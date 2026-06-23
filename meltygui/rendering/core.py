@@ -1502,10 +1502,26 @@ def render_func(*args, **o_kwargs):
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
 
-            left_mouse_up = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
-            if left_mouse_up:
+            # Non-blocking + high priority: this handler sees EVERY left_mouse_down
+            # regardless of which view consumes it (the input handler walks the
+            # non_blocking chain from the top before stopping at the first blocking
+            # subscriber - see InputHandler._resolve_subscribers). That's exactly
+            # what we need to raise a window on click without taking the press away
+            # from its children: an interactive child still wins the press for its
+            # own purposes, while we additionally raise the window here.
+            raise_press = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
+            if raise_press:
                 ds_under_mouse = Melty.bvh_query(*imgui.get_mouse_pos())
                 Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
+                # Bring the clicked window to the front. ds_under_mouse is z-sorted
+                # (frontmost first), so raising the front hit's owning window is the
+                # right pick even where windows overlap. move_window_to_front walks
+                # up to the registered root, so using the deepest hit raises the
+                # innermost window (and restacks it among its siblings). This runs
+                # once per hit window but every copy resolves the same front hit,
+                # so the move is idempotent - no fight over which window wins.
+                if ds_under_mouse:
+                    Melty.move_window_to_front(ds_under_mouse[0])
 
             # Universal drag-and-drop: any view rendered as an item of a
             # dict/list collection offers its window as a drag handle. The
@@ -1518,16 +1534,13 @@ def render_func(*args, **o_kwargs):
                 if not _explicit_window_pos:
                     on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
                     on_drag = draw_state.on_action("left_mouse_drag", "window_move", priority_delta=-2)
-                    left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
-
-                    if left_mouse_down:
-                        # draw_state is the window that actually won the click
-                        # (left_mouse_down is its own on_action result). Pass it
-                        # here rather than reading melty_window_stack[-1] - for
-                        # a child window move_window_to_front walks up to the
-                        # registered root, for a root window it's a no-op anyway.
-                        Melty.move_window_to_front(draw_state)
+                    # Bring-to-front on a left press is owned by the non_blocking
+                    # raise_press handler above (so a press consumed by an
+                    # interactive child still raises the window). The blocking
+                    # left_mouse_down "window_move" subscription that used to raise
+                    # here lost the press to any child that subscribed to it, which
+                    # is exactly the inconsistency this replaces.
 
                     # ctrl+right-drag moves a window, exactly like a left-drag.
                     # The right-drag is captured in the resize system above as
@@ -1544,7 +1557,8 @@ def render_func(*args, **o_kwargs):
                         if draw_state._initial_window_pos is None:
                             # First frame of a move drag. Raise on grab for
                             # parity with the left-drag move (which raises on its
-                            # left_mouse_down). Rebase the baseline by the drag
+                            # left press via raise_press above). Rebase the baseline
+                            # by the drag
                             # delta so far so pos = baseline + total_d is
                             # correct when the move (re-)activates mid-drag -
                             # e.g. the moment ctrl is pressed during a resize.

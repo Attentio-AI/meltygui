@@ -309,7 +309,7 @@ class Swoosh:
 
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
-    
+
     # Global App Toggles
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:
@@ -347,17 +347,9 @@ class Toggles:
 
     @defaults(tint=(0.652, 0.672, 0.733))
     class TerminalSettings:
-        # Minimum LOGICAL terminal size, in pixels - independent of the window size.
-        min_width = 98.634
+        # Minimum render terminal size, in pixels - independent of the window size.
         min_height = 480.0
-
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 600
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # ms
-        bg_offset = 30
-        debug_scroll = False
+        min_width = 98.634
 
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
@@ -369,6 +361,14 @@ class Toggles:
         # re-appeared within this many frames (safety net for closes abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
+
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 600
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # seconds
+        bg_offset = 30
+        debug_scroll = False
 
     show_filled_tiles = False
     gl_check_error = False
@@ -408,10 +408,10 @@ class Toggles:
 
     debug_z_depth = False
     filters = True
+    ignore_call_from = ()
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
-    ignore_call_from = ()
 
     # Shadow settings
     shadow_downscale = 2

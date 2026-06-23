@@ -2521,58 +2521,85 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
               selectable=False, left_mouse_drag=None, left_mouse_held=False,
               left_mouse_down=False):
 
-    width = min(draw_state.width - 3, draw_state.content_width + 0)
-
-    imgui.dummy(width, 21)
-    draw_list = imgui.get_window_draw_list()
-    bg_alpha = 1.0
-        
     left_margin = 5
-    if input_value:
-        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), bg_alpha)
-    else:
-        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), bg_alpha)
-    
-    outline_color = imgui.get_color_u32_rgba(*Tint.checkbox_outline(), 1.0)
-
-    draw_list.add_rect_filled(imgui.get_cursor_pos_x() + left_margin, 
-                              draw_state.abs_top, 
-                              imgui.get_cursor_pos_x() + width - 0,
-                              draw_state.abs_top + draw_state.content_height, 
-                              rounding=4,
-                              col=bg_color)
-    draw_list.add_rect(imgui.get_cursor_pos_x() + left_margin, 
-                       draw_state.abs_top, 
-                       imgui.get_cursor_pos_x() + width - 0,
-                       draw_state.abs_top + draw_state.content_height, 
-                       rounding=4,
-                       col=outline_color, 
-                       thickness=1.5)
-                             
-    if draw_state._bounding_hovered:
-        hover_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_hovered(), 0.2)
-    
-        draw_list.add_rect_filled(imgui.get_cursor_pos_x() + left_margin, 
-                                  draw_state.abs_top, 
-                                  imgui.get_cursor_pos_x() + width - 0,
-                                  draw_state.abs_top + draw_state.content_height, 
-                                  rounding=4,
-                                  col=hover_color)
+    box_h = 21
+    text_inset = 8
 
     if input_value:
+        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), 1.0)
         text_color = (*Tint.checkbox_text_true(), 1.0)
         icon = f""
     else:
+        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
         text_color = (*Tint.checkbox_text(), 0.2)
         icon = f""
-    imgui.same_line(8 + left_margin)
-    imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
-    imgui.text_colored(f"{icon} {input_value}", *text_color)
-    if draw_state._bounding_hovered and imgui.is_mouse_clicked(0):
+
+    label = f"{icon} {input_value}"
+    icon_w = imgui.calc_text_size(icon)[0]
+    label_w = imgui.calc_text_size(label)[0]
+
+    # The box hugs the content rather than expanding to fill the cell. When even
+    # the label won't fit the available space we collapse to a square that shows
+    # just the icon. `width` is the box's right edge measured from the cell left,
+    # matching the original cursor-relative geometry below.
+    avail = min(draw_state.width - 3, draw_state.content_width + 0)
+    full_width = left_margin + text_inset * 2 + label_w
+    compact = full_width > avail
+    if compact:
+        width = left_margin + box_h
+    else:
+        width = full_width
+
+    imgui.dummy(width, 21)
+    draw_list = imgui.get_window_draw_list()
+
+    outline_color = imgui.get_color_u32_rgba(*Tint.checkbox_outline(), 1.0)
+
+    # Align the box to the right edge of the value cell: the leftover space
+    # between the content width and the box's own width becomes the left offset.
+    # When the box is wider than the cell this goes negative, pinning the right
+    # edge and letting the box grow left over the header - so when there's
+    # absolutely no room it starts overlapping the header rather than overflowing.
+    right_offset = draw_state.content_width - width
+    box_left = imgui.get_cursor_pos_x() + left_margin + right_offset
+    box_right = imgui.get_cursor_pos_x() + width + right_offset
+    box_top = draw_state.abs_top
+    box_bottom = draw_state.abs_top + draw_state.content_height
+
+    draw_list.add_rect_filled(box_left, box_top, box_right, box_bottom,
+                              rounding=4, col=bg_color)
+    draw_list.add_rect(box_left, box_top, box_right, box_bottom,
+                       rounding=4, col=outline_color, thickness=1.5)
+
+    # The hit target is the box itself, not the whole value cell - the rest of
+    # the row (the header) stays usable for its own drag-and-drop. _bounding_hovered
+    # keeps occlusion/z-order correct (no clicking through an overlapping window);
+    # the rect test narrows it to the drawn box.
+    box_hovered = draw_state._bounding_hovered and imgui.is_mouse_hovering_rect(
+        box_left, box_top, box_right, box_bottom)
+
+    if box_hovered:
+        hover_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_hovered(), 0.2)
+        draw_list.add_rect_filled(box_left, box_top, box_right, box_bottom,
+                                  rounding=4, col=hover_color)
+
+    if compact:
+        # Center just the icon inside the square (which spans [left_margin, width]).
+        box_w = width - left_margin
+        imgui.same_line(left_margin + (box_w - icon_w) / 2.0 + right_offset)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
+        imgui.text_colored(icon, *text_color)
+    else:
+        imgui.same_line(text_inset + left_margin + right_offset)
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
+        imgui.text_colored(label, *text_color)
+
+    if box_hovered and imgui.is_mouse_clicked(0):
         request_render()
         return True, not input_value
     else:
         return False, input_value
+
 
 
 

@@ -3031,6 +3031,13 @@ class Melty:
                     draw_state = node
 
             window_key = draw_state._tile_id
+            # The walk may end without ever reaching a registered window - e.g. the
+            # raise-on-press interaction passes whatever view is topmost under the
+            # cursor, which can be a non-window top-level view. Don't set a move
+            # for something the window manager doesn't track (apply_move_to_front
+            # would only warn and no-op); just leave the z-order untouched.
+            if window_key not in Melty.registered_windows:
+                return
             cls.pending_move_to_front = (window_key, draw_state, nested_chain)
 
             # window_key = f"{cls.pending_move_to_front[0]}_window"
