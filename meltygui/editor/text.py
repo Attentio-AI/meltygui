@@ -2161,7 +2161,8 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
-   
+
+
     ds = draw_state   
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -2426,17 +2427,20 @@ def draw_text(input_value: str, height=None,
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
 
-    def _try_usage_jump(pos):
+    def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (double-click / Ctrl+B): one
         counterpart opens straight in IntelliJ; several open the usage-jump
-        picker under the symbol. True if the jump or picker happened."""
+        picker under the symbol. `force_picker` opens the picker even for a
+        SINGLE counterpart (the Toggles.TextEditor.double_click_opens_dropdown
+        behavior) instead of jumping straight. True if the jump or picker
+        happened (a span with zero targets returns False -> word-select)."""
         for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
             if _us <= pos < _ue:
                 _targets = _usage_jump_targets(
                     _su,
                     view_path=getattr(jump_to, 'path', None) if jump_to is not None else None,
                     view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
-                if len(_targets) > 1:
+                if _targets and (len(_targets) > 1 or force_picker):
                     _items, _tags = _usage_ref_items(_targets)
                     ds._uj_items = _items
                     ds._uj_tags = _tags
@@ -2484,7 +2488,9 @@ def draw_text(input_value: str, height=None,
             # code-suggestion popup) under the symbol so the user picks the
             # target. Anywhere else, word-select. (Ctrl+B does the same at the
             # caret - see the standalone handler below the click state.)
-            _jumped = _try_usage_jump(click_pos)
+            _jumped = _try_usage_jump(
+                click_pos,
+                force_picker=Toggles.TextEditor.double_click_opens_dropdown)
             if _jumped:
                 ds.text_drag_mode = 'char'
                 ds.text_cursor_pos = click_pos
@@ -2518,7 +2524,6 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_end = click_pos
             ds.text_drag_anchor_lo = ds.text_selection_start
             ds.text_drag_anchor_hi = ds.text_selection_end
-
 
     # Extend the selection on cursor motion, and also every frame the button is
     # held (left_mouse_held) once a drag is underway - so holding the cursor

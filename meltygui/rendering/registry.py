@@ -175,6 +175,14 @@ class _RenderFuncs:
     var_dict_to_class = _LazyRenderFunc("var_dict_to_class")
 
     def __getattr__(self, name):
+        # Dunders must NOT fabricate or handle. No render func is named like a
+        # dunder, and fabricating would break copy/pickle of anything holding
+        # RenderFuncs (deepcopy probes __deepcopy__ -> a _LazyRenderFunc whose
+        # _resolve() raises + spams the registry to stdout) and would detonate
+        # inspect.unwrap the moment _LazyRenderFunc gains a __class__ property.
+        # See _LazyRenderFunc.__getattr__'s own guard (and _Modes in modes.py).
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         return _LazyRenderFunc(name)
 
 

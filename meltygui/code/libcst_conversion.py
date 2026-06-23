@@ -1125,8 +1125,11 @@ def _src_mod_map() -> dict:
 
 def _collect_refs(tree) -> list:
     """Reference occurrences in a module AST:
-      ("name", name, line, col, scope)            -- a bare Name
-      ("attr", (base_name, attr), line, col, scope) -- `base_name.attr` access
+      ("name", name, line, col, scope)              -- a bare Name
+      ("attr", (base, attr), line, col, scope)      -- `base.attr` access; `base`
+            is the base NAME (str) for a one-level `A.attr`, or the dotted
+            value-chain as a tuple of names for a chained `A.B.attr`
+            (-> base=("A","B")) so the resolver can getattr-walk it.
     col is 0-indexed; scope is the nearest enclosing def/class.
 
     Hot: this runs once per file in the cold caller scan and was the single
@@ -1142,6 +1145,19 @@ def _collect_refs(tree) -> list:
     FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
     ClassDef = ast.ClassDef
 
+    def _attr_chain(node):
+        # Names in a dotted Name/Attribute value-chain's root first, or None if it
+        # bottoms out in a call/subscript/etc. (`a.b.c` -> ("a","b","c")).
+        parts = []
+        while node.__class__ is Attribute:
+            parts.append(node.attr)
+            node = node.value
+        if node.__class__ is Name:
+            parts.append(node.id)
+            parts.reverse()
+            return tuple(parts)
+        return None
+
     def walk(node, scope):
         for child in iter_child(node):
             t = child.__class__
@@ -1149,9 +1165,20 @@ def _collect_refs(tree) -> list:
                 out_append(("name", child.id, child.lineno, child.col_offset, scope))
             elif t is Attribute:
                 v = child.value
-                if v.__class__ is Name:
+                vt = v.__class__
+                if vt is Name:
                     out_append(("attr", (v.id, child.attr),
                                 child.lineno, child.col_offset, scope))
+                elif vt is Attribute:
+                    # Chained access `A.B.attr`: capture the LEAF member on its
+                    # full-chain base so nested-class attributes resolve. Without
+                    # this, `Toggles.Inner.attr` only ever captured the inner CLASS
+                    # (`Inner`-on-`Toggles`, from the walk below) and the leaf
+                    # attribute showed no usages.
+                    chain = _attr_chain(v)
+                    if chain is not None:
+                        out_append(("attr", (chain, child.attr),
+                                    child.lineno, child.col_offset, scope))
                 walk(child, scope)          # also records the base case beneath
             elif t is FunctionDef or t is AsyncFunctionDef or t is ClassDef:
                 out_append(("name", child.name, child.lineno, child.col_offset, scope))
@@ -1161,6 +1188,83 @@ def _collect_refs(tree) -> list:
 
     walk(tree, "<module>")
     return out
+
+
+def _resolve_static_obj(node, look):
+    """Resolve a pure Name / attribute-chain AST node to a live object via `look`
+    (name -> object) + getattr, or None. The root name goes through `look`;
+    getattr walks the rest. Used to find the class a local is bound to (an alias
+    RHS or a type annotation) so member access through the local is trackable."""
+    cls = node.__class__
+    if cls is ast.Name:
+        return look(node.id)
+    if cls is ast.Attribute:
+        parts = []
+        n = node
+        while n.__class__ is ast.Attribute:
+            parts.append(n.attr)
+            n = n.value
+        if n.__class__ is not ast.Name:
+            return None
+        obj = look(n.id)
+        for p in reversed(parts):
+            if obj is None:
+                return None
+            try:
+                obj = getattr(obj, p, None)
+            except Exception:
+                return None
+        return obj
+    return None
+
+
+def _local_class_bindings(tree, look):
+    """{(scope, local_name): obj} for locals bound to a resolvable object, so a
+    member access THROUGH a local resolves — the index otherwise resolves bases
+    only via the module/import namespace, losing every usage reached via a local
+    (`ts = Toggles.TerminalSettings; ts.min_width`, or a typed parameter
+    `tab_state: TabState` then `tab_state.selected_tabs`). Scope is the SAME
+    string _collect_refs assigns refs (nearest enclosing def/class name), so the
+    binding and the ref it explains share a key. Two binding sources:
+      • parameter / AnnAssign type annotation -> the local is bound to the TYPE
+        (its class); member access resolves to that class's members.
+      • a simple alias assignment `x = <Name | attr-chain>` -> the bound object.
+    Only Name / attribute-chain annotations and RHS resolve; Subscript (List[X]),
+    calls, and literals are skipped (conservative). Last binding in a scope wins."""
+    bindings = {}
+    Name = ast.Name; Attribute = ast.Attribute
+    FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
+    ClassDef = ast.ClassDef; Assign = ast.Assign; AnnAssign = ast.AnnAssign
+    iter_child = ast.iter_child_nodes
+
+    def bind(scope, name, node):
+        obj = _resolve_static_obj(node, look)
+        if obj is not None:
+            bindings[(scope, name)] = obj
+
+    def walk(node, scope):
+        for child in iter_child(node):
+            t = child.__class__
+            if t is FunctionDef or t is AsyncFunctionDef:
+                a = child.args
+                for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs):
+                    if arg.annotation is not None:
+                        bind(child.name, arg.arg, arg.annotation)
+                walk(child, child.name)
+            elif t is ClassDef:
+                walk(child, child.name)
+            elif t is AnnAssign:
+                if child.target.__class__ is Name and child.annotation is not None:
+                    bind(scope, child.target.id, child.annotation)
+            elif t is Assign:
+                if (len(child.targets) == 1 and child.targets[0].__class__ is Name
+                        and child.value.__class__ in (Name, Attribute)):
+                    bind(scope, child.targets[0].id, child.value)
+            else:
+                walk(child, scope)
+
+    walk(tree, "<module>")
+    return bindings
 
 
 def _imported_name_objects(tree) -> dict:
@@ -1242,12 +1346,29 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
 
             if raw_refs is None:
                 raw_refs = _collect_refs(tree)
+            # Locals bound to a class (alias or typed param) so aing
+            # through them resolves; falls back to the global/import namespace.
+            bindings = _local_class_bindings(tree, look)
+            def look_base(name, scope):
+                b = bindings.get((scope, name))
+                return b if b is not None else look(name)
             for (kind, payload, line, col, scope) in raw_refs:
                 if kind == "name":
                     obj = look(payload)
                     refs.append(("name", id(obj) if obj is not None else None, line, col, scope))
                 else:
-                    base = look(payload[0])
+                    b = payload[0]
+                    if b.__class__ is tuple:        # dotted: `A.B` -> getattr-walk
+                        base = look_base(b[0], scope)
+                        try:
+                            for part in b[1:]:
+                                if base is None:
+                                    break
+                                base = getattr(base, part, None)
+                        except Exception:           # a property on the chain raised
+                            base = None
+                    else:
+                        base = look_base(b, scope)
                     key = (id(base), payload[1]) if base is not None else None
                     refs.append(("attr", key, line, col, scope))
         except Exception:
@@ -1280,20 +1401,31 @@ def _collect_targets(file_tree, module, s: int, e: int):
         elif container is not None:
             mem_targets[(id(container), name)] = name
 
-    def walk(node, container):
+    def walk(node, container, class_obj=None):
         cd = getattr(container, "__dict__", None) or {}
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(child, ast.ClassDef):
                 obj = cd.get(child.name)
                 add(child.name, child.lineno, child.col_offset, container, obj)
-                walk(child, obj)             # recurse with the def's object as container
+                walk(child, obj, class_obj=obj)        # entering a class
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                obj = cd.get(child.name)
+                add(child.name, child.lineno, child.col_offset, container, obj)
+                walk(child, obj, class_obj=class_obj)  # method keeps its class
             elif isinstance(child, (ast.Assign, ast.AnnAssign)):
                 tgts = child.targets if isinstance(child, ast.Assign) else [child.target]
                 for t in tgts:
                     if isinstance(t, ast.Name):
                         add(t.id, child.lineno, t.col_offset, container, cd.get(t.id))
+                    elif (class_obj is not None and isinstance(t, ast.Attribute)
+                          and isinstance(t.value, ast.Name) and t.value.id == "self"):
+                        # `self.x = ...` / `self.x: T` in a method -> a member of
+                        # the enclosing CLASS. Instance attrs have no class-body
+                        # def, so they'd otherwise never be a usage target (e.g.
+                        # TabState.selected_tabs, set once in __init__).
+                        add(t.attr, child.lineno, t.col_offset, class_obj, None)
             else:
-                walk(child, container)
+                walk(child, container, class_obj=class_obj)
 
     walk(file_tree, module)
     return obj_targets, mem_targets, obj_by_name, sites, def_lines
@@ -1326,15 +1458,23 @@ def _member_def_site(base, attr):
     members (no source info of their own) fall back to scanning the base's
     source for the `attr = ...` / `attr: ...` assignment line."""
     try:
-        val = inspect.unwrap(getattr(base, attr))
+        m = getattr(base, attr)
+        # property / cached_property expose the underlying function via fget/func;
+        # the descriptor object itself has no source, so unwrap to it first (this
+        # is why DrawState.get_clip_rect - a @property - resolved to nothing).
+        m = getattr(m, "fget", None) or getattr(m, "func", None) or m
+        val = inspect.unwrap(m)
         return inspect.getsourcefile(val), inspect.getsourcelines(val)[1]
     except Exception:
         pass
     try:
         lines, start = inspect.getsourcelines(base)
+        pre = f"self.{attr}"      # instance attr defined in a method body
         for i, ln in enumerate(lines):
             s = ln.lstrip()
             if s.startswith(attr) and len(s) > len(attr) and s[len(attr)] in ' =:(':
+                return inspect.getsourcefile(base), start + i
+            if s.startswith(pre) and len(s) > len(pre) and s[len(pre)] in ' =:':
                 return inspect.getsourcefile(base), start + i
     except Exception:
         pass
@@ -1405,29 +1545,61 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         return v if v is not None else _file_imports.get(n)
 
     member_bases = {}                       # dotted name -> base object
+    # Members DEFINED in the span (from _collect_targets); a reference to the
+    # inside the span keeps the definition's site, not a re-registration. Snapshot
+    # now so the loop can still record EVERY occurrence of a REFERENCED member.
+    defined_member_keys = frozenset(mem_targets)
     file_refs = _collect_refs(file_tree)    # one full tree walk, reused for the
                                             # edited file's caller scan below too
+    # Locals bound to a class (alias / typed param) so member access through them
+    # resolves; falls back to the module/import namespace.
+    _bindings = _local_class_bindings(file_tree, _lookup)
+    def _lookup_base(name, scope):
+        b = _bindings.get((scope, name))
+        return b if b is not None else _lookup(name)
     for (kind, payload, line, col, scope) in file_refs:
         if not (start_line <= line <= end_line):
             continue
         if kind == "name":
             obj = _lookup(payload)
-            if obj is not None and id(obj) not in obj_targets:
-                obj_targets[id(obj)] = payload
-                obj_by_name.setdefault(payload, obj)
+            if obj is not None:
+                if id(obj) not in obj_targets:
+                    obj_targets[id(obj)] = payload
+                    obj_by_name.setdefault(payload, obj)
+                    def_lines.setdefault(payload, line)
+                # EVERY occurrence is a site: registration above runs once, but
+                # each reference must link. Appending was inside that guard, so
+                # only the FIRST of N references (e.g. draw_window called 9× in
+                # draw_main) got a site - the rest had no reference recorded.
                 sites.setdefault(payload, []).append((line, col))
-                def_lines.setdefault(payload, line)
         elif kind == "attr":
-            base_name, attr = payload
-            base = _lookup(base_name)
+            base_repr, attr = payload
+            if base_repr.__class__ is tuple:    # dotted base `A.B` -> getattr-walk
+                base = _lookup_base(base_repr[0], scope)
+                try:
+                    for part in base_repr[1:]:
+                        if base is None:
+                            break
+                        base = getattr(base, part, None)
+                except Exception:
+                    base = None
+                base_str = ".".join(base_repr)
+            else:
+                base = _lookup_base(base_repr, scope)
+                base_str = base_repr
             if base is None or not _is_src_object(base, mod_map):
                 continue
             key = (id(base), attr)
-            if key in mem_targets:          # span-defined member: already covered
+            if key in defined_member_keys:  # span-defined member: sites come from the def
                 continue
-            nm = f"{base_name}.{attr}"
-            mem_targets[key] = nm
-            member_bases.setdefault(nm, base)
+            nm = mem_targets.get(key)       # canonical name; None until first reference
+            if nm is None:
+                nm = f"{base_str}.{attr}"
+                mem_targets[key] = nm
+                member_bases.setdefault(nm, base)
+            # Every occurrence is a site (was skipped for repeats with `key in
+            # mem_targets`, so a member referenced N× - e.g. imgui.text - only
+            # linked once).
             sites.setdefault(nm, []).append((line, col))
     if not obj_targets and not mem_targets:
         return {}
@@ -1506,14 +1678,28 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 df = inspect.getsourcefile(target)
                 dl = _cached_def_line(target, df)   # cached; skips per-class re-parse
                 dm = getattr(target, "__module__", "") or mod_name
-            except (TypeError, OSError, ValueError):
+            except Exception:
+                # Best-effort definition lookup over ARBITRARY live objects: any
+                # one of them can have a pathological __getattr__/__class__ that
+                # makes inspect.unwrap raise something exotic (a _LazyMode probed
+                # for __wrapped__ raised KeyError here, and an uncaught KeyError
+                # silently zeroes the WHOLE span's index - see index.py). A failed
+                # symbol must fall back to its in-file def, never kill the span.
                 df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
         elif base is not None:                    # reverse ref: member on an
-            df, dl = _member_def_site(base, nm.split('.', 1)[1])   # external base
+            df, dl = _member_def_site(base, nm.rsplit('.', 1)[-1])   # external base (an attr)
             dm = (getattr(base, '__module__', None)
                   or getattr(base, '__name__', '') or '')
             if df is None:
-                df, dl = rp_str, def_lines.get(nm, 0)
+                # Unresolvable member def: point at the BASE's own file (where the
+                # class lives), never rp_str: the member isn't defined in the file
+                # being analyzed (that gave bogus "new_gl_panel.py:0" for a
+                # local-resolved external member like DrawArgs.abs_clip_rect).
+                try:
+                    df = inspect.getsourcefile(base)
+                except Exception:
+                    df = None
+                dl = 0
         else:                                     # class member: defined in this file
             df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
         out[nm] = {
@@ -1623,7 +1809,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     before the O(file) offset map even runs."""
     from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-    accurate = getattr(Toggles, "jedi_correctness", False)
+    accurate = Toggles.jedi_correctness
     try:
         mtime = resolved.stat().st_mtime
     except OSError:
@@ -1654,7 +1840,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # are added). `src_key` is tracked so we can read its buffer-text snapshot for
     # the position-offset fast path and evict it when the view shifts off it.
     prev = src = src_key = None
-    if not accurate and getattr(Toggles, "incremental_symbol_index", True):
+    if not accurate and Toggles.incremental_symbol_index:
         if cached is not None and cached[0][2] is False and cached[0][3] == gen:
             src, src_key = cached, key
         else:
@@ -1665,7 +1851,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
             # result's buffer positions by a count delta. _line_offset_map returns
             # None on any substantial change, falling through to the full
             # recompute below.
-            if getattr(Toggles, "offset_symbol_positions", True):
+            if Toggles.offset_symbol_positions:
                 old_text = _span_text.get(src_key)
                 # fast_only render-thread gate: only a line-COUNT change can be a
                 # position-only offset, so a within-line edit skips the O(file)
@@ -2250,7 +2436,7 @@ _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 fr
 
 def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
-    if not getattr(Toggles, "yield_to_ui", False):
+    if not Toggles.yield_to_ui:
         return
     last = getattr(Melty, "_last_input_time", 0.0)
     if not last or time.monotonic() - last >= _YIELD_QUIET_S:
@@ -2264,7 +2450,7 @@ def _yield_to_ui():
     glt = getattr(gl_state, "_gl_thread", None)   # read, don't claim (assert_gl_thread claims)
     if glt is None or cur is glt:
         return
-    while getattr(Toggles, "yield_to_ui", False):
+    while Toggles.yield_to_ui:
         if time.monotonic() - getattr(Melty, "_last_input_time", 0.0) >= _YIELD_QUIET_S:
             break
         time.sleep(_YIELD_SLICE_S)
@@ -2439,7 +2625,7 @@ class _position_map:
         self._prev = getattr(_span_scope, "positions", None)
         try:
             from src.lsd.gl_gui.toggles import Toggles   # lazy: breaks import cycle
-            if getattr(Toggles, "new_position_map", False):
+            if Toggles.new_position_map:
                 _span_scope.positions = _build_ast_span_map(self._module, self._source)
             else:
                 wrapper = _MetadataWrapper(self._module, unsafe_skip_copy=True)
@@ -2902,9 +3088,9 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         # mid-gesture (a structured tint drag echoes through chain_in, which
         # would run this compute DURING the drag): the gp ships unstamped, and
         # the editor-side nudge re-indexes it the moment the drag ends.
-        auto = (getattr(Toggles, "enable_jedi", True)
-                and getattr(Toggles, "auto_index", True)
-                and not getattr(Toggles, "jedi_correctness", False)
+        auto = (Toggles.enable_jedi
+                and Toggles.auto_index
+                and not Toggles.jedi_correctness
                 and _index_generation > 0
                 and _wait_for_no_drag(max_wait=0.0))
         if run_jedi:

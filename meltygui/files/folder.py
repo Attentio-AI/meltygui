@@ -38,6 +38,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 ROOT = Path(__file__).parent
 TEST_FOLDER = Path("/home/lukas/test_folder")
 
+
 def _scan(folder):
     """Disk → the held shape: {name: Path} for files, {name: {…}} for dirs."""
     out = {}
@@ -219,7 +220,7 @@ def draw_folder_files(input_value, draw_state, **kwargs):
     return False, None
 
 
-@window(input_value=test_folder_proxy, tint=(0.35, 0.74, 1.00), disable_scroll=False, mode=Modes.WINDOW)
+@window(input_value=test_folder_proxy, tint=(0.39, 0.356, 0.33), disable_scroll=False, mode=Modes.WINDOW)
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_test_folders(input_value, draw_state, **kwargs):
     _draw_tree(input_value, draw_state, TEST_FOLDER)

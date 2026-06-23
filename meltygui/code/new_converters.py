@@ -87,7 +87,7 @@ import libcst as cst
 from src.lsd.gl_gui import toggles
 from src.lsd.gl_gui.melty import FileWatch, Melty
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.model.core_model.draw_state import TabState
+from src.lsd.gl_gui.model.core_model.draw_state import TabState, DrawState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.modes import Modes
@@ -1797,7 +1797,7 @@ def code_hosts_for(ref):
         # their id()s are all distinct - unique per concurrent host, and stable for
         # the entry's life (the value-key keeps THIS ref's id from being recycled).
         tag = id(ref)
-        str_host = RenderHost(io_function=code_file_io, input_value=ref,
+        str_host = RenderHost(io_function=code_file_io, input_value=ref, evictable=True,
                               name=f"##code_cache_{label}{tag}_str",
                               child_kwargs={"auto_load_edits": True, "auto_save": True})
 
@@ -1817,7 +1817,7 @@ def code_hosts_for(ref):
         elif isinstance(ref, types.ModuleType):
             lint_path = getattr(ref, "__file__", None)
         dict_host = RenderHost(
-            io_function=convert_in_and_out_value, input_value=str_host,
+            io_function=convert_in_and_out_value, input_value=str_host, evictable=True,
             name=f"##code_cache_{label}{tag}_dict",
             child_kwargs={
                 "chain_in": [string_to_cst_module, cst_module_to_dict],
@@ -1903,9 +1903,9 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     global _last_auto_index_time
     if dict_host is None or not isinstance(code_dict, dict):
         return
-    if not (getattr(Toggles, "enable_jedi", True)
-            and getattr(Toggles, "auto_index", True)
-            and not getattr(Toggles, "jedi_correctness", False)):
+    if not (Toggles.enable_jedi
+            and Toggles.auto_index
+            and not Toggles.jedi_correctness):
         return
     from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
     gen = _lc._index_generation
@@ -2000,9 +2000,9 @@ def _wake_stale_code_hosts(gen):
     be observed. Attaches IN PLACE (no chain re-run / libcst reparse — see
     _index_host_in_place); a small sleep between hosts keeps their index
     passes from stacking into one GIL burst against the render thread."""
-    if not (getattr(Toggles, "enable_jedi", True)
-            and getattr(Toggles, "auto_index", True)
-            and not getattr(Toggles, "jedi_correctness", False)):
+    if not (Toggles.enable_jedi
+            and Toggles.auto_index
+            and not Toggles.jedi_correctness):
         return
     for sh, dh in list(_code_host_cache.values()):
         gp = dh._held()
@@ -2115,9 +2115,13 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             changed, value, ds = RenderFuncs.draw_text(list(_str_host.values())[0], code_dict=code_dict,
                                                        code_tree=cache_error, error=error,
                                                        return_extras=True, **{**kwargs, "is_tree":False})
+            # Every frame's editor draws: mark as a LIVE user so the idle sweep
+            # keeps the host registered (and repaint it when a background parse
+            # lands). Not gated on `changed` - an open-but-unedited editor still
+            # owns the host, and the sweep would otherwise immediately-register it.
+            dict_host.notify_on_change(ds)
             if changed:
                 _str_host[list(_str_host.keys())[0]] = value
-                dict_host.notify_on_change(ds)
     # # Re-render this editor when a background parse lands: its cached
     # # subtree is outside the host's own draw loop, so without registering it
     # # the fresh cst_dict sits invisible until an unrelated invalidation.
@@ -2165,7 +2169,7 @@ def _host_code_tree_error(dict_host):
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
              shadow=False, indent_size=0, with_footer=None)
 def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabState = None,
-                              unique=None, draw_state=None, column_widths=None,
+                              unique=None, draw_state:DrawState=None, column_widths=None,
                               column_edges=None, draw=False, error=None,
                               run_jedi=False, **kwargs):
     """NEW_CODE's text|structured tabs on the code-host-cache route — no inline

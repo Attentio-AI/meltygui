@@ -104,6 +104,14 @@ class _Modes:
     draw_text_funcs = _LazyMode("draw_text_funcs")
 
     def __getattr__(self, name):
+        # Dunders must NOT fabricate a handle. No Mode member is a dunder, and a
+        # _LazyMode("__wrapped__") detonates the moment anything probes its
+        # __class__ (-> Mode["__wrapped__"] -> KeyError) - which is exactly what
+        # inspect.signature(Modes) does (it probes __wrapped__) when the symbol
+        # index walks this object. Mirror _LazyMode.__getattr__'s own guard so
+        # copy/pickle/unwrap probes fall through to normal AttributeError.
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
         return _LazyMode(name)
 
 

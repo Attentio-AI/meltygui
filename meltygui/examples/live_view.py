@@ -50,8 +50,8 @@ def decay_step(t):
 
 
 def orbit(t):
-    pos = (round(50 + 40 * math.sin(t / 2.0), 2),
-           round(50 + 38 * math.cos(t / 3.0), 2))
+    pos = (round(50 + 40 * math.sin(t / 2.0), 23),
+           round(50 + 38 * math.cos(t / 3.2), 2))
     live_view()
     if pos[0] >= 91:
         right = f"right of center, x={pos[0]}"

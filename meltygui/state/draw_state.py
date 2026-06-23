@@ -146,10 +146,26 @@ class AttrDict:
         object.__setattr__(self, '_data', data)
 
     def __getattr__(self, name):
+        # `_data` itself must raise, not route through here: during deepcopy/
+        # pickle reconstruction the slot is briefly unset, and `self._data`
+        # would re-enter __getattr__('_data') -> infinite recursion. Dunders
+        # raise AttributeError so copy/pickle/unwrap protocol probes (__setstate__,
+        # __deepcopy__, ...) read as exceptions instead of a None that some
+        # protocols might try to call.
+        if name == "_data" or (name.startswith("__") and name.endswith("__")):
+            raise AttributeError(name)
         return self._data.get(name, None)
 
 
     def __setattr__(self, name, value):
+        # The `_data` slot is set directly; everything else is a data key.
+        # Without this, copy/pickle reconstruction (which setattrs `_data` back
+        # onto a fresh, slot-unset instance) would route into `self._data[...]`
+        # and hit the unset slot -> AttributeError. Pairs with __getattr__'s
+        # `_data` guard to make AttrDict round-trip through copy/pickle.
+        if name == "_data":
+            object.__setattr__(self, name, value)
+            return
         self._data[name] = value
 
     def rebind(self, data):

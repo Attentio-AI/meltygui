@@ -70,7 +70,7 @@ class RenderHost(_DeepAttrMixin, dict):
 
     def __init__(self, io_function=None, *args, input_value=None, child_kwargs=None,
                  settings_renderer=None, name=None, hidden=False, window=True, standalone=True,
-                 value_key="value", **extra):
+                 value_key="value", evictable=False, **extra):
         super().__init__(*args)
         self.io_function = io_function
         # `is None` (not falsy): an empty host-dict is a valid input_value.
@@ -83,6 +83,14 @@ class RenderHost(_DeepAttrMixin, dict):
         self.hidden = hidden
         self.window = window
         self.standalone = standalone
+        # evictable → the idle sweep (RenderHost.sweep) may DEREGISTER this host
+        # from Melty.render_hosts when ALL its consumer windows close - it stays
+        # in the code-host cache and re-registers on reopen (notify_on_change →
+        # register). Module-level singleton proxies (files_proxy, claude_proxy, the
+        # playground demos) default this False so they're never swept; only
+        # code_hosts_for opts its short-lived cache pairs in.
+        self.evictable = evictable
+        self._birth_frame = Melty.frame_count   # idle-sweep birth grace
         # The held value lives under this key, type intact - so a GeneralParse stays a
         # GeneralParse for chain_out, and the proxy "looks like a dict with one value".
         self.value_key = value_key
@@ -112,7 +120,10 @@ class RenderHost(_DeepAttrMixin, dict):
         # finally materializes, request_render() wakes the loop but doesn't reach the
         # external cached subtrees - so they'd show nothing until an unrelated manual
         # invalidation. They register here and _materialize invalidates them on change.
-        self._consumers = []
+        # Maps each consumer draw_state → the frame it last re-registered
+        # (notify_on_change); the idle sweep reads that last-seen stamp (plus
+        # abs_closed) to decide whether this host still has an alive user.
+        self._consumers = {}
 
         # Bubble nested changes: upgrade existing contents + a non-self input tree so
         # a deep edit (held['cfg']['rank'] = 16, or a grabbed GeneralParse) marks the
@@ -127,10 +138,19 @@ class RenderHost(_DeepAttrMixin, dict):
 
     # ── Registration ──────────────────────────────────────────────────────────
     def register(self):
-        """Add to Melty.render_hosts so draw_main calls draw() each frame. Idempotent."""
+        """Add to Melty.render_hosts so draw_main calls draw() each frame. Idempotent.
+
+        Also re-registers the upstream proxy in the chain (a dict_host's str_host):
+        str_host has no consumers of its own, so reviving the dict_host after an idle
+        sweep must bring its source proxy back too, or the value goes stale. Guarded on
+        the upstream's own _registered flag, so a chain can't recurse forever."""
         if not self._registered:
             Melty.render_hosts[id(self)] = self
             self._registered = True
+
+        iv = self.input_value
+        if isinstance(iv, RenderHost) and iv is not self and not iv._registered:
+            iv.register()
 
         return self
 
@@ -138,15 +158,24 @@ class RenderHost(_DeepAttrMixin, dict):
         """Register an EXTERNAL consumer's draw_state to be invalidated when this host's
         held value next materializes/changes. Idempotent. For code that reads the host's
         value (e.g. host.deep.parameters()) and draws it OUTSIDE the host's own draw loop
-        — without this its cached subtree never re-runs when a background parse lands."""
-        if draw_state is not None and draw_state not in self._consumers:
-            # Cached root hosts (code_hosts.py) live for the session while
-            # consumers (e.g. context-menu tabs) come and go - drop closed ones
-            # so the list doesn't grow without bound across menu opens.
-            if len(self._consumers) > 32:
-                self._consumers = [c for c in self._consumers
-                                   if not getattr(c, 'closed', False)]
-            self._consumers.append(draw_state)
+        — without this its cached subtree never re-runs when a background parse lands.
+
+        Doubles as the per-frame "I am a live user" pulse the idle sweep reads: call it
+        every frame the consumer draws (not just on edit), so its last-seen stamp stays
+        current. Reviving a host the sweep deregistered happens here too — reopening a
+        closed view re-registers it (and its upstream proxy chain) in Melty.render_hosts."""
+        if draw_state is None:
+            return
+        self._consumers[draw_state] = Melty.frame_count
+        # Reopened view → the idle sweep had popped us from render_hosts; bring the
+        # host (and its str_host) back into the draw loop. Idempotent.
+        if self.standalone and not self._registered:
+            self.register()
+        # Toggle-off fallback: with no sweep pruning each frame, cap growth by
+        # dropping closed consumers when the map gets large.
+        if len(self._consumers) > 64:
+            self._consumers = {ds: f for ds, f in self._consumers.items()
+                               if not getattr(ds, 'closed', False)}
 
     def remove(self):
         Melty.render_hosts.pop(id(self), None)
@@ -160,6 +189,74 @@ class RenderHost(_DeepAttrMixin, dict):
     @classmethod
     def current(cls):
         return cls._active[-1] if cls._active else None
+
+    # ── Idle sweep: deregister hosts whose consumer windows have all closed ─────
+    @staticmethod
+    def _consumer_closed(ds):
+        """A consumer draw_state counts as gone once its window is abs_closed —
+        the primary, immediate trigger. A vanished/broken draw_state (raises) is
+        treated as gone too."""
+        try:
+            return bool(ds.abs_closed)
+        except Exception:
+            return True
+
+    def _prune_consumers(self, now, k):
+        """Drop consumers that are abs_closed OR haven't re-registered within k
+        frames (the last-seen net for closes abs_closed doesn't catch — orphaned
+        draw_states that simply stopped drawing)."""
+        cons = self._consumers
+        if not isinstance(cons, dict):          # pre-hotswap list shape - reset
+            self._consumers = {}
+            return
+        self._consumers = {ds: seen for ds, seen in cons.items()
+                           if (now - seen) <= k and not self._consumer_closed(ds)}
+
+    @classmethod
+    def sweep(cls):
+        """Deregister evictable hosts with no active consumer from Melty.render_hosts
+        so draw_main stops drawing them each frame. The host and its parse stay in the
+        code-host cache (NOT evicted) — reopening the view re-registers it via
+        notify_on_change → register. Toggle-gated; runs once per frame from end_frame."""
+        from src.lsd.gl_gui.toggles import Toggles
+        cfg = Toggles.HostLifecycle
+        if not cfg.deregister_idle:
+            return
+        k = int(cfg.idle_frames)
+        now = Melty.frame_count
+        hosts = list(Melty.render_hosts.values())
+
+        # First pass: direct liveness. Non-evictable singletons are always alive;
+        # a freshly-born host is held through a birth grace (its consumer may not
+        # have drawn yet - Mode.WINDOW bodies render deferred).
+        alive = {}
+        for h in hosts:
+            if not getattr(h, "evictable", False):
+                alive[id(h)] = True
+                continue
+            if now - getattr(h, "_birth_frame", 0) <= k:
+                alive[id(h)] = True
+                continue
+            h._prune_consumers(now, k)
+            alive[id(h)] = bool(h._consumers)
+
+        # Second pass: a host referenced as a live host's input_value stays alive.
+        # The str_host behind a dict_host has no consumers of its own, so it would
+        # otherwise be swept out from under the dict_host that still needs it.
+        changed = True
+        while changed:
+            changed = False
+            for h in hosts:
+                if not alive.get(id(h)):
+                    continue
+                iv = getattr(h, "input_value", None)
+                if isinstance(iv, RenderHost) and iv is not h and not alive.get(id(iv)):
+                    alive[id(iv)] = True
+                    changed = True
+
+        for h in hosts:
+            if getattr(h, "evictable", False) and not alive.get(id(h)):
+                h.remove()      # pop from render_hosts but KEEP the cache entry
 
     # ── Visibility ────────────────────────────────────────────────────────────
     def show(self):
@@ -481,7 +578,10 @@ class RenderHost(_DeepAttrMixin, dict):
         host's value/error from OUTSIDE its own draw loop, so nothing else re-runs
         them. Climb their ancestors (invalidate_up) since the consumer is usually a
         nested cached view that won't re-run unless its parents do."""
-        for cds in self._consumers:
+        # Snapshot: this can run on a background worker (via _materialize) while
+        # the render thread rebuilds _consumers in notify_on_change / the sweep -
+        # a live dict would raise "changed size during iteration".
+        for cds in list(self._consumers):
             tid = getattr(cds, "_tile_id", None)
             if tid is not None:
                 Melty.cache.invalidate_up(tid, force=True,

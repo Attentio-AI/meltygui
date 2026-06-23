@@ -30,7 +30,7 @@ def _shot_dir():
     falling back to the in-repo `.melty/screenshots` if it can't be read."""
     try:
         from src.lsd.gl_gui.toggles import Toggles
-        configured = getattr(Toggles, "screenshots", None)
+        configured = Toggles.screenshots
         if configured:
             return Path(configured).expanduser()
     except Exception:

@@ -52,7 +52,6 @@ class Mode(Enum):
     def get_config_for(self, input_value=None, the_type=None):
         if input_value is not None:
             the_type = type(input_value)
-
         config = self.unwrapped.get(the_type, None)
         if config is not None:
             return config
@@ -205,7 +204,7 @@ class Mode(Enum):
                     "show_tint": True, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
                     "disable_scroll": False, "bg_offset": -1,
                     "with_header": draw_header, "min_width": 200, "min_height": 60,
-                    "initial": {"width": 400, "height": 700, "window_pos": (100, 500)}},
+                    "initial": {"width": 400, "height": 700, "window_pos": (500, 100)}},
             recursive=False
         )
     }

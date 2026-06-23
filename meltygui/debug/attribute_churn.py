@@ -27,7 +27,7 @@ class AttributeChurnMonitor:
             return
 
         from src.lsd.gl_gui.toggles import Toggles
-        if getattr(Toggles, "attrib_churn_log", False):
+        if Toggles.attrib_churn_log:
             from src.lsd.gl_gui.melty import Melty
             top = sorted(cls.attribute_change_count.items(), key=lambda kv: -kv[1])[:10]
             line = ", ".join(f"{c}.{a}={n}" for (c, a), n in top)

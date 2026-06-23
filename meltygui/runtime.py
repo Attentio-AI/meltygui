@@ -2289,6 +2289,13 @@ class Melty:
         # the GL delete queue above.
         cls._drain_render_tasks()
 
+        # Deregister RenderHosts whose consumer windows have all closed, so
+        # draw_main stops drawing/parsing them every frame. Toggle-gated
+        # (Toggles.HostLifecycle): the host + its parse stay in the code-host
+        # cache and re-register on reopen.
+        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        RenderHost.sweep()
+
         cls.apply_refresh_nested_windows()
         # Reset overlay routing to the top (global, unmasked) channel so
         # end_frame draws - FPS counter, selection rects, debug text - don't
@@ -2809,7 +2816,7 @@ class Melty:
             # same soft shadow with far fewer fragment invocations. The composite
             # filter samples the shadow map as a sampler2D (GL_LINEAR), so it
             # upscales automatically over the full-res UI.
-            downscale = max(1, int(getattr(Toggles, "shadow_downscale", 1)))
+            downscale = max(1, int(Toggles.shadow_downscale))
             shadow_size = (
                 max(1, int(fb_w) // downscale),
                 max(1, int(fb_h) // downscale),
@@ -2835,7 +2842,7 @@ class Melty:
                     shadow_color=(0.0, 0.02, 0.05),  # Slightly blue shadow
                     shadow_size=(float(composite_shadow_size[0]),
                                  float(composite_shadow_size[1])),
-                    depth_sharpness=float(getattr(Toggles, "shadow_edge_sharpness", 50.0)),
+                    depth_sharpness=float(Toggles.shadow_edge_sharpness),
                 )
 
         # Overlay last, so the highlight/swoosh sits on top of the shadow pass

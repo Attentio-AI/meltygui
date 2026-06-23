@@ -24,6 +24,7 @@ from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchT
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
+from src.lsd.gl_gui.notifications import display
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles, Tint, mix
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
@@ -1166,13 +1167,6 @@ dropdown_demo_data = {
 
 drop_down_selection = None
 
-@render_func(use_cache=False, show_bg=True)
-def draw_hosts():
-    for host in list(Core.melty.render_hosts.values()):
-        host.draw()
-
-    Core.melty.render_hosts.clear()
-
 
 @render_func(use_cache=False, show_bg=True, selectable=False,
              show_tint=True, bg_offset=-1, with_header=draw_header)
@@ -1336,6 +1330,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # host may register/remove during render (re-entrant mutation).
     for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
         host.draw()
+
+    display(len(Core.melty.render_hosts), tag="Render Hosts Count")
 
 
 @render_func
@@ -4196,7 +4192,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     # next render), so recompute every pass and rebuild the hosts only when the
     # resolved sites change.
     from src.lsd.gl_gui.view.core_conversion.chain_converters import caller_chain
-    walk_steps = max(1, int(getattr(Toggles, "caller_walk_steps", 1) or 1))
+    walk_steps = max(1, int(Toggles.caller_walk_steps or 1))
     caller_frames = caller_chain(getattr(input_value, "_call_stack", None))[:walk_steps]
     caller_site_keys = tuple((f, ln) for f, ln, _ in caller_frames)
     # getattr: a cm_state created before this field existed (hotswap of an
@@ -4818,7 +4814,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # Is THIS dropdown the one whose popover is showing?
     is_open = Melty.popover_focused_ds is draw_state
 
-    _DD_DBG = getattr(Toggles, "dd_debug", True)  # TEMP: default-on for dropdown-close debug
+    _DD_DBG = Toggles.dd_debug  # TEMP: default-on for dropdown state investigation
     if _DD_DBG:
         _pf = Melty.popover_focused_ds
         if is_open or _pf is not None:

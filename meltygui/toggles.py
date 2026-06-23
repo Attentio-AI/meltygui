@@ -310,12 +310,21 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
-    def clear_hosts(value=7):
+    def clear_hosts(value=51):
         pass
+
+    # Debug: toggle-on while investigating dropdown-close. A real property rather
+    # than a getattr(Toggles, "dd_debug", True) default, so it's indexed/visible.
+    dd_debug = True
 
     @defaults(tint=(0.939, 0.086, 0.042))
     class TextEditor:
         enable_spell_check = False
+        # Double-clicking a symbol with usages opens the multi-jump picker
+        # dropdown even when there's only ONE target (instead of jumping straight
+        # to it in IntelliJ). True → single target jumps straight, several opens the
+        # picker. Only affects double-click; Ctrl+B always jumps straight.
+        double_click_opens_dropdown = True
 
     @defaults(tint=(0.42, 0.58, 0.83))
     class WindowSettings:
@@ -342,13 +351,6 @@ class Toggles:
         max_preferred_header_width = 70
         preferred_header_width = 132
 
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 600
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # seconds
-        bg_offset = 30
-
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
         keep_for_frames = 26
@@ -361,6 +363,27 @@ class Toggles:
         # Minimum LOGICAL terminal size, in pixels - independent of the window size.
         min_width = 98.634
         min_height = 480.0
+
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 600
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # ms
+        bg_offset = 30
+
+    @defaults(tint=(0.27, 0.7, 0.52))
+    class HostLifecycle:
+        # Deregister a RenderHost from Melty.render_hosts (so draw_main stops
+        # drawing/parsing it every frame) once none of its consumer windows are
+        # active. The host + its parse stay in the code-host cache; reopening the
+        # view re-registers it (notify_on_change → register). Reclaims the
+        # per-frame cost of hosts sitting behind closed windows.
+        deregister_idle = True
+        # A consumer is gone when its window is abs_closed, OR it hasn't
+        # re-registered as a user within this many frames - the safety net for
+        # closes abs_closed doesn't catch (orphaned hosts from draw_states). Also the
+        # birth grace a freshly-created host gets before it's be swept.
+        idle_frames = 120
 
     debug_scroll = False
     show_filled_tiles = False
@@ -406,8 +429,6 @@ class Toggles:
     attrib_churn_log = False
     debug_threads = False
     slow_down_threads = False
-    render_depth = False
-    ds_invalidate_stack = False
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
     show_line_break = False

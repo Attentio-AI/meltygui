@@ -1553,7 +1553,7 @@ def draw_voxel_5d(input_value=None, **kwargs):
     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_flow, tint=(0.20, 0.80, 0.45))
+@window(input_value=voxel_host_flow, tint=(0.91, 0.39, 0.00))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_flow(input_value=None, **kwargs):
     _draw_host_volume(input_value)

@@ -1108,7 +1108,7 @@ def _is_dispatch_frame(filename, func_name):
         return True
     # User-configurable wrapper/dispatch shells (RenderFuncs._draw, the user_*
     # render shells).
-    if func_name in getattr(Toggles, "ignore_call_from", ()):
+    if func_name in Toggles.ignore_call_from:
         return True
     return False
 

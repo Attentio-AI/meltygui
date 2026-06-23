@@ -54,9 +54,9 @@ def display(value, tint=(1, 1, 1, 1), tag=None, urgent=True):
     key = tag if tag is not None else "value"
     NotificationCenter.live_values[key] = (_format_value(value), tint, formatted_time)
 
-    if urgent:
-        from src.lsd.gl_gui.utils.glfw_utils import request_render
-        request_render()
+    # if urgent:
+    #     from src.lsd.gl_gui.utils.glfw_utils import request_render
+    #     request_render()
 
 
 def _wrap_text(text, max_width):

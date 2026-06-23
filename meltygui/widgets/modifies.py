@@ -75,7 +75,6 @@ class InCode:
 
 _code_host_cache: dict = {}
 
-
 def code_hosts_for(ref):
     """The shared (source_str_host, cst_dict_host) RenderHost pair for a
     function / class / module / CallSite — the same wiring draw_input_tab used
