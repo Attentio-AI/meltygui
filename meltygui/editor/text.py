@@ -2239,6 +2239,9 @@ def draw_text(input_value: str, height=None,
         # lines keep their normal positions; only the bar was floated. The text
         # clip below is raised by bar_height so glyphs never paint over the bar.
         imgui.set_cursor_screen_pos((_bx, _by + bar_height))
+        
+        
+    
 
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:

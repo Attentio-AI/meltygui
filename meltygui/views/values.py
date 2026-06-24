@@ -1169,7 +1169,7 @@ drop_down_selection = None
 
 
 @render_func(use_cache=False, show_bg=True, selectable=False,
-             show_tint=True, bg_offset=-1, with_header=draw_header)
+             show_tint=True, bg_offset=0, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict
@@ -3065,7 +3065,7 @@ def draw_usage(input_value: UsageRef):
 
 @render_func(is_default_for=(Comment), shadow=False, indent_size=4, selectable=False, use_cache=False,
              show_bg=False, with_header=None, is_tree=False, temp=True)
-def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False):
+def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
 
     imgui.dummy(0, 4)
@@ -3078,7 +3078,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    alpha = 0.1
+    alpha = 0.15
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor

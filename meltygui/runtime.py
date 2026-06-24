@@ -921,7 +921,18 @@ class Melty:
         for ds in stale:
             cls.bvh_evict(ds)
 
-        hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
+        # Sort front-to-back. PRIMARY key is abs_layer, not the stored z_pos:
+        # abs_layer is a property derived live from the parent chain and's
+        # .layer, and move-to-front (apply_move_to_front) updates .layer
+        # immediately - whereas z_pos is only recomputed when a view RENDERS, so
+        # a just-raised window whose subtree is served from the blit cache (no
+        # re-render) keeps a z_pos from when it was lower. Sorting by z_pos alone
+        # would leaves that stale subtree under the window now behind it, and
+        # click-to-raise picks the wrong window at the freshly-raised window's
+        # edge (the "resizing the front window raises the one behind it" bug).
+        # abs_layer captures the raise the instant .layer is set; z_pos stays the
+        # within-window (depth) tiebreaker, so steady-state order is unchanged.
+        hits.sort(key=lambda ds: (ds.abs_layer or 0, ds.z_pos or 0), reverse=True)
 
         cls._bvh_query_cache[key] = hits
         return hits
@@ -1690,10 +1701,19 @@ class Melty:
         if gx <= 0.0 and gy <= 0.0:
             return False
 
-        # Bridge along the axis with the wider gap. ep/ec are the two facing
-        # edge coordinates on that axis; lo/hi bound the straight portion of
-        # the facing edge (inset by its corner radius) on the other axis.
-        if gx >= gy:
+        # Bridge along the axis with the most gap, weighted by ribbon_axis_bias:
+        # 0.5 is the neutral `gx >= gy` choice; sliding toward 1 weights the
+        # horizontal (left/right) gap so the band prefers the sides; toward 0
+        # weights the vertical (top/bottom) gap. The weighting keeps the choice
+        # monotonic in the bias while still respecting overlap - an axis with
+        # no facing gap is a negative term, so an extreme bias can't force a
+        # bridge where there's nothing to bridge; it falls back to the axis that
+        # actually has a gap.
+        bias = Swoosh.ribbon_axis_bias
+        # ep/ec are the two facing edge coordinates on the chosen axis; lo/hi
+        # bound the straight portion of each facing edge (inset by its corner
+        # radius) on the cross axis.
+        if gx * bias >= gy * (1.0 - bias):
             ep, ec = (px1, nx0) if gap_r >= gap_l else (px0, nx1)
             p_lo, p_hi = py0 + p_round, py1 - p_round
             c_lo, c_hi = ny0 + n_round, ny1 - n_round
@@ -3111,6 +3131,13 @@ class Melty:
                 #     Melty.cache.invalidate_by_obj(Melty.registered_windows)
                 #     note = Note(name="", reason="move_to_front", draw_state=draw_state, tint=(0.5, 1.0, 0.5))
                 #     Melty.cache.invalidate_up(cls.pending_move_to_front[1]._tile_id, max_depth=4, force=True, note=note)
+
+            # The reorder above changed the live z-order (abs_layer / sibling
+            # list order) without changing the BVH index, so bump _bvh_gen to drop
+            # the per-(x,y) bvh_query memo - otherwise a result cached for this
+            # frame would match the pre-raise ordering and click-to-raise (which
+            # reads bvh_query) could still pick the old front window for a frame.
+            cls._bvh_gen += 1
 
             # Clear once handled (inside the not-imgui_active gate so the move
             # still works through across frames where imgui owns the interaction). The

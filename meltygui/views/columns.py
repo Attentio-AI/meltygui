@@ -262,6 +262,40 @@ def window_edge_pass(window):
                 ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
+def edge_under_cursor(window, cursor_x_window, cursor_y_abs):
+    """The column edge a right-drag resize should move, given the drag-start
+    cursor (``cursor_x_window`` in window coords — offset from window.abs_left
+    — and ``cursor_y_abs`` in absolute screen coords).
+
+    Returns the nearest edge dict strictly to the RIGHT of the cursor among
+    the rows whose visible band vertically contains the cursor — i.e. the
+    right edge of the INNERMOST column under the cursor. Every window
+    registers its own frame edges (``window.id`` entry, full-window span), so
+    a window with NO columns — or a drag in the last column — lands on the
+    window's right frame edge and width resizes exactly as a plain resize.
+    Returns None only if no edges exist yet."""
+    _ensure_window_state(window)
+    best, best_x = None, None
+    for ds, edge_list in window._edge_views.values():
+        clip = getattr(ds, "abs_clip_rect", None)
+        if clip:
+            top, bottom = clip[1], clip[3]
+        else:
+            top = ds.abs_top
+            bottom = top + max(getattr(ds, "_edge_lines_height", 0.0),
+                               MIN_ROW_HEIGHT)
+        if not (top - 1 <= cursor_y_abs <= bottom + 1):
+            continue
+        for e in edge_list:
+            if e["x"] > cursor_x_window + 0.5 and (best_x is None or e["x"] < best_x):
+                best, best_x = e, e["x"]
+    if best is None:
+        fe = getattr(window, "_frame_edges", None)
+        if fe:
+            best = fe[1]
+    return best
+
+
 def _grab_zone(edges, k):
     """Horizontal grab span for edge k of this view's list: EDGE_GRAB_WIDTH
     centered on the line, but split at the midpoint toward each neighbouring

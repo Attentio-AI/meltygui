@@ -255,6 +255,12 @@ class Swoosh:
     # (overlapping) fall back to the thin line, which knows how to route
     # around the overlap.
     ribbon = True              # global default: ribbon instead of the thin line
+    ribbon_axis_bias = 0.9      # which axis the band comes from: 0.5 picks the axis
+                                # with the wider facing gap (current behavior); 1.0
+                                # biases fully to the left/right (x) edges,
+                                # 0.0 fully to the top/bottom (y) edges. An
+                                # axis with no facing gap can't be bridged, so an
+                                # extreme bias falls back to whichever axis has a gap.
     ribbon_coverage = 1.04      # each end's band width as a fraction of its own edge
                                 # (clamped at the full edge, so >=1 spans the edge)
     ribbon_max_width = 0     # px cap on either end's band width (0 = uncapped)
@@ -310,6 +316,7 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
+
     # Global App Toggles
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:
@@ -326,15 +333,15 @@ class Toggles:
         double_click_opens_dropdown = True
         text_focus_stack_trace = False
 
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
     @defaults(tint=(0.42, 0.58, 0.83))
     class WindowSettings:
         # Sticky resize: re-anchor the window top to the drag start position each
         # frame so only the bottom-on-display clamp displaces it.
         sticky_drag = False
-
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
 
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:

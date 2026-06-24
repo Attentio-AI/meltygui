@@ -878,14 +878,23 @@ class TileCacheMasked:
             all_keys.extend(self.get_parent_keys(parent_key))
         return all_keys
 
-    def get_child_keys(self, key, depth=0, max_depth=4, stop_at_filled: bool = False):
+    def get_child_keys(self, key, depth=0, max_depth=4, stop_at_filled: bool = False,
+                       include_windows: bool = True):
         if depth >= max_depth:
             return {}
         child_keys = self.parent_key_to_child_keys.get(key, {})
         if not stop_at_filled:
-            all_keys = child_keys.copy()
-            for ck in child_keys.values():
-                all_keys.update(self.get_child_keys(ck[1], depth + 1, max_depth=max_depth))
+            all_keys = {}
+            for k_inner, ck in child_keys.items():
+                # Terminate the chain on nested windows when asked: a closable
+                # window owns its own tile, so invalidating an ancestor
+                # (e.g. a scroll) needn't re-invalidate the window or its
+                # subtree. Skip the window entirely - don't add it, don't recurse.
+                if not include_windows and ck[2] is not None and ck[2].closable:
+                    continue
+                all_keys[k_inner] = ck
+                all_keys.update(self.get_child_keys(ck[1], depth + 1, max_depth=max_depth,
+                                                    include_windows=include_windows))
             return all_keys
 
         # stop_at_filled: include the boundary child (so it still gets
@@ -897,15 +906,18 @@ class TileCacheMasked:
         all_keys = {}
         for k_inner, ck in child_keys.items():
             child_key = ck[1]
+            if not include_windows and ck[2] is not None and ck[2].closable:
+                continue
             all_keys[k_inner] = ck
             if self._tile_fully_filled(self._tiles.get(child_key)):
                 continue  # one past: included above, but don't walk the subtree
             all_keys.update(self.get_child_keys(child_key, depth + 1, max_depth=max_depth,
-                                                stop_at_filled=stop_at_filled))
+                                                stop_at_filled=stop_at_filled,
+                                                include_windows=include_windows))
         return all_keys
 
     def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0, note=None, skip_self=False,
-                      stop_at_filled: bool = False, bypass_clip=False) -> None:
+                      stop_at_filled: bool = False, bypass_clip=False, include_windows: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
         if note is None:
             note = Note(name="Unnamed invalidate_up", reason="", tint=(1, 0, 0),
@@ -921,7 +933,8 @@ class TileCacheMasked:
 
         self.invalidate(k, force=force, note=note, stop_at_filled=stop_at_filled)
         child_keys = self.get_child_keys(k, max_depth=max_depth,
-                                          stop_at_filled=stop_at_filled).values()
+                                          stop_at_filled=stop_at_filled,
+                                          include_windows=include_windows).values()
         child_keys_list = list(child_keys)
         child_keys_list.sort(key=lambda x: x[0] if x[0] is not None else 0)
 

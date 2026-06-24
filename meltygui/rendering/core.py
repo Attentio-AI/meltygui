@@ -1389,6 +1389,10 @@ def render_func(*args, **o_kwargs):
             # handle, so corner_drag stays None for them).
             corner_drag = None
             if not auto_resize and (passed_width is None or passed_height is None):
+                # Resolved through the module each call so columns.py hotswaps
+                # keep reaching the width-retargeting below (and to avoid a
+                # circular import at module load).
+                from src.lsd.gl_gui.view.core_views import columns as _columns
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
                                                    rect=corner_rect, priority_delta=1)
@@ -1421,7 +1425,42 @@ def render_func(*args, **o_kwargs):
                         draw_state._source["height"] = "initial window size"
 
                     if passed_width is None:
-                        draw_state.width = snap_int(max(size_w, draw_state.min_width))
+                        # A plain right-drag (corner_drag) retargets the drag to
+                        # the COLUMN edge under the cursor. The bottom-right
+                        # corner handle (left-drag) always resizes the window
+                        # frame. The edge is latched once at drag start (rebased
+                        # by the drag delta so far for ctrl-release continuity);
+                        # an INTERIOR edge is queued onto the window's pending
+                        # drags and solved by window_edge_pass (below, same
+                        # frame). The window's OWN right frame edge, the last
+                        # column's right edge, or a column-less window) takes
+                        # the unchanged direct path so min_width and immediacy
+                        # are preserved exactly. Defensive: any columns hiccup
+                        # falls back to a plain width resize.
+                        queued = False
+                        if handle_drag is corner_drag:
+                            try:
+                                if draw_state._resize_target_edge is None:
+                                    sx = (handle_drag.x - handle_drag.total_dx) - draw_state.abs_left
+                                    sy = handle_drag.y - handle_drag.total_dy
+                                    e = _columns.edge_under_cursor(draw_state, sx, sy)
+                                    draw_state._resize_target_edge = e
+                                    draw_state._resize_target_edge_x0 = (
+                                        e["x"] - handle_drag.total_dx if e else None)
+                                edge = draw_state._resize_target_edge
+                                fe = getattr(draw_state, "_frame_edges", None)
+                                # Interior divider only - the frame's own right
+                                # edge falls through to the direct resize below.
+                                if edge is not None and not (fe and edge is fe[1]):
+                                    _columns._ensure_window_state(draw_state)
+                                    draw_state._pending_drags.append(
+                                        (edge, draw_state._resize_target_edge_x0
+                                         + handle_drag.total_dx))
+                                    queued = True
+                            except Exception:
+                                queued = False
+                        if not queued:
+                            draw_state.width = snap_int(max(size_w, draw_state.min_width))
 
                     if draw_state.anchor_pos is not None:
                         anchor_pos = draw_state.anchor_pos
@@ -1501,6 +1540,8 @@ def render_func(*args, **o_kwargs):
                 else:
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
+                    draw_state._resize_target_edge = None
+                    draw_state._resize_target_edge_x0 = None
 
             # Non-blocking + high priority: this handler sees EVERY left_mouse_down
             # regardless of which view consumes it (the input handler walks the
@@ -1511,17 +1552,42 @@ def render_func(*args, **o_kwargs):
             # own purposes, while we additionally raise the window here.
             raise_press = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
             if raise_press:
-                ds_under_mouse = Melty.bvh_query(*imgui.get_mouse_pos())
+                # Resolve against the press position the event captured, not the
+                # live cursor - a press over a frame late (start of a move)
+                # would otherwise read a cursor that has already moved off the
+                # window and clear focus / raise the wrong one. The event's x/y is
+                # the down point.
+                ds_under_mouse = Melty.bvh_query(raise_press.x, raise_press.y)
                 Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
                 # Bring the clicked window to the front. ds_under_mouse is z-sorted
-                # (frontmost first), so raising the front hit's owning window is the
-                # right pick even where windows overlap. move_window_to_front walks
-                # up to the registered root, so using the deepest hit raises the
-                # innermost window (and restacks it among its siblings). This runs
-                # once per hit window but every copy resolves the same front hit,
-                # so the move is idempotent - no fight over which window wins.
+                # (frontmost first); move_window_to_front walks up to the registered
+                # parents, so the deepest hit raises the innermost window (restacked
+                # among its siblings). Idempotent across every hovered window's copy.
+                # The front pick is reliable even at a just-raised window's own
+                # resize handle now that bvh_query sorts by the live abs_layer (see
+                # bvh_query) - don't be tempted to add a blocking left_mouse_down sub
+                # to "fix" something here: buttons detect their press via a
+                # left_mouse_down event param, and a top-level competitor in that
+                # bucket steals their press (breaks every button).
                 if ds_under_mouse:
                     Melty.move_window_to_front(ds_under_mouse[0])
+
+            # Right press raises the window too - e.g. opening a context menu or
+            # starting a right-drag resize brings its window forward. This one
+            # subscribes BLOCKING and hits draw_state itself: the input handler
+            # resolves the press to the single topmost hover-eligible window (this
+            # one whenever its handle/body is under the cursor), so it needs no
+            # point-query at all and can't be confused by a window's own edge.
+            # Blocking is safe here only because NOTHING else subscribes to
+            # right_mouse_down (the context menu is right_mouse_clicked, resize/voxel
+            # are right_mouse_drag - different keys), so it starves no child. The
+            # left handler can't do this (its buttons a left_mouse_down, so a
+            # blocking sub would steal their press) and uses the bvh path instead.
+            # Deliberately does NOT clear focus - a right-click context menu can
+            # depend on focus.
+            raise_press_right = draw_state.on_action("right_mouse_down", "window_raise")
+            if raise_press_right:
+                Melty.move_window_to_front(draw_state)
 
             # Universal drag-and-drop: any view rendered as an item of a
             # dict/list collection offers its window as a drag handle. The
@@ -3881,7 +3947,11 @@ def render_func(*args, **o_kwargs):
 
             if scroll_y_changed is not None:
                 note=Note(name=f"scroll change {draw_state.name}", tint=(1, 0, 1))
-                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=3, note=note)
+                # Don't cascade the scroll invalidation into nested windows -
+                # a window owns its own scrollbar and doesn't scroll with us,
+                # so re-invalidating that subtree is wasted work.
+                Melty.cache.invalidate_up(draw_state._tile_id, max_depth=3, note=note,
+                                          include_windows=False)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
             if not draw_state.closed:

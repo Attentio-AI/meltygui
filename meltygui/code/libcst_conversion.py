@@ -255,7 +255,7 @@ class GeneralParse(dict):
 # tint/bg/shadow. Declaring them here keeps the visual treatment identical to a
 # plain GeneralParse today, while giving these types their own slot to diverge
 # later (the whole point of splitting them out). Same pattern as CallParse below.
-@defaults(disable_scroll=True, show_bg=True, shadow=True, excluded=("decorators"),
+@defaults(disable_scroll=True, show_bg=True, shadow=True, excluded=("decorators"), icon="class",
           use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
 class ClassParse(GeneralParse):
     """A class definition's parsed body, as a GeneralParse subclass.
@@ -310,7 +310,7 @@ class FunctionParse(GeneralParse):
     """
 
 
-@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.FONTAWESOME_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
+@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
