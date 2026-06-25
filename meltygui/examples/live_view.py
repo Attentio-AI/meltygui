@@ -68,7 +68,6 @@ _C = np.linspace(-1.0, 1.0, _N, dtype=np.float32)
 _GZ, _GY, _GX = np.meshgrid(_C, _C, _C, indexing="ij")
 _GR = np.sqrt(_GX * _GX + _GY * _GY + _GZ * _GZ)
 
-
 def wave_field(t):
     """A breathing shell with a swirling intensity pattern — the voxel demo.
     The bare live_view() captures the (48,48,48) float32 field; the value

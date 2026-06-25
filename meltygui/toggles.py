@@ -316,47 +316,20 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
-
-    # Global App Toggles
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
-
-    @defaults(tint=(0.922, 0.476, 0.031))
-    class TextEditor:
-        enable_spell_check = False
-        double_click_opens_dropdown = True
-        text_focus_stack_trace = False
-
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
-
     @defaults(tint=(0.42, 0.58, 0.83))
     class WindowSettings:
         # Sticky resize: re-anchor the window top to the drag start position each
         # frame so only the bottom-on-display clamp displaces it.
         sticky_drag = False
 
-    @defaults(tint=(0.91, 0.659, 0.15))
-    class InvalidateTracker:
-        keep_for_frames = 26
-        enable = False
-        draw_bvh = False
-        draw_rect = False
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
-
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum render terminal size, in pixels - independent of the window size.
-        min_height = 480.0
-        min_width = 98.634
+    @defaults(tint=(0.18, 0.62, 0.55))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (ini_new eval blob)
+        # as a backstop alongside the native-pickle custom.py. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
+        # this True until the .ini is fully retired.
+        ini_save = False
 
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
@@ -369,6 +342,41 @@ class Toggles:
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
 
+    @defaults(tint=(0.922, 0.476, 0.031))
+    class TextEditor:
+        enable_spell_check = False
+        double_click_opens_dropdown = True
+        text_focus_stack_trace = False
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
+    # Global App Toggles
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum logical terminal size, in pixels, independent of actual window size.
+        min_height = 480.0
+        min_width = 98.634
+
+    @defaults(tint=(0.91, 0.659, 0.15))
+    class InvalidateTracker:
+        keep_for_frames = 26
+        enable = False
+        draw_bvh = False
+        draw_rect = False
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
+
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
         scroll_speed = 600
@@ -380,7 +388,6 @@ class Toggles:
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
-
     jedi_correctness = False
     # Auto-compute symbol usages after every editor parse (recommended, fast path
     # only); the Index button stays as a force refresh.

@@ -1428,34 +1428,45 @@ def render_func(*args, **o_kwargs):
                         # A plain right-drag (corner_drag) retargets the drag to
                         # the COLUMN edge under the cursor. The bottom-right
                         # corner handle (left-drag) always resizes the window
-                        # frame. The edge is latched once at drag start (rebased
-                        # by the drag delta so far for ctrl-release continuity);
-                        # an INTERIOR edge is queued onto the window's pending
-                        # drags and solved by window_edge_pass (below, same
-                        # frame). The window's OWN right frame edge, the last
-                        # column's right edge, or a column-less window) takes
-                        # the unchanged direct path so min_width and immediacy
-                        # are preserved exactly. Defensive: any columns hiccup
-                        # falls back to a plain width resize.
+                        # itself. The edge is latched live at drag start; an
+                        # INTERIOR edge is queued onto the window's pending drags
+                        # and solved by window_edge_pass (below, same frame). The
+                        # window's OWN right frame edge - the last column's right
+                        # edge, or a column-less window - takes the unchanged
+                        # resize path so min_width and immediacy are handled
+                        # exactly. Any error / columns hiccup falls back to a
+                        # plain width resize.
+                        #
+                        # The queue is INCREMENTAL (edge["x"] + this frame's dx),
+                        # exactly like ColumnLayout's own edge handles, NOT an
+                        # absolute x0+total_dx. window_edge_pass rebases every
+                        # edge when the left frame edge moves (it slides the
+                        # window and shifts all edges to hold their screen
+                        # position); an absolute baseline doesn't rebase, so it
+                        # falls behind the window, pushes the left edge again, and
+                        # the window flies off screen. Reading edge["x"] live each
+                        # frame survives the rebase. _resize_target_edge_x0 holds
+                        # the previous total_dx so the per-frame delta is exact.
                         queued = False
                         if handle_drag is corner_drag:
                             try:
                                 if draw_state._resize_target_edge is None:
                                     sx = (handle_drag.x - handle_drag.total_dx) - draw_state.abs_left
                                     sy = handle_drag.y - handle_drag.total_dy
-                                    e = _columns.edge_under_cursor(draw_state, sx, sy)
-                                    draw_state._resize_target_edge = e
-                                    draw_state._resize_target_edge_x0 = (
-                                        e["x"] - handle_drag.total_dx if e else None)
+                                    draw_state._resize_target_edge = _columns.edge_under_cursor(
+                                        draw_state, sx, sy)
+                                    draw_state._resize_target_edge_x0 = handle_drag.total_dx
                                 edge = draw_state._resize_target_edge
                                 fe = getattr(draw_state, "_frame_edges", None)
                                 # Interior divider only - the frame's own right
                                 # edge falls through to the direct resize below.
                                 if edge is not None and not (fe and edge is fe[1]):
-                                    _columns._ensure_window_state(draw_state)
-                                    draw_state._pending_drags.append(
-                                        (edge, draw_state._resize_target_edge_x0
-                                         + handle_drag.total_dx))
+                                    inc = handle_drag.total_dx - draw_state._resize_target_edge_x0
+                                    draw_state._resize_target_edge_x0 = handle_drag.total_dx
+                                    if inc:
+                                        _columns._ensure_window_state(draw_state)
+                                        draw_state._pending_drags.append(
+                                            (edge, edge["x"] + inc))
                                     queued = True
                             except Exception:
                                 queued = False
@@ -3473,7 +3484,7 @@ def render_func(*args, **o_kwargs):
                 if draw_state._has_popup:
                     is_popup_open = Melty.imgui_popup_open
                     if is_popup_open != draw_state._imgui_popover_open and not is_popup_open:
-                        note = Note(nadd_rect_filledame=f"popover close {draw_state.name}", tint=(0,1,1))
+                        note = Note(name=f"popover close {draw_state.name}", tint=(0,1,1))
                         Melty.cache.invalidate_up_by_obj(input_value, max_depth=4, note=note)
                     if is_popup_open:
                         Melty.report_imgui_active()

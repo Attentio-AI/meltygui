@@ -1411,7 +1411,11 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         draw_state.invalidate()
         request_render()
     panel_open = bool(draw_state.misc.get("params_panel", False))
-    # imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
+    # Anchor the panel at the window's RIGHT edge (+12px gap). Set every frame
+    # so left_offset/top_offset track the right edge and the panel rides along
+    # when the window is dragged; the panel's own drag accumulates into
+    # window_pos on top of that, so it stays draggable.
+    imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
 
     if not middle_mouse_drag and not double_right_mouse_drag and scroll_y_changed is None:

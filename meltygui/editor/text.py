@@ -2162,6 +2162,9 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
 
+
+
+
     ds = draw_state   
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -2169,7 +2172,7 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-    #
+    
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
