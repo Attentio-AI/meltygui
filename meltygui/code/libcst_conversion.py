@@ -1032,8 +1032,11 @@ def _rebuild_symbol_usages(raw: dict) -> dict:
         definition = UsageRef(path=_Path(dp) if dp else None, line=dl, column=dc, module_name=dm)
         callers = [UsageRef(path=_Path(c[0]) if c[0] else None, line=c[1], column=c[2],
                             scope=c[3], module_name=c[4]) for c in e["callers"]]
-        result[sym] = SymbolUsage(name=sym, definition=definition, callers=callers,
-                                  sites=[tuple(s) for s in e["sites"]])
+        # Display spelling defaults to the key, but a local-variable entry keys on
+        # scope+name+line (collision-proof) and carries its bare identifier in "name"
+        # - that's what the user highlights / completes against.
+        result[sym] = SymbolUsage(name=e.get("name", sym), definition=definition,
+                                  callers=callers, sites=[tuple(s) for s in e["sites"]])
     return result
 
 
@@ -1057,6 +1060,17 @@ def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
 # locals. Toggle Toggles.jedi_correctness to A/B-test the full jedi path.
 
 _index_refs_cache: dict = {}   # resolved_path -> (mtime, [(kind, key, line, col, scope)])
+
+# Whole-FILE parse artifacts (the ast tree + the three sub-tree walks derived
+# from it) for the file _symbol_refs_index is analyzing, cached so every span in
+# the SAME file shares one parse+walk instead of redoing it. These depend only on
+# the file's content + the index generation, NEVER on the [start, end] span - yet
+# the old code re-parsed and re-walked the whole file (~55ms on a 7k-line file)
+# for every span! Keyed exactly like the usage cache: mtime (disk writes),
+# pending_gen (deferred edits that never touch disk), index gen (cross-file / live
+# object moves). One entry per file (overwritten on a sig change), so it's bounded
+# by the number of distinct files that had a span opened.
+_file_parse_cache: dict = {}   # resolved_path -> (mtime, (tree, imports, refs, bindings))
 
 # Per-class definition LINE, cached by (defining file, qualname) and invalidated
 # on the file's mtime. `inspect.getsourcelines(obj)` ast.parses the .src file it
@@ -1434,7 +1448,14 @@ def _collect_targets(file_tree, module, s: int, e: int):
                 tgts = child.targets if isinstance(child, ast.Assign) else [child.target]
                 for t in tgts:
                     if isinstance(t, ast.Name):
-                        add(t.id, child.lineno, t.col_offset, container, cd.get(t.id))
+                        # Only module-level / class-body assignments are real targets
+                        # here. A Name assigned inside a function body is a local
+                        # variable (container is the function def) and handled by the
+                        # local-usage path; adding it as a (id(func), name) member
+                        # was a callerless ghost (and occasionally drew a spurious
+                        # id-collision caller). Only descend the module/class chain.
+                        if isinstance(container, (_ModuleType, type)):
+                            add(t.id, child.lineno, t.col_offset, container, cd.get(t.id))
                     elif (class_obj is not None and isinstance(t, ast.Attribute)
                           and isinstance(t.value, ast.Name) and t.value.id == "self"):
                         # `self.x = ...` / `self.x: T` in a method -> a member of
@@ -1551,6 +1572,180 @@ def _is_src_object(base, mod_map) -> bool:
     return f is not None and _Path(f).resolve() in mod_map
 
 
+def _file_parse_artifacts(resolved, owning, text):
+    """(tree, imports, refs, bindings) for `resolved`, cached across spans.
+
+    The four whole-FILE artifacts _symbol_refs_index needs that depend only on the
+    file content + index generation, never on the span: the ast tree (reused by
+    _collect_targets per span and by the edited file's own caller scan), the
+    resolved import-name objects, the full ref walk, and the local→class bindings.
+    Caching them by (mtime, pending_gen, index gen) lets N spans of one file share
+    ONE parse+walk (~55ms on a 7k-line file) instead of redoing it per span — the
+    dominant startup cost when several editors open spans from the same file.
+
+    Returns None when the text won't parse (caller bails, as before). The shared
+    tree is safe: _collect_targets / _collect_refs / _imported_name_objects /
+    _local_class_bindings all walk it read-only (no node mutation)."""
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    try:
+        mtime = resolved.stat().st_mtime
+    except OSError:
+        mtime = None
+    sig = (mtime, PendingSave.pending_gen_for(resolved), _index_generation)
+    cached = _file_parse_cache.get(resolved)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
+    try:
+        tree = ast.parse(text)
+    except Exception:
+        return None
+    imports = _imported_name_objects(tree)
+    refs = _collect_refs(tree)
+    od = getattr(owning, "__dict__", None) or {}
+
+    def look(n):
+        v = od.get(n)
+        return v if v is not None else imports.get(n)
+
+    bindings = _local_class_bindings(tree, look)
+    artifacts = (tree, imports, refs, bindings)
+    _file_parse_cache[resolved] = (sig, artifacts)
+    return artifacts
+
+
+def _local_var_bindings(file_tree, start_line, end_line):
+    """Binding sites of function-LOCAL variables overlapping the span — a
+    parameter, or an assignment / annotation / aug-assign / walrus / for / with /
+    except / comprehension target inside a function body, not declared
+    global/nonlocal. Returns (bounds, declared_global):
+      bounds            {(scope, name): (line, col)}  first binding of each local
+      declared_global   {(scope, name)}  names declared global/nonlocal
+
+    A binding-ONLY walk: it records assignment-like targets and params, never
+    every Name occurrence — the occurrences (sites) come for free from the span
+    ref scan _symbol_refs_index already runs. Scope strings match _collect_refs
+    (nearest enclosing def/class name, else "<module>"); only names bound inside a
+    FUNCTION count. Functions/classes that don't overlap the span are pruned, so
+    the walk is O(span), not O(file)."""
+    Name = ast.Name
+    FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
+    ClassDef = ast.ClassDef; iter_child = ast.iter_child_nodes
+    Assign = ast.Assign; AnnAssign = ast.AnnAssign; AugAssign = ast.AugAssign
+    NamedExpr = ast.NamedExpr; For = ast.For; AsyncFor = ast.AsyncFor
+    With = ast.With; AsyncWith = ast.AsyncWith; ExceptHandler = ast.ExceptHandler
+    comprehension = ast.comprehension; Tuple = ast.Tuple; List = ast.List
+    Starred = ast.Starred; Global = ast.Global; Nonlocal = ast.Nonlocal
+    bounds = {}
+    declared_global = set()
+
+    def record_bind(scope, name, line, col):
+        k = (scope, name)
+        cur = bounds.get(k)
+        if cur is None or line < cur[0]:
+            bounds[k] = (line, col)
+
+    def targets(node):           # Name leaves of an assignment/for/with target
+        t = node.__class__
+        if t is Name:
+            yield node
+        elif t is Tuple or t is List:
+            for el in node.elts:
+                yield from targets(el)
+        elif t is Starred:
+            yield from targets(node.value)
+
+    def walk(node, scope, in_func):
+        for child in iter_child(node):
+            t = child.__class__
+            if t is FunctionDef or t is AsyncFunctionDef:
+                cend = getattr(child, "end_lineno", child.lineno) or child.lineno
+                if child.lineno > end_line or cend < start_line:
+                    continue                     # span-pruned: O(span), not O(file)
+                a = child.args
+                params = (*a.posonlyargs, *a.args, *a.kwonlyargs)
+                if a.vararg: params += (a.vararg,)
+                if a.kwarg: params += (a.kwarg,)
+                for arg in params:
+                    record_bind(child.name, arg.arg, arg.lineno, arg.col_offset)
+                walk(child, child.name, True)
+            elif t is ClassDef:
+                cend = getattr(child, "end_lineno", child.lineno) or child.lineno
+                if child.lineno > end_line or cend < start_line:
+                    continue
+                walk(child, child.name, False)   # class body: not a function scope
+            elif t is Global or t is Nonlocal:
+                for nm in child.names:
+                    declared_global.add((scope, nm))
+            elif in_func:
+                if t is Assign:
+                    for tgt in child.targets:
+                        for n in targets(tgt):
+                            record_bind(scope, n.id, n.lineno, n.col_offset)
+                    walk(child, scope, True)
+                elif t is AnnAssign or t is AugAssign or t is NamedExpr:
+                    if child.target.__class__ is Name:
+                        record_bind(scope, child.target.id,
+                                    child.target.lineno, child.target.col_offset)
+                    walk(child, scope, True)
+                elif t is For or t is AsyncFor:
+                    for n in targets(child.target):
+                        record_bind(scope, n.id, n.lineno, n.col_offset)
+                    walk(child, scope, True)
+                elif t is With or t is AsyncWith:
+                    for it in child.items:
+                        if it.optional_vars is not None:
+                            for n in targets(it.optional_vars):
+                                record_bind(scope, n.id, n.lineno, n.col_offset)
+                    walk(child, scope, True)
+                elif t is ExceptHandler:
+                    if child.name:
+                        record_bind(scope, child.name, child.lineno, child.col_offset)
+                    walk(child, scope, True)
+                elif t is comprehension:
+                    for n in targets(child.target):
+                        record_bind(scope, n.id, n.lineno, n.col_offset)
+                    walk(child, scope, True)
+                else:
+                    walk(child, scope, True)
+            else:
+                walk(child, scope, in_func)
+
+    walk(file_tree, "<module>", False)
+    return bounds, declared_global
+
+
+def _build_local_entries(bounds, declared_global, local_sites,
+                         start_line, end_line, rp_str, mod_name):
+    """Local-variable usage entries from the binding sites (_local_var_bindings)
+    plus the occurrences the span ref scan gathered (local_sites: {(scope,name):
+    [(line,col),...]}). Definition = the binding, sites = every in-span
+    occurrence, callers = those OTHER than the binding — so a local washes and
+    double-clicks to its uses like a cross-file symbol. A decl-only / unused local
+    (no occurrence beyond its binding) is skipped so it doesn't wash. Keyed
+    scope+name+def-line (NUL-joined, never a bare identifier) so two scopes' `i`,
+    and a local shadowing a module global, get distinct entries; the display
+    spelling rides in `name` (see _rebuild_symbol_usages)."""
+    raw = {}
+    for (scope, name), defpos in bounds.items():
+        if (scope, name) in declared_global:
+            continue
+        site_set = {defpos}
+        site_set.update(local_sites.get((scope, name), ()))
+        in_span = sorted(p for p in site_set if start_line <= p[0] <= end_line)
+        callers = [p for p in in_span if p != defpos]
+        if not callers:
+            continue
+        dl, dc = defpos
+        key = "%s\x1f%s\x1f%d" % (scope, name, dl)
+        raw[key] = {
+            "name": name,
+            "sites": in_span,
+            "definition": (rp_str, dl, dc, mod_name),
+            "callers": [(rp_str, l, c, scope, mod_name) for (l, c) in callers],
+        }
+    return raw
+
+
 def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None,
                        prev=None) -> dict:
     """jedi-free fast path. Resolve the span's symbols (module-level + class
@@ -1581,12 +1776,29 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         text = Melty.read_code(resolved)
     if text is None:
         return {}
-    try:
-        file_tree = ast.parse(text)
-    except Exception:
-        return {}
+    # Whole-file parse + the three full-tree walks, shared across every span of
+    # this file (see _file_parse_artifacts). _collect_targets stays per-span - it
+    # filters to [start, end] - but reuses the file tree instead of re-parsing.
+    artifacts = _file_parse_artifacts(resolved, owning, text)
+    if artifacts is None:
+        return _PARSE_FAILED          # buffer didn't parse - caller holds last-good
+    file_tree, _file_imports, file_refs, _bindings = artifacts
     obj_targets, mem_targets, obj_by_name, sites, def_lines = _collect_targets(
         file_tree, owning, start_line, end_line)
+    # Function-local variables: only the BINDING SITES matter (fast, binding-only
+    # walk); each local's occurrences are gathered for free from the span ref scan
+    # below into local_sites - no separate every-Name walk, no cross-file scan, and
+    # they attach in the SAME flat dict as the module/member symbols so they stay
+    # in sync. `local_keys` also lets the bare-name scan skip resolving a local
+    # against the module namespace (a local shadows a same-named global). Gated by
+    # Toggles.local_symbol_usages.
+    from src.lsd.gl_gui.toggles import Toggles
+    if Toggles.local_symbol_usages:
+        local_bounds, local_global = _local_var_bindings(file_tree, start_line, end_line)
+        local_keys = local_bounds.keys() - local_global
+    else:
+        local_bounds, local_global, local_keys = {}, set(), set()
+    local_sites = {}                        # (scope, name) -> [(line, col), ...]
     # Also target objects REFERENCED (not defined) in the span, so usage sites
     # link back too (the REVERSE direction):
     #  - bare names - decorators (@window/@defaults), used enums (ProfileMode)
@@ -1595,7 +1807,6 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     #    named "Base.attr" so the editor washes/clicks the full dotted access.
     #    Their definition resolves into the BASE's source (see _member_def_site).
     od = getattr(owning, "__dict__", None) or {}
-    _file_imports = _imported_name_objects(file_tree)
 
     def _lookup(n):
         v = od.get(n)
@@ -1606,11 +1817,9 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # inside the span keeps the definition's site, not a re-registration. Snapshot
     # now so the loop can still record EVERY occurrence of a REFERENCED member.
     defined_member_keys = frozenset(mem_targets)
-    file_refs = _collect_refs(file_tree)    # one full tree walk, reused for the
-                                            # edited file's caller scan below too
-    # Locals bound to a class (alias / typed param) so member access through them
-    # resolves; falls back to the module/import namespace.
-    _bindings = _local_class_bindings(file_tree, _lookup)
+    # _file_imports / file_refs / _bindings come from the shared parse above
+    # (locals bound to a class -> member access on them resolves; falls back
+    # to the module/import namespace).
     def _lookup_base(name, scope):
         b = _bindings.get((scope, name))
         return b if b is not None else _lookup(name)
@@ -1618,6 +1827,12 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         if not (start_line <= line <= end_line):
             continue
         if kind == "name":
+            if (scope, payload) in local_keys:
+                # Local var: record every occurrence (the span ref scan IS the
+                # occurrence source - no separate every-Name walk) and skip the
+                # global resolution (a local shadows a same-named global).
+                local_sites.setdefault((scope, payload), []).append((line, col))
+                continue
             obj = _lookup(payload)
             if obj is not None:
                 if id(obj) not in obj_targets:
@@ -1658,7 +1873,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             # mem_targets`, so a member referenced N× - e.g. imgui.text - only
             # linked once).
             sites.setdefault(nm, []).append((line, col))
-    if not obj_targets and not mem_targets:
+    if not obj_targets and not mem_targets and not local_bounds:
         return {}
 
     rp_str = str(resolved)
@@ -1770,6 +1985,13 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             "definition": (df, dl, 0, dm),
             "callers": callers.get(nm, []),
         }
+    # Local-variable usages: built from the binding sites + the occurrences the ref
+    # scan gathered into local_sites. Collision-proof keys (scope+name+line) never
+    # clash with the bare-name or "Base.attr" keys; the display spelling rides in
+    # each entry's "name". Locals have no callers outside their scope -> no scan.
+    if local_bounds:
+        out.update(_build_local_entries(local_bounds, local_global, local_sites,
+                                        start_line, end_line, rp_str, mod_name))
     return out
 
 
@@ -1805,6 +2027,14 @@ def _distribute_by_name(gp, flat: dict, _matched=None) -> None:
 # The caller (the editor's auto-index) uses it to decide whether to refresh inline
 # on the render thread or defer to the cooperative-yielded path.
 _NEEDS_RECOMPUTE = object()
+
+# Returned by _symbol_refs_index when the CURRENT buffer doesn't parse (an
+# in-progress edit with a syntax error). Distinct from an empty {} result (a the
+# file genuinely has no symbols): on a parse failure _compute_symbol_usages HOLDS
+# the last-good graph rather than discarding it - the references stay washed as
+# the user fixes the code, and the next valid parse recomputes incrementally from
+# the held result instead of cold. (A real empty span just caches {} normally.)
+_PARSE_FAILED = object()
 
 
 def compute_symbol_usages_for_address(address, fast_only=False):
@@ -1934,9 +2164,19 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     try:
         raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
                else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
-        usages = _rebuild_symbol_usages(raw)
     except Exception:
-        usages = {}
+        raw = {}
+    # In-progress edit with a syntax error: HOLD the last-good graph instead of
+    # discarding it. Return the emptygraph (so the editor knows the graph
+    # washed) WITHOUT caching over the good entry - leaving it intact means the
+    # next valid parse recomputes incrementally from it rather than raw, and a
+    # never-evicted broken {} snapshot can't poison the offset/reuse paths. A
+    # valid empty span (raw == {}) still caches normally below.
+    if raw is _PARSE_FAILED:
+        held = (src[1] if src is not None
+                else cached[1] if cached is not None else {})
+        return held
+    usages = _rebuild_symbol_usages(raw)
     notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
            f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
     # The view moved to `key`; the shifted sibling we reused is now dead weight.
@@ -2022,12 +2262,16 @@ def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None
       • sites and IN-FILE callers are buffer positions → remapped (col unchanged,
         the line's content is identical),
       • cross-file callers are reused as-is (their files didn't move),
-      • definitions are KEPT — module-level defs resolve against the LIVE object
-        (inspect), which a buffer edit doesn't move, so a recompute leaves them
-        unchanged too. (A class-member def that fell back to a buffer line can go
-        stale by the delta until the next recompute — minor, and self-heals.)
-    Returns None if any in-file position is absent from the map (a site on a line
-    the map doesn't cover) so the caller falls back to a recompute."""
+      • an IN-FILE definition is a buffer line too → remapped. Local variables
+        define in THIS file, and the declaration's line drives the per-site
+        `at_def` direction (text_editor._collect_usage_spans): if the def line
+        stayed stale while the sites shifted, the declaration occurrence stopped
+        matching it and the jump direction broke for everything after an inserted
+        line. A cross-file def (a module symbol resolved via inspect against the
+        live object) is KEPT — its file didn't move.
+    Returns None if any in-file SITE/caller is absent from the map so the caller
+    falls back to a recompute; a def line that's absent (it became blank — can't
+    happen for a real declaration) keeps its old value rather than force one."""
     out = {}
     for nm, su in usages.items():
         new_sites = []
@@ -2046,7 +2290,13 @@ def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None
                                             scope=ref.scope, module_name=ref.module_name))
             else:
                 new_callers.append(ref)                 # other file: unchanged, reuse
-        out[nm] = SymbolUsage(name=nm, definition=su.definition,
+        d = su.definition
+        if d is not None and d.path == resolved:        # in-file def: buffer line, remap
+            ndl = line_map.get(d.line)
+            if ndl is not None:
+                d = UsageRef(path=d.path, line=ndl, column=d.column,
+                             scope=d.scope, module_name=d.module_name)
+        out[nm] = SymbolUsage(name=su.name, definition=d,
                               callers=new_callers, sites=new_sites)
     return out
 
@@ -2073,9 +2323,11 @@ def invalidate_usage_cache(path: _Path | str | None = None) -> None:
         _symbol_usage_cache.clear()
         _span_text.clear()
         _span_hashes.clear()
+        _file_parse_cache.clear()
     else:
         resolved = _Path(path).resolve()
         _xref_cache.pop(resolved, None)
+        _file_parse_cache.pop(resolved, None)
         for k in [k for k in _symbol_usage_cache if k[0] == resolved]:
             _symbol_usage_cache.pop(k, None)
         for k in [k for k in _span_text if k[0] == resolved]:
@@ -3023,8 +3275,10 @@ def completions_at(code_tree, line):
         add(name, "import")
     symbols = getattr(code_tree, "symbol_usage", None)  # jedi, only if indexed
     if isinstance(symbols, dict):
-        for name in symbols:
-            add(name, "symbol")
+        for k, su in symbols.items():
+            # Key is collision-proof (a local's is scope+name+line); the completion
+            # candidate is the bare spelling on the SymbolUsage.
+            add(getattr(su, "name", k), "symbol")
     return out
 
 
@@ -3054,11 +3308,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # (.span / _child_spans) with the line ↔ node map.
     with _position_map(input_value, source=source_code), _module_scope(_build_src_scope()):
         # Module header comments (top-of-file, before first statement)
-        for ll in input_value.header:
-            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-                c = Comment(ll.comment.value)
-                readable[c] = c
-                _merge_override_comment(c, readable)
+        _extract_comment_lines(input_value.header, readable)
 
         _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
         _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
@@ -4254,6 +4504,66 @@ def _extract_block_assignments(stmts):
     return result
 
 
+# ─── Multi-line comment blocks ────────────────────────────────────────────────
+# Consecutive, directly-adjacent comment lines (no blank line, no code, and no
+# override `# [...]` line between them) surface as a single Comment whose text is
+# the '\n'-joined lines. The reverse (_repatch_comment_block) splits on '\n'
+# back into one `#` EmptyLine per line. A blank line, a code line, or an
+# override comment breaks the run, so distinct paragraphs stay distinct and
+# override comments keep their own dedicated lines.
+
+
+def _comment_line_groups(lines):
+    """Yield (start, end, run) for each maximal run of consecutive non-override
+    comment EmptyLines in `lines` (end exclusive, run == lines[start:end]).
+
+    Blank lines, non-comment lines, and `# [...]` override comments act as
+    separators and never belong to a run. A lone comment line is a run of one,
+    so single comments round-trip exactly as before.
+    """
+    def _is_block_comment(ll):
+        return (isinstance(ll, cst.EmptyLine) and ll.comment is not None
+                and _parse_override_comment(ll.comment.value) is None)
+
+    i, n = 0, len(lines)
+    while i < n:
+        if _is_block_comment(lines[i]):
+            j = i + 1
+            while j < n and _is_block_comment(lines[j]):
+                j += 1
+            yield i, j, lines[i:j]
+            i = j
+        else:
+            i += 1
+
+
+def _extract_comment_lines(lines, result, skip_overrides=False):
+    """Surface comments from a sequence of leading/header lines into `result`.
+
+    Adjacent non-override comment lines collapse into one multi-line Comment
+    (see _comment_line_groups); a lone comment stays a single-line Comment.
+    Override `# [...]` comments are kept individual and routed into __overrides__
+    via _merge_override_comment (unless skip_overrides drops them).
+    """
+    groups = {start: (end, run) for start, end, run in _comment_line_groups(lines)}
+    i, n = 0, len(lines)
+    while i < n:
+        if i in groups:
+            end, run = groups[i]
+            c = Comment("\n".join(ll.comment.value for ll in run))
+            result[c] = c
+            i = end
+            continue
+        ll = lines[i]
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            # Only override comments reach here - groups consumed the rest.
+            if not (skip_overrides and _parse_override_comment(ll.comment.value) is not None):
+                c = Comment(ll.comment.value)
+                result[c] = c
+                _merge_override_comment(c, result)
+        i += 1
+
+
 def _extract_leading_comments(stmt, result, skip_overrides=False):
     """Extract standalone comment lines from a statement's leading_lines.
 
@@ -4261,13 +4571,8 @@ def _extract_leading_comments(stmt, result, skip_overrides=False):
     statement is a nested class/function, whose leading override comment is
     routed to the child's own __overrides__ via _attach_leading_override.
     """
-    for ll in getattr(stmt, "leading_lines", ()):
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            if skip_overrides and _parse_override_comment(ll.comment.value) is not None:
-                continue
-            c = Comment(ll.comment.value)
-            result[c] = c
-            _merge_override_comment(c, result)
+    _extract_comment_lines(getattr(stmt, "leading_lines", ()), result,
+                           skip_overrides=skip_overrides)
 
 
 def _attach_leading_override(stmt, child_dict):
@@ -4574,23 +4879,10 @@ def _patch_module_comments(module, comment_edits):
         return module
 
     result = module
-    changed = False
 
     # Patch header comments (a _REMOVE_COMMENT mapping drops the line)
-    new_header = []
-    for ll in module.header:
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            new_text = text_map.get(ll.comment.value)
-            if new_text is _REMOVE_COMMENT:
-                changed = True
-                continue
-            if new_text is not None:
-                new_header.append(ll.with_changes(comment=cst.Comment(value=new_text)))
-                changed = True
-                continue
-        new_header.append(ll)
-
-    if changed:
+    new_header, header_changed = _patch_comment_lines(list(module.header), text_map)
+    if header_changed:
         result = result.with_changes(header=new_header)
 
     # Patch body statement comments by direct walk
@@ -5170,6 +5462,60 @@ def _patch_simple_stmt(stmt, assign_edits, seen, call_edits=None, call_consumed=
     return stmt.with_changes(body=new_body)
 
 
+def _rebuild_comment_block(new_text, run):
+    """Split an edited multi-line comment string into one EmptyLine comment per
+    line — the inverse of the join in _extract_comment_lines. The original run's
+    first line is reused as a formatting template (indent/whitespace/newline) and
+    each line is normalized to a valid comment value (leading whitespace stripped,
+    a `# ` prefix added when missing; a blank line becomes a bare `#`)."""
+    template = run[0]
+    pieces = []
+    for raw in new_text.split("\n"):
+        line = raw.rstrip("\r\n").lstrip()
+        if not line.startswith("#"):
+            line = "# " + line if line else "#"
+        pieces.append(template.with_changes(comment=cst.Comment(value=line)))
+    return pieces
+
+
+def _patch_comment_lines(lines, text_map):
+    """Apply `text_map` (old_text -> new_text | _REMOVE_COMMENT) to a sequence of
+    leading/header lines, mirroring _extract_comment_lines' grouping: a changed
+    multi-line block is rebuilt into one `#` line per text line; a removed block
+    drops every line in the run. Returns (new_lines, changed)."""
+    groups = {start: (end, run) for start, end, run in _comment_line_groups(lines)}
+    new_lines, changed, i, n = [], False, 0, len(lines)
+    while i < n:
+        if i in groups:
+            end, run = groups[i]
+            joined = "\n".join(ll.comment.value for ll in run)
+            new_text = text_map.get(joined)
+            if new_text is _REMOVE_COMMENT:
+                changed = True
+            elif new_text is not None:
+                new_lines.extend(_rebuild_comment_block(new_text, run))
+                changed = True
+            else:
+                new_lines.extend(run)
+            i = end
+            continue
+        ll = lines[i]
+        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
+            new_text = text_map.get(ll.comment.value)
+            if new_text is _REMOVE_COMMENT:
+                changed = True
+                i += 1
+                continue
+            if new_text is not None:
+                new_lines.append(ll.with_changes(comment=cst.Comment(value=new_text)))
+                changed = True
+                i += 1
+                continue
+        new_lines.append(ll)
+        i += 1
+    return new_lines, changed
+
+
 def _patch_stmt_comments(stmt, text_map):
     """Patch leading and trailing comments on a statement by direct access."""
     result = stmt
@@ -5177,20 +5523,10 @@ def _patch_stmt_comments(stmt, text_map):
 
     # Leading comments (EmptyLine nodes); a _REMOVE_COMMENT mapping drops the line
     if hasattr(result, "leading_lines") and result.leading_lines:
-        new_lines = []
-        for ll in result.leading_lines:
-            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-                new_text = text_map.get(ll.comment.value)
-                if new_text is _REMOVE_COMMENT:
-                    changed = True
-                    continue
-                if new_text is not None:
-                    new_lines.append(ll.with_changes(comment=cst.Comment(value=new_text)))
-                    changed = True
-                    continue
-            new_lines.append(ll)
-        if changed:
+        new_lines, lead_changed = _patch_comment_lines(list(result.leading_lines), text_map)
+        if lead_changed:
             result = result.with_changes(leading_lines=new_lines)
+            changed = True
 
     # Trailing comment
     tw = getattr(result, "trailing_whitespace", None)

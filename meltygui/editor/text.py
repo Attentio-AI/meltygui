@@ -11,6 +11,7 @@ from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
+from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -551,7 +552,6 @@ def draw_bool_token(input_value, draw_state=None, **kwargs):
     color = COLORS['bool']
     # if hovered:
     #      draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 0.0)
-    
     draw_list.add_text(x, y, color, word)
     if hovered and imgui.is_mouse_double_clicked(0):
         return True, ("False" if word == "True" else "True")
@@ -867,16 +867,41 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
 # open the usage-jump popup (the same latched dropdown as the code-suggestion
 # popup) listing every user.
 
-def _collect_usage_spans(code_tree, text, line_offset=0):
-    """[(start_index, end_index, SymbolUsage)] — buffer-index spans for every
-    occurrence of a symbol that has callers, from the code_tree's nested
+def _collect_usage_spans(code_tree, text, line_offset=0, view_path=None):
+    """[(start_index, end_index, SymbolUsage, at_def)] — buffer-index spans for
+    every occurrence of a symbol that has callers, from the code_tree's nested
     __symbol_usages__ maps. Sites are file-absolute; `line_offset` (the file
     line, 0-based, of buffer line 0 — usually jump_to.start) maps them into the
     buffer. A site whose text no longer matches the symbol name (buffer edited
     since the background usage pass ran) is dropped rather than highlighting
-    the wrong characters."""
+    the wrong characters.
+
+    `at_def` flags the occurrence that IS the symbol's declaration (the one site
+    on `su.definition.line` when the definition lives in THIS file, `view_path`).
+    The click/wash logic is per-SITE, not per-symbol: AT the declaration you jump
+    to its usages; at a usage you jump back to the declaration. Without this a
+    symbol defined in-view — every LOCAL variable, since its def is always in
+    scope — showed its whole usage list at every occurrence. realpath runs at most
+    once per symbol here (per keystroke), keeping the per-frame wash realpath-free."""
     spans = []
     seen_nodes, seen_sites = set(), set()
+    _def_in_file = {}        # id(su) -> is su declaration in THIS view file
+
+    def _su_def_in_file(su):
+        k = id(su)
+        if k not in _def_in_file:
+            import os
+            d = getattr(su, 'definition', None)
+            dp = getattr(d, 'path', None) if d is not None else None
+            if dp is None or view_path is None:
+                _def_in_file[k] = False
+            else:
+                try:
+                    _def_in_file[k] = (os.path.realpath(str(dp))
+                                       == os.path.realpath(str(view_path)))
+                except OSError:
+                    _def_in_file[k] = False
+        return _def_in_file[k]
 
     def walk(node, depth=0):
         if not isinstance(node, dict) or depth > 64 or id(node) in seen_nodes:
@@ -884,9 +909,23 @@ def _collect_usage_spans(code_tree, text, line_offset=0):
         seen_nodes.add(id(node))
         su_map = node.get("__symbol_usages__")
         if isinstance(su_map, dict):
-            for name, su in su_map.items():
+            for key, su in su_map.items():
                 if not getattr(su, 'callers', None):
                     continue
+                # Key may be edit-proof, not the spelling (for local keys on
+                # scope+name+line); the highlighted token is the SymbolUsage's name.
+                name = getattr(su, 'name', key) or key
+                d = getattr(su, 'definition', None)
+                def_line = getattr(d, 'line', None) if d is not None else None
+                def_col = getattr(d, 'column', None) if d is not None else None
+                # Local-variable entries (key = scope\x1fname\x1fline) record an
+                # ACCURATE binding column, so the declaration is matched by (line,
+                # col) - needed to single out the binding among several occurrences
+                # on one line (`[t for t in xs]`). Module/member symbols record a
+                # PLACEHOLDER def column 0, so they match by line only (their
+                # declaration is the lone occurrence on its def line; col-matching
+                # would mark NONE of them, self-linking every in-view definition).
+                is_local = isinstance(key, str) and "\x1f" in key
                 for site in getattr(su, 'sites', None) or ():
                     ln, col = site
                     # Key includes the name: a bare-name target (`Window`) and a
@@ -919,7 +958,13 @@ def _collect_usage_spans(code_tree, text, line_offset=0):
                         if p == -1:
                             continue
                         idx, end = p, p + len(name)
-                    spans.append((idx, end, su))
+                    # This occurrence is the declaration when its file line (and,
+                    # for locals, col) is the definition's AND the definition lives
+                    # in this file.
+                    at_def = (def_line is not None and ln == def_line
+                              and (col == def_col if is_local else True)
+                              and _su_def_in_file(su))
+                    spans.append((idx, end, su, at_def))
         for k, v in node.items():
             if k not in ("__cst__", "__symbol_usages__"):
                 walk(v, depth + 1)
@@ -929,7 +974,7 @@ def _collect_usage_spans(code_tree, text, line_offset=0):
     return spans
 
 
-def _usage_spans(ds, text, code_tree, line_offset=0):
+def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
     """Cached-per-(code_tree, text) wrapper around _collect_usage_spans. The
     top-level __symbol_usages__ map's identity rides in the key: the background
     usage pass fills it in-place on an already-rendered code_tree (fresh dict
@@ -938,62 +983,65 @@ def _usage_spans(ds, text, code_tree, line_offset=0):
     if code_tree is None:
         return ()
     su_top = code_tree.get("__symbol_usages__") if isinstance(code_tree, dict) else None
-    key = (id(code_tree), id(su_top), line_offset, text)
+    key = (id(code_tree), id(su_top), line_offset, text, str(view_path))
     if getattr(ds, '_usage_spans_key', None) != key:
         try:
-            ds._usage_spans = _collect_usage_spans(code_tree, text, line_offset)
+            ds._usage_spans = _collect_usage_spans(code_tree, text, line_offset, view_path)
         except Exception:
             ds._usage_spans = ()
         ds._usage_spans_key = key
-        ds._usage_tc = {}     # per-su jump-target counts; valid per span set
+        ds._usage_tc = {}     # per-(su, at_def) jump-target counts; dies with span set
     return ds._usage_spans
 
 
-def _usage_target_count(ds, su, view_path, view_span):
-    """len() of the EXACT list the usage-jump dropdown would show for `su` in
-    this view — the wash color keys on this, so hue ≡ dropdown size. Raw
-    caller count is the wrong signal: a usage SITE away from the definition
-    jumps to exactly one place (the definition) no matter how many callers
-    exist project-wide, and must read cool. Memoized per span set on the
-    draw_state — _usage_jump_targets realpath()s per call, far too hot for a
-    per-span per-frame paint loop. id(su) is a stable key here: the spans
-    cache holds the su objects alive, and the memo dies with it."""
+def _usage_target_count(ds, su, at_def, view_path, view_span):
+    """len() of the EXACT list the usage-jump dropdown would show for THIS
+    occurrence of `su` — the wash color keys on this, so hue ≡ dropdown size.
+    Raw caller count is the wrong signal: a USAGE occurrence jumps to exactly one
+    place (the declaration) however many callers exist project-wide, so it must
+    read cool, while the DECLARATION (`at_def`) reads hot with its full usage
+    list. Memoized per (su, at_def) on the draw_state — at_def is precomputed by
+    _collect_usage_spans, so this is realpath-free; the memo dies with the span
+    set."""
     tc = getattr(ds, '_usage_tc', None)
     if tc is None:
         tc = ds._usage_tc = {}
-    n = tc.get(id(su))
+    mk = (id(su), at_def)
+    n = tc.get(mk)
     if n is None:
-        n = len(_usage_jump_targets(su, view_path=view_path, view_span=view_span))
-        tc[id(su)] = n
+        n = len(_usage_jump_targets(su, view_path=view_path, view_span=view_span,
+                                    at_def=at_def))
+        tc[mk] = n
     return n
 
 
-def _usage_jump_targets(su, view_path=None, view_span=None):
-    """Ordered jump candidates (UsageRefs) for a symbol-usage click. Direction
-    depends on where we are:
-      • the symbol's DEFINITION lives inside this view (view_path + 1-based
-        file-line range view_span) → we're at the definition: the candidates
-        are its callers ("who uses this?").
-      • otherwise we're at a USAGE site → the definition (falling back to the
-        callers when jedi found none).
-    One candidate → the caller jumps straight there; several → it opens the
-    usage-jump picker."""
+def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
+    """Ordered jump candidates (UsageRefs) for a symbol-usage click. Direction is
+    per-OCCURRENCE (`at_def`, from _collect_usage_spans):
+      • at_def True  → we're ON the declaration: candidates are its callers
+        ("who uses this?").
+      • at_def False → we're at a USAGE: the declaration (falling back to the
+        callers when none was found).
+    One candidate → jump straight there; several → open the usage-jump picker.
+    `at_def=None` falls back to the legacy symbol-level test (is the definition
+    anywhere in view_span) for callers that don't pass a per-site flag."""
     d = getattr(su, 'definition', None)
     if d is not None and getattr(d, 'path', None) is None:
         d = None
     callers = [c for c in (getattr(su, 'callers', None) or ())
                if getattr(c, 'path', None) is not None]
 
-    def_here = False
-    if d is not None and view_path is not None and view_span:
-        try:
-            import os
-            def_here = (os.path.realpath(str(d.path)) == os.path.realpath(str(view_path))
-                        and view_span[0] <= (getattr(d, 'line', 0) or 0) <= view_span[1])
-        except OSError:
-            def_here = False
+    if at_def is None:
+        at_def = False
+        if d is not None and view_path is not None and view_span:
+            try:
+                import os
+                at_def = (os.path.realpath(str(d.path)) == os.path.realpath(str(view_path))
+                          and view_span[0] <= (getattr(d, 'line', 0) or 0) <= view_span[1])
+            except OSError:
+                at_def = False
 
-    if def_here:
+    if at_def:
         return callers
     return [d] if d is not None else callers
 
@@ -1513,23 +1561,49 @@ def _window_tokens(text, line_offs, line_open, v0, v1, lookback=12):
     return wl, start_off, toks
 
 
+_LINE_STARTS_CACHE: dict = {}   # id(text) -> (text, [line-start char offsets])
+
+
+def _line_starts(text):
+    """Char index where each line begins, memoized by text IDENTITY. The editor
+    renders one buffer in tight per-span loops, so this is ~always a hit; the id
+    key is guarded by holding the text ref (`e[0] is text`) so a GC'd id can't
+    alias a different string. Turns _index_to_line_col / _line_col_to_index from
+    O(index)/O(line) buffer scans into O(log n) bisects — the usage-wash loop
+    calls them per span EVERY frame, so on a long buffer with many spans the old
+    scan was O(spans x buffer) (the add-a-line frame-time blowup)."""
+    e = _LINE_STARTS_CACHE.get(id(text))
+    if e is not None and e[0] is text:
+        return e[1]
+    starts = [0]
+    ap = starts.append
+    i = text.find('\n')
+    while i != -1:
+        ap(i + 1)
+        i = text.find('\n', i + 1)
+    if len(_LINE_STARTS_CACHE) > 8:
+        _LINE_STARTS_CACHE.clear()       # bounded: just a few open buffers, no leak
+    _LINE_STARTS_CACHE[id(text)] = (text, starts)
+    return starts
+
+
 def _index_to_line_col(text, index):
-    line = text[:index].count('\n')
-    last_nl = text.rfind('\n', 0, index)
-    col = index - (last_nl + 1) if last_nl != -1 else index
-    return line, col
+    starts = _line_starts(text)
+    line = bisect.bisect_right(starts, index) - 1
+    if line < 0:
+        line = 0
+    return line, index - starts[line]
 
 
 def _line_col_to_index(text, line, col):
-    idx = 0
-    for _ in range(line):
-        nl = text.find('\n', idx)
-        if nl == -1:
-            return len(text)
-        idx = nl + 1
-    line_end = text.find('\n', idx)
-    line_end = line_end if line_end != -1 else len(text)
-    return min(idx + col, line_end)
+    starts = _line_starts(text)
+    if line < 0:
+        return 0
+    if line >= len(starts):
+        return len(text)
+    base = starts[line]
+    line_end = starts[line + 1] - 1 if line + 1 < len(starts) else len(text)
+    return min(base + col, line_end)
 
 
 def _get_line_start(text, index):
@@ -2040,7 +2114,7 @@ def _find_matches(text, term):
     return matches
 
 
-def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
+def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
     """Scroll the nearest scrollable ancestor (or the view itself) so the
     screen-space band [top_abs, bottom_abs] is visible.
 
@@ -2049,6 +2123,13 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
     (and the editor's own scroll_offset is forced to 0). Walking up _parent to
     the node whose scroll_visible is set, then nudging that node's scroll_offset
     by the on-screen overflow, scrolls the right thing in both layouts.
+
+    With center=True the band is centered vertically in the viewport instead of
+    just nudged to the nearest margin edge — used for search-result navigation,
+    where the match should land in the middle of the view rather than stuck at
+    the top/bottom. Vertical only; the horizontal scroll is never touched. The
+    centered offset is clamped at the content ends, so a match near the top or
+    bottom of the document lands as close to center as the scroll range allows.
     """
     node = ds
     seen = set()
@@ -2058,6 +2139,16 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0):
             view_top = node.abs_top + node.header_height
             view_bottom = node.abs_top + (node.height or 0)
             sx, sy = node.scroll_offset
+            if center:
+                # Align the band's midline with the viewport's midline (Y only,
+                # horizontal sx untouched). Clamped at the content ends below.
+                delta = ((top_abs + bottom_abs) * 0.5) - ((view_top + view_bottom) * 0.5)
+                if abs(delta) > 0.5:
+                    __old_scroll = node.scroll_offset
+                    node.scroll_offset = (sx, max(0, min(sy + delta, node._max_scroll_y)))
+                    node._debug_log_scroll(node, __old_scroll, node.scroll_offset, "scroll_into_view center")
+                    request_render()
+                return
             # No clamping here - _ancestor_scroll enforces the scroll bound at
             # the source, so overshoot past the content ends doesn't accumulate.
             if top_abs < view_top + margin:
@@ -2146,10 +2237,10 @@ def _describe_code_tree(code_tree):
     return name
 
 
-@render_func(is_default_for=(CodeLine), show_bg=False, use_cache=True, 
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-1, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
@@ -2162,17 +2253,15 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
 
-
-
-
     ds = draw_state   
+
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-    
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -2189,7 +2278,7 @@ def draw_text(input_value: str, height=None,
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
     ac_state = ds._ac_state
-
+    
     # Same deal for the usage-jump picker (multi-user symbol double-click).
     if getattr(ds, '_uj_state', None) is None:
         ds._uj_state = DropDownState()
@@ -2242,9 +2331,6 @@ def draw_text(input_value: str, height=None,
         # lines keep their normal positions; only the bar was floated. The text
         # clip below is raised by bar_height so glyphs never paint over the bar.
         imgui.set_cursor_screen_pos((_bx, _by + bar_height))
-        
-        
-    
 
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -2296,7 +2382,7 @@ def draw_text(input_value: str, height=None,
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
-
+            
         if syntax_highlight:
             if getattr(ds, '_lo_text', None) != text:
                 ds._lo_offs, ds._lo_open = _update_line_open(
@@ -2431,7 +2517,7 @@ def draw_text(input_value: str, height=None,
         # opened the search box / dropdown / menu owning it.
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
-
+        
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (double-click / Ctrl+B): one
         counterpart opens straight in IntelliJ; several open the usage-jump
@@ -2439,11 +2525,12 @@ def draw_text(input_value: str, height=None,
         SINGLE counterpart (the Toggles.TextEditor.double_click_opens_dropdown
         behavior) instead of jumping straight. True if the jump or picker
         happened (a span with zero targets returns False -> word-select)."""
-        for _us, _ue, _su in _usage_spans(ds, text, _usage_tree, _usage_off):
+        _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree, _usage_off, _vpath):
             if _us <= pos < _ue:
                 _targets = _usage_jump_targets(
-                    _su,
-                    view_path=getattr(jump_to, 'path', None) if jump_to is not None else None,
+                    _su, at_def=_at_def,
+                    view_path=_vpath,
                     view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
                 if _targets and (len(_targets) > 1 or force_picker):
                     _items, _tags = _usage_ref_items(_targets)
@@ -3194,7 +3281,7 @@ def draw_text(input_value: str, height=None,
         # up) and the match landed off-screen whenever the editor owned its
         # scrollbar.
         match_top_abs = origin_y + line * line_px
-        _scroll_into_view(ds, match_top_abs, match_top_abs + line_px)
+        _scroll_into_view(ds, match_top_abs, match_top_abs + line_px, center=True)
 
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
@@ -3289,11 +3376,11 @@ def draw_text(input_value: str, height=None,
     # place and stays cool blue however popular the symbol is project-wide;
     # the definition of a six-caller function reads hot. Drawn before (under)
     # the search highlights and the glyphs.
-    _uspans = _usage_spans(ds, text, _usage_tree, _usage_off)
+    _u_vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+    _uspans = _usage_spans(ds, text, _usage_tree, _usage_off, _u_vpath)
     if _uspans:
-        _u_vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
         _u_vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
-        for _us, _ue, _su in _uspans:
+        for _us, _ue, _su, _at_def in _uspans:
             u_line, _ = _index_to_line_col(text, _us)
             sy = origin_y + u_line * line_px
             ey = sy + line_px
@@ -3301,15 +3388,14 @@ def draw_text(input_value: str, height=None,
                 continue
             sx = origin_x + _colx(_us)
             ex = origin_x + _colx(_ue)
-            usage_bg = _usage_wash_color(_usage_target_count(ds, _su, _u_vpath, _u_vspan))
+            usage_bg = _usage_wash_color(_usage_target_count(ds, _su, _at_def, _u_vpath, _u_vspan))
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, usage_bg, 3.0)
 
-    # Search match highlights (drawn behind the text so glyphs stay readable).
-    # The active match gets a stronger fill plus an outline; the others are faint.
+    # Search match highlights (drawn under the text so glyphs stay readable).
+    # The current match radiates a circular gradient glow with its rect cut out
+    # so the matched text stays visible; the rest get a thin border. Look is
+    # tunable via Toggles.SearchSettings (see search_glow.draw_search_highlight).
     if search_matches:
-        match_bg = (0.902, 0.784, 0.314, 0.349)  # faint yellow
-        cur_bg = (0.941, 0.667, 0.235, 0.588)  # active fill
-        cur_border = (1.0, 0.784, 0.353, 1.0)  # active outline
         for m_idx, (ms, me) in enumerate(search_matches):
             m_line, _ = _index_to_line_col(text, ms)
             sx = origin_x + _colx(ms)
@@ -3318,11 +3404,7 @@ def draw_text(input_value: str, height=None,
             ey = sy + line_px
             if ey < rect_min_y or sy > rect_max_y:
                 continue
-            if m_idx == current_local:
-                draw_list.add_rect_filled(sx, sy, ex, ey, imgui.get_color_u32_rgba(*cur_bg))
-                draw_list.add_rect(sx, sy, ex, ey, imgui.get_color_u32_rgba(*cur_border))
-            else:
-                draw_list.add_rect_filled(sx, sy, ex, ey, imgui.get_color_u32_rgba(*match_bg))
+            draw_search_highlight(draw_list, sx, sy, ex, ey, current=(m_idx == current_local))
 
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under

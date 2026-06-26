@@ -312,9 +312,15 @@ class InputHandler:
 
         # Parse new subscriptions
         new_subs = set()
+        scroll_override = False
         for s in subscribed:
             if selected and s == "scroll_y_changed":
                 priority -= 20
+                # A *selected* view's scroll is the zoom-override gesture
+                # (e.g. draw_texture): the -20 boost is meant to out-prioritize
+                # its scroll parent so the wheel zooms instead of scrolling the
+                # list. Mark it so the merge below preserves the boost.
+                scroll_override = True
             input_id, action, inverted, non_blocking = parse_event_name(s)
             sub = (input_id, action)
             if view_id not in _view_id_names_cache:
@@ -328,9 +334,26 @@ class InputHandler:
         # Check if view already registered this frame - merge if so
         for i, (vid, pri, subs) in enumerate(self._hovered):
             if vid == view_id:
-                # Merge subscriptions, keep lowest priority
                 merged_subs = subs | frozenset(new_subs)
-                merged_priority = max(pri, priority)
+                # A view_id collapses to ONE priority for all its subs, so by
+                # default keep the WORST (max) - this stops a single boosted
+                # subscription (e.g. a deeply-nested child's select) from
+                # silently stealing the wheel from its scroll parent.
+                #
+                # EXCEPTION: the selected-scroll override. The render wrapper
+                # registers that view's event params (incl. its -20 scroll boost)
+                # under the bare tile_id, the SAME id the select gesture and the
+                # right-click menu register on at baseline priority. With max()
+                # that baseline wins the merge and erases the boost, so the
+                # parent's view_scroll recaptures the wheel and scrolling the
+                # selected child clears its own selection - the override never
+                # fires. The boosted scroll registration is the child's last
+                # tile_id registration, so taking the best (min) here preserves
+                # the boost without affecting the non-selected case.
+                if scroll_override:
+                    merged_priority = min(pri, priority)
+                else:
+                    merged_priority = max(pri, priority)
                 self._hovered[i] = (view_id, merged_priority, merged_subs)
                 return
 

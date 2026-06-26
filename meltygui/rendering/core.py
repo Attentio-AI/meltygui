@@ -2162,7 +2162,7 @@ def render_func(*args, **o_kwargs):
                     if esc_key:
                         Melty.focused_ds = None
                         draw_state.search_active = False
-                        draw_state.search_text = ""
+                        # Keep search_text so Find restores the last query.
                         draw_state._search_was_active = False
                         if Toggles.TextEditor.text_focus_stack_trace:
                             print_stack_trace()

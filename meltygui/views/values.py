@@ -54,6 +54,7 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end,
     annotation_item_type
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
+from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
@@ -256,7 +257,7 @@ def go_to_search_result(ds, win=None):
     Core.melty.selected = {ds}
     Core.melty.last_selected = ds
     if ds.abs_top is not None and ds.height is not None:
-        _scroll_into_view(ds, ds.abs_top, ds.abs_top + ds.height)
+        _scroll_into_view(ds, ds.abs_top, ds.abs_top + ds.height, center=True)
     request_render()
 
 
@@ -1734,7 +1735,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     clip_right = min(p_max[0], raw_img_right)
     clip_top = max(p_min_y, raw_img_top)
     clip_bottom = min(p_max[1], raw_img_bottom)
-
     draw_list: _DrawList = imgui.get_window_draw_list()
 
     if imgui.is_mouse_hovering_rect(clip_left, clip_top, clip_right, clip_bottom):
@@ -2445,11 +2445,11 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
                                   imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], 0.33),
                                   rounding=rnd)
 
-    # Selection / match highlight: translucent WHITE, so the tint still reads
-    # through it instead of being covered. The active row is brighter + outlined.
+    # Search match highlight (drawn under the text): the current row radiates a
+    # circular gradient glow with its rect cut out so its content stays legible;
+    # other matches get a thin outline. Tunable via Toggles.SearchSettings.
     if search_match:
-        _a = 64 if search_current else 26
-        draw_list.add_rect_filled(bx0, by0, bx1, by1, (_a << 24) | (255 << 16) | (255 << 8) | 255, rounding=rnd)
+        draw_search_highlight(draw_list, bx0, by0, bx1, by1, current=search_current, rounding=rnd)
 
     if text_align == "left":
         draw_list.add_text(draw_state.abs_left + 5,
@@ -2463,10 +2463,6 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
         draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
-
-    if search_match and search_current:
-        draw_list.add_rect(bx0, by0, bx1, by1, (200 << 24) | (255 << 16) | (255 << 8) | 255,
-                           rounding=rnd, thickness=1.5)
 
 
     if left_mouse_down:
@@ -3063,8 +3059,8 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, indent_size=4, selectable=False, use_cache=False,
-             show_bg=False, with_header=None, is_tree=False, temp=True)
+@render_func(is_default_for=(Comment), shadow=False, is_tree=True, indent_size=4, selectable=False, use_cache=False,
+             show_bg=False, with_header=draw_header, temp=True)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
 
@@ -3086,9 +3082,16 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
     name_color = style_manager.make_color_style_value(input=name_style)
 
+    # A grouped multi-line comment is a '\n'-joined run of '# ' lines; strip the
+    # '#'/'# ' prefix from EACH line so it displays as clean prose, not just the
+    # first (str[2:] would leave a stray '#' on every continuation line).
+    def _strip_hash(ln):
+        return ln[2:] if ln.startswith("# ") else (ln[1:] if ln.startswith("#") else ln)
+    display = "\n".join(_strip_hash(ln) for ln in str(input_value).split("\n"))
+
     imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
     imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
-    imgui.text_wrapped(str(input_value[2:]))
+    imgui.text_wrapped(display)
     imgui.pop_style_color()
     imgui.pop_text_wrap_pos()
 
@@ -5495,7 +5498,6 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                 result = (True, picked)
     return result
 
-
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True, show_add_delete=False,
              with_header=None, disable_scroll=True, min_width=300, swoosh=False, z_offset=-3)
 def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
@@ -5703,7 +5705,7 @@ def draw_search(input_value=None, draw_state=None, unique=0):
               tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
         search_ds.search_active = False
         search_ds._search_was_active = False
-        search_ds.search_text = ""
+        # Keep search_text so reopening the find bar restores the last query.
         Melty.text_focused_ds = None
 
     total = search_ds.text_search_count
@@ -5730,10 +5732,20 @@ def draw_search(input_value=None, draw_state=None, unique=0):
                 nav = 1
             elif any(k == glfw.KEY_UP for k, _ in Melty.frame_key_events):
                 nav = -1
+            # Enter steps to the next match, Shift+Enter to the previous, and
+            # HOLDING Enter rapid-fires - imgui's synthesized auto-repeat
+            # (io.key_repeat_delay/rate) is read here because GLFW's REPEAT events
+            # don't reach the key queue on every platform (Wayland); keep the loop
+            # rendering while it is held so that cadence is sampled. Ctrl+Enter
+            # "clicks" the selected result and stays single-shot (from the queue).
             _enter = [m for k, m in Melty.frame_key_events
                       if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
-            if _enter:
-                if _enter[-1] & glfw.MOD_CONTROL:
+            _enter_repeat = (imgui.is_key_pressed(glfw.KEY_ENTER, repeat=True)
+                             or imgui.is_key_pressed(glfw.KEY_KP_ENTER, repeat=True))
+            if imgui.is_key_down(glfw.KEY_ENTER) or imgui.is_key_down(glfw.KEY_KP_ENTER):
+                request_render()
+            if _enter or _enter_repeat:
+                if _enter and (_enter[-1] & glfw.MOD_CONTROL):
                     # "Click" the selected result: hit-test the BVH at the center
                     # of the current match's rect and send a mouse down to the
                     # front-most view there (the actual target, e.g. a managed
@@ -5758,8 +5770,8 @@ def draw_search(input_value=None, draw_state=None, unique=0):
                         # the top view actually re-runs and reads the injection.
                         Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
                         request_render()
-                else:
-                    nav = -1 if (_enter[-1] & glfw.MOD_SHIFT) else 1
+                elif not imgui.get_io().key_ctrl:
+                    nav = -1 if imgui.get_io().key_shift else 1
 
         if nav != 0:
             # total is the combined count across all views; stepping wraps over

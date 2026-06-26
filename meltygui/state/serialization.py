@@ -39,6 +39,7 @@ from enum import Enum
 # These imports are heavy but already resolved whenever the app is running.
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
+from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 
 log = logging.getLogger("load_save_v2")
 
@@ -81,6 +82,35 @@ def _torch_types():
             cached = None
         _torch_types._cache = cached
     return cached
+
+
+def _numpy_generic():
+    """Lazily resolve numpy.generic (base of ALL numpy scalars: np.float64,
+    np.int64, np.bool_, …) so they can be converted to Python primitives. Cached;
+    None if numpy is absent."""
+    cached = getattr(_numpy_generic, "_cache", False)
+    if cached is False:
+        try:
+            import numpy
+            cached = numpy.generic
+        except Exception:
+            cached = None
+        _numpy_generic._cache = cached
+    return cached
+
+
+def _recover_numpy_scalar(dtype, *args):
+    """find_class hands numpy's scalar reconstructor to THIS on load. New saves
+    convert numpy scalars to Python primitives (so no numpy.scalar in the wire),
+    but a LEGACY pkl written before that fix dropped the dtype to None — without a
+    dtype the bytes can't be decoded, so recover as 0.0 rather than crash the load."""
+    if dtype is None:
+        return 0.0
+    try:
+        import numpy
+        return numpy.core.multiarray.scalar(dtype, *args)
+    except Exception:
+        return 0.0
 
 
 def _compute_is_external(t):
@@ -401,24 +431,101 @@ def _seed_defaults(obj):
         object.__setattr__(obj, init_flag, False)
 
 
-def _reconstruct(cls):
-    """Construct a FULLY-initialized default instance — exactly like from_dict's
-    cls() — then let pickle overlay the saved public state. Running the real
-    __init__ (via the metaclass __call__) is what makes the EXISTING schema
-    handling work: every attribute __init__/__post_init__/FieldMeta would set is
-    present, including underscore attrs set ONLY in __init__ (e.g.
-    HyperparameterCollection._snapshot_visible) that aren't in the saved state and
-    that the cheap __new__+__post_init__ path would miss. Pickle memoizes this
-    object before applying state, so cycles/aliases still resolve correctly.
-
-    Falls back to the cheap __new__ + seed only if cls() raises (an __init__ that
-    needs args or throws) — better a partially-seeded object than a failed load."""
+def _default_for(cls):
+    """The cached pristine default instance (cls.default_instance), created once if
+    absent (DictConversion.__init__ caches it). Template for fast reconstruction."""
+    d = getattr(cls, "default_instance", None)
+    if d is not None:
+        return d
     try:
-        return cls()
+        cls()                       # side effect: caches cls.default_instance
     except Exception:
-        obj = cls.__new__(cls)
-        _seed_defaults(obj)
+        return None
+    return getattr(cls, "default_instance", None)
+
+
+# During a load, every reconstructed DictConversion is appended here so _post_load
+# can fire on_load WITHOUT re-walking the whole graph (that walk pushed every
+# primitive __dict__ value - millions of list.pop/id() calls). Set to a list by
+# loads(); None otherwise.
+_collect = None
+
+# Per-class copy plan: which default keys are plain (just assign), mutable
+# CONTAINERS (need a fresh per-instance .copy()), or SELF-REFERENCES (rebind to the
+# new instance - DrawState._parent = self). Computed ONCE per class from its default
+# so _reconstruct doesn't isinstance() every attribute of every object (that was
+# ~3.6M isinstance calls per load). 'id'/'hash' are set explicitly, skipped here.
+_copy_plan_cache = weakref.WeakKeyDictionary()
+
+
+def _copy_plan(cls, default):
+    plan = _copy_plan_cache.get(cls)
+    if plan is None:
+        plain, containers, selfrefs = [], [], []
+        for k, v in default.__dict__.items():
+            if k in ("id", "hash") or isinstance(v, types.MethodType):
+                continue                         # set explicitly or @live-injection
+            if v is default:
+                selfrefs.append(k)
+            elif isinstance(v, (dict, list, set)):
+                containers.append(k)
+            else:
+                plain.append(k)
+        plan = (tuple(plain), tuple(containers), tuple(selfrefs))
+        try:
+            _copy_plan_cache[cls] = plan
+        except TypeError:
+            pass
+    return plan
+
+
+def _reconstruct(cls):
+    """Reconstruct by COPYING the cached default instance's __dict__ — NOT by
+    re-running __init__ per object. The default already ran the full
+    __init__/__post_init__/FieldMeta chain once, so it carries every attribute
+    (incl. underscore attrs set only in __init__, e.g. _snapshot_visible). Copying
+    it skips ~270 @live-wrapped setattrs PER object (DrawState.__init__ alone fired
+    ~1.7M -> ~1.4s on the live graph). Pickle then overlays the saved public state.
+
+    Uses a cached per-class plan (no per-attribute isinstance), rebinds self-loops
+    (DrawState._parent = self) to this instance, gives each instance fresh mutable
+    containers via .copy() (defaultdict-safe), and a unique id (overlaid if saved).
+    Falls back to full cls() if no default is available."""
+    default = _default_for(cls)
+    if default is None:
+        try:
+            obj = cls()
+        except Exception:
+            obj = cls.__new__(cls)
+        if _collect is not None:
+            _collect.append(obj)
         return obj
+
+    obj = cls.__new__(cls)
+    d = obj.__dict__
+    dd = default.__dict__
+    plain, containers, selfrefs = _copy_plan(cls, default)
+    for k in plain:
+        d[k] = dd[k]
+    for k in containers:
+        cv = dd[k]
+        try:
+            d[k] = cv.copy()                     # dict/list/set/defaultdict all have .copy()
+        except Exception:
+            d[k] = cv
+    for k in selfrefs:
+        d[k] = obj
+    d["id"] = generate_id()                      # unique; overlaid by pickle if saved
+    d["hash"] = None
+    insts = getattr(cls, "_instances", None)
+    if insts is not None:
+        try:
+            insts.add(obj)
+        except Exception:
+            pass
+    if _collect is not None:
+        _collect.append(obj)
+    return obj
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -542,6 +649,11 @@ class _PicklerOverrides:
             return None
         if isinstance(obj, DictConversion):
             return None                         # -> generic reduce in reducer_override
+        # numpy scalars (np.bool_/np.int_ that AREN'T isinstance of a Python
+        # primitive) -> kept so reducer_override converts them to a Python primitive.
+        ng = _numpy_generic()
+        if ng is not None and isinstance(obj, ng):
+            return None
         return "DROP"                           # any other type -> stub to None (to_dict parity)
 
     def reducer_override(self, obj):
@@ -595,6 +707,18 @@ class _PicklerOverrides:
         # deep-serialized" rule.
         if isinstance(obj, DictConversion):
             return (_reconstruct, (type(obj),), _save_state(obj, self._excluded))
+        # numpy scalars (np.float64 isinstance float, np.int64 isinstance int, ...)
+        # -> a PYTHON primitive, mirroring to_dict (its str/eval codec does the
+        # same). Their native pickle reduce is (scalar, (numpy.dtype, bytes)), and
+        # the catch-all drops the dtype to None -> "scalar() argument 1 must be
+        # numpy.dtype, not None" on load. obj.item() yields the Python value.
+        ng = _numpy_generic()
+        if ng is not None and isinstance(obj, ng):
+            try:
+                v = obj.item()
+                return (type(v), (v,))
+            except Exception:
+                pass
         return NotImplemented
 
 
@@ -615,6 +739,11 @@ class _UnpicklerOverrides:
         raise pickle.UnpicklingError(f"unknown persistent id {pid!r}")
 
     def find_class(self, module, name):
+        # Legacy-pickle recovery: a numpy scalar saved before the ng-conversion fix
+        # has a (numpy...scalar, (dtype, ...)) reduce that would crash. Hand it to a
+        # tolerant reconstructor (recovers as 0.0). New saves don't use numpy scalar.
+        if name == "scalar" and "numpy" in module:
+            return _recover_numpy_scalar
         # Try the normal path first (fast, correct when nothing moved).
         try:
             return super().find_class(module, name)
@@ -716,14 +845,21 @@ def dumps(obj, excluded=None):
 def loads(data, *, vis=None, root=None, run_on_load=True):
     # The pickle format is stable, so the C unpickler reads either pickler's bytes;
     # fall back to the pure-Python unpickler only if depth overflows the C one.
+    # _collect gathers every reconstructed DictConversion so _post_load needn't walk.
+    global _collect
+    _collect = []
     try:
-        obj = LSDUnpickler(io.BytesIO(data)).load()
-    except RecursionError:
-        log.warning("load_save_v2: deep graph exceeded C unpickler limit — "
-                    "falling back to pure-Python unpickler")
-        obj = _in_big_stack(lambda: LSDUnpicklerPy(io.BytesIO(data)).load())
+        try:
+            obj = LSDUnpickler(io.BytesIO(data)).load()
+        except RecursionError:
+            log.warning("load_save_v2: deep graph exceeded C unpickler limit — "
+                        "falling back to pure-Python unpickler")
+            obj = _in_big_stack(lambda: LSDUnpicklerPy(io.BytesIO(data)).load())
+        collected = _collect
+    finally:
+        _collect = None
     if run_on_load:
-        _post_load(obj, vis=vis, root=root if root is not None else obj)
+        _post_load(obj, collected, vis=vis, root=root if root is not None else obj)
     return obj
 
 
@@ -745,33 +881,19 @@ def load(path, *, vis=None, run_on_load=True):
         return loads(f.read(), vis=vis, run_on_load=run_on_load)
 
 
-def _post_load(graph_root, *, vis=None, root=None):
+def _post_load(graph_root, collected, *, vis=None, root=None):
     """Replicate from_dict's final pass (which __setstate__ can't, lacking context):
       1. collect every DictConversion into root._instantiated_objects (id->inst),
       2. fire on_load(vis, root) on each (mirrors dict_conversion 207-221).
-    Studio-specific fixups (_parent_tensor_frame rebind, save_config pruning,
-    draw_state_registry validation) belong in the eventual studio swap, not here."""
-    seen = set()
-    instantiated = {}
-    stack = [graph_root]
-    while stack:
-        o = stack.pop()
-        oid = id(o)
-        if oid in seen:
-            continue
-        seen.add(oid)
-        if isinstance(o, dict):
-            stack.extend(o.values())
-            continue
-        if isinstance(o, (list, tuple, set, frozenset)):
-            stack.extend(o)
-            continue
-        d = getattr(o, "__dict__", None)
-        if d is None:
-            continue
-        if isinstance(o, DictConversion):
-            instantiated[getattr(o, "id", oid)] = o
-        stack.extend(list(d.values()))
+
+    `collected` is every DictConversion reconstructed during the load (gathered in
+    _reconstruct), so we DON'T re-walk the graph — that walk pushed every primitive
+    __dict__ value onto a stack (millions of list.pop/id() calls). Studio-specific
+    fixups (_parent_tensor_frame rebind, save_config pruning, draw_state_registry
+    validation) belong in the studio swap, not here."""
+    if collected is None:                        # e.g. plain-pickle path with no collect
+        collected = [graph_root] if isinstance(graph_root, DictConversion) else []
+    instantiated = {getattr(o, "id", id(o)): o for o in collected}
 
     if isinstance(root, DictConversion):
         try:
@@ -779,7 +901,7 @@ def _post_load(graph_root, *, vis=None, root=None):
         except Exception:
             pass
 
-    for inst in instantiated.values():
+    for inst in collected:
         cb = getattr(inst, "on_load", None)
         if callable(cb):
             try:

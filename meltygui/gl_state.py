@@ -107,7 +107,7 @@ class tight_unpack:
 class GLTexture:
     """A GL texture handle plus the metadata shader_func needs to bind it:
     `target` decides sampler2D vs sampler3D at uniform-injection time."""
-    tint = (0.1778, 0.10, 0.03)
+    tint = (0.0667, 0.07, 0.07)
     def __init__(self, texture_id, target, shape=(), internal_format=0):
         self.texture_id = int(texture_id)
         self.target = int(target)

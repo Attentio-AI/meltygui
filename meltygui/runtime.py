@@ -999,7 +999,7 @@ class Melty:
                 print_stack_trace(size=5)
 
             ds.search_active = False
-            ds.search_text = ""
+            # Keep search_text so reopening the find bar restores the last term.
             ds._search_was_active = False
             ds.invalidate_up()
 

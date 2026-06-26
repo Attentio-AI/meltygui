@@ -228,16 +228,20 @@ class TileMode(Enum):
 # self._text_search_scroll_to = False
 
 
-@no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique", "search_active",
+# Search state persists across reloads: search_text, search_active, and
+# text_search_current are saved so the find box reopens with the last query and
+# selected match. text_search_count is derived (recomputed each frame) and stays
+# transient below.
+@no_save("mouse_btn_state", "mouse_up", "mouse_down", "unique",
          "shadow", "size_change", "drag_released", "clicked", "dragged", "clipped_by_rect",
-         "dragged", "expanded_height", "clipped", "fully_clipped",  "header_height", "inside_clip", "layer",
-         "overhead_time", "scroll_visible", "depth_and_layer", "imgui_is_toggled_open", "top", "left",
-         "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "z_pos", "content_height", "return_item",
+         "dragged", "expanded_height", "clipped", "fully_clipped", "inside_clip",
+         "overhead_time", "scroll_visible", "imgui_is_toggled_open", "top", "left",
+         "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "return_item",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line", "relative_pos", "footer_width", "footer_height",
          "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
-         "imgui_is_item_activated", "frame_count", "text_search_current", "text_search_count")
+         "imgui_is_item_activated", "frame_count", "text_search_count")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
          'width', "size_change", 'left', 'top', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
@@ -251,7 +255,7 @@ class TileMode(Enum):
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "", "child_selected", "bg_color",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
-                 "top_offset", 'kwargs', "just_shadow", "header_width", "header_end_width",
+                 "top_offset", 'kwargs', "just_shadow",
                  "header_natural_width", "max_header_width", "pin_to_clip", "pin_clip_rect", "pin_clamp",
                  "header_left_delta", "header_top_delta", "last_seen", "persistent", "shadow_margin", "bg_depth",
                  "anchor_pos", "parent_anchor_pos", "pin_to_clip", "pin_clip_rect", "just_shadow", 'hover_reported', 'explain_convert',

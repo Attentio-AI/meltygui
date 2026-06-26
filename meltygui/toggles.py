@@ -316,21 +316,6 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
-    @defaults(tint=(0.42, 0.58, 0.83))
-    class WindowSettings:
-        # Sticky resize: re-anchor the window top to the drag start position each
-        # frame so only the bottom-on-display clamp displaces it.
-        sticky_drag = False
-
-    @defaults(tint=(0.18, 0.62, 0.55))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (ini_new eval blob)
-        # as a backstop alongside the native-pickle custom.py. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
-        # this True until the .ini is fully retired.
-        ini_save = False
-
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.render_host (stops per-frame
@@ -342,31 +327,74 @@ class Toggles:
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
 
-    @defaults(tint=(0.922, 0.476, 0.031))
-    class TextEditor:
-        enable_spell_check = False
-        double_click_opens_dropdown = True
-        text_focus_stack_trace = False
+    @defaults(tint=(0.42, 0.58, 0.83))
+    class WindowSettings:
+        # Sticky resize: re-anchor the window top to the drag-start position each
+        # frame so only the bottom-on-screen clamp displaces it.
+        sticky_drag = True
+
+    @defaults(tint=(0.18, 0.62, 0.55))
+    class LoadSave:
+        # When True, save() also writes the legacy custom.ini (root_new_style blob)
+        # as a backout alongside the native-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main-file identity / hot-reload cache key, so kee
+        # this True until the .ini is fully retired.
+        ini_save = False
 
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:
         show_debug = False
-
-    # Global App Toggles
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
 
     @defaults(tint=(0.652, 0.672, 0.733))
     class TerminalSettings:
         # Minimum logical terminal size, in pixels, independent of actual window size.
         min_height = 480.0
         min_width = 98.634
+
+    @defaults(tint=(0.965, 0.6, 0.149))
+    class SearchSettings:
+        # Search matches are highlighted with a radial gradient "glow" that
+        # radiates out from the matched rectangle (rounded-rect cutout), with the
+        # rect itself blurred out so the matched text stays readable. The CURRENT
+        # match uses ActiveElement; every other match uses InactiveElements, so
+        # the two can be tuned (color/falloff/opacity/...) independently. Glows
+        # combine where they overlap. Applies in both the text editor (draw_text)
+        # and collections (draw_collection_line). See view/core_views/search_glow.py.
+
+        @defaults(tint=(0.965, 0.6, 0.149))
+        class ActiveElement:
+            gradient_color = (1.0, 0.6, 0.15)   # RGB of the halo
+            outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
+            falloff = 200.00          # px the glow radiates out past the match edge
+            opacity = 0.648           # peak opacity, right at the cutout edge
+            falloff_exp = 2.735       # >1 = bright at the word, then drop off fast
+            inner_pad = 2.218         # px the cutout is grown around the match rect
+            cutout_radius = 5.0       # corner radius of the rounded cutout
+            rings = 50                # radial tessellation rings (higher = smoother)
+            corner_segments = 6       # arc subdivisions at each rounded cutout corner
+            outline_alpha = 0.0       # 0 = rely on the glow's bright inner ring alone
+            outline_thickness = 1.0
+
+        @defaults(tint=(0.36, 0.52, 0.93))
+        class InactiveElements:
+            gradient_color = (0.42, 0.58, 1.0)  # cooler hue so the active match stands out
+            outline_color = (0.6, 0.72, 1.0)
+            falloff = 34.0
+            opacity = 0.4
+            falloff_exp = 2.0
+            inner_pad = 1.5
+            cutout_radius = 4.0
+            rings = 16
+            corner_segments = 5
+            outline_alpha = 0.0
+            outline_thickness = 1.0
+
+    @defaults(tint=(0.922, 0.476, 0.031))
+    class TextEditor:
+        enable_spell_check = False
+        double_click_opens_dropdown = True
+        text_focus_stack_trace = False
 
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
@@ -385,6 +413,16 @@ class Toggles:
         bg_offset = 30
         debug_scroll = False
 
+    # Main App Toggles
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
+
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
@@ -401,6 +439,12 @@ class Toggles:
     # Position-only fast path: when an edit only added/removed blank lines, remap
     # the cached line numbers by the delta (~5ms vs ~42ms) instead of recomputing.
     offset_symbol_positions = True
+
+    # Add function-local variables (params + in-function bindings) to the symbol
+    # usage graph. to hover + double-click to their uses like any symbol. Cheap
+    # now that the editor's line<->index helpers are O(log n) (see _line_starts);
+    # toggle off to drop locals from the graph if ever needed.
+    local_symbol_usages = True
 
     # Build the node→span map from Python's `ast` (C code) instead of libcst's
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).

@@ -18,6 +18,7 @@ from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, 
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
+from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 
@@ -127,7 +128,7 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
               tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
         search_ds.search_active = False
         search_ds._search_was_active = False
-        search_ds.search_text = ""
+        # Keep search_text so reopening the find bar restores the last query.
         Melty.text_focused_ds = None
 
     total = search_ds.text_search_count
@@ -154,10 +155,20 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                 nav = 1
             elif any(k == glfw.KEY_UP for k, _ in Melty.frame_key_events):
                 nav = -1
+            # Enter steps to the next match, Shift+Enter to the previous, and
+            # HOLDING Enter rapid-fires — imgui's synthesized auto-repeat
+            # (io.key_repeat_delay/rate) is read here because GLFW's REPEAT events
+            # don't reach the key queue on every platform (Wayland); keep the loop
+            # rendering while Enter is held so that cadence is sampled. Ctrl+Enter
+            # "clicks" the selected result and stays single-shot (from the queue).
             _enter = [m for k, m in Melty.frame_key_events
                       if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
-            if _enter:
-                if _enter[-1] & glfw.MOD_CONTROL:
+            _enter_repeat = (imgui.is_key_pressed(glfw.KEY_ENTER, repeat=True)
+                             or imgui.is_key_pressed(glfw.KEY_KP_ENTER, repeat=True))
+            if imgui.is_key_down(glfw.KEY_ENTER) or imgui.is_key_down(glfw.KEY_KP_ENTER):
+                request_render()
+            if _enter or _enter_repeat:
+                if _enter and (_enter[-1] & glfw.MOD_CONTROL):
                     # "Click" the selected result: hit-test the BVH at the center
                     # of the selected match's rect and send a mouse-down to the
                     # front-most view there (the actual clickable, e.g. a managed
@@ -182,8 +193,8 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                         # the clicked view actually re-runs and reads the injection.
                         Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
                         request_render()
-                else:
-                    nav = -1 if (_enter[-1] & glfw.MOD_SHIFT) else 1
+                elif not imgui.get_io().key_ctrl:
+                    nav = -1 if imgui.get_io().key_shift else 1
 
         if nav != 0:
             # total is the combined count across all views; stepping wraps over
@@ -212,7 +223,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 **kwargs):
     # Constants
     _font_pushed = False
-    
 
     if font is not None and Melty.font_mgr is not None:
         _font_handle = Melty.font_mgr.get(font)
@@ -303,7 +313,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line()
     else:
         imgui.same_line(spacing=0)
-
+        
+        
     # ── Type / unique labels ───────────────────────────────────
     if show_type:
         imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_tint)
@@ -440,15 +451,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             # (global-current) match; a faint fill for the rest. The flags are
             # set by draw_collection when this header's key matches the query.
             if kwargs.get("search_match", False):
-                pad = 0.0
-                hx0, hy0 = cursor_pos[0] - pad, cursor_pos[1] 
-                hx1 = cursor_pos[0] + text_width + pad
+                hx0, hy0 = cursor_pos[0], cursor_pos[1]
+                hx1 = cursor_pos[0] + text_width
                 hy1 = cursor_pos[1] + imgui.get_text_line_height()
-                if kwargs.get("search_current", False):
-                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (150 << 24) | (60 << 16) | (170 << 8) | 240)
-                    draw_list.add_rect(hx0, hy0, hx1, hy1, (255 << 24) | (90 << 16) | (200 << 8) | 255)
-                else:
-                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (89 << 24) | (80 << 16) | (200 << 8) | 230)
+                draw_search_highlight(draw_list, hx0, hy0, hx1, hy1,
+                                      current=kwargs.get("search_current", False))
             packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())
@@ -524,7 +531,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
 
     # Depth-driven color computation
-
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     name_style['saturation'] = name_style['saturation'] + sat_shift
 
@@ -666,15 +672,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             # (global-current) match; a faint fill for the rest. The flags are
             # set by draw_collection when this header's key matches the query.
             if kwargs.get("search_match", False):
-                pad = 0.0
-                hx0, hy0 = cursor_pos[0] - pad, cursor_pos[1] 
-                hx1 = cursor_pos[0] + text_width + pad
+                hx0, hy0 = cursor_pos[0], cursor_pos[1]
+                hx1 = cursor_pos[0] + text_width
                 hy1 = cursor_pos[1] + imgui.get_text_line_height()
-                if kwargs.get("search_current", False):
-                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (150 << 24) | (60 << 16) | (170 << 8) | 240)
-                    draw_list.add_rect(hx0, hy0, hx1, hy1, (255 << 24) | (90 << 16) | (200 << 8) | 255)
-                else:
-                    draw_list.add_rect_filled(hx0, hy0, hx1, hy1, (89 << 24) | (80 << 16) | (200 << 8) | 230)
+                draw_search_highlight(draw_list, hx0, hy0, hx1, hy1,
+                                      current=kwargs.get("search_current", False))
             packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())

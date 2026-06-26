@@ -431,7 +431,7 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
 
     Debounce: `debounce_ms` defers the launch until the trigger goes quiet (a
     one-shot timer wakes the loop at the deadline — never per-frame polling)."""
-    if Melty.frame_count < 10 or main_thread:
+    if Melty.frame_count < 4 or main_thread:
         debounce_ms = 0
     if start:
         loading_state._run_next = input_value, child_kwargs
@@ -492,18 +492,18 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                         note= Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
                         Melty.cache.invalidate(draw_state._tile_id, note=note)
                         request_render()
-
-            if Melty.frame_count < 3 or main_thread:
-                run(run_next_inner=loading_state._run_next)
+            #
+            # if Melty.frame_count < 0 or main_thread:
+            #     run(run_next_inner=loading_state._run_next)
+            #     loading_state._run_next = None
+            # else:
+            run_next = loading_state._run_next
+            if not loading_state._loading:
                 loading_state._run_next = None
-            else:
-                run_next = loading_state._run_next
-                if not loading_state._loading:
+                threading.Thread(target=run, kwargs={"run_next_inner": run_next}).start()
+                loading_state._loading_start_frame = Melty.frame_count
+                if loading_state._run_next is run_next:
                     loading_state._run_next = None
-                    threading.Thread(target=run, kwargs={"run_next_inner": run_next}).start()
-                    loading_state._loading_start_frame = Melty.frame_count
-                    if loading_state._run_next is run_next:
-                        loading_state._run_next = None
 
     # BUSY includes "completed, but a newer run is already queued". Completion is
     # only ever REPORTED once the queue is empty (coalesced to latest-only - see
