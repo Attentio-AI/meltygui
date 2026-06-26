@@ -1154,10 +1154,15 @@ class Melty:
             # (now-)focused text view so its cursor disappears this frame, then
             # clear focus, which also unblocks global hotkeys via is_key_pressed.
         if glfw.get_key(cls.glfw_window, glfw.KEY_ESCAPE) == glfw.PRESS:
-            # Close any active search globally - no hover required. We must
-            # clear search_active (not just text focus): otherwise the search
-            # box's Esc-grab-when-unfocused logic would immediately reclaim
-            # focus and the find bar would never dismiss off-screen.
+            # Esc closes the active find bar - no hover required. clear_focus no
+            # longer closes search (so clicking away leaves bars open), so close
+            # the focused search owner's bar explicitly here. Other open find bars
+            # stay until their own Esc/X. Once focused_ds is cleared below the
+            # bar's re-grab can't reclaim focus, so the bar dismisses cleanly.
+            if cls.focused_ds is not None and getattr(cls.focused_ds, 'search_active', False):
+                cls.focused_ds.search_active = False
+                cls.focused_ds._search_was_active = False
+                cls.focused_ds.invalidate_up()
 
             cls.clear_focus()
 

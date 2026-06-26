@@ -158,13 +158,18 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
         if imgui.small_button(f"##search_next{unique}"):
             nav = 1
         # Enter / Down = find next, Shift+Enter / Up = find prev, Ctrl+Enter =
-        # "click" the selected result — but only while the search box (not the
+        # "click" the selected result — but only while the FIND BOX (not the
         # underlying editor) holds text focus, so Enter still inserts newlines
-        # when you click into the editor. The find box is single-line, so Up/Down
-        # don't move its cursor and are free for stepping matches. Drained from
-        # the GLFW-callback key queue (not imgui.is_key_pressed) so it isn't
-        # dropped on slow frames.
-        if Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds:
+        # when you click into the editor. We gate on the box holding text focus
+        # directly rather than on `focused_ds is search_ds`: clicking back into
+        # the box runs clear_focus, which nulls focused_ds (the searched view
+        # isn't under the click to be protected), so keying off focused_ds
+        # silently dropped Enter-nav after a mouse refocus. text_focused_ds is
+        # set straight by the box's own click handler, so it survives that.
+        # The find box is single-line, so Up/Down don't move its cursor and are
+        # free for stepping matches. Drained from the GLFW-callback key queue
+        # (not imgui.is_key_pressed) so it isn't dropped on slow frames.
+        if _box_ds is not None and Melty.text_focused_ds is _box_ds:
             if any(k == glfw.KEY_DOWN for k, _ in Melty.frame_key_events):
                 nav = 1
             elif any(k == glfw.KEY_UP for k, _ in Melty.frame_key_events):

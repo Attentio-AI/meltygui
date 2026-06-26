@@ -2519,6 +2519,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
     left_margin = 5
     box_h = 21
     text_inset = 8
+    cursor_start = imgui.get_cursor_pos_x()
 
     if input_value:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), 1.0)
@@ -2537,7 +2538,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
     # the label won't fit the available space we collapse to a square that shows
     # just the icon. `width` is the box's right edge measured from the cell left,
     # matching the original cursor-relative geometry below.
-    avail = min(draw_state.width - 3, draw_state.content_width + 0)
+    avail = min(draw_state.width - 14, draw_state.content_width + 0)
     full_width = left_margin + text_inset * 2 + label_w
     compact = full_width > avail
     if compact:
@@ -5734,13 +5735,18 @@ def draw_search(input_value=None, draw_state=None, unique=0):
         if imgui.small_button(f"##search_next{unique}"):
             nav = 1
         # Enter / Down = find next, Shift+Enter / Up = find prev, Ctrl+Enter =
-        # "click" the selected result - but only if the search box (not the
+        # "click" the selected result - but only while the FIND BOX (not the
         # underlying editor) holds text focus, so Enter still inserts newlines
-        # when you click into the editor. The find box is single-line, so Up/Down
-        # don't move its cursor and are free for stepping matches. Drained from
-        # the GLFW-callback key queue (not imgui.is_key_pressed) so it isn't
-        # dropped on slow frames.
-        if Melty.focused_ds is search_ds and Melty.text_focused_ds is not search_ds:
+        # when you click into the editor. We gate on the box holding text focus
+        # directly rather than on `focused_ds is search_ds`: clicking back into
+        # the box runs clear_focus, which nulls focused_ds (the searched view
+        # isn't under the mouse to be protected), so keying off focused_ds
+        # silently dropped Enter-nav after a mouse refocus. text_focused_ds is
+        # set straight by the box's own key handler, so it survives that.
+        # The find box is single-line, so Up/Down don't move its cursor and are
+        # free for stepping matches. Drained from the frame-callback key queue
+        # (not imgui.is_key_pressed) so it isn't dropped on slow frames.
+        if _box_ds is not None and Melty.text_focused_ds is _box_ds:
             if any(k == glfw.KEY_DOWN for k, _ in Melty.frame_key_events):
                 nav = 1
             elif any(k == glfw.KEY_UP for k, _ in Melty.frame_key_events):

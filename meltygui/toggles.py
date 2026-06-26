@@ -409,9 +409,9 @@ class Toggles:
             gradient_color = (1.0, 0.6, 0.15)   # RGB of the halo
             outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
             falloff = 200.00          # px the glow radiates out past the match edge
-            opacity = 0.648           # peak opacity, right at the cutout edge
-            falloff_exp = 2.735       # >1 = bright at the word, then drop off fast
-            inner_pad = 2.218         # px the cutout is grown around the match rect
+            opacity = 0.409           # peak opacity, right at the cutout edge
+            falloff_exp = 2.105       # >1 = bright at the edge, then drops off fast
+            inner_pad = 2.218         # px the cutout is grown beyond the match rect
             cutout_radius = 5.0       # corner radius of the rounded cutout
             rings = 50                # radial tessellation rings (higher = smoother)
             corner_segments = 6       # arc subdivisions at each rounded cutout corner
@@ -420,10 +420,10 @@ class Toggles:
 
         @defaults(tint=(0.36, 0.52, 0.93))
         class InactiveElements:
-            gradient_color = (0.42, 0.58, 1.0)  # cooler hue so the active match stands out
+            gradient_color = (0.00, 0.42, 0.83)  # cooler hue so the active match stands out
             outline_color = (0.6, 0.72, 1.0)
             falloff = 34.0
-            opacity = 0.4
+            opacity = 0.295
             falloff_exp = 2.0
             inner_pad = 1.5
             cutout_radius = 4.0
