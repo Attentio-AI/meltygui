@@ -1076,30 +1076,16 @@ def _usage_ref_items(targets):
     return items, tags
 
 
-_USAGE_WASH_CACHE: dict = {}
-
-
 def _usage_wash_color(n_targets):
-    """Packed-ABGR wash for a usage span — a heat ramp on the JUMP-TARGET
-    count (the rows the usage-jump dropdown would show, see
-    _usage_target_count): one target is the faint washed-out steel blue,
-    climbing to a bright deep orange by ~six, so a click that fans out reads
-    hot at a glance while a straight jump-to-definition stays cool. The hue
-    walks the warm side of the wheel (blue → violet → red → orange) rather
-    than lerping straight down through green."""
-    n_users = n_targets
-    col = _USAGE_WASH_CACHE.get(n_users)
-    if col is None:
-        import colorsys
-        t = min(max(n_users, 1) - 1, 5) / 5.0
-        h = (0.57 + 0.5 * t) % 1.0      # 0.57 blue → 1.07 ≡ 0.07 orange
-        s = 0.35 + 0.6 * t              # washed-out → fully saturated
-        v = 0.75 + 0.25 * t             # dim → bright
-        a = int(52 + 38 * t)            # the wash itself firms up a touch
-        r, g, b = colorsys.hsv_to_rgb(h, s, v)
-        col = (a << 24) | (int(b * 255) << 16) | (int(g * 255) << 8) | int(r * 255)
-        _USAGE_WASH_CACHE[n_users] = col
-    return col
+    """Packed-ABGR wash for a usage span. The look — color + opacity vs the
+    jump-target count `n_targets` (see _usage_target_count) — lives in the
+    live-editable Toggles.TextEditor.usage_tint; this just clamps + packs its
+    (r, g, b, a) into the int the draw list wants. Read fresh every call so a
+    tweak to usage_tint shows immediately."""
+    from src.lsd.gl_gui.toggles import Toggles
+    r, g, b, a = Toggles.TextEditor.usage_tint(n_targets)
+    pr, pg, pb, pa = (min(255, max(0, int(c * 255))) for c in (r, g, b, a))
+    return (pa << 24) | (pb << 16) | (pg << 8) | pr
 
 
 def _is_icon_char(c):
@@ -2114,6 +2100,57 @@ def _find_matches(text, term):
     return matches
 
 
+def _word_under_cursor(text, pos):
+    """The identifier-like token the caret sits in (or just past) as
+    (start, end, word) — or None when the caret isn't on a word character.
+
+    'Word' is the alnum/underscore run (the same class double-click selection
+    uses), so it spans a whole identifier and nothing else — no dots, no
+    operators, no surrounding punctuation. Purely positional: no CST or syntax
+    metadata is consulted."""
+    n = len(text)
+    if n == 0:
+        return None
+    # Prefer the char under the caret; fall back to the one just left of it so a
+    # caret resting at a word's right edge still picks that word.
+    i = pos
+    if i >= n or _char_class(text[i]) != 'word':
+        i = pos - 1
+    if i < 0 or i >= n or _char_class(text[i]) != 'word':
+        return None
+    start = i
+    while start > 0 and _char_class(text[start - 1]) == 'word':
+        start -= 1
+    end = i + 1
+    while end < n and _char_class(text[end]) == 'word':
+        end += 1
+    return start, end, text[start:end]
+
+
+def _word_match_ranges(text, word):
+    """Whole-word (identifier-bounded) occurrences of `word` in `text` as
+    (start, end) ranges — a dumb, case-sensitive character match that ignores
+    all syntax/CST metadata. A hit is rejected when an adjacent character is a
+    word char, so `i` never matches inside `if` and `id` never inside `width`."""
+    ranges = []
+    if not word:
+        return ranges
+    wlen = len(word)
+    n = len(text)
+    start = 0
+    while True:
+        idx = text.find(word, start)
+        if idx == -1:
+            break
+        b_ok = idx == 0 or _char_class(text[idx - 1]) != 'word'
+        a = idx + wlen
+        a_ok = a >= n or _char_class(text[a]) != 'word'
+        if b_ok and a_ok:
+            ranges.append((idx, a))
+        start = idx + wlen
+    return ranges
+
+
 def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
     """Scroll the nearest scrollable ancestor (or the view itself) so the
     screen-space band [top_abs, bottom_abs] is visible.
@@ -2254,7 +2291,6 @@ def draw_text(input_value: str, height=None,
               completion_source=None, unique=0):
 
     ds = draw_state   
-
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
@@ -3259,12 +3295,15 @@ def draw_text(input_value: str, height=None,
     # walking the live draw_state tree (DrawState.descendants / search_walk)
     # without re-rendering it - the key to counting off-screen editors. Set
     # every render (capturing the current text) so an editor that has since
-    # changed out still contributes a count. The find UI's own input box
-    # (is_search_box) must never self-count, because it sets the term.
+    # scrolled out still contributes its count. The find UI's own input box
+    # (is_search_box) must never self-count, so it clears any matcher - its text
+    # IS the query, so a matcher inside would always self-match (phantom +1).
     if not is_search_box:
         _match_text = text
         ds._search_matcher = (
             lambda term, sess, _t=_match_text: sess.claim(len(_find_matches(_t, term))))
+    else:
+        ds._search_matcher = None
 
     if should_scroll:
         ms, me = search_matches[current_local]
@@ -3366,6 +3405,33 @@ def draw_text(input_value: str, height=None,
                     ex = origin_x + _colx(line_abs_end, line_start=line_abs_start) + char_w
                 draw_list.add_rect_filled(sx, sy, ex, sy + line_px, imgui.get_color_u32_rgba(*sel_color))
             line_abs_start = line_abs_end + 1
+
+    # Token-occurrence highlight: when the caret rests on an identifier that
+    # appears more than once, wash a subtle background behind every place that
+    # exact token shows up - INCLUDING the one under the caret. A dumb,
+    # identifier-bounded character match (see _word_match_ranges) - no CST /
+    # symbol-usage index involved - so it works in any text, even mid-edit or
+    # unparseable. A unique identifier (its own occurrence and no other) lights
+    # nothing up. Drawn under the usage washes / search glow / glyphs.
+    if (is_focused and not is_search_box
+            and Toggles.TextEditor.highlight_token_matches):
+        _tok = _word_under_cursor(text, ds.text_cursor_pos)
+        if _tok is not None:
+            _t_start, _t_end, _t_word = _tok
+            _ranges = _word_match_ranges(text, _t_word)
+            # Only when the token recurs (its own occurrence plus at least one
+            # other) - so the caret's own occurrence is washed too.
+            if len(_ranges) > 1:
+                _tm_color = imgui.get_color_u32_rgba(*Toggles.TextEditor.token_match_tint)
+                for _ms, _me in _ranges:
+                    _m_line, _ = _index_to_line_col(text, _ms)
+                    sy = origin_y + _m_line * line_px
+                    ey = sy + line_px
+                    if ey < rect_min_y or sy > rect_max_y:
+                        continue
+                    sx = origin_x + _colx(_ms)
+                    ex = origin_x + _colx(_me)
+                    draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _tm_color, 3.0)
 
     # Symbol-usage washes: a slight background behind every occurrence of a
     # symbol that has callers elsewhere - the affordance that a double-click
@@ -3675,7 +3741,6 @@ def draw_text(input_value: str, height=None,
         _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcols=vcols)
 
     draw_list.pop_clip_rect()
-
     # --- Line-number gutter ---
     # Drawn after the text body in its own clip column (left to → gutter_w) so
     # the numbers stay fixed while code scrolls horizontally under them. Numbers

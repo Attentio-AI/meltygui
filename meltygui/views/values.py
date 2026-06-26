@@ -348,7 +348,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     """
     if excluded is None:
         excluded = set()
-
+        
     if included is None:
         included = set()
 
@@ -1230,9 +1230,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             if target is None or getattr(ds, 'z_pos', 0) < getattr(target, 'z_pos', 0):
                 target = ds
         if target is not None and not owns_ctrl_f:
-            if Core.melty.focused_ds is not None and Core.melty.focused_ds is not target:
-                Core.melty.focused_ds.search_active = False
-                Core.melty.cache.invalidate(Core.melty.focused_ds._tile_id, force=True)
+            # Multiple find bars may stay open at once: opening a view's search
+            # no longer closes whichever view's search was already open.
             target.search_active = True
             target._search_was_active = False     # find box re-claims focus
             Core.melty.clear_focus(not_this=target)
@@ -3059,12 +3058,12 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, is_tree=True, indent_size=4, selectable=False, use_cache=False,
+@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, is_tree=True, show_name=False, indent_size=4, selectable=False, use_cache=False,
              show_bg=False, with_header=draw_header, temp=True)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
 
-    imgui.dummy(0, 4)
+    imgui.dummy(0, 0)
     depth = max(0.0, Core.melty.bg_depth)
     depth_scale = 0.067
     name_style = {
@@ -3202,7 +3201,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
     return False, input_value
 
 
-@render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color"), has_popup=True,
+@render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
              indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state):
@@ -4509,6 +4508,7 @@ def draw_mode_tab(input_value, draw_state, current_mode=None, **kwargs):
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
                       search_active=False,
                       enter_key_down=None, tab_state: TabState = None, **kwargs):
+   
     context_menu_offset = input_value.context_menu_offset
 
     # imgui.text(type(input_value._input_value).__name__)
@@ -4531,6 +4531,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
         imgui.dummy(30, 30)
+        
 
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
@@ -5664,8 +5665,13 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     regrab_focus = True
 
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+    # Re-grab gated on this search still being active (focused_ds is the owner):
+    # a deliberate click away clears focused_ds (via clear_focus) so the box
+    # releases focus and stays open-but-unfocused, while a spurious clear during
+    # typing leaves focused_ds intact so the box reclaims focus.
     focus_search = ((not search_ds._search_was_active)
-                    or (regrab_focus and Melty.text_focused_ds is None)
+                    or (regrab_focus and Melty.text_focused_ds is None
+                        and Melty.focused_ds is search_ds)
                     or search_ds._search_focus_pending)
     search_ds._search_focus_pending = False
     search_ds._search_was_active = True
@@ -5675,12 +5681,19 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     imgui.same_line()
 
     width = draw_state.content_width
-    search_change, new_search = draw_text(search_ds.search_text, searchable=False, width=draw_state.content_width - 41,
-                                          shadow=False, name=search_icon + str(unique),
-                                          with_header_end=None, wrap=True, z_offset=-1, single_line=True,
-                                          with_footer=None, tint=search_ds.tint,
-                                          show_name=False, show_header=False,
-                                          request_focus=focus_search)
+    _box = draw_text(search_ds.search_text, searchable=False, is_search_box=True,
+                     width=draw_state.content_width - 41,
+                     shadow=False, name=search_icon + str(unique),
+                     with_header_end=None, wrap=True, z_offset=-1, single_line=True,
+                     with_footer=None, tint=search_ds.tint,
+                     show_name=False, show_header=False,
+                     request_focus=focus_search, return_extras=True)
+    search_change, new_search = _box[0], _box[1]
+    _box_ds = _box[2] if len(_box) > 2 else None
+    # While the find box holds text focus, mark this search as the active one so
+    # Enter/arrow nav goes here - including after clicking back into the box.
+    if _box_ds is not None and Melty.text_focused_ds is _box_ds:
+        Melty.focused_ds = search_ds
     if search_change:
         search_ds.search_text = new_search
         # Re-render the owner's whole subtree so every child view recomputes its

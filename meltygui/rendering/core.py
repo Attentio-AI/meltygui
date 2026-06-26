@@ -2135,10 +2135,8 @@ def render_func(*args, **o_kwargs):
                     kwargs["search_text"] = Melty.search_stack[-1]
 
                 if search_requested:
-                    if Melty.focused_ds is not None:
-                        Melty.focused_ds.search_active = False
-                        Melty.cache.invalidate(Melty.focused_ds._tile_id, force=True)
-                        request_render()
+                    # Multiple find bars may stay open at once: opening a view's
+                    # search no longer closes whichever view's search was open.
                     draw_state.search_active = True
                     # Reset so render_search re-requests focus, and release
                     # the view's own text focus, so the search box takes
@@ -2152,6 +2150,7 @@ def render_func(*args, **o_kwargs):
                     # draw_state._search_focus_pending = True
                     Melty.clear_focus(not_this=draw_state)
                     Melty.focused_ds = draw_state
+                    request_render()
 
                 if draw_state.search_active:
                     # Stay live while searching so the find UI (inline or the

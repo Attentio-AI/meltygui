@@ -83,8 +83,15 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     # "text_focused_ds is None" alone misses the just-opened case). Consume it so
     # later frames fall back to the gentle re-grab and don't fight a deliberate
     # click into the editor.
+    # The re-grab (reclaim focus when nothing holds text focus) is gated on this
+    # search still being the active one (focused_ds is the owner). A deliberate
+    # click away runs clear_focus, which clears focused_ds, so the box releases
+    # focus and stays open-but-unfocused. A spurious clear during typing leaves
+    # focused_ds intact, so the box reclaims focus and no keystroke is lost.
+    # First-open and the Ctrl+F one-shot grab regardless.
     focus_search = ((not search_ds._search_was_active)
-                    or (regrab_focus and Melty.text_focused_ds is None)
+                    or (regrab_focus and Melty.text_focused_ds is None
+                        and Melty.focused_ds is search_ds)
                     or search_ds._search_focus_pending)
     search_ds._search_focus_pending = False
     search_ds._search_was_active = True
@@ -95,14 +102,21 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
 
     if width is None:
         width = draw_state.content_width
-    search_change, new_search = draw_text(search_ds.search_text, searchable=False,
-                                          is_search_box=True,
-                                          shadow=False, max_height=40,
-                                          name=search_icon + str(unique), with_header=None,
-                                          with_header_end=None, max_width=width - 50,
-                                          with_footer=None, header_same_line=True, tint=search_ds.tint,
-                                          show_name=False, show_header=False, single_line=True,
-                                          request_focus=focus_search)
+    _box = draw_text(search_ds.search_text, searchable=False,
+                     is_search_box=True,
+                     shadow=False, max_height=40,
+                     name=search_icon + str(unique), with_header=None,
+                     with_header_end=None, max_width=width - 50,
+                     with_footer=None, header_same_line=True, tint=search_ds.tint,
+                     show_name=False, show_header=False, single_line=True,
+                     request_focus=focus_search, return_extras=True)
+    search_change, new_search = _box[0], _box[1]
+    _box_ds = _box[2] if len(_box) > 2 else None
+    # While the find box holds text focus, mark this search as the active one so
+    # Enter/arrow nav routes here — including after clicking back into the box,
+    # where the click restores text focus but not focused_ds.
+    if _box_ds is not None and Melty.text_focused_ds is _box_ds:
+        Melty.focused_ds = search_ds
     if search_change:
         search_ds.search_text = new_search
         # Re-render the owner's whole subtree so every child view recomputes its

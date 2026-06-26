@@ -316,6 +316,73 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
+    @defaults(tint=(0.18, 0.62, 0.55))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (root_new_root.ini)
+        # as a backout alongside the native-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main save cache / hot-reload cache anchor, so leave
+        # this on until the .ini is fully retired.
+        ini_save = False
+
+    @defaults(tint=(0.42, 0.58, 0.83))
+    class WindowSettings:
+        # Sticky resize: re-anchor the window top to the drag-start position each
+        # frame so only the bottom-on-display clamp displaces it.
+        sticky_drag = True
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum active terminal size, in pixels - independent of the window size.
+        min_height = 480.0
+        min_width = 98.634
+
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 600
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # ms
+        bg_offset = 30
+        debug_scroll = False
+
+    @defaults(tint=(0.922, 0.476, 0.031))
+    class TextEditor:
+        enable_spell_check = False
+        double_click_opens_dropdown = True
+        text_focus_stack_trace = False
+
+        # When the caret rests on an identifier, every OTHER place that same
+        # token appears in the visible buffer gets this color wash. A naive,
+        # identifier-bounded character match - no CST / symbol-usage metadata is
+        # needed, so it works in any text, mid-edit or unparseable. Flip the
+        # flag to disable; the (r, g, b, a) tint is read live.
+        highlight_token_matches = True
+        token_match_tint = (0.5, 0.5, 0.5, 0.22)
+
+        @staticmethod
+        def usage_tint(users):
+            """Background-wash color for a symbol-usage span in the editor — a
+            heat ramp on `users`, the number of jump targets that occurrence
+            fans out to (the rows the usage-jump dropdown would show). One
+            target is a faint washed-out steel blue; it climbs to a bright deep
+            orange by ~six, so a click that fans out reads hot at a glance while
+            a straight jump-to-definition stays cool. The hue walks the warm
+            side of the wheel (blue → violet → red → orange) rather than lerping
+            straight down through green.
+
+            Returns (r, g, b, a) floats in 0..1 (a = opacity). Edit freely to
+            restyle the wash — it is read live, so changes show immediately."""
+            import colorsys
+            t = min(max(users, 1) - 1, 5) / 5.0
+            v = max(0.11, 0.88 * t + 0.2)           
+            tint = (0.317, 0.251, 0.0)
+            tint = (*tint, v)
+            return tint
+
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.render_host (stops per-frame
@@ -326,31 +393,6 @@ class Toggles:
         # re-appeared within this many frames (safety net for closes abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
-
-    @defaults(tint=(0.42, 0.58, 0.83))
-    class WindowSettings:
-        # Sticky resize: re-anchor the window top to the drag-start position each
-        # frame so only the bottom-on-screen clamp displaces it.
-        sticky_drag = True
-
-    @defaults(tint=(0.18, 0.62, 0.55))
-    class LoadSave:
-        # When True, save() also writes the legacy custom.ini (root_new_style blob)
-        # as a backout alongside the native-pickle custom.pkl. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main-file identity / hot-reload cache key, so kee
-        # this True until the .ini is fully retired.
-        ini_save = False
-
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
-
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum logical terminal size, in pixels, independent of actual window size.
-        min_height = 480.0
-        min_width = 98.634
 
     @defaults(tint=(0.965, 0.6, 0.149))
     class SearchSettings:
@@ -390,12 +432,6 @@ class Toggles:
             outline_alpha = 0.0
             outline_thickness = 1.0
 
-    @defaults(tint=(0.922, 0.476, 0.031))
-    class TextEditor:
-        enable_spell_check = False
-        double_click_opens_dropdown = True
-        text_focus_stack_trace = False
-
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
         keep_for_frames = 26
@@ -404,14 +440,6 @@ class Toggles:
         draw_rect = False
         invalidate_stack_trace = False
         attrib_change_stack_trace = False
-
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 600
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # seconds
-        bg_offset = 30
-        debug_scroll = False
 
     # Main App Toggles
     @defaults(tint=(0.378, 0.286, 0.201))

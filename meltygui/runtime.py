@@ -998,9 +998,13 @@ class Melty:
             if Toggles.TextEditor.text_focus_stack_trace:
                 print_stack_trace(size=5)
 
-            ds.search_active = False
-            # Keep search_text so reopening the find bar restores the last term.
-            ds._search_was_active = False
+            # Search stays open on focus loss - only Esc or the close (X) button
+            # closes a find bar, and multiple bars may be open at once. clear_focus
+            # only clears TEXT focus here (below); it no longer touches search_active
+            # / _search_was_active, which used to proactively close the find bar
+            # when focus moved away. Leaving _search_was_active alone also keeps
+            # the box's existing re-grab gated on `text_focused_ds is None`, so this
+            # doesn't change text box behavior.
             ds.invalidate_up()
 
             if cls.focused_ds is ds:
