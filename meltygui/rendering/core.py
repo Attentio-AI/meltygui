@@ -1554,48 +1554,9 @@ def render_func(*args, **o_kwargs):
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
 
-            # Non-blocking + high priority: this handler sees EVERY left_mouse_down
-            # regardless of which view consumes it (the input handler walks the
-            # non_blocking chain from the top before stopping at the first blocking
-            # subscriber - see InputHandler._resolve_subscribers). That's exactly
-            # what we need to raise a window on click without taking the press away
-            # from its children: an interactive child still wins the press for its
-            # own purposes, while we additionally raise the window here.
-            raise_press = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
-            if raise_press:
-                # Resolve against the press position the event captured, not the
-                # live cursor - a press over a frame late (start of a move)
-                # would otherwise read a cursor that has already moved off the
-                # window and clear focus / raise the wrong one. The event's x/y is
-                # the down point.
-                ds_under_mouse = Melty.bvh_query(raise_press.x, raise_press.y)
-                Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
-                # Bring the clicked window to the front. ds_under_mouse is z-sorted
-                # (frontmost first); move_window_to_front walks up to the registered
-                # parents, so the deepest hit raises the innermost window (restacked
-                # among its siblings). Idempotent across every hovered window's copy.
-                # The front pick is reliable even at a just-raised window's own
-                # resize handle now that bvh_query sorts by the live abs_layer (see
-                # bvh_query) - don't be tempted to add a blocking left_mouse_down sub
-                # to "fix" something here: buttons detect their press via a
-                # left_mouse_down event param, and a top-level competitor in that
-                # bucket steals their press (breaks every button).
-                if ds_under_mouse:
-                    Melty.move_window_to_front(ds_under_mouse[0])
 
-            # Right press raises the window too - e.g. opening a context menu or
-            # starting a right-drag resize brings its window forward. This one
-            # subscribes BLOCKING and hits draw_state itself: the input handler
-            # resolves the press to the single topmost hover-eligible window (this
-            # one whenever its handle/body is under the cursor), so it needs no
-            # point-query at all and can't be confused by a window's own edge.
-            # Blocking is safe here only because NOTHING else subscribes to
-            # right_mouse_down (the context menu is right_mouse_clicked, resize/voxel
-            # are right_mouse_drag - different keys), so it starves no child. The
-            # left handler can't do this (its buttons a left_mouse_down, so a
-            # blocking sub would steal their press) and uses the bvh path instead.
-            # Deliberately does NOT clear focus - a right-click context menu can
-            # depend on focus.
+
+
             raise_press_right = draw_state.on_action("right_mouse_down", "window_raise")
             if raise_press_right:
                 Melty.move_window_to_front(draw_state)
@@ -1604,13 +1565,21 @@ def render_func(*args, **o_kwargs):
             # dict/list collection offers its window as a drag handle. The
             # gesture itself is owned by DragDrop.frame_update (Melty.end_frame).
             _drag_drop.DragDrop.register_item(draw_state)
-
-
             if draw_state.window_pos is not None and closable:
                 _explicit_window_pos = kwargs.get("window_pos", None) is not None
                 if not _explicit_window_pos:
                     on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
-                    on_drag = draw_state.on_action("left_mouse_drag", "window_move", priority_delta=-2)
+                    on_drag = draw_state.on_action("left_mouse_drag", "window_move")
+                    left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
+
+                    if left_mouse_down:
+                        # draw_state is the window that actually won the click
+                        # (left_mouse_down is its own on_action result). Pass it
+                        # directly rather than reading melty_window_stack[-1] - for
+                        # a child window move_window_to_front walks up to the
+                        # true root, for a root window it's a no-op resolve.
+                        Melty.move_window_to_front(draw_state)
+                        print("mve to front")
 
                     # Bring-to-front on a left press is owned by the non_blocking
                     # raise_press handler above (so a press consumed by an
@@ -2267,7 +2236,19 @@ def render_func(*args, **o_kwargs):
                     # render-time claims, and off-screen rows can't join.
                     # Only on a new-search frame (term change / nav); otherwise
                     # the marks from the last such frame stand.
-                    if session.scroll_to:
+                    # Recompute the count + current-match marks on a full-search
+                    # frame (term change / nav), AND whenever the term currently
+                    # has zero results. The zero case self-heals a fresh load from
+                    # disk: from_dict rebuilds the searched subtree as brand-new
+                    # draw_states with no matchers yet, under the SAME search
+                    # term, so the term-change walk on the load frame counts 0;
+                    # re-counting when the total sits at 0 recovers it as soon as
+                    # the rebuilt views have rendered their matchers - no new state,
+                    # so no scroll yank (the scroll/invalidate is gated to a
+                    # full-search frame below).
+                    _recount = (session.scroll_to
+                                or (term_str and draw_state.text_search_count == 0))
+                    if _recount:
                         _q = str(session)
                         _tally = SearchTerm(_q)
                         search_walk(draw_state, _q, _tally)
@@ -2282,8 +2263,10 @@ def render_func(*args, **o_kwargs):
                         # child) to "click" the selected result.
                         Melty.search_current_node = _current_node
                         # Force the current match's view (and ancestors) to
-                        # re-render so an off-screen match scrolls into view.
-                        if (_current_node is not None and _current_node is not draw_state
+                        # re-render so an off-screen row scrolls into view - only
+                        # on a real full-search frame, never on a passive recount.
+                        if (session.scroll_to
+                                and _current_node is not None and _current_node is not draw_state
                                 and _current_node._tile_id is not None):
                             Melty.cache.invalidate_up(_current_node._tile_id,
                                                       force=True, max_depth=12)

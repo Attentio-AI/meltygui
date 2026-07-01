@@ -335,20 +335,6 @@ class Toggles:
     class InputHandlerToggles:
         show_debug = False
 
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum active terminal size, in pixels - independent of the window size.
-        min_height = 480.0
-        min_width = 98.634
-
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 600
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # ms
-        bg_offset = 30
-        debug_scroll = False
-
     @defaults(tint=(0.922, 0.476, 0.031))
     class TextEditor:
         enable_spell_check = False
@@ -361,7 +347,7 @@ class Toggles:
         # needed, so it works in any text, mid-edit or unparseable. Flip the
         # flag to disable; the (r, g, b, a) tint is read live.
         highlight_token_matches = True
-        token_match_tint = (0.5, 0.5, 0.5, 0.22)
+        token_match_tint = (0.277, 0.5, 0.5, 0.22)
 
         @staticmethod
         def usage_tint(users):
@@ -383,16 +369,19 @@ class Toggles:
             tint = (*tint, v)
             return tint
 
-    @defaults(tint=(0.27, 0.7, 0.52))
-    class HostLifecycle:
-        # Deregister a RenderHost from Melty.render_host (stops per-frame
-        # draw/parse) once none of its consumer windows are active. Host's parse
-        # stay cached; reopening re-registers (notify_on_change → register).
-        deregister_idle = True
-        # A host is gone when its window is abs_closed, or it hasn't
-        # re-appeared within this many frames (safety net for closes abs_closed
-        # misses). Also the birth grace before a new host can be swept.
-        idle_frames = 120
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum logical terminal size, in pixels - independent of the window size.
+        min_height = 480.0
+        min_width = 98.634
+
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # ms
+        bg_offset = 30
+        debug_scroll = False
 
     @defaults(tint=(0.965, 0.6, 0.149))
     class SearchSettings:
@@ -406,15 +395,15 @@ class Toggles:
 
         @defaults(tint=(0.965, 0.6, 0.149))
         class ActiveElement:
-            gradient_color = (1.0, 0.6, 0.15)   # RGB of the halo
+            gradient_color = (1.0, 0.80, 0.06)   # RGB of the halo
             outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
-            falloff = 200.00          # px the glow radiates out past the match edge
-            opacity = 0.409           # peak opacity, right at the cutout edge
+            falloff = 97.856          # px the glow radiates out past the match edge
+            opacity = 0.392           # max opacity, right at the cutout edge
             falloff_exp = 2.105       # >1 = bright at the edge, then drops off fast
-            inner_pad = 2.218         # px the cutout is grown beyond the match rect
+            inner_pad = 2.668         # px the cutout is grown beyond the match rect
             cutout_radius = 5.0       # corner radius of the rounded cutout
-            rings = 50                # radial tessellation rings (higher = smoother)
-            corner_segments = 6       # arc subdivisions at each rounded cutout corner
+            rings = 86                # radial tessellation steps (higher = smoother)
+            corner_segments = 15       # arc subdivisions at each rounded cutout corner
             outline_alpha = 0.0       # 0 = rely on the glow's bright inner ring alone
             outline_thickness = 1.0
 
@@ -426,11 +415,22 @@ class Toggles:
             opacity = 0.295
             falloff_exp = 2.0
             inner_pad = 1.5
-            cutout_radius = 4.0
+            cutout_radius = 4.00
             rings = 16
             corner_segments = 5
             outline_alpha = 0.0
             outline_thickness = 1.0
+
+    @defaults(tint=(0.27, 0.7, 0.52))
+    class HostLifecycle:
+        # Deregister a RenderHost from Melty.rendering (stops per-frame
+        # draw/parse) once none of its consumer windows are active. Host + parse
+        # stay cached; reopening re-registers (close_on_change → register).
+        deregister_idle = True
+        # A consumer is gone when its window is abs_closed, or it hasn't
+        # re-registered within this many frames (safety net for any abs_closed
+        # misses). Also the birth grace before a new host can be swept.
+        idle_frames = 120
 
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:

@@ -227,13 +227,25 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
     elif search_ds.search_text:
         imgui.align_text_to_frame_padding()
         imgui.text_colored("No results", 0.74, 0.5, 0.5, 1.0)
+        # Enter with the find box focused force-recomputes the result set. "No
+        # results" can be stale — the searched views may have been rebuilt since
+        # the count was last taken (e.g. a fresh load from disk) — so re-run the
+        # cross-view walk on demand rather than leaving it stuck at zero. Flagging
+        # _search_nav_pending makes the owner's pre-body walk re-count next frame
+        # (same key source + box-focus gate as the nav block above).
+        if _box_ds is not None and Melty.text_focused_ds is _box_ds:
+            if any(k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+                   for k, _ in Melty.frame_key_events):
+                search_ds._search_nav_pending = True
+                Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+                request_render()
     else:
         imgui.align_text_to_frame_padding()
         imgui.text_colored("", 0.74, 0.5, 0.5, 1.0)
 
 
 @window
-def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=0, suffix="",
+def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",
                 collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False, name_color=None,
                 on_search=False, trigger_collapse=False, trigger_expand=False, header_same_line=False,
@@ -332,8 +344,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line()
     else:
         imgui.same_line(spacing=0)
-        
-        
+
+
     # ── Type / unique labels ───────────────────────────────────
     if show_type:
         imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_tint)

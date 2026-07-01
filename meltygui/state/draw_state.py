@@ -770,31 +770,6 @@ class DrawState(DictConversion):
         except OSError:
             pass
 
-    @staticmethod
-    def _debug_log_scroll(ds, old, new, reason):
-        """TEMP debug: trace every write to a view's scroll_offset, and shout
-        loudly when the vertical scroll is CLEARED (y: non-zero -> 0). Remove
-        once the scroll-reset-on-load bug is pinned down."""
-        try:
-            old_y = old[1] if old else 0
-            new_y = new[1] if new else 0
-            if old == new:
-                return
-            cleared = bool(old_y) and not new_y
-            tag = "SCROLL-CLEAR" if cleared else "scroll-set"
-            line = (f"[{tag}] {getattr(ds, 'name', None)!r} id={id(ds)} "
-                    f"{old}->{new} via '{reason}' "
-                    f"frame={Core.melty.frame_count} "
-                    f"scroll_visible={getattr(ds, 'scroll_visible', None)} "
-                    f"invalid_content_height={getattr(ds, 'invalid_content_height', None)} "
-                    f"abs_content_height={ds.abs_content_height} "
-                    f"abs_clipped_height={ds.abs_clipped_height} height={ds.height}")
-            print(line)
-            if cleared:
-                import traceback
-                traceback.print_stack(limit=6)
-        except Exception as e:
-            print(f"[scroll-log] failed: {e}")
 
     def pos_changed(self):
         """Reconcile this view's BVH box with its current geometry/visibility.
@@ -1113,7 +1088,7 @@ class DrawState(DictConversion):
                         ny = mx
                     if ny != so[1]:
                         node.scroll_offset = (so[0], ny)
-                        DrawState._debug_log_scroll(node, so, node.scroll_offset, "ancestor auto-scroll")
+
                 sx += so[0]
                 sy += ny
             nxt = node._parent

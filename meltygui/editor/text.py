@@ -2183,7 +2183,6 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
                 if abs(delta) > 0.5:
                     __old_scroll = node.scroll_offset
                     node.scroll_offset = (sx, max(0, min(sy + delta, node._max_scroll_y)))
-                    node._debug_log_scroll(node, __old_scroll, node.scroll_offset, "scroll_into_view center")
                     request_render()
                 return
             # No clamping here - _ancestor_scroll enforces the scroll bound at
@@ -2194,7 +2193,6 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
                 __old_scroll = node.scroll_offset
                 node.scroll_offset = (current_x,
                                       max(0, min(new_offset, node._max_scroll_y)))
-                node._debug_log_scroll(node, __old_scroll, node.scroll_offset, "scroll_into_view top")
 
                 request_render()
             elif bottom_abs > view_bottom - margin:
@@ -2203,7 +2201,6 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
                 __old_scroll = node.scroll_offset
                 node.scroll_offset = (current_x,
                                       max(0, min(new_offset, node._max_scroll_y)))
-                node._debug_log_scroll(node, __old_scroll, node.scroll_offset, "scroll_into_view bottom")
 
                 request_render()
             return

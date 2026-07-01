@@ -102,6 +102,16 @@ def search_walk(ds, term, session, max_depth=12):
         matcher = getattr(node, '_search_matcher', None)
         if matcher is None:
             continue
+        # Skip matchers sitting in a closed/collapsed subtree - e.g. a context
+        # menu or dropdown that was opened over a node and then dismissed. Its
+        # matcher persists from its last render, so without this its stale
+        # matches inflate the find count (and steal the current-match mark) for
+        # nodes nothing is showing. abs_closed is critical here: scrolled-off
+        # rows are NOT abs_closed (their window is open + section expanded), so
+        # the off-screen-rows behaviour this walk exists for is preserved.
+        if node.abs_closed:
+            node._search_active_local = None
+            continue
         base = session.offset
         matcher(term, session)
         count = session.offset - base
@@ -921,18 +931,14 @@ class Melty:
         for ds in stale:
             cls.bvh_evict(ds)
 
-        # Sort front-to-back. PRIMARY key is abs_layer, not the stored z_pos:
-        # abs_layer is a property derived live from the parent chain and's
-        # .layer, and move-to-front (apply_move_to_front) updates .layer
-        # immediately - whereas z_pos is only recomputed when a view RENDERS, so
-        # a just-raised window whose subtree is served from the blit cache (no
-        # re-render) keeps a z_pos from when it was lower. Sorting by z_pos alone
-        # would leaves that stale subtree under the window now behind it, and
-        # click-to-raise picks the wrong window at the freshly-raised window's
-        # edge (the "resizing the front window raises the one behind it" bug).
-        # abs_layer captures the raise the instant .layer is set; z_pos stays the
-        # within-window (depth) tiebreaker, so steady-state order is unchanged.
-        hits.sort(key=lambda ds: (ds.abs_layer or 0, ds.z_pos or 0), reverse=True)
+        # Sort front-to-back by the stored z_pos. (Do NOT switch the sort key to
+        # the live abs_layer. abs_layer adds a per-nested-window layer_offset that
+        # z_pos doesn't, so it reorders raised-window hits and breaks the imgui
+        # press-handoff priming below - it primes hits[0], which must stay the
+        # topmost view by the same z_pos order the renderer used. The just-raised-
+        # window staleness is fixed at the source by apply_move_to_front, which
+        # refreshes the moved view's z_pos so this sort stays correct.)
+        hits.sort(key=lambda ds: ds.z_pos or 0, reverse=True)
 
         cls._bvh_query_cache[key] = hits
         return hits
@@ -3035,6 +3041,8 @@ class Melty:
             if draw_state is None:
                 return
 
+
+
             # Child windows aren't registered with the window manager (only
             # top-level windows, where parent_window is None, get registered).
             # If this draw_state isn't itself registered, walk up the
@@ -3079,6 +3087,15 @@ class Melty:
 
     @classmethod
     def apply_move_to_front(cls):
+        # # No bring-to-front when the press lands on an imgui widget - the
+        # # raise reshuffles z-order/caches mid-gesture and disrupts the
+        # # widget. is_any_item_hovered() also reports the PREV frame's
+        # # HoveredId, so it stays true on the press frame even when the
+        # # widget's tile blit-skipped this frame (on_drag suppresses the
+        # # self-invalidate on press frames, so the widget isn't submitted).
+        # if imgui.is_any_item_hovered():
+        #     return
+
         if cls.pending_delete_window is not None:
             window_key, draw_state = cls.pending_delete_window
             if window_key in Melty.registered_windows:
@@ -3125,9 +3142,39 @@ class Melty:
 
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             if window_z_pos != cls.pending_move_to_front[1].layer:
+                old_layer = cls.pending_move_to_front[1].layer
                 cls.pending_move_to_front[1].layer = window_z_pos
                 draw_state = cls.pending_move_to_front[1]
                 draw_state.active_layer = window_z_pos
+
+                # Refresh the z_pos sort key for the raised window's WHOLE subtree
+                # now, not when it next renders. bvh_query sorts hits by the stored
+                # z_pos, but z_pos is only recomputed at render - a blit-cached
+                # subtree keeps a behind-era z_pos, so a press over the just-raised
+                # window sorts under the window now behind it and click-to-raise
+                # picks the wrong one (the "resizing the front window raises the one
+                # behind it" bug). Shift every descendant by the SAME layer delta
+                # the render loop would (z_pos = active_layer * max_depth + depth),
+                # so the whole subtree lifts above the windows it now sits in front
+                # of while its INTERNAL order is preserved - that internal order is
+                # what the imgui press-handoff priming (begin_frame) relies on to
+                # pick the widget under the cursor, so don't disrupt it. Bounded
+                # walk up parent_window avoids a self-referential cycle.
+                delta_z = (window_z_pos - old_layer) * Melty.max_depth if old_layer is not None else 0
+                if delta_z:
+                    for _ds in list(cls._bvh_id_to_ds.values()):
+                        node, _n = _ds, 0
+                        while node is not None and _n < 64:
+                            if node is draw_state:
+                                if _ds.z_pos is not None:
+                                    _ds.z_pos += delta_z
+                                break
+                            nxt = node.parent_window
+                            if nxt is node:
+                                break
+                            node = nxt
+                            _n += 1
+
                 if window_key in Melty.registered_windows:
                     # Remove and re-insert to move to end (top)
                     window = Melty.registered_windows.pop(window_key)

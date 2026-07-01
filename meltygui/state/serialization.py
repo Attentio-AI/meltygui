@@ -335,6 +335,15 @@ def _save_state(obj, excluded=()):
             if dv is not _MISSING and _equals_default(v, dv):
                 continue
         out[k] = v
+    # dlt_count prune countdown (to_dict's mechanism, dict_conversion:265-269).
+    # ALWAYS serialize it decremented - bypassing the delta-omission above - so an
+    # unused object counts down across saves to <= 0, at which point persistent_id
+    # drops it. Without this, draw_state_registry grows unbounded (dlt_count would
+    # remain at its default and never count down). Used objects are subject to
+    # save_draw_state_for (=1) each render, so they survive; unused ones don't.
+    dc = getattr(obj, "dlt_count", None)
+    if type(dc) is int:
+        out["dlt_count"] = dc - 1
     return out
 
 
@@ -648,6 +657,14 @@ class _PicklerOverrides:
         if callable(obj):
             return None
         if isinstance(obj, DictConversion):
+            # dlt_count prune (to_dict parity): any object whose delete-countdown has
+            # reached <= 0 (an unused draw_state - used states are reset to
+            # save_draw_state_for each frame) is DROPPED, so draw_state_registry
+            # doesn't grow unbounded. Its registry slot becomes None on load and the
+            # studio's draw_state_registry cleanup removes it.
+            dc = getattr(obj, "dlt_count", None)
+            if type(dc) is int and dc <= 0:
+                return "DROP"
             return None                         # -> generic reduce in reducer_override
         # numpy scalars (np.bool_/np.int_ that AREN'T isinstance of a Python
         # primitive) -> kept so reducer_override converts them to a Python primitive.

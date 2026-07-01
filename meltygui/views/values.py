@@ -1523,7 +1523,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
         # zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
         # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
-
+        
     if jet:
         texture_id = Core.melty.filter.brightness_contrast(
             input_value,
@@ -5804,6 +5804,18 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     elif search_ds.search_text:
         imgui.align_text_to_frame_padding()
         imgui.text_colored("No results", 0.74, 0.5, 0.5, 1.0)
+        # Enter with the find box focused force-recomputes the result set. "No
+        # results" can be stale - the searched views may have been rebuilt since
+        # the count was last done (e.g. a fresh load from disk) - so re-run the
+        # sub-view walk on demand rather than leaving it stuck at zero. Flagging
+        # _search_nav_pending makes the owner's pre-body walk re-count next frame
+        # (same key source + box-focus gate as the nav block above).
+        if _box_ds is not None and Melty.text_focused_ds is _box_ds:
+            if any(k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+                   for k, _ in Melty.frame_key_events):
+                search_ds._search_nav_pending = True
+                Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
+                request_render()
     else:
         imgui.align_text_to_frame_padding()
         imgui.text_colored("", 0.74, 0.5, 0.5, 1.0)
