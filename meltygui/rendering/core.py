@@ -23,7 +23,7 @@ from src.lsd.gl_gui.mode_defaults import ModeDefaults
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict, TOP_ANCHORS
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict, TOP_ANCHORS, ExpandMode
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
@@ -589,6 +589,13 @@ def render_func(*args, **o_kwargs):
         if header_defaults is not None:
             kwargs = header_defaults | kwargs
 
+        # ExpandMode.MANUAL: the view func always runs (gate in draw_inner_main)
+        # and owns its collapsed rendering, so every wrapper shortcut keyed to
+        # "collapsed -> no content" must back off for it: sizes keep flowing,
+        # bg isn't forced, collapse/expand rects aren't juggled, convert_in
+        # keeps running. AUTO (default) keeps the legacy skip-the-func path.
+        manual_expand = kwargs.get("expanded_mode", None) is ExpandMode.MANUAL
+
         if _has_imgui and not Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
             draw_list.channels_split(Melty.max_depth)
@@ -945,7 +952,7 @@ def render_func(*args, **o_kwargs):
                             draw_state.left_offset, draw_state.top_offset = (
                                 left - draw_state._parent.abs_left,
                                 imgui.get_cursor_screen_pos()[1] - draw_state._parent.abs_top)
-                            if not draw_state.expanded:
+                            if not draw_state.expanded and not manual_expand:
                                 return_value = (False, None)
                                 if return_extras:
                                     if len(return_value) == 3:
@@ -1042,7 +1049,7 @@ def render_func(*args, **o_kwargs):
             if not draw_state.expanded:
                 kwargs['is_tree'] = False
 
-        if not draw_state.expanded:
+        if not draw_state.expanded and not manual_expand:
             kwargs.pop("width", None)
             kwargs.pop("height", None)
 
@@ -1050,7 +1057,7 @@ def render_func(*args, **o_kwargs):
         if has_collection:
             Melty.collection_stack.append(collection)
 
-        if not draw_state.expanded:
+        if not draw_state.expanded and not manual_expand:
             passed_width = None
             passed_height = None
 
@@ -1062,35 +1069,36 @@ def render_func(*args, **o_kwargs):
 
         # Restore expanded =================
         if draw_state._last_expanded is not None and draw_state._last_expanded != draw_state.expanded and draw_state.frame_count > 2:
-            if draw_state._last_expanded:
-                draw_state.expanded_rect = (
-                    draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
-            else:
-                draw_state._collapsed_rect = (
-                    draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.header_height)
-
-            if draw_state.expanded:
-                # Restore the rect saved at collapse time - but only a real
-                # one. A view that STARTED expanded has only the zeroed
-                # default here; restoring it wiped width/height, so clear
-                # them to the auto-resize writers to measure this frame.
-                _exp_rect = draw_state.expanded_rect
-                if _exp_rect and _exp_rect[2] > 5 and _exp_rect[3] > 5:
-                    draw_state.left, draw_state.right, draw_state.width, draw_state.height = _exp_rect
-                    draw_state._source["height"] = "expanded_rect"
-                draw_state.expanded_rect = (0, 0, 0, 0)
-            else:
-                _col_rect = draw_state._collapsed_rect
-                if _col_rect and _col_rect[2] > 5 and _col_rect[3] > 5:
-                    draw_state.left, draw_state.right, draw_state.width, draw_state.height = _col_rect
+            if not manual_expand:
+                if draw_state._last_expanded:
+                    draw_state.expanded_rect = (
+                        draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.height)
                 else:
-                    # First-ever collapse: nothing saved yet. Keep the full
-                    # width (a header-only view spans the same width) and set
-                    # height to the header band. Restoring the zeroed default
-                    # made the header degenerate - bboxes_sync dropped the box and
-                    # the view vanished from hover & drag-and-drop.
-                    draw_state.height = max(draw_state.header_height or 0, 18)
-                draw_state._source["height"] = "collapsed_rect"
+                    draw_state._collapsed_rect = (
+                        draw_state.abs_left, draw_state.abs_top, draw_state.width, draw_state.header_height)
+
+                if draw_state.expanded:
+                    # Restore the rect saved at collapse time - but only a real
+                    # one. A view that STARTED collapsed has only the zeroed
+                    # default here; restoring it wiped width/height, so leave
+                    # them for the auto-resize writers to measure this frame.
+                    _exp_rect = draw_state.expanded_rect
+                    if _exp_rect and _exp_rect[2] > 5 and _exp_rect[3] > 5:
+                        draw_state.left, draw_state.right, draw_state.width, draw_state.height = _exp_rect
+                        draw_state._source["height"] = "expanded_rect"
+                    draw_state.expanded_rect = (0, 0, 0, 0)
+                else:
+                    _col_rect = draw_state._collapsed_rect
+                    if _col_rect and _col_rect[2] > 5 and _col_rect[3] > 5:
+                        draw_state.left, draw_state.right, draw_state.width, draw_state.height = _col_rect
+                    else:
+                        # First-ever collapse: nothing saved yet. Keep the current
+                        # width (a header-only row spans the same width) and drop
+                        # height to the header band. Restoring the zeroed default
+                        # made the rect degenerate - bvh_sync skipped the box and
+                        # the view vanished from hover and drag-and-drop.
+                        draw_state.height = max(draw_state.header_height or 0, 18)
+                    draw_state._source["height"] = "collapsed_rect"
 
             if draw_state._collection_draw_state is not None:
                 draw_state._collection_draw_state.invalid_content_height = True
@@ -2464,7 +2472,8 @@ def render_func(*args, **o_kwargs):
                             draw_state._address = _fresh_ref
 
                     if (draw_state._raw_input_value == UNSET_VALUE or
-                            (draw_state._raw_input_value is None) or not draw_state.expanded):
+                            (draw_state._raw_input_value is None) or
+                            (not draw_state.expanded and not manual_expand)):
                         internal_value, thead_launch_frame = draw_state._input_cache["internal_state"]
                     else:
                         start_frame = Melty.frame_count
@@ -2630,7 +2639,8 @@ def render_func(*args, **o_kwargs):
                 highlight = False
 
                 show_bg = kwargs.get("show_bg", False) or (
-                        highlight and draw_state.height < 60) or not draw_state.expanded
+                        highlight and draw_state.height < 60) or (
+                        not draw_state.expanded and not manual_expand)
 
                 # Input value is indexable
                 if isinstance(input_value, dict) and "decorators" in input_value:
@@ -3977,9 +3987,11 @@ def render_func(*args, **o_kwargs):
                                          start_cursor[1] - scroll_offset[1]))
 
 
-        # If we are using the new callback header, gate rendering behind expanded
+        # If we are using the new callback header, gate rendering behind expanded.
+        # ExpandMode.MANUAL opts out of the gate: the func always runs and reads
+        # draw_state.expanded to gate its own collapsed rendering.
         Melty.silence_invalidate = False
-        if draw_state.expanded:
+        if draw_state.expanded or kwargs.get("expanded_mode", None) is ExpandMode.MANUAL:
             is_primitive = input_value is None or isinstance(input_value,
                                                              (int, float, str, bool, tuple)) and not hasattr(
                 input_value, '__dict__')

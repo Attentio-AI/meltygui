@@ -21,7 +21,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, ExpandMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.notifications import display
@@ -3059,8 +3059,8 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, is_tree=True, show_name=False, indent_size=4, selectable=False, use_cache=False,
-             show_bg=False, with_header=draw_header, temp=True)
+@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, is_tree=False, show_name=False, indent_size=4, selectable=False, use_cache=False,
+             show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
 
@@ -3088,6 +3088,26 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     def _strip_hash(ln):
         return ln[2:] if ln.startswith("# ") else (ln[1:] if ln.startswith("#") else ln)
     display = "\n".join(_strip_hash(ln) for ln in str(input_value).split("\n"))
+
+    # is_tree is off (no header arrow); each multi-line comment gets its own
+    # arrow instead, so single-line comments get none at all. ExpandMode.MANUAL
+    # keeps this body running while collapsed, with the first line standing in
+    # for the whole comment.
+    if "\n" in display:
+        imgui.align_text_to_frame_padding()
+        imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
+        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
+        imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
+        arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
+        if imgui.arrow_button("##comment_tree", arrow_dir):
+            draw_state.expanded = not draw_state.expanded
+            draw_state.content_height = 0
+            draw_state.invalid_content_height = True
+            request_render()
+        imgui.pop_style_color(3)
+        imgui.same_line()
+        if not draw_state.expanded:
+            display = display.split("\n", 1)[0]
 
     imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
     imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)

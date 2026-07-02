@@ -78,6 +78,20 @@ class ApplyMode(Enum):
     CONFIRM = 'confirm'
 
 
+class ExpandMode(Enum):
+    """How the render_func wrapper treats a collapsed (is_tree) view.
+
+    AUTO   - wrapper owns collapse: the view func is skipped while collapsed
+             and the box shrinks to its header (default, legacy behavior).
+    MANUAL - the view func is ALWAYS called and reads draw_state.expanded to
+             choose its own collapsed rendering (e.g. draw_comment showing
+             just the first line). The wrapper skips its collapsed-state
+             sizing shortcuts so whatever the func draws is measured normally.
+    """
+    AUTO = 'auto'
+    MANUAL = 'manual'
+
+
 @no_save_exclude()
 class TabState(DictConversion):
     def __init__(self):

@@ -296,7 +296,7 @@ class EnumParse(ClassParse):
     """
 
 
-@defaults(disable_scroll=True, show_bg=True, shadow=True, use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+@defaults(disable_scroll=True, show_bg=True, shadow=True, icon="def", use_cache=True, tint=(0.009, 0.2495, 0.39, 0.922))
 class FunctionParse(GeneralParse):
     """A function / method definition's parse, as a GeneralParse subclass.
 
@@ -1760,13 +1760,17 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     `prev` is the raw result of a PRIOR compute of this span whose expensive half
     is still valid — the caller (_compute_symbol_usages) only passes it when the
     index generation is unchanged, i.e. no other file's content and no live object
-    moved, only the local buffer did. A symbol's DEFINITION (resolved against a
-    live object via inspect — the ~65% cost) and its callers in OTHER files are
-    then invariant; only its callers in THIS file and its in-span sites can have
-    moved. So with `prev` we rescan just the edited file (always) + run the
-    cross-file scan / inspect ONLY for names not already in `prev` (freshly typed
-    symbols), reusing the rest. Cold path (prev=None): every name is "fresh", so
-    the scan is full and behaviour is identical to before."""
+    moved, only the local buffer did. A symbol's callers in OTHER files are then
+    invariant, as is a DEFINITION living in another file (resolved against a live
+    object via inspect — the ~65% cost). A definition in the EDITED file is NOT
+    reusable: it moves with the buffer as lines shift, and a stale line breaks the
+    editor's at_def direction (the declaration stops matching, jumps to a stale
+    copy of itself, and hides its callers) — so in-file defs re-resolve fresh
+    (cheap: def_lines for span-defined names, mtime-cached inspect otherwise).
+    With `prev` we rescan just the edited file (always) + run the cross-file
+    scan / inspect ONLY for names not already in `prev` (freshly typed symbols),
+    reusing the rest. Cold path (prev=None): every name is "fresh", so the scan
+    is full and behaviour is identical to before."""
     resolved = _Path(file_path).resolve()
     mod_map = _src_mod_map()
     owning = mod_map.get(resolved)
@@ -1921,21 +1925,11 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
 
     out = {}
-    for si, nm in enumerate(sites):               # every target name has sites
-        pe = reuse.get(nm)
-        if pe is not None:
-            # Reuse the expensive half: definition + callers in OTHER files
-            # (everything not in the edited file), refreshing this file's callers
-            # (rescanned above) and the in-span sites from the live buffer.
-            out[nm] = {
-                "sites": sites[nm],
-                "definition": pe["definition"],
-                "callers": [c for c in pe["callers"] if c[0] != rp_str]
-                           + callers.get(nm, []),
-            }
-            continue
-        if si and si % 32 == 0:
-            _time.sleep(0.001)   # GIL yield - inspect.getsourcelines per symbol adds up
+
+    def _resolve_def(nm):
+        # Fresh (file, line, col, module) for `nm`, resolved against the live
+        # buffer and obj definitions. Shared by the cold loop and the reuse loop
+        # (which must re-resolve any definition living in the EDITED file).
         obj = obj_by_name.get(nm)
         base = member_bases.get(nm)
         if obj is not None:                       # module-level: real source via inspect
@@ -1980,9 +1974,45 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 dl = 0
         else:                                     # class member: defined in this file
             df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
+        return (df, dl, 0, dm)
+
+    # "This file" as a prior definition may have spelled it - rp_str is what the
+    # member/const paths record; the module's own __file__ covers class-derived
+    # paths in case the spellings ever diverge.
+    own_paths = {rp_str}
+    _own_file = getattr(owning, "__file__", None)
+    if _own_file:
+        own_paths.add(_own_file)
+
+    for si, nm in enumerate(sites):               # every target name has sites
+        pe = reuse.get(nm)
+        if pe is not None:
+            # Reuse the expensive parts: callers in OTHER files (everything not in
+            # the edited file), the edited file's callers (rescanned above)
+            # and the in-span sites from the live buffer. The DEFINITION is only
+            # reused when it lives in ANOTHER file - an in-span definition moves
+            # with the buffer as lines are inserted/removed in it, so a reused
+            # line drifts off the real def; at_def then stops matching the
+            # definition site, which made a symbol's declaration jump to a stale
+            # copy of itself instead of listing its references (draw_legacy showed
+            # no usages). Re-resolving in-span defs is cheap: span-defined
+            # members come straight from def_lines, module-level names from the
+            # mtime-keyed _cached_def_line cache.
+            d = pe["definition"]
+            if d is not None and d[0] in own_paths:
+                d = _resolve_def(nm)
+            out[nm] = {
+                "sites": sites[nm],
+                "definition": d,
+                "callers": [c for c in pe["callers"] if c[0] != rp_str]
+                           + callers.get(nm, []),
+            }
+            continue
+        if si and si % 32 == 0:
+            _time.sleep(0.001)   # GIL yield - inspect.getsourcelines per symbol adds up
         out[nm] = {
             "sites": sites[nm],
-            "definition": (df, dl, 0, dm),
+            "definition": _resolve_def(nm),
             "callers": callers.get(nm, []),
         }
     # Local-variable usages: built from the binding sites + the occurrences the ref

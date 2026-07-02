@@ -349,6 +349,7 @@ class Toggles:
         highlight_token_matches = True
         token_match_tint = (0.277, 0.5, 0.5, 0.22)
 
+
         @staticmethod
         def usage_tint(users):
             """Background-wash color for a symbol-usage span in the editor — a
@@ -494,10 +495,10 @@ class Toggles:
 
     debug_z_depth = False
     filters = True
-    ignore_call_from = ()
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
+    ignore_call_from = ()
 
     # Shadow settings
     shadow_downscale = 2
