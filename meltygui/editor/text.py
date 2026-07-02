@@ -1239,6 +1239,47 @@ def _open_usage_ref(ref):
                      daemon=True).start()
 
 
+def _focus_in_context_menu_over(editor_ds, max_steps=64):
+    """True if the view holding TEXT focus sits inside an open context-menu
+    window whose target chain leads back to ``editor_ds``. The usage-jump
+    picker is gated on the editor owning text focus, so a context menu opened
+    ON the picker (to inspect/edit it) used to kill the popover the moment the
+    menu's search box grabbed focus — and the menu, rendered from the popover's
+    subtree, died with it. A context-menu window is recognized statelessly by
+    the existing mutual link (the menu's input_value is its target draw_state,
+    whose ``context_menu_ds`` points back at the menu); the walk climbs
+    _parent/parent_window and hops menu→target, and only a walk that crossed at
+    least one such hop counts — plain in-subtree focus stays on the normal
+    ``text_focused_ds is draw_state`` gate."""
+    node = Melty.text_focused_ds
+    if node is None or node is editor_ds:
+        return False
+    # seen is keyed on (node, via_menu): the same ancestor can be reachable both
+    # through a menu hop and through the normal parent chain (a context menu's
+    # _parent is its target), and whichever path pops first must not block the
+    # other - only a via_menu=True arrival at editor_ds returns True.
+    stack, seen = [(node, False)], set()
+    while stack and len(seen) < 2 * max_steps:
+        node, via_menu = stack.pop()
+        if node is None or (id(node), via_menu) in seen:
+            continue
+        seen.add((id(node), via_menu))
+        if node is editor_ds:
+            if via_menu:
+                return True
+            continue
+        target = getattr(node, "_raw_input_value", None)
+        if target is not None and getattr(target, "context_menu_ds", None) is node:
+            stack.append((target, True))
+        parent = getattr(node, "_parent", None)
+        pwin = getattr(node, "parent_window", None)
+        if parent is not None and parent is not node:
+            stack.append((parent, via_menu))
+        if pwin is not None and pwin is not node:
+            stack.append((pwin, via_menu))
+    return False
+
+
 def _usage_ref_items(targets):
     """({label: UsageRef}, {UsageRef: tag}) rows for the usage-jump picker: the
     label is the user's enclosing scope, the dim right-aligned tag its
@@ -4083,7 +4124,7 @@ def draw_text(input_value: str, height=None,
     # background results wake it via the future's done-callback (_ac_on_future).
     ac_changed, ac_pick = draw_dd_menu(
         _ac_items, name=f"{ds.name}_ac_menu", view_offset=False,
-        temp=True, show_search=False, swoosh=False, closed=not _ac_show, height=300, auto_resize=False,
+        temp=True, show_search=False, swoosh=False, closed=not _ac_show, height=141, auto_resize=False,
         window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
         parent_window=draw_state, root_state=ac_state, path_prefix=())
@@ -4119,7 +4160,9 @@ def draw_text(input_value: str, height=None,
     # is called EVERY frame with closed= toggled. Rows are the symbol's users
     # ({scope_id: UsageRef}, with the text as the dim row tag); a pick - mouse
     # or Enter (handled in the key block) - opens that site in IntelliJ.
-    _uj_show = (Melty.text_focused_ds is draw_state and getattr(ds, '_uj_open', False)
+    _uj_show = ((Melty.text_focused_ds is draw_state
+                 or _focus_in_context_menu_over(draw_state))
+                and getattr(ds, '_uj_open', False)
                 and bool(getattr(ds, '_uj_items', None)))
     _uj_items = ds._uj_items if _uj_show else {}
     _uj_anchor = getattr(ds, '_uj_anchor', ds.text_cursor_pos)

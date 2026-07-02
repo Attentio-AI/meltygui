@@ -977,6 +977,19 @@ class Melty:
                     stack.append(parent)
                 if pwin is not None and pwin is not node:
                     stack.append(pwin)
+                # A context-menu window's _parent/parent_window chain does NOT
+                # run through the view the menu was opened ON, so a click inside
+                # the menu used to clear that view's focus - including an open
+                # popover (and the menu with it, since context_menu_ds renders
+                # from the popover's subtree). Hop from the menu window to its
+                # target: draw_context_menu receives the target draw_state as
+                # its input_value, and the target's context_menu_ds points back
+                # to the menu window, so the pair is identified by that mutual
+                # link alone - no new state, and other draw_states whose input
+                # happens to be a draw_state don't match.
+                target = getattr(node, "_raw_input_value", None)
+                if target is not None and getattr(target, "context_menu_ds", None) is node:
+                    stack.append(target)
 
         # A just-opened popover gets a one-frame grace: the very click that opens
         # it also fires clear_focus, and the opener (e.g. a tiny colour swatch) may

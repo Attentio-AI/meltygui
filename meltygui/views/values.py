@@ -5101,11 +5101,22 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
 
 def _ds_in_subtree(node, ancestor, max_depth=64):
     """True if ``node`` is ``ancestor`` or a descendant of it. Walks the
-    ``_parent`` chain, stopping on the root's self-loop (root._parent is root)."""
+    ``_parent`` chain, stopping on the root's self-loop (root._parent is root).
+    A context-menu window counts as inside its TARGET's subtree: the menu's
+    parent chain doesn't run through the view it was opened on, so a click in
+    a menu over an open popover read as click-outside and dismissed the
+    popover (and the menu with it). The menu is recognized by the existing
+    mutual link — its input_value is the target draw_state, whose
+    ``context_menu_ds`` points back at the menu — so no new state."""
     seen = 0
     while node is not None and seen < max_depth:
         if node is ancestor:
             return True
+        target = getattr(node, "_raw_input_value", None)
+        if target is not None and getattr(target, "context_menu_ds", None) is node:
+            node = target
+            seen += 1
+            continue
         parent = getattr(node, "_parent", None)
         if parent is None or parent is node:
             break
@@ -5428,10 +5439,11 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # leaves and dd_menu_row branches line up.
     color = _dd_obj_tint(value, tint)
     imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) * 0.5))
-    if color:
-        imgui.text_colored(str(label), *color[:4])
-    else:
-        imgui.text(str(label))
+
+    color = Tint.dd_text(requested_tint=color)
+    color = *(color[:3]), 1.0
+    imgui.text_colored(str(label), *color)
+
     imgui.set_cursor_screen_pos((x, y + h))
 
     # Dimmed tag, right-aligned (autocomplete's func/class/... label). Opaque
@@ -5459,7 +5471,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=True, with_header=None, 
-             max_height=420, min_width=300, swoosh=False)
+             max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, full_render=False, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates

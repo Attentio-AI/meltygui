@@ -177,6 +177,25 @@ class Tint:
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
+
+    @staticmethod
+    @defaults(tint=(0.9, 0.0, 0))
+    def dd_text(requested_tint=None):
+        if requested_tint is None:
+            style_manager: ImGuiStyleManager = Core.melty.style_manager
+            active_hsv = style_manager.hsv
+        else:
+            active_hsv = rgb_to_hsv(*requested_tint)
+
+        hue_delta = 0.00
+        saturation_factor = 0.4
+        value_factor = 2.161
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+
     @staticmethod
     @defaults(tint=(0.54, 0.54, 0.54))
     def cursor_tint():
@@ -331,6 +350,7 @@ class Toggles:
         # frame so only the bottom-on-display clamp displaces it.
         sticky_drag = True
 
+
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
         keep_for_frames = 26
@@ -481,9 +501,9 @@ class Toggles:
     # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
     yield_to_ui = True
-
     attrib_churn_log = False
     debug_threads = False
+    
     slow_down_threads = False
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False

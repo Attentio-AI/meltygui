@@ -220,7 +220,7 @@ def draw_folder_files(input_value, draw_state, **kwargs):
     return False, None
 
 
-@window(input_value=test_folder_proxy, tint=(0.72, 0.702, 0.69), disable_scroll=False, mode=Modes.WINDOW)
+@window(input_value=test_folder_proxy, tint=(0.17, 0.70, 0.96), disable_scroll=False, mode=Modes.WINDOW)
 @render_func(show_bg=False, use_cache=True, selectable=False)
 def draw_test_folders(input_value, draw_state, **kwargs):
     _draw_tree(input_value, draw_state, TEST_FOLDER)
