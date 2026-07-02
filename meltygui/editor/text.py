@@ -1,4 +1,5 @@
 import bisect
+import builtins as _builtins
 import keyword
 import re
 import time
@@ -59,17 +60,26 @@ BUILTIN_PSEUDO = {'self', 'cls'}
 WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
 
 # --- Code-suggestion (autocomplete) --------------------------------------------
-# Drives the dropdown popup (draw_dd_menu) anchored at the caret. The actual
-# symbol intelligence lives in libcst_conversion.completions_at - it reads the
-# routed code_tree (the digest + parsed dict + span/line index + libcst tree +
-# jedi symbol data) and returns scope-aware, kind-tagged candidates ranked
-# best-first. Here we just thread the caret context, supplement with a plain
-# buffer scan (covers freshly-typed locals the parse hasn't caught up to yet),
-# and filter by the half-typed prefix.
+# Drives the dropdown popup (draw_dd_menu) anchored at the caret. IDE trigger
+# model (IntelliJ-style): the popup opens as you TYPE - an identifier char
+# (scope-aware), a '.' (attribute access), or a new import line (module
+# completion) - plus explicitly on Ctrl+P / Ctrl+Space. Typing in a comment or
+# string stays quiet (checked against the same incremental _line_open lexer
+# state the viewport tokenizer maintains), as does naming something NEW right
+# after def/class/for/as/....
 #
-# Still NOT type-aware: after `somevar.` we can't resolve what `somevar` IS, so
-# the dot-trigger offers the same scoped name pool as bare-identifier typing.
-# Resolving attribute members (via jedi on the fly) is the next step.
+# Candidate sources, best first:
+#   bare identifier - libcst_conversion.completions_at over the routed code_tree
+#     (scope-aware: params/locals → class members → module names → imports →
+#     indexed symbols), then a plain buffer scan (just-typed locals the parse
+#     hasn't caught up to), then builtins + keywords at the lowest priority.
+#     Kind tags upgrade to exact runtime type names where FuncsMetadata has
+#     observed the edited function's scope (the eval REPL records it).
+#   dotted receiver / import line - _ensure_member_completions: first the LIVE
+#     module namespace of the edited file (instant, exact - `imgui.`, `Melty.`,
+#     any top-level name, walked with func_metadata.member_completions),
+#     falling back to jedi over the WHOLE surrounding file (async, subprocess
+#     pool - resolves `self.`, just-typed locals, import statements).
 
 _IDENT_RE = re.compile(r'[A-Za-z_]\w*')
 # Identifier immediately to the left of a position - the half-typed word the
@@ -95,13 +105,17 @@ def _completion_context(text, cursor):
         return prefix, anchor, False
 
 
-def _completion_pool(code_tree, text, line):
+def _completion_pool(code_tree, text, line, func=None):
     """Ordered (name, kind) candidate pool for a caret on 0-indexed `line`,
     best-first. The scope-aware names from the parsed `code_tree` lead (params,
     locals, members, module, imports, jedi symbols — see `completions_at`); a
-    plain identifier scan of the live buffer is appended at low priority so
-    just-typed locals that haven't round-tripped through libcst yet still show.
-    De-duplicated keeping the first (highest-ranked) occurrence of each name."""
+    plain identifier scan of the live buffer follows (just-typed locals that
+    haven't round-tripped through libcst yet); builtins and keywords close the
+    list at the lowest priority, IDE-style. De-duplicated keeping the first
+    (highest-ranked) occurrence of each name. When the edited span's live
+    function `func` has runtime-observed scope types (FuncsMetadata, recorded by
+    the eval REPL), those names' kind tags upgrade to the exact type name — the
+    popup reads `draw_state  DrawState` even with an unhinted signature."""
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import completions_at
     pool, seen = [], set()
 
@@ -118,6 +132,19 @@ def _completion_pool(code_tree, text, line):
             pass  # never let a parse hiccup kill typing
     for name in _IDENT_RE.findall(text):
         add(name, "name")
+    for name in dir(_builtins):
+        if not name.startswith("_"):
+            add(name, "builtin")
+    for kw in keyword.kwlist:
+        if len(kw) > 1 and kw not in seen:
+            seen.add(kw)
+            pool.append((kw, "kw"))
+    if func is not None:
+        from src.lsd.gl_gui.func_metadata import FuncsMetadata, _type_name
+        meta = FuncsMetadata.get(func)
+        if meta:
+            pool = [(n, (_type_name(meta[n].type) or k) if n in meta else k)
+                    for n, k in pool]
     return pool
 
 
@@ -127,7 +154,8 @@ def _completion_pool(code_tree, text, line):
 _KIND_TAGS = {"param": "param", "local": "local", "var": "var", "func": "fn",
               "class": "class", "member": "attr", "module": "mod",
               "import": "import", "symbol": "sym", "instance": "var",
-              "kw": "kw", "path": "path", "name": ""}
+              "kw": "kw", "path": "path", "name": "",
+              "method": "fn", "builtin": ""}
 
 
 def _kind_tag(kind):
@@ -151,6 +179,129 @@ def _filter_completions(pool, prefix):
         contains = [(n, k) for n, k in rows if p in n.lower() and not n.lower().startswith(p)]
         ranked = starts + contains
     return ranked[:_AC_MAX_ROWS]
+
+
+# Name-DEFINING keywords: an identifier typed right after one is a NEW name
+# (`def foo`, `for x`, `open() as f`)); nothing can complete a name being
+# invented, so the auto-popup stays quiet there. NOT in the set: with/del/
+# except/global/nonlocal - those are followed by names that already exist.
+# import/from lines are handled separately (they route to jedi, which
+# completes module paths natively).
+_DEF_SITE_KEYWORDS = {"def", "class", "for", "as", "lambda"}
+
+
+def _defining_keyword_before(text, anchor):
+    """True when the word immediately left of `anchor` (skipping spaces/tabs) is
+    a name-DEFINING keyword — the caret is naming something new."""
+    i = anchor
+    while i > 0 and text[i - 1] in " \t":
+        i -= 1
+    j = i
+    while j > 0 and (text[j - 1].isalnum() or text[j - 1] == "_"):
+        j -= 1
+    return text[j:i] in _DEF_SITE_KEYWORDS
+
+
+_IMPORT_LINE_RE = re.compile(r'\s*(from|import)\s')
+
+
+def _import_line_context(text, anchor):
+    """True when `anchor` sits on an import-statement line. Bare identifiers
+    there are module names / import targets — names the static scope pool can't
+    know — so the caller routes them to jedi (which completes import statements
+    natively, full-file mode). Parenthesized multi-line import bodies aren't
+    detected (their lines don't start with from/import); those fall back to the
+    scope pool, which is merely unhelpful, not wrong."""
+    ls = _get_line_start(text, anchor)
+    return _IMPORT_LINE_RE.match(text, ls, anchor) is not None
+
+
+def _ac_lex_state(ds, text):
+    """The editor's incremental (line_offsets, line_open) lexer state for `text`,
+    refreshed through the same ds cache the viewport tokenizer uses — on a typed
+    frame the completion gate pays only the incremental re-lex of the edited
+    lines, and the render's `_window()` call afterwards gets a cache hit."""
+    if getattr(ds, '_lo_text', None) != text:
+        ds._lo_offs, ds._lo_open = _update_line_open(
+            getattr(ds, '_lo_text', None), getattr(ds, '_lo_offs', None),
+            getattr(ds, '_lo_open', None), text)
+        ds._lo_text = text
+    return ds._lo_offs, ds._lo_open
+
+
+def _pos_in_string_or_comment(text, idx, offs, line_open):
+    """True when a character typed at index `idx` would land inside a string
+    literal or a comment — where the code popup must stay quiet. Line-local:
+    resumes from the per-line string state (`line_open`, same source as the
+    tokenizer) and scans only [line_start, idx). An f-string counts as string
+    even inside its {braces} — a rare miss, never a false popup."""
+    li = bisect.bisect_right(offs, idx) - 1
+    i = offs[li] if 0 <= li < len(offs) else 0
+    opener = line_open[li] if 0 <= li < len(line_open) else None
+    in_str = opener[0] if opener else None    # the quote that would close it
+    while i < idx:
+        c = text[i]
+        if in_str is not None:
+            if len(in_str) == 3:
+                if text.startswith(in_str, i):
+                    in_str = None
+                    i += 3
+                    continue
+                i += 1
+            else:
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == in_str or c == "\n":
+                    in_str = None   # newline ends an unterminated single-quote
+                i += 1
+            continue
+        if c == "#":
+            return True                       # rest of the line is comment
+        if c in "\"'":
+            if text.startswith(c * 3, i):
+                in_str = c * 3
+                i += 3
+            else:
+                in_str = c
+                i += 1
+            continue
+        i += 1
+    return in_str is not None
+
+
+# First top-level def in the buffer - a function span's own def sits at column
+# 0 (spans keep file indentation, so a method in a class span won't match).
+_DEF_NAME_RE = re.compile(r'^def\s+(\w+)', re.MULTILINE)
+
+
+def _ac_live_context(ds, text, address):
+    """(module_globals, live_func) for the span being edited: the live module
+    the file is loaded as (hotswap-aware — richest of the dual src./non-src
+    identities, via code_checks._module_for) and, when the buffer is a top-level
+    function span, the live function object itself (its FuncsMetadata carries
+    runtime-observed scope types). Cached on the draw_state per (path,
+    span-start); a file that isn't imported caches (None, None) and the dot
+    path falls through to jedi."""
+    if address is None or getattr(address, "path", None) is None:
+        return None, None
+    key = (str(address.path), getattr(address, "start", None))
+    if getattr(ds, '_ac_live_ctx_key', None) == key:
+        return ds._ac_live_ctx
+    from src.lsd.gl_gui.view.core_conversion.code_checks import _module_for
+    ns = func = None
+    try:
+        mod = _module_for(address.path)
+        if mod is not None:
+            ns = vars(mod)
+            m = _DEF_NAME_RE.search(text)
+            if m:
+                func = ns.get(m.group(1))
+    except Exception:
+        pass
+    ds._ac_live_ctx = (ns, func)
+    ds._ac_live_ctx_key = key
+    return ns, func
 
 
 # jedi completion `.type` → our kind mapping.
@@ -192,14 +343,22 @@ def _wake_on_future(fut, ds):
     return fut
 
 
-def _ensure_member_completions(ds, text, anchor):
+def _ensure_member_completions(ds, text, anchor, address=None):
     """Type-aware member candidates for the dotted receiver ending at `anchor`
-    (index just past the '.'), via jedi (async). Submits ONE job per receiver
-    context to the background pool, polls it without blocking, and returns
-    (members, pending): `members` is an ordered [(name, kind)] once ready (else
-    None); `pending` is True while a job is in flight, so the caller keeps the
-    body repainting to poll it. The receiver key is anchored at the '.', so it's
-    stable while the user types the member stem — one jedi call, local filtering."""
+    (index just past the '.'), or for the import statement the anchor sits in.
+    Resolution ladder, cheapest first:
+      1. LIVE — the receiver is getattr-walked from the edited file's live
+         module namespace / builtins, or the edited function's runtime-observed
+         scope types (FuncsMetadata). Synchronous, exact, chainable: `imgui.`,
+         `Melty.cache.`, any module-level name answers instantly, no subprocess.
+      2. JEDI — full-file static inference in the background pool (`self.`,
+         locals built from project classes, import lines). Submits ONE job per
+         receiver context, polls without blocking.
+    Returns (members, pending): `members` is an ordered [(name, kind)] once
+    ready (else None); `pending` is True while a jedi job is in flight, so the
+    caller keeps the body repainting to poll it. The receiver key is anchored at
+    the '.', so it's stable while the user types the member stem — one
+    resolution, local filtering."""
     line0, col = _index_to_line_col(text, anchor)
     line_start = _get_line_start(text, anchor)
     key = (line0, text[line_start:anchor])   # the receiver expression on this line
@@ -207,11 +366,32 @@ def _ensure_member_completions(ds, text, anchor):
     if getattr(ds, '_ac_jedi_done_key', None) == key:
         return ds._ac_jedi_members, False
 
+    if text[max(anchor - 1, 0):anchor] == ".":
+        from src.lsd.gl_gui.func_metadata import member_completions, _receiver_before
+        rcv = _receiver_before(text, anchor)
+        # A receiver head followed by )/]/quote is a call/index/literal access
+        # (`foo().cache.`) - its NAME means nothing in the module namespace, so
+        # only jedi (which infers the real type) may answer it.
+        head_start = anchor - 1 - len(rcv)
+        if rcv and (head_start < 1 or text[head_start - 1] not in ")]\"'"):
+            ns, func = _ac_live_context(ds, text, address)
+            if ns is not None or func is not None:
+                try:
+                    rows = member_completions(func, rcv, globals_ns=ns)
+                except Exception:
+                    rows = []
+                if rows:
+                    ds._ac_jedi_members = rows
+                    ds._ac_jedi_done_key = key
+                    ds._ac_jedi_future = None
+                    return rows, False
+
     if getattr(ds, '_ac_jedi_req_key', None) != key:
         # Receiver changed - request new completions (drops any stale future).
         # The done-callback wakes us once when it lands; no per-frame polling.
         from src.lsd.gl_gui.view.core_conversion.libcst_conversion import submit_member_completion
-        ds._ac_jedi_future = _wake_on_future(submit_member_completion(text, line0, col), ds)
+        ds._ac_jedi_future = _wake_on_future(
+            submit_member_completion(text, line0, col, address), ds)
         ds._ac_jedi_req_key = key
 
     fut = getattr(ds, '_ac_jedi_future', None)
@@ -287,11 +467,12 @@ def _param_type(s):
     return " ".join(parts[:-1]) if len(parts) > 1 else ""
 
 
-def _ensure_signature_help(ds, text, open_paren, cursor):
+def _ensure_signature_help(ds, text, open_paren, cursor, address=None):
     """Signature of the call whose '(' is at `open_paren`, via jedi (async, same
-    pool/synthetic-module trick as completion). Submits ONE job per callee
-    (keyed at the paren, stable while typing args), polls without blocking, and
-    returns (name, [param_names]) once ready, else None."""
+    pool + full-file/fallback context as completion — with an `address`, src and
+    self. callees resolve too). Submits ONE job per callee (keyed at the paren,
+    stable while typing args), polls without blocking, and returns
+    (name, [param_names]) once ready, else None."""
     callee = _callee_at(text, open_paren)
     if not callee:
         return None
@@ -301,7 +482,8 @@ def _ensure_signature_help(ds, text, open_paren, cursor):
     if getattr(ds, '_ac_sig_req_key', None) != key:
         from src.lsd.gl_gui.view.core_conversion.libcst_conversion import submit_signature_help
         line0, col = _index_to_line_col(text, cursor)
-        ds._ac_sig_future = _wake_on_future(submit_signature_help(text, line0, col), ds)
+        ds._ac_sig_future = _wake_on_future(
+            submit_signature_help(text, line0, col, address), ds)
         ds._ac_sig_req_key = key
     fut = getattr(ds, '_ac_sig_future', None)
     if fut is None:
@@ -1110,6 +1292,36 @@ def _split_icons(s, base):
         yield s[start:], ('icon' if run_icon else base)
 
 
+# An override comment holds live values (`# [tint=(0.1, 0.2), nf_on=True]`,
+# possibly split across several '#' lines - see _parse_override_comment in
+# libcst_conversion). Matches LINE-LOCALLY, because viewport tokenization may
+# start on a continuation line that never shows the opening '# [': a '#', an
+# optional '[', then `key=` with nothing between the identifier and the '='
+# (prose like `# x = 5 by default` stays a code comment) and no '==' anywhere.
+_OVERRIDE_COMMENT_RE = re.compile(r'^#\s*\[?\s*[A-Za-z_]\w*=(?!=)')
+
+# Widget-eligible kinds an override comment's values keep; every other
+# sub-token (keys, brackets, strings, commas) is washed back to 'comment'.
+_OVERRIDE_VALUE_KINDS = frozenset(('bool', 'number', 'color3', 'icon'))
+
+
+def _tokenize_override_comment(comment):
+    """Sub-tokenize an override-comment line so its VALUES get their
+    widget-eligible kinds — 'bool' (double-click toggle), 'number' (drag),
+    'color3' (swatch), 'icon' — while keys and punctuation keep the plain
+    'comment' color. The body runs the same local pipeline as code (raw scan
+    + sign and color-tuple merges), so `z_offset=-1` drags across zero and an
+    all-floats `tint=(0.1, 0.2, 0.3)` merges into one color3 token. Token
+    texts still concatenate to exactly `comment` (no newlines inside), so the
+    vcols/caret math and line_open bookkeeping stay intact."""
+    split = 1
+    while split < len(comment) and comment[split] in ' \t':
+        split += 1
+    yield comment[:split], 'comment'
+    for tok, kind in _merge_color_tuples(_merge_unary_signs(_tokenize_raw(comment[split:]))):
+        yield tok, kind if kind in _OVERRIDE_VALUE_KINDS else 'comment'
+
+
 def _tokenize_raw(text):
     """Yields (text, color_key) tuples with Darcula-style token categories.
     Raw pass — see tokenize() below for the unary-sign merge."""
@@ -1121,7 +1333,11 @@ def _tokenize_raw(text):
         if text[i] == '#':
             end = text.find('\n', i)
             end = end if end != -1 else n
-            yield text[i:end], 'comment'
+            comment = text[i:end]
+            if _OVERRIDE_COMMENT_RE.match(comment):
+                yield from _tokenize_override_comment(comment)
+            else:
+                yield comment, 'comment'
             i = end
 
         # --- Decorators ---
@@ -2288,6 +2504,7 @@ def draw_text(input_value: str, height=None,
               completion_source=None, unique=0):
 
     ds = draw_state   
+    
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
@@ -2446,7 +2663,6 @@ def draw_text(input_value: str, height=None,
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
 
-
     # --- Line-number gutter ---
     # Shown only when the routed address (jump_to) supplies a starting line, so
     # a function body span shows its true file line numbers. Plain buffers with
@@ -2551,6 +2767,7 @@ def draw_text(input_value: str, height=None,
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
         
+    
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (double-click / Ctrl+B): one
         counterpart opens straight in IntelliJ; several open the usage-jump
@@ -2744,8 +2961,15 @@ def draw_text(input_value: str, height=None,
                   or pressed(glfw.KEY_TAB)) and _ac_cands and not ctrl:
                 chosen = _ac_cands[min(_ac_idx, len(_ac_cands) - 1)]
                 anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
-                # Replace the half-typed identifier [anchor, caret) with the pick.
-                text = text[:anchor] + chosen + text[ds.text_cursor_pos:]
+                # Replace the half-typed identifier [anchor, caret) with the
+                # pick. Tab additionally overwrites the rest of the word under
+                # the caret (IntelliJ semantics); Enter inserts, leaving it.
+                _replace_to = ds.text_cursor_pos
+                if pressed(glfw.KEY_TAB):
+                    while _replace_to < len(text) and (text[_replace_to].isalnum()
+                                                       or text[_replace_to] == '_'):
+                        _replace_to += 1
+                text = text[:anchor] + chosen + text[_replace_to:]
                 ds.text_cursor_pos = anchor + len(chosen)
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
@@ -2799,10 +3023,9 @@ def draw_text(input_value: str, height=None,
             ds.text_cursor_pos += len(ch)
             ds.text_selection_start = ds.text_cursor_pos
             ds.text_selection_end = ds.text_cursor_pos
-            # Only a typed '.' (attribute access) opens the popup as you go;
-            # plain identifier typing doesn't - Ctrl+P requests it explicitly.
-            # (The REPL REPL relaxes this below: a `completion_source` box also
-            # opens on identifier typing, so suggestions track every keystroke.)
+            # Both a typed dot (member access) and a plain identifier char are
+            # popup triggers (IDE model) - the visibility block below decides
+            # whether this site actually qualifies (comment/string/def-site gates).
             if ch == '.':
                 typed_dot_this_frame = True
             elif ch.isalnum() or ch == '_':
@@ -3125,19 +3348,39 @@ def draw_text(input_value: str, height=None,
             sup = getattr(ds, '_ac_suppress_anchor', -1)
             if sup != -1 and sup != anchor:
                 ds._ac_suppress_anchor = sup = -1  # caret moved on; allow reopen
-            # Explicit-trigger model: the popup only opens on a TYPED '.'
-            # (attribute access) or Ctrl+P. The trigger pins the completion site
-            # (`_ac_request_anchor`); the popup stays up there - re-filtering as
-            # the prefix grows/shrinks - until the caret leaves the site, Esc, or
-            # an accepted pick. A bare caret move (e.g. clicking right after an
-            # attribute) never opens it.
-            # A `completion_source` box (the Eval REPL) is REPL-style: it also
-            # opens on plain identifier typing, so suggestions track every
-            # keystroke without a Ctrl+P. The body keeps its explicit model.
-            repl_open = completion_source is not None and typed_word_char_this_frame
-            if typed_dot_this_frame or (ctrl and pressed(glfw.KEY_P)) or repl_open:
+            # IDE trigger model (IntelliJ-style): the popup opens as you TYPE -
+            # a '.' (member access), an identifier char (scope completion), or
+            # inside an import line (module completion) - or explicitly on
+            # Ctrl+P / Ctrl+Space. The trigger pins the completion site
+            # (`_ac_request_anchor`); the popup stays up there — re-filtering as
+            # the prefix grows/shrinks - until the caret leaves that site, Esc,
+            # or an accepted pick. A bare caret move (e.g. clicking right after
+            # an existing '.') never opens it. Typed triggers stay out inside
+            # comments/strings (checked against the same incremental lexer
+            # state the viewport tokenizer maintains) and right after a
+            # name-DEFINING keyword (`def f`, `for x` - a name being referenced
+            # has no members); an explicit ask bypasses both gates and also
+            # overrides a prior Esc at this site, which typed triggers respect.
+            # A `completion_source` box (the Eval REPL) is a one-line eval - no
+            # comments, no parse tree - so every typed char re-triggers as-is.
+            import_ctx = _import_line_context(text, anchor)
+            typed_trigger = False
+            if typed_dot_this_frame or typed_word_char_this_frame:
+                if completion_source is not None:
+                    typed_trigger = True
+                elif syntax_highlight and (dot_trigger or import_ctx or prefix):
+                    _offs, _lopen = _ac_lex_state(ds, text)
+                    typed_trigger = (
+                        not _pos_in_string_or_comment(
+                            text, anchor - 1 if dot_trigger else anchor,
+                            _offs, _lopen)
+                        and (dot_trigger or import_ctx
+                             or not _defining_keyword_before(text, anchor)))
+            if ctrl and (pressed(glfw.KEY_P) or pressed(glfw.KEY_SPACE)):
                 ds._ac_request_anchor = anchor
                 ds._ac_suppress_anchor = sup = -1  # explicit ask overrides a prior Esc
+            elif typed_trigger and sup != anchor:
+                ds._ac_request_anchor = anchor
             req = getattr(ds, '_ac_request_anchor', -1)
             if req != -1 and req != anchor:
                 ds._ac_request_anchor = req = -1  # caret left the trigger site
@@ -3150,19 +3393,19 @@ def draw_text(input_value: str, height=None,
                 # source resolves member access via the recorded type's dict
                 # (vs a live module's getattr) and bare names from the scope, both
                 # with EXACT type tags. We still filter by the half-typed prefix.
-                raw = []
-                # try:
-                #     raw = completion_source(text, anchor, prefix, dot_trigger) or []
-                # except Exception:
-                #     raw = []
+                try:
+                    raw = completion_source(text, anchor, prefix, dot_trigger) or []
+                except Exception:
+                    raw = []
                 cands = _filter_completions(raw, prefix)
-            elif want and dot_trigger:
-                # Member access (`imgui.`, `foo.bar`) - resolve the receiver's
-                # REAL members with jedi (async, off-thread). Until they arrive,
-                # keep the popup closed (scoped names aren't members) and keep the
-                # body repainting so the future gets polled. Unresolvable
-                # receivers (a bare local, `self.`) just return nothing.
-                members, pending = _ensure_member_completions(ds, text, anchor)
+            elif want and (dot_trigger or import_ctx):
+                # Member access (`imgui.`, `foo.bar`) or an import line - the
+                # live module namespace answers instantly when it can; otherwise
+                # jedi resolves the receiver's REAL type / all importable
+                # modules (async, off-thread, full-file context). Until that
+                # lands, keep the list closed (scoped names aren't helpful) and
+                # keep the body repainting so the future gets polled.
+                members, pending = _ensure_member_completions(ds, text, anchor, jump_to)
                 if members is not None:
                     cands = _filter_completions(members, prefix)
                 else:
@@ -3177,7 +3420,8 @@ def draw_text(input_value: str, height=None,
                 _ac_line = _index_to_line_col(text, ds.text_cursor_pos)[0]
                 _pool_key = (id(code_tree), _ac_line, len(text))
                 if getattr(ds, '_ac_pool_key', None) != _pool_key:
-                    ds._ac_pool = _completion_pool(code_tree, text, _ac_line)
+                    _pool_func = _ac_live_context(ds, text, jump_to)[1]
+                    ds._ac_pool = _completion_pool(code_tree, text, _ac_line, _pool_func)
                     ds._ac_pool_key = _pool_key
                 cands = _filter_completions(ds._ac_pool, prefix)
             else:
@@ -3217,7 +3461,7 @@ def draw_text(input_value: str, height=None,
         if ac_enabled and completion_source is None:
             _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
             if _open_paren is not None and _ensure_signature_help(
-                    ds, text, _open_paren, ds.text_cursor_pos) is not None:
+                    ds, text, _open_paren, ds.text_cursor_pos, jump_to) is not None:
                 ds._ac_sig_active = _arg_index
                 ds._ac_sig_open_paren = _open_paren   # lets the hint align under the call name
                 ds._ac_sig_show = True
@@ -3482,13 +3726,13 @@ def draw_text(input_value: str, height=None,
                 continue
             draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, imgui.get_color_u32_rgba(*err_bg))
 
-    # Diff wash highlights: in is_diff mode each line's leading marker (the +/- left over
-    # half the unified diff, with the ---/+++/@@ headers already stripped by the
-    # caller) drives a full-width background - added lines green, deleted lines
-    # yellow - drawn under the glyphs so the code stays readable.
+    # Diff washes: in is_diff mode each line's leading marker (the +/- left over
+    # from the unified diff, with the ---/+++/@@ headers already stripped by the
+    # caller) drives a full-width background — added lines green, deleted lines
+    # red, drawn under the glyphs so the code stays readable.
     if is_diff:
         add_bg = (0.157, 0.627, 0.157, 0.353)  # translucent green
-        del_bg = (0.824, 0.745, 0.157, 0.353)  # translucent yellow
+        del_bg = (0.824, 0.235, 0.235, 0.353)  # translucent red
         for line_idx, line_text in enumerate(text.split('\n')):
             c = line_text[:1]
             bg = add_bg if c == '+' else del_bg if c == '-' else None

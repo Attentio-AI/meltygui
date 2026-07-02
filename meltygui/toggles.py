@@ -331,24 +331,21 @@ class Toggles:
         # frame so only the bottom-on-display clamp displaces it.
         sticky_drag = True
 
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
+    @defaults(tint=(0.91, 0.659, 0.15))
+    class InvalidateTracker:
+        keep_for_frames = 26
+        enable = False
+        draw_bvh = False
+        draw_rect = False
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
 
     @defaults(tint=(0.922, 0.476, 0.031))
     class TextEditor:
         enable_spell_check = False
         double_click_opens_dropdown = True
         text_focus_stack_trace = False
-
-        # When the caret rests on an identifier, every OTHER place that same
-        # token appears in the visible buffer gets this color wash. A naive,
-        # identifier-bounded character match - no CST / symbol-usage metadata is
-        # needed, so it works in any text, mid-edit or unparseable. Flip the
-        # flag to disable; the (r, g, b, a) tint is read live.
-        highlight_token_matches = True
         token_match_tint = (0.277, 0.5, 0.5, 0.22)
-
 
         @staticmethod
         def usage_tint(users):
@@ -370,11 +367,16 @@ class Toggles:
             tint = (*tint, v)
             return tint
 
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum logical terminal size, in pixels - independent of the window size.
-        min_height = 480.0
-        min_width = 98.634
+        # When the caret rests on an identifier, every OTHER place that exact
+        # token appears in the visible buffer gets this background wash. A dumb,
+        # identifier-bounds character match - no CST / symbol-usage metadata is
+        # involved, so it works in any text, mid-edit or unparseable. Flip the
+        # flag to disable; the (r, g, b, a) tuple is read live.
+        highlight_token_matches = True
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
 
     @defaults(tint=(0.878, 0.762, 0.692))
     class ScrollSettings:
@@ -383,6 +385,12 @@ class Toggles:
         acceleration_threshold = 0.036  # ms
         bg_offset = 30
         debug_scroll = False
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum logical terminal size, in chars, independent of the window size.
+        min_height = 480.0
+        min_width = 98.634
 
     @defaults(tint=(0.965, 0.6, 0.149))
     class SearchSettings:
@@ -396,7 +404,7 @@ class Toggles:
 
         @defaults(tint=(0.965, 0.6, 0.149))
         class ActiveElement:
-            gradient_color = (1.0, 0.80, 0.06)   # RGB of the halo
+            gradient_color = (0.98, 0.68, 0.00)   # RGB of the halo
             outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
             falloff = 97.856          # px the glow radiates out past the match edge
             opacity = 0.392           # max opacity, right at the cutout edge
@@ -432,15 +440,6 @@ class Toggles:
         # re-registered within this many frames (safety net for any abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
-
-    @defaults(tint=(0.91, 0.659, 0.15))
-    class InvalidateTracker:
-        keep_for_frames = 26
-        enable = False
-        draw_bvh = False
-        draw_rect = False
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
 
     # Main App Toggles
     @defaults(tint=(0.378, 0.286, 0.201))

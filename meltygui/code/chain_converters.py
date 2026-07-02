@@ -214,7 +214,8 @@ def class_to_address(input_value: type, draw_state, changed=False):
 @render_func()
 def class_to_address_incl_overrides(input_value: type, draw_state, changed=False):
     """Like class_to_address, but extends the span UPWARD over a contiguous
-    leading `# [...]` override comment immediately above the class.
+    leading `# [...]` override comment immediately above the class (which may
+    be split across several `#` lines).
 
     getsourcelines starts at `class X:`, so a comment above it falls outside the
     span — meaning a module-level override comment would never round-trip and the
@@ -251,11 +252,20 @@ def class_to_address_incl_overrides(input_value: type, draw_state, changed=False
             file_lines = _split_lines(data.decode("utf-8"))
         except UnicodeDecodeError:
             file_lines = _split_lines(data.decode("latin-1"))
+        # Walk up over any contiguous `#` lines above the class, then take the
+        # longest tail of that run that parses as ONE override comment - a
+        # single `# [...]` line or one split across several `#` lines (each
+        # line alone doesn't parse, joined they do). Plain comments above the
+        # override stay outside the span.
         ext_start = start0
         j = start0 - 1
-        while j >= 0 and _parse_override_comment(file_lines[j].strip()) is not None:
-            ext_start = j
+        while j >= 0 and file_lines[j].lstrip().startswith("#"):
             j -= 1
+        for k in range(j + 1, start0):
+            joined = "\n".join(l.strip() for l in file_lines[k:start0])
+            if _parse_override_comment(joined) is not None:
+                ext_start = k
+                break
 
         address = Address(Path(source_file), ext_start, end0,
                           source=input_value, watcher_ds=draw_state)

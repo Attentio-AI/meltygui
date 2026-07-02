@@ -1315,7 +1315,7 @@ class DrawState(DictConversion):
                 int(min(box_right, clip[2])),
                 int(min(box_bottom, clip[3])))
 
-    def children_in_clip(self, clip=None, max_depth=1):
+    def children_in_clip(self, clip=None, max_depth=1, include_windows=True):
         """Descendants whose vertical span overlaps `clip` (default: this view's
         abs_clip_rect), top-to-bottom.
 
@@ -1326,6 +1326,12 @@ class DrawState(DictConversion):
         — positions are absolute (screen space), so a grandchild is kept iff it
         overlaps the original viewport, not its immediate parent's box.
 
+        `include_windows=False` prunes nested windows (closable) and their
+        whole subtree — same contract as get_child_keys' include_windows: a
+        window owns its own composition and doesn't move with this view, so
+        callers reacting to this view's layout (e.g. the scroll-in sweep)
+        shouldn't touch it.
+
         Results are pre-order (each child immediately followed by its own
         in-clip subtree) and deduped by identity across the whole walk."""
         if clip is None:
@@ -1334,6 +1340,8 @@ class DrawState(DictConversion):
             return []
 
         direct = self._direct_children_in_clip(clip)
+        if not include_windows:
+            direct = [c for c in direct if not c.closable]
         if max_depth is not None and max_depth <= 1:
             return direct
 
@@ -1344,7 +1352,7 @@ class DrawState(DictConversion):
             if id(c) not in seen:
                 seen.add(id(c))
                 result.append(c)
-            for gc in c.children_in_clip(clip, next_depth):
+            for gc in c.children_in_clip(clip, next_depth, include_windows):
                 if id(gc) not in seen:
                     seen.add(id(gc))
                     result.append(gc)

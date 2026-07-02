@@ -2128,7 +2128,18 @@ class Melty:
 
         original_bg_stack = copy(Melty.bg_stack)
         if draw_state._bg_stack is not None:
-            if len(draw_state._bg_stack) > 1:
+            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            if DragDrop.active and draw_state is DragDrop.item_ds:
+                # A dragged item is the one window that flips inline ->
+                # window mid-life. Its contents lay out with
+                # content_margin = len(bg_stack) * 2 (absolute depth), so the
+                # tint-tail truncation below would change every level's
+                # content_width from how it looks inline. Restore the FULL
+                # spawn snapshot: depths (margins) match inline exactly, and
+                # color reads are tail-relative (get_bg_color(-1/-2)) so they
+                # see the same entries either way.
+                Melty.bg_stack = list(draw_state._bg_stack)
+            elif len(draw_state._bg_stack) > 1:
                 Melty.bg_stack = draw_state._bg_stack[-2:]
             else:
                 Melty.bg_stack = [draw_state._bg_stack[-1]]
@@ -2416,7 +2427,12 @@ class Melty:
 
             for draw_state in layer:
                 if draw_state is not None:
-                    cls.draw(draw_state)
+                    # Same once-per-frame guard as the root_draw_states pass
+                    # below: a draw_state already fully drawn this frame (its
+                    # unique is registered in the wrapper) is never drawn
+                    # again - double-queuing must not cause double-drawing.
+                    if draw_state.unique not in cls.seen_unique:
+                        cls.draw(draw_state)
 
             Melty.depth = 0
             if Melty.channels_split:
@@ -2702,6 +2718,9 @@ class Melty:
                 frames_past = Melty.frame_count - note.frame
                 alpha_from_frame_past = max(0, 1.0 - (frames_past / max(1, Toggles.InvalidateTracker.keep_for_frames)))
                 alpha_from_note = note.tint[3] if len(note.tint) > 3 else 1.0
+
+                if ds is None:
+                    continue
 
                 invalidation_rect = (ds.abs_left, ds.abs_top,
                                      ds.abs_left + (ds.width or 0),

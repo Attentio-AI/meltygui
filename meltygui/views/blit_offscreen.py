@@ -41,7 +41,7 @@ INV_65535 = 1.0 / 65535.0
 # A tile backs a view with an offscreen texture sized to the view's bounds. Very
 # large views (long scroll regions, oversized layouts, etc.) would allocate
 # enormous textures (an 8000x8000 RGBA8 colour buffer alone is 256 MB, plus a
-# mask texture and a depth/stencil renderbuffer). When a view exceeds this size
+# mask buffer). When a view exceeds this size
 # on either axis it gracefully falls back to uncached rendering instead.
 MAX_TILE_DIM = 8000
 
@@ -206,15 +206,24 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         return None
 
     new_mask_tex = _create_mask_tex(w, h)
-    new_fbo, new_rbo = _create_fbo_with_tex(new_tex, True, w, h)
+    # No depth-stencil renderbuffer: tiles are only ever written by the PASS 3
+    # copy shader and the crop-blit, neither of which depth/stencil-tests, and
+    # the D24S8 attachment was 4 B/px of VRAM plus the slowest part of the
+    # create/destroy/delete cycle. Tile.rbo stays None; the guarded delete
+    # sites will free RBOs on tiles created before this change.
+    new_fbo, new_rbo = _create_fbo_with_tex(new_tex, False, w, h)
 
     if existing:
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, existing.fbo)
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, new_fbo)
+            # Inherited scissor box clips both glClear and glBlitFramebuffer;
+            # without this the new surface keeps undefined texels outside
+            # whatever scissor box the frame happened to leave behind.
+            gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glClearColor(0, 0, 0, 0.0)
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
             # Crop, don't stretch. The previous stretch-blit produced ugly
             # squished/streched content until the partial blits caught up. We
             # copy 1:1 from the old surface's screen-top-left corner into the
@@ -254,7 +263,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             gl.glViewport(0, 0, snap_int(w), snap_int(h))
             gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glClearColor(0, 0, 0, 0.0)
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT | gl.GL_STENCIL_BUFFER_BIT)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
         finally:
             st.restore()
 
@@ -1106,7 +1115,11 @@ class TileCacheMasked:
         # in still carries its previous box and a clip query misses it - the
         # very views this needs to find. children_in_clip binary searches the
         # ordered child dict using live abs_top, so it sees the current layout.
-        children_in_clip = draw_state.children_in_clip(clip, max_depth=5)
+        # Nested windows are pruned: a window doesn't translate with our
+        # scroll, so it can never be "scrolled in" and invalidating it (and its
+        # subtree) here just added lag to every scroll event.
+        children_in_clip = draw_state.children_in_clip(clip, max_depth=5,
+                                                       include_windows=False)
         for ds in children_in_clip:
             if Toggles.InvalidateTracker.draw_bvh:
                 InvalidateTracker.invalidations[f"{ds.name} in {draw_state.name} ds"] = Note(name="ds rect",

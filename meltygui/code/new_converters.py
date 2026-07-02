@@ -965,7 +965,7 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
         if len(tab_state.selected_tabs) == 1:
             column = None
         m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"],
-                                     show_system=True, draw=draw, max_width=draw_state.content_width - 10,
+                                     show_system=False, draw=draw, max_width=draw_state.content_width - 10,
                                      disable_scroll=False, show_header=False,
                                      column=idx, column_width=column_width,
                                      show_add_delete=False, name=f"{view_func.__name__}##{unique}",
@@ -2283,7 +2283,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                                            else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
                         continue
                     m_changed, m_out = RenderFuncs.draw_collection(
-                        gp, excluded=["__cst__"], child_kwargs={"show_bg":True, "shadow":False, "use_cache":True, "z_offset":0}, show_system=True, draw=draw,
+                        gp, excluded=["__cst__"], child_kwargs={"show_bg":True, "shadow":False, "use_cache":True, "z_offset":0}, show_system=False, draw=draw,
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,
                         name=f"draw_collection##{unique}", selectable=False)

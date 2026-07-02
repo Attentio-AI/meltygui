@@ -227,7 +227,7 @@ void main() {
     vec3 world = a_anchor + (a_out * a_metrics.z
                + a_u * (a_metrics.x * q.x) + a_v * (a_metrics.y * q.y)) * ws;
     vec3 d = world - eye;
-    // The voxel ray gen, inverted (same math as project_corners): perspective
+    // The voxel ray gen, inverted (same math as _axis_edges): perspective
     // keeps the depth in w for the divide, ortho is a plain scale.
     if (ortho) {
         float s = zoom / 1.7;
@@ -644,110 +644,151 @@ def lut_io(input_value=None, gl_state: GLState = None, view_func=None,
     return view_func(input_value=input_value, **kwargs)
 
 
-def _silhouette_edges(corners):
-    """The cube edges on the screen-space outline, by the classic mesh rule:
-    an edge is on the silhouette iff exactly ONE of its two adjacent faces is
-    front-facing. Facing comes from the projected quad's signed (shoelace)
-    area — outward-wound faces flip to clockwise on screen (y grows down), so
-    front-facing means a NEGATIVE sum. Edge-on faces (|area| ≈ 0 — every side
-    face in an exact top view) count as back-facing, so the camera-facing
-    square contributes all four sides.
-
-    The previous convex-hull walk degenerated in the axis-aligned views: the
-    depth-axis corner pairs project onto the same point (or onto collinear
-    runs that interleave the front and back squares), consecutive hull
-    vertices then differ on two axes, the cube-adjacency test fails, and
-    outline sides vanish — the missing-lines bug."""
-
-    def face_visible(k, s):
-        # Corner quad of face (axis k, sign s), wound CCW seen from outside:
-        # i + j = +k, and the s<0 loop reverses.
-        i, j = (k + 1) % 3, (k + 2) % 3
-        quad = ((-1, -1), (1, -1), (1, 1), (-1, 1)) if s > 0 else \
-            ((-1, -1), (-1, 1), (1, 1), (1, -1))
-        loop = []
-        for vi, vj in quad:
-            c = [0, 0, 0]
-            c[k], c[i], c[j] = s, vi, vj
-            p = corners[tuple(c)]
-            if p is None:
-                return False
-            loop.append(p)
-        area2 = sum(loop[m][0] * loop[(m + 1) % 4][1]
-                    - loop[(m + 1) % 4][0] * loop[m][1] for m in range(4))
-        return area2 < -1.0
-
-    vis = {(k, s): face_visible(k, s) for k in range(3) for s in (-1, 1)}
-    edges = set()
-    all_valid = set()
-    for k in range(3):
-        i, j = (k + 1) % 3, (k + 2) % 3
-        for si in (-1, 1):
-            for sj in (-1, 1):
-                a, b = [0, 0, 0], [0, 0, 0]
-                a[k], b[k] = -1, 1
-                a[i] = b[i] = si
-                a[j] = b[j] = sj
-                a, b = tuple(a), tuple(b)
-                if corners[a] is None or corners[b] is None:
-                    continue
-                all_valid.add(frozenset((a, b)))
-                if vis[(i, si)] != vis[(j, sj)]:  # the edge's adjacent faces
-                    edges.add(frozenset((a, b)))
-    # Camera INSIDE the box: every face is back-facing, so the original
-    # silhouette (exactly one front-facing face per edge) is empty and the
-    # outline + labels would vanish. Don't hide them - fall back to every edge
-    # with both corners in front of the camera, so the box stays outlined and
-    # labeled from the inside.
-    return edges or all_valid
+# Near-plane depth for the axis box's Python-side projection - the old
+# per-corner behind-camera cutoff; edges now CLIP here instead of vanishing.
+_AXIS_NEAR = 0.05
 
 
-def project_corners(tilt, spin, zoom, aspect, width, height, scale=(1.0, 1.0, 1.0),
-                    pan=(0.0, 0.0, 0.0), ortho=False):
-    """Screen positions of the volume BOX's 8 corners (extents = `scale`, the
-    voxel-count-proportional volume_scale) — the Python mirror of the shader's
-    orbit camera, so labels land exactly on the rendered edges. Keys stay the
-    ±1 sign tuples; positions carry the scaling.
-    Returns {corner_signs: (sx, sy) or None (behind camera)}."""
+def _axis_edges(tilt, spin, zoom, aspect, width, height,
+                scale=(1.0, 1.0, 1.0), pan=(0.0, 0.0, 0.0), ortho=False):
+    """The volume box's silhouette edges, each clipped to its VISIBLE span —
+    the Python mirror of the shader's orbit camera (extents = `scale`, the
+    voxel-count-proportional volume_scale), so lines and labels land exactly
+    on the rendered edges.
+
+    Face visibility is decided in WORLD space: front-facing iff the eye is
+    outside the face's plane (ortho: iff the view direction looks against
+    its normal) — never from projected corner geometry. The old test used
+    the projected quad's shoelace area against an absolute px² threshold and
+    needed all four corners in front of the near plane; on a wide-skinny
+    volume (a (1, 96, 4096) slab is a 1.0 × 0.023 × 0.02 box) any zoom that
+    makes the data readable puts the camera INSIDE the box's long span, the
+    near corners fell to the behind-camera cutoff, and every face and edge
+    touching them vanished — the axis hid exactly when you zoomed in to
+    read it, and orbiting changed which corners died.
+
+    An edge is on the silhouette iff exactly one adjacent face is front-
+    facing (edge-on faces count as back-facing, so the camera-facing square
+    contributes all four sides in an exact top view); eye inside the box —
+    no face front-facing — keeps all 12, so the box stays outlined and
+    labeled from the inside. Each edge then clips against the near plane in
+    camera space and the image rect in screen space (screen params map back
+    through the perspective-correct 1/z interpolation), so a partially-
+    behind or partially-offscreen axis keeps its on-screen portion.
+
+    Returns [(a, b, pa, pb, t0, t1, z0, z1)]: the ±1 corner sign tuples, the
+    screen endpoints of the visible span, its world-param range over a→b
+    (exactly 0.0 / 1.0 when that end is the true corner), and the camera
+    depths at the visible ends (equal under ortho) for perspective-correct
+    tick placement downstream."""
     ct = math.cos(tilt)
     fwd = -np.array([math.cos(spin) * ct, math.sin(spin) * ct, math.sin(tilt)])
     right = np.array([-math.sin(spin), math.cos(spin), 0.0])
     up = np.cross(right, fwd)
     eye = np.asarray(pan, np.float64) - fwd * zoom
-    out = {}
-    for corner in ((x, y, z) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)):
-        world = np.asarray(corner, np.float64) * np.asarray(scale, np.float64)
-        d = world - eye
-        zc = d @ fwd
-        if zc < 0.05:
-            out[corner] = None
-            continue
-        # Inverse of the shader's ray gen (rd ∝ fwd*1.7 + right*ndc.x + up*ndc.y,
-        # ndc.x pre-scaled for aspect): ndc = 1.7 * cam_xy / cam_z, x /= aspect.
-        # Ortho divides by the fixed frame half-size (zoom/1.7) instead of the
-        # corner's own depth.
-        denom = zoom / 1.7 if ortho else zc / 1.7
-        ndx = ((d @ right) / denom) / aspect
-        ndy = (d @ up) / denom
-        out[corner] = ((ndx * 0.5 + 0.5) * width, (1.0 - (ndy * 0.5 + 0.5)) * height)
-    return out
+    sc = np.asarray(scale, np.float64)
+    # Inverse of the shader's ray gen (rd ∝ fwd*1.7 + right*ndc.x + up*ndc.y,
+    # ndc.x pre-scaled by aspect): ndc = 1.7 * cam_xy / cam_z, x /= aspect.
+    # Ortho divides by the fixed frame half-size (zoom/1.7) instead of the
+    # point's own depth.
+    ortho_denom = max(zoom, 1e-6) / 1.7
+
+    def to_screen(cx, cy, cz):
+        denom = ortho_denom if ortho else cz / 1.7
+        ndx = (cx / denom) / aspect
+        ndy = cy / denom
+        return ((ndx * 0.5 + 0.5) * width, (1.0 - (ndy * 0.5 + 0.5)) * height)
+
+    def face_visible(k, s):
+        # The box is centered on the ORIGIN (pan is the camera target).
+        return (-s * fwd[k] > 1e-12) if ortho else (s * eye[k] > sc[k])
+
+    vis = {(k, s): face_visible(k, s) for k in range(3) for s in (-1, 1)}
+    any_vis = any(vis.values())
+
+    def clip(a, b):
+        # World → camera space (right/up/depth) at both corners.
+        da = np.asarray(a, np.float64) * sc - eye
+        db = np.asarray(b, np.float64) * sc - eye
+        az, bz = float(da @ fwd), float(db @ fwd)
+        if az < _AXIS_NEAR and bz < _AXIS_NEAR:
+            return None
+        t0, t1 = 0.0, 1.0
+        if az < _AXIS_NEAR:
+            t0 = (_AXIS_NEAR - az) / (bz - az)
+        elif bz < _AXIS_NEAR:
+            t1 = (_AXIS_NEAR - az) / (bz - az)
+        ax, ay = float(da @ right), float(da @ up)
+        bx, by = float(db @ right), float(db @ up)
+        cx0, cy0, cz0 = ax + (bx - ax) * t0, ay + (by - ay) * t0, az + (bz - az) * t0
+        cx1, cy1, cz1 = ax + (bx - ax) * t1, ay + (by - ay) * t1, az + (bz - az) * t1
+        pa, pb = to_screen(cx0, cy0, cz0), to_screen(cx1, cy1, cz1)
+        # Liang-Barsky against the image rect.
+        s0, s1 = 0.0, 1.0
+        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
+        for p, q in ((-dx, pa[0]), (dx, width - pa[0]),
+                     (-dy, pa[1]), (dy, height - pa[1])):
+            if abs(p) < 1e-9:
+                if q < 0.0:
+                    return None
+                continue
+            r = q / p
+            if p < 0.0:
+                if r > s1:
+                    return None
+                if r > s0:
+                    s0 = r
+            else:
+                if r < s0:
+                    return None
+                if r < s1:
+                    s1 = r
+
+        def world_u(s):
+            # Screen param → world param over the near-clipped span: 1/z
+            # interpolates linearly in screen space, so u = s-z0/(z1+s-(z0-z1));
+            # ortho z is affine (u = s).
+            return s if ortho else s * cz0 / (cz1 + s * (cz0 - cz1))
+
+        u0, u1 = world_u(s0), world_u(s1)
+        return (a, b,
+                (pa[0] + dx * s0, pa[1] + dy * s0),
+                (pa[0] + dx * s1, pa[1] + dy * s1),
+                t0 + (t1 - t0) * u0, t0 + (t1 - t0) * u1,
+                cz0 + (cz1 - cz0) * u0, cz0 + (cz1 - cz0) * u1)
+
+    edges = []
+    for k in range(3):
+        i, j = (k + 1) % 3, (k + 2) % 3
+        for si in (-1, 1):
+            for sj in (-1, 1):
+                if any_vis and vis[(i, si)] == vis[(j, sj)]:
+                    continue  # the edge's two faces agree → not visible
+                a, b = [0, 0, 0], [0, 0, 0]
+                a[k], b[k] = -1, 1
+                a[i] = b[i] = si
+                a[j] = b[j] = sj
+                rec = clip(tuple(a), tuple(b))
+                if rec is not None:
+                    edges.append(rec)
+    return edges
 
 
-# Outline lines draw shortened by this many screen px at each end (the
-# original fixed_shorten look); tick placement compresses into the remaining
-# span so the 0 and max labels align with the visible line ends.
+# Outline edges draw shortened by this many screen px at each true-corner
+# end (the original fixed_shorten look); clipped edges compresses into the
+# same span so the end labels align with the visible span ends.
 _EDGE_SHORTEN_PX = 14.0
 
 
-def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
-    """The cube's silhouette outline as thin imgui lines, shortened near the
-    corners (the original fixed_shorten look). Labels are NOT drawn here any
-    more — they're textured billboards in the voxel FBO (_billboard_specs +
-    _render_label_billboards), so they live in the 3-D scene."""
+def _draw_axis_lines(draw_list, img_pos, edges):
+    """The visible silhouette spans as thin imgui lines, shortened near true
+    CORNERS (the original fixed_shorten look); a clipped end (near plane /
+    screen border) runs to its cut, since the edge continues past it. Labels
+    are NOT drawn here any more — they're textured billboards in the voxel
+    FBO (_billboard_specs + _render_label_billboards), so they live in the
+    3-D scene."""
     line_col = imgui.get_color_u32_rgba(0.9, 0.9, 1.0, 0.5)
-    for edge in silhouette:
-        a, b = tuple(edge)
-        pa, pb = corners[a], corners[b]
+    for a, b, pa, pb, t0, t1, z0, z1 in edges:
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
         if length < 0.5:
@@ -755,20 +796,31 @@ def _draw_axis_lines(draw_list, img_pos, corners, silhouette):
         # Short edges shorten proportionally instead of vanishing - the
         # outline only ever skips sub-2px degenerates.
         shorten = min(_EDGE_SHORTEN_PX, length * 0.25)
+        sh_a = shorten if t0 == 0.0 else 0.0
+        sh_b = shorten if t1 == 1.0 else 0.0
         ux, uy = dx / length, dy / length
-        draw_list.add_line(img_pos[0] + pa[0] + ux * shorten, img_pos[1] + pa[1] + uy * shorten,
-                           img_pos[0] + pb[0] - ux * shorten, img_pos[1] + pb[1] - uy * shorten,
+        draw_list.add_line(img_pos[0] + pa[0] + ux * sh_a, img_pos[1] + pa[1] + uy * sh_a,
+                           img_pos[0] + pb[0] - ux * sh_b, img_pos[1] + pb[1] - uy * sh_b,
                            line_col, 1.0)
 
 
-def _tick_values(size, px_per_idx, num_px, spacing=1.6):
-    """Integer tick positions for one edge: EVERY integer when the labels
-    fit, else the smallest 1-2-5·10ᵏ step whose rotated labels keep clear of
-    each other (footprint ≈ the widest label's text width along the edge, in
-    projected PIXELS — so zooming in fits more ticks). `spacing` is the
-    minimum gap between tick centers in widest-label widths. The end value
-    always shows; the last multiple yields when it would crowd it."""
-    widest = max(1, len(str(size))) * 0.62 * num_px  # ~avg glyph aspect
+def _tick_values(lo, hi, px_per_idx, num_px, spacing=1.6):
+    """Integer tick positions for the VISIBLE [lo, hi] index span of one
+    edge: EVERY integer when the labels fit, else the smallest 1-2-5·10ᵏ
+    step whose rotated labels keep clear of each other (footprint ≈ the
+    widest label's text width along the edge, in projected PIXELS — so
+    zooming in fits more ticks). `spacing` is the minimum gap between tick
+    centers in widest-label widths. The span's end values always show —
+    0/max on an unclipped edge, the boundary indices (a scrollbar-like
+    readout of where you are along the axis) on a clipped one; interior
+    step multiples stay GLOBAL multiples (they don't jitter as the clip
+    end moves) and yield when they would crowd an end."""
+    e0, e1 = int(math.ceil(lo - 1e-9)), int(math.floor(hi + 1e-9))
+    if e1 < e0:
+        return []
+    if e1 == e0:
+        return [e0]
+    widest = max(1, len(str(e1))) * 0.62 * num_px  # ~max glyph aspect
     min_px = widest * spacing
     step, k = None, 1
     while step is None and k <= 10 ** 9:
@@ -778,53 +830,58 @@ def _tick_values(size, px_per_idx, num_px, spacing=1.6):
                 break
         else:
             k *= 10
-    if step is None or step > size:
-        return [0, size] if size > 0 else [0]
-    ticks = list(range(0, size + 1, step))
-    if ticks[-1] != size:
-        if size - ticks[-1] < 0.6 * step and len(ticks) > 1:
-            ticks.pop()
-        ticks.append(size)
+    if step is None or step > e1 - e0:
+        return [e0, e1]
+    ticks = [e0]
+    m = int(math.ceil((e0 + 0.6 * step) / step)) * step
+    while m <= e1 - 0.6 * step:
+        ticks.append(m)
+        m += step
+    ticks.append(e1)
     return ticks
 
 
-def _billboard_specs(silhouette, corners, axis_display, volume_scale,
+def _billboard_specs(edges, axis_display, volume_scale,
                      name_size=24.0, name_padding=34.0, name_opacity=1.0,
                      num_size=16.0, num_padding=11.0, num_opacity=1.0,
                      num_spacing=1.6, num_angle=0.0):
     """[(text, anchor3, u_dir3, v_dir3, out_dir3, px_h, off_px, alpha)] for
-    every drawn silhouette edge — the dim name beside the midpoint plus
-    integer ticks (_tick_values) at their TRUE positions along the edge.
-    Anchors are volume-box WORLD points ON the edge. All metrics are screen
-    PIXELS, held at any zoom (the shader depth-converts at each anchor):
-    `*_size` is the label height (0 hides that label type), `*_padding` the
-    GAP between the line and the label's near edge (independent of size),
-    `*_opacity` the tint alpha. u runs along the edge and v outward from
-    the box ("angled perpendicular to the line"); both are flipped for
-    readability — the up-axis flips when the quad shows its back (un-mirrors
-    without reversing the reading direction), then a 180° spin makes text
-    read left-to-right, or bottom-to-top on near-vertical edges. The offset
+    every visible silhouette span — the dim name beside the SPAN's midpoint
+    (always on screen, unlike a clipped edge's full midpoint, which can sit
+    behind the camera) plus integer ticks (_tick_values) at their TRUE
+    positions along the edge; a clipped edge labels only its on-screen index
+    range, so a zoomed-in wide volume reads like a scrolled ruler. Anchors
+    are volume-box WORLD points ON the edge. All metrics are screen PIXELS,
+    held at any zoom (the shader depth-converts at each anchor): `*_size` is
+    the label height (0 hides that label type), `*_padding` the GAP between
+    the line and the label's near edge (independent of size), `*_opacity`
+    the tint alpha. u runs along the edge and v outward from the box
+    ("angled perpendicular to the line"); both are flipped for readability —
+    the up-axis flips when the quad shows its back (un-mirrors without
+    reversing the reading direction), then a 180° spin makes text read
+    left-to-right, or bottom-to-top on near-vertical edges. The offset
     always rides the UNFLIPPED outward direction, so labels never land
     inside the box. Nothing hides by projected size any more — the
     face-visibility silhouette already culls truly invisible edges, and
-    _tick_values degrades to just 0/max on short edges."""
+    _tick_values degrades to just the end values on short edges."""
     name_off = name_padding + name_size * 0.5  # anchor -> label CENTER
     num_off = num_padding + num_size * 0.5
     # tick label slant (optional, not the label plane - matplotlib-style)
     ca, sa = math.cos(math.radians(num_angle)), math.sin(math.radians(num_angle))
-    vis = [p for p in corners.values() if p is not None]
-    if not vis:
+    pts = [p for e in edges for p in (e[2], e[3])]
+    if not pts:
         return []
-    scx = sum(p[0] for p in vis) / len(vis)  # silhouette's screen centroid
-    scy = sum(p[1] for p in vis) / len(vis)
+    scx = sum(p[0] for p in pts) / len(pts)  # silhouette's screen centroid
+    scy = sum(p[1] for p in pts) / len(pts)
 
     specs = []
-    for edge in silhouette:
-        a, b = tuple(edge)
+    for a, b, pa, pb, t0, t1, z0, z1 in edges:
         k = next(i for i in range(3) if a[i] != b[i])  # the axis it runs along
-        if a[k] > b[k]:
-            a, b = b, a  # a is the texcoord-0 end
-        pa, pb = corners[a], corners[b]
+        if a[k] > b[k]:  # a = the texcoord-0 end (visible span flips with it)
+            a, b = b, a
+            pa, pb = pb, pa
+            t0, t1 = 1.0 - t1, 1.0 - t0
+            z0, z1 = z1, z0
         px_len = math.hypot(pb[0] - pa[0], pb[1] - pa[1])
         if px_len < 0.5:
             continue   # zero-area edge: direction math requires a length
@@ -833,9 +890,13 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
         b3 = tuple(b[i] * volume_scale[i] for i in range(3))
         length = math.sqrt(sum((b3[i] - a3[i]) ** 2 for i in range(3))) or 1.0
         w = tuple((b3[i] - a3[i]) / length for i in range(3))  # a → b, for placement
-        mid = tuple((a3[i] + b3[i]) * 0.5 for i in range(3))
-        m_len = math.sqrt(sum(c * c for c in mid)) or 1.0
-        out = tuple(c / m_len for c in mid)  # normalized, ⊥ the edge (mid-w = 0)
+        mid_full = tuple((a3[i] + b3[i]) * 0.5 for i in range(3))
+        m_len = math.sqrt(sum(c * c for c in mid_full)) or 1.0
+        out = tuple(c / m_len for c in mid_full)  # outward, ⊥ the edge (mid-w = 0)
+        # World endpoints + midpoint of the VISIBLE span (the label anchors).
+        va = tuple(a3[i] + (b3[i] - a3[i]) * t0 for i in range(3))
+        vb = tuple(a3[i] + (b3[i] - a3[i]) * t1 for i in range(3))
+        mid = tuple((va[i] + vb[i]) * 0.5 for i in range(3))
 
         # TRUE screen directions, not the camera-basis approximation (which
         # skews under perspective for off-center edges and mirrors oblique
@@ -866,22 +927,44 @@ def _billboard_specs(silhouette, corners, axis_display, volume_scale,
 
         if name_size > 0:
             specs.append((name, mid, u, v, out, name_size, name_off, name_opacity))
-        if num_size > 0 and size > 0:
-            # Ticks convert into the VISIBLE line span (edges draw shortened
-            # adaptively per end), so 0 sits at the edge's start and the max
-            # value at its end instead of out at the corners. _tick_values
-            # self-limits on short edges (degrades to just 0 and max).
+        i0, i1 = t0 * size, t1 * size  # the visible index range
+        if num_size > 0 and size > 0 and i1 - i0 > 1e-9:
+            # Ticks compress into the DRAWN line span (true-corner ends draw
+            # shortened; clipped ends need to be cut), and the end labels
+            # sit at the visible line ends. Screen px and world params go
+            # through the perspective-correct 1/z map (affine when z0 == z1,
+            # i.e. ortho or an edge parallel to the screen).
+            def u_of(s):
+                return s if z0 == z1 else s * z0 / (z1 + s * (z0 - z1))
+
+            def s_of(up):
+                return up if z0 == z1 else up * z1 / (z0 + up * (z1 - z0))
+
             inset_px = min(_EDGE_SHORTEN_PX, px_len * 0.25)
-            inset = inset_px * length / px_len
-            span = max(0.0, length - 2.0 * inset)
+            u_lo = u_of(inset_px / px_len if t0 == 0.0 else 0.0)
+            u_hi = u_of(1.0 - (inset_px / px_len if t1 == 1.0 else 0.0))
             if num_angle:
                 ut = tuple(ca * u[i] + sa * v[i] for i in range(3))
                 vt = tuple(ca * v[i] - sa * u[i] for i in range(3))
             else:
                 ut, vt = u, v
-            for idx in _tick_values(int(size), (px_len - 2 * inset_px) / size,
-                                    num_size, num_spacing):
-                p = tuple(a3[i] + w[i] * (inset + span * idx / size) for i in range(3))
+            # Step from the span's AVERAGE screen density; perspective
+            # compresses the far end, so greedily skip interior ticks whose
+            # SCREEN positions crowd the previous one or the end label.
+            ticks = _tick_values(i0, i1, px_len / (i1 - i0), num_size,
+                                 num_spacing)  # [] on an integer-free sliver
+            min_gap = max(1, len(str(ticks[-1] if ticks else 0))) \
+                * 0.62 * num_size * num_spacing
+            placed = []
+            for n, idx in enumerate(ticks):
+                up = u_lo + (u_hi - u_lo) * ((idx - i0) / (i1 - i0))
+                s_px = s_of(up) * px_len
+                if 0 < n < len(ticks) - 1 and placed and (
+                        s_px - placed[-1] < min_gap
+                        or s_of(u_hi) * px_len - s_px < min_gap):
+                    continue
+                placed.append(s_px)
+                p = tuple(va[i] + (vb[i] - va[i]) * up for i in range(3))
                 specs.append((str(idx), p, ut, vt, out, num_size, num_off, num_opacity))
     return specs
 
@@ -1131,7 +1214,7 @@ def draw_voxel_controls(input_value=None, vox_ds=None, mapping=None,
     return changed, input_value
 
 
-@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, min_height=50, disable_scroll=True, use_cache=True)
+@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, min_height=293, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 draw_state=None,
                 # ── camera + shading: cam_* names dodge the legacy DrawState
@@ -1284,6 +1367,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         cam_zoom = min(135.5, max(0.0, cam_zoom * math.exp(-0.23 * scroll_y_changed.value)))
         draw_state.cam_zoom = cam_zoom
 
+
     # ── Blender-style numpad views (hover-routed key events): 7/1/3 = top/
     # front/right, ctrl = the opposite side, 5 = ortho toggle, / (either
     # slash, or numpad . like the old viewer) = recenter the pan on the
@@ -1336,17 +1420,16 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         lut_tex = gl_state.texture1d("lut_fallback", lut_list,
                                      version=(lut, len(lut_list)))
 
-    # ── axis furniture geometry: corners + silhouette are the Python mirror
-    # of the OpenGL camera, computed BEFORE the GL pass - the label
-    # billboards render IN the voxel FBO with the volume's own camera ────
-    corners = silhouette = None
+    # ── axis coordinate positions: visible silhouette spans via the Python
+    # mirror of the shader camera, computed BEFORE the GL pass - the label
+    # billboards render INTO the voxel FBO with the volume's own camera ────
+    axis_edges = None
     if axis_display:
-        corners = project_corners(tilt, spin, cam_zoom,
-                                  width / height, width, height,
-                                  scale=volume_scale,
-                                  pan=(pan_x, pan_y, pan_z),
-                                  ortho=ortho)
-        silhouette = _silhouette_edges(corners)
+        axis_edges = _axis_edges(tilt, spin, cam_zoom,
+                                 width / height, width, height,
+                                 scale=volume_scale,
+                                 pan=(pan_x, pan_y, pan_z),
+                                 ortho=ortho)
 
     # ── GL pass: every resource tracked + lifecycle-managed by gl_state ──
     fb = gl_state.fbo("target", width, height)
@@ -1364,13 +1447,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                    pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
                    brightness=cam_brightness, contrast=cam_contrast,
                    centered=centered)
-        if silhouette and (name_size > 0 or num_size > 0):
+        if axis_edges and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
             # log it and keep rendering the volume.
             global _LABEL_WARNED
             try:
-                specs = _billboard_specs(silhouette, corners, axis_display,
+                specs = _billboard_specs(axis_edges, axis_display,
                                          volume_scale, name_size, name_padding,
                                          name_opacity, num_size, num_padding,
                                          num_opacity, num_spacing, num_angle)
@@ -1391,8 +1474,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     imgui.image(fb.texture_id, width, height, uv0=(0, 1), uv1=(1, 0))
 
     # ── the outline stays 2-D imgui (crisp 1px outline over the volume) ────
-    if silhouette:
-        _draw_axis_lines(imgui.get_window_draw_list(), img_pos, corners, silhouette)
+    if axis_edges:
+        _draw_axis_lines(imgui.get_window_draw_list(), img_pos, axis_edges)
 
     # ── ALL controls live in a satellite panel opening to the RIGHT of
     # the window (params + LUTs + axis remap + scrubbers + flow + names +

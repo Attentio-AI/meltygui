@@ -120,12 +120,15 @@ def _unwrap(func):
         return func
 
 
-def _lookup_live(func, name):
+def _lookup_live(func, name, globals_ns=None):
     """The live object a free ``name`` resolves to in ``func``'s scope -- a module
     global or a builtin -- or ``_MISSING``. Lets ``imgui.``/``len.`` complete
     against the real object (exact, chainable) without holding anything: the
-    module/builtin already lives forever."""
-    g = getattr(_unwrap(func), "__globals__", None) or {}
+    module/builtin already lives forever. ``globals_ns`` overrides the globals
+    dict consulted (the code editor passes the edited file's live module dict;
+    the eval box has a real ``func`` and passes nothing)."""
+    g = globals_ns if globals_ns is not None else (
+        getattr(_unwrap(func), "__globals__", None) or {})
     if name in g:
         return g[name]
     if hasattr(_builtins, name):
@@ -134,10 +137,26 @@ def _lookup_live(func, name):
 
 
 def _live_member_kind(obj, name):
+    """method/class/mod/attr tag for member ``name`` of live object ``obj``.
+    Resolved with getattr_static so completion never fires a property/descriptor
+    (a DrawState geometry property, a lazy loader) just to classify its row."""
     try:
-        return "method" if callable(getattr(obj, name)) else "attr"
+        attr = inspect.getattr_static(obj, name)
     except Exception:
-        return "attr"
+        try:
+            attr = inspect.getattr_static(type(obj), name)
+        except Exception:
+            return "attr"
+    if isinstance(attr, (staticmethod, classmethod)):
+        return "method"
+    if (inspect.isfunction(attr) or inspect.ismethod(attr)
+            or inspect.isbuiltin(attr) or inspect.ismethoddescriptor(attr)):
+        return "method"
+    if isinstance(attr, type):
+        return "class"
+    if inspect.ismodule(attr):
+        return "mod"
+    return "attr"
 
 
 def _type_member_kind(t, name):
@@ -180,18 +199,21 @@ def _attr_type(t, name):
     return None
 
 
-def member_completions(func, receiver):
+def member_completions(func, receiver, globals_ns=None):
     """``[(name, kind)]`` for ``receiver.``<caret>. The receiver resolves either
     to a LIVE object (module global / builtin -> walked with getattr, exact and
     chainable) or to a recorded scope var (-> its captured member snapshot for the
     first hop, a static type-chain walk for deeper hops). ``[]`` when unresolved
-    (the popup simply stays closed)."""
+    (the caller falls through to jedi / keeps the popup closed). ``globals_ns``
+    substitutes the globals the receiver head resolves in -- the code editor
+    passes the edited file's live module dict, so any module-level name in the
+    file being edited completes instantly against the running process."""
     if not receiver:
         return []
     segs = receiver.split(".")
     head, rest = segs[0], segs[1:]
 
-    live = _lookup_live(func, head)
+    live = _lookup_live(func, head, globals_ns)
     if live is not _MISSING:
         obj = live
         for seg in rest:

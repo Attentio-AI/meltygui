@@ -9,7 +9,7 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
-MIN_COLUMN_WIDTH = 30
+MIN_COLUMN_WIDTH = 60
 MIN_ROW_HEIGHT = 20
 EDGE_GRAB_WIDTH = 20.0
 # Band color when the cursor is over the row (hard-coded for now).
@@ -97,24 +97,46 @@ def _all_edges(window):
     return flat
 
 
-def _drag_edge(edges, k, target):
+def _drag_edge(edges, k, target, walls=frozenset()):
     """Move edge k of the sorted list to `target`. Edges are independent
     objects: no other edge moves unless the moving edge (or one it already
     carried) closes to MIN_COLUMN_WIDTH — then it is carried, and the chain
     stops at the first edge with slack. Pulling away never drags anything
-    along; only contact pushes."""
+    along; only contact pushes.
+
+    ``walls`` is a set of edge ids the cascade must NOT move. Contact stops
+    dead at a wall: the *dragged* edge itself is clamped so the pile packs
+    against the wall at MIN_COLUMN_WIDTH spacing instead of the chain
+    shoving the wall along. Used by _solve_collisions to keep one FRAME
+    edge from pushing the other (breaks the foreign-width feedback loop —
+    see there); interior divider drags pass no walls, so a divider can
+    still push a frame edge and slide/grow the window 1:1 with the
+    cursor."""
     old = edges[k]["x"]
     if target == old:
         return
-    edges[k]["x"] = float(target)
     if target > old:
         for m in range(k + 1, len(edges)):
+            if id(edges[m]) in walls:
+                target = min(target, edges[m]["x"] - (m - k) * MIN_COLUMN_WIDTH)
+                break
+        edges[k]["x"] = float(target)
+        for m in range(k + 1, len(edges)):
+            if id(edges[m]) in walls:
+                break
             need = edges[m - 1]["x"] + MIN_COLUMN_WIDTH
             if edges[m]["x"] >= need:
                 break
             edges[m]["x"] = need
     else:
         for m in range(k - 1, -1, -1):
+            if id(edges[m]) in walls:
+                target = max(target, edges[m]["x"] + (k - m) * MIN_COLUMN_WIDTH)
+                break
+        edges[k]["x"] = float(target)
+        for m in range(k - 1, -1, -1):
+            if id(edges[m]) in walls:
+                break
             need = edges[m + 1]["x"] - MIN_COLUMN_WIDTH
             if edges[m]["x"] <= need:
                 break
@@ -130,13 +152,27 @@ def _solve_collisions(window):
     if not pending:
         return False
     flat = _all_edges(window)
+    # A FRAME edge drag must never shove the OTHER frame edge. The danger
+    # case is the foreign-width invariant drag (window_edge_pass queues
+    # right→window.width): when an outside writer re-stamps width below the
+    # fully-compressed pile span every frame, that drag pushes clean through
+    # the pile into the left frame edge, the rebase dumps the mismat
+    # into window_pos, width springs back, and the loop re-fires each frame
+    # - the window flies off screen with no end limit. Walling the
+    # opposite frame edge clamps the drag at the pile span instead, so the
+    # mismatch resolves by width snapping back (stable), never by sliding.
+    # INTERIOR divider drags keep an empty wall set: pushing the window's
+    # left edge with a divider (slide or grow) is normal normal and only
+    # ever moves 1:1 with the cursor.
+    frame_ids = {id(e) for e in (getattr(window, "_frame_edges", None) or [])}
     moved = False
     for edge, target in pending:
         flat.sort(key=lambda e: e["x"])
         k = next((i for i, e in enumerate(flat) if e is edge), None)
         if k is None or target == edge["x"]:
             continue
-        _drag_edge(flat, k, target)
+        walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
+        _drag_edge(flat, k, target, walls=walls)
         moved = True
     return moved
 

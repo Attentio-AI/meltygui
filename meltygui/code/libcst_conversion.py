@@ -12,6 +12,7 @@ import ast
 import enum
 import inspect
 import math
+import re
 import struct
 import sys
 import threading
@@ -704,16 +705,25 @@ def _jedi_subprocess(file_path_str: str,
 
 
 # ── Type-aware member completion (jedi, async) ────────────────
-# Powers the editor's `imgui.` & an attribute popup. Two obstacles, one answer:
-#   1. The editor holds only a function's SPAN, so `import imgui` lives above
-#      it - jedi parsing the span alone never sees the name.
+# Powers the editor's `imgui.`-style attribute popup. Two obstacles, two answers:
+#   1. The buffer holds only a function/class SPAN, so `import imgui`, the
+#      enclosing class (for `self.`), and every module-level name live above it -
+#      jedi on the span and never sees them. Fixed by handing jedi the
+#      WHOLE FILE with the live buffer spliced over the span (_full_file_context):
+#      the span's Address knows its path + line range, and PendingSave supplies
+#      the file text with all unsaved queued edits applied. With the file's real
+#      path + the src-scoped Project, jedi resolves `self.`, locals built from
+#      project classes, src imports, and import-statement completion. A plain
+#      buffer with no Address falls back to the old dedent-the-span mode.
 #   2. imgui (and torch, numpy) are compiled C-extension modules: jedi's STATIC
-#      analysis finds no names in them (it works for pure-python like `os.`).
-# `jedi.Interpreter` solves both - it completes against live objects via real
-# introspection, so we hand it a namespace binding the names it interest
-# (the live modules) and it resolves `imgui.<790 real members>`. To support
-# another module, add it to _COMPLETION_MODULES. The span is dedented to column 0
-# first (a method body is indented) so it parses as a module.
+#      analysis finds no members in them (it works for pure-python like `os.`).
+#      `jedi.Interpreter` solves that - it completes against LIVE names via C
+#      introspection, so we hand it a namespace binding the names worth completing
+#      (the live modules) and it resolves `imgui.<790 real members>`. To support
+#      another module, add it to _COMPLETION_MODULES.
+# (The editor also short-circuits dotted receivers it can resolve against the
+# live module namespace in-process - see _ensure_member_completions - so jedi
+# only sees the receivers that need static inference: locals, self, imports.)
 _COMPLETION_MODULES = {
     "imgui": "imgui",
     "glfw": "glfw",
@@ -739,14 +749,17 @@ def _completion_namespace():
     return _completion_ns_cache
 
 
-def _jedi_complete_worker(code: str, line: int, col: int):
+def _jedi_complete_worker(code: str, line: int, col: int, path: str = None):
     """Child-process worker: jedi.Interpreter completions at (1-indexed `line`,
     0-indexed `col`) in `code`, resolving names against the live module namespace.
+    `path` (full-file mode) is the real file the code came from — with it jedi
+    gets the src-scoped Project, so relative/src imports resolve statically.
     Returns picklable [(name, type), ...] (type ∈ jedi's
     module/class/function/instance/param/keyword/statement/property/path)."""
     import jedi
     try:
-        comps = jedi.Interpreter(code, [_completion_namespace()]).complete(line, col)
+        kw = {"path": path, "project": _jedi_project()} if path else {}
+        comps = jedi.Interpreter(code, [_completion_namespace()], **kw).complete(line, col)
     except Exception:
         return []
     return [(c.name, c.type) for c in comps if c.name]
@@ -759,13 +772,50 @@ def _completion_common_indent(text: str) -> int:
     return min(indents) if indents else 0
 
 
-def submit_member_completion(text: str, line0: int, col: int):
-    """Submit a jedi member-completion job for a caret at 0-indexed (`line0`,
-    `col`) within editor `text` (a function/class span). Dedents the span to
-    column 0, maps the caret into it, and returns a Future of [(name, type), ...]
-    — or None if the pool is unavailable. Non-blocking; poll Future.done() from
-    the render loop."""
+def _full_file_context(text: str, address):
+    """(code, caret_line_shift, path_str) for jedi over the WHOLE file the edited
+    span lives in: the file's current in-memory text (disk + every queued unsaved
+    edit, via PendingSave) with the live buffer `text` spliced over the span's
+    line range. The buffer keeps its file indentation, so lines splice verbatim
+    and a caret at buffer line L sits at file line `shift + L` (same column).
+    None when the span has no usable file context (a plain buffer, an unreadable
+    file) — callers fall back to the dedented-span mode."""
     try:
+        if (address is None or getattr(address, "path", None) is None
+                or getattr(address, "start", None) is None):
+            return None
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        file_text = PendingSave.current_file_text(address.path)
+        if file_text is None:
+            return None
+        lines = file_text.split("\n")
+        if not (0 <= address.start <= len(lines)):
+            return None
+        # Same trailing-newline convention as PendingSave.current_file_text /
+        # apply_all_saves, so the splice matches how a save would land.
+        buf = text[:-1] if text.endswith("\n") else text
+        end = address.end if address.end is not None else address.start
+        end = max(address.start, min(end, len(lines)))
+        lines[address.start:end] = buf.split("\n")
+        return "\n".join(lines), address.start, str(address.path)
+    except Exception:
+        return None
+
+
+def submit_member_completion(text: str, line0: int, col: int, address=None):
+    """Submit a jedi member-completion job for a caret at 0-indexed (`line0`,
+    `col`) within editor `text` (a function/class span). With an `address` the
+    job runs over the whole surrounding file (full context: self., src imports,
+    project-typed locals — see _full_file_context); without one the span is
+    dedented to column 0 and parsed alone. Returns a Future of
+    [(name, type), ...] — or None if the pool is unavailable. Non-blocking;
+    poll Future.done() from the render loop."""
+    try:
+        ctx = _full_file_context(text, address)
+        if ctx is not None:
+            code, shift, path = ctx
+            return _get_jedi_pool().submit(
+                _jedi_complete_worker, code, shift + line0 + 1, col, path)
         ci = _completion_common_indent(text)
         dedented = "\n".join(l[ci:] if len(l) >= ci else l for l in text.split("\n"))
         return _get_jedi_pool().submit(
@@ -774,14 +824,16 @@ def submit_member_completion(text: str, line0: int, col: int):
         return None
 
 
-def _jedi_signatures_worker(code: str, line: int, col: int):
+def _jedi_signatures_worker(code: str, line: int, col: int, path: str = None):
     """Child-process worker: jedi.Interpreter signature help at (1-indexed `line`,
-    0-indexed `col`) — the callee whose parens enclose the caret. Returns
-    picklable [(call_name, [param_string, ...]), ...] (param strings like
+    0-indexed `col`) — the callee whose parens enclose the caret. `path` (full-
+    file mode) scopes jedi to the src Project so src-defined callees resolve.
+    Returns picklable [(call_name, [param_string, ...]), ...] (param strings like
     'x', 'y=0', '*args')."""
     import jedi
     try:
-        sigs = jedi.Interpreter(code, [_completion_namespace()]).get_signatures(line, col)
+        kw = {"path": path, "project": _jedi_project()} if path else {}
+        sigs = jedi.Interpreter(code, [_completion_namespace()], **kw).get_signatures(line, col)
     except Exception:
         return []
     out = []
@@ -794,12 +846,19 @@ def _jedi_signatures_worker(code: str, line: int, col: int):
     return out
 
 
-def submit_signature_help(text: str, line0: int, col: int):
+def submit_signature_help(text: str, line0: int, col: int, address=None):
     """Submit a jedi signature-help job for a caret at 0-indexed (`line0`, `col`)
-    inside a call's parens within editor `text`. Same synthetic-module trick as
-    member completion (dedent + live-module namespace), so `imgui.text(` resolves.
-    Returns a Future of [(call_name, [params]), ...] or None. Non-blocking."""
+    inside a call's parens within editor `text`. Same full-file/fallback split as
+    member completion: with an `address` jedi sees the whole surrounding file (so
+    src-defined and self. callees resolve); without one, the dedented span + the
+    live-module namespace (so `imgui.text(` still resolves). Returns a Future of
+    [(call_name, [params]), ...] or None. Non-blocking."""
     try:
+        ctx = _full_file_context(text, address)
+        if ctx is not None:
+            code, shift, path = ctx
+            return _get_jedi_pool().submit(
+                _jedi_signatures_worker, code, shift + line0 + 1, col, path)
         ci = _completion_common_indent(text)
         dedented = "\n".join(l[ci:] if len(l) >= ci else l for l in text.split("\n"))
         return _get_jedi_pool().submit(
@@ -4535,63 +4594,83 @@ def _extract_block_assignments(stmts):
 
 
 # ─── Multi-line comment blocks ────────────────────────────────────────────────
-# Consecutive, directly-adjacent comment lines (no blank line, no code, and no
-# override `# [...]` line between them) surface as a single Comment whose text is
-# the '\n'-joined lines. The reverse (_repatch_comment_block) splits on '\n'
-# back into one `#` EmptyLine per line. A blank line, a code line, or an
-# override comment breaks the run, so distinct paragraphs stay distinct and
-# override comments keep their own dedicated lines.
+# Consecutive, directly-adjacent comment lines (no blank line, no code between
+# them) surface as a SINGLE Comment whose text is the '\n'-joined lines. The
+# reverse (_rebuild_comment_lines) splits on '\n' back into one `#` EmptyLine
+# per line. A blank line or a code statement breaks the run, so distinct
+# paragraphs stay separate. An override `# [...]` comment is always its own
+# group - including one split across several `#` lines for readability
+# (`# [a=1,` / `# b=2]`), which only parses as an override when joined - so
+# paragraphs and overrides never merge.
+
+
+def _override_run_end(lines, i, end):
+    """The exclusive end of a (possibly multi-line) override comment starting
+    at lines[i], or None if lines[i] doesn't start one. Tries the shortest
+    extent first, so a complete single-line override never absorbs the line
+    below it. Cheap gates (`[` opener / `]` closer) bound the ast parsing."""
+    if not lines[i].comment.value.lstrip("#").strip().startswith("["):
+        return None
+    for j in range(i, end):
+        if lines[j].comment.value.rstrip().endswith("]"):
+            joined = "\n".join(ll.comment.value for ll in lines[i:j + 1])
+            if _parse_override_comment(joined) is not None:
+                return j + 1
+    return None
 
 
 def _comment_line_groups(lines):
-    """Yield (start, end, run) for each maximal run of consecutive non-override
-    comment EmptyLines in `lines` (end exclusive, run == lines[start:end]).
+    """Yield (start, end, run) for each group of consecutive comment
+    EmptyLines in `lines` (end exclusive, run == lines[start:end]).
 
-    Blank lines, non-comment lines, and `# [...]` override comments act as
-    separators and never belong to a run. A lone comment line is a run of one,
-    so single comments round-trip exactly as before.
+    Blank lines and non-comment lines act as separators and never belong to a
+    group. Within a run of comment lines, each override comment (single- or
+    multi-line, see _override_run_end) is its own group; the plain lines
+    around it group into comment blocks. A lone comment line is a group of
+    one, so single comments round-trip exactly as before.
     """
-    def _is_block_comment(ll):
-        return (isinstance(ll, cst.EmptyLine) and ll.comment is not None
-                and _parse_override_comment(ll.comment.value) is None)
+    def _is_comment(ll):
+        return isinstance(ll, cst.EmptyLine) and ll.comment is not None
 
     i, n = 0, len(lines)
     while i < n:
-        if _is_block_comment(lines[i]):
-            j = i + 1
-            while j < n and _is_block_comment(lines[j]):
-                j += 1
-            yield i, j, lines[i:j]
-            i = j
-        else:
+        if not _is_comment(lines[i]):
             i += 1
+            continue
+        j = i + 1
+        while j < n and _is_comment(lines[j]):
+            j += 1
+        k = plain = i
+        while k < j:
+            ov_end = _override_run_end(lines, k, j)
+            if ov_end is None:
+                k += 1
+                continue
+            if plain < k:
+                yield plain, k, lines[plain:k]
+            yield k, ov_end, lines[k:ov_end]
+            k = plain = ov_end
+        if plain < j:
+            yield plain, j, lines[plain:j]
+        i = j
 
 
 def _extract_comment_lines(lines, result, skip_overrides=False):
     """Surface comments from a sequence of leading/header lines into `result`.
 
-    Adjacent non-override comment lines collapse into one multi-line Comment
-    (see _comment_line_groups); a lone comment stays a single-line Comment.
-    Override `# [...]` comments are kept individual and routed into __overrides__
-    via _merge_override_comment (unless skip_overrides drops them).
+    Adjacent plain comment lines collapse into one multi-line Comment (see
+    _comment_line_groups); a lone comment stays a single-line Comment. An
+    override `# [...]` comment — single-line or split across several lines —
+    is its own Comment and is routed into __overrides__ via
+    _merge_override_comment (unless skip_overrides drops it).
     """
-    groups = {start: (end, run) for start, end, run in _comment_line_groups(lines)}
-    i, n = 0, len(lines)
-    while i < n:
-        if i in groups:
-            end, run = groups[i]
-            c = Comment("\n".join(ll.comment.value for ll in run))
-            result[c] = c
-            i = end
+    for _start, _end, run in _comment_line_groups(lines):
+        text = "\n".join(ll.comment.value for ll in run)
+        if skip_overrides and _parse_override_comment(text) is not None:
             continue
-        ll = lines[i]
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            # Only override comments reach here - groups consumed the rest.
-            if not (skip_overrides and _parse_override_comment(ll.comment.value) is not None):
-                c = Comment(ll.comment.value)
-                result[c] = c
-                _merge_override_comment(c, result)
-        i += 1
+        c = Comment(text)
+        result[c] = c
+        _merge_override_comment(c, result)
 
 
 def _extract_leading_comments(stmt, result, skip_overrides=False):
@@ -4606,16 +4685,15 @@ def _extract_leading_comments(stmt, result, skip_overrides=False):
 
 
 def _attach_leading_override(stmt, child_dict):
-    """Route a leading '# [...]' comment above a nested class/function into
-    that child's __overrides__ (the first such comment wins)."""
+    """Route a leading '# [...]' comment (single- or multi-line) above a nested
+    class/function into that child's __overrides__ (the first one wins)."""
     if not isinstance(child_dict, dict) or isinstance(child_dict.get("__overrides__"), dict):
         return
-    for ll in getattr(stmt, "leading_lines", ()):
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            parsed = _parse_override_comment(ll.comment.value)
-            if parsed:
-                child_dict["__overrides__"] = parsed
-                return
+    for _s, _e, run in _comment_line_groups(getattr(stmt, "leading_lines", ())):
+        parsed = _parse_override_comment("\n".join(ll.comment.value for ll in run))
+        if parsed:
+            child_dict["__overrides__"] = parsed
+            return
 
 
 def _patch_leading_override(node, value):
@@ -4632,20 +4710,21 @@ def _patch_leading_override(node, value):
         return node
     current = {k: v for k, v in overrides.items() if not _is_dunder(k)}
     lines = list(getattr(node, "leading_lines", ()))
-    for i, ll in enumerate(lines):
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            original = _parse_override_comment(ll.comment.value)
-            if original is not None:
-                if not current:
-                    # All overrides deleted → drop the comment line entirely
-                    # rather than leave an empty `# []`.
-                    del lines[i]
-                    return node.with_changes(leading_lines=lines)
-                if current != original:
-                    lines[i] = ll.with_changes(
-                        comment=cst.Comment(value=_format_override_comment(current)))
-                    return node.with_changes(leading_lines=lines)
-                return node
+    for start, end, run in _comment_line_groups(lines):
+        joined = "\n".join(ll.comment.value for ll in run)
+        original = _parse_override_comment(joined)
+        if original is None:
+            continue
+        if not current:
+            # All overrides deleted → drop the comment line(s) entirely
+            # rather than leave an empty `# []`.
+            del lines[start:end]
+            return node.with_changes(leading_lines=lines)
+        if current != original:
+            lines[start:end] = _rebuild_comment_block(
+                _reformat_override_comment(joined, current), run)
+            return node.with_changes(leading_lines=lines)
+        return node
     return node
 
 
@@ -4659,16 +4738,15 @@ def _attach_field_override(stmt, field_name, result):
     """
     if field_name is None:
         return
-    for ll in getattr(stmt, "leading_lines", ()):
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            parsed = _parse_override_comment(ll.comment.value)
-            if parsed:
-                overrides = result.get("__overrides__")
-                if not isinstance(overrides, dict):
-                    overrides = {}
-                    result["__overrides__"] = overrides
-                overrides.setdefault(f"__{field_name}__", parsed)
-                return
+    for _s, _e, run in _comment_line_groups(getattr(stmt, "leading_lines", ())):
+        parsed = _parse_override_comment("\n".join(ll.comment.value for ll in run))
+        if parsed:
+            overrides = result.get("__overrides__")
+            if not isinstance(overrides, dict):
+                overrides = {}
+                result["__overrides__"] = overrides
+            overrides.setdefault(f"__{field_name}__", parsed)
+            return
 
 
 def _patch_field_overrides(stmts, overrides):
@@ -4726,20 +4804,26 @@ def _extract_trailing_comment(stmt, var_key, result):
 
 # ─── Override comments: a tiny key=value store embedded in a comment ──────────
 # A comment like  # [tint=(0.1, 0.2, 0.3), bg_offset=5]  parses into a dict
-# stored under result["__overrides__"]. Parsing is best-effort: anything that
-# doesn't match the shape is left as an ordinary comment and never raises.
+# stored under result["__overrides__"]. The comment can be split across
+# several `#` lines for readability (each continuation line is a literal `#`
+# line; a line break is only valid where whitespace could go, so end lines at
+# a comma). Parsing is best-effort: anything that doesn't fit the shape is
+# left as an ordinary comment and never raises.
 
 
 def _parse_override_comment(text):
     """Parse a '# [k=v, ...]' override comment into a dict, or None.
 
+    `text` may span multiple '#' lines ('\\n'-joined, the grouped-Comment
+    shape): each line's leading '#' is stripped and the bodies joined, so an
+    override split across lines for readability parses like one long line.
     The bracketed body is read as keyword arguments (commas inside tuples,
     lists, etc. are respected) and each value is literal-eval'd. Returns None
     on any malformed input — callers treat None as "not an override comment".
     """
     if not isinstance(text, str):
         return None
-    body = text.lstrip("#").strip()
+    body = " ".join(ln.strip().lstrip("#").strip() for ln in text.split("\n")).strip()
     if not (body.startswith("[") and body.endswith("]")):
         return None
     inner = body[1:-1].strip()
@@ -4788,6 +4872,43 @@ def _format_override_comment(overrides):
     return "# [" + ", ".join(parts) + "]"
 
 
+def _reformat_override_comment(original_text, overrides):
+    """Render an updated overrides dict, preserving `original_text`'s line
+    structure: each key stays on the line it came from, a dropped key leaves
+    its line (a line losing every key disappears), and brand-new keys append
+    to the last line. A single-line comment stays single-line."""
+    pairs = {k: v for k, v in overrides.items() if not _is_dunder(k)}
+    lines = original_text.split("\n")
+    original = _parse_override_comment(original_text)
+    if len(lines) == 1 or not pairs or not original:
+        return _format_override_comment(pairs)
+    # Assign each original key to the line its `k=` sits on. Keys parse in
+    # source order, so a forward-moving cursor keeps repeated text in a
+    # key value from pushing a later key onto an earlier line; a key that
+    # can't be matched falls to the last line. Mis-attribution only ever
+    # shifts formatting - values always regenerate from `overrides`.
+    per_line = [[] for _ in lines]
+    li = pos = 0
+    for key in original:
+        pat = re.compile(rf"(?<!\w){re.escape(key)}\s*=")
+        while li < len(lines):
+            m = pat.search(lines[li], pos)
+            if m is not None:
+                pos = m.end()
+                break
+            li, pos = li + 1, 0
+        if key in pairs:
+            per_line[min(li, len(lines) - 1)].append(key)
+    per_line[-1].extend(k for k in pairs if k not in original)
+    rendered = [", ".join(f"{k}={_format_override_value(pairs[k])}" for k in keys)
+                for keys in per_line if keys]
+    if len(rendered) == 1:
+        return "# [" + rendered[0] + "]"
+    return "\n".join(("# [" if i == 0 else "# ") + part
+                     + ("]" if i == len(rendered) - 1 else ",")
+                     for i, part in enumerate(rendered))
+
+
 def _merge_override_comment(comment, result):
     """If `comment` is an override comment, store its pairs in __overrides__.
 
@@ -4807,25 +4928,25 @@ def _iter_direct_comment_texts(node):
 
     Module header + top-level statement comments, or a class/function body's
     statement comments. Does not descend into nested class/function bodies.
+    Leading/header lines yield per GROUP ('\\n'-joined, matching
+    _extract_comment_lines), so a multi-line override reads as one text.
     """
+    def _group_texts(lines):
+        for _s, _e, run in _comment_line_groups(lines):
+            yield "\n".join(ll.comment.value for ll in run)
+
     if isinstance(node, cst.Module):
-        for ll in node.header:
-            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-                yield ll.comment.value
+        yield from _group_texts(node.header)
         stmts = node.body
     elif isinstance(node, (cst.ClassDef, cst.FunctionDef)) and isinstance(node.body, cst.IndentedBlock):
         # The node's own leading lines count too: a leading-line comment
         # above this class/function means body insertion should duplicate it.
-        for ll in getattr(node, "leading_lines", ()):
-            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-                yield ll.comment.value
+        yield from _group_texts(getattr(node, "leading_lines", ()))
         stmts = node.body.body
     else:
         stmts = ()
     for stmt in stmts:
-        for ll in getattr(stmt, "leading_lines", ()):
-            if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-                yield ll.comment.value
+        yield from _group_texts(getattr(stmt, "leading_lines", ()))
         tw = getattr(stmt, "trailing_whitespace", None)
         if tw is not None and getattr(tw, "comment", None) is not None:
             yield tw.comment.value
@@ -4896,8 +5017,9 @@ def _collect_comment_edits(edits, text_map=None):
             if original is None:
                 continue
             if current != original:
-                # Empty → remove the comment line entirely (not `# []`).
-                text_map[str(k)] = _format_override_comment(current) if current else _REMOVE_COMMENT
+                # {} → remove the comment line(s) entirely (not `# []`).
+                text_map[str(k)] = (_reformat_override_comment(str(k), current)
+                                    if current else _REMOVE_COMMENT)
             break
     return text_map
 
@@ -5511,8 +5633,10 @@ def _rebuild_comment_block(new_text, run):
 def _patch_comment_lines(lines, text_map):
     """Apply `text_map` (old_text -> new_text | _REMOVE_COMMENT) to a sequence of
     leading/header lines, mirroring _extract_comment_lines' grouping: a changed
-    multi-line block is rebuilt into one `#` line per text line; a removed block
-    drops every line in the run. Returns (new_lines, changed)."""
+    multi-line block (or multi-line override) is rebuilt into one `#` line per
+    text line; a removed block drops every line in the run. Every comment line
+    belongs to a group (a lone comment is a run of one), so only blank/other
+    lines pass through ungrouped. Returns (new_lines, changed)."""
     groups = {start: (end, run) for start, end, run in _comment_line_groups(lines)}
     new_lines, changed, i, n = [], False, 0, len(lines)
     while i < n:
@@ -5529,19 +5653,7 @@ def _patch_comment_lines(lines, text_map):
                 new_lines.extend(run)
             i = end
             continue
-        ll = lines[i]
-        if isinstance(ll, cst.EmptyLine) and ll.comment is not None:
-            new_text = text_map.get(ll.comment.value)
-            if new_text is _REMOVE_COMMENT:
-                changed = True
-                i += 1
-                continue
-            if new_text is not None:
-                new_lines.append(ll.with_changes(comment=cst.Comment(value=new_text)))
-                changed = True
-                i += 1
-                continue
-        new_lines.append(ll)
+        new_lines.append(lines[i])
         i += 1
     return new_lines, changed
 

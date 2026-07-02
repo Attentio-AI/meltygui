@@ -644,7 +644,21 @@ def render_func(*args, **o_kwargs):
         if "layer_unique" in kwargs:
             unique = kwargs.pop("layer_unique")
         else:
-            root_window_name = Melty.melty_window_stack[-1].name if len(Melty.melty_window_stack) > 0 else "Root"
+            if len(Melty.melty_window_stack) > 0:
+                _rw = Melty.melty_window_stack[-1]
+                # The floating dragged item renders as its own window, so its
+                # descendants would hash the item's name here instead of the
+                # home window's - fresh uniques, fresh draw_states, expanded/
+                # scroll state gone every pickup. Keep the inline identity:
+                # while the item floats, its subtree hashes the home window.
+                if (_drag_drop.DragDrop.active
+                        and _rw is _drag_drop.DragDrop.item_ds
+                        and _rw.parent_window is not None):
+                    root_window_name = _rw.parent_window.name
+                else:
+                    root_window_name = _rw.name
+            else:
+                root_window_name = "Root"
             if is_root:
                 unique = ui_id(suffix=name + unique_name + str(key) + func.__name__)
                 suffix = f"{unique_name}_{func.__name__}_{unique}_{key}"
@@ -657,6 +671,16 @@ def render_func(*args, **o_kwargs):
         closable = kwargs.get("closable", False)
         detached = kwargs.get("detached", False)
         draw_state._view_func = func
+
+        if _drag_drop.DragDrop.active and draw_state is _drag_drop.DragDrop.item_ds:
+            # The floating dragged item anchors available_width on ITSELF
+            # (closable -> fixed_size, x_offset 0), where inline the parent
+            # clip clamp absorbed the depth margin into the content width
+            # (content_width == width). Zero the margin so that stays true
+            # while floating. Descendants need no correction: Melty.draw
+            # restores the window's full inline bg snapshot, so their
+            # absolute depths - including margins - match inline exactly.
+            content_margin = 0.0
 
         if closable:
             kwargs['use_cache'] = True
@@ -972,7 +996,13 @@ def render_func(*args, **o_kwargs):
                         if not detached:
                             Melty.root_draw_states[parent_ds.id].append(draw_state)
                             layer = layer + (len(Melty.root_draw_states[parent_ds.id]))
-                        Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
+                        # A detached (dragged) window may already be queued this
+                        # frame by DragDrop._keep_alive, which is into the
+                        # layer loop and ran just when this body was about to run
+                        # its defered call - never queue it twice, or the
+                        # loop draws the same draw_state twice in one frame.
+                        if not any(draw_state in l for l in Melty.layers):
+                            Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
                 else:
                     Melty.layers[min(layer, len(Melty.layers) - 1)].append(draw_state)
 
@@ -1562,8 +1592,24 @@ def render_func(*args, **o_kwargs):
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
 
-
-
+            # Click-away focus clearing: non_blocking + high priority sees every
+            # left press over this window without taking it from interactive
+            # children. Protect the press hit-stack's ancestor closure (bvh_query
+            # at the press point) so a click inside a popover / find box keeps
+            # its owner focused, while any outside click dismisses popovers and
+            # releases all focus. This is the clear_focus half of the old
+            # raise-on-press handler (removed with the move-to-front redesign,
+            # which also silently removed the only click-driven clear_focus -
+            # popovers stopped dismissing on outside click); the raise half
+            # now lives in the blocking left_mouse_down "window_move" handler.
+            clear_press = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
+            if clear_press:
+                # Resolve against the press position the event captured, not the
+                # live cursor - a press dispatched a frame ago (start of a drag)
+                # would otherwise read a cursor that has already moved off the
+                # press point and protect/clear the wrong views.
+                ds_under_mouse = Melty.bvh_query(clear_press.x, clear_press.y)
+                Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
 
             raise_press_right = draw_state.on_action("right_mouse_down", "window_raise")
             if raise_press_right:
@@ -2125,7 +2171,11 @@ def render_func(*args, **o_kwargs):
                     # # enough - the next searchable view did reclaim it, which
                     # # left the box un-focused after Ctrl+F).
                     # draw_state._search_focus_pending = True
-                    Melty.clear_focus(not_this=draw_state)
+                    # Keep the open popover (color picker / dropdown) alive:
+                    # it isn't in this view's ancestor tree, so a bare
+                    # clear_focus(not_this=draw_state) close it on every
+                    # Ctrl+F. Popovers close on outside click / Esc / pick only.
+                    Melty.clear_focus(not_this=(draw_state, Melty.popover_focused_ds))
                     Melty.focused_ds = draw_state
                     request_render()
 

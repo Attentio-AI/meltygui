@@ -218,10 +218,19 @@ class DragDrop:
                 x + 2, y, x + w - 2, y + h - 2,
                 imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.10),
                 rounding=4.0, thickness=1.0)
+        # The slot dummies anchor on the same pickup position as the bg - not
+        # on the incoming cursor or the floating window's win_* (glued to the
+        # mouse): the window group's item_rect swallows every submitted item,
+        # so a mid-drag re-render would otherwise stretch the collection's
+        # measured width/height out to where the drag has wandered.
         if horizontal:
+            imgui.set_cursor_screen_pos((x, y))
             imgui.dummy(w, h)
             imgui.same_line(spacing=0)
         else:
+            # 0-width dummy at the slot's right edge: match the row's width
+            # contribution without spanning past it.
+            imgui.set_cursor_screen_pos((x + w, y))
             imgui.dummy(0, int(h))
             imgui.dummy(0, item_spacing_y)
 

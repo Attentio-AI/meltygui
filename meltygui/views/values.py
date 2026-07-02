@@ -349,6 +349,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     if excluded is None:
         excluded = set()
         
+        
     if included is None:
         included = set()
 
@@ -366,6 +367,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     # --- configure per collection type ---
     collection = input_value
+    
     # When the value *is* a class (e.g. an @window-registered class drawn
     # directly), its per-attribute `{field}_meta` overrides live on the class
     # itself, not on its metaclass. Use the class as parent_type so get_child_meta
@@ -689,10 +691,13 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     search_current_h = returned_ds.header_height
                 if is_dragged:
                     # The child deferred to a floating window and drew nothing
-                    # inline - hold its slot open with a placeholder so the
-                    # remaining layout doesn't shift. (The horizontal branch
-                    # must not run: returned_ds.abs_* is the floating window.)
-                    imgui.set_cursor_screen_pos((returned_ds.abs_left + returned_ds.width, returned_ds.abs_top))
+                    # inline — hold its slot open with a placeholder so the
+                    # collection layout doesn't shift. Neither the horizontal
+                    # branch nor any other math off returned_ds may run here:
+                    # returned_ds.abs_* is the floating window glued to the
+                    # mouse, so a mid-drag re-render would measure the flow
+                    # back of the cursor. The placeholder anchors itself to the
+                    # pickup slot (DragDrop.home_rect).
                     _drag_drop.DragDrop.draw_placeholder(horizontal, item_spacing_y,
                                                          style_manager=style_manager,
                                                          draw_bg=draw_bg)
@@ -1234,7 +1239,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             # no longer closes whichever view's search was already open.
             target.search_active = True
             target._search_was_active = False     # find box re-claims focus
-            Core.melty.clear_focus(not_this=target)
+            # Keep the open popover (color picker / dropdown) alive: it isn't in
+            # target's ancestor closure, so a bare clear_focus(not_this=target)
+            # closes it on every Ctrl+F. Popovers close on outside click /
+            # Esc / pick only.
+            Core.melty.clear_focus(not_this=(target, Melty.popover_focused_ds))
             Core.melty.focused_ds = target
             Core.melty.cache.invalidate_up(target._tile_id, force=True, max_depth=12)
             request_render()
@@ -2534,11 +2543,19 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
     icon_w = imgui.calc_text_size(icon)[0]
     label_w = imgui.calc_text_size(label)[0]
 
+    # content_width carries a min_width floor (core_render), so when a long
+    # unpadded header eats the row below min_width it overstates the space
+    # actually left - the float-right logic would push the box past the row's
+    # right edge. Measure the true leftover from the header to the row edge
+    # (10 = the row's right content margin) and take the smaller for the cell.
+    leftover = draw_state.abs_left + draw_state.width - 10 - cursor_start
+    cell_width = min(draw_state.content_width, leftover)
+
     # The box hugs the content rather than expanding to fill the cell. When even
     # the label won't fit the available space we collapse to a square that shows
     # just the icon. `width` is the box's right edge measured from the cell left,
     # matching the original cursor-relative geometry below.
-    avail = min(draw_state.width - 14, draw_state.content_width + 0)
+    avail = min(draw_state.width - 14, cell_width)
     full_width = left_margin + text_inset * 2 + label_w
     compact = full_width > avail
     if compact:
@@ -2556,7 +2573,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,
     # When the box is wider than the cell this goes negative, pinning the right
     # edge and letting the box grow left over the header - so when there's
     # absolutely no room it starts overlapping the header rather than overflowing.
-    right_offset = draw_state.content_width - width
+    right_offset = cell_width - width
     box_left = imgui.get_cursor_pos_x() + left_margin + right_offset
     box_right = imgui.get_cursor_pos_x() + width + right_offset
     box_top = draw_state.abs_top
@@ -3059,12 +3076,13 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, is_tree=False, show_name=False, indent_size=4, selectable=False, use_cache=False,
+@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded":False},
+             is_tree=False, show_name=False, indent_size=0, selectable=False, use_cache=False, tint=(0.083, 0.206, 0.083, 0.1),
              show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
 
-    imgui.dummy(0, 0)
+    imgui.dummy(0, 6)
     depth = max(0.0, Core.melty.bg_depth)
     depth_scale = 0.067
     name_style = {
@@ -3074,21 +3092,23 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    alpha = 0.15
+    alpha = 0.35
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
     name_style['saturation'] = name_style['saturation'] + sat_shift
 
     name_color = style_manager.make_color_style_value(input=name_style)
-
+    
     # A grouped multi-line comment is a '\n'-joined run of '# ' lines; strip the
     # '#'/'# ' prefix from EACH line so it displays as clean prose, not just the
     # first (str[2:] would leave a stray '#' on every continuation line).
     def _strip_hash(ln):
         return ln[2:] if ln.startswith("# ") else (ln[1:] if ln.startswith("#") else ln)
+        
     display = "\n".join(_strip_hash(ln) for ln in str(input_value).split("\n"))
 
+   
     # is_tree is off (no header arrow); each multi-line comment gets its own
     # arrow instead, so single-line comments get none at all. ExpandMode.MANUAL
     # keeps this body running while collapsed, with the first line standing in
@@ -3105,9 +3125,12 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
             draw_state.invalid_content_height = True
             request_render()
         imgui.pop_style_color(3)
-        imgui.same_line()
+        imgui.same_line(spacing=0)
         if not draw_state.expanded:
             display = display.split("\n", 1)[0]
+             
+    # icon = f""
+    # display = f"{icon} {display}"
 
     imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
     imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
@@ -5199,20 +5222,53 @@ def _dd_label_for_path(collection, path):
     return str(_dd_walk(collection, tuple(path)))
 
 
-def _dd_set_cursor(root_state, cursor_path, is_branch):
+def _dd_set_cursor(root_state, cursor_path, is_branch, menu_ds=None):
     """Point the highlight at `cursor_path` and derive the open path from it: a
     branch expands its own sub-menu, a leaf collapses back to its parent level.
-    This is the single writer for both hover and keyboard, so they stay in sync."""
+    This is the single writer for both hover and keyboard, so they stay in sync.
+
+    When the OPEN path changes, the containing menu's row tiles must re-run:
+    a branch row stamps `closed` on its submenu window only when its body
+    actually runs, and the blit cache has no kwargs key — a clean row tile
+    blit-skips even though its open_path input changed, leaving the submenu
+    stamped open forever (one leaked submenu per branch row swept). Keyboard
+    nav never leaked because begin_frame cascades invalidate_up from the menu
+    tile on every nav key; this is the hover-side equivalent. `menu_ds` is the
+    level's menu-window draw_state (row tiles are its direct tile children)."""
     if root_state is None:
         return
     new_cursor = tuple(cursor_path)
     new_open = tuple(cursor_path) if is_branch else tuple(cursor_path[:-1])
+    old_open = _dd_as_tuple(root_state.open_path)
     if (new_cursor == _dd_as_tuple(root_state.cursor_path)
-            and new_open == _dd_as_tuple(root_state.open_path)):
+            and new_open == old_open):
         return
     root_state.cursor_path = new_cursor
     root_state.open_path = new_open
+    if new_open != old_open:
+        _dd_invalidate_rows(root_state, menu_ds)
 
+
+def _dd_invalidate_rows(root_state, menu_ds=None):
+    """Cascade-invalidate a menu window's tile subtree so every row body
+    re-runs and re-stamps `closed` on its submenu from the current open_path.
+    Without a menu_ds at hand (close paths), resolve the root menu through the
+    search box tile — its parent_window is the root menu. bypass_clip so a
+    branch row scrolled out of the menu viewport is cleaned too (otherwise
+    scrolling it back in would revive its stale-open submenu). Submenu windows
+    are tile ROOTS (not tile children of their spawner rows), so this reaches
+    rows, not window interiors — which is all closing needs."""
+    if menu_ds is None and root_state is not None:
+        box_tile = getattr(root_state, "_search_box_tile", None)
+        if box_tile is not None:
+            box_ds = Melty.cache.key_to_draw_state.get(box_tile)
+            menu_ds = getattr(box_ds, "parent_window", None) if box_ds is not None else None
+    if menu_ds is None or getattr(menu_ds, "_tile_id", None) is None:
+        return
+    from src.lsd.gl_gui.view.invalidation_tracker import Note
+    Melty.cache.invalidate_up(menu_ds._tile_id, force=True, bypass_clip=True,
+                              note=Note(name="dd open_path change", tint=(1, 0.6, 0.2)))
+    request_render()
 
 
 def _dd_close(root_state):
@@ -5220,12 +5276,19 @@ def _dd_close(root_state):
     search query, and release the search box's text focus if it held it."""
     if root_state is None:
         return
+    open_was = _dd_as_tuple(root_state.open_path)
     root_state.open_path = ()
     root_state.cursor_path = ()
     root_state.search_query = ""
     root_state.search = ""
     root_state._focus_search = 0
     root_state._had_focus = False
+    # A branch row left stamped open would blit-skip on reopen and revive its
+    # submenu window even though open_path was reset - dirty the rows now (the
+    # flags persist while the menu is hidden) so the first reopen render
+    # re-stamps every submenu closed.
+    if open_was:
+        _dd_invalidate_rows(root_state)
     box_tile = getattr(root_state, "_search_box_tile", None)
     tf = Melty.text_focused_ds
     if tf is not None and box_tile is not None and getattr(tf, "_tile_id", None) == box_tile:
@@ -5348,7 +5411,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     mp = imgui.get_mouse_pos()
     hovered = (x <= mp[0] < x + w) and (y <= mp[1] < y + h)
     if hovered and not kbd_mode:
-        _dd_set_cursor(root_state, row_path, False)
+        _dd_set_cursor(root_state, row_path, False, menu_ds=draw_state)
 
     active = is_cursor if kbd_mode else hovered
     dl = imgui.get_window_draw_list()
@@ -5414,12 +5477,15 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     half-typed identifier IS the filter, so a second focus-stealing search box
     would fight it. The caller pre-filters the rows in that case.
 
-    The popover and its rows are CACHED tiles; cursor/open paths live in
-    root_state (mutated in place), which cache keys can't see. Repaints are
-    driven by explicit invalidation: hover via _dd_set_cursor, keys via the
-    begin_frame popover hook (or the code editor's per-event invalidate_up) —
-    invalidate_up specifically, since it cascades to the row tiles; a plain
-    invalidate leaves the inner dd_rows collection clean and it blit-skips."""
+    The popover and its rows are CACHED tiles with NO kwargs cache key —
+    a clean row tile blit-skips even when its cursor/open path inputs changed.
+    Repaints are therefore driven by explicit invalidation only: an open_path
+    change cascades invalidate_up from the menu tile inside _dd_set_cursor
+    (this is what re-runs a stale branch row so it stamps its submenu window
+    closed — see the leak note there), keys via the begin_frame popover hook
+    (or the code editor's per-event invalidate_up) — invalidate_up
+    specifically, since it cascades to the row tiles; a plain invalidate
+    leaves the inner dd_rows collection clean and it blit-skips."""
     if show_search and not path_prefix and root_state is not None:
         # Root owns the search box. Single-line so Up/Down/Enter pass through to
         # menu nav; it auto-focuses once when the menu opens (_focus_search).
@@ -5452,13 +5518,11 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
             if new_search:
                 leaf = _dd_first_match_leaf(input_value, new_search)
                 if leaf is not None:
-                    _dd_set_cursor(root_state, leaf, False)
+                    _dd_set_cursor(root_state, leaf, False, menu_ds=draw_state)
                 else:
-                    root_state.cursor_path = ()
-                    root_state.open_path = ()
+                    _dd_set_cursor(root_state, (), False, menu_ds=draw_state)
             else:
-                root_state.cursor_path = ()
-                root_state.open_path = ()
+                _dd_set_cursor(root_state, (), False, menu_ds=draw_state)
         root_state.search = new_search
 
     search = str(getattr(root_state, "search", "") or "")
@@ -5553,7 +5617,8 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
 
     kbd_mode = getattr(root_state, "_kbd_mode", True)
     if hovered and not kbd_mode:
-        _dd_set_cursor(root_state, row_path, is_branch)
+        _dd_set_cursor(root_state, row_path, is_branch,
+                       menu_ds=draw_state.parent_window)
 
     active = is_cursor if kbd_mode else hovered
     if active:
