@@ -335,31 +335,6 @@ class Swoosh:
 @window(tint=(0.11, 0.12, 0.14))
 class Toggles:
 
-    @defaults(tint=(0.18, 0.62, 0.55))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (root_new_root.ini)
-        # as a backout alongside the native-pickle custom.pkl. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main save cache / hot-reload cache anchor, so leave
-        # this on until the .ini is fully retired.
-        ini_save = False
-
-    @defaults(tint=(0.42, 0.58, 0.83))
-    class WindowSettings:
-        # Sticky resize: re-anchor the window top to the drag-start position each
-        # frame so only the bottom-on-display clamp displaces it.
-        sticky_drag = True
-
-
-    @defaults(tint=(0.91, 0.659, 0.15))
-    class InvalidateTracker:
-        keep_for_frames = 26
-        enable = False
-        draw_bvh = False
-        draw_rect = False
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
-
     @defaults(tint=(0.922, 0.476, 0.031))
     class TextEditor:
         enable_spell_check = False
@@ -386,7 +361,7 @@ class Toggles:
             tint = (0.317, 0.251, 0.0)
             tint = (*tint, v)
             return tint
-
+            
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounds character match - no CST / symbol-usage metadata is
@@ -394,17 +369,20 @@ class Toggles:
         # flag to disable; the (r, g, b, a) tuple is read live.
         highlight_token_matches = True
 
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
+    @defaults(tint=(0.18, 0.62, 0.55))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
+        # as a backout alongside the native-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
+        # this on until the .ini is fully retired.
+        ini_save = False
 
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # ms
-        bg_offset = 30
-        debug_scroll = False
+    @defaults(tint=(0.42, 0.58, 0.83))
+    class WindowSettings:
+        # Sticky resize: reamp the window top to the drag-start position each
+        # frame so only the bottom-on-display clamp displaces it.
+        sticky_drag = True
 
     @defaults(tint=(0.652, 0.672, 0.733))
     class TerminalSettings:
@@ -412,7 +390,20 @@ class Toggles:
         min_height = 480.0
         min_width = 98.634
 
-    @defaults(tint=(0.965, 0.6, 0.149))
+    @defaults(tint=(0.91, 0.659, 0.15))
+    class InvalidateTracker:
+        keep_for_frames = 26
+        enable = False
+        draw_bvh = False
+        draw_rect = False
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
+    @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:
         # Search matches are highlighted with a radial gradient "glow" that
         # radiates out from the matched rectangle (rounded-rect cutout), with the
@@ -436,7 +427,7 @@ class Toggles:
             outline_alpha = 0.0       # 0 = rely on the glow's bright inner ring alone
             outline_thickness = 1.0
 
-        @defaults(tint=(0.36, 0.52, 0.93))
+        @defaults(tint=(0.36, 0.52, 0.93, 0.484))
         class InactiveElements:
             gradient_color = (0.00, 0.42, 0.83)  # cooler hue so the active match stands out
             outline_color = (0.6, 0.72, 1.0)
@@ -449,6 +440,14 @@ class Toggles:
             corner_segments = 5
             outline_alpha = 0.0
             outline_thickness = 1.0
+
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # seconds
+        bg_offset = 30
+        debug_scroll = False
 
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
@@ -498,19 +497,20 @@ class Toggles:
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
 
+
     # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
     yield_to_ui = True
     attrib_churn_log = False
     debug_threads = False
-    
+
     slow_down_threads = False
     profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
 
     # View Settings
-    brightness = 0.475
-    contrast = 1.812
+    brightness = 0.517
+    contrast = 1.879
 
     debug_z_depth = False
     filters = True

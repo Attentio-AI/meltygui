@@ -5282,6 +5282,43 @@ def _dd_invalidate_rows(root_state, menu_ds=None):
     request_render()
 
 
+def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0):
+    """Nudge a menu window's scroll_offset the minimal amount so keyboard-cursor
+    row `row_index` is fully visible. Rows are a fixed _DD_ROW_H pitch drawn
+    flush from the content origin in the manual-loop path; `row0_offset` covers
+    a level that draws chrome above its rows. Stateless — pure geometry from
+    the live draw_state, clamped to the wrapper-published _max_scroll_y so this
+    writer never fights core_render's own clamp."""
+    if menu_ds is None or row_index is None or row_index < 0:
+        return
+    view_h = menu_ds.abs_clipped_height - menu_ds.header_height - menu_ds.footer_height
+    sx, sy = menu_ds.scroll_offset
+    row_top = row0_offset + row_index * _DD_ROW_H
+    row_bot = row_top + _DD_ROW_H
+    new_sy = sy
+    if view_h > 0 and row_bot > new_sy + view_h:    # below the viewport: must scroll down
+        new_sy = row_bot - view_h
+        max_y = menu_ds._max_scroll_y
+        if max_y is not None:
+            new_sy = min(new_sy, max_y)
+    if row_top < new_sy:                            # above the viewport (top-aligns a tiny view)
+        new_sy = row_top
+    new_sy = max(0.0, new_sy)
+    if new_sy != sy:
+        menu_ds.scroll_offset = (sx, new_sy)
+        # Own the repaint edge: scroll is BAKED into the blit capture at render
+        # time and only the wheel-event callback repaints on scroll change, so a
+        # clean tile would replay the old-offset capture (the caller's repaint gate
+        # doesn't always fire - e.g. a snap-to-top when the filtered list is
+        # value-identical). Change-edge-gated by `new_sy != sy` above, never
+        # per-frame. bypass_clip: the popup can protrude outside its parent.
+        if menu_ds._tile_id is not None:
+            from src.lsd.gl_gui.view.invalidation_tracker import Note
+            Melty.cache.invalidate_up(menu_ds._tile_id, force=True, bypass_clip=True,
+                                      note=Note(name="dd scroll-into-view", tint=(1, 0.6, 0.2)))
+        request_render()
+
+
 def _dd_close(root_state):
     """Reset popover state on close: collapse the open/cursor paths, clear the
     search query, and release the search box's text focus if it held it."""
@@ -5421,6 +5458,14 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     h = _DD_ROW_H
     mp = imgui.get_mouse_pos()
     hovered = (x <= mp[0] < x + w) and (y <= mp[1] < y + h)
+    if hovered:
+        # Clamp hover to the menu window's visible band: rows laid out above the
+        # window bounds (scrolled/clipped away) are invisible but this raw imgui
+        # math would still hit them - a click on editor text under the popup
+        # could pick an unseen row.
+        _wt = draw_state._abs_top()
+        if not (_wt <= mp[1] < _wt + (draw_state.height or 0)):
+            hovered = False
     if hovered and not kbd_mode:
         _dd_set_cursor(root_state, row_path, False, menu_ds=draw_state)
 
@@ -5441,6 +5486,12 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) * 0.5))
 
     color = Tint.dd_text(requested_tint=color)
+    if active:
+        # Active-row label: lerp toward white so it clears the white@0.16 wash
+        # (the wash lightens the row fill while the label is its plain text
+        # value - light-on-light, 2.8:1 in a dark-tinted editor). Keeping 40%
+        # of the original chroma leaves per-item tints recognizable.
+        color = tuple(min(1.0, c * 0.4 + 0.6) for c in color[:3])
     color = *(color[:3]), 1.0
     imgui.text_colored(str(label), *color)
 
@@ -5650,8 +5701,12 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         imgui.text(f"{label}{chevron}")
         clicked = hovered and imgui.is_mouse_clicked(0)
     elif is_branch:
+        # +0.9 value on the active row lifts the label over the white@0.16 wash
+        # (button's own +1.5 hover boost keys off `hovered`, which is False for
+        # the keyboard-cursor row); hue is retained, only brightness moves.
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width - 10,
-                            height=_DD_ROW_H, hovered=hovered, text_value=0.56, text_saturation=1.349, shadow=False,
+                            height=_DD_ROW_H, hovered=hovered, text_value=0.56 + (0.9 if active else 0.0),
+                            text_saturation=1.349, shadow=False,
                              rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)
     else:

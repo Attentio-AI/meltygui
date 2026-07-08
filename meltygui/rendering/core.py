@@ -389,6 +389,35 @@ def _codec_render_kwargs(value_type):
     return getattr(codec, "render_kwargs", None) or {}
 
 
+def _selection_for_search(owner_ds):
+    """Selected text to prefill the find box with on Ctrl+F, or None. The
+    selection lives on the text-focused editor's draw_state
+    (text_selection_start/end against its _raw_input_value buffer). Only
+    honored when that editor is the searchable view itself or one of its
+    descendants, so a selection in some other window never leaks into this
+    view's search. The find box itself is never a source, and multi-line
+    selections are skipped — they make useless search terms."""
+    ds = Melty.text_focused_ds
+    if ds is None or getattr(ds, "is_search_box", False):
+        return None
+    node = ds
+    while node is not owner_ds:
+        parent = node._parent
+        if parent is node or parent is None:
+            return None
+        node = parent
+    lo, hi = ds.text_selection_start, ds.text_selection_end
+    if lo > hi:
+        lo, hi = hi, lo
+    text = ds._raw_input_value
+    if lo == hi or not isinstance(text, str):
+        return None
+    sel = text[lo:hi]
+    if not sel or "\n" in sel:
+        return None
+    return sel
+
+
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     if not callable(func):
@@ -2158,6 +2187,15 @@ def render_func(*args, **o_kwargs):
                     kwargs["search_text"] = Melty.search_stack[-1]
 
                 if search_requested:
+                    # Prefill the find box from the current text selection -
+                    # also when the search is already open, replacing the query.
+                    _sel = _selection_for_search(draw_state)
+                    if _sel is not None and _sel != draw_state.search_text:
+                        draw_state.search_text = _sel
+                        # New query: recompute matches across the subtree, same
+                        # as an edit typed into the find box (render_search).
+                        Melty.cache.invalidate_up(draw_state._tile_id,
+                                                  force=True, max_depth=12)
                     # Multiple find bars may stay open at once: opening a view's
                     # search no longer closes whichever view's search was open.
                     draw_state.search_active = True

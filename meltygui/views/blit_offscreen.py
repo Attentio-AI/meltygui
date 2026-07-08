@@ -45,6 +45,37 @@ INV_65535 = 1.0 / 65535.0
 # on either axis it gracefully falls back to uncached rendering instead.
 MAX_TILE_DIM = 8000
 
+# Tile textures are allocated at sizes rounded up to TILE_BUCKET so minor
+# view-size jitter (hover re-measures, per-keystroke height changes) stays
+# within the same allocation and costs zero GL work - no realloc, no
+# crop-blit, and no "New Tile" invalidate_up cascade. Tile.size keeps meaning
+# the LOGICAL view size everywhere (every equality gate, filled_bbox,
+# size_change); only allocation and the raw-texel sites (PASS 3 viewport,
+# PASS 4 mask blit, sampling UVRect) read Tile.alloc_size. Content is
+# TOP-ANCHORED: the screen top-left corner is pinned at texel row alloc_h, so
+# any logical resize within the bucket leaves existing texels aligned.
+# TILE_BUCKET = 1 reverts the whole scheme to exact tile sizes.
+TILE_BUCKET = 32
+
+
+def _bucket(v: int) -> int:
+    return min(MAX_TILE_DIM, ((int(v) + TILE_BUCKET - 1) // TILE_BUCKET) * TILE_BUCKET)
+
+
+def _tile_alloc(t) -> Tuple[int, int]:
+    # getattr: tolerates Tile instances created before alloc_size existed
+    # (hotswap onto a live session).
+    return getattr(t, "alloc_size", None) or t.size
+
+
+def _tile_uv_rect(t) -> Tuple[float, float, float, float]:
+    """uUVRect (xy scale, zw offset) mapping a 0..1 dest-rect UV onto the
+    top-anchored logical subrect of a bucket-padded tile texture."""
+    taw, tah = _tile_alloc(t)
+    sx = t.size[0] / taw
+    sy = t.size[1] / tah
+    return (sx, sy, 0.0, 1.0 - sy)
+
 
 
 # ==============================
@@ -57,7 +88,8 @@ class Tile:
     tex: int
     mask_tex: int  # Cached subtree mask for this tile
     rbo: Optional[int]
-    size: Tuple[int, int]
+    size: Tuple[int, int]  # LOGICAL view size; the texture may be larger (alloc_size)
+    alloc_size: Optional[Tuple[int, int]] = None  # bucketed texture dims, None = same as size
     dirty: bool = True
     last_clean_frame: int = -1
     last_invalidated_frame: int = 3
@@ -66,7 +98,8 @@ class Tile:
     # Cumulative union (in tile-local coords) of regions blitted from the main
     # framebuffer during the tile's lifetime. None until the first partial blit;
     # once it covers (0,0,size) the tile is fully filled and scroll-driven
-    # invalidations can be skipped. Reset implicitly on tile recreation/resize.
+    # invalidations can be skipped. Reset on tile recreation and clamped in place
+    # on a within-bucket logical resize.
     filled_bbox: Optional[Tuple[int, int, int, int]] = None
 
 
@@ -151,6 +184,27 @@ def snap_int(v: float) -> int:
     return int(v)
 
 
+def _ceil256(v: int) -> int:
+    return ((int(v) + 255) // 256) * 256
+
+
+def _display_max_size() -> Tuple[int, int]:
+    """Largest video mode across all monitors, used to seed the one-time
+    frame-global surface allocation so an OS-window resize never needs to
+    reallocate. (0, 0) on any failure — the grow-only path then just rounds
+    up from the current framebuffer size instead."""
+    try:
+        import glfw
+        w = h = 0
+        for m in glfw.get_monitors():
+            mode = glfw.get_video_mode(m)
+            w = max(w, int(mode.size.width))
+            h = max(h, int(mode.size.height))
+        return w, h
+    except Exception:
+        return 0, 0
+
+
 def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
     fbo = gl.glGenFramebuffers(1)
@@ -173,6 +227,23 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     return fbo, rbo
 
 
+def _clear_mask_regions(mask_tex: int, rects) -> None:
+    """Clear regions of an R16 tile mask to rank 0. Tile masks aren't attached
+    to the tile's own FBO, so borrow the shared scratch FBO the way PASS 4
+    does. rects are GL-space (x, y, w, h); the caller owns state save/restore
+    (this enables scissor and rebinds GL_FRAMEBUFFER)."""
+    scratch = getattr(Melty.cache, "_scratch_fbo", None)
+    if not scratch:
+        return
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, scratch)
+    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, mask_tex, 0)
+    gl.glEnable(gl.GL_SCISSOR_TEST)
+    gl.glClearColor(0, 0, 0, 0.0)
+    for x, y, cw, ch in rects:
+        gl.glScissor(int(x), int(y), int(cw), int(ch))
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+
 def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, draw_state=None, tile_id=None) -> \
         Optional[Tile]:
     # Layout occasionally hands us fractional or negative dims (e.g. a
@@ -186,32 +257,80 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     if existing and existing.size == (w, h):
         return existing
 
-    # print("existing", existing.size if existing else None, "new", (w, h), "frame", frame_id, "tile_id", tile_id)
+    aw = _bucket(w)
+    ah = _bucket(h)
 
-    # if Melty.frame_count > 20:
-    #     print_stack_trace()
+    if existing and _tile_alloc(existing) == (aw, ah):
+        # Same bucket: update the logical size in place - no GL realloc, no
+        # crop-blit (top-anchored content keeps the screen-top-left corner on
+        # the same texels). Returning the SAME object is the caller's signal
+        # to issue a direct ancestor invalidate instead of the "New Tile"
+        # invalidate_up cascade.
+        ow = snap_int(existing.size[0])
+        oh = snap_int(existing.size[1])
 
-    if w == 0 or h == 0:
-        return None
+        # Invariant: texels outside the current logical rect stay transparent
+        # (color) and rank 0 (mask), so a grow reveals new pixels - PASS 3's
+        # mask-gated copy discards where the tile has no fresh geometry, so it
+        # would NOT overwrite stale texels left by an earlier larger logical
+        # era. Clear the newly exposed bands on grow.
+        if w > ow or h > oh:
+            st = _GLState()
+            try:
+                bands = []
+                if h > oh:  # bottom band: screen rows [oh, h)
+                    bands.append((0, ah - h, w, h - oh))
+                if w > ow:  # right band: screen cols [ow, w), full new height
+                    bands.append((ow, ah - h, w - ow, h))
+                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, existing.fbo)
+                gl.glEnable(gl.GL_SCISSOR_TEST)
+                # Pin the colormask: a leaked R-only one (the mask passes use
+                # one) would leave stale G/B/A inside the new logical rect.
+                gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+                gl.glClearColor(0, 0, 0, 0.0)
+                for x, y, cw, ch in bands:
+                    gl.glScissor(int(x), int(y), int(cw), int(ch))
+                    gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                _clear_mask_regions(existing.mask_tex, bands)
+            finally:
+                st.restore()
+
+        existing.size = (w, h)
+        # Always stamp alloc_size: also upgrades a pre-bucketing tile whose
+        # exact size happened to be bucket-aligned (getattr fallback saw
+        # alloc == size for it).
+        existing.alloc_size = (aw, ah)
+        if existing.filled_bbox is not None:
+            # Clamp to the new logical dims. On a shrink an old full-coverage
+            # bbox now covers the new logical rect (reads fully filled, the
+            # scroll-invalidate gate stops immediately); on a grow the old
+            # coverage stays valid in top-left coords and the revealed border
+            # reads unfilled - both matching the recreate path's seeding.
+            l, t_, r, b = existing.filled_bbox
+            r, b = min(r, w), min(b, h)
+            existing.filled_bbox = (l, t_, r, b) if r > l and b > t_ else None
+        existing.last_invalidated_frame = max(existing.last_invalidated_frame, frame_id + 1)
+        request_render()
+        return existing
 
     try:
-        new_tex = _create_color_tex(w, h)
+        new_tex = _create_color_tex(aw, ah)
     except Exception as e:
         existing_size = existing.size if existing else None
         reset = "\033[0m"
         pink = "\033[95m"
         print(f"{pink}{draw_state.to_dict()}\n{'=' * 10} "
-              f"Failed to create color texture for tile (size {w}x{h}): {e}"
+              f"Failed to create color texture for tile (size {aw}x{ah}): {e}"
               f"\nCurrent size {existing_size}\n{'=' * 10}{reset}")
         return None
 
-    new_mask_tex = _create_mask_tex(w, h)
+    new_mask_tex = _create_mask_tex(aw, ah)
     # No depth-stencil renderbuffer: tiles are only ever written by the PASS 3
     # copy shader and the crop-blit, neither of which depth/stencil-tests, and
     # the D24S8 attachment was 4 B/px of VRAM plus the slowest part of the
     # create/destroy/delete cycle. Tile.rbo stays None; the guarded delete
     # sites will free RBOs on tiles created before this change.
-    new_fbo, new_rbo = _create_fbo_with_tex(new_tex, False, w, h)
+    new_fbo, new_rbo = _create_fbo_with_tex(new_tex, False, aw, ah)
 
     if existing:
         st = _GLState()
@@ -230,23 +349,23 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             # new surface's screen-top-left corner; the uncovered remainder
             # stays transparent until Stage 3 fills it.
             #
-            # Y is flipped relative to screen coords here - draw_tile samples
-            # with uv_a=(0,1), uv_b=(1,0), so screen-top maps to FBO-y = H.
-            # The cropping region in FBO coords therefore runs from H - crop_h to
-            # H on both surfaces.
+            # Y is flipped relative to screen coords, so content is
+            # TOP-ANCHORED: screen-top maps to FBO y = alloc_h on each
+            # surface. The crop dims are the LOGICAL dims; the crop source
+            # runs from alloc_h - crop_h to alloc_h on both surfaces.
+            old_aw, old_ah = _tile_alloc(existing)
             ow = snap_int(existing.size[0])
             oh = snap_int(existing.size[1])
-            nw = snap_int(w)
-            nh = snap_int(h)
-            cw = max(0, min(ow, nw))
-            ch = max(0, min(oh, nh))
+            cw = max(0, min(ow, w))
+            ch = max(0, min(oh, h))
             if cw > 0 and ch > 0:
                 gl.glBlitFramebuffer(
-                    0, oh - ch, cw, oh,           # src (old FBO, top-left in screen)
-                    0, nh - ch, cw, nh,           # dst (new FBO, same screen corner)
+                    0, snap_int(old_ah) - ch, cw, snap_int(old_ah),  # src (old FBO, top-left in screen)
+                    0, ah - ch, cw, ah,                              # dst (new FBO, same screen corner)
                     gl.GL_COLOR_BUFFER_BIT,
                     gl.GL_NEAREST,                # no scaling -> NEAREST is exact and cheap
                 )
+            _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
         finally:
             st.restore()
 
@@ -260,15 +379,18 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         st = _GLState()
         try:
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
-            gl.glViewport(0, 0, snap_int(w), snap_int(h))
             gl.glDisable(gl.GL_SCISSOR_TEST)
             gl.glClearColor(0, 0, 0, 0.0)
             gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            # glTexImage2D(None) values are undefined; the padding for PASS 4
+            # only ever rewrites the logical region, so zero the mask once here
+            # so edge taps at the logical boundary read as mask rank 0.
+            _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
         finally:
             st.restore()
 
     t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h),
-             dirty=True)
+             alloc_size=(aw, ah), dirty=True)
     # Seed filled_bbox to what the crop-copy above covered (in tile-local
     # top-left coords). On a shrink it's the whole tile -> tile reads are fully
     # covered and the scroll-invalidate gate stops early; on a grow it's
@@ -460,6 +582,9 @@ _MASK_TEXTURED_OFFSET_ROUNDED_FS = """
 uniform sampler2D uTex;
 uniform float uOffset;
 uniform vec2 uRectSize;      // Width and height in pixels
+uniform vec4 uUVRect;        // xy = UV scale, zw = UV offset: maps the dest
+                             // rect onto the top-anchored logical subrect of a
+                             // bucket-padded tile mask. (1,1,0,0) = whole tex.
 uniform float uCornerRadius; // Corner radius in pixels
 in vec2 vUV;
 out vec4 oColor;
@@ -481,7 +606,7 @@ void main() {
         discard;
     }
 
-    float val = texture(uTex, vUV).r;
+    float val = texture(uTex, vUV * uUVRect.xy + uUVRect.zw).r;
     if (val > 0.0) {
         oColor = vec4(val + uOffset, 0.0, 0.0, 1.0);
     } else {
@@ -622,6 +747,10 @@ class TileCacheMasked:
         self.all_keys = set()
 
         self._fb_size: Tuple[int, int] = (0, 0)
+        # Allocated dims of the four co-sized internal surfaces (_mask,
+        # _sub_mask, _full_sub_mask, snapshot). For monitor only, grow-only.
+        # _fb_size stays the LOGICAL framebuffer size everywhere.
+        self._fb_alloc_size: Tuple[int, int] = (0, 0)
 
         # Top mask - fresh geometry only, for pixel copying
         self._mask_tex: Optional[int] = None
@@ -683,6 +812,7 @@ class TileCacheMasked:
         self._loc_texoffr_uRectSize = None
         self._loc_texoffr_uCornerRadius = None
         self._loc_texoffr_uMargin = None
+        self._loc_texoffr_uUVRect = None
 
         self._loc_uSrc = None
         self._loc_uTopMask = None
@@ -1221,6 +1351,9 @@ class TileCacheMasked:
         self._prev_occluders = new_occluders
 
     def get_texture_id(self, key: str) -> Optional[int]:
+        # Returned texture may be zero-padded: content is the top-anchored
+        # logical subrect (u [0, size/alloc], v [1 - size/alloc, 1]) - sample
+        # via _tile_uv_rect, not 0..1.
         rk = self._resolve_key(key)
         t = self._tiles.get(rk) or self._tiles.get(key)
         return t.tex if t else None
@@ -1306,45 +1439,92 @@ class TileCacheMasked:
         rf = self._rand
         self.frame_tint = (0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 0.5 + 0.5 * rf(), 1.0)
 
-        if ((fb_w, fb_h) != self._fb_size or self._snapshot_fbo is None) and fb_w > 0 and fb_h > 0:
-            self._fb_size = (fb_w, fb_h)
+        # The four internal surfaces (_mask/_sub_mask/_full_sub_mask R16 +
+        # snapshot RGBA8) are allocated ONCE at monitor-max (256px-rounded,
+        # grow-only); content renders into the GL (0,0,fb_w,fb_h) corner, so
+        # an interactive OS-window resize no longer destroys and recreates
+        # ~146MB of surfaces per drag step. They are only ever sampled through
+        # _COPY_FS's uv = srcPx / uFBSize, so finalize_captures passes the
+        # ALLOCATED size in uFBSize. _full_mask_tex is the exception: the
+        # shader_library filters in Melty.post_frame (normalize/shadowmap)
+        # process it edge-to-edge in UV space, so it must be the logical fb
+        # size - resized in-place via glTexImage2D rebind, which keeps the
+        # texture name and its FBO attachment valid.
+        self._fb_alloc_size = getattr(self, "_fb_alloc_size", (0, 0))
+        if fb_w > 0 and fb_h > 0:
+            aw, ah = self._fb_alloc_size
+            if fb_w > aw or fb_h > ah or self._snapshot_fbo is None:
+                def safe_del_tex(t):
+                    if t:
+                        gl.glDeleteTextures(1, [t])
 
-            def safe_del_tex(t):
-                if t:
-                    gl.glDeleteTextures(1, [t])
+                def safe_del_fbo(f):
+                    if f:
+                        gl.glDeleteFramebuffers(1, [f])
 
-            def safe_del_fbo(f):
-                if f:
-                    gl.glDeleteFramebuffers(1, [f])
+                safe_del_tex(self._mask_tex)
+                safe_del_fbo(self._mask_fbo)
+                safe_del_tex(self._sub_mask_tex)
+                safe_del_fbo(self._sub_mask_fbo)
+                safe_del_tex(self._full_sub_mask_tex)
+                safe_del_fbo(self._full_sub_mask_fbo)
+                safe_del_tex(self.snapshot_tex)
+                safe_del_fbo(self._snapshot_fbo)
 
-            safe_del_tex(self._mask_tex)
-            safe_del_fbo(self._mask_fbo)
-            safe_del_tex(self._full_mask_tex)
-            safe_del_fbo(self._full_mask_fbo)
-            safe_del_tex(self._sub_mask_tex)
-            safe_del_fbo(self._sub_mask_fbo)
-            safe_del_tex(self._full_sub_mask_tex)
-            safe_del_fbo(self._full_sub_mask_fbo)
-            safe_del_tex(self.snapshot_tex)
-            safe_del_fbo(self._snapshot_fbo)
-            safe_del_fbo(self._scratch_fbo)
+                mon_w, mon_h = _display_max_size()
+                max_tex = int(gl.glGetIntegerv(gl.GL_MAX_TEXTURE_SIZE))
+                aw = max(min(_ceil256(max(fb_w, mon_w)), max_tex), fb_w)
+                ah = max(min(_ceil256(max(fb_h, mon_h)), max_tex), fb_h)
 
-            self._mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
-            self._mask_fbo, _ = _create_fbo_with_tex(self._mask_tex, False, fb_w, fb_h)
+                self._mask_tex = _create_mask_tex(aw, ah, clamp_to_border=True)
+                self._mask_fbo, _ = _create_fbo_with_tex(self._mask_tex, False, aw, ah)
 
-            self._full_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
-            self._full_mask_fbo, _ = _create_fbo_with_tex(self._full_mask_tex, False, fb_w, fb_h)
+                self._sub_mask_tex = _create_mask_tex(aw, ah, clamp_to_border=True)
+                self._sub_mask_fbo, _ = _create_fbo_with_tex(self._sub_mask_tex, False, aw, ah)
 
-            self._sub_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
-            self._sub_mask_fbo, _ = _create_fbo_with_tex(self._sub_mask_tex, False, fb_w, fb_h)
+                self._full_sub_mask_tex = _create_mask_tex(aw, ah, clamp_to_border=True)
+                self._full_sub_mask_fbo, _ = _create_fbo_with_tex(self._full_sub_mask_tex, False, aw, ah)
 
-            self._full_sub_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
-            self._full_sub_mask_fbo, _ = _create_fbo_with_tex(self._full_sub_mask_tex, False, fb_w, fb_h)
+                self.snapshot_tex = _create_color_tex(aw, ah, clamp_to_border=True, filter=gl.GL_NEAREST)
+                self._snapshot_fbo, _ = _create_fbo_with_tex(self.snapshot_tex, False, aw, ah)
 
-            self.snapshot_tex = _create_color_tex(fb_w, fb_h, clamp_to_border=True, filter=gl.GL_NEAREST)
-            self._snapshot_fbo, _ = _create_fbo_with_tex(self.snapshot_tex, False, fb_w, fb_h)
+                # An FBO has no storage - bound to bind, create it once.
+                if self._scratch_fbo is None:
+                    self._scratch_fbo = gl.glGenFramebuffers(1)
 
-            self._scratch_fbo = gl.glGenFramebuffers(1)
+                # glTexImage2D(None) contents are undefined, and the copy gate
+                # (topRank == maxRank > 0) relies on padding beyond the logical
+                # fb reading rank 0. This may also be re-entered mid-frame by
+                # finalize_captures under arbitrary leftover GL state, so pin
+                # scissor/colormask explicitly around the clears.
+                st = _GLState()
+                try:
+                    gl.glDisable(gl.GL_SCISSOR_TEST)
+                    gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+                    gl.glClearColor(0, 0, 0, 0.0)
+                    for fbo in (self._mask_fbo, self._sub_mask_fbo,
+                                self._full_sub_mask_fbo, self._snapshot_fbo):
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
+                        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                finally:
+                    st.restore()
+
+                self._fb_alloc_size = (aw, ah)
+
+            if (fb_w, fb_h) != self._fb_size or self._full_mask_fbo is None:
+                self._fb_size = (fb_w, fb_h)
+                if self._full_mask_tex is None or self._full_mask_fbo is None:
+                    if self._full_mask_tex:
+                        gl.glDeleteTextures(1, [self._full_mask_tex])
+                    if self._full_mask_fbo:
+                        gl.glDeleteFramebuffers(1, [self._full_mask_fbo])
+                    self._full_mask_tex = _create_mask_tex(fb_w, fb_h, clamp_to_border=True)
+                    self._full_mask_fbo, _ = _create_fbo_with_tex(self._full_mask_tex, False, fb_w, fb_h)
+                else:
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, self._full_mask_tex)
+                    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_R16, fb_w, fb_h, 0,
+                                    gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         self._mask_rects.clear()
         self._rect_seq = 0
@@ -1544,8 +1724,11 @@ class TileCacheMasked:
         if use_image:
             a = draw_state.abs_left, draw_state.abs_top
             b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
+            # Top-anchored logical subrect of the (possibly bucket-padded)
+            # texture: content spans u [0, lw/aw], v [1 - lh/ah, 1].
+            taw, tah = _tile_alloc(t)
             uv_a = (0.0, 1.0)
-            uv_b = (1.0, 0.0)
+            uv_b = (t.size[0] / taw, 1.0 - t.size[1] / tah)
 
             imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                            a=a,
@@ -1657,8 +1840,11 @@ class TileCacheMasked:
 
                 a = draw_state.abs_left, draw_state.abs_top
                 b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
+                # Top-anchored logical subrect of the (possibly zero-padded)
+                # texture: it spans u [0, lw/aw], v [1 - lh/ah, 1].
+                taw, tah = _tile_alloc(t)
                 uv_a = (0.0, 1.0)
-                uv_b = (1.0, 0.0)
+                uv_b = (t.size[0] / taw, 1.0 - t.size[1] / tah)
 
                 imgui.get_window_draw_list().add_image_rounded(t.tex,
                                                                a=a,
@@ -1833,11 +2019,25 @@ class TileCacheMasked:
 
             if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (int(ctx.size[0]), int(ctx.size[1])))) and not imgui.is_mouse_down(0)
                     and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
+                old_t = t
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
-                reason = f"New size old_size{old_size} new_size{ctx.size}" if old_size else "New tile"
-                reason = "t None" if t is None else reason
 
-                self.invalidate_up(ctx.key, max_depth=4, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
+                if t is not None and t is old_t:
+                    # Within-bucket logical resize: the tile was updated in
+                    # place. Ancestors must recompose (their cached pixels and
+                    # masks show the old extent), but there is no need for the
+                    # depth-4 descendant sweep: skipping it is safe because
+                    # whatever caused the size change already invalidated this
+                    # view, and invalidate_up force-marks every ancestor on the
+                    # parent resize path.
+                    self.invalidate(ctx.key, note=Note(name="Logical resize",
+                                                       reason=f"{old_size} -> {ctx.size} in bucket",
+                                                       tint=(0.5, 1, 0.5)))
+                else:
+                    reason = f"New size old_size{old_size} new_size{ctx.size}" if old_size else "New tile"
+                    reason = "t None" if t is None else reason
+
+                    self.invalidate_up(ctx.key, max_depth=4, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
                 self._tiles[ctx.key] = t
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
@@ -1912,6 +2112,14 @@ class TileCacheMasked:
                 self._prog_mask_textured_offset_rounded, "uMargin"
             )
 
+        # Fallback in the compile guard so a hotswap onto a live instance
+        # (which already compiled from the pre-uUVRect source) still resolves
+        # the location: -1 there, and glUniform4f(-1, ...) is a legal no-op.
+        if getattr(self, "_loc_texoffr_uUVRect", None) is None and self._prog_mask_textured_offset_rounded is not None:
+            self._loc_texoffr_uUVRect = gl.glGetUniformLocation(
+                self._prog_mask_textured_offset_rounded, "uUVRect"
+            )
+
         if self._prog_copy is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _COPY_FS)
@@ -1976,7 +2184,8 @@ class TileCacheMasked:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def _draw_mask_rect_cached(self, tex: int, ix0: int, iy0: int, iw: int, ih: int, offset: float,
-                               corner_radius: float, shadow_margin: float = 0.0):
+                               corner_radius: float, shadow_margin: float = 0.0,
+                               uv_rect=(1.0, 1.0, 0.0, 0.0)):
         """Draw a cached mask texture with offset and optional rounded corners.
         Note: preserves existing behavior (rounded path effectively always used by callers).
         """
@@ -1990,7 +2199,8 @@ class TileCacheMasked:
         gl.glUniform1f(self._loc_texoffr_uOffset, offset)
         gl.glUniform2f(self._loc_texoffr_uRectSize, float(iw), float(ih))
         gl.glUniform1f(self._loc_texoffr_uCornerRadius, corner_radius)
-        gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+        gl.glUniform1f(self._loc_texoffr_uMargin, shadow_margin)
+        gl.glUniform4f(self._loc_texoffr_uUVRect, *uv_rect)
 
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
@@ -2010,6 +2220,10 @@ class TileCacheMasked:
         can_use_cached = use_cached and (t is not None) and (not self._is_dirty(t)) and (t.mask_tex is not None)
 
         if can_use_cached:
+            # Dead in practice: the sole caller (PASS 2) passes
+            # use_cached=False. If ever revived, callers must remap sampling to
+            # the tile's logical subrect (see uUVRect in _draw_mask_rect_cached)
+            # - bucket-padded textures sampled 0..1 here will render stretched.
             gl.glUseProgram(self._prog_mask_textured_rounded)
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, t.mask_tex)
@@ -2123,7 +2337,12 @@ class TileCacheMasked:
             gl.glBindTexture(gl.GL_TEXTURE_2D, self._mask_tex)
             gl.glUniform1i(self._loc_uTopMask, 1)
 
-            gl.glUniform2f(self._loc_uFBSize, float(fb_w), float(fb_h))
+            # uFBSize is the divisor turning framebuffer-pixel coords into UVs
+            # for uSrc/uTopMask/uSubMask. Those textures are allocated at
+            # _fb_alloc_size with content corner-anchored at (0,0), so the
+            # divisor is the ALLOCATED size, not the logical framebuffer size.
+            alloc_w, alloc_h = self._fb_alloc_size
+            gl.glUniform2f(self._loc_uFBSize, float(alloc_w), float(alloc_h))
             gl.glUniform1f(self._loc_copy_uDebugScale, float(self.offscreen_scale))
             gl.glUniform1i(self._loc_copy_uCopyDebugMode, self._copy_debug_mode_to_int())
 
@@ -2168,7 +2387,11 @@ class TileCacheMasked:
                 if p.tile is not None and p.tile.fbo != -1:
                     try:
                         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, p.tile.fbo)
-                        gl.glViewport(0, 0, snap_int(p.tile.size[0]), snap_int(p.tile.size[1]))
+                        # Write into the top-anchored logical subrect of the
+                        # (possibly bucket-padded) texture.
+                        t_lw, t_lh = snap_int(p.tile.size[0]), snap_int(p.tile.size[1])
+                        t_ah = snap_int(_tile_alloc(p.tile)[1])
+                        gl.glViewport(0, t_ah - t_lh, t_lw, t_lh)
 
                         # Pre-tint: multiplicative blending drifts stale pixels toward blue
                         if Toggles.debug_stale_tint:
@@ -2308,7 +2531,8 @@ class TileCacheMasked:
                             ih,
                             offset,
                             r.corner_radius,
-                            r.draw_state.shadow_margin if r.draw_state is not None else 0.0
+                            r.draw_state.shadow_margin if r.draw_state is not None else 0.0,
+                            uv_rect=_tile_uv_rect(t_child),
                         )
                     else:
                         if r.draw_state.parent_window is not None:
@@ -2349,15 +2573,19 @@ class TileCacheMasked:
 
                     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._full_sub_mask_fbo)
 
+                    # Dst is the top-anchored logical subrect of the (possibly
+                    # bucket-padded) mask texture, mirroring PASS 3's viewport.
+                    m_lw, m_lh = int(p.tile.size[0]), int(p.tile.size[1])
+                    m_ah = int(_tile_alloc(p.tile)[1])
                     gl.glBlitFramebuffer(
                         int(x0),
                         int(y0),
                         int(x1),
                         int(y1),
                         0,
-                        0,
-                        int(p.tile.size[0]),
-                        int(p.tile.size[1]),
+                        m_ah - m_lh,
+                        m_lw,
+                        m_ah,
                         gl.GL_COLOR_BUFFER_BIT,
                         gl.GL_NEAREST,
                     )
@@ -2423,7 +2651,8 @@ class TileCacheMasked:
                         shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
 
                         self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
-                                                    r.corner_radius, shadow_margin)
+                                                    r.corner_radius, shadow_margin,
+                                                    uv_rect=_tile_uv_rect(t))
                     else:
                         rank_norm = float(depth_and_layer) / 65535.5
                         gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)

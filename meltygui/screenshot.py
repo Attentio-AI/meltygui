@@ -357,7 +357,10 @@ def _capture_tile(name):
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, tile.fbo)
     gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
     gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-    data = gl.glReadPixels(0, 0, int(w), int(h), gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
+    # Content is top-anchored in a possibly bottom-padded texture: the logical
+    # w x h pixels live in the texture rows [alloc_h - h, alloc_h), not at y=0.
+    alloc_h = (getattr(tile, "alloc_size", None) or tile.size)[1]
+    data = gl.glReadPixels(0, int(alloc_h) - int(h), int(w), int(h), gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)  # restore the default framebuffer
 
     if isinstance(data, bytes):

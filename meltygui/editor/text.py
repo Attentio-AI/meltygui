@@ -42,8 +42,8 @@ COLORS = {
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
     'comment': _hex('#808080'),  # Comment
     'number': _hex('#6897bb'),  # Number
-    'color3': _hex('#6897bb'),  # merged float 3-tuple `(r, g, b)` (for text color)
-    'icon': _hex('#56b6c2'),  # Font Awesome / Pango glyph (cyan, distinct from strings)
+    'color3': _hex('#6897bb'),  # merged color tuple `(r, g, b[, a])` (fallback text color)
+    'icon': _hex('#56b6c2'),  # Font Awesome / PUA glyph (cyan, distinct from strings)
 }
 
 KEYWORDS = {'def', 'class', 'if', 'else', 'elif', 'for', 'while',
@@ -877,8 +877,9 @@ def draw_number_token(input_value, draw_state=None,
 
 
 def _fmt_color_channel(v):
-    """Format a 0..1 channel back into source keeping it a FLOAT literal (a bare
-    `1` would break the all-floats tuple pattern and unmerge the token)."""
+    """Format a 0..1 channel back into source as a FLOAT literal (the merged
+    token needs at least one float channel, and a dragged value is fractional
+    anyway; untouched channels keep their original text — ints stay ints)."""
     s = f"{max(0.0, min(1.0, v)):.3f}".rstrip('0')
     return s + '0' if s.endswith('.') else s
 
@@ -888,26 +889,35 @@ def _fmt_color_channel(v):
 def draw_color3_token(input_value, draw_state=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
-    """Inline color swatch for a float 3-tuple — ACCESSORY (lead_cells) renderer
-    for 'color3' tokens (`(1.0, 0.5, 0.2)` merged by tokenize). The editor draws
-    the tuple TEXT itself, normally — fully editable, caret/selection like any
-    code — and this widget only gets the lead area to its LEFT, where it draws a
-    swatch. Clicking the swatch opens the MELTY color-picker popover (same
+    """Inline color swatch for a color tuple — ACCESSORY (lead_cells) renderer
+    for 'color3' tokens (`(1.0, 0.5, 0.2)` or RGBA `(1.0, 0.5, 0.2, 0.5)` —
+    the fourth channel is alpha — with ints 0/1 allowed as channels; merged by
+    tokenize). The editor draws the tuple TEXT itself, normally — fully
+    editable, caret/selection like any code — and this widget only gets the
+    lead area to its LEFT, where it draws a swatch (split alpha preview when 4
+    channels). Clicking the swatch opens the MELTY color-picker popover (same
     pattern as draw_tuple's swatch: popover_focused_ds identity is the open
     state, the picker window is latched — drawn every frame with closed=
     toggled — anchored under the swatch, dismissed by outside click / Esc).
     NEVER imgui's built-in popup: melty windowing has diverged (shadows,
     z-order, cached render tiles) and they don't compose. Edits splice the
-    reformatted tuple back; channels stay float literals so the token re-merges.
+    reformatted tuple back — changed channels become float literals, untouched
+    channels keep their original text — so the token re-merges.
     Draws nothing if the tuple doesn't parse (the text is still there).
     left_mouse_* declared (never read) for the event latch — see draw_icon_selector."""
     from src.lsd.gl_gui.view.mode import Mode
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
     s = input_value if isinstance(input_value, str) else str(input_value)
+    parts = [p.strip() for p in s.strip('()').split(',')]
     try:
-        r, g, b = (float(p) for p in s.strip('()').split(','))
+        vals = [float(p) for p in parts]
     except ValueError:
         return False, s
+    if len(vals) not in (3, 4):
+        return False, s
+    has_alpha = len(vals) == 4
+    r, g, b = vals[0], vals[1], vals[2]
+    a = vals[3] if has_alpha else 1.0
 
     # Square-ish swatch inset in the lead area, vertically centered on the line;
     # the extra cell width to its right is the gap before the text.
@@ -915,8 +925,11 @@ def draw_color3_token(input_value, draw_state=None,
     _cx, _cy = imgui.get_cursor_screen_pos()
     imgui.set_cursor_screen_pos((_cx, _cy + (draw_state.height - _sw) * 0.5))
     is_open = Melty.popover_focused_ds is draw_state
-    if imgui.color_button("##color3_tv", r, g, b, 1.0,
-                          flags=imgui.COLOR_EDIT_NO_TOOLTIP,
+    # ALPHA_PREVIEW_HALF splits the swatch - half composited at the real alpha
+    # over a checkerboard, half opaque - so RGBA transparency shows in the chip.
+    flags = imgui.COLOR_EDIT_NO_TOOLTIP | (imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF if has_alpha else 0)
+    if imgui.color_button("##color3_tv", r, g, b, a,
+                          flags=flags,
                           width=_sw, height=_sw):
         Melty.popover_focused_ds = None if is_open else draw_state
         if not is_open:
@@ -924,11 +937,11 @@ def draw_color3_token(input_value, draw_state=None,
         request_render()
     is_open = Melty.popover_focused_ds is draw_state  # reflect the close this frame
 
-    # Fixed-size popover (closable windows can't auto-resize, the picker body is
-    # raw imgui the framework can't measure): SV square + 3 channel rows + title.
-    picker_h = 180 + 14 + 3 * 26 + 26
+    # Fixed-size popover (closable windows don't auto-resize; the picker body is
+    # live imgui the framework can't measure): SV square + N channel rows + hex.
+    picker_h = 180 + 14 + len(vals) * 26 + 26
     color_changed, new_color = draw_color_picker(
-        (r, g, b), name=f"{draw_state.name}_picker", closed=not is_open,
+        tuple(vals), name=f"{draw_state.name}_picker", closed=not is_open,
         window_pos=(0, 10), parent_window=draw_state, width=216, height=picker_h,
         mode=Mode.POPOVER)
     if is_open:
@@ -940,18 +953,24 @@ def draw_color3_token(input_value, draw_state=None,
         if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
             request_render()
+        if color_changed and new_color is not None:
+            out = [old_text if new_v == old_v else _fmt_color_channel(new_v)
+                   for old_text, old_v, new_v in zip(parts, vals, new_color)]
+            return True, "(" + ", ".join(out) + ")"
         if color_changed:
-            return True, (f"({_fmt_color_channel(new_color[0])}, "
-                          f"{_fmt_color_channel(new_color[1])}, "
-                          f"{_fmt_color_channel(new_color[2])})")
+            # The picker's delete affordance returned None - meaningless for a
+            # code literal. Just dismiss the popover and leave the text alone.
+            Melty.popover_focused_ds = None
+            request_render()
     return False, s
 
 
 # The default callback-widget set: when draw_text is called with no token_views,
 # Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns,
 # True/False become double-click-to-toggle words, numeric literals become drag
-# widgets, and float 3-tuples become color swatches. Add more entries here to
-# make other token kinds interactive by default.
+# widgets, and color tuples (3 or 4 numeric channels, RGBA) become color
+# swatches. Add more entries here to make other token kinds interactive by
+# default.
 # For whole_token entries char_width is also the "this is inline" flag - the
 # widget REPLACES the text at exactly token-width (len(token) cells), unless
 # lead_cells=N makes it an ACCESSORY: the text draws normally (shifted N cells
@@ -1351,8 +1370,9 @@ def _tokenize_override_comment(comment):
     widget-eligible kinds — 'bool' (double-click toggle), 'number' (drag),
     'color3' (swatch), 'icon' — while keys and punctuation keep the plain
     'comment' color. The body runs the same local pipeline as code (raw scan
-    + sign and color-tuple merges), so `z_offset=-1` drags across zero and an
-    all-floats `tint=(0.1, 0.2, 0.3)` merges into one color3 token. Token
+    + sign and color-tuple merges), so `z_offset=-1` drags across zero and a
+    color tuple — `tint=(0.1, 0.2, 0.3)`, RGBA, or mixed int/float like
+    `tint=(0, 0.002, 0.004)` — merges into one color3 token. Token
     texts still concatenate to exactly `comment` (no newlines inside), so the
     vcols/caret math and line_open bookkeeping stay intact."""
     split = 1
@@ -1551,24 +1571,39 @@ def _is_float_literal(tok):
     return not t.startswith(('0x', '0o', '0b')) and ('.' in t or 'e' in t)
 
 
+def _is_int_channel(tok):
+    """True for an int literal usable as a 0..1 color channel: exactly 0 or 1.
+    Other ints are far more likely shapes/strides/counts than channels, so a
+    tuple containing them never merges into a color token."""
+    try:
+        return int(tok) in (0, 1)
+    except ValueError:
+        return False
+
+
 def _merge_color_tuples(stream):
-    """Merge pass: `(f, f, f)` — an open paren, exactly three FLOAT literals
-    separated by commas (spaces allowed), closed on the same line — becomes one
-    'color3' token, rendered by the inline color-picker widget. Only fires in
-    tuple-literal positions (`x = (...)`, `tint=(...)`, `return (...)`), judged
-    by the token before the '(' via _unary_sign_context — an identifier or
-    closing bracket there means a CALL's argument list (`f(0.1, 0.5, 1.0)`),
-    which stays untouched."""
+    """Merge pass: `(c, c, c)` or `(c, c, c, c)` — an open paren, three or four
+    numeric channels separated by commas (spaces allowed), closed on the same
+    line — becomes one 'color3' token, rendered by the inline color-picker
+    widget (four channels = RGBA, the fourth is alpha). A channel is a FLOAT
+    literal or the ints 0/1 (mixed tuples like `(0, 0.002, 0.004)` are common
+    color spellings), but at least one channel must be a float — an all-int
+    tuple reads as a shape/stride, not a color. Only fires in tuple-literal
+    positions (`x = (...)`, `tint=(...)`, `return (...)`), judged by the token
+    before the '(' via _unary_sign_context — an identifier or closing bracket
+    there means a CALL's argument list (`f(0.1, 0.5, 1.0)`), which stays
+    untouched."""
     prev = None  # last significant token, for the call-vs-tuple judgement
     buf = []     # tokens collected since a candidate '('
-    nfloats = 0
+    n_nums = 0
+    has_float = False
     expect = None  # 'num' | 'comma' - alternates while buffering
     for tok, kind in stream:
         while True:
             if not buf:
                 if tok == '(' and kind == 'default' and _unary_sign_context(prev):
                     buf = [(tok, kind)]
-                    nfloats, expect = 0, 'num'
+                    n_nums, has_float, expect = 0, False, 'num'
                 else:
                     yield tok, kind
                     if not tok.isspace() and kind != 'comment':
@@ -1577,16 +1612,19 @@ def _merge_color_tuples(stream):
             if tok == ' ':
                 buf.append((tok, kind))
                 break
-            if kind == 'number' and expect == 'num' and nfloats < 3 and _is_float_literal(tok):
+            if (kind == 'number' and expect == 'num' and n_nums < 4
+                    and (_is_float_literal(tok) or _is_int_channel(tok))):
                 buf.append((tok, kind))
-                nfloats += 1
+                n_nums += 1
+                has_float = has_float or _is_float_literal(tok)
                 expect = 'comma'
                 break
-            if tok == ',' and kind == 'default' and expect == 'comma' and nfloats < 3:
+            if tok == ',' and kind == 'default' and expect == 'comma' and n_nums < 4:
                 buf.append((tok, kind))
                 expect = 'num'
                 break
-            if tok == ')' and kind == 'default' and expect == 'comma' and nfloats == 3:
+            if (tok == ')' and kind == 'default' and expect == 'comma'
+                    and n_nums in (3, 4) and has_float):
                 buf.append((tok, kind))
                 merged = (''.join(t for t, _ in buf), 'color3')
                 yield merged
@@ -2630,6 +2668,7 @@ def draw_text(input_value: str, height=None,
             imgui.push_font(_font_handle)
             _font_pushed = True
 
+
     # Character advance. Every caller uses JetBrains Mono (monospace), so one
     # character advance lets us position and measure text by character count
     # instead of calling imgui.calc_text_size per glyph/slice each frame.
@@ -2833,6 +2872,12 @@ def draw_text(input_value: str, height=None,
                     uj_state._kbd_mode = True
                     uj_state.cursor_path = (next(iter(_items)),)
                     uj_state.open_path = ()
+                    # The picker window is LATCHED - its scroll state survives
+                    # a close, so a repeat can come up mid-list with the index-0
+                    # cursor scrolled offscreen. Snap it back to the top.
+                    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                    _dd_scroll_cursor_into_view(
+                        Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
                     request_render()
                     return True
                 if _targets:
@@ -2995,6 +3040,12 @@ def draw_text(input_value: str, height=None,
                 ds._ac_index = _ac_idx
                 ac_state._kbd_mode = True
                 ac_state.cursor_path = (_ac_cands[_ac_idx],)
+                # Keep the selection cursor visible: nudge the popup window to
+                # scroll the minimal amount (no-op while the row is in view).
+                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                _dd_scroll_cursor_into_view(
+                    Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None)),
+                    _ac_idx)
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
@@ -3037,6 +3088,11 @@ def draw_text(input_value: str, height=None,
                 ds._uj_index = _uj_idx
                 uj_state._kbd_mode = True
                 uj_state.cursor_path = (_uj_keys[_uj_idx],)
+                # Same scroll-into-view as the suggestion popup's arrow nav.
+                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                _dd_scroll_cursor_into_view(
+                    Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
+                    _uj_idx)
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
@@ -3473,6 +3529,12 @@ def draw_text(input_value: str, height=None,
                 names = [n for n, _ in cands]
                 if prefix != getattr(ds, '_ac_prefix', None) or not was_open:
                     ds._ac_index = 0  # list changed shape, restart at the top match
+                    # Snap the (latched) popup back to the top so the restarted
+                    # selection is visible - the popup keeps its scroll_offset
+                    # across reshapes and reopens otherwise.
+                    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                    _dd_scroll_cursor_into_view(
+                        Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None)), 0)
                     # Assert keyboard-select mode so the top match is highlighted
                     # immediately (the dropdown only paints the cursor_path row
                     # when _kbd_mode is set; otherwise it waits for hover). A mouse
@@ -4092,9 +4154,20 @@ def draw_text(input_value: str, height=None,
         _mp = imgui.get_mouse_pos()
         _lm = getattr(ac_state, '_last_mouse', None)
         _pop_x0, _pop_y0 = _ac_x, _ac_y + line_px
-        _pop_h = min(len(_ac_cands) * 24 + 10, 312)        # ~row height, capped
-        _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
-                 and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
+        _pop_ds = Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None))
+        if _pop_ds is not None and _pop_ds.width and _pop_ds.height:
+            # REAL window rect (live abs pos - cached abs lags a frame during a
+            # parent-window drag). Survives a user resize; a hardcoded estimate
+            # here left a narrow band where _kbd_mode was re-forced every frame,
+            # so rows outside it never hover-highlighted.
+            _px0, _py0 = _pop_ds._abs_left(), _pop_ds._abs_top()
+            _over = (_px0 - 4 <= _mp[0] <= _px0 + _pop_ds.width + 4
+                     and _py0 - 2 <= _mp[1] <= _py0 + _pop_ds.height)
+        else:
+            # First-open-frame fallback before the popup's tile id is found.
+            _pop_h = min(len(_ac_cands) * 24 + 10, 312)        # ~row height, capped
+            _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
+                     and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
         _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
         if not _over:
             ac_state._kbd_mode = True       # mouse away → keyboard selection shown
@@ -4103,47 +4176,53 @@ def draw_text(input_value: str, height=None,
         # over + resting → leave as-is (so an arrow's _kbd_mode=True persists)
         ac_state._last_mouse = (_mp[0], _mp[1])
 
-        # The popup is a CACHED latched window - re-calling draw_dd_menu does NOT
-        # repaint it (verified: the highlight sticks on the row it first opened on).
-        # Force its tile dirty here so the current selection/hover row actually
-        # paints. Must be invalidate_up (it cascades to CHILD tiles below): a plain
-        # invalidate leaves the dd_menu collection inside the window clip, so it
-        # blit-skips and the rows never re-render with the new cursor pos - same
-        # mechanism the begin_frame popover code uses for regular dropdowns. This
-        # body only re-runs on events (keys/hover), so it's one invalidate per
-        # interaction, not a per-frame spin. The tile id (found by name below)
-        # carries a hash, so look it up rather than hard-code it.
-        _mt = getattr(ds, '_ac_menu_tile', None)
-        if _mt is not None:
-            Melty.cache.invalidate_up(_mt, force=True)
-
     imgui.dummy(draw_state.content_width, max(draw_state._kwargs.get("min_height", 0), text_height))
 
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
     # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
     # background results wake it via the future's done-callback (_ac_on_future).
-    ac_changed, ac_pick = draw_dd_menu(
+    ac_changed, ac_pick, _ac_menu_ds = draw_dd_menu(
         _ac_items, name=f"{ds.name}_ac_menu", view_offset=False,
-        temp=True, show_search=False, swoosh=False, closed=not _ac_show, height=141, auto_resize=False,
+        temp=True, show_search=False, swoosh=False, closed=not _ac_show, min_height=141, auto_resize=False,
         window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
-        parent_window=draw_state, root_state=ac_state, path_prefix=())
-    # Cache the popup window's tile id (it carries a hash) so the invalidate above
-    # can find it next frame. Scanned once; updates if the tile is rebuilt.
-    if _ac_show:
-        _mt = getattr(ds, '_ac_menu_tile', None)
-        if _mt is None or _mt not in Melty.cache._tiles:
-            _pref = f"{ds.name}_ac_menu##"
-            for _k in Melty.cache._tiles:
-                if _k.startswith(_pref):
-                    ds._ac_menu_tile = _k
-                    break
+        parent_window=draw_state, root_state=ac_state, path_prefix=(),
+        return_extras=True)
+    # Latch the popup's exact tile id from the call itself (return_extras hands
+    # back its draw_state on every wrapper path, including closed/deferred). The
+    # old name-prefix scan of cache._tiles mis-latched ANOTHER editor's popup
+    # whenever they share a prefix - every RenderHost editor is named "value" -
+    # and since the wrong popup stayed live the latch never healed: that editor's
+    # popup only repainted while hovered. Restamped every call, so a rebuilt
+    # tile or renamed editor re-latches automatically.
+    if _ac_menu_ds is not None:
+        ds._ac_menu_tile = _ac_menu_ds._tile_id
     # Hover may have moved the menu's cursor (when the mouse is over it); mirror
     # that back into our selection index so Enter/arrows continue from the hovered row.
     if _ac_show and not ac_state._kbd_mode:
         _cp = ac_state.cursor_path
         if isinstance(_cp, tuple) and len(_cp) == 1 and _cp[0] in _ac_cands:
             ds._ac_index = _ac_cands.index(_cp[0])
+    # The popup is a CACHED latched window with no kwargs cache key - repaints
+    # happen only via explicit invalidation. Fire it ONLY on a real change edge:
+    # the candidate list / kind tags (typing, jedi landing), the keyboard row,
+    # or the highlight mode. Hover repaints need nothing here (a currently-
+    # hovered tile re-renders every frame), so a resting pointer or held key
+    # costs zero invalidates. Must be invalidate_up - it cascades to child
+    # tiles (a plain invalidate leaves inner collections due to blit-skip).
+    # It lands before the parent window dispatch on end_frame, so the menu
+    # repaints the same frame; request_render backstops bad orderings.
+    if _ac_show:
+        _sig = (ds._ac_candidates, ds._ac_kinds, ds._ac_index,
+                bool(getattr(ac_state, '_kbd_mode', True)))
+        if _sig != getattr(ds, '_ac_menu_sig', None):
+            ds._ac_menu_sig = _sig
+            _mt = getattr(ds, '_ac_menu_tile', None)
+            if _mt is not None:
+                Melty.cache.invalidate_up(_mt, force=True)
+                request_render()
+    else:
+        ds._ac_menu_sig = None   # force one repaint on the next open
     if ac_changed and isinstance(ac_pick, str):
         anchor = ds._ac_anchor
         text = text[:anchor] + ac_pick + text[ds.text_cursor_pos:]
@@ -4174,41 +4253,57 @@ def draw_text(input_value: str, height=None,
         _mp = imgui.get_mouse_pos()
         _lm = getattr(uj_state, '_last_mouse', None)
         _pop_x0, _pop_y0 = _uj_x, _uj_y + line_px
-        _pop_h = min(len(_uj_items) * 24 + 10, 312)
-        _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
-                 and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
+        _pop_ds = Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None))
+        if _pop_ds is not None and _pop_ds.width and _pop_ds.height:
+            # REAL window rect - the picker is auto-resize (and its 500px
+            # min-width already exceeded the fallback 400px estimate, leaving a
+            # hover-dead right strip). See the AC popup note above.
+            _px0, _py0 = _pop_ds._abs_left(), _pop_ds._abs_top()
+            _over = (_px0 - 4 <= _mp[0] <= _px0 + _pop_ds.width + 4
+                     and _py0 - 2 <= _mp[1] <= _py0 + _pop_ds.height)
+        else:
+            # First-open-frame fallback before the picker's tile id is known.
+            _pop_h = min(len(_uj_items) * 24 + 10, 312)
+            _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
+                     and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
         _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
         if not _over:
             uj_state._kbd_mode = True
         elif _moved:
             uj_state._kbd_mode = False
         uj_state._last_mouse = (_mp[0], _mp[1])
-        # Cached latched window: force its tile dirty per interaction so the
-        # selection/hover row actually repaints (see the AC popup note above).
-        _mt = getattr(ds, '_uj_menu_tile', None)
-        if _mt is not None:
-            Melty.cache.invalidate_up(_mt, force=True)
 
-    uj_changed, uj_pick = draw_dd_menu(
+    uj_changed, uj_pick, _uj_menu_ds = draw_dd_menu(
         _uj_items, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
         temp=True, show_search=False, swoosh=False, closed=not _uj_show, min_height=140, bg_offset=0, auto_resize=False, min_width=500,
         window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None),
-        parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13))
-    if _uj_show:
-        _mt = getattr(ds, '_uj_menu_tile', None)
-        if _mt is None or _mt not in Melty.cache._tiles:
-            _pref = f"{ds.name}_uj_menu##"
-            for _k in Melty.cache._tiles:
-                if _k.startswith(_pref):
-                    ds._uj_menu_tile = _k
-                    break
+        parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13),
+        return_extras=True)
+    # Exact tile id from the call above - the old name-prefix scan mis-landed
+    # across same-named editors (see the AC popup note above).
+    if _uj_menu_ds is not None:
+        ds._uj_menu_tile = _uj_menu_ds._tile_id
     # Mirror a hover-moved cursor back into the keyboard index so Enter/arrows
     # continue from the hovered row.
     if _uj_show and not uj_state._kbd_mode:
         _cp = uj_state.cursor_path
         if isinstance(_cp, tuple) and len(_cp) == 1 and _cp[0] in _uj_items:
             ds._uj_index = list(_uj_items).index(_cp[0])
+    # Change-gated repaint - one invalidate per real change edge (row swap,
+    # arrow nav, keyboard-mode flip), zero on parked idle frames. Same
+    # design as the AC popup block above.
+    if _uj_show:
+        _sig = (ds._uj_items, getattr(ds, '_uj_index', 0),
+                bool(getattr(uj_state, '_kbd_mode', True)))
+        if _sig != getattr(ds, '_uj_menu_sig', None):
+            ds._uj_menu_sig = _sig
+            _mt = getattr(ds, '_uj_menu_tile', None)
+            if _mt is not None:
+                Melty.cache.invalidate_up(_mt, force=True)
+                request_render()
+    else:
+        ds._uj_menu_sig = None   # force one repaint on the next open
     if uj_changed and getattr(uj_pick, 'path', None) is not None:
         _open_usage_ref(uj_pick)
         ds._uj_open = False
