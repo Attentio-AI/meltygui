@@ -395,8 +395,7 @@ def _selection_for_search(owner_ds):
     (text_selection_start/end against its _raw_input_value buffer). Only
     honored when that editor is the searchable view itself or one of its
     descendants, so a selection in some other window never leaks into this
-    view's search. The find box itself is never a source, and multi-line
-    selections are skipped — they make useless search terms."""
+    view's search. The find box itself is never a source."""
     ds = Melty.text_focused_ds
     if ds is None or getattr(ds, "is_search_box", False):
         return None
@@ -412,8 +411,11 @@ def _selection_for_search(owner_ds):
     text = ds._raw_input_value
     if lo == hi or not isinstance(text, str):
         return None
-    sel = text[lo:hi]
-    if not sel or "\n" in sel:
+    # Trim surrounding whitespace so a line-swipe selection (which picks up
+    # both neighboring newlines) seeds the bare line. Interior newlines are
+    # kept so a multi-line selection becomes a multi-line search term.
+    sel = text[lo:hi].strip()
+    if not sel:
         return None
     return sel
 

@@ -1234,7 +1234,40 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 continue
             if target is None or getattr(ds, 'z_pos', 0) < getattr(target, 'z_pos', 0):
                 target = ds
+        _find_box = None
+        if target is None and not owns_ctrl_f:
+            # No searchable view under the cursor - the press may sit on a
+            # floating Find window (it covers its owner's corner, so this is
+            # common when reaching for the box). Resolve the owner from the
+            # find UI itself: the hovered search box's ancestor header, or the
+            # hovered Find window, whose input_value IS the owner draw_state.
+            _box = Core.melty.text_focused_ds
+            if _box is not None and getattr(_box, 'is_search_box', False):
+                _find_box = _box
+                node = _box
+                while target is None:
+                    if getattr(node, 'search_active', False):
+                        target = node          # in-header box: nothing above it
+                        break
+                    p = node._parent
+                    if p is node or p is None:
+                        rv = getattr(node, '_raw_input_value', None)
+                        if isinstance(rv, DrawState) and getattr(rv, 'search_active', False):
+                            target = rv        # floating Find window root
+                        break
+                    node = p
+            if target is None and _front_win is not None:
+                rv = getattr(_front_win, '_raw_input_value', None)
+                if isinstance(rv, DrawState) and getattr(rv, 'search_active', False):
+                    target = rv
         if target is not None and not owns_ctrl_f:
+            # Prefill the find box from the current text selection - also when
+            # the search is already open, replacing the term (same as the
+            # per-view path in core_render's searchable block).
+            from src.lsd.gl_gui.view.core_views.core_render import _selection_for_search
+            _sel = _selection_for_search(target)
+            if _sel is not None and _sel != target.search_text:
+                target.search_text = _sel
             # Multiple find bars may stay open at once: opening a view's search
             # no longer closes whichever view's search was already open.
             target.search_active = True
@@ -1246,6 +1279,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             Core.melty.clear_focus(not_this=(target, Melty.popover_focused_ds))
             Core.melty.focused_ds = target
             Core.melty.cache.invalidate_up(target._tile_id, force=True, max_depth=12)
+            # The floating Find window is its own tile-root, so the owner
+            # invalidation above doesn't reach it; when the press was resolved
+            # through the box, repaint it directly (select-all shows this
+            # frame instead of waiting on the owner's focus-repaint).
+            if _find_box is not None:
+                Core.melty.cache.invalidate_up(_find_box._tile_id, force=True)
             request_render()
 
     if draw_state.on_action("non_blocking_ctrl_z_down"):
@@ -3839,18 +3878,8 @@ def draw_lens(lens, draw_state):
 
 @render_func(use_cache=True, show_bg=True, selectable=False)
 def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwargs):
-    """Render every tint source as its own picker. Each lens in
-    LENSES_BY_ATTR["tint"] is shown via the same focus/draw_tuple machinery;
-    present sources get a color picker, absent ones get a "+ Add". No precedence
-    or selection — just one row per source of tint."""
-    from src.lsd.gl_gui.view.mode import LENSES_BY_ATTR
-    ds = input_value
-    changed = False
-    for lens in LENSES_BY_ATTR.get("tint", []):
-        c, _ = draw_lens(lens, ds)
-        changed = changed or c
-        imgui.separator()
-    return changed, None
+
+    return False, None
 
 
 @window
@@ -5807,7 +5836,7 @@ def pending_window(input_value, button_name, pending=None, draw_state=None,
     return False, input_value
 
 
-@render_func(use_cache=True, max_height=500, auto_resize=False, layer_offset=1,searchable=False)
+@render_func(use_cache=True, max_height=893, auto_resize=False, min_width=702, layer_offset=1, searchable=False)
 def draw_search(input_value=None, draw_state=None, unique=0):
     """Floating find bar for searchable views that have no header. Rendered as
     a Mode.WINDOW from core_render when search is active; draws the shared
@@ -5826,21 +5855,27 @@ def draw_search(input_value=None, draw_state=None, unique=0):
                     or (regrab_focus and Melty.text_focused_ds is None
                         and Melty.focused_ds is search_ds)
                     or search_ds._search_focus_pending)
+    # One-shot open/Ctrl+F frame (NOT the spurious-clear regrab): select the
+    # whole term so typing replaces, and a single delete clears it.
+    focus_fresh = ((not search_ds._search_was_active)
+                   or search_ds._search_focus_pending)
     search_ds._search_focus_pending = False
     search_ds._search_was_active = True
     search_icon = ""
     imgui.align_text_to_frame_padding()
     imgui.text(search_icon)
     imgui.same_line()
+    x_width = 30
 
     width = draw_state.content_width
     _box = draw_text(search_ds.search_text, searchable=False, is_search_box=True,
-                     width=draw_state.content_width - 41,
+                     width=draw_state.content_width - x_width - 24,
                      shadow=False, name=search_icon + str(unique),
                      with_header_end=None, wrap=True, z_offset=-1, single_line=True,
                      with_footer=None, tint=search_ds.tint,
                      show_name=False, show_header=False,
-                     request_focus=focus_search, return_extras=True)
+                     request_focus=focus_search, select_all_on_focus=focus_fresh,
+                     return_extras=True)
     search_change, new_search = _box[0], _box[1]
     _box_ds = _box[2] if len(_box) > 2 else None
     # While the find box holds text focus, mark this search as the active one so
@@ -5863,11 +5898,10 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     from src.lsd.gl_gui.view.core_views.new_core_view import button
     fa_x_icon = ""
 
-    imgui.set_cursor_screen_pos((draw_state.abs_left + width - 16, imgui.get_cursor_screen_pos()[1]))
+    imgui.set_cursor_screen_pos((draw_state.abs_left + width - x_width, imgui.get_cursor_screen_pos()[1]))
     # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
     if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
-              use_cache=True, height=23, shadow=True, z_offset=4
-              , max_height=40,
+              use_cache=True, height=23, shadow=True, z_offset=4, max_height=40,
               tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
         search_ds.search_active = False
         search_ds._search_was_active = False

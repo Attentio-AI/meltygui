@@ -93,6 +93,10 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                     or (regrab_focus and Melty.text_focused_ds is None
                         and Melty.focused_ds is search_ds)
                     or search_ds._search_focus_pending)
+    # One-shot open/Ctrl+F frame (NOT the spurious-clear regrab): select the
+    # whole term so typing replaces it and a single delete clears it.
+    focus_fresh = ((not search_ds._search_was_active)
+                   or search_ds._search_focus_pending)
     search_ds._search_focus_pending = False
     search_ds._search_was_active = True
     search_icon = ""
@@ -109,7 +113,8 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
                      with_header_end=None, max_width=width - 50,
                      with_footer=None, header_same_line=True, tint=search_ds.tint,
                      show_name=False, show_header=False, single_line=True,
-                     request_focus=focus_search, return_extras=True)
+                     request_focus=focus_search, select_all_on_focus=focus_fresh,
+                     return_extras=True)
     search_change, new_search = _box[0], _box[1]
     _box_ds = _box[2] if len(_box) > 2 else None
     # While the find box holds text focus, mark this search as the active one so

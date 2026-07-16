@@ -12,7 +12,7 @@ from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
-from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
+from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight, draw_search_highlight_multi
 from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -2576,7 +2576,7 @@ def draw_text(input_value: str, height=None,
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False,
               single_line=False, is_search_box=False,
-              draw_state=None, request_focus=False, 
+              draw_state=None, request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
@@ -2846,6 +2846,13 @@ def draw_text(input_value: str, height=None,
         # opened the search box / dropdown / menu owning it.
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
+        # Select-all on a fresh grant (the find box on Ctrl+F): the caller
+        # requests this only on the one-shot open/re-open frame, so typing
+        # replaces the prefilled term and a single delete clears it.
+        if select_all_on_focus and text:
+            ds.text_selection_start = 0
+            ds.text_selection_end = len(text)
+            ds.text_cursor_pos = len(text)
         
     
     def _try_usage_jump(pos, force_picker=False):
@@ -3668,8 +3675,11 @@ def draw_text(input_value: str, height=None,
 
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
+        # For a multi-line match only the first line drives the horizontal
+        # scroll - _colx(me) on a later line would be meaningless here.
+        _nl = text.find('\n', ms, me)
         match_x = _colx(ms)
-        match_x_end = _colx(me)
+        match_x_end = _colx(me if _nl == -1 else _nl)
         edge_padding = 20.0
         if text_visible_width > 0:
             if match_x_end <= text_visible_width - edge_padding:
@@ -3808,13 +3818,31 @@ def draw_text(input_value: str, height=None,
     if search_matches:
         for m_idx, (ms, me) in enumerate(search_matches):
             m_line, _ = _index_to_line_col(text, ms)
-            sx = origin_x + _colx(ms)
-            ex = origin_x + _colx(me)
-            sy = origin_y + m_line * line_px
-            ey = sy + line_px
-            if ey < rect_min_y or sy > rect_max_y:
-                continue
-            draw_search_highlight(draw_list, sx, sy, ex, ey, current=(m_idx == current_local))
+            # A match may span lines (multi-line search terms): collect one
+            # rect per covered line, like the selection wash above. Segments
+            # that run through a newline extend one cell past EOL to read as
+            # continuing onto the next line. The whole match draws as one
+            # glow around the segments' bounding box (per-line glows overlap
+            # into a blob) with each segment outlined separately.
+            segs = []
+            seg_start = ms
+            seg_line = m_line
+            while True:
+                nl = text.find('\n', seg_start, me)
+                seg_end = me if nl == -1 else nl
+                sy = origin_y + seg_line * line_px
+                sx = origin_x + _colx(seg_start)
+                ex = origin_x + _colx(seg_end)
+                if nl != -1:
+                    ex += char_w
+                segs.append((sx, sy, ex, sy + line_px))
+                if nl == -1:
+                    break
+                seg_start = nl + 1
+                seg_line += 1
+            if segs[-1][3] >= rect_min_y and segs[0][1] <= rect_max_y:
+                draw_search_highlight_multi(draw_list, segs,
+                                            current=(m_idx == current_local))
 
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under

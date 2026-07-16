@@ -361,13 +361,19 @@ class Toggles:
             tint = (0.317, 0.251, 0.0)
             tint = (*tint, v)
             return tint
-            
+
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounds character match - no CST / symbol-usage metadata is
         # involved, so it works in any text, mid-edit or unparseable. Flip the
         # flag to disable; the (r, g, b, a) tuple is read live.
         highlight_token_matches = True
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum logical terminal size, in pixels, independent of the window size.
+        min_height = 480.0
+        min_width = 98.634
 
     @defaults(tint=(0.18, 0.62, 0.55))
     class LoadSave:
@@ -383,12 +389,6 @@ class Toggles:
         # Sticky resize: reamp the window top to the drag-start position each
         # frame so only the bottom-on-display clamp displaces it.
         sticky_drag = True
-
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum logical terminal size, in chars, independent of the window size.
-        min_height = 480.0
-        min_width = 98.634
 
     @defaults(tint=(0.91, 0.659, 0.15))
     class InvalidateTracker:
@@ -415,7 +415,7 @@ class Toggles:
 
         @defaults(tint=(0.965, 0.6, 0.149))
         class ActiveElement:
-            gradient_color = (0.98, 0.68, 0.00)   # RGB of the halo
+            gradient_color = (1.00, 0.83, 0.00)   # RGB of the halo
             outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
             falloff = 97.856          # px the glow radiates out past the match edge
             opacity = 0.392           # max opacity, right at the cutout edge
@@ -429,10 +429,10 @@ class Toggles:
 
         @defaults(tint=(0.36, 0.52, 0.93, 0.484))
         class InactiveElements:
-            gradient_color = (0.00, 0.42, 0.83)  # cooler hue so the active match stands out
+            gradient_color = (0.87, 0.95, 1.00)  # cooler hue so the active one stands out
             outline_color = (0.6, 0.72, 1.0)
             falloff = 34.0
-            opacity = 0.295
+            opacity = 0.35
             falloff_exp = 2.0
             inner_pad = 1.5
             cutout_radius = 4.00
@@ -496,7 +496,6 @@ class Toggles:
     # Build the node→span map from Python's `ast` (C code) instead of libcst's
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
-
 
     # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.

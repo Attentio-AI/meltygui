@@ -104,6 +104,30 @@ def _draw_glow(draw_list, x0, y0, x1, y1, spec):
         draw_list.flags = flags
 
 
+def draw_search_highlight_multi(draw_list, segs, *, current):
+    """Highlight a match made of per-line segments (a multi-line search term).
+    One glow radiates around the segments' BOUNDING box — per-segment glows
+    overlap into an unreadable blob — while each segment keeps its own thin
+    outline so the exact matched text stays delineated."""
+    if len(segs) == 1:
+        x0, y0, x1, y1 = segs[0]
+        draw_search_highlight(draw_list, x0, y0, x1, y1, current=current)
+        return
+    spec = (Toggles.SearchSettings.ActiveElement if current
+            else Toggles.SearchSettings.InactiveElements)
+    bx0 = min(s[0] for s in segs)
+    bx1 = max(s[2] for s in segs)
+    _draw_glow(draw_list, bx0, segs[0][1], bx1, segs[-1][3], spec)
+    a = float(spec.outline_alpha)
+    if a > 0.0:
+        oc = spec.outline_color
+        col = imgui.get_color_u32_rgba(oc[0], oc[1], oc[2], a)
+        for x0, y0, x1, y1 in segs:
+            draw_list.add_rect(x0, y0, x1, y1, col,
+                               rounding=float(spec.cutout_radius),
+                               thickness=float(spec.outline_thickness))
+
+
 def draw_search_highlight(draw_list, x0, y0, x1, y1, *, current, rounding=0.0):
     """Highlight a search match with its glow (rect cut out) plus an optional
     thin outline. The current match uses the ActiveElement spec; the rest use
