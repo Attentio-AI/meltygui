@@ -1921,7 +1921,7 @@ class Melty:
     @staticmethod
     def _draw_swoosh(overlay_dl, px, py, pw, ph, nx, ny, nw, nh, rgb,
                      rgb2=None, p_round=0.0, n_round=0.0, p_clip=None,
-                     mode=None):
+                     mode=None, hover=None):
         """Draw a curved connector from the parent view's outline to the nested
         view. The line is thick at both endpoints and tapers thin in the middle.
         `rgb` is the resolved highlight color (see _highlight_rgb); `rgb2`,
@@ -1935,7 +1935,11 @@ class Melty:
         on a region that's been scrolled/clipped away. `mode` is a SwooshMode
         (or its string value) selecting the connector style per window — the
         swoosh_mode window kwarg lands here; None follows the global
-        Swoosh.ribbon toggle. Tunables live on Swoosh.*."""
+        Swoosh.ribbon toggle. `hover` is the nested-window hover override:
+        None means no nested window is hovered anywhere (keep the default
+        opacity behavior); True means THIS connector's window is the hovered
+        one (full opacity); False means some OTHER window is hovered (drop to
+        Swoosh.mouse_falloff_floor). Tunables live on Swoosh.*."""
         if mode is None:
             mode = SwooshMode.RIBBON if Swoosh.ribbon else SwooshMode.LINE
         elif isinstance(mode, str):
@@ -1956,14 +1960,23 @@ class Melty:
         rpx0, rpy0, rpx1, rpy1 = px, py, px + pw, py + ph
         rnx0, rny0, rnx1, rny1 = nx, ny, nx + nw, ny + nh
 
-        # Mouse-proximity fade applies to RIBBON mode only: dim the whole band by
+        # The hover override (see docstring) beats the proximity fade entirely.
+        # Otherwise the mouse-proximity fade applies to RIBBON mode only: dim the whole band by
         # how close the cursor is to each connected view, parent and child fading
         # on their own distance scales (see _mouse_fade). When it fully fades out
         # there is nothing to draw, so skip the geometry entirely. LINE mode uses a
         # static opacity (Swoosh.alpha) anyway, so it computes no fade - this is
         # local to the selected mode, so a ribbon that falls through to the line on
         # overlapping views keeps the live fade.
-        if mode is SwooshMode.RIBBON:
+        if hover is not None:
+            # A nested window is hovered: its own connector reads at full
+            # opacity and every other connector drops to the falloff floor,
+            # in BOTH modes - hover names one window, so distance no longer
+            # gets a vote.
+            mouse_fade = 1.0 if hover else Swoosh.mouse_falloff_floor
+            if mouse_fade <= 0.0:
+                return
+        elif mode is SwooshMode.RIBBON:
             mouse_fade = Melty._mouse_fade(
                 (rpx0, rpy0, rpx1, rpy1), (rnx0, rny0, rnx1, rny1))
             if mouse_fade <= 0.0:
@@ -2427,6 +2440,38 @@ class Melty:
         except Exception as dnd_e:
             print(f"DragDrop.frame_update failed: {dnd_e}")
 
+        # Which swoosh(es) the mouse is over: walk up from the BVH-hovered
+        # draw_state (begin_frame's bvh_query hit, so occlusion and hidden
+        # subtrees are already incorporated) to the first ancestor that is
+        # either a dispatched nested-window root or the parent view
+        # (offset_ds) that spawned one. Drives the swoosh hover override
+        # below: hovering a window snaps its own connector to full opacity,
+        # hovering a spawning view snaps the connector of every window it
+        # spawned; all other connectors drop to the falloff floor. The
+        # innermost matching ancestor wins, so hovering a spawner from
+        # inside a nested window reads as the spawner, not the window. When
+        # nothing matches, the connector keeps the default distance-based
+        # fade.
+        swoosh_targets = defaultdict(set)  # id(hoverable ds) -> {id(window ds)}
+        for ds_list in cls.root_draw_states_by_layer.values():
+            for ds in ds_list:
+                swoosh_targets[id(ds)].add(id(ds))
+                if ds._parent is not None:
+                    off = ds._parent._offset_ds
+                    if off is None:
+                        off = ds._parent
+                    swoosh_targets[id(off)].add(id(ds))
+        hovered_swoosh_ids = None
+        walk = cls.hovered_ds
+        while walk is not None:
+            hit = swoosh_targets.get(id(walk))
+            if hit:
+                hovered_swoosh_ids = hit
+                break
+            if walk._parent is walk:  # root ds parents itself - end of chain
+                break
+            walk = walk._parent
+
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -2607,6 +2652,8 @@ class Melty:
                         n_round=rounding,
                         p_clip=parent_clip,
                         mode=draw_state._kwargs.get("swoosh_mode"),
+                        hover=(None if hovered_swoosh_ids is None
+                               else id(draw_state) in hovered_swoosh_ids),
                     )
 
                 if Melty.channels_split:

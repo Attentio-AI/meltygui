@@ -1328,7 +1328,16 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # the ancestor and stayed put while the voxel window was dragged.
     win = draw_state if draw_state.closable else (draw_state.parent_window or draw_state)
     width = max(64, int(draw_state.content_width or win.content_width or 0))
-    height = max(100, draw_state.height - 30)
+    if draw_state.closable:
+        height = max(100, draw_state.height - 30)
+    else:
+        # when in a parent's flow, draw_state.height is a MEASUREMENT of
+        # what this view drew last frame - sizing the image from it is a
+        # feedback loop that sustains any spike forever (image = height-30 →
+        # measures back ≈ height → committed again). Use the design height
+        # (min_height, overridable per calling site); a bad design height
+        # generally self-heals on the first live render.
+        height = max(100, int(draw_state.min_height or 293) - 30)
 
     # ── gestures → draw_state params (auto-state: the caller diverges the
     # param so it persists; events are hover-routed wrapper kwargs) ──────
@@ -1498,16 +1507,30 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # so left_offset/top_offset track the right edge and the panel rides along
     # when the window is dragged; the panel's own drag accumulates into
     # window_pos on top of that, so it stays draggable.
-    imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, win.abs_top))
+    # Save/restore the flow cursor around the panel jump; nested in a scroll
+    # view, `win` is the ENCLOSING window, so this teleports the cursor far
+    # from this view's box - left unrestored, poisons the parent rect and
+    # the group measure (views popped in with a huge height, then the -30
+    # self-reference shrank them back 29px a frame).
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
 
     if not middle_mouse_drag and not double_right_mouse_drag and scroll_y_changed is None:
+        _flow_cursor = imgui.get_cursor_screen_pos()
+        # Anchor y: the enclosing window's top for a window voxel, this ROW's
+        # top for a nested one. The panel call emits an inline item at the
+        # cursor, and that item is committed into THIS view's group - an
+        # anchor at win.abs_top made a nested view's rect span from the row to
+        # the window top, so committed heights scaled with scroll distance
+        # (the scrollbar jitter as rows crossed the viewport).
+        _anchor_y = win.abs_top if draw_state.closable else draw_state.abs_top
+        imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, _anchor_y))
         changed, _, panel_ds = draw_voxel_controls(tex, vox_ds=draw_state,
                                                    mapping=mapping, name="controls",
                                                        mode=Modes.WINDOW_PARAMS,
                                                    parent_window=win, auto_resize=True,
                                                    shadow=True, return_extras=True,
                                                    **panel_kwargs)
+        imgui.set_cursor_screen_pos(_flow_cursor)
         if panel_ds is not None:
             draw_state.misc["params_panel"] = not panel_ds.closed
             # The panel is cached and must NOT invalidate per drag frame - it

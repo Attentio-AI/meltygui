@@ -61,9 +61,10 @@ WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
 
 # --- Code-suggestion (autocomplete) --------------------------------------------
 # Drives the dropdown popup (draw_dd_menu) anchored at the caret. IDE trigger
-# model (IntelliJ-style): the popup opens as you TYPE - an identifier char
-# (scope-aware), a '.' (attribute access), or a new import line (module
-# completion) - plus explicitly on Ctrl+P / Ctrl+Space. Typing in a comment or
+# model (IntelliJ-style): the popup opens as you TYPE — an identifier char
+# (scope completion), a '.' (member access), or inside an import line (module
+# completion) - or explicitly on Ctrl+Space (Ctrl+P asks for an fn-call
+# PARAM HINT instead - see the signature-help block). Typing in a comment or
 # string stays quiet (checked against the same incremental _line_open lexer
 # state the viewport tokenizer maintains), as does naming something NEW right
 # after def/class/for/as/....
@@ -1055,17 +1056,17 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     imgui.set_cursor_screen_pos(_save_cur)
 
 
-# --- Symbol usages: highlight + double-click jump-to-caller -------------------
+# --- Symbol usages: highlight & Ctrl+B jump-to-caller -------------------------
 # The parse pipeline attaches {name: SymbolUsage} maps to GeneralParse nodes
 # under "__symbol_usages__" (see libcst_conversion.populate_symbol_usages /
 # _distribute_by_name). Each SymbolUsage carries `sites` — file-absolute
 # (line, col) occurrences of the symbol within this view's source — and
 # `callers` — cross-project UsageRefs. The editor washes a slight background
-# behind each site whose symbol HAS callers, its color climbing a blue→orange
-# heat ramp with the user count; a double-click jumps via IntelliJ (the same opener as the jump-to
-# button) - toward the callers if a definition is in a view, back to the
-# definition from a usage site. A single target jumps straight there, more
-# open the usage-jump popup (the same latched dropdown as the code-suggestion
+# behind every site whose symbol HAS callers, its color climbing a blue→orange
+# heat ramp with the user count; Ctrl+B jumps like IntelliJ (the same key as the jump-to
+# button) — toward the callers when the definition is in this view, back to the
+# definition from a usage site. A single target jumps straight there; several
+# open the usage-jump picker (the same latched dropdown as the code-suggestion
 # popup) listing every user.
 
 def _collect_usage_spans(code_tree, text, line_offset=0, view_path=None):
@@ -2608,7 +2609,7 @@ def draw_text(input_value: str, height=None,
         ds._ac_state = DropDownState()
     ac_state = ds._ac_state
     
-    # Same deal for the usage-jump picker (multi-user symbol double-click).
+    # Same deal for the usage-jump popup (multi-user symbol Ctrl+B).
     if getattr(ds, '_uj_state', None) is None:
         ds._uj_state = DropDownState()
     uj_state = ds._uj_state
@@ -2856,12 +2857,11 @@ def draw_text(input_value: str, height=None,
         
     
     def _try_usage_jump(pos, force_picker=False):
-        """Usage jump at buffer index `pos` (double-click / Ctrl+B): one
-        counterpart opens straight in IntelliJ; several open the usage-jump
-        picker under the symbol. `force_picker` opens the picker even for a
-        SINGLE counterpart (the Toggles.TextEditor.double_click_opens_dropdown
-        behavior) instead of jumping straight. True if the jump or picker
-        happened (a span with zero targets returns False -> word-select)."""
+        """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
+        straight in IntelliJ; several open the usage-jump picker under the
+        symbol. `force_picker` opens the picker even for a SINGLE counterpart
+        instead of jumping straight. True if the jump or picker happened (a
+        span with zero targets returns False)."""
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
         for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree, _usage_off, _vpath):
             if _us <= pos < _ue:
@@ -2900,10 +2900,14 @@ def draw_text(input_value: str, height=None,
         Melty._text_focus_grant_frame = Melty.frame_count
         is_focused = True
         # A fresh click anywhere in the editor dismisses the usage-jump picker
-        # (the double-click branch below re-opens it when it should). Clicks on
-        # the picker itself never land here - it floats in its own window, so
-        # this hover-ranged event doesn't fire.
+        # (Ctrl+B re-opens it when it applies). Clicks on the picker itself
+        # never land here - it's in its own window, so this hover-routed
+        # event doesn't fire.
         ds._uj_open = False
+        # ...and disarms the param hint: a caret placed by CLICK never shows it,
+        # even inside the function it's armed for. It re-arms on the next edit
+        # within parens, or Ctrl+P (see the signature-help block).
+        ds._ac_sig_request_paren = -1
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
                                       origin_x, origin_y, line_px, vcols=_get_vcols())
@@ -2916,28 +2920,14 @@ def draw_text(input_value: str, height=None,
         ds.text_last_click_pos = click_pos
 
         if ds.text_click_count == 2:
-            # Double-click on a symbol that has users → jump like IntelliJ
-            # instead of word-selecting (the washed background is the
-            # affordance). One counterpart jumps you there; several open
-            # the usage-jump picker (the same latched dropdown as the
-            # code-suggestion popup) under the symbol so the user picks the
-            # target. Anywhere else, word-select. (Ctrl+B does the same at the
-            # caret - see the standalone handler below the click state.)
-            _jumped = _try_usage_jump(
-                click_pos,
-                force_picker=Toggles.TextEditor.double_click_opens_dropdown)
-            if _jumped:
-                ds.text_drag_mode = 'char'
-                ds.text_cursor_pos = click_pos
-                ds.text_selection_start = ds.text_selection_end = click_pos
-                ds.text_drag_anchor_lo = ds.text_drag_anchor_hi = click_pos
-            else:
-                ds.text_drag_mode = 'word'
-                ds.text_selection_start = _select_unit_left(text, click_pos)
-                ds.text_selection_end = _select_unit_right(text, click_pos)
-                ds.text_cursor_pos = ds.text_selection_end
-                ds.text_drag_anchor_lo = ds.text_selection_start
-                ds.text_drag_anchor_hi = ds.text_selection_end
+            # Double-click word-selects. (Usage jump lives on Ctrl+B - see the
+            # standalone handler under the click block.)
+            ds.text_drag_mode = 'word'
+            ds.text_selection_start = _select_unit_left(text, click_pos)
+            ds.text_selection_end = _select_unit_right(text, click_pos)
+            ds.text_cursor_pos = ds.text_selection_end
+            ds.text_drag_anchor_lo = ds.text_selection_start
+            ds.text_drag_anchor_hi = ds.text_selection_end
         elif ds.text_click_count >= 3:
             ds.text_drag_mode = 'line'
             line_start = _get_line_start(text, click_pos)
@@ -3455,7 +3445,8 @@ def draw_text(input_value: str, height=None,
             # IDE trigger model (IntelliJ-style): the popup opens as you TYPE -
             # a '.' (member access), an identifier char (scope completion), or
             # inside an import line (module completion) - or explicitly on
-            # Ctrl+P / Ctrl+Space. The trigger pins the completion site
+            # Ctrl+Space (Ctrl+P asks for the HO HINT instead - see the
+            # signature-help block below). The trigger sets the completion site
             # (`_ac_request_anchor`); the popup stays up there — re-filtering as
             # the prefix grows/shrinks - until the caret leaves that site, Esc,
             # or an accepted pick. A bare caret move (e.g. clicking right after
@@ -3480,7 +3471,7 @@ def draw_text(input_value: str, height=None,
                             _offs, _lopen)
                         and (dot_trigger or import_ctx
                              or not _defining_keyword_before(text, anchor)))
-            if ctrl and (pressed(glfw.KEY_P) or pressed(glfw.KEY_SPACE)):
+            if ctrl and pressed(glfw.KEY_SPACE):
                 ds._ac_request_anchor = anchor
                 ds._ac_suppress_anchor = sup = -1  # explicit ask overrides a prior Esc
             elif typed_trigger and sup != anchor:
@@ -3561,16 +3552,28 @@ def draw_text(input_value: str, height=None,
                 ds._ac_open = False
 
         # --- Function call parameter hints (signature help) ---
-        # Independent of the completion popup - when the caret sits inside a
-        # call's parens, resolve the callee's signature (jedi, async) and show it
-        # with the current argument highlighted. The active arg index is recomputed
-        # locally each frame (cheap); jedi is only re-queried when the call
-        # changes. `_ac_sig_show` gates the hint paint. No off for the Eval REPL
-        # box (completion_source): jedi can't see its runtime-typed locals, and we
-        # don't want a subprocess signature job fired every keystroke in a one-liner.
+        # Shown while EDITING a call's parameters, never on a bare caret move -
+        # a click into existing parens stays quiet (the click handler above
+        # disarms), and Ctrl+P asks explicitly. A buffer edit made with the
+        # caret inside call parens arms the hint at that call - keyed on the
+        # '(' index, so edits after it won't shift - and it stays up (the
+        # active arg recomputed locally each frame, jedi re-queried only when
+        # the callee changes) until the caret leaves that call's parens.
+        # `_ac_sig_show` gates the render below. Skipped in the Eval REPL box
+        # (completion_source): jedi can't see its runtime-typed locals, and we
+        # don't want a subprocess completion job fired per keystroke in a
+        # one-liner.
         if ac_enabled and completion_source is None:
             _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
-            if _open_paren is not None and _ensure_signature_help(
+            _sig_req = getattr(ds, '_ac_sig_request_paren', -1)
+            if _open_paren is None:
+                _sig_req = -1
+            elif changed or (ctrl and pressed(glfw.KEY_P)):
+                _sig_req = _open_paren
+            elif _sig_req != _open_paren:
+                _sig_req = -1   # caret move into a call it wasn't armed for
+            ds._ac_sig_request_paren = _sig_req
+            if _sig_req != -1 and _ensure_signature_help(
                     ds, text, _open_paren, ds.text_cursor_pos, jump_to) is not None:
                 ds._ac_sig_active = _arg_index
                 ds._ac_sig_open_paren = _open_paren   # lets the hint align under the call name
@@ -3788,8 +3791,8 @@ def draw_text(input_value: str, height=None,
                     draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _tm_color, 3.0)
 
     # Symbol-usage washes: a slight background behind every occurrence of a
-    # symbol that has callers elsewhere - the affordance that a double-click
-    # jumps to its users (see the mouse handler). The wash rides a blue→orange
+    # symbol that has callers elsewhere - the affordance that Ctrl+B jumps to
+    # its users (see the standalone handler). The wash rides a blue→orange
     # color ramp from the DROPDOWN size (_usage_target_count - the same list
     # _try_usage_jump would show), so the user answers "how many places does
     # this click go": a usage site away from its definition jumps to one

@@ -3649,6 +3649,23 @@ def render_func(*args, **o_kwargs):
 
 
             column = kwargs.get("column", None)
+
+            # The parent's flow must advance past this view's BOX
+            # (draw_state.height is what the bg, borders, BVH and the dummy
+            # skip-advance all use), not just past what the body managed to
+            # draw. When a floor (min_height / passed height) lifts height
+            # above the measured flow, live-rendered rows pack tighter than
+            # skip-advanced ones and everything below jumps as the view
+            # crosses a scroll viewport edge. The group ended above
+            # (item_rect is already captured), so this dummy extends only the
+            # PARENT's flow - it cannot feed back into this view's measure.
+            if (not closable and draw_state.expanded and column is None
+                    and not header_same_line and draw_state.height is not None):
+                _box_bottom = draw_state.abs_top + draw_state.height
+                _short_by = _box_bottom - imgui.get_cursor_screen_pos()[1]
+                if _short_by > 2:
+                    imgui.dummy(0, _short_by)
+
             current_cursor = imgui.get_cursor_screen_pos()
             delta_x = current_cursor[0] - draw_state.abs_left
             delta_y = current_cursor[1] - draw_state.abs_top

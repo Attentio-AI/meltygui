@@ -326,7 +326,8 @@ def draw_symbol_usage(input_value):
     imgui.text(str(input_value))
 
 
-@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse, CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath), 
+@render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse,
+                             CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath),
              use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,

@@ -209,9 +209,9 @@ def attention_lab(heads=12, seq=48, dim=32, temp=0.35, shift=3):
    
     # [tint=(0.0, 0.2, 0.5)]
     q = torch.randn(heads, seq, dim)
-    # [tint=(1.0, 0.0, 0.5)]
+    # [tint=(0.611, 0.292, 0.451)]
     k = q.roll(shifts=shift, dims=1) + 0.4 * torch.randn(heads, seq, dim)
-    # [tint=(0.07, 0.0, 0.5)]
+    # [tint=(0.217, 0.119, 0.822)]
     scores = q @ k.transpose(-2, -1) / (dim ** 0.5 * temp)
     # [tint=(0.6,0,0)]
     attn = torch.softmax(scores, dim=-1)

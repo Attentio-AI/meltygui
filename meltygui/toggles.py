@@ -338,7 +338,6 @@ class Toggles:
     @defaults(tint=(0.922, 0.476, 0.031))
     class TextEditor:
         enable_spell_check = False
-        double_click_opens_dropdown = True
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.5, 0.5, 0.22)
 
@@ -384,7 +383,8 @@ class Toggles:
         # this on until the .ini is fully retired.
         ini_save = False
 
-    @defaults(tint=(0.42, 0.58, 0.83))
+
+    @defaults(tint=(0.189, 0.486, 0.944))
     class WindowSettings:
         # Sticky resize: reamp the window top to the drag-start position each
         # frame so only the bottom-on-display clamp displaces it.
@@ -441,14 +441,6 @@ class Toggles:
             outline_alpha = 0.0
             outline_thickness = 1.0
 
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # seconds
-        bg_offset = 30
-        debug_scroll = False
-
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.rendering (stops per-frame
@@ -459,6 +451,14 @@ class Toggles:
         # re-registered within this many frames (safety net for any abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
+
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # seconds
+        bg_offset = 30
+        debug_scroll = False
 
     # Main App Toggles
     @defaults(tint=(0.378, 0.286, 0.201))
@@ -508,8 +508,8 @@ class Toggles:
     debug_stale_tint = False
 
     # View Settings
-    brightness = 0.517
-    contrast = 1.879
+    brightness = 0.576
+    contrast = 2.031
 
     debug_z_depth = False
     filters = True
