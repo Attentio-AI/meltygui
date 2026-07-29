@@ -140,6 +140,7 @@ def launch_claude_session(prompt_text=None):
                 pass
         if not prompt_text:
             return
+            
         # Wait for Claude Code's input box before typing, so the text lands in
         # the prompt rather than the boot screen. The box's prompt chrome is
         # "" (U+276F); accept ASCII ">" too in case the glyph changes.

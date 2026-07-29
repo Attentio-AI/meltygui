@@ -350,7 +350,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     if excluded is None:
         excluded = set()
         
-        
     if included is None:
         included = set()
 
@@ -891,7 +890,7 @@ def draw_type(input_value: type, **kwargs):
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
-             with_header=None, bg_offset=3, auto_resize=True, temp=True)
+             with_header=None, bg_offset=-1, auto_resize=True, temp=True)
 def draw_global_search(input_value, draw_state=None, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching nodes
     from the draw_state tree draw_main registered on us. Results are recomputed
@@ -1309,8 +1308,17 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
         request_render()
 
-    draw_any(Core.melty.registered_windows, name="Dock", with_header=draw_header,
-             mode=(Mode.WINDOW_MANAGER_SORTED, Mode.WINDOW))
+    # draw_any(Core.melty.registered_windows, name="Dock", with_header=draw_header,
+    #          mode=(Mode.WINDOWS_SORTED, Mode.WINDOW))
+
+    # Fast Dock: same functionality as the Dock, but the rows are raw tile-list
+    # rendering inside one render_func (see fast_dock.py). The sync call runs
+    # every frame after this always-rendering root so external open/close/tint
+    # changes repaint the cached tile.
+    from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock, fast_dock_sync
+    fast_dock_sync()
+    draw_fast_dock(Core.melty.registered_windows, name="Fast Dock", with_header=draw_header,
+                   mode=Mode.WINDOW, bg_offset=-3)
 
     for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
 
@@ -3117,22 +3125,22 @@ def draw_usage(input_value: UsageRef):
 
 
 @render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded":False},
-             is_tree=False, show_name=False, indent_size=0, selectable=False, use_cache=False, tint=(0.083, 0.206, 0.083, 0.1),
+             is_tree=True, show_name=False, indent_size=0, selectable=False, use_cache=False, tint=(0.083, 0.206, 0.083, 0.1),
              show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
 
-    imgui.dummy(0, 6)
-    depth = max(0.0, Core.melty.bg_depth)
-    depth_scale = 0.067
+    imgui.dummy(0, 0)
+    depth = max(0.3, Core.melty.bg_depth)
+    depth_scale = 0.047
     name_style = {
-        'value': 0.143, 'saturation': 0.92,
-        'alpha': 0.014, 'max_value': 0.787,
-        'depth_factor': 0.741
+        'value': 0.114, 'saturation': 0.68,
+        'alpha': 0.004, 'max_value': 0.787,
+        'depth_factor': 0.41
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    alpha = 0.35
+    alpha = 0.15
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
@@ -3148,38 +3156,36 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
         
     display = "\n".join(_strip_hash(ln) for ln in str(input_value).split("\n"))
 
-   
-    # is_tree is off (no header arrow); each multi-line comment gets its own
-    # arrow instead, so single-line comments get none at all. ExpandMode.MANUAL
-    # keeps this body running while collapsed, with the first line standing in
-    # for the whole comment.
-    if "\n" in display:
-        imgui.align_text_to_frame_padding()
-        imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
+    # The framework header (is_tree=True) owns the expand/collapse button.
+    # ExpandMode.MANUAL keeps this body visible while collapsed, with the
+    # first line standing in for the whole comment.
+    if "\n" in display and not draw_state.expanded:
+        # Collapsed: one line truncated to the available width - never let it
+        # spill onto a second row.
+        flat = " ".join(display.split("\n"))
+        avail = draw_state.abs_left + draw_state.width - imgui.get_cursor_screen_pos().x
+        if imgui.calc_text_size(flat).x > avail:
+            lo, hi = 0, len(flat)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if imgui.calc_text_size(flat[:mid]).x <= avail:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            flat = flat[:lo].rstrip()
         imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
-        arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
-        if imgui.arrow_button("##comment_tree", arrow_dir):
-            draw_state.expanded = not draw_state.expanded
-            draw_state.content_height = 0
-            draw_state.invalid_content_height = True
-            request_render()
-        imgui.pop_style_color(3)
-        imgui.same_line(spacing=0)
-        if not draw_state.expanded:
-            display = display.split("\n", 1)[0]
-             
-    # icon = f""
-    # display = f"{icon} {display}"
-
-    imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
-    imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
-    imgui.text_wrapped(display)
-    imgui.pop_style_color()
-    imgui.pop_text_wrap_pos()
+        imgui.text(flat)
+        imgui.pop_style_color()
+    else:
+        imgui.push_text_wrap_pos(draw_state.abs_left + draw_state.width)
+        imgui.push_style_color(imgui.COLOR_TEXT, *name_color[:3], alpha)
+        imgui.text_wrapped(display)
+        imgui.pop_style_color()
+        imgui.pop_text_wrap_pos()
 
     if changed:
         return True, value
+    return False, input_value
 
 
 @render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
@@ -3655,7 +3661,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
     
     imgui.new_line()
     if show_run_button and button(f"{input_value.__name__}##{unique}", icon=kwargs.get("icon", ""), height=29,
-                                  bg_offset=0, tint=(0.238, 0.539, 0.228, 0.32))[0]:
+                                  bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32))[0]:
         _run()
 
     if run_in_thread and draw_state.misc.get("_run_busy"):
@@ -4484,6 +4490,14 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                 TypeCodec, location=cls_loc, kind="class var")
     _add_source(f"@defaults({cls_name})", cm_state.class_dict.deep.decorators.defaults(),
                 TypeCodec, location=cls_loc, kind="class default")
+    # @window on the class (e.g. `@window(tint=(0.11,0.12,0.14))` on Toggles) -
+    # its kwargs drive the window rendering the value, so it's an input source.
+    # Same skip-when-absent rule as the fn-side @window below.
+    _cls_window_deco = (cm_state.class_dict.deep.decorators.window()
+                        if cm_state.class_dict else None)
+    if isinstance(_cls_window_deco, dict) and _cls_window_deco:
+        _add_source(f"@window({cls_name})", _cls_window_deco,
+                    DecorationsCodec, location=cls_loc, kind="class decoration")
     _add_source(f"@render_func({fn_name})",
                 cm_state.render_func_dict.deep.decorators.render_func(),
                 DecorationsCodec, location=fn_loc, kind="decoration")
@@ -4719,7 +4733,14 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # Use exact-type matching, not isinstance: a subclass of a primitive
     # (e.g. CodeLine(str)) DOES have its own source, so it should show its
     # own class tab rather than being treated as a bare primitive.
-    if type(raw_value) not in (int, float, str, bool):
+    if isinstance(raw_value, type):
+        # The view is a CLASS itself (e.g. the Toggles window draws the
+        # Toggles class via @window). The class whose source to show is the
+        # value, not its metaclass - type(Toggles) is `type`, a builtin with
+        # no source, which would blank every right-side source row (class
+        # var / @defaults / @window on the class).
+        class_to_show = base_of_bubbling(raw_value)
+    elif type(raw_value) not in (int, float, str, bool):
         class_to_show = base_of_bubbling(type(raw_value))
     else:
         max_walk = 4

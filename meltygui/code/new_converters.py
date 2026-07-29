@@ -118,6 +118,8 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
+                                       span as _pspan, once as _ponce)
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -143,7 +145,8 @@ def load_file(input_value: Address, codec: Codec = None, **kwargs) -> str:
     images, etc.)."""
     file_name = input_value.path.name if input_value.path is not None else "unknown"
     notify(f"Loading {file_name}...", tint=(0.5, 1.0, 0.5))
-    data = codec.load(input_value)
+    with _pspan("load_file", file=file_name):
+        data = codec.load(input_value)
     PendingSave.mark_load(address=input_value, codec=codec, data=data)
     return data
 
@@ -401,7 +404,8 @@ LOADING = object()
 @render_func(use_cache=True, selectable=False, temp=True)
 def run_in_background(input_value, loading_state: LoadingState, unique,
                       draw_state, child_kwargs, start=False, timeout=20,
-                      debounce_ms=0, main_thread=False, **kwargs):
+                      debounce_ms=0, main_thread=False, inline_first=False,
+                      **kwargs):
     """One-shot background runner: call it every frame; `start=True` is the
     trigger edge that snapshots (input_value, child_kwargs) into the queue.
 
@@ -488,10 +492,18 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                 finally:
                     loading_state._loading = False
                     loading_state._pending_change = True
-                    if not main_thread:
-                        note= Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
-                        Melty.cache.invalidate(draw_state._tile_id, note=note)
-                        request_render()
+                    # Completion wake for every flavor, main_thread=True included.
+                    # main_thread once meant "ran inline, result visible this
+                    # frame" (see the commented block below) - when it moved to
+                    # worker threads the invalidate was never added, so a finished
+                    # load/save was unobserved until an unrelated event fired a
+                    # frame (the 100–600ms idle gaps on the initial-load
+                    # timeline). The invalidate dirties this runner's tile +
+                    # ancestors so the caller's body actually re-runs next frame -
+                    # a dirty tile would just replay its blit past the result.
+                    note = Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
+                    Melty.cache.invalidate(draw_state._tile_id, note=note)
+                    request_render()
             #
             # if Melty.frame_count < 0 or main_thread:
             #     run(run_next_inner=loading_state._run_next)
@@ -500,10 +512,24 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
             run_next = loading_state._run_next
             if not loading_state._loading:
                 loading_state._run_next = None
-                threading.Thread(target=run, kwargs={"run_next_inner": run_next}).start()
-                loading_state._loading_start_frame = Melty.frame_count
-                if loading_state._run_next is run_next:
-                    loading_state._run_next = None
+                if inline_first and loading_state.cached_result is UNSET:
+                    # First-ever result for a caller that opted in (the initial
+                    # file load): run synchronously so the value is visible THIS
+                    # frame. Each async stage costs one whole render-hop before
+                    # its result is observed; on the initial-load pipeline those
+                    # hops (not the work, ~2ms here) are the latency. Only the
+                    # first load is inline - reloads and every save stay async
+                    # (the save UI must never interrupt the edit frame).
+                    run(run_next_inner=run_next)
+                else:
+                    # Named after the target func so perf-trace lines from this
+                    # worker read as e.g. [bg:_run_chain_in] instead of [Thread-42].
+                    _bg_name = f"bg:{getattr(run_next[0], '__name__', 'task')}"
+                    threading.Thread(target=run, kwargs={"run_next_inner": run_next},
+                                     name=_bg_name).start()
+                    loading_state._loading_start_frame = Melty.frame_count
+                    if loading_state._run_next is run_next:
+                        loading_state._run_next = None
 
     # BUSY includes "completed, but a newer run is already queued". Completion is
     # only ever REPORTED once the queue is empty (coalesced to latest-only - see
@@ -720,9 +746,15 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
         if not accepts_var_kw:
             call = {k: v for k, v in call.items() if k in node.__params__}
         try:
+            _t_node0 = time.monotonic()
             result = inner(**call)
+            _dt_node = (time.monotonic() - _t_node0) * 1000.0
+            if _dt_node >= 10.0:
+                _ptrace(f"convert node {getattr(inner, '__name__', str(inner))} "
+                        f"took {_dt_node:.0f}ms")
         except Exception as e:
-
+            _ptrace(f"convert node {getattr(inner, '__name__', str(inner))} "
+                    f"raised {type(e).__name__} (treated as value)")
             return e, routed
         if isinstance(result, tuple) and len(result) == 2:
             _, value = result
@@ -814,7 +846,11 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
     generation the finished parse actually reflects (not whatever the source is by the
     time the worker returns)."""
     notify(f"_run_chain_in: start", tag="chain_in")
+    _t_ci0 = time.monotonic()
+    _ptrace("chain_in: worker start",
+            len=len(input_value) if isinstance(input_value, str) else type(input_value).__name__)
     result, routed = _run_convert(chain, input_value, **extra)
+    _t_ci_conv = time.monotonic()
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
@@ -830,6 +866,12 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
             lint = check_source(input_value, path=lint_path)
         except Exception:
             lint = []
+    _now = time.monotonic()
+    _ptrace(f"chain_in: worker done in {(_now - _t_ci0) * 1000:.0f}ms",
+            convert=f"{(_t_ci_conv - _t_ci0) * 1000:.0f}ms",
+            checks=f"{(_now - _t_ci_conv) * 1000:.0f}ms",
+            error=type(error).__name__ if error is not None else "none",
+            lint=len(lint))
     return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen}
 
 
@@ -855,10 +897,19 @@ def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
     edit frame that made it (used to recognize and order its chain_in echo)."""
     notify(f"_run_chain_out: start", tag="chain_out")
 
-    result, _ = _run_convert(chain, input_value, **extra)
+    with _pspan("chain_out: worker", min_ms=5.0):
+        result, _ = _run_convert(chain, input_value, **extra)
     if isinstance(result, Exception):
         return {"error": result, "_out_gen": _out_gen}
     return {"value": result, "_out_gen": _out_gen}
+
+
+# Buffers up to this size take the inline-first parse path in
+# convert_in_and_out_value (first result only - see the call site). 128KB
+# covers every practical editor span (text_editor.py's draw_text is ~102KB,
+# 215ms of parse+compile); beyond it the first parse runs async so a
+# pathological buffer can't freeze its first frame for seconds.
+_INLINE_FIRST_PARSE_MAX_CHARS = 128 * 1024
 
 
 class ModesState:
@@ -1142,6 +1193,13 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     chain_in_error = modes_state.last_error
     inbound_gen = None
     if chain_in:
+        # "No value yet" is not a parse job: a host's first external_change edge
+        # fires before its source input has loaded (input None/UNSET), the chain
+        # would just AttributeError on a worker, and the loaded text raises a
+        # real edge moments later anyway (real value load re-flags
+        # external_change). Swallow the empty edge instead of queueing it.
+        if external_change and (input_value is None or input_value is UNSET):
+            external_change = False
         # Tag this parse with the generation of the source it consumes. If the source is
         # the echo of our OWN last chain_out (same string object), it reflects that edit's
         # frame (echo_gen); otherwise it's an external change as of now. Threaded through
@@ -1149,11 +1207,24 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         src_gen = modes_state.echo_gen if (input_value is modes_state.echo_str) else Melty.frame_count
         chain_in_kwargs = {**forwarded, "input_value": input_value,
                            "chain": chain_in, "route": route, "_src_gen": src_gen}
+        # The FIRST parse of a fresh view runs INLINE, size-gated: parsing is
+        # pure-Python, so a worker thread doesn't wall it under the GIL - it
+        # just smears the same CPU across stretched frames, pop-in, and a second
+        # render once the result drops a frame later. Synchronous-first paints
+        # the view fully formed the one sooner. run_in_background inlines only
+        # if its state has no result yet, so every later reparse - typing,
+        # echoes, external changes - stays async/debounced exactly as before.
+        # The size gate prevents a large buffer from freezing its first parse
+        # indefinitely (it falls back to the async path).
+        inline = (isinstance(input_value, str)
+                  and len(input_value) <= _INLINE_FIRST_PARSE_MAX_CHARS)
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
-            name=f"chain_in{unique}", start=external_change)
+            name=f"chain_in{unique}", start=external_change, inline_first=inline)
         if external_change:
+            _ptrace("chain_in: queued (source changed)", unique=unique,
+                    len=len(input_value) if isinstance(input_value, str) else "-")
             note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
             draw_state._parent.invalidate(note=note)
         external_change = False
@@ -1180,6 +1251,9 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
             Melty.cache.invalidate_up(draw_state._tile_id, force=True, note=note)
             notify(f"chain_in finished", tag="chain_in")
+            _ptrace("chain_in: landed on host", unique=unique,
+                    error=type(modes_state.last_error).__name__
+                          if modes_state.last_error is not None else "none")
 
     out_changed, out_value = False, input_value
 
@@ -1199,8 +1273,16 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     primary = routed.get(primary_key) if primary_key is not None else None
 
     child_kwargs['routed'] = routed
+    _t_vf0 = time.monotonic()
     edited, edited_value = view_func(input_value=primary, external_change=external_change,
                                      inbound_gen=inbound_gen, **child_kwargs)
+    _dt_vf = (time.monotonic() - _t_vf0) * 1000.0
+    if _dt_vf >= 20.0:
+        # The inline-chain route's own view subtree (e.g. the text editor) -
+        # the one long-frame render the cache-route timers don't cover.
+        _ptrace_rl(("vf-slow", unique),
+                   f"view_func {getattr(view_func, '__name__', str(view_func))} "
+                   f"took {_dt_vf:.0f}ms", unique=unique)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET
     if edited:
         draw_state.invalidate(note=Note(name="convert_in_out, view func edit", tint=(1.0, 0.5, 0), draw_state=draw_state))
@@ -1377,7 +1459,15 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if getattr(codec, "view_func", None) is not None:
             view_func = codec.view_func
 
+        _t_res0 = time.monotonic()
         address = codec.resolve_address(input_value, draw_state, code_state=code_state)
+        _dt_res = (time.monotonic() - _t_res0) * 1000.0
+        if _dt_res >= 5.0:
+            # Per-frame render-thread call - only slow ones are timeline-worthy.
+            _ptrace_rl(("resolve", id(draw_state)),
+                       f"io: resolve_address ({getattr(codec, '__name__', type(codec).__name__)}) "
+                       f"took {_dt_res:.1f}ms",
+                       name=getattr(input_value, "__name__", None) or type(input_value).__name__)
         code_state.address = address
         top_line_height = 30
         external_change = False
@@ -1396,6 +1486,11 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 load = True
                 code_state.text_cache = None
                 code_state.mark_file_current()
+                _ptrace("io: initial load fire",
+                        name=getattr(input_value, "__name__", None) or type(input_value).__name__,
+                        file=getattr(getattr(address, "path", None), "name", address.path)
+                             if getattr(address, "path", None) is not None else "-",
+                        span=f"{getattr(address, 'start', None)}-{getattr(address, 'end', None)}")
 
         # str gate on top: even a code codec can briefly hold non-text data.
         if (code_buttons and not auto_recompile_edits
@@ -1455,6 +1550,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state.text_cache = cache_text
                 code_state.mark_file_current()
                 external_change = True
+                _ptrace("io: pulled sibling edit from PendingSave cache (reparse follows)",
+                        file=getattr(getattr(address, "path", None), "name", "-"))
                 draw_state.invalidate_up(max_depth=6)
                 request_render()
 
@@ -1476,12 +1573,17 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                     code_state.mark_file_current()
                     code_state._save_refused = False
                     external_change = True
+                    _ptrace("io: in-process self-write sync (reparse follows)",
+                            file=getattr(getattr(address, "path", None), "name", "-"))
                     draw_state.invalidate_up(max_depth=6)
                     request_render()
                 else:
                     load = True
                     code_state._loaded_externally = not self_write
                     code_state.mark_file_current()
+                    _ptrace("io: stale file -> reload fire",
+                            external=not self_write,
+                            file=getattr(getattr(address, "path", None), "name", "-"))
             else:
                 imgui.same_line(spacing=0)
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
@@ -1522,11 +1624,16 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         changed, new_text = run_in_background(load_file, main_thread=True,
                                               child_kwargs={"input_value": address, 'codec': codec},
-                                              name=f"load{unique}", start=load)
+                                              name=f"load{unique}", start=load,
+                                              inline_first=True)
         if new_text is LOADING:
             code_state.mark_file_current()
 
         elif changed:
+            _ptrace("io: load landed",
+                    file=getattr(getattr(address, "path", None), "name", "-"),
+                    len=len(new_text) if isinstance(new_text, str) else type(new_text).__name__,
+                    external=code_state._loaded_externally)
             code_state.text_cache = new_text
             code_state.mark_file_current()
             draw_state.invalidate_up(max_depth=6)
@@ -1671,7 +1778,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         save_start = (auto_save and edited and not conflict) or explicit_save
         force_save = keep_mine or (conflict and explicit_save)
         save_debounce = 0 if explicit_save else save_debounce_ms
-        time = datetime.now().strftime("%H:%M:%S")
         if save_start:
             note = Note(name="Code_file_io save start", tint=(1, 0.5, 0))
             # Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
@@ -1828,6 +1934,8 @@ def code_hosts_for(ref):
         pair = (str_host, dict_host)
         if cacheable:
             _code_host_cache[ref] = pair
+        _ptrace(f"host pair created for {label}", cached=cacheable,
+                total_hosts=len(_code_host_cache))
     return pair
 
 
@@ -1854,6 +1962,11 @@ _last_auto_index_time = 0.0
 _AUTO_INDEX_STAGGER_S = 0.25
 
 
+def _host_label(host):
+    """Short perf-trace label for a code host ("Toggles140234_dict")."""
+    return str(getattr(host, "name", "?")).replace("##code_cache_", "")
+
+
 def _post_symbol_attach(dict_host, gen, flat):
     """Attach a computed {symbol: SymbolUsage} map onto the host's held gp at the
     next frame boundary (Melty.post_to_render). Deferred-not-inline because the gp
@@ -1865,12 +1978,18 @@ def _post_symbol_attach(dict_host, gen, flat):
     def _attach():
         gp = dict_host._held()
         if not isinstance(gp, dict):
+            # The computed symbols had nowhere to land (host holds no parse yet)
+            # - the work is wasted and must be re-triggered later.
+            _ptrace("attach: DROPPED — host holds no parse yet",
+                    host=_host_label(dict_host))
             return
-        gp._symbol_gen = gen
-        if flat:
-            gp.symbol_usage = flat
-            _distribute_by_name(gp, flat)
-        dict_host._notify_consumers(name="symbol index attached")
+        with _pspan("attach: distribute on render thread", min_ms=2.0,
+                    host=_host_label(dict_host), names=len(flat) if flat else 0):
+            gp._symbol_gen = gen
+            if flat:
+                gp.symbol_usage = flat
+                _distribute_by_name(gp, flat)
+            dict_host._notify_consumers(name="symbol index attached")
 
     Melty.post_to_render(_attach)
 
@@ -1910,6 +2029,9 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
     gen = _lc._index_generation
     if gen < 1:
+        _ptrace_rl("ensure-gen0",
+                   "ensure-index: waiting for first warmer build (gen=0)",
+                   min_interval=5.0)
         return          # warmer hasn't built yet - we retry once it bumps
     if jump_to is None and str_host is not None:
         cs = host_code_state(str_host)
@@ -1928,9 +2050,13 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     # — ~sub-ms–2ms, GIL-cheap. Attach next frame so highlights track the edit,
     # skipping the yield/stagger/background hop. Fires per pending edit so a
     # newline offsets eagerly instead of waiting for the reparse.
+    _t_probe0 = time.monotonic()
     flat = _lc.compute_symbol_usages_for_address(jump_to, fast_only=True)
     if flat is not _lc._NEEDS_RECOMPUTE:
         dict_host._auto_index_key = key
+        _ptrace(f"ensure-index: inline attach (probe "
+                f"{(time.monotonic() - _t_probe0) * 1000:.1f}ms)",
+                host=_host_label(dict_host), names=len(flat))
         _post_symbol_attach(dict_host, gen, flat)
         return
 
@@ -1939,16 +2065,24 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     # the chain's reparse will refresh them; don't spawn a recompute per keystroke.
     if getattr(code_dict, "_symbol_gen", None) == gen:
         dict_host._auto_index_key = key   # handled (mark so we don't re-probe/frame)
+        _ptrace("ensure-index: positions left to next reparse (parse already at gen)",
+                host=_host_label(dict_host))
         return
 
     # SLOW PATH (gen-stale parse: fresh parse / warmer bump) - a real recompute,
     # deferred to a background thread behind the no-drag yield + stagger.
     if not _lc._wait_for_no_drag(max_wait=0.0):
+        _ptrace_rl(("ensure-drag", id(dict_host)),
+                   "ensure-index: deferred (mid-drag)", host=_host_label(dict_host))
         return          # mid-gesture - don't even start, retried next frame
     if time.monotonic() - _last_auto_index_time < _AUTO_INDEX_STAGGER_S:
+        _ptrace_rl(("ensure-stagger", id(dict_host)),
+                   "ensure-index: deferred (stagger window)", host=_host_label(dict_host))
         return          # another host nudged recently - stagger a retry later
     _last_auto_index_time = time.monotonic()
     dict_host._auto_index_key = key
+    _ptrace("ensure-index: spawning background recompute (gen-stale parse)",
+            host=_host_label(dict_host), gen=gen)
     threading.Thread(target=_index_host_in_place, args=(str_host, dict_host, gen),
                      daemon=True, name="symbol-index-attach").start()
 
@@ -1966,24 +2100,32 @@ def _index_host_in_place(str_host, dict_host, gen):
     invalidates their subtrees (the same wake a background parse uses)."""
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
         compute_symbol_usages_for_address, _wait_for_no_drag)
-    if not _wait_for_no_drag():
+    _t_ih0 = time.monotonic()
+    if not _wait_for_no_drag(label=f"index-host {_host_label(dict_host)}"):
         # Gesture outlasted the wait - bail rather than steal GIL time from
         # it. Clearing the in-flight key lets the editor-side nudge (or
         # the next generation bump) retry once the user lets go.
         dict_host._auto_index_key = None
+        _ptrace("index-host: bailed (drag outlasted wait)", host=_host_label(dict_host))
         return
     address = dict_host.child_kwargs.get("jump_to")
     if address is None:
         cs = host_code_state(str_host)
         address = getattr(cs, "address", None) if cs is not None else None
         if address is None:
+            _ptrace("index-host: no address resolved yet — skipped",
+                    host=_host_label(dict_host))
             return
         # Persist for the chain: future reparses attach via cst_module_to_dict.
         dict_host.child_kwargs["jump_to"] = address
     try:
         flat = compute_symbol_usages_for_address(address)
-    except Exception:
+    except Exception as _e:
+        _ptrace(f"index-host: compute RAISED {type(_e).__name__}: {_e}",
+                host=_host_label(dict_host))
         return
+    _ptrace(f"index-host: computed in {(time.monotonic() - _t_ih0) * 1000:.0f}ms, posting attach",
+            host=_host_label(dict_host), names=len(flat))
     # Attach at the next frame, - the gp is walked live every frame and a
     # mid-walk insert would raise (see _post_symbol_attach). Re-fetches the
     # held gp there (a reparse may have replaced it; sites are file-absolute).
@@ -2004,15 +2146,23 @@ def _wake_stale_code_hosts(gen):
             and Toggles.auto_index
             and not Toggles.jedi_correctness):
         return
-    for sh, dh in list(_code_host_cache.values()):
+    _t_wake0 = time.monotonic()
+    _woken = 0
+    hosts = list(_code_host_cache.values())
+    _ptrace("wake-stale-hosts: sweep start (0.25s sleep between hosts)",
+            gen=gen, hosts=len(hosts))
+    for sh, dh in hosts:
         gp = dh._held()
         if not isinstance(gp, dict) or getattr(gp, "_symbol_gen", None) == gen:
             continue
         if getattr(dh, "_auto_index_key", None) == (id(gp), gen):
             continue
         dh._auto_index_key = (id(gp), gen)
+        _woken += 1
         _index_host_in_place(sh, dh, gen)
         time.sleep(0.25)
+    _ptrace(f"wake-stale-hosts: sweep done in {(time.monotonic() - _t_wake0) * 1000:.0f}ms",
+            gen=gen, woken=_woken)
 
 
 def _register_index_bump_hook():
@@ -2039,9 +2189,17 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     reloads from the file, and the editor picks up the fresh parse a beat
     later — the leaf and the cache only ever talk through the file."""
     code_dict, cache_error, dict_host = None, None, None
+    _t_editor0 = time.monotonic()
     if root_input is not None:
         _str_host, dict_host = code_hosts_for(root_input)
         code_dict = dict_host._held()
+        # First-parse arrival transition (once per host): the gap between
+        # "waiting" and "visible" is what the user sees as load time.
+        if isinstance(code_dict, dict):
+            if _ponce(("parse-visible", _host_label(dict_host))):
+                _ptrace("editor: first parse visible", host=_host_label(dict_host))
+        elif _ponce(("parse-wait", _host_label(dict_host))):
+            _ptrace("editor: waiting for first parse", host=_host_label(dict_host))
         # Background auto-index: keep the held parse's symbol usages current
         # without the manual Index click (no-op when already indexed).
 
@@ -2127,6 +2285,12 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     # # the fresh cst_dict sits invisible until an unrelated invalidation.
     # if dict_host is not None and ds is not None:
     #     dict_host.notify_on_change(ds)
+    _dt_editor = (time.monotonic() - _t_editor0) * 1000.0
+    if _dt_editor >= 20.0 and dict_host is not None:
+        # Render-thread stall inside the editor's loop (draw_text + pulls).
+        _ptrace_rl(("editor-slow", id(dict_host)),
+                   f"editor frame took {_dt_editor:.0f}ms",
+                   host=_host_label(dict_host))
     return False, None
 
 
@@ -2190,6 +2354,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
     only ever talk through the FILE: a dict edit saves via the cache and this
     window's auto_load_edits picks it up; a text edit saves here and the
     cache's file watch re-parses."""
+    _t_tabs0 = time.monotonic()
     view_funcs = [RenderFuncs.draw_collection, RenderFuncs.draw_text]
     # Drop entries that didn't survive (de)serialization, then default to two
     # tabs (structured | text), matching draw_with_view_funcs.
@@ -2255,6 +2420,11 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         # child_kwargs. Computing here also drops the old order dependency (the text tab
         # read `gp` before the structured branch defined it).
         gp = dict_host._held() if dict_host is not None else None
+        if isinstance(gp, dict):
+            if _ponce(("parse-visible", _host_label(dict_host))):
+                _ptrace("tabs: first parse visible", host=_host_label(dict_host))
+        elif dict_host is not None and _ponce(("parse-wait", _host_label(dict_host))):
+            _ptrace("tabs: waiting for first parse", host=_host_label(dict_host))
         cache_error = _host_code_tree_error(dict_host)
         
         raw_changed, raw_value = False, input_value
@@ -2299,4 +2469,10 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         draw_state.invalidate_up(max_depth=2)
 
         cols.finish()
+    _dt_tabs = (time.monotonic() - _t_tabs0) * 1000.0
+    if _dt_tabs >= 20.0 and dict_host is not None:
+        # Render-thread stall inside the tabs subtree this frame (structured
+        # collection build + text pane together).
+        _ptrace_rl(("tabs-slow", id(dict_host)),
+                   f"tabs frame took {_dt_tabs:.0f}ms", host=_host_label(dict_host))
     return False, None

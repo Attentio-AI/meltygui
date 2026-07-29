@@ -73,65 +73,13 @@ class InCode:
 
 # draw_text_static_file_load = inspect.getsource(draw_text)
 
-_code_host_cache: dict = {}
-
-def code_hosts_for(ref):
-    """The shared (source_str_host, cst_dict_host) RenderHost pair for a
-    function / class / module / CallSite — the same wiring draw_input_tab used
-    to build per menu-open, now built ONCE per distinct reference and reused:
-
-        str_host   code_file_io <- ref          (the editable source text)
-        dict_host  convert_in_and_out_value     (source <-> cst dict via the
-                   <- str_host                   NEW_CODE chain, "code_dict"
-                                                 routed to the editor)
-
-    Lazy: nothing loads until the first consumer draws the host. Consumers that
-    read the value outside the host's own draw loop must still register via
-    host.notify_on_change(draw_state), exactly as before."""
-    # Key by the ref ITSELF (object-equality), not str(id(ref)). See the matching
-    # note at new_file_view.code_hosts_for: an identity key leaks a new host pair on
-    # every CallSite(f, ln) / Path, and recycles ids into wrong cache hits.
-    try:
-        pair = _code_host_cache.get(ref)
-        cacheable = True
-    except TypeError:  # genuinely unhashable ref - skip the cache
-        pair, cacheable = None, False
-    if pair is None:
-        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-        label = getattr(ref, "__name__", None) or type(ref).__name__
-        tag = id(ref)  # unique among concurrently-cached (keep-alive) refs
-        str_host = RenderHost(io_function=code_file_io, input_value=ref,
-                              name=f"##code_cache_{label}{tag}_str",
-                              child_kwargs={"auto_load_edits": True, "auto_load": True})
-
-        # string_proxy = RenderHost(io_function=code_file_io, input_value=draw_text, name="String Proxy test",
-        #
-        #                           child_kwargs={"auto_load_edits": False, "auto_load":True})   # auto-reload on external file change
-        #
-
-        # Whole-FILE refs get the static name/signature checker (code_checks): the
-        # buffer is self-contained, so an unresolved name really IS a NameError.
-        # A partial ref (func/class/CallSite) sees none of its module's imports
-        # # and would flag every one - no lint_path, no lint.
-        lint_path = None
-        # if isinstance(ref, Path) and ref.suffix == ".py":
-        #     lint_path = str(ref)
-        # elif isinstance(ref, types.ModuleType):
-        #     lint_path = getattr(ref, "__file__", None)
-        dict_host = RenderHost(
-            io_function=convert_in_and_out_value, input_value=str_host,
-            name=f"##code_cache_{label}{tag}_dict",
-            child_kwargs={
-                "chain_in": [string_to_cst_module, cst_module_to_dict],
-                "chain_out": [dict_to_cst_module, cst_module_to_string],
-                "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
-                **({"run_chain_kwargs": {"lint_path": lint_path}} if lint_path else {}),
-            })
-        pair = (str_host, dict_host)
-        if cacheable:
-            _code_host_cache[ref] = pair
-    return pair
-
+# The shared framework pair, NOT a private copy. This module used to carry its
+# own copy of code_hosts_for and its own cache, so this window passed draw_text
+# through a second, independent pipeline while the editor route parsed the same
+# span through the framework pair: two full 102KB str→cst→dict conversions per
+# session (~430ms of duplicated background work, visible in the perf-trace
+# timeline). One cache, one pair, one parse.
+from src.lsd.gl_gui.view.core_conversion.new_converters import code_hosts_for
 
 string_proxy, dict_proxy = code_hosts_for(draw_text)
 

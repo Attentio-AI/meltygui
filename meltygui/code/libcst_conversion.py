@@ -31,6 +31,8 @@ from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingStat
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
+from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
+                                       span as _pspan, once as _ponce)
 
 
 def register(fn):
@@ -931,23 +933,27 @@ def _load_symbol_store() -> dict:
     store = getattr(sys, "_symbol_index_store", None)
     if isinstance(store, dict):
         store.setdefault("hashes", {})    # bump; backfill the hash dict if older
+        _ptrace("store: adopted live symbol store (restart-in-place)",
+                spans=len(store.get("spans", ())), gen=store.get("gen"))
         return store                      # restart-in-place: adopt live dicts
     spans, gen, mtimes, hashes = {}, 0, {}, {}
     if not _disk_cache_enabled():         # cache off: no warm-start, stay cold
         store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
         sys._symbol_index_store = store
         return store
-    try:                                  # fresh process: warm-start from pick
-        import pickle
-        with open(_SYMBOL_INDEX_PICKLE, "rb") as f:
-            payload = pickle.load(f)
-        if payload.get("version") == _SYMBOL_INDEX_PICKLE_VERSION:
-            spans = payload["spans"]
-            gen = payload["gen"]
-            mtimes = payload["mtimes"]
-            hashes = payload.get("hashes", {})   # absent in pre-hash pickles
-    except Exception:
-        pass                              # missing/corrupt/stale-format → fresh
+    with _pspan("store: warm-start load") as _sp:
+        try:                                  # fresh process: warm-start from disk
+            import pickle
+            with open(_SYMBOL_INDEX_PICKLE, "rb") as f:
+                payload = pickle.load(f)
+            if payload.get("version") == _SYMBOL_INDEX_PICKLE_VERSION:
+                spans = payload["spans"]
+                gen = payload["gen"]
+                mtimes = payload["mtimes"]
+                hashes = payload.get("hashes", {})   # absent in pre-hash pickles
+        except Exception as e:
+            _sp.add(failed=type(e).__name__)  # missing/corrupt/stale-format → cold
+        _sp.add(spans=len(spans), gen=gen)
     store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
     sys._symbol_index_store = store
     return store
@@ -961,19 +967,20 @@ def _save_symbol_store():
     are immutable tuples)."""
     if not _disk_cache_enabled():         # cache off: keep the pickle untouched
         return
-    try:
-        import pickle, os
-        _SYMBOL_INDEX_PICKLE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _SYMBOL_INDEX_PICKLE.with_suffix(".tmp")
-        with open(tmp, "wb") as f:
-            pickle.dump({"version": _SYMBOL_INDEX_PICKLE_VERSION,
-                         "spans": dict(_symbol_usage_cache),
-                         "gen": _index_generation,
-                         "mtimes": dict(_mtime_snapshot),
-                         "hashes": dict(_span_hashes)}, f)
-        os.replace(tmp, _SYMBOL_INDEX_PICKLE)
-    except Exception:
-        pass
+    with _pspan("store: save pickle", min_ms=5.0, spans=len(_symbol_usage_cache)):
+        try:
+            import pickle, os
+            _SYMBOL_INDEX_PICKLE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _SYMBOL_INDEX_PICKLE.with_suffix(".tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump({"version": _SYMBOL_INDEX_PICKLE_VERSION,
+                             "spans": dict(_symbol_usage_cache),
+                             "gen": _index_generation,
+                             "mtimes": dict(_mtime_snapshot),
+                             "hashes": dict(_span_hashes)}, f)
+            os.replace(tmp, _SYMBOL_INDEX_PICKLE)
+        except Exception:
+            pass
 
 
 _symbol_store = _load_symbol_store()
@@ -1120,6 +1127,12 @@ def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
 
 _index_refs_cache: dict = {}   # resolved_path -> (mtime, [(kind, key, line, col, scope)])
 
+# Perf-trace metric: bumps every time _file_index_refs actually re-parses a
+# file (mtime cache miss). Callers snapshot it around their scan loop to report
+# "N of src files re-parsed" - the difference between a warm ~10ms scan and a
+# cold ~1s one.
+_index_refs_reparses = 0
+
 # Whole-FILE parse artifacts (the ast tree + the three sub-tree walks derived
 # from it) for the file _symbol_refs_index is analyzing, cached so every span in
 # the SAME file shares one parse+walk instead of redoing it. These depend only on
@@ -1158,7 +1171,7 @@ _index_generation = _symbol_store["gen"]
 _index_bump_callbacks: list = []
 
 
-def _wait_for_no_drag(max_wait=30.0, poll=0.05):
+def _wait_for_no_drag(max_wait=30.0, poll=0.05, label=""):
     """Hold a background index pass while the user is mid-gesture — index CPU
     is GIL-bound, so it surfaces as dropped frames at exactly the moment frame
     pacing matters most. Reads Melty's per-frame drag flags (plain class
@@ -1167,13 +1180,19 @@ def _wait_for_no_drag(max_wait=30.0, poll=0.05):
     produces a frame that clears them). max_wait=0 is an instant probe.
     Returns False when the drag outlasted max_wait — callers bail and rely on
     a later retry (the editor-side nudge re-indexes any gp whose generation
-    stamp is stale, so a skipped pass self-heals)."""
+    stamp is stale, so a skipped pass self-heals). `label` names the caller in
+    the perf-trace timeline (a long wait here delays whatever that caller was
+    about to compute)."""
     waited = 0.0
     while getattr(Melty, "window_drag", False) or getattr(Melty, "on_drag", False):
         if waited >= max_wait:
+            if waited > 0:      # instant probes (max_wait=0) stay silent
+                _ptrace(f"drag-wait GAVE UP after {waited:.2f}s", where=label)
             return False
         _time.sleep(poll)
         waited += poll
+    if waited >= 0.1:
+        _ptrace(f"drag-wait held {waited:.2f}s", where=label)
     return True
 
 
@@ -1413,6 +1432,7 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
     passes the edited file's tree/imports/refs, which it already built for target
     resolution, so the edited file is parsed and walked once per compute, not
     twice."""
+    global _index_refs_reparses
     use_text = text is not None
     if not use_text:
         try:
@@ -1422,6 +1442,8 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
         cached = _index_refs_cache.get(path)
         if cached is not None and cached[0] == mtime:
             return cached[1]
+        _index_refs_reparses += 1
+    _t_refs0 = _time.monotonic()
     od = getattr(module, "__dict__", None)
     refs = []
     if od is not None:
@@ -1466,6 +1488,10 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
             refs = []
     if not use_text:
         _index_refs_cache[path] = (mtime, refs)
+    _dt_refs = (_time.monotonic() - _t_refs0) * 1000.0
+    if _dt_refs >= 20.0:   # individual slow file - worth a (rate-limited) line
+        _ptrace_rl(("file-refs", path), f"file refs re-parse {_dt_refs:.0f}ms",
+                   min_interval=2.0, file=path.name)
     return refs
 
 
@@ -1830,10 +1856,13 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     scan / inspect ONLY for names not already in `prev` (freshly typed symbols),
     reusing the rest. Cold path (prev=None): every name is "fresh", so the scan
     is full and behaviour is identical to before."""
+    _t_idx0 = _time.monotonic()
     resolved = _Path(file_path).resolve()
     mod_map = _src_mod_map()
+    _t_modmap = _time.monotonic()
     owning = mod_map.get(resolved)
     if owning is None:
+        _ptrace("refs-index: file not in loaded module map", file=resolved.name)
         return {}
     if text is None:
         text = Melty.read_code(resolved)
@@ -1842,7 +1871,9 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # Whole-file parse + the three full-tree walks, shared across every span of
     # this file (see _file_parse_artifacts). _collect_targets stays per-span - it
     # filters to [start, end] - but reuses the file tree instead of re-parsing.
+    _t_art0 = _time.monotonic()
     artifacts = _file_parse_artifacts(resolved, owning, text)
+    _t_art = _time.monotonic() - _t_art0
     if artifacts is None:
         return _PARSE_FAILED          # buffer didn't parse - caller holds last-good
     file_tree, _file_imports, file_refs, _bindings = artifacts
@@ -1937,6 +1968,8 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             # linked once).
             sites.setdefault(nm, []).append((line, col))
     if not obj_targets and not mem_targets and not local_bounds:
+        _ptrace("refs-index: no targets in span", file=resolved.name,
+                span=f"{start_line}-{end_line}")
         return {}
 
     rp_str = str(resolved)
@@ -1950,18 +1983,27 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     fresh = set(sites) - reuse.keys()
     skip_other_files = prev is not None and not fresh  # nothing left to look up
 
+    _t_scan0 = _time.monotonic()
+    _reparse0 = _index_refs_reparses
+    _scan_slept = 0.0
+    _files_scanned = 0
     callers = {}
     for fi, (path, mod) in enumerate(mod_map.items()):
         is_edited = path == resolved
         if skip_other_files and not is_edited:
             continue
+        _files_scanned += 1
         if fi % 8 == 0:
             # GIL yield: this scan is the bulk of the span compute (~150 files ×
             # cached ref lists, plus ~5-10ms ast re-parse per stale file) and
             # runs on a plain thread - without the sleeps it holds the GIL in
             # one ~0.2s block and the render thread stutters. ~19 sleeps ≈
             # +20ms delay per span.
+            _s0 = _time.monotonic()
             _time.sleep(0.001)
+            # Measured, not assumed: under GIL contention a 1ms sleep can take
+            # far longer - the yield IS the contention signal.
+            _scan_slept += _time.monotonic() - _s0
         # The edited file's own internal callers must come from the overlaid text
         # (deferred saves keep disk stale); others read disk via the mtime cache.
         cur = text if is_edited else None
@@ -1982,6 +2024,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 continue
             callers.setdefault(nm, []).append(
                 (str(path), line, col, scope, getattr(mod, "__name__", "") or ""))
+    _t_scan = _time.monotonic() - _t_scan0
 
     out = {}
 
@@ -2043,6 +2086,8 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     if _own_file:
         own_paths.add(_own_file)
 
+    _t_def0 = _time.monotonic()
+    _def_slept = 0.0
     for si, nm in enumerate(sites):               # every target name has sites
         pe = reuse.get(nm)
         if pe is not None:
@@ -2068,7 +2113,9 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             }
             continue
         if si and si % 32 == 0:
+            _s0 = _time.monotonic()
             _time.sleep(0.001)   # GIL yield - inspect.getsourcelines per symbol adds up
+            _def_slept += _time.monotonic() - _s0
         out[nm] = {
             "sites": sites[nm],
             "definition": _resolve_def(nm),
@@ -2078,9 +2125,23 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # scan gathered into local_sites. Collision-proof keys (scope+name+line) never
     # clash with the bare-name or "Base.attr" keys; the display spelling rides in
     # each entry's "name". Locals have no callers outside their scope -> no scan.
+    _t_def = _time.monotonic() - _t_def0
     if local_bounds:
         out.update(_build_local_entries(local_bounds, local_global, local_sites,
                                         start_line, end_line, rp_str, mod_name))
+    # Performance summary per compute: where the time went. `slept` inside scan/defs is
+    # the cooperative GIL-yield share - big slept vs small work = contention,
+    # higher index cost. reparsed = files whose mtime cache missed this run.
+    _ptrace(f"refs-index done in {(_time.monotonic() - _t_idx0) * 1000:.0f}ms",
+            file=resolved.name, span=f"{start_line}-{end_line}",
+            mode="incremental" if prev is not None else "cold",
+            modmap=f"{(_t_modmap - _t_idx0) * 1000:.0f}ms",
+            artifacts=f"{_t_art * 1000:.0f}ms",
+            scan=f"{_t_scan * 1000:.0f}ms/{_files_scanned}files"
+                 f"/{_index_refs_reparses - _reparse0}reparsed"
+                 f"/slept{_scan_slept * 1000:.0f}ms",
+            defs=f"{_t_def * 1000:.0f}ms/slept{_def_slept * 1000:.0f}ms",
+            names=len(out), fresh=len(fresh))
     return out
 
 
@@ -2188,6 +2249,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     before the O(file) offset map even runs."""
     from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    _t_probe = _time.monotonic()
     accurate = Toggles.jedi_correctness
     try:
         mtime = resolved.stat().st_mtime
@@ -2213,6 +2275,8 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     if (cached is not None and cached[0][2] == accurate
             and _span_hashes.get(key) == chash):
         _store_usages(key, sig, cached[1], text, chash=chash)
+        _ptrace(f"usage hash-rescue in {(_time.monotonic() - _t_probe) * 1000:.1f}ms "
+                f"(sig lapsed, content identical)", file=resolved.name, span=f"{start}-{end}")
         return cached[1]
     # Find a reusable prior result (same resolver + index generation): the exact-
     # span entry, else the best-overlapping sibling (the span key shifts as lines
@@ -2243,18 +2307,30 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                     if offset is not None:
                         _store_usages(key, sig, offset, text, chash=chash,
                                       evict=src_key if src_key != key else None)
+                        _ptrace(f"usage offset-remap in {(_time.monotonic() - _t_probe) * 1000:.1f}ms",
+                                file=resolved.name, span=f"{start}-{end}")
                         return offset
             prev = _raw_from_usages(src[1])
     if fast_only:
+        # Per-frame render-thread probe that missed - the probe itself already
+        # costs O(file) (pending-overlay text build + content hash), so surface
+        # what it burns per frame while the deferred recompute is pending.
+        _ptrace_rl(("probe-miss", key),
+                   f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame)",
+                   file=resolved.name, span=f"{start}-{end}")
         return _NEEDS_RECOMPUTE       # only exact-hit + offset are cheap; defer the rest
     # Past every fast path, this is a real incremental/full recompute. Time and
     # notify only here, so cache hits / offsets stay silent.
     recompute_start = _time.monotonic()
+    _mode = "jedi" if accurate else ("incremental" if prev is not None else "cold")
+    _ptrace(f"usage recompute start ({_mode})", file=resolved.name, span=f"{start}-{end}")
     try:
         raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
                else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
-    except Exception:
+    except Exception as _e:
         raw = {}
+        _ptrace(f"usage recompute RAISED {type(_e).__name__}: {_e}",
+                file=resolved.name, span=f"{start}-{end}")
     # In-progress edit with a syntax error: HOLD the last-good graph instead of
     # discarding it. Return the emptygraph (so the editor knows the graph
     # washed) WITHOUT caching over the good entry - leaving it intact means the
@@ -2262,10 +2338,16 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # never-evicted broken {} snapshot can't poison the offset/reuse paths. A
     # valid empty span (raw == {}) still caches normally below.
     if raw is _PARSE_FAILED:
+        _ptrace(f"usage recompute: buffer parse failed after "
+                f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms — holding last-good",
+                file=resolved.name, span=f"{start}-{end}")
         held = (src[1] if src is not None
                 else cached[1] if cached is not None else {})
         return held
     usages = _rebuild_symbol_usages(raw)
+    _ptrace(f"usage recompute done ({_mode}) in "
+            f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms",
+            file=resolved.name, span=f"{start}-{end}", names=len(usages))
     notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
            f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
     # The view moved to `key`; the shifted sibling we reused is now dead weight.
@@ -2839,6 +2921,11 @@ def _active_positions():
 _YIELD_QUIET_S = 0.5   # resume once keyboard input has been quiet this long
 _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 frame)
 
+# Per-thread accumulation of time _yield_to_ui actually slept, so a conversion
+# (cst_module_to_dict) can report how much of its wall time was deliberate
+# back-off versus real work. Reset by the top-level convert, added to here.
+_yield_slept = threading.local()
+
 
 def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
@@ -2858,10 +2945,12 @@ def _yield_to_ui():
     glt = getattr(gl_state, "_gl_thread", None)   # read, don't claim (assert_gl_thread claims)
     if glt is None or cur is glt:
         return
+    _t0 = time.monotonic()
     while Toggles.yield_to_ui:
         if time.monotonic() - getattr(Melty, "_last_input_time", 0.0) >= _YIELD_QUIET_S:
             break
         time.sleep(_YIELD_SLICE_S)
+    _yield_slept.t = getattr(_yield_slept, "t", 0.0) + (time.monotonic() - _t0)
 
 
 def _build_ast_span_map(module, source=None):
@@ -3385,7 +3474,10 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     if not isinstance(input_value, cst.Module):
         print("Expected cst.Module, got", type(input_value).__name__, file=sys.stderr)
         return input_value
+    _t_start = time.monotonic()
+    _yield_slept.t = 0.0          # this parser's cumulative yield-to-UI sleep
     source_code = input_value.code
+    _t_codegen = time.monotonic()
     readable = GeneralParse(source=source_code)
     _stamp_span(readable, input_value)
 
@@ -3465,6 +3557,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
 
         readable["__cst__"] = input_value
         # readable.usages = _collect_usages(input_value, top_scope="<module>")
+    _t_converted = time.monotonic()
 
     # `jump_to` (a resolved source address: file + line span) rides in via
     # **extra - the chain route forwards it from the host's child_kwargs. It
@@ -3488,22 +3581,30 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # The accurate jedi resolver is far too slow to run per parse; it stays
     # behind the Refresh Index button (run_jedi), which also force-drops this
     # file's cached spans so a re-click is a true refresh.
+    _sym_note = None
     if address is not None:
         from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
         # The drag probe (max_wait=0) drops the index pass while the user is
         # mid-gesture (a structured tint drag echoes through chain_in, which
         # would run this compute DURING the drag): the gp ships unstamped, and
         # the editor-side nudge re-indexes it the moment the drag ends.
-        auto = (Toggles.enable_jedi
-                and Toggles.auto_index
-                and not Toggles.jedi_correctness
+        wants_auto = (Toggles.enable_jedi
+                      and Toggles.auto_index
+                      and not Toggles.jedi_correctness)
+        auto = (wants_auto
                 and _index_generation > 0
                 and _wait_for_no_drag(max_wait=0.0))
+        if wants_auto and not auto:
+            # WHY the parse ships unstamped: the two cases read very
+            # differently in the timeline (no-gen: warmer hasn't built yet, the
+            # editor-side nudge fires after the first bump; mid-drag: deferred).
+            _sym_note = "skipped:no-gen" if _index_generation < 1 else "skipped:mid-drag"
         if run_jedi:
             print("Index refresh (manual) for", address.path)
             invalidate_usage_cache(address.path)
         if run_jedi or auto:
             try:
+                _t_sym0 = time.monotonic()
                 flat = compute_symbol_usages_for_address(address)
                 # Generation stamp even when flat is empty: marks "indexed
                 # against the current generation" so the editor-side auto-index
@@ -3512,8 +3613,17 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                 if flat:
                     readable.symbol_usage = flat   # whole-span flat (debugging)
                     _distribute_by_name(readable, flat)
-            except Exception:
-                pass
+                _sym_note = f"{(time.monotonic() - _t_sym0) * 1000:.0f}ms/{len(flat)}syms"
+            except Exception as _e:
+                _sym_note = f"FAILED:{type(_e).__name__}"
+    _ap = getattr(address, "path", None)
+    _ptrace(f"cst→dict done in {(time.monotonic() - _t_start) * 1000:.0f}ms",
+            file=_Path(_ap).name if _ap else "<no address>",
+            lines=source_code.count("\n") + 1,
+            codegen=f"{(_t_codegen - _t_start) * 1000:.0f}ms",
+            convert=f"{(_t_converted - _t_codegen) * 1000:.0f}ms",
+            yielded=f"{getattr(_yield_slept, 't', 0.0) * 1000:.0f}ms",
+            symbols=_sym_note or "off")
     return readable
 
 
@@ -3998,7 +4108,6 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
                         _record_child(readable, attr_name, readable[attr_name], stmt)
 
     readable["__cst__"] = value
-    readable.usages = _collect_usages(value, top_scope="<class>")
     return readable
 
 
@@ -7448,14 +7557,17 @@ def build_index_cache() -> tuple:
     re-parses but nothing really changed). Pure index work — safe on a background
     thread (no imgui / Melty)."""
     global _index_generation
+    _t_build0 = _time.monotonic()
     mod_map = _src_mod_map()
+    _ptrace("warmer: build pass start", files=len(mod_map), gen=_index_generation)
+    _build_slept = 0.0
     reparsed = 0
     real_changes = 0
     for path, mod in mod_map.items():
         # Pause at file boundaries while the user is mid-drag - even the
         # 2ms-sliced build below competes for the GIL, and a gesture is when
         # dropped frames are most visible. Resumes where it left off.
-        _wait_for_no_drag(max_wait=10.0)
+        _wait_for_no_drag(max_wait=10.0, label="warmer-build")
         prev = _index_refs_cache.get(path)
         _file_index_refs(path, mod)
         entry = _index_refs_cache.get(path)
@@ -7479,7 +7591,12 @@ def build_index_cache() -> tuple:
             # yet - sprint through the build so symbols are ready the moment
             # the user is; politeness only buys anything once the UI is live.
             if Melty.frame_count > 60:
+                _s0 = _time.monotonic()
                 _time.sleep(0.002)
+                _build_slept += _time.monotonic() - _s0
+    _ptrace(f"warmer: build pass done in {(_time.monotonic() - _t_build0) * 1000:.0f}ms",
+            files=len(mod_map), reparsed=reparsed, real_changes=real_changes,
+            slept=f"{_build_slept * 1000:.0f}ms")
     if real_changes:
         _bump_generation()
     elif _index_generation == 0 and reparsed:
@@ -7488,6 +7605,7 @@ def build_index_cache() -> tuple:
         # the gate open anyway.
         _index_generation = 1
         _symbol_store["gen"] = 1
+        _ptrace("warmer: generation gate force-opened (0 -> 1, no counted changes)")
     return len(mod_map), reparsed, real_changes
 
 
@@ -7502,11 +7620,18 @@ def _bump_generation():
     global _index_generation
     _index_generation += 1
     _symbol_store["gen"] = _index_generation
+    _ptrace(f"index generation -> {_index_generation}",
+            callbacks=len(_index_bump_callbacks))
     for cb in list(_index_bump_callbacks):
         try:
-            cb(_index_generation)
-        except Exception:
-            pass
+            # Callbacks run INLINE on this (daemon / watch-timer) thread -
+            # _wake_stale_code_hosts can take seconds (0.25s sleep per host),
+            # which delays the store save and the next watch batch.
+            with _pspan(f"gen callback {getattr(cb, '__name__', cb)}", min_ms=1.0):
+                cb(_index_generation)
+        except Exception as _e:
+            _ptrace(f"gen callback {getattr(cb, '__name__', cb)} RAISED "
+                    f"{type(_e).__name__}: {_e}")
     _save_symbol_store()
 
 
@@ -7555,7 +7680,8 @@ def _process_watch_events():
         _watch_timer = None
     if not paths:
         return
-    _wait_for_no_drag(max_wait=10.0)
+    _wait_for_no_drag(max_wait=10.0, label="watch-batch")
+    _t_watch0 = _time.monotonic()
     mod_map = _src_mod_map()
     changed = 0
     for p in paths:
@@ -7573,6 +7699,8 @@ def _process_watch_events():
                 and _mtime_snapshot.get(rp) != entry[0]):
             changed += 1
             _mtime_snapshot[rp] = entry[0]
+    _ptrace(f"watch batch re-index done in {(_time.monotonic() - _t_watch0) * 1000:.0f}ms",
+            paths=len(paths), changed=changed)
     if changed:
         _bump_generation()
 
@@ -7633,8 +7761,10 @@ class SymbolIndexCache:
         t0 = _time.perf_counter()
         try:
             cls.src_files, cls.last_reparsed, real = build_index_cache()
-        except Exception:
-            pass
+        except Exception as _e:
+            # A silently-dead build leaves the generation gate open and NO
+            # symbols ever attach - make that failure visible in the timeline.
+            _ptrace(f"warmer: build RAISED {type(_e).__name__}: {_e}")
         finally:
             cls.last_real_changes = real
             cls.last_secs = round(_time.perf_counter() - t0, 3)
@@ -7669,7 +7799,10 @@ def _symbol_index_daemon(stop):
         mod = sys.modules.get(modname)
         return getattr(mod, "SymbolIndexCache", None) or SymbolIndexCache
 
-    stop.wait(max(0.0, getattr(live_cls(), "startup_delay_s", 0.0)))
+    _delay = max(0.0, getattr(live_cls(), "startup_delay_s", 0.0))
+    _ptrace(f"warmer daemon: started, first build in {_delay:.0f}s",
+            gen=_index_generation)
+    stop.wait(_delay)
     while not stop.is_set():
         cls = live_cls()
         if getattr(cls, "auto", True):

@@ -332,10 +332,10 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.11, 0.12, 0.14))
+@window(tint=(0.06, 0.189, 0.289))
 class Toggles:
 
-    @defaults(tint=(0.922, 0.476, 0.031))
+    @defaults(tint=(0.628, 0.347, 0.185))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
@@ -355,11 +355,11 @@ class Toggles:
             Returns (r, g, b, a) floats in 0..1 (a = opacity). Edit freely to
             restyle the wash — it is read live, so changes show immediately."""
             import colorsys
-            t = min(max(users, 1) - 1, 5) / 5.0
-            v = max(0.11, 0.88 * t + 0.2)           
-            tint = (0.317, 0.251, 0.0)
-            tint = (*tint, v)
-            return tint
+            t = min(max(users, 1) - 1, 5) / 5.2
+            v = max(0.11, 0.88 * t + 0.3)           
+            usage_tint = (0.317, 0.251, 0.0)
+            usage_tint = (*usage_tint, v)
+            return usage_tint
 
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
@@ -368,13 +368,18 @@ class Toggles:
         # flag to disable; the (r, g, b, a) tuple is read live.
         highlight_token_matches = True
 
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum logical terminal size, in pixels, independent of the window size.
-        min_height = 480.0
-        min_width = 98.634
+        # Definition tints: a class/def whose definition carries a tint
+        # (@defaults(tint=...), a '# [tint=...]' override comment, or a
+        # class-body tint=...) gets a full-body background wash in the editor,
+        # and every occurrence of that symbol - even when its definition lives
+        # in another file - gets a small wash of the same color. The washes take
+        # the tint's rgb with these alphas (the tint's own alpha is a view-
+        # background opacity, not meant for text washes). All read live.
+        definition_tints = True
+        def_block_alpha = 0.066
+        def_symbol_alpha = 0.306
 
-    @defaults(tint=(0.18, 0.62, 0.55))
+    @defaults(tint=(0.388, 0.706, 0.656))
     class LoadSave:
         # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
         # as a backout alongside the native-pickle custom.pkl. Set False to go
@@ -382,6 +387,17 @@ class Toggles:
         # custom.ini as the main-file identity / hot-reload cache anchor, so leave
         # this on until the .ini is fully retired.
         ini_save = False
+
+    @defaults(tint=(0.631, 0.474, 0.861))
+    class InputHandlerToggles:
+        show_debug = False
+
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum console terminal size, in pixels - independent of the window size.
+        min_height = 506.5
+        min_width = 94.154
 
 
     @defaults(tint=(0.189, 0.486, 0.944))
@@ -394,14 +410,18 @@ class Toggles:
     class InvalidateTracker:
         keep_for_frames = 26
         enable = False
-        draw_bvh = False
-        draw_rect = False
+        draw_rect = True
         invalidate_stack_trace = False
         attrib_change_stack_trace = False
+        draw_bvh = False
 
-    @defaults(tint=(0.631, 0.474, 0.861))
-    class InputHandlerToggles:
-        show_debug = False
+    @defaults(tint=(0.878, 0.762, 0.692))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # px
+        bg_offset = 30
+        debug_scroll = False
 
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:
@@ -418,8 +438,8 @@ class Toggles:
             gradient_color = (1.00, 0.83, 0.00)   # RGB of the halo
             outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
             falloff = 97.856          # px the glow radiates out past the match edge
-            opacity = 0.392           # max opacity, right at the cutout edge
-            falloff_exp = 2.105       # >1 = bright at the edge, then drops off fast
+            opacity = 0.142           # peak opacity, right at the cutout edge
+            falloff_exp = 2.105       # >1 = bright at the word, then drops off fast
             inner_pad = 2.668         # px the cutout is grown beyond the match rect
             cutout_radius = 5.0       # corner radius of the rounded cutout
             rings = 86                # radial tessellation steps (higher = smoother)
@@ -441,6 +461,16 @@ class Toggles:
             outline_alpha = 0.0
             outline_thickness = 1.0
 
+    # Global Feature Toggles
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
+
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.rendering (stops per-frame
@@ -451,24 +481,6 @@ class Toggles:
         # re-registered within this many frames (safety net for any abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
-
-    @defaults(tint=(0.878, 0.762, 0.692))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # seconds
-        bg_offset = 30
-        debug_scroll = False
-
-    # Main App Toggles
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
 
     show_filled_tiles = False
     gl_check_error = False
@@ -499,17 +511,28 @@ class Toggles:
 
     # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
+
+    # [tint=(0.85, 0.411, 0.156)]
     yield_to_ui = True
+
+    # Timeline logging of the symbol-index / code-host load path: every
+    # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
+    # attach) writes a timestamped, thread-labeled line to
+    # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
+    symbol_perf_log = True
     attrib_churn_log = False
     debug_threads = False
 
     slow_down_threads = False
+
+    # [tint=(0.211, 0.761, 0.761)]
     profile_mode = ProfileMode.LIGHT
+
     debug_stale_tint = False
 
     # View Settings
-    brightness = 0.576
-    contrast = 2.031
+    brightness = 0.609
+    contrast = 2.157
 
     debug_z_depth = False
     filters = True
@@ -532,9 +555,9 @@ class Toggles:
 @window
 class LegacyToggles:
     # All the padding settings from imgui style
-    item_spacing = (5, 2)
-    window_padding = (6, 6)
+    item_spacing = (3, 2)
     frame_padding = (4, 1)
+    window_padding = (6, 6)
     line_height = 16
 
 

@@ -1,5 +1,6 @@
 import difflib
 import re
+import types
 from collections import defaultdict
 from typing import Any
 
@@ -190,6 +191,57 @@ class PendingSave:
         cls.pending_saves.clear()
         cls.pending_saves.update(survivors)
 
+    @classmethod
+    def recompile_all(cls):
+        """Hotswap every changed pending edit into the running process — no
+        disk write; the queue stays intact for apply_all_saves at shutdown.
+
+        Rides the editor Run button's worker (recompile_source): each queued
+        span recompiles its OWN live object in place (class / function /
+        module / decorator block / call site), so line-number conventions
+        match a per-editor Run exactly and the hotswap guard arms as usual.
+        Entries whose text still equals their load-time original are skipped
+        — the same no-op filter the diff view uses."""
+        from src.lsd.gl_gui.view.core_conversion.new_converters import recompile_source
+        from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import record_compile
+
+        compiled, failures, skipped = [], [], 0
+        # Snapshot: this runs in a worker thread (draw_function run_in_thread)
+        # while the render thread may still queue edits mid-iteration.
+        for address, (codec, kwargs) in list(cls.pending_saves.items()):
+            data = kwargs.get("data")
+            if not isinstance(data, str):
+                continue
+            if data == cls.originals.get(address):   # .get - the factory raises
+                continue
+            label = address.path.name if address.path is not None else "?"
+            if address.start is not None:
+                label += f"({address.start}:{address.end})"
+            source = getattr(address, "source", None)
+            if not isinstance(source, (type, types.FunctionType,
+                                       types.ModuleType, CallSite, Decorations)):
+                skipped += 1   # pure text / no live object - nothing to hotswap
+                continue
+            try:
+                err = recompile_source(source, data, address.path, address=address)
+            except Exception as e:
+                err = e
+            if err is None:
+                record_compile(address)
+                compiled.append(label)
+            else:
+                failures.append(f"{label}: {type(err).__name__}: {err}")
+
+        if not (compiled or failures or skipped):
+            return "Nothing to recompile — no changed pending edits."
+        lines = [f"Recompiled {len(compiled)}: {', '.join(compiled)}"] if compiled else []
+        if skipped:
+            lines.append(f"Skipped {skipped} non-code edit(s)")
+        for failure in failures:
+            lines.append(f"FAILED {failure}")
+        return "\n".join(lines)
+
 
 @window(disable_scroll=False)
 @render_func()
@@ -197,6 +249,11 @@ def draw_pending_saves():
     pass
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
     RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_bg=False, shadow=False)
+    # name= keeps its draw_state distinct from apply_all_saves' (both calls
+    # would otherwise derive the same file-name identity); run_in_thread so
+    # the hotswaps run outside the render loop like every other recompile.
+    RenderFuncs.draw_function(PendingSave.recompile_all, name="recompile_all", icon="",
+                              tint=(0,0,0,1), show_bg=False, shadow=False, run_in_thread=True)
     
     for address, (codec, kwargs) in PendingSave.pending_saves.items():
         if address in PendingSave.originals:

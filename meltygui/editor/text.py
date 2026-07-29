@@ -780,13 +780,11 @@ def draw_number_token(input_value, draw_state=None,
     and a drag crosses zero in one gesture. In binary-minus contexts (`a - 5`)
     the widget sees only the magnitude; dragging it negative splices `a - -1`,
     which is still valid Python.
-    Typing mode (ctrl+click / double-click) is OURS, not imgui's: the drag is
-    drawn with SLIDER_FLAGS_NO_INPUT and we swap in an input_text whose buffer
-    lives on the draw_state. imgui's built-in temp input keeps its buffer
-    private (and sets NoMarkEdited), so "the buffer is empty" is unobservable
-    from outside — owning the buffer is what lets backspace/delete on an
-    already-empty buffer delete the literal itself (splice '', widget gone),
-    matching what the text caret would do.
+    Drag is the widget's ONLY job — there is no typing mode (imgui's temp
+    input is disabled via SLIDER_FLAGS_NO_INPUT). Text editing goes through
+    the editor itself: a click on the widget places the editor caret at the
+    character under the mouse (the _tv_click path in draw_text), and from
+    there the literal edits like any other text.
     left_mouse_* are declared (never read) to win the event latch over the editor —
     a drag that starts on the widget latches here, so the editor doesn't grow a
     text selection while a value is being dragged. See draw_icon_selector."""
@@ -802,51 +800,13 @@ def draw_number_token(input_value, draw_state=None,
     # is that much wider than the token cells), so the frame fills the digits.
     # Editor-look colors: number-blue lettering on a dark frame, like the bool
     # word, with only a subtle hover/active lift instead of imgui's bright blue.
-    push_style_var(imgui.STYLE_FRAME_PADDING, (0, 1))
+    push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
     push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)              # number blue
     def _pop_styles():
         pop_style_color(1)
         pop_style_var()
 
     imgui.set_next_item_width(draw_state.width)
-    if getattr(draw_state, '_num_edit', False):
-        # --- Typing mode -----------------------------------------------------
-        # _num_edit_buf is LAST frame's buffer (buffer at the start of this
-        # frame's input processing), so the keystroke that empties the buffer
-        # doesn't itself fire the delete - only the next backspace/delete does.
-        prev_buf = getattr(draw_state, '_num_edit_buf', s)
-        _del_keys = (glfw.KEY_BACKSPACE, glfw.KEY_DELETE)
-        del_pressed = (any(k in _del_keys for k, _ in Melty.frame_key_events)
-                       or any(imgui.is_key_pressed(k, repeat=True) for k in _del_keys))
-        if del_pressed and not prev_buf.strip():
-            draw_state._num_edit = False
-            _pop_styles()
-            return True, ''
-        if not getattr(draw_state, '_num_edit_started', False):
-            imgui.set_keyboard_focus_here()
-        _, buf = imgui.input_text("##num_tv_edit", prev_buf,
-                                  flags=imgui.INPUT_TEXT_AUTO_SELECT_ALL)
-        draw_state._num_edit_buf = buf
-        if imgui.is_item_active():
-            draw_state._num_edit_started = True
-        elif getattr(draw_state, '_num_edit_started', False):
-            draw_state._num_edit = False   # Enter / Esc / click-away ends this
-        # The editor's tile is cached; keep it re-rendering while we hold the
-        # input so the caret blinks and keystrokes land the frame they occur.
-        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=4, force=True)
-        request_render()
-        _pop_styles()
-        # Live-apply parseable edits like imgui's temp input did: a same-kind
-        # value keeps the literal's shape via fmt_back; a kind change (int text
-        # typed over a float) splices the typed text verbatim.
-        typed = buf.strip()
-        nk, nv, _nf, _nd = _parse_number_token(typed) if typed else (None, None, None, None)
-        if nk is not None:
-            out = fmt_back(nv) if nk == kind else typed
-            if out != s:
-                return True, out
-        return False, s
-
     if kind == 'int':
         speed = max(0.2, abs(val) * 0.01)
         try:
@@ -857,20 +817,19 @@ def draw_number_token(input_value, draw_state=None,
             _pop_styles()
             return False, s
     else:
-        speed = max(0.01, abs(val) * 0.005)
+        # Speed follows the literal's decimal places: one pixel of drag moves
+        # the last significant digit (0.001 → 0.001/px), scaling up with
+        # magnitude for large values. E-notation has no fixed precision, so
+        # it stays purely magnitude-based.
+        if '.' in s and 'e' not in s.lower():
+            prec = min(6, max(1, len(s.split('.', 1)[1])))
+            step = 10.0 ** -prec
+        else:
+            step = max(1e-6, abs(val) * 0.01)
+        speed = max(step, abs(val) * 0.005)
         changed, new = imgui.drag_float("##num_tv", val, change_speed=speed,
                                         min_value=0, max_value=0, format=disp,
                                         flags=imgui.SLIDER_FLAGS_NO_INPUT)
-    # Ctrl+click / double-click enters typing mode (imgui's own temp input is
-    # disabled above): seed the buffer with the literal; the editor draws - and
-    # grabs keyboard focus - next frame in this widget's place.
-    if (imgui.is_item_hovered()
-            and (imgui.is_mouse_double_clicked(0)
-                 or (imgui.is_mouse_clicked(0) and imgui.get_io().key_ctrl))):
-        draw_state._num_edit = True
-        draw_state._num_edit_buf = s
-        draw_state._num_edit_started = False
-        request_render()
     _pop_styles()
     if changed and new != val:
         return True, fmt_back(new)
@@ -1317,6 +1276,378 @@ def _usage_ref_items(targets):
         p = getattr(ref, 'path', None)
         tags[ref] = f"{p.name}:{ref.line}" if p is not None else f":{ref.line}"
     return items, tags
+
+
+# --- Definition tints: block wash behind tinted class/def bodies + a matching
+# wash behind every occurrence of a symbol whose DEFINITION carries a tint ----
+# A definition's tint can be in three source forms (the same stores the lens
+# system edits): a `@defaults(tint=...)` decorator, a `# [tint=...]` override
+# comment above the def, or a `tint = (...)` class-body assignment. For defs
+# inside THIS buffer the tint is read straight off the parsed code_tree node
+# (decorators / __overrides__ / tint key); for defs in OTHER buffers a small
+# mtime-keyed per-file cache scans the few lines around the definition. The
+# goal: glance at any `Toggles` occurrence and see the color of its definition.
+
+
+def _is_color(v):
+    return (isinstance(v, (tuple, list)) and 3 <= len(v) <= 4
+            and all(isinstance(c, (int, float)) and not isinstance(c, bool) for c in v))
+
+
+def _node_tint(node):
+    """The tint a parsed class/def dict node carries, or None. Checks the
+    override comment first (the explicit per-instance store), then the
+    @defaults decorator, then a class-body `tint = (...)` assignment."""
+    ov = node.get("__overrides__")
+    if isinstance(ov, dict) and _is_color(ov.get("tint")):
+        return tuple(ov["tint"])
+    dec = node.get("decorators")
+    if isinstance(dec, dict):
+        df = dec.get("defaults")
+        if isinstance(df, dict) and _is_color(df.get("tint")):
+            return tuple(df["tint"])
+    if _is_color(node.get("tint")):
+        return tuple(node["tint"])
+    return None
+
+
+def _tint_from_defaults_line(s):
+    """Extract tint=(...) from a single `@defaults(...)` decorator line."""
+    import ast as _ast
+    m = re.search(r"\btint\s*=\s*\(", s)
+    if not m:
+        return None
+    start = m.end() - 1
+    depth = 0
+    for j in range(start, len(s)):
+        if s[j] == "(":
+            depth += 1
+        elif s[j] == ")":
+            depth -= 1
+            if depth == 0:
+                try:
+                    v = _ast.literal_eval(s[start:j + 1])
+                except (ValueError, SyntaxError):
+                    return None
+                return tuple(v) if _is_color(v) else None
+    return None
+
+
+def _snap_to_def(lines, i, limit=40):
+    """Index of the actual `class`/`def` line for a definition recorded at
+    line index `i` — index tiers disagree on whether a decorated definition's
+    line is the STATEMENT start (the first decorator, e.g. `@window(...)`) or
+    the class/def line itself. Walks down over decorator lines (paren-balanced,
+    so multi-line decorators are consumed) and comments; returns `i` unchanged
+    when the line isn't part of a decorated definition at all."""
+    j, depth = i, 0
+    while 0 <= j < len(lines) and j < i + limit:
+        s = lines[j].strip()
+        if depth == 0:
+            if re.match(r"(?:class|def)\s", s):
+                return j
+            if not (s.startswith("@") or s.startswith("#")):
+                return i
+        depth += s.count("(") - s.count(")")
+        j += 1
+    return i
+
+
+def _scan_def_tint_lines(lines, line, _depth=0):
+    """Tint for the definition at 1-based `line` of `lines`, in SOURCE form:
+    the recorded line is first snapped to the real class/def line, then the
+    decorator/comment run above is checked for `@...(tint=...)` /
+    `# [tint=...]`, then a short downward body scan for a `tint = (...)`
+    class var. When the definition carries no tint of its own, it inherits
+    the nearest ENCLOSING tinted class's color (a plain field like
+    `text_focus_stack_trace = False` washes in its class's tint), so every
+    member of a tinted class ties back to it at a glance."""
+    import ast as _ast
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+    i = line - 1
+    if not (0 <= i < len(lines)):
+        return None
+    i = _snap_to_def(lines, i)
+    comment = []
+    j = i - 1
+    while j >= 0:
+        s = lines[j].strip()
+        if s.startswith("#"):
+            comment.append(s)
+            j -= 1
+            continue
+        if s.startswith("@"):
+            t = _tint_from_defaults_line(s)
+            if t is not None:
+                return t
+            j -= 1
+            continue
+        # Possibly a continuation line of a multi-line decorator; search up a
+        # short window for the '@' line that opens it and check the joined
+        # statement, so a comment-line decorator above a multi-line one still reads.
+        q = j - 1
+        while q >= 0 and q >= j - 20 and not lines[q].strip().startswith("@"):
+            if not lines[q].strip() or re.match(r"\s*(?:class|def)\s", lines[q]):
+                q = -1
+                break
+            q -= 1
+        if q >= 0 and lines[q].strip().startswith("@"):
+            t = _tint_from_defaults_line(" ".join(l.strip() for l in lines[q:j + 1]))
+            if t is not None:
+                return t
+            j = q - 1
+            continue
+        break
+    if comment:
+        parsed = _parse_override_comment("\n".join(reversed(comment)))
+        if parsed and _is_color(parsed.get("tint")):
+            return tuple(parsed["tint"])
+    indent = len(lines[i]) - len(lines[i].lstrip())
+    if re.match(r"\s*(?:class|def)\s", lines[i]):
+        for k in range(i + 1, min(i + 40, len(lines))):
+            s = lines[k]
+            if not s.strip():
+                continue
+            if len(s) - len(s.lstrip()) <= indent:
+                break
+            m = re.match(r"\s*tint\s*=\s*(\(.*\))\s*(#.*)?$", s)
+            if m:
+                try:
+                    v = _ast.literal_eval(m.group(1))
+                except (ValueError, SyntaxError):
+                    break
+                if _is_color(v):
+                    return tuple(v)
+                break
+            if re.match(r"\s*(?:def|class)\s", s):
+                break
+    # Ownership fallback: inherit the nearest enclosing tinted CLASS.
+    if _depth < 4 and indent > 0:
+        j = i - 1
+        while j >= 0:
+            s = lines[j]
+            if s.strip() and len(s) - len(s.lstrip()) < indent:
+                if re.match(r"\s*class\s", s):
+                    return _scan_def_tint_lines(lines, j + 1, _depth + 1)
+                if not s.strip().startswith(("@", "#", ")")):
+                    break
+            j -= 1
+    return None
+
+
+def _scan_def_tint(path, line):
+    """File-reading wrapper around _scan_def_tint_lines. Runs only on a
+    cache miss (see _cross_file_def_tint)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    return _scan_def_tint_lines(lines, line)
+
+
+# Salt for the _def_tints memo key; bump on any change to the collector or
+# scanner logic so hotswapped editors recompute instead of replaying a memo
+# built with the old code (draw_state can outlive the hotswap).
+_DEF_TINTS_VER = 3
+
+# realpath-str -> ((mtime_ns, size), {def_line: tint | None}). Invalidated by
+# stat key (cheap, content-free - per CLAUDES.md we hash contents); the stat
+# runs once per unique definition file per collector REBUILD (per edit/parse),
+# never per frame. In-app edits pending in PendingSave show after disk write.
+_XFILE_TINT_CACHE = {}
+
+
+def _cross_file_def_tint(path, line):
+    if path is None:
+        return None
+    import os
+    p = str(path)
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    stat_key = (st.st_mtime_ns, st.st_size)
+    entry = _XFILE_TINT_CACHE.get(p)
+    if entry is None or entry[0] != stat_key:
+        entry = (stat_key, {})
+        _XFILE_TINT_CACHE[p] = entry
+    per_line = entry[1]
+    if line not in per_line:
+        per_line[line] = _scan_def_tint(p, line)
+    return per_line[line]
+
+
+def _site_span(text, ln, col, name, line_offset):
+    """(start_index, end_index) in the buffer for one file-absolute (ln, col)
+    occurrence of `name`, or None. Same verify-then-recover logic as
+    _collect_usage_spans: the fast import-index records the STATEMENT start
+    col, and the buffer may have drifted since the pass ran."""
+    buf_line = ln - 1 - line_offset
+    if buf_line < 0:
+        return None
+    idx = _line_col_to_index(text, buf_line, col)
+    end = idx + len(name)
+    if text[idx:end] != name:
+        ls = _get_line_start(text, min(idx, len(text)))
+        le = _get_line_end(text, ls)
+        p = text.find(name, ls, le)
+        while p != -1:
+            b_ok = p == 0 or not (text[p - 1].isalnum() or text[p - 1] == "_")
+            a = p + len(name)
+            a_ok = a >= len(text) or not (text[a].isalnum() or text[a] == "_")
+            if b_ok and a_ok:
+                break
+            p = text.find(name, p + 1, le)
+        if p == -1:
+            return None
+        idx, end = p, p + len(name)
+    return idx, end
+
+
+def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
+    """(blocks, spans) for the definition-tint washes.
+
+    blocks: [(def_buf_line, indent_buf_index, end_buf_line, tint)] — one per
+        tinted class/def defined in THIS buffer; the rect runs from the def
+        keyword's first character down to the last line before the dedent.
+    spans: [(start_index, end_index, tint)] — one per occurrence (SymbolUsage
+        site) of any symbol whose definition — in-buffer or cross-file —
+        carries a tint.
+
+    One tree walk (same shape/guards as _collect_usage_spans); block extents
+    come from a single split of the buffer text. Rebuilds only when the cached
+    key in _def_tints changes (per edit/parse), never per frame."""
+    lines = text.split("\n")
+    line_start_idx = [0]
+    for l in lines:
+        line_start_idx.append(line_start_idx[-1] + len(l) + 1)
+
+    blocks, spans = [], []
+    tinted_lines = {}                    # file line of a tinted in-buffer def -> tint
+    node_seen, su_seen = set(), set()
+    all_sus = []
+    _in_file_memo = {}
+
+    def _def_in_file(d):
+        dp = getattr(d, "path", None)
+        if dp is None or view_path is None:
+            return False
+        k = str(dp)
+        if k not in _in_file_memo:
+            import os
+            try:
+                _in_file_memo[k] = os.path.realpath(k) == os.path.realpath(str(view_path))
+            except OSError:
+                _in_file_memo[k] = False
+        return _in_file_memo[k]
+
+    def _find_def_line(name):
+        # Fallback when no SymbolUsage names the def: first `class|def name`
+        # in the buffer, returned as a file line.
+        m = re.search(rf"^[ \t]*(?:class|def)\s+{re.escape(name)}\b", text, re.M)
+        if m is None:
+            return None
+        return text.count("\n", 0, m.start()) + 1 + line_offset
+
+    def _block_extent(buf_line):
+        if not (0 <= buf_line < len(lines)):
+            return None
+        # The recorded def line may be the decorated statement's first line
+        # (`@defaults X`); the wash starts at the class/def keyword.
+        buf_line = _snap_to_def(lines, buf_line)
+        def_line_text = lines[buf_line]
+        indent = len(def_line_text) - len(def_line_text.lstrip())
+        end = buf_line
+        for k in range(buf_line + 1, len(lines)):
+            s = lines[k]
+            if not s.strip():
+                continue
+            if len(s) - len(s.lstrip()) <= indent:
+                break
+            end = k
+        return buf_line, line_start_idx[buf_line] + indent, end
+
+    def walk(node, depth=0):
+        if not isinstance(node, dict) or depth > 64 or id(node) in node_seen:
+            return
+        node_seen.add(id(node))
+        su_map = node.get("__symbol_usages__")
+        if isinstance(su_map, dict):
+            for su in su_map.values():
+                if id(su) not in su_seen:
+                    su_seen.add(id(su))
+                    all_sus.append(su)
+        for k, v in node.items():
+            if k in ("__cst__", "__symbol_usages__", "__overrides__", "decorators"):
+                continue
+            if not isinstance(v, dict):
+                continue
+            tint = _node_tint(v)
+            if tint is not None and isinstance(k, str):
+                su = su_map.get(k) if isinstance(su_map, dict) else None
+                d = getattr(su, "definition", None)
+                ln = (d.line if d is not None and getattr(d, "line", None)
+                      and _def_in_file(d) else None)
+                if ln is None:
+                    ln = _find_def_line(k)
+                if ln is not None:
+                    tinted_lines[ln] = tint
+                    blk = _block_extent(ln - 1 - line_offset)
+                    if blk is not None:
+                        blocks.append((*blk, tint))
+            walk(v, depth + 1)
+
+    walk(code_tree)
+
+    seen_spans = set()
+    for su in all_sus:
+        d = getattr(su, "definition", None)
+        if d is None or not getattr(d, "line", None):
+            continue
+        tint = tinted_lines.get(d.line) if _def_in_file(d) else None
+        if tint is None:
+            # Cross-file defs, and in-buffer defs the tree walk didn't tint
+            # (plain fields, methods - which inherit their enclosing tinted
+            # class via the scanner's ownership fallback), resolve from the
+            # definition file the source through the mtime-keyed cache.
+            tint = _cross_file_def_tint(getattr(d, "path", None), d.line)
+        if tint is None:
+            continue
+        name = getattr(su, "name", None)
+        if not name:
+            continue
+        for site in getattr(su, "sites", None) or ():
+            span = _site_span(text, site[0], site[1], name, line_offset)
+            if span is not None and span not in seen_spans:
+                seen_spans.add(span)
+                spans.append((span[0], span[1], tint))
+
+    blocks.sort()
+    # Longer spans first for equal starts: a dotted path records overlapping
+    # sites (`Toggles`, `Toggles.TextEditor`, `Toggles.TextEditor.x`) and the
+    # draw order is paint order - the member-chain wash goes down first, then
+    # the base symbol's own color wins on its own token.
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    return tuple(blocks), tuple(spans)
+
+
+def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
+    """Cached-per-(code_tree, text) wrapper around _collect_def_tints — the
+    exact key discipline of _usage_spans: the top-level __symbol_usages__
+    map's identity rides in the key so the background usage pass's in-place
+    arrival busts the cache."""
+    if not isinstance(code_tree, dict):
+        return ((), ())
+    su_top = code_tree.get("__symbol_usages__")
+    key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset, text, str(view_path))
+    if getattr(ds, "_def_tints_key", None) != key:
+        try:
+            ds._def_tints = _collect_def_tints(code_tree, text, line_offset, view_path)
+        except Exception:
+            ds._def_tints = ((), ())
+        ds._def_tints_key = key
+    return ds._def_tints
 
 
 def _usage_wash_color(n_targets):
@@ -2669,7 +3000,6 @@ def draw_text(input_value: str, height=None,
             imgui.push_font(_font_handle)
             _font_pushed = True
 
-
     # Character advance. Every caller uses JetBrains Mono (monospace), so one
     # character advance lets us position and measure text by character count
     # instead of calling imgui.calc_text_size per glyph/slice each frame.
@@ -3742,6 +4072,37 @@ def draw_text(input_value: str, height=None,
 
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
 
+    # Definition tints (drawn FIRST, under everything): a block wash behind
+    # every tinted class/def/etc in this buffer - top-left corner at the def
+    # keyword's first character, bottom at the last line before the dedent,
+    # right side at the view edge - and a small wash behind every occurrence
+    # of a symbol whose definition (here or in another file) carries a tint,
+    # in that definition's color. Ties usages to their definitions at a glance.
+    if getattr(Toggles.TextEditor, 'definition_tints', False) and not is_search_box:
+        _dt_blocks, _dt_spans = _def_tints(
+            ds, text, _usage_tree, _usage_off,
+            getattr(jump_to, 'path', None) if jump_to is not None else None)
+        _dt_block_a = Toggles.TextEditor.def_block_alpha
+        for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
+            sy = origin_y + _b_line * line_px
+            ey = origin_y + (_b_end + 1) * line_px
+            if ey < rect_min_y or sy > rect_max_y:
+                continue
+            sx = origin_x + _colx(_b_idx)
+            _b_col = imgui.get_color_u32_rgba(_b_tint[0], _b_tint[1], _b_tint[2], _dt_block_a)
+            draw_list.add_rect_filled(sx, sy, rect_max_x, ey, _b_col, 4.0)
+        _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
+        for _s_start, _s_end, _s_tint in _dt_spans:
+            _s_line, _ = _index_to_line_col(text, _s_start)
+            sy = origin_y + _s_line * line_px
+            ey = sy + line_px
+            if ey < rect_min_y or sy > rect_max_y:
+                continue
+            sx = origin_x + _colx(_s_start)
+            ex = origin_x + _colx(_s_end)
+            _s_col = imgui.get_color_u32_rgba(_s_tint[0], _s_tint[1], _s_tint[2], _dt_sym_a)
+            draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
+
     # Selection
     if _has_selection(ds):
         sel_color = (0.2, 0.4, 0.8, 0.4)  # rgba(51, 102, 204, 0.4)
@@ -3790,29 +4151,27 @@ def draw_text(input_value: str, height=None,
                     ex = origin_x + _colx(_me)
                     draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _tm_color, 3.0)
 
-    # Symbol-usage washes: a slight background behind every occurrence of a
-    # symbol that has callers elsewhere - the affordance that Ctrl+B jumps to
-    # its users (see the standalone handler). The wash rides a blue→orange
-    # color ramp from the DROPDOWN size (_usage_target_count - the same list
-    # _try_usage_jump would show), so the user answers "how many places does
-    # this click go": a usage site away from its definition jumps to one
-    # place and stays cool blue however popular the symbol is project-wide;
-    # the definition of a six-caller function reads hot. Drawn before (under)
-    # the search highlights and the glyphs.
+    # Symbol-usage heat, PER LINE: instead of washing each symbol occurrence
+    # inline, the jump-target counts (_usage_target_count - the same list
+    # _try_usage_jump would show) of every usage span on a line are SUMMED and
+    # the total boxes that line's gutter number and the usage heat color (the
+    # blue→orange ramp - more references on the line, hotter number). The
+    # per-symbol breakdown deliberately collapses to a per-line summary; Ctrl+B
+    # on a symbol still resolves per-span. Counts are gathered here (spans are
+    # buffer-indexed) and drawn in the gutter pass below.
     _u_vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
     _uspans = _usage_spans(ds, text, _usage_tree, _usage_off, _u_vpath)
+    _usage_line_heat = {}
     if _uspans:
         _u_vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
         for _us, _ue, _su, _at_def in _uspans:
             u_line, _ = _index_to_line_col(text, _us)
             sy = origin_y + u_line * line_px
-            ey = sy + line_px
-            if ey < rect_min_y or sy > rect_max_y:
+            if sy + line_px < rect_min_y or sy > rect_max_y:
                 continue
-            sx = origin_x + _colx(_us)
-            ex = origin_x + _colx(_ue)
-            usage_bg = _usage_wash_color(_usage_target_count(ds, _su, _at_def, _u_vpath, _u_vspan))
-            draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, usage_bg, 3.0)
+            n = _usage_target_count(ds, _su, _at_def, _u_vpath, _u_vspan)
+            if n:
+                _usage_line_heat[u_line] = _usage_line_heat.get(u_line, 0) + n
 
     # Search match highlights (drawn under the text so glyphs stay readable).
     # The current match radiates a circular gradient glow with its rect cut out
@@ -3916,7 +4275,19 @@ def draw_text(input_value: str, height=None,
         if _inline and _view.get("whole_token") and token and '\n' not in token:
             _lead = _view.get("lead_cells", 0)
             _cells = _lead + len(token)
-            if y + line_px >= rect_min_y and y <= rect_max_y:
+            # While the editor caret sits on TOP a REPLACE token, the widget
+            # gets out of the way entirely: the token rides as plain text, so
+            # caret, selection and typing behave like any other code, and the
+            # widget returns when the caret leaves. (The widget view
+            # composites ABOVE the editor tile, so a caret under it would be
+            # invisible anyway.) _tv_idx is still consumed so the OTHER
+            # visible widgets keep their render-order names (and state).
+            _caret_in = (not _lead and Melty.text_focused_ds is ds
+                         and src_i <= ds.text_cursor_pos <= src_i + len(token))
+            if _caret_in and y + line_px >= rect_min_y and y <= rect_max_y:
+                _tv_idx += 1
+                draw_list.add_text(x, y, color, token)
+            elif y + line_px >= rect_min_y and y <= rect_max_y:
                 _name = f"{ds.name}_tv{_tv_idx}"
                 _tv_idx += 1
                 _save_cur = imgui.get_cursor_screen_pos()
@@ -3936,23 +4307,42 @@ def draw_text(input_value: str, height=None,
                     draw_list.add_text(x + _lead * char_w, y, color, token)
                 if (isinstance(_res, tuple) and len(_res) >= 2 and _res[0]
                         and isinstance(_res[1], str) and _res[1] != token):
-                    _tv_edit = (src_i, len(token), _res[1])
+                    # owns_mouse REPLACE edits come from a value DRAG - the
+                    # caret must not be stamped into the token by the splice
+                    # (a caret in the token hides the widget, killing the
+                    # drag on its first value change); see the splice below.
+                    _tv_edit = (src_i, len(token), _res[1],
+                                bool(_view.get("owns_mouse")) and not _lead)
                 # owns_mouse REPLACE widgets consume the melty mouse events, so
                 # a press on them never reaches the editor's click handling -
-                # read the raw press and place the caret beside the literal
-                # instead. Replace REPLACE widgets (bool) and ACCESSORY widgets
-                # skip this: the toggle takes normal editor clicks, and a press
-                # on an accessory (opening its popover) shouldn't move the caret.
-                # Skipped while an imgui input owns the keyboard (want_text_input):
-                # that press belongs to the widget's typing mode (caret moves,
-                # select) and refocusing the editor would double-feed keystrokes.
+                # read the raw mouse and place the caret at the column under
+                # it, exactly like a text click (the widget's cells are
+                # identity vcols, one cell per source char). Fires on RELEASE
+                # without drag, not on press: a click-and-drag is a value
+                # adjustment and must keep the widget alive (placing a caret
+                # hides it - see _caret_in above), while a plain click hands
+                # the token over to text editing. get_mouse_drag_delta stays
+                # (0,0) until the drag threshold is ever exceeded, so a drag
+                # that circles back to its origin still counts as a drag.
+                # Pass-through widgets (bool) and ACCESSORY widgets skip this:
+                # their text takes normal editor clicks, and a press on an
+                # accessory (opening its popover) shouldn't move the caret.
                 if (_view.get("owns_mouse") and not _lead
-                        and imgui.is_mouse_clicked(0)
-                        and not io.want_text_input
                         and x <= io.mouse_pos.x < x + _cells * char_w
                         and y <= io.mouse_pos.y < y + line_px):
-                    _tv_click = (src_i, len(token),
-                                 io.mouse_pos.x >= x + _cells * char_w * 0.5)
+                    if imgui.is_mouse_clicked(0):
+                        ds._tv_press_time = time.time()
+                    if imgui.is_mouse_released(0):
+                        # A click must also be SHORT: press-and-hold is an
+                        # (abandoned) drag, and releasing it in-place must not
+                        # move the caret. pyimgui doesn't expose imgui's
+                        # mouse_click_duration, so the press time on our own.
+                        _dd = imgui.get_mouse_drag_delta(0)
+                        if (_dd.x == 0 and _dd.y == 0
+                                and time.time() - getattr(ds, '_tv_press_time', 0) < 0.33):
+                            _col = int((io.mouse_pos.x - x) / char_w + 0.5)
+                            _tv_click = (src_i, len(token),
+                                         min(len(token), max(0, _col)))
             x += _cells * char_w
             src_i += len(token)
             continue
@@ -3982,7 +4372,7 @@ def draw_text(input_value: str, height=None,
                         imgui.set_cursor_screen_pos(_save_cur)
                         if (isinstance(_res, tuple) and len(_res) >= 2 and _res[0]
                                 and isinstance(_res[1], str) and _res[1] != _ch):
-                            _tv_edit = (_src, 1, _res[1])
+                            _tv_edit = (_src, 1, _res[1], False)
                         _ix += _cw * char_w
                 elif color_key == 'icon':
                     # Font Awesome glyphs aren't monospaced - their natural width
@@ -4008,10 +4398,29 @@ def draw_text(input_value: str, height=None,
     # text in for the view's source char and report the edit, so the framework
     # reparses/saves exactly as if it were typed.
     if _tv_edit is not None:
-        _es, _el, _ev = _tv_edit
+        _es, _el, _ev, _keep_caret = _tv_edit
         text = text[:_es] + _ev + text[_es + _el:]
-        ds.text_cursor_pos = _es + len(_ev)
-        ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+        if _keep_caret:
+            # Widget widget edit: leave the caret where it is (stamping it into
+            # the token would hide the cursor mid-drag - see _caret_in). Only
+            # shift positions sitting at/after the splice, when the token's
+            # length changed, so the selection stays on the same line.
+            # Also latch "this mouse gesture edited a value" - the release
+            # handler below must NOT place the caret after a value drag, and
+            # short drags (1-6px: enough to edit, under imgui's drag
+            # threshold) are indistinguishable from clicks by mouse motion
+            # alone. Cleared on every mouse release.
+            ds._tv_gesture_edited = True
+            _d = len(_ev) - _el
+            if _d:
+                for _attr in ('text_cursor_pos', 'text_selection_start',
+                              'text_selection_end'):
+                    _v = getattr(ds, _attr)
+                    if _v >= _es + _el:
+                        setattr(ds, _attr, _v + _d)
+        else:
+            ds.text_cursor_pos = _es + len(_ev)
+            ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
         if not _ev:
             # The widget deleted ITSELF (e.g. the number input's buffer was
             # emptied and backspace pressed again) - hand the keyboard back to
@@ -4021,19 +4430,24 @@ def draw_text(input_value: str, height=None,
             ds.text_cursor_blink_time = time.time()
         changed = True
 
-    # A press on a whole-token widget also places the editor caret beside the
-    # literal: left half → before it, right half → after it - and focuses the
-    # editor, so typing after a widget interaction feels like editing text.
+    # A press on a whole-token widget also places the editor caret INSIDE the
+    # literal at the clicked column - and focuses the editor - so the literal
+    # feels like any other text; the widget's only extra behavior is the drag.
     # Applied after the splice so it overrides its caret-at-end default; if the
-    # same widget changed the value (bool toggle), use the new token's length.
-    if _tv_click is not None:
-        _cs, _cl, _right = _tv_click
+    # same press changed the value, clamp to the NEW token's length.
+    if _tv_click is not None and not getattr(ds, '_tv_gesture_edited', False):
+        _cs, _cl, _col = _tv_click
         if _tv_edit is not None and _tv_edit[0] == _cs:
             _cl = len(_tv_edit[2])
         Melty.text_focused_ds = ds
-        ds.text_cursor_pos = _cs + _cl if _right else _cs
+        ds.text_cursor_pos = _cs + min(_col, _cl)
         ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
         ds.text_cursor_blink_time = time.time()
+    # The gesture-edited latch lives for exactly one mouse gesture: every
+    # release ends it (checked above too, so the release that ENDS a value
+    # drag is still suppressed).
+    if getattr(ds, '_tv_gesture_edited', False) and imgui.is_mouse_released(0):
+        ds._tv_gesture_edited = False
 
     # Token views keyed by code_tree node TYPE (e.g. Conditional) — overlay pass,
     # positioned by each node's span. Runs after the inline text so widgets paint
@@ -4147,6 +4561,12 @@ def draw_text(input_value: str, height=None,
             else:
                 num_str = str(line_offset + line_idx + 1)
             nx = left + gutter_w - 6.0 - len(num_str) * char_w
+            # Usage heat box (see the aggregation pass above): a rounded wash
+            # across the gutter, painted over every usage span on the line.
+            heat = _usage_line_heat.get(line_idx)
+            if heat:
+                draw_list.add_rect_filled(nx - 3.0, ly + 1, left + gutter_w - 3.0,
+                                          ly + line_px - 1, _usage_wash_color(heat), 3.0)
             draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
         draw_list.pop_clip_rect()
 
