@@ -332,14 +332,14 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.124, 0.158, 0.2))
+@window(tint=(0.167, 0.177, 0.211))
 class Toggles:
 
-    @defaults(tint=(0.7, 0.369, 0.051))
+    @defaults(tint=(0.672, 0.358, 0.041))
     class TextEditor:
         enable_spell_check = False
 
-        # [tint=(0.772, 0.154, 0.0)]
+        # [tint=(0.922, 0.0, 0.0)]
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.5, 0.5, 0.22)
 
@@ -378,8 +378,8 @@ class Toggles:
         # the tint's rgb with these alphas (the tint's own alpha is a view-
         # background opacity, not meant for text washes). All read live.
         definition_tints = True
-        def_block_alpha = 0.054
-        def_symbol_alpha = 0.445
+        def_block_alpha = 0.148
+        def_symbol_alpha = 0.206
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
@@ -388,26 +388,40 @@ class Toggles:
         # LOWER = colors die out faster along assignment chains (0.55 puts
         # hop 1 at 55%, hop 2 at 30%; chains below 20% stop washing at all).
         def_tint_propagation = True
-        def_propagation_fade = 0.55
+        def_propagation_fade = 0.705
 
         # Line tint behind any line carrying symbol washes: one transparen
         # full-width rect fitting the line exactly, in the def's color (its
         # own explicit comment tint if the definition has one, else the
         # mix of its symbol tints). That same color also marks the line's
         # number box in the gutter. 0 disables.
-        def_line_alpha = 0.011
+        def_line_alpha = 0.173
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
-        # color (syntax color stays the base) - the slight text tinting used
+        # color (syntax color stays the base) — the slight text tinting used
         # app-wide so text reads as part of its panel. 0 disables.
-        def_text_tint_mix = 0.398
+        # [tint=(0.278, 0.076, 0.126, 1.0)]
+        def_text_tint_mix = 0.293
 
-        # Tint-comment TEXT color adjustment (hsv factors, the defint-class
-        # version): an override comment gets its own [tint=...] color,
+        # Glyph-mix TARGET color adjustment (which color text leans toward
+        # inside a wash) - same hsv factor pattern as comment_tint_* /
+        # bg_tint_*, independent of the wash's own factors; the shared
+        # brightness clamp (bg_min/max) still applies after. 1/1 = raw tint.
+        text_tint_saturation = 1.0
+        text_tint_value = 1.0
+
+        # Tint-comment TEXT color adjustment (hsv factors, the Tint-class
+        # pattern): an override comment wears its own [tint=...] color,
         # desaturated and darkened by these so it reads as commentary, not
         # code. Both read live; 1.0/1.0 = the raw tint.
-        comment_tint_saturation = 2.912
-        comment_tint_value = 0.24
+        # [tint=(1.0, 0.661, 0.0, 1.0)]
+        comment_tint_saturation = 0.73
+        # [tint=(0.033, 1.0, 0.0, 1.0)]
+        comment_tint_value = 0.008
+        # Legibility floor for tinted COMMENT TEXT - independent of the
+        # washes' bg_min_brightness (text needs a higher floor than a
+        # background does); the brightness clamp still shares bg_max_brightness.
+        comment_min_brightness = 0.154
 
         # Background wash color adjustment - applies to ALL def-tint
         # backgrounds (symbol washes, line bands, block washes, number
@@ -416,12 +430,12 @@ class Toggles:
         # brightness (0.299r+0.587g+0.114b) so text stays visible even when the
         # tint is very bright (scaled down to max) or very dark (lifted to
         # min, hue kept). Neutral = 1 / 1 / 0 / 1.
-        bg_tint_saturation = 2.5
-        bg_tint_value = 0.5
+        bg_tint_saturation = 1.0
+        bg_tint_value = 0.432
         bg_min_brightness = 0.18
-        bg_max_brightness = 0.13
+        bg_max_brightness = 0.41
 
-    @defaults(tint=(0.388, 0.706, 0.656))
+    @defaults(tint=(0.315, 0.489, 0.322))
     class LoadSave:
         # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
         # as a backout alongside the native-pickle custom.pkl. Set False to go
@@ -447,7 +461,7 @@ class Toggles:
         # frame so only the bottom-on-display clamp displaces it.
         sticky_drag = True
 
-    @defaults(tint=(0.91, 0.659, 0.15))
+    @defaults(tint=(0.358, 0.444, 0.348))
     class InvalidateTracker:
         keep_for_frames = 26
         enable = False
@@ -572,8 +586,11 @@ class Toggles:
     debug_stale_tint = False
 
     # View Settings
-    brightness = 0.641
-    contrast = 2.261
+
+    # [tint=(0.418, 0.656, 0.744)]
+    brightness = 0.639
+    # [tint=(0.025, 0.032, 0.044)]
+    contrast = 2.255
 
     debug_z_depth = False
     filters = True

@@ -216,7 +216,6 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
     # [tint=(0.6,0,0)]
     attn = torch.softmax(scores, dim=-1)
     
-
     # [tint=(0.264, 0.833, 0.294)]
     focus = attn.amax(dim=-1).mean(dim=-1)    
     def some_text():
@@ -225,7 +224,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
 
 
 @window
-@render_func(tint=(0.02, 0.20, 0.37), auto_resize=True)
+@render_func(tint=(0.02, 0.07, 0.14), auto_resize=True)
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner")

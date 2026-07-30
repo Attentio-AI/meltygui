@@ -221,6 +221,7 @@ def claude_terminals_io(input_value, draw_state, view_func=None, external_change
             dead.add(k)
 
     for k in store:
+    
         seen.add(k)
     live = _live_sessions
     for s in live:

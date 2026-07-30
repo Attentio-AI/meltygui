@@ -1579,17 +1579,52 @@ _BG_ADJ_CACHE = {}
 
 
 def _brightness_clamp(r, g, b, min_b, max_b):
-    """Clamp PERCEIVED brightness (0.299r + 0.587g + 0.114b): too dark is
-    lifted by a uniform add (multiplying near-black does nothing; hue kept),
-    too bright is scaled down — the legibility guard for tinted colors."""
+    """Clamp PERCEIVED brightness (0.299r + 0.587g + 0.114b) — the
+    legibility guard for tinted colors. Both directions SCALE the channels,
+    which preserves their ratios and therefore saturation — a dark
+    high-saturation tint lifts to a dark high-saturation color, it does NOT
+    wash toward gray (a uniform add did, which made lowering the value
+    factor also lose saturation). Only true near-black — no hue left to
+    preserve — falls back to the uniform add."""
+    # Inverted clamp (min above max - mid-drag or experimental toggle values)
+    # collapses to the floor: without this, dark colors LIFT to min while
+    # bright ones CRUSH to max < min, inverting brightness ordering and pinning
+    # every wash to near-identical luminance ("tints stopped responding").
+    if 0 < max_b < min_b:
+        max_b = min_b
     lum = 0.299 * r + 0.587 * g + 0.114 * b
     if lum < min_b:
+        if lum > 1e-4:
+            k = min_b / lum
+            return min(1.0, r * k), min(1.0, g * k), min(1.0, b * k)
         d = min_b - lum
         return min(1.0, r + d), min(1.0, g + d), min(1.0, b + d)
     if lum > max_b > 0 and lum > 0:
         k = max_b / lum
         return r * k, g * k, b * k
     return r, g, b
+
+
+def _soft_brightness_floor(r, g, b, min_b):
+    """COMPRESSIVE floor (comment text): black lifts to min_b, the lift
+    fades linearly to zero at the knee (2×min_b), colors above the knee are
+    untouched — so raising the floor surfaces the dimmest comments WITHOUT
+    dragging every comment to one identical brightness (the hard clamp
+    pinned everything the value factor pushed under the floor, turning the
+    min knob into a global brightness slider). Monotone: relative
+    brightness ordering between comments is preserved. Scales channels
+    (saturation kept); uniform add only for true near-black."""
+    if min_b <= 0:
+        return r, g, b
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    knee = min_b * 2.0
+    if lum >= knee:
+        return r, g, b
+    target = min_b + (lum / knee) * (knee - min_b)
+    if lum > 1e-4:
+        k = target / lum
+        return min(1.0, r * k), min(1.0, g * k), min(1.0, b * k)
+    return min(1.0, r + target), min(1.0, g + target), min(1.0, b + target)
 
 
 def _bg_adjust(rgb, factors):
@@ -1622,16 +1657,17 @@ def _comment_tint_color(rgb):
     Toggles.TextEditor, read live), then the shared perceived-brightness
     clamp so a very dark/bright tint's comment stays readable."""
     from src.lsd.gl_gui.toggles import rgb_to_hsv, hsv_to_rgb, Toggles
-    saturation_factor = getattr(Toggles.TextEditor, 'comment_tint_saturation', 0.72)
-    value_factor = getattr(Toggles.TextEditor, 'comment_tint_value', 0.82)
+    saturation_factor = Toggles.TextEditor.comment_tint_saturation
+    value_factor = Toggles.TextEditor.comment_tint_value
 
     h, s, v = rgb_to_hsv(rgb[0], rgb[1], rgb[2])
     r, g, b = hsv_to_rgb(h,
                          min(max(s * saturation_factor, 0.0), 1.0),
                          min(max(v * value_factor, 0.0), 1.0))
-    return _brightness_clamp(r, g, b,
-                             getattr(Toggles.TextEditor, 'bg_min_brightness', 0.0),
-                             getattr(Toggles.TextEditor, 'bg_max_brightness', 1.0))
+    r, g, b = _soft_brightness_floor(r, g, b,
+                                     Toggles.TextEditor.comment_min_brightness)
+    return _brightness_clamp(r, g, b, 0.0,
+                             Toggles.TextEditor.bg_max_brightness)
 
 
 # (packed_abgr, rgb_tuple, k_milli) -> packed. Syntax colors × tint colors ×
@@ -1879,8 +1915,8 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # its color trail as it flows through code. Iterated so a local defined
     # from an already-propagated local fades one step further per hop.
     from src.lsd.gl_gui.toggles import Toggles as _Tg
-    fade = getattr(_Tg.TextEditor, "def_propagation_fade", 0.75)
-    if getattr(_Tg.TextEditor, "def_tint_propagation", True):
+    fade = _Tg.TextEditor.def_propagation_fade
+    if _Tg.TextEditor.def_tint_propagation:
         for _pass in range(4):
             changed = False
             for su in untinted_locals:
@@ -1979,7 +2015,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         m2 = re.match(r"(?:async\s+)?(def|class)\s", s)
         if m2:
             _scopes.append((ind, m2.group(1)))
-    mix_on = getattr(_Tg.TextEditor, "def_tint_propagation", True)
+    mix_on = _Tg.TextEditor.def_tint_propagation
     for bi, lt in enumerate(lines):
         m = _asn_re.match(lt)
         if m is None:
@@ -3393,10 +3429,11 @@ def _describe_code_tree(code_tree):
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-3, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-1.9, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
+              
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False,
               single_line=False, is_search_box=False,
@@ -4571,16 +4608,23 @@ def draw_text(input_value: str, height=None,
     # of a symbol whose definition (here or in another file) carries a tint,
     # in that definition's color. Ties usages to their definitions at a glance.
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
-    if getattr(Toggles.TextEditor, 'definition_tints', False) and not is_search_box:
+    if Toggles.TextEditor.definition_tints and not is_search_box:
         _dt_blocks, _dt_spans, _dt_lines, _dt_comments = _def_tints(
             ds, text, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
+        # ALL def-tint washes paint on the UNDER-text channel (same idiom as
+        # the cursor-token highlight below): translucent rects must never be
+        # able to land over glyphs - the tile pipeline composites re-renders
+        # over prior content, so transparent-over-text accumulates copies and
+        # clouds the final color with tile count.
+        if Melty.channels_split:
+            draw_list.channels_set_current(Core.melty.get_channel() - 1)
         # Shared background color adjustment (hsv factors + brightness clamp)
         # for every usage-tint wash below - see _bg_adjust.
-        _bg_f = (getattr(Toggles.TextEditor, 'bg_tint_saturation', 1.0),
-                 getattr(Toggles.TextEditor, 'bg_tint_value', 1.0),
-                 getattr(Toggles.TextEditor, 'bg_min_brightness', 0.0),
-                 getattr(Toggles.TextEditor, 'bg_max_brightness', 1.0))
+        _bg_f = (Toggles.TextEditor.bg_tint_saturation,
+                 Toggles.TextEditor.bg_tint_value,
+                 Toggles.TextEditor.bg_min_brightness,
+                 Toggles.TextEditor.bg_max_brightness)
         _dt_block_a = Toggles.TextEditor.def_block_alpha
         for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
             sy = origin_y + _b_line * line_px
@@ -4597,7 +4641,7 @@ def draw_text(input_value: str, height=None,
         # if the definition has one, else a mix of its symbol tints.
         # (Full-width and feathered/glow variants were tried and reverted:
         # a simple band hugging the relevant text wins.)
-        _dt_line_a = getattr(Toggles.TextEditor, 'def_line_alpha', 0.03)
+        _dt_line_a = Toggles.TextEditor.def_line_alpha
         if _dt_line_a > 0:
             for _l_line, _l_rgb, _l_sc, _l_s, _l_e in _dt_lines:
                 sy = origin_y + _l_line * line_px
@@ -4625,6 +4669,9 @@ def draw_text(input_value: str, height=None,
             _s_col = imgui.get_color_u32_rgba(_sa[0], _sa[1], _sa[2],
                                               _dt_sym_a * _s_scale)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
+        # Back to the body's text channel for everything after the washes.
+        if Melty.channels_split:
+            draw_list.channels_set_current(Core.melty.get_channel() + 1)
 
     # Selection
     if _has_selection(ds):
@@ -4773,17 +4820,24 @@ def draw_text(input_value: str, height=None,
     # granularity: a symbol is per identifier token, so per-token is exact.
     # Cost: one bisect + ≤4-span overlap walk per visible token; the mixed
     # packed color is memoized in _GLYPH_MIX_CACHE.
-    _dt_mix = (getattr(Toggles.TextEditor, 'def_text_tint_mix', 0.0)
+    _dt_mix = (Toggles.TextEditor.def_text_tint_mix
                if _dt_spans else 0.0)
     _dt_starts = [s[0] for s in _dt_spans] if _dt_mix > 0 else None
+    # The mix TARGET gets its own sat/value factors (independent of the
+    # wash's bg_tint_* pair) but a shared brightness clamp - same _bg_adjust
+    # machinery, different factor tuple.
+    _tx_f = (Toggles.TextEditor.text_tint_saturation,
+             Toggles.TextEditor.text_tint_value,
+             Toggles.TextEditor.bg_min_brightness,
+             Toggles.TextEditor.bg_max_brightness)
     # Override comments carrying tint=(...) draw their TEXT in that color -
     # the comment names a definition, so it wears it (text-only, no background).
     # The tint factors join the memo key so any toggle tweaks repaint.
     _ct_starts = [c[0] for c in _dt_comments] if _dt_comments else None
-    _ct_factors = (getattr(Toggles.TextEditor, 'comment_tint_saturation', 0.72),
-                   getattr(Toggles.TextEditor, 'comment_tint_value', 0.82),
-                   getattr(Toggles.TextEditor, 'bg_min_brightness', 0.0),
-                   getattr(Toggles.TextEditor, 'bg_max_brightness', 1.0))
+    _ct_factors = (Toggles.TextEditor.comment_tint_saturation,
+                   Toggles.TextEditor.comment_tint_value,
+                   Toggles.TextEditor.comment_min_brightness,
+                   Toggles.TextEditor.bg_max_brightness)
 
     x = origin_x
     y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
@@ -4823,9 +4877,9 @@ def draw_text(input_value: str, height=None,
                 if _sp[1] <= src_i:
                     continue
                 if _sp[0] <= src_i:
-                    # Mix toward the ADJUSTED wash color - what's actually
-                    # painted behind the glyphs (same _bg_f as the washes).
-                    color = _mix_packed(color, _bg_adjust(tuple(_sp[2][:3]), _bg_f),
+                    # Mix toward the wash through the TEXT factor pair
+                    # (text_tint_saturation/value + shared brightness clamp).
+                    color = _mix_packed(color, _bg_adjust(tuple(_sp[2][:3]), _tx_f),
                                         _dt_mix * _sp[3])
                 break
         # Inline token view: a str-keyed token_views entry with a char_width draws

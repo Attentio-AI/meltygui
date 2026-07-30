@@ -737,7 +737,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         imgui.same_line()
 
     end_x = imgui.get_cursor_screen_pos()[0]
-    
+
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = Toggles.profile_mode == ProfileMode.ON
     if is_profiling:
