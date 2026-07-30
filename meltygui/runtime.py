@@ -3639,6 +3639,15 @@ class Melty:
 
         FileWatch.start()
 
+        # Spin up the interactive jedi (autocomplete) server now, off-thread -
+        # cold it takes seconds, and lazily that lands on the first popup.
+        try:
+            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                warm_interactive_jedi)
+            warm_interactive_jedi()
+        except Exception:
+            pass
+
         cls.global_attrs["style_manager"] = getattr(cls, "style_manager", None)
 
         cls.annotation_mode = False

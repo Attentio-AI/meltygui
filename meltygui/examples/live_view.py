@@ -27,7 +27,8 @@ import imgui
 import numpy as np
 
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.live_view import live_view, live_values_for
+from src.lsd.gl_gui.view.core_conversion.live_view import (
+    live_view, live_values_for, label_for)
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_collection
@@ -152,16 +153,15 @@ def live_view_values(input_value=None, draw_state=None, **kwargs):
         store = live_values_for(fn)
         # Key the display by the CST key path - the address the editor line
         # will match on - with the captured variable name alongside.
-        display = {f"{' / '.join(key)}  ({lv.name})": lv.value
-                   for key, lv in store.items()}
+        display = {f"{' / '.join(key)}  ({label_for(fn, key) or ''})": value
+                   for key, value in store.items()}
         draw_collection(display, name=f"{fn.__name__}()", column=column,
                         disable_scroll=False)
-        publishes = sum(lv.generation for lv in store.values())
-        imgui.text(f"  {publishes} publishes")
+        imgui.text(f"  {len(store)} keys")
 
 
 @window
-@render_func(tint=(0.078, 0.232, 0.439), auto_resize=True)
+@render_func(tint=(0.11, 0.118, 0.128), auto_resize=True)
 def live_view_code(input_value=None, draw_state=None, **kwargs):
     # The toy source through the unified editor route. Ctrl+Enter hotswaps;
     # the publisher's next tick republishes through the new code.
@@ -191,7 +191,7 @@ def fit_line(n=45, noise=9):
 
 
 @window
-@render_func(tint=(0.28, 0.12, 0.57), auto_resize=True)
+@render_func(auto_resize=True)
 def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(fit_line, name="fit_line snapshot")

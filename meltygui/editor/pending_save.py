@@ -69,6 +69,22 @@ class PendingSave:
         prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
         cls._pending_gen[address.path] += 1
+        # Debug timeline: who bumped this file's pending generation (a bump is
+        # what invalidates the symbol-usage cache sig → forces a recompute).
+        try:
+            from src.lsd.gl_gui.perf_trace import trace as _ptrace
+            import sys as _sys
+            trail = []
+            f = _sys._getframe(1)
+            for _ in range(4):
+                if f is None:
+                    break
+                trail.append(f"{f.f_code.co_filename.rsplit('/', 1)[-1]}:{f.f_lineno} {f.f_code.co_name}")
+                f = f.f_back
+            _ptrace(f"queue_save gen={cls._pending_gen[address.path]} <- {' <- '.join(trail)}",
+                    file=getattr(address.path, 'name', address.path))
+        except Exception:
+            pass
         # Deferred saves never write disk, so the file watcher never needs to update
         # SIBLING views of this file (a structured/cst/dict view, another editor).
         # When the queued text content changes, wake them so they re-render and
@@ -243,7 +259,7 @@ class PendingSave:
         return "\n".join(lines)
 
 
-@window(disable_scroll=False)
+@window(disable_scroll=False, tint=(0.18712963163852692, 0.2611111, 0.19945986568927765))
 @render_func()
 def draw_pending_saves():
     pass
@@ -254,7 +270,7 @@ def draw_pending_saves():
     # the hotswaps run outside the render loop like every other recompile.
     RenderFuncs.draw_function(PendingSave.recompile_all, name="recompile_all", icon="",
                               tint=(0,0,0,1), show_bg=False, shadow=False, run_in_thread=True)
-    
+
     for address, (codec, kwargs) in PendingSave.pending_saves.items():
         if address in PendingSave.originals:
             original_data = PendingSave.originals[address]
@@ -266,7 +282,7 @@ def draw_pending_saves():
             old_lines = str(old_data).splitlines(keepends=True)
             if new_lines == old_lines:
                 continue
-    
+
             diff = difflib.unified_diff(
                 fromfile=str(address.path), tofile=str(address.path),
                 a=old_lines, b=new_lines, n=3,
@@ -280,7 +296,7 @@ def draw_pending_saves():
             # lines; line_numbers feeds the gutter.
             content_lines, line_numbers = _diff_lines_with_numbers(diff, address.start or 0)
             diff_str = "".join(content_lines)
-    
+
             file_name = address.path.name
             line_range = f"({address.start}:{address.end})"
             name = f"{file_name} {line_range}"

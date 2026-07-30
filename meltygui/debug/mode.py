@@ -197,6 +197,18 @@ class Mode(Enum):
         )
     }
 
+    LIVE_WINDOW = {
+        Any: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
+                    "with_header_end": draw_header_end, "draggable": True, 'shadow': True,
+                    "show_tint": True, "show_header": True, "with_footer": draw_footer,
+                    "disable_scroll": False, "bg_offset": -1, "is_tree":False,
+                    "with_header": draw_header,
+                    "initial": {"window_pos": (100, 500), "width": 400, "height": 320}},
+            recursive=False
+        )
+    }
+
     WINDOW_PARAMS = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,

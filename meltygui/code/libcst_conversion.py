@@ -27,6 +27,7 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.modes import Modes, _LazyMode
 from src.lsd.gl_gui.notifications import notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -554,7 +555,16 @@ DISABLE_JEDI = False
 # doesn't hold the main process GIL.
 
 from concurrent.futures import ProcessPoolExecutor as _PPE
-_jedi_pool: _PPE | None = None
+from concurrent.futures import Future as _Future
+# Two pools, same forkserver context. "index" (4 workers) runs the heavy
+# symbol-index and usage jobs; "ac" (1 worker) is reserved for INTERACTIVE jobs
+# (member completion, signature help). Interactive jobs have their own pool for
+# two reasons: a multi-second index job is never run ahead of the popup; and
+# every interactive job lands on the SAME worker process, so parso's per-process
+# parse cache stays warm for the file being edited (~10-30ms per completion vs
+# ~1s re-parsing cold on whichever index worker happened to be idle).
+_jedi_pools: dict[str, _PPE] = {}
+_jedi_pool_lock = threading.Lock()
 _jedi_mp_ctx = None
 
 
@@ -587,21 +597,61 @@ def _get_jedi_mp_ctx():
     return _jedi_mp_ctx
 
 
-def _get_jedi_pool() -> _PPE:
-    global _jedi_pool
+def _get_jedi_pool(kind: str = "index") -> _PPE:
     # A studio restart-in-place ends the session, which fires concurrent.futures'
     # atexit (_python_exit) even though THIS process keeps running. That sets the
     # module-level _global_shutdown flag and kills the worker processes, so EVERY
     # ProcessPoolExecutor.submit() raises "after global shutdown" forever -
     # silently disabling jedi + every off-GIL task. Clear that stale signal (the
-    # process is not actually exiting) and rebuild the pool.
+    # process is not actually exiting) and rebuild BOTH pools.
     import concurrent.futures.process as _cfp
-    stale = getattr(_cfp, "_global_shutdown", False)
-    if stale:
-        _cfp._global_shutdown = False
-    if _jedi_pool is None or stale or getattr(_jedi_pool, "_shutdown_thread", False):
-        _jedi_pool = _PPE(max_workers=4, mp_context=_get_jedi_mp_ctx())
-    return _jedi_pool
+    with _jedi_pool_lock:
+        if getattr(_cfp, "_global_shutdown", False):
+            _cfp._global_shutdown = False
+            _jedi_pools.clear()
+        pool = _jedi_pools.get(kind)
+        if pool is None or getattr(pool, "_shutdown_thread", False):
+            pool = _PPE(max_workers=1 if kind == "ac" else 4,
+                        mp_context=_get_jedi_mp_ctx())
+            _jedi_pools[kind] = pool
+        return pool
+
+
+def warm_interactive_jedi():
+    """Spin up the interactive jedi worker in the background so the FIRST
+    completion popup of a session doesn't wait on it — cold it pays forkserver
+    worker spawn + `import jedi` + grammar/typeshed load (seconds in the loaded
+    app). Fully async and idempotent: on a warm pool this is one trivial ~30ms
+    subprocess job. Called from Melty.init."""
+    _submit_interactive(_jedi_complete_worker, "import os\nos.", 2, 3)
+
+
+def _submit_interactive(worker, *args) -> _Future:
+    """Future for `worker(*args)` on the interactive ("ac") jedi worker, without
+    ever touching the pool on the CALLING thread. This runs on the render thread
+    (per keystroke), and a cold pool's first submit blocks on spawning the
+    forkserver — which preloads this module, >1s of imports — so pool get +
+    submit happen on a short-lived daemon thread and the pool future's result is
+    mirrored into the returned Future (same done()/add_done_callback contract)."""
+    out = _Future()
+
+    def _bg():
+        try:
+            f = _get_jedi_pool("ac").submit(worker, *args)
+        except Exception as e:
+            out.set_exception(e)
+            return
+
+        def _copy(f):
+            try:
+                out.set_result(f.result())
+            except BaseException as e:
+                out.set_exception(e)
+
+        f.add_done_callback(_copy)
+
+    threading.Thread(target=_bg, daemon=True, name="jedi-ac-submit").start()
+    return out
 
 
 def _jedi_project():
@@ -626,17 +676,18 @@ def _jedi_script(file_path, code=None):
 
 
 def shutdown_jedi_pool():
-    global _jedi_pool
-    if _jedi_pool is not None:
+    with _jedi_pool_lock:
+        pools = list(_jedi_pools.values())
+        _jedi_pools.clear()
+    for pool in pools:
         # Kill worker processes first because shutdown(cancel_futures=True) only
         # cancels pending futures, not ones already running in a subprocess.
-        for pid, proc in list(getattr(_jedi_pool, '_processes', {}).items()):
+        for pid, proc in list(getattr(pool, '_processes', {}).items()):
             try:
                 proc.kill()
             except Exception:
                 pass
-        _jedi_pool.shutdown(wait=False, cancel_futures=True)
-        _jedi_pool = None
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _jedi_worker(file_path_str: str, names: set[str]) -> dict[str, list[tuple]]:
@@ -816,11 +867,11 @@ def submit_member_completion(text: str, line0: int, col: int, address=None):
         ctx = _full_file_context(text, address)
         if ctx is not None:
             code, shift, path = ctx
-            return _get_jedi_pool().submit(
+            return _submit_interactive(
                 _jedi_complete_worker, code, shift + line0 + 1, col, path)
         ci = _completion_common_indent(text)
         dedented = "\n".join(l[ci:] if len(l) >= ci else l for l in text.split("\n"))
-        return _get_jedi_pool().submit(
+        return _submit_interactive(
             _jedi_complete_worker, dedented, line0 + 1, max(0, col - ci))
     except Exception:
         return None
@@ -859,11 +910,11 @@ def submit_signature_help(text: str, line0: int, col: int, address=None):
         ctx = _full_file_context(text, address)
         if ctx is not None:
             code, shift, path = ctx
-            return _get_jedi_pool().submit(
+            return _submit_interactive(
                 _jedi_signatures_worker, code, shift + line0 + 1, col, path)
         ci = _completion_common_indent(text)
         dedented = "\n".join(l[ci:] if len(l) >= ci else l for l in text.split("\n"))
-        return _get_jedi_pool().submit(
+        return _submit_interactive(
             _jedi_signatures_worker, dedented, line0 + 1, max(0, col - ci))
     except Exception:
         return None
@@ -2278,6 +2329,17 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
         _ptrace(f"usage hash-rescue in {(_time.monotonic() - _t_probe) * 1000:.1f}ms "
                 f"(sig lapsed, content identical)", file=resolved.name, span=f"{start}-{end}")
         return cached[1]
+
+    # DEBUG timeline: WHY the cache missed - which sig component moved.
+    if cached is None:
+        _why = "cold(no-entry)"
+    else:
+        _os = cached[0]
+        _why = "changed:" + ",".join(
+            n for n, o, nw in (("mtime", _os[0], mtime),
+                               ("pending_gen", _os[1], pending_gen),
+                               ("resolver", _os[2], accurate),
+                               ("index_gen", _os[3], gen)) if o != nw)
     # Find a reusable prior result (same resolver + index generation): the exact-
     # span entry, else the best-overlapping sibling (the span key shifts as lines
     # are added). `src_key` is tracked so we can read its buffer-text snapshot for
@@ -2323,7 +2385,8 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # notify only here, so cache hits / offsets stay silent.
     recompute_start = _time.monotonic()
     _mode = "jedi" if accurate else ("incremental" if prev is not None else "cold")
-    _ptrace(f"usage recompute start ({_mode})", file=resolved.name, span=f"{start}-{end}")
+    _ptrace(f"usage recompute start ({_mode}, miss={_why})",
+            file=resolved.name, span=f"{start}-{end}", pending_gen=pending_gen)
     try:
         raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
                else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
@@ -4834,6 +4897,13 @@ def _patch_leading_override(node, value):
                 _reformat_override_comment(joined, current), run)
             return node.with_changes(leading_lines=lines)
         return node
+    if current:
+        # No override comment exists yet (e.g. the input tab's + creates a
+        # comment-less site) - so create one on a fresh leading line just
+        # above the statement, after any plain comments.
+        lines.append(cst.EmptyLine(
+            comment=cst.Comment(_format_override_comment(current))))
+        return node.with_changes(leading_lines=lines)
     return node
 
 

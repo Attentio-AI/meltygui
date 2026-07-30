@@ -4,7 +4,7 @@ User code drops a bare `live_view()` after an assignment (or `live_view(expr)`
 anywhere) in a function body. At runtime the call resolves its own site to the
 SAME key the libcst→dict conversion gives that statement — `("if##0",
 "live_view()")`, not a line number — reads the preceding local for the bare
-form, and stores a LiveValue on the OWNING FUNCTION object under
+form, and stores the value RAW on the OWNING FUNCTION object under
 `__live_values__`. The editor reads the store off the object it is editing
 (`live_values_for`) and renders each value as a nested window anchored to the
 call's inline token, so the value and the code that produced it stay linked.
@@ -79,25 +79,6 @@ _asts = {}
 _linemaps = {}
 
 
-class LiveValue:
-    """One captured value at one CST key. `generation` counts publishes at the
-    key — the editor invalidates its view when it changes rather than polling
-    the value itself. `name` is the display label: the explicit name= kwarg,
-    else the variable the bare form read, else the argument's source text."""
-    __slots__ = ("value", "generation", "name", "lineno", "updated_at")
-
-    def __init__(self, value, generation, name, lineno, updated_at):
-        self.value = value
-        self.generation = generation
-        self.name = name
-        self.lineno = lineno
-        self.updated_at = updated_at
-
-    def __repr__(self):
-        return (f"LiveValue({self.name or '?'}={self.value!r}, "
-                f"gen={self.generation})")
-
-
 class _Site:
     """Everything line-dependent about one live_view call site, resolved once.
     `key_path` is relative to `store_obj`'s scope; `var_name` labels (and for
@@ -143,16 +124,31 @@ def live_view(value=_MISSING, name=None):
 
 
 def live_values_for(obj):
-    """A SNAPSHOT {key_path: LiveValue} of a function/module's store, or {}.
-    Copied so a render-thread iteration can't race a training-thread insert.
-    Looks through decorator wrappers — capture attaches to the UNWRAPPED
-    function, the object whose __code__ hotswap mutates."""
+    """A SNAPSHOT {key_path: value} of a function/module's store, or {}. The
+    store holds the captured values RAW — no record wrapper — so a reader
+    hands them straight to draw_any and the framework routes by type. Copied
+    so a render-thread iteration can't race a training-thread insert. Looks
+    through decorator wrappers — capture attaches to the UNWRAPPED function,
+    the object whose __code__ hotswap mutates."""
     try:
         obj = inspect.unwrap(obj)
     except Exception:
         pass
     store = getattr(obj, "__live_values__", None)
     return dict(store) if store else {}
+
+
+def label_for(obj, key_path):
+    """The display label published for a key (the explicit name= kwarg, else
+    the variable the bare form read, else the argument's source text), or
+    None. Labels ride the store object beside the values (the same
+    attach-to-object pattern as the watcher sets)."""
+    try:
+        obj = inspect.unwrap(obj)
+    except Exception:
+        pass
+    labels = getattr(obj, "__live_labels__", None)
+    return labels.get(key_path) if labels else None
 
 
 def site_for_line(filename, lineno):
@@ -216,7 +212,7 @@ def watch(store_obj, key_path, draw_state, first_only=False):
     values) in a per-key WeakSet — a closed window's draw_state just drops
     out. Re-registering every render is the idempotent norm.
 
-    first_only=True fires ONLY on a key's FIRST value (generation 1): the
+    first_only=True fires ONLY on a key's FIRST value: the
     marker dot registers this way, so a freshly-typed live_view() flips green
     and auto-opens the moment its code first runs — one editor re-render per
     new key — without paying a full editor recomposite on every publish.
@@ -322,14 +318,15 @@ def _publish(site, value, name, bare):
         store = vars(site.store_obj).setdefault("__live_values__", {})
     except (AttributeError, TypeError):
         return
-    prev = store.get(site.key_path)
-    generation = prev.generation + 1 if prev is not None else 1
+    first = site.key_path not in store
     label = name or (site.var_name if bare else site.arg_label)
-    # Replace the LiveValue entirely (never mutate in place) so the render
-    # thread always reads a consistent (value, generation) pair.
-    store[site.key_path] = LiveValue(value, generation, label,
-                                     site.lineno, time.time())
-    _notify_watchers(site.store_obj, site.key_path, first=prev is None)
+    if label:
+        vars(site.store_obj).setdefault("__live_labels__", {})[
+            site.key_path] = label
+    # The value is stored RAW - a single object assignment, atomic under the
+    # GIL, so the rendering thread always reads either the old or new value.
+    store[site.key_path] = value
+    _notify_watchers(site.store_obj, site.key_path, first=first)
 
 
 def _resolve_site(code, lineno):

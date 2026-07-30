@@ -1139,7 +1139,8 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
              shadow=False, indent_size=0, with_footer=None, temp=True)
 def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=None, chain_out=None,
                              run_chain_kwargs=None, route=None, modes_state: ModesState = None, temp=True,
-                             external_change=False, child_kwargs=None, unique=0, **kwargs):
+                             external_change=False, child_kwargs=None, unique=0,
+                             background_load=False, **kwargs):
     """Like `convert_in_and_out`, but hands the view_func the chain_in OUTPUT directly.
 
     IDENTICAL background processing to `convert_in_and_out` — chain_in and chain_out
@@ -1199,13 +1200,20 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         # echoes, external changes - stays async/debounced exactly as before.
         # The size gate prevents a large buffer from freezing its first parse
         # indefinitely (it falls back to the async path).
-        inline = (isinstance(input_value, str)
+        # background_load=True hidden cache hosts (input-tab feeders) opt OUT of
+        # the synchronous first parse - nobody's looking at them the frame
+        # they load, and a big span's inline parse puts a visible 100ms+ hitch
+        # on whatever the user IS doing (dragging a window).
+        inline = (not background_load
+                  and isinstance(input_value, str)
                   and len(input_value) <= _INLINE_FIRST_PARSE_MAX_CHARS)
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
             name=f"chain_in{unique}", start=external_change, inline_first=inline)
         if external_change:
+            _ptrace(f"chain_in START edge (unique={unique})", src_gen=src_gen,
+                    echo=(input_value is modes_state.echo_str))
             note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
             draw_state._parent.invalidate(note=note)
         external_change = False
@@ -1266,6 +1274,9 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         # current frame. Threaded through the worker snapshot so the output string is
         # tagged with the edit frame - its chain_in echo is then recognized + ordered.
         out_gen = Melty.frame_count
+        if co_start:
+            _ptrace(f"chain_out TRIGGERED by view_func edit (unique={unique})",
+                    gen=out_gen)
         co_changed, co_payload = run_in_background(
             _run_chain_out,
             child_kwargs={"input_value": converted_edit if co_start else None,
@@ -1390,7 +1401,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=True,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=0, bg_offset=-2,
-                 ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None, **kwargs):
+                 ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None,
+                 background_load=False, **kwargs):
     edited = False
     try:
         imgui.dummy(0, 0)
@@ -1572,10 +1584,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.align_text_to_frame_padding()
             imgui.text_colored(str(f" Auto"), *(1.0, 1.0, 1.0, 0.2))
 
+        # Hidden cache hosts (background_load) never load inline - the disk
+        # read + span resolve can cost ~100ms and nobody sees their first frame.
         changed, new_text = run_in_background(load_file, main_thread=True,
                                               child_kwargs={"input_value": address, 'codec': codec},
                                               name=f"load{unique}", start=load,
-                                              inline_first=True)
+                                              inline_first=not background_load)
         if new_text is LOADING:
             code_state.mark_file_current()
 
@@ -1760,8 +1774,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             note = Note(name="On saved, code_file_io", tint=(0.5, 1.0, 1.0), draw_state=draw_state)
             Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
-        # Recompile (hot reload, no disk write): button, Ctrl+Enter, or recompile=True
-        # on edit. Same runner, its own loading_state.
+        # Recompile (hotswap, no disk write): button or Ctrl+Enter. Same
+        # runner with its own loading_state. Deliberately NO edit-driven auto
+        # trigger here: these hosts read back VISIBLE editor panes, so any
+        # `edited`-keyed trigger fires per keystroke (tried and reverted -
+        # even origin-tagged edits misfire, since a synced-in keystroke
+        # _materializes and reads as a value write). Programmatic writers
+        # (set_anywhere) drive run_recompile themselves, writer-side.
         recompile_start = (recompile) or recompile_hotkey
         run_recompile(input_value, code_state, draw_state, start=recompile_start)
 
@@ -1851,7 +1870,8 @@ def code_hosts_for(ref):
         tag = id(ref)
         str_host = RenderHost(io_function=code_file_io, input_value=ref, evictable=True,
                               name=f"##code_cache_{label}{tag}_str",
-                              child_kwargs={"auto_load_edits": True, "auto_save": True})
+                              child_kwargs={"auto_load_edits": True, "auto_save": True,
+                                            "background_load": True})
 
         # str_proxy = RenderHost(io_function=code_file_io, input_value=draw_text, name="String Proxy test",
         #
@@ -1872,6 +1892,7 @@ def code_hosts_for(ref):
             io_function=convert_in_and_out_value, input_value=str_host, evictable=True,
             name=f"##code_cache_{label}{tag}_dict",
             child_kwargs={
+                "background_load": True,
                 "chain_in": [string_to_cst_module, cst_module_to_dict],
                 "chain_out": [dict_to_cst_module, cst_module_to_string],
                 "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},

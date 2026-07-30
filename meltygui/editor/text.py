@@ -3520,7 +3520,7 @@ def _describe_code_tree(code_tree):
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-2.1, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-2.5, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
@@ -3575,6 +3575,10 @@ def draw_text(input_value: str, height=None,
     # Suppression (clearing _err_markers and _err_msg while keyboard editing) is
     # applied AFTER the keyboard recompute below, so it can read this frame's
     # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
+
+
+
+
 
     # Jump-to-source button drawn inline at the top (before the monospace font
     # push, so it uses the normal UI font), above the text body. The first error
@@ -3777,6 +3781,10 @@ def draw_text(input_value: str, height=None,
     # rebind focus by tile id so a cache hit doesn't silently drop it.
     if (not is_focused and Melty.text_focused_ds is not None
             and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
+        
+        
+        
+        
         if Toggles.TextEditor.text_focus_stack_trace:
             print(f"[focus-grant] rebind -> {ds.name} ({ds._tile_id}) "
                   f"from ds {id(Melty.text_focused_ds)}")
@@ -4900,13 +4908,16 @@ def draw_text(input_value: str, height=None,
                 continue
             draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, imgui.get_color_u32_rgba(*bg))
 
+
+
+
+
     # Syntax-highlighted text - only the visible window is tokenized (see
     # `_window`), so this is O(visible) not O(buffer). The loop starts at the
     # window's first line and source offset; tokens above it (the merge-context
     # lookback) are processed but viewport-culled. Each token is drawn one
     # line-segment at a time with a single add_text call rather than per glyph.
     win_line, win_off, tokens, _ = _window()
-
     # Glyph tinting: glyphs under a definition-tint wash lean ever so
     # slightly toward the wash color (syntax color stays the base), so text
     # reads as part of its panel - the same treatment used app-wide. Token
@@ -4931,7 +4942,6 @@ def draw_text(input_value: str, height=None,
                    Toggles.TextEditor.comment_tint_value,
                    Toggles.TextEditor.comment_min_brightness,
                    Toggles.TextEditor.bg_max_brightness)
-
     x = origin_x
     y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
     src_i = win_off    # ABSOLUTE source index at the start of the current token

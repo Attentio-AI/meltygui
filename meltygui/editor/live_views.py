@@ -31,7 +31,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
-    live_values_for, site_for_line, watch, install_builtin)
+    live_values_for, label_for, site_for_line, watch, install_builtin)
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
@@ -56,56 +56,12 @@ def install_token_views(token_views):
                                  "char_width": None}
 
 
-class LiveHandle:
-    """Hashable (store_obj, key_path) pair — the input_value of the marker and
-    window render_funcs, so draw_state identity and caching key off the site,
-    not the (ever-changing) value. `box_w`/`box_h` (the symbol box's pixel
-    size) and `tint` (the symbol's definition-tint color at this site, when
-    the hosting editor has one) ride along as plain attrs excluded from
-    hash/eq, re-stamped by the overlay every call: per-site geometry must NOT
-    travel as render_func kwargs — caching/auto-state replays another
-    marker's values there (every box rendered at the last call's width)."""
-    __slots__ = ("store_obj", "key_path", "box_w", "box_h", "tint")
 
-    def __init__(self, store_obj, key_path, box_w=None, box_h=None, tint=None):
-        self.store_obj = store_obj
-        self.key_path = key_path
-        self.box_w = box_w
-        self.box_h = box_h
-        self.tint = tint
-
-    def __hash__(self):
-        return hash((self.store_obj, self.key_path))
-
-    def __eq__(self, other):
-        return (isinstance(other, LiveHandle)
-                and self.store_obj is other.store_obj
-                and self.key_path == other.key_path)
-
-    def __repr__(self):
-        return f"LiveHandle({'/'.join(self.key_path)})"
-
-
-def _symbol_tint_at(editor_ds, buf_line0, col):
-    """The definition-tint wash color under (0-based buffer line, col) in the
-    hosting editor, or None. Reads the editor's cached _def_tints spans
-    (buffer-index ranges, sorted by start — see text_editor._collect_def_tints)
-    so the marker can adopt the symbol's own color instead of the stock green."""
-    dt = getattr(editor_ds, "_def_tints", None)
-    key = getattr(editor_ds, "_def_tints_key", None)
-    if not dt or key is None or not dt[1]:
-        return None
-    from src.lsd.gl_gui.view.core_views.text_editor import _line_col_to_index
-    try:
-        idx = _line_col_to_index(key[4], buf_line0, col)
-    except Exception:
-        return None
-    for s, e, rgb, _sc in dt[1]:
-        if s <= idx < e:
-            return rgb
-        if s > idx:
-            break
-    return None
+def _store_name(obj):
+    """Stable display/name key for a store object (function qualname or
+    module name) — window/marker names key on this + the cst key path,
+    never on draw_state ids (not stable across sessions/editors)."""
+    return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?")
 
 
 def _right_of_window_pos(parent_win, marker_x, gap=10.0):
@@ -153,76 +109,99 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                               - span.start_col)
     pad = 2.0
     imgui.set_cursor_screen_pos((x - pad, y - pad))
-    draw_live_view_marker(LiveHandle(store_obj, key_path,
-                                     box_w=token_cells * char_w + 2 * pad,
-                                     box_h=line_px + 2 * pad,
-                                     tint=_symbol_tint_at(draw_state,
-                                                          span.start_line - 1,
-                                                          span.start_col)),
-                          name=f"lvm::{draw_state.id}::{'/'.join(key_path)}",
-                          editor_ds=draw_state)
+    snap = live_values_for(store_obj)
+    draw_live_view_marker(snap.get(key_path),
+                          captured=key_path in snap,
+                          store_obj=store_obj, key_path=key_path,
+                          width=token_cells * char_w + 2 * pad,
+                          height=line_px + 2 * pad,
+                          name=f"lvm::{_store_name(store_obj)}::"
+                               f"{'/'.join(key_path)}")
 
 
 @render_func(use_cache=False, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, disable_scroll=True, wrap=True,
              z_offset=4, max_height=32)
-def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
-                          auto_open=True, child_kwargs=None, corner_radius=4.0,
-                          left_mouse_down=False, left_mouse_held=False, unique=0,
-                          **kwargs):
-    """The anchor box around the symbol being visualized: a plain rect over
-    the live_view call / captured assignment, drawn ONLY while hovered (the
-    editor stays tidy; the dummy still reserves the hit area every frame).
-    Colored with the symbol's definition tint when the editor has one
-    (handle.tint), else green when a value has been captured; gray when the
-    site hasn't run yet. Click toggles the value window. The box's pixel size rides on the handle (`handle.box_w/h`, set
-    by the overlays along with the cursor at the box's top-left) — NOT as
-    kwargs: use_cache replays stale kwargs on watcher-driven re-renders, so
-    every box would render at some other marker's size.
+def draw_live_view_marker(input_value=None, draw_state=None,
+                          store_obj=None, key_path=None, captured=False,
+                          code_tree_node=None, auto_open=True,
+                          corner_radius=4.0,
+                          left_mouse_down=False, left_mouse_held=False,
+                          unique=0, **kwargs):
+    """The live-view token widget — draw_bool_token's pattern plus one extra
+    call, draw_any(value, mode=WINDOW). input_value IS the captured value
+    (None + captured=False while the site hasn't run); the window call just
+    forwards it and the framework routes it by type. draw_text positioned
+    this view inline over the symbol and the draw_state carries its size —
+    no rect plumbing.
+
+    `code_tree_node` is the owning scope's dict from draw_text's parse; the
+    site's `# [...]` comment is already formatted as a dict there
+    (__overrides__['__<key>__']) and IS, 1:1, the window call's **kwargs.
+    The box wears its `tint`.
+
+    Window close: the one place a Modes.WINDOW child differs from a direct
+    call — the framework can't see when a parent STOPS calling draw_any (it
+    approximates liveness with abs_closed) — so the window ds is tracked by
+    hand and, once it exists, called every render with visibility driven
+    through the closed= kwarg. (Maybe the framework can own this someday.)
+
     `auto_open=False` (the snapshot/param markers) keeps the window closed
     until the box is clicked — only explicit live_view() tokens pop their
     value unprompted. left_mouse_* are declared (never read) so a press on
     the box latches here instead of moving the editor caret — see
     draw_icon_selector."""
-    handle = input_value
     ds = draw_state
-    if child_kwargs is None:
-        child_kwargs = {}
     # First only only: a gray box whose code then runs gets invalidated
     # on the key's FIRST value, flips green (and auto-opens below, when this
     # marker auto-opens) — one editor re-render per new key, nothing per
-    # steady-state publish.
-    watch(handle.store_obj, handle.key_path, ds, first_only=True)
-    lv = live_values_for(handle.store_obj).get(handle.key_path)
+    # steady-state publish. The invalidation re-runs the overlay, which boxes
+    # the marker and passes the new value in.
+    watch(store_obj, key_path, ds, first_only=True)
 
-    if getattr(ds, "_lv_open", None) is None and lv is not None and auto_open:
+    # The comment data, already a dict from the code tree.
+    comment_args = {}
+    if isinstance(code_tree_node, dict) and key_path:
+        _ca = code_tree_node.get("__overrides__", {}).get(
+            f"__{key_path[-1]}__")
+        if isinstance(_ca, dict):
+            comment_args = {k: v for k, v in _ca.items()
+                            if not (isinstance(k, str) and k.startswith("__"))}
+
+    # Input-tab lookup: the context menu resolves this site's inputs off the
+    # draw_state graph (draw_input_tab's live_root branch), so attach the same
+    # scope dict the comment-args splat reads - restamp the render like
+    # everything else per-site.
+    ds.live_root = code_tree_node
+    ds.live_key = key_path[-1] if key_path else None
+
+    auto_open = comment_args.get("auto_open", auto_open)
+
+    # Manual window-ds tracking (see docstring).
+    win_ds = getattr(ds, "_lv_window_ds", None)
+    if getattr(ds, "_lv_open", None) is None and captured and auto_open:
         ds._lv_open = True  # first value seen → show it without a click
+    elif win_ds is not None and win_ds.closed and getattr(ds, "_lv_open", False):
+        ds._lv_open = False  # user closed the window via its own header X
+    open_now = bool(getattr(ds, "_lv_open", False))
+
     x, y = imgui.get_cursor_screen_pos()
-    w = getattr(handle, "box_w", None) or 18.7
-    h = getattr(handle, "box_h", None) or 18.7
+    w = max(1.0, ds.width)
+    h = max(1.0, ds.height)
     io = imgui.get_io()
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
     # Hover-edge invalidation (enter/leave only, never per-frame): the
-    # outline is hover-gated now, so a cached tile must repaint exactly when
+    # outline is never-stated, so a cached tile must repaint exactly when
     # visibility changes.
     if getattr(ds, "_lv_hovered", None) != hovered:
         ds._lv_hovered = hovered
         ds.invalidate()
-    win_ds = getattr(ds, "_lv_window_ds", None)
-    if win_ds is not None:
-        open_now = not win_ds.closed
-    else:
-        open_now = False
 
-    # Color: the symbol's own definition tint when the editor has one for
-    # this site (rides the handle, like the geometry), else the stock green;
-    # gray keeps meaning "site hasn't run yet". Brightened while open/hovered
-    # so it still reads as a highlight.
-    sym_tint = getattr(handle, "tint", None)
-    if lv is not None:
-        if sym_tint is not None:
+    tint = comment_args.get("tint")
+    if captured:
+        if tint is not None:
             base = tuple(min(1.0, c + (0.15 if open_now else 0.0))
-                         for c in sym_tint[:3])
+                         for c in tint[:3])
         else:
             base = (0.36, 0.85, 0.46) if open_now else (0.26, 0.62, 0.34)
     else:
@@ -239,59 +218,43 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     imgui.dummy(w, h)
 
     if hovered and imgui.is_mouse_clicked(0):
-        ds._lv_open = not open_now
-        if win_ds is not None:
-            win_ds.closed = not ds._lv_open
-            if ds._lv_open:
-                # Reopening a latched window: snap it back to the right of the
-                # editor window (it may have been dragged onto the code).
-                pos = _right_of_window_pos(ds.parent_window, x)
-                if pos is not None:
-                    win_ds.window_pos = pos
-        ds.invalidate()
-
-    # Latched-window visibility pattern (the color-picker pattern,
-    # draw_editor ~750): once a window exists, CALL IT EVERY MARKER RENDER
-    # with closed= toggled - a latched window stays in root_draw_states until
-    # its closed flag is set, so merely not-calling it does nothing.
-    if getattr(ds, "_lv_open", None) is not None and (
-            getattr(ds, "_lv_open", False) or win_ds is not None):
-        # Full (per-publish) watch now the window is open so the value
-        # streams in - the first_only watch above just flips the box green.
-        # Re-uses the lv resolved at the top: no value → nothing to anchor.
-        watch(handle.store_obj, handle.key_path, ds)
-        if lv is None:
-            return False, None
-        label = lv.name if lv.name else handle.key_path[-1]
-        key = '/'.join(handle.key_path)
-        # Anchor the latch from INSIDE the marker's bounds: a cursor sitting
-        # outside the clip (e.g. after a dummy that overflows max_height) makes
-        # the window's FIRST measure degenerate - and a closable window never
-        # remeasures (fixed_size), leaving it 0×0 and invisible visible.
-        imgui.set_cursor_screen_pos((x, y))
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-
-        # The value renders through its own normal view as a closable window
-        # (Mode.WINDOW) - volumes route to draw_voxels, scalars/dicts to their
-        # renderers. No dedicated draw_live_value_window wrapper needed.
-        child_kwargs.pop("mode", None)
-        # First creation: open the value window to the RIGHT of the editor's
-        # window rather than on top of the code. window_pos persists on the
-        # spawned window's draw_state (and stays parent-relative, so it tracks
-        # the editor window), so this is set once - later frames and user drags
-        # of the value window are preserved.
-        if win_ds is None and "window_pos" not in child_kwargs:
+        open_now = not open_now
+        ds._lv_open = open_now
+        if open_now and win_ds is not None:
+            # Reopening: snap the window back to the right of the editor
+            # window (it may have been dragged onto the code).
             pos = _right_of_window_pos(ds.parent_window, x)
             if pos is not None:
-                child_kwargs["window_pos"] = pos
-        _c, _v, win_ds = draw_any(
-            lv.value, name=f"{label}##lv{ds.id}{key}", mode=Modes.WINDOW,
-            with_header=draw_header, selectable=False, min_height=32,
-            min_width=9, disable_scroll=True, return_extras=True, **child_kwargs)
+                win_ds.window_pos = pos
+        ds.invalidate()
 
-        if win_ds.closed:
-            ds._lv_open = False
+    if captured and (open_now or win_ds is not None):
+        # Full (per-publish) watch once a window exists so the value streams
+        # in - the first_only call above only flips the box green.
+        watch(store_obj, key_path, ds)
+        label = label_for(store_obj, key_path) or key_path[-1]
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        # Named by the cst dict's own stable identity - never draw_state ids.
+        win_kwargs = dict(
+            name=f"{label}##lv::{_store_name(store_obj)}::"
+                 f"{'/'.join(key_path)}",
+            mode=Modes.LIVE_WINDOW, closed=not open_now,
+            with_header=draw_header, disable_scroll=True, return_extras=True)
+        # First creation: place the window to the RIGHT of the editor's
+        # window rather than on top of the code. window_pos persists on the
+        # spawned window's draw_state (parent-relative, so it tracks the
+        # editor window) - set once; user drags are preserved after.
+        if win_ds is None:
+            pos = _right_of_window_pos(ds.parent_window, x)
+            if pos is not None:
+                win_kwargs["window_pos"] = pos
+        _c, _v, win_ds = draw_any(input_value, **(win_kwargs | comment_args))
         ds._lv_window_ds = win_ds
+        # The menu usually opens on the WINDOW - stamp the site context there
+        # too (the _parent chain isn't guaranteed to pass through this marker
+        # after a root_draw_states re-dispatch).
+        win_ds.live_root = code_tree_node
+        win_ds.live_key = ds.live_key
 
     return False, None
 
@@ -330,7 +293,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     origin_y = y - (span.start_line - 1) * line_px
     origin_x = x - getattr(span, "start_col", 0) * char_w
     source_lines = (getattr(root, "source", "") or "").split("\n")
-    for key_path, lv in live_values_for(fn).items():
+    for key_path, value in live_values_for(fn).items():
         if not key_path or not isinstance(key_path[-1], str):
             continue
         if key_path[-1].split("#", 1)[0] == "live_view()":
@@ -371,25 +334,17 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
         # point of the lab) so a run pops them unprompted; scalars/configs
         # stay quiet click-to-open boxes so 19 locals don't bury the def.
-        overrides = {}
-        if 'locals' in node and '__overrides__' in node['locals']:
-            override_path = f"__{key_path[-1]}__"
-            if override_path in node['locals']["__overrides__"]:
-                overrides = dict(node['locals']["__overrides__"][override_path])
-        # Overrides go ONLY in child_kwargs (for the value window's view) -
-        # never splat them onto the marker itself: they're view params
-        # (tint/show_bg/dim_names/nf_format), and show_bg=True in a dark theme
-        # makes the marker's wrapper paint an opaque bg over the very symbol
-        # it boxes (the symbol inside the rect disappears).
+        # code_tree_node carries the scope dict: the marker reads the site's
+        # comment source from it and splats it 1:1 onto the popup window's
+        # draw_state (not onto the marker's own wrapper - show_bg=True with a
+        # dark tint would draw an opaque bg over the very symbol it boxes).
         draw_live_view_marker(
-            LiveHandle(fn, key_path,
-                       box_w=max(1, end_col - start_col) * char_w + 2 * pad,
-                       box_h=line_px + 2 * pad,
-                       tint=_symbol_tint_at(draw_state, rel_line - 1, start_col)),
-            name=f"lvs::{draw_state.id}::{fn.__qualname__}::"
-                 f"{'/'.join(key_path)}",
-            editor_ds=draw_state, auto_open=is_volume(lv.value),
-            child_kwargs=overrides)
+            value, captured=True, store_obj=fn, key_path=key_path,
+            width=max(1, end_col - start_col) * char_w + 2 * pad,
+            height=line_px + 2 * pad,
+            code_tree_node=node.get("locals") if isinstance(node, dict) else None,
+            name=f"lvs::{fn.__qualname__}::{'/'.join(key_path)}",
+            auto_open=is_volume(value))
 
 
 def _scope_function(filename, def_line):
@@ -469,7 +424,7 @@ def run_forward_pass(use_gen_pass=True):
 
 
 @window(initial={"width": 350, "height": 540})
-@render_func(tint=(0.15, 0.174, 0.21), auto_resize=False)
+@render_func(tint=(0.27, 0.27, 0.37, 1.00), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     from src.lsd.gl_gui.view.mode import Mode

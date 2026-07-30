@@ -47,7 +47,7 @@ from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
 from src.lsd.gl_gui.view.core_views import drag_drop as _drag_drop
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, tint, Core
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, Core
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
@@ -677,18 +677,10 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             if show_add_types and isinstance(item, dict):
                 item_kwargs['show_add_types'] = show_add_types
 
-            # Per-field overrides: a `# [tint=...]` comment above a primitive
-            # field is stored on the parent as __overrides__['__<field>__'].
-            # Feed those into the child's kwargs (the child has no dict of its
-            # own to carry them). Skip dunder keys defensively.
-            if isinstance(input_value, dict):
-                _parent_ov = input_value.get("__overrides__")
-                if isinstance(_parent_ov, dict):
-                    _field_ov = _parent_ov.get(f"__{key}__")
-                    if isinstance(_field_ov, dict):
-                        for _ok, _ov in _field_ov.items():
-                            if not (isinstance(_ok, str) and _ok.startswith("__")):
-                                item_kwargs[_ok] = _ov
+            # Per-field `# [tint=...]` comment overrides
+            # (__overrides__['__<field>__'] from the parent) are fed by the
+            # render_func wrapper from the collection= + key= passed above -
+            # see the __overrides__ block in core_render.
 
             item_kwargs = item_kwargs | child_kwargs
             if is_dragged:
@@ -876,7 +868,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         else:
             return False, input_value
 
-    return changed, input_value
+    return changed, input_value  
 
 
 def main_header(input_value, name, **kwargs):
@@ -1426,6 +1418,14 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # is a stateful wrapper that draws into its own window. Snapshot the values - a
     # host may register/remove during render (re-entrant mutation).
     for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
+        # Event-driven pump: an idle hidden cache host skips unnecessary draw
+        # calls (draw_needed - edit flags / upstream identity change /
+        # tile invalidation / timer heartbeat). An open input tab registers
+        # ~20 code-cache hosts and each skipped draw is ~0.1ms of wrapper
+        # overhead doing nothing - this is what dropped drags at 70fps.
+        # Visible hosts always draw.
+        if not host.draw_needed():
+            continue
         host.draw()
 
     display(len(Core.melty.render_hosts), tag="Render Hosts Count")
@@ -2347,7 +2347,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     min_value = -0.272
     depth_wrap = 300
     depth_scale = 2.713
-    # [tint=(1,1,1)]
+   
+    # [tint=(2,1,1)]
     corner_radius = rounding
     border_inset = 2.802
     border_inset_half = 1.5
@@ -2606,10 +2607,10 @@ def draw_none(input_value: NoneType):
     return False, input_value
 
 
-@render_func(is_default_for=(bool), use_cache=True, 
-             is_tree=False, wrap=True, header_same_line=True, min_width=62, align_header=True, shadow=False, 
+@render_func(is_default_for=(bool), use_cache=True, auto_resize=True,
+             is_tree=False, wrap=True, header_same_line=True, min_width=83, align_header=True, shadow=False, 
              with_header=draw_header, temp=True)
-def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None,  
+def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=359,
               selectable=False, left_mouse_drag=None, left_mouse_held=False,
               left_mouse_down=False):
 
@@ -3450,7 +3451,7 @@ def draw_float_ctx(input_value):
 
 
 @render_func(is_default_for=float, use_cache=True, shadow=False,
-             is_tree=False, show_bg=False,
+             is_tree=False, show_bg=False, auto_resize=True,
              with_header=draw_header, temp=True)
 def draw_float(input_value: float,
                draw_state,
@@ -3539,7 +3540,9 @@ def eval_function(input_value, draw_state):
     return changed, input_value
 
 
-@render_func(is_default_for="LSDStudio", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
+@render_func(is_default_for="LSDStudio", show_bg=True,
+             auto_resize=True, min_width=218,tint=(0.6, 0.2, 0.8),
+             with_header=draw_header)
 def draw_lsd_studio(input_val):
     imgui.text("An LSD Studio Instance")
 
@@ -3733,7 +3736,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
 @render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
-def draw_int(input_value: int, draw_state=None, min_width=80, wrap=False, min_value=-1000.0, 
+def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20, min_width=80, wrap=False, min_value=-1000.0, 
              max_value=1000.0, speed=0.1, unique=0):
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
@@ -3926,6 +3929,19 @@ def draw_lens(lens, draw_state):
 
 @render_func(use_cache=True, show_bg=True, selectable=False)
 def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwargs):
+
+    if Toggles.debug_set_anywhere:
+        source_name = get_source_for("tint", input_value)
+        imgui.text(f"Tint source: {source_name}")
+
+    # The live framework-resolved tint - except mid-round-trip, when the
+    # pending UI value shows so the widget doesn't snap back while the
+    # write→save→hotswap frames play out (anywhere_value).
+    tint_changed, tint_value = draw_tuple(anywhere_value("tint", input_value), name="Tint: set anywhere", height=30,
+                                          width=40,  
+                                          show_name=False, show_header=False)
+    if tint_changed:
+        set_anywhere("tint", tint_value, input_value)
 
     return False, None
 
@@ -4120,6 +4136,44 @@ def draw_config_tab(input_value, **kwargs):
                      show_add_delete=False, draw=True)
     return False, input_value
 
+#
+# # I want to use the order of the enum elements as a way of determining the source of the input.
+# # From the frameworks perspective it just sees parameters injected. Melty is routing data from many different sources
+# # and does its best to pick sensible defaults when there are multiple sources. Which source takes priority depends on
+# # how the code is written, and the code may change. Rather than trying to infer the priority, we are just hard coding it
+# # so. I can adjust the order of the elements in the enum to reflect the runtime behavior of Melty. This is just my
+# # rough memory of which sources take priority.
+# class SourcePriority(Enum):
+#     MODE = 0
+#     RENDER_FUNC = 1
+#     AT_DEFAULT_CODE_TYPE = 2
+#     AT_DEFAULT_CODE_TYPE = 3
+#     LIVE_COMMENT = 4
+#     CALLER_0 = 5 # Caller is a litter more complicated, we need the whole call state as potential sources. Similar thing for mode I think.
+#     CALLER_1 = 6 # Hopefully there's a better way than hard coding the caller depth
+#
+# def get_value_for_source(attr_name, input_source, draw_state):
+#
+#     value_at_source = None # Do the same thing we do in the input tab, but cleaner
+#     return input_source, value_at_source
+#
+# def set_anywhere(attr_name, value, draw_state):
+#
+#     # Use the melty routing system to set the value at its source,
+#     # be that code, memory, code comments, decoration or enum.
+#
+#     # The live tab can already figure out which sources exist, so we can easily have a list of potential sources to pull
+#     # from.
+#     input_matrix = {} # Map possible values for each source, same as input tab
+#     sources_that_exist = [SourcePriority.MODE, SourcePriority.RENDER_FUNC] # infer from input matrix
+#
+#     sorted_by_priority = sorted(sources_that_exist, key=lambda s: s.value) # Sort by the enum value, lower is highest priority
+#     top_priority_source = sorted_by_priority[0]
+#     input_matrix[top_priority_source] = value # This should update wherever it happens to be, if the framework did its job
+#
+#     # We could cross compare with the current value in draw_state._kwargs[attr_name] and see if it matches. Not bullet proof but would
+#     # catch a bunch of bugs. Don't throw but maybe do a notify()
+
 
 @render_func(use_cache=True, show_bg=False, live=False, mode=Modes.WINDOW, show_header=False, show_name=False, selectable=False)
 def draw_live_tab(input_value, **kwargs):
@@ -4292,28 +4346,434 @@ class ContextMenuState:
         self.class_loc = None
 
 
-@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False,
-             temp=True, searchable=True)
-def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True, unique=None, class_to_show=None,
-                   enter_key_pressed=None, **kwargs):
-    """The three editable sources behind this view, in dispatch order:
+class _InstanceAttrSource(dict):
+    """The 'instance attr' source row: the value object's own whitelisted
+    params (core_render.OBJ_ATTR_PARAMS — the attrs the wrapper injects, e.g.
+    Loras.tint). Reads snapshot at collection time; a write goes straight to
+    setattr on the LIVE object — in place and immediate, no code round trip
+    (the same storage the instance_attr lens edits). Unlike the host-backed
+    sources, a plain setattr triggers NOTHING — so the write also invalidates
+    the target view's subtree (the wrapper re-injects the attr on the next
+    render, which is also what clears the anywhere in-flight cache)."""
 
-      1. RENDER FUNCTION — the render_func whose body produced the view, edited
-         whole via FunctionCodec. It isn't on the captured stack (the capture runs
-         in the wrapper BEFORE the body executes, so the innermost frame is the
-         filtered wrapper), so it's read from `_view_func`.
-      2. CALLER — the direct `draw_x(...)` call site that invoked this view, edited
-         via CallerCodec (spans just the call expression). `_call_site` is the
-         nearest real caller (filename, lineno), captured once on menu-open with the
-         render-dispatch machinery already filtered out (caller_site, core_render).
-      3. DECORATIONS — the `@...` block on the value's class, edited via
-         DecorationsCodec. `class_to_show` is resolved by draw_context_menu (the
-         value's own class, or the nearest parent with source for a primitive
-         field); only classes carry decorations, so it's skipped otherwise.
-      4. MODE — the ACTIVE mode's entry kwargs in its enum class source
-         (mode.py), edited via ModeCodec. Which member to show comes from the
-         target's _kwargs ('current_mode', stamped by the wrapper when a mode
-         config matched); skipped when no mode drove this view."""
+    def __init__(self, obj, target_ds=None):
+        from src.lsd.gl_gui.view.core_views.core_render import OBJ_ATTR_PARAMS
+        super().__init__({p: getattr(obj, p) for p in OBJ_ATTR_PARAMS
+                          if getattr(obj, p, None) is not None})
+        self._obj = obj
+        self._target_ds = target_ds
+
+    def __setitem__(self, k, v):
+        setattr(self._obj, k, v)
+        super().__setitem__(k, v)
+        ds = self._target_ds
+        if ds is not None:
+            # invalidate_up: the attr (tint) paints the whole subtree's bg -
+            # cached middle tiles would blit-skip dirty grandchildren.
+            ds.invalidate_up(max_depth=6)
+            request_render()
+
+
+class _LazyOverrideEntry(dict):
+    """Stand-in '# [<key>]' source for a site with NO override comment yet.
+    Reads as the empty entry dict; the FIRST write (the matrix's + button)
+    materializes __overrides__['__<key>__'] in the owning parse and the save
+    synthesizes the comment line (_patch_leading_override's creation branch).
+    On the next walk the real entry exists and registers instead.
+
+    Bubbling treats `__…` keys as internal bookkeeping — writes to them are
+    stored RAW (no wrap, no dirty mark), which is exactly right for parse
+    bookkeeping and exactly wrong here: naive creation leaves plain dicts the
+    host never hears about (tint shows — the marker reads the same tree — but
+    nothing saves). So the new structure is installed onto the host's bubble
+    root explicitly, and the LEAF write goes through the wrapped entry, whose
+    non-internal key fires the standard notify → dirty → save path."""
+
+    def __init__(self, root, entry_key):
+        super().__init__()
+        self._root = root
+        self._entry_key = entry_key
+
+    def __setitem__(self, k, v):
+        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
+        root_node = self._root
+        ovs = root_node.get("__overrides__")
+        if not isinstance(ovs, dict):
+            ovs = {}
+        if not isinstance(ovs.get(self._entry_key), dict):
+            ovs[self._entry_key] = {}
+        broot = getattr(root_node, "_bubble_root", None)
+        if broot is not None:
+            # Plain dicts can't reclass - install returns the wrapped copy,
+            # so store THAT (raw store: internal key). Idempotent if ovs
+            # already bubbles.
+            ovs = install_bubbling(ovs, broot)
+        root_node["__overrides__"] = ovs
+        entry = ovs[self._entry_key]
+        entry[k] = v  # non-internal key on the wrapped entry → notify → dirty
+        super().__setitem__(k, v)  # same-frame reads (row refresh) see it too
+
+
+# I want to use the order of the enum elements as a way of determining the
+# source of the input. From the function's perspective it just has parameters
+# injected. Melty is routing data from several different sources and does its
+# best to pick sane defaults when there are multiple sources. Which source
+# takes priority depends on how the code is written, and the code may change.
+# Rather than trying to guess the priority, we are just hardcoding it here -
+# adjust the order of the elements to reflect the desired behavior of melty.
+# (This is a rough sketch of which sources take priority; reorder freely.)
+class SourcePriority(Enum):
+    MODE = 0
+    RENDER_FUNC = 1              # signature defaults (def draw_x(x=3))
+    WINDOW_DECORATION = 2        # @window(...) on the func or class - outranks
+                                 # @defaults (the window kwargs drive the
+                                 # window that renders the view)
+    AT_DEFAULT_CODE_TYPE = 3     # @defaults on a @window class in the value tree
+    AT_DEFAULT_OBJ_TYPE = 4      # @defaults on the value's runtime class
+    LIVE_COMMENT = 5             # the `# [tint=...]` override comment
+    CALLER = 6                   # call-site kwargs; DEPTH is the natural
+                                 # tiebreaker (see _source_priority) - no
+                                 # CALLER_0/CALLER_1 members needed
+    DECORATION = 7               # @render_func(...) kwargs on the view func
+    INSTANCE_ATTR = 8            # whitelisted live attr on the value object
+                                 # (core_render.OBJ_ATTR_PARAMS, e.g.
+                                 # Lora.tint) - injected via setdefault, so
+                                 # every kwargs-borne source always wins
+    CLASS_VAR = 9                # class-body assignment on the value's class -
+                                 # reaches the view through the SAME getattr
+                                 # injection as INSTANCE_ATTR, where the
+                                 # class var shadows it (Python lookup
+                                 # order), so it ranks BELOW the instance
+
+
+# The tab's kind captions → priority. Kinds are the single naming authority
+# (collect_input_sources stamps them); this is just the lookup.
+_KIND_TO_PRIORITY = {
+    "mode": SourcePriority.MODE,
+    "signature": SourcePriority.RENDER_FUNC,
+    "code class default": SourcePriority.AT_DEFAULT_CODE_TYPE,
+    "class default": SourcePriority.AT_DEFAULT_OBJ_TYPE,
+    "code comment": SourcePriority.LIVE_COMMENT,
+    "class var": SourcePriority.CLASS_VAR,
+    "decoration": SourcePriority.DECORATION,
+    "window decoration": SourcePriority.WINDOW_DECORATION,   # @window on the func
+    "class decoration": SourcePriority.WINDOW_DECORATION,    # @window on the class
+    "instance attr": SourcePriority.INSTANCE_ATTR,
+}
+
+
+def _source_priority(kind):
+    """Sort key for a source's kind caption: (SourcePriority value, depth).
+    Caller rows ("caller", "caller +1", ...) share one enum member with their
+    walk depth as the tiebreaker, so priority never hardcodes caller depth."""
+    if isinstance(kind, str) and kind.startswith("caller"):
+        depth = int(kind.split("+", 1)[1]) if "+" in kind else 0
+        return (SourcePriority.CALLER.value, depth)
+    p = _KIND_TO_PRIORITY.get(kind)
+    return (p.value, 0) if p is not None else (len(SourcePriority) + 1, 0)
+
+
+def _sources_for(draw_state, class_to_show=None):
+    """collect_input_sources for a TARGET draw_state outside the context menu:
+    the host-caching ContextMenuState rides on the draw_state so repeat calls
+    (a drag writing per-release, say) reuse the parsed hosts. class_to_show
+    defaults to the value's runtime class, so the @defaults/class-var rows
+    resolve the same way here as under the context menu."""
+    if class_to_show is None:
+        raw = draw_state._raw_input_value
+        # A view can wrap a class itself (a @window class like Toggles):
+        # its class rows (@window(cls) / class vars / @defaults) show on
+        # THAT class. `raw.__class__` would find them `type`.
+        class_to_show = raw if isinstance(raw, type) else getattr(raw, "__class__", None)
+    cm_state = getattr(draw_state, "_sa_cm_state", None)
+    if cm_state is None:
+        cm_state = ContextMenuState()
+        draw_state._sa_cm_state = cm_state
+    srcs = collect_input_sources(draw_state, cm_state, class_to_show)
+    # Keep-alive & revive: code hosts are EVICTABLE - the idle sweep pops them
+    # from the run loop once their consumers close (RenderHost.sweep). A
+    # dead host still accepts writes: the tree is dirty but nothing runs
+    # its chain_out, so the save silently never fires (set_anywhere writing
+    # into a dirty orphan was the first field failure). notify_on_change is
+    # the sanctioned same-frame pulse: stamps liveness AND re-registers a
+    # swept host plus its cached str proxy. Same registration the input
+    # tab does at frame end with its own draw_state.
+    for _h in (cm_state.render_func_dict, cm_state.class_dict,
+               cm_state.mode_dict,
+               *[dh for (_sh, dh) in (cm_state.call_site_hosts or [])]):
+        if _h is not None:
+            _h.notify_on_change(draw_state)
+    return srcs
+
+
+_UNSET = object()
+
+
+def get_value_for_source(attr_name, input_source, draw_state, class_to_show=None):
+    """(input_source, value) for `attr_name` as set by a specific
+    SourcePriority source on this view, or (input_source, None) when that
+    source doesn't set it. The same registry the input tab shows."""
+    srcs = _sources_for(draw_state, class_to_show)
+    for sname, sdict in srcs["sources"].items():
+        kind = srcs["kinds"].get(sname)
+        if _source_priority(kind)[0] == input_source.value and attr_name in sdict:
+            return input_source, sdict[attr_name]
+    return input_source, None
+
+
+def _driving_source(srcs, attr_name):
+    """The source name actually driving `attr_name`: the highest-priority
+    (SourcePriority order) WRITABLE source that currently sets it, else the
+    signature source as the stamp-fallback, else None. Shared by
+    get_source_for / from_anywhere / set_anywhere so they can never disagree."""
+    sources, kinds = srcs["sources"], srcs["kinds"]
+    writable = set(srcs["writable"])
+    candidates = [sname for sname in sources
+                  if sname in writable and attr_name in sources[sname]]
+    if candidates:
+        return min(candidates, key=lambda s: _source_priority(kinds.get(s)))
+    return next((s for s in sources
+                 if kinds.get(s) == "signature" and s in writable), None)
+
+
+def get_source_for(attr_name, draw_state, class_to_show=None):
+    """Name of the source driving `attr_name` on this view (display label)."""
+    return _driving_source(_sources_for(draw_state, class_to_show), attr_name)
+
+
+def from_anywhere(attr_name, draw_state, class_to_show=None, default=None):
+    """Read `attr_name` from whichever source is driving it — the read mirror
+    of set_anywhere, resolved through the same registry and priority pick.
+    `default` when no source sets the attr (the driving pick may be the
+    signature FALLBACK, which doesn't set it yet — a + affordance case)."""
+    srcs = _sources_for(draw_state, class_to_show)
+    target = _driving_source(srcs, attr_name)
+    if target is None:
+        return default
+    return srcs["sources"][target].get(attr_name, default)
+
+
+# Parameters the set-anywhere round trip supports. The trip is multi-frame
+# (write → debounced chain_out → save → hotswap → new o_kwargs), so these
+# params also get the in-flight display cache below; grow this list as params
+# are verified end-to-end.
+SET_ANYWHERE_PARAMS = ("tint",)
+
+
+def anywhere_value(attr_name, draw_state, default=None):
+    """The value a set-anywhere editor should DISPLAY for `attr_name`:
+    draw_state._kwargs — the framework-resolved truth — except while a
+    set_anywhere round trip is in flight, when it's the pending UI value
+    (cached on the draw_state by set_anywhere), so the widget doesn't snap
+    back to the stale value for the frames the write→save→hotswap takes.
+
+    Completion is "the live value MOVED off what it was when the set was
+    issued" — never equality with the set value, which round-trips through
+    source formatting (float reformat) and might never compare equal. Moving
+    to anything (our set landing, or someone else's edit) clears the entry
+    and live reads resume."""
+    _anywhere_recompile_tick(draw_state)
+    live = (draw_state._kwargs or {}).get(attr_name, default)
+    _anywhere_verify_tick(attr_name, draw_state, live)
+    pending = getattr(draw_state, "_sa_pending", None)
+    entry = pending.get(attr_name) if pending else None
+    if entry is None:
+        return live
+    ui_value, live_at_set = entry
+    try:
+        moved = not (live is live_at_set or bool(live == live_at_set))
+    except Exception:
+        moved = True
+    if moved:
+        del pending[attr_name]
+        # The trip LANDED (live moved off its at-set baseline). Queue the
+        # value cross-check for 2 frames out - comparing any earlier fires
+        # on every working set (the UI write-time check is failure-only).
+        verify = getattr(draw_state, "_sa_verify", None)
+        if verify is None:
+            verify = {}
+            draw_state._sa_verify = verify
+        verify[attr_name] = (ui_value, Core.melty.frame_count)
+        return live
+    return ui_value
+
+
+def _anywhere_agrees(a, b):
+    """Tolerant post-trip comparison: a set value round-trips through source
+    formatting (floats re-rendered at 2 decimals, a 3-tuple may come back
+    4-long), so exact equality would flag working trips. Numeric sequences
+    compare elementwise over the common prefix at 0.01; incomparables pass
+    (no basis to warn)."""
+    if a is b:
+        return True
+    try:
+        if bool(a == b):
+            return True
+    except Exception:
+        return True
+    if (isinstance(a, (tuple, list)) and isinstance(b, (tuple, list))
+            and a and b):
+        try:
+            return all(abs(float(x) - float(y)) <= 0.01
+                       for x, y in zip(a, b))
+        except (TypeError, ValueError):
+            return True
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= 0.01
+    return True
+
+
+def _anywhere_verify_tick(attr_name, draw_state, live):
+    """Deferred set_anywhere cross-check: 2 frames after a trip lands,
+    compare the live value against what was set. A real divergence here
+    means the SourcePriority pick wrote to a source that ISN'T driving this
+    view — the one thing the alert exists to catch."""
+    verify = getattr(draw_state, "_sa_verify", None)
+    entry = verify.get(attr_name) if verify else None
+    if entry is None:
+        return
+    set_value, landed_frame = entry
+    if Core.melty.frame_count - landed_frame < 2:
+        return
+    del verify[attr_name]
+    if not _anywhere_agrees(live, set_value):
+        from src.lsd.gl_gui.notifications import notify
+        notify(f"set_anywhere: '{attr_name}' settled at {live!r}, not the "
+               f"{set_value!r} that was set — SourcePriority may not match "
+               f"melty's routing for this view", tag="set_anywhere")
+
+
+def _owning_code_host(cm_state, kind):
+    """(str_host, source_obj) whose buffer a write of this kind lands in — the
+    pair the writer-side hotswap drives. None for kinds that apply LIVE with
+    no compile (comment splat, instance attr) or aren't wired yet (callers)."""
+    if kind in ("signature", "decoration", "window decoration"):
+        return cm_state.render_func_str, (cm_state.host_key or (None, None))[0]
+    if kind in ("class var", "class default", "class decoration"):
+        return cm_state.class_str, (cm_state.host_key or (None, None))[1]
+    if kind == "mode":
+        return cm_state.mode_str, cm_state.mode_key
+    return None, None
+
+
+def _anywhere_recompile_tick(draw_state):
+    """Writer-side hotswap driver, run every frame the anywhere UI reads a
+    value (anywhere_value). set_anywhere stamps what it's waiting for; the
+    tick starts the recompile the moment the owning host's buffer moves off
+    the pre-write snapshot (the debounced chain_out landing), then keeps the
+    runner polled until the hotswap lands. This lives ENTIRELY on the writer
+    side — code_file_io has no edit-driven recompile (the cache hosts also
+    back visible editor panes, where any `edited` trigger fires per
+    keystroke)."""
+    pend = getattr(draw_state, "_sa_recompile", None)
+    if not pend:
+        return
+    from src.lsd.gl_gui.view.core_conversion.new_converters import (
+        host_code_state, run_recompile)
+    cs = host_code_state(pend["host"])
+    if cs is None or cs.address is None:
+        return
+    start = False
+    if not pend["started"]:
+        if cs.text_cache is pend["buf"]:
+            return                      # chain_out hasn't landed yet
+        pend["started"] = True
+        pend["start_frame"] = Core.melty.frame_count
+        start = True
+    run_recompile(pend["source"], cs, draw_state, start=start,
+                  name=f"sa_recompile{draw_state.unique}")
+    landed = cs._recompiled_on_frame is not None and         cs._recompiled_on_frame >= pend["start_frame"]
+    if landed or Core.melty.frame_count - pend["start_frame"] > 600:
+        draw_state._sa_recompile = None
+
+
+def set_anywhere(attr_name, value, draw_state, class_to_show=None):
+    """Set `attr_name` at whichever input source is actually driving it —
+    code, comment, decoration, mode entry — using the same registry the input
+    tab edits. The write is a plain item-set on the source's bubbling parse
+    dict, so the owning host goes dirty and saves through its normal chain.
+
+    The DRIVING source is the highest-priority (SourcePriority order) writable
+    source that currently sets the attr; when none sets it, the value stamps
+    into the render function's signature defaults (the + button's fallback).
+    Returns the source name written to, or None when nothing writable exists.
+
+    Sanity cross-check, not bulletproof: if the driving source's pre-write
+    value disagrees with the live draw_state._kwargs value, our hardcoded
+    priority table probably mis-ranked this view's sources — notify, don't
+    throw, and write anyway (the user asked for the set)."""
+    from src.lsd.gl_gui.notifications import notify
+    if attr_name not in SET_ANYWHERE_PARAMS:
+        notify(f"set_anywhere: '{attr_name}' not in SET_ANYWHERE_PARAMS",
+               tag="set_anywhere")
+        return None
+    srcs = _sources_for(draw_state, class_to_show)
+    sources = srcs["sources"]
+    target = _driving_source(srcs, attr_name)
+    if target is None:
+        notify(f"set_anywhere: no writable source for '{attr_name}'",
+               tag="set_anywhere")
+        return None
+
+    live = (draw_state._kwargs or {}).get(attr_name, _UNSET)
+    # (No write-time sanity cross-check here: mid-trip the live value
+    # LEGITIMATELY disagrees with the target, so comparing now cries wolf on
+    # every working set. Verification is deferred - see anywhere_value: 2
+    # frames after the round trip lands, live vs what we set.)
+
+    sources[target][attr_name] = value
+    # In-flight display cache (see anywhere_value): remember what we set and
+    # what the live value was when we set it. Re-sets during a drag update
+    # the UI value but KEEP the original live_at_set: live hasn't moved yet,
+    # and that's the baseline whose change means "round trip landed".
+    pending = getattr(draw_state, "_sa_pending", None)
+    if pending is None:
+        pending = {}
+        draw_state._sa_pending = pending
+    prior = pending.get(attr_name)
+    # _UNSET normalizes to None: anywhere_value reads live with a None
+    # default, and both baselines must compare equal until the trip lands.
+    live_at_set = prior[1] if prior is not None else (
+        None if live is _UNSET else live)
+    pending[attr_name] = (value, live_at_set)
+    getattr(draw_state, "_sa_verify", {}).pop(attr_name, None)
+    # Deferred writer-side hotswap: code-backed sources only become LIVE via
+    # recompile, but the source text only exists after the host's debounced
+    # chain_out. Snapshot the current buffer identity; the per-frame tick
+    # (anywhere_value's _anywhere_recompile_tick) starts the recompile when
+    # the buffer changes and polls the runner until the hotswap lands.
+    cm_state = getattr(draw_state, "_sa_cm_state", None)
+    if cm_state is not None:
+        _rc_host, _rc_source = _owning_code_host(cm_state, srcs["kinds"].get(target))
+        if _rc_host is not None and _rc_source is not None:
+            from src.lsd.gl_gui.view.core_conversion.new_converters import host_code_state
+            _cs = host_code_state(_rc_host)
+            draw_state._sa_recompile = {
+                "host": _rc_host, "source": _rc_source, "started": False,
+                "start_frame": 0,
+                "buf": _cs.text_cache if _cs is not None else None}
+    return target
+
+
+def collect_input_sources(input_value, cm_state, class_to_show=None):
+    """Every editable input source behind a view, collected WITHOUT drawing —
+    the shared engine of draw_input_tab and set_anywhere. `input_value` is the
+    TARGET draw_state; `cm_state` caches the code hosts across calls (pass the
+    context menu's, or any per-target instance). Returns a dict:
+      sources    {source_name: parse dict}  (placeholder {} when unparsed)
+      tints      {source_name: codec tint}
+      locations  {source_name: (file, line)} for jump buttons
+      kinds      {source_name: kind caption} ("signature" / "caller +N" / ...)
+      writable   source names whose dict is a REAL parse node (writes save)
+    """
+    # Per-frame memo: the input tab plus the tint tab's get_sources_for /
+    # from_anywhere / set_anywhere all this for the same target within one
+    # frame, and the parses can't change mid-frame - build once per
+    # (frame, class_to_show) per cm_state. Profiled at avg 2.5ms / max 12.7ms
+    # per build; tripling it per frame was the input-tab drag fps drop.
+    _memo_key = (Core.melty.frame_count, class_to_show)
+    if getattr(cm_state, "_collect_key", None) == _memo_key:
+        return cm_state._collect_cache
 
     # Source/cst hosts come from the process-wide code-host cache, keyed by the
     # live reference - every menu opened on the same render_func/class/call
@@ -4373,24 +4833,6 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         cm_state.mode_key = mode_cls
         cm_state.mode_str, cm_state.mode_dict = (
             code_hosts_for(mode_cls) if mode_cls is not None else (None, None))
-
-    # ── Recompile (hotswap) - the same Run path code_file_io draws on a file
-    # leaf (menu_files / FILE_TREE). A matrix edit saves SOURCE to disk via
-    # the hosts' chain_out, but the live render function keeps its old defaults
-    # until a hotswap. The button/runner work against the str_host's own
-    # CodeState, so Run compiles the host's live buffer (the edit already
-    # merged in), not a possibly-stale disk read. None until the lazy host is
-    # drawn/loaded so the button appears a beat after the menu opens.
-    code_state = host_code_state(cm_state.render_func_str)
-    if code_state is not None and code_state.address is not None:
-        clicked = recompile_button(code_state, unique=unique)
-        recompile_status(code_state, draw_state)
-        # Alt+Enter (or the editor's usual Ctrl+Enter) while hovering the tab -
-        # enter_key_pressed is the auto-subscribed Enter-down InputEvent, same
-        # mechanism as code_file_io's hotkey; modifiers ride on the event.
-        hotkey = bool(enter_key_pressed and (enter_key_pressed.alt or enter_key_pressed.ctrl))
-        run_recompile(input_value._view_func, code_state, draw_state,
-                      start=clicked or hotkey, name=f"recompile{unique}")
 
     # ── Every input source, one parameter at a time ──────────────────────────
     # Collect each parsed source dict, match against the render function's
@@ -4504,15 +4946,24 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                 live_keys = set(live_cfg.kwargs)
         mode_kwargs = max(candidates,
                           key=lambda c: len(live_keys & set(c)), default=None)
-        try:
-            cls_lines, cls_start = inspect.getsourcelines(mode_cls)
-            member_off = next(
-                (i for i, l in enumerate(cls_lines)
-                 if l.lstrip().startswith((f"{current_mode.name} =",
-                                           f"{current_mode.name}="))), 0)
-            mode_loc = (inspect.getsourcefile(mode_cls), cls_start + member_off)
-        except (TypeError, OSError):
-            pass
+        # inspect.getsourcelines on a class AST-parses its WHOLE module (the
+        # class_loc lesson) - cache the member's location per (class, member),
+        # never recompute per frame.
+        _ml_key = (mode_cls, current_mode.name)
+        if getattr(cm_state, "_mode_loc_key", None) != _ml_key:
+            cm_state._mode_loc_key = _ml_key
+            cm_state._mode_loc = None
+            try:
+                cls_lines, cls_start = inspect.getsourcelines(mode_cls)
+                member_off = next(
+                    (i for i, l in enumerate(cls_lines)
+                     if l.lstrip().startswith((f"{current_mode.name} =",
+                                               f"{current_mode.name}="))), 0)
+                cm_state._mode_loc = (inspect.getsourcefile(mode_cls),
+                                      cls_start + member_off)
+            except (TypeError, OSError):
+                pass
+        mode_loc = cm_state._mode_loc
 
     # Registration order IS the per-param screen's row order: param default
     # (signature), caller, mode, class var, class default, function decoration.
@@ -4531,6 +4982,118 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                 TypeCodec, location=cls_loc, kind="class var")
     _add_source(f"@defaults({cls_name})", cm_state.class_dict.deep.decorators.defaults(),
                 TypeCodec, location=cls_loc, kind="class default")
+    # INSTANCE ATTR - the value instance's own whitelisted params (Lamp.tint):
+    # what core_render's OBJ_ATTR_PARAMS injection reads. Skip-when-absent
+    # like the other value-side rows; dicts/classes carry their config in
+    # __overrides__ / class rows above.
+    _raw_obj = getattr(input_value, "_raw_input_value", None)
+    if _raw_obj is not None and not isinstance(_raw_obj, (dict, list, type)):
+        _ia = _InstanceAttrSource(_raw_obj, target_ds=input_value)
+        if _ia:
+            _add_source(f"{type(_raw_obj).__name__} instance", _ia,
+                        TypeCodec, kind="instance attr")
+    # ── Sources parsed off the VALUE itself ──────────────────────────────────
+    # The value flowing through the view can be (or sit inside) a parse node
+    # of the owning window's's bubbling tree (e.g. a nested ClassParse in
+    # the Toggles window). Kwargs carried by that parse are live inputs the
+    # class_to_show rows (keyed on the value's runtime TYPE) miss, and since
+    # the dicts are bubbling trees, a cell edit marks the host dirty and saves
+    # through its normal path - no extra save need. Walk a few parents so a
+    # primitive leaf (scroll_speed) still finds its owning class parse, same
+    # as the class_to_show walk. Two such sources per parse:
+    #   @defaults(<name>)  the parse's decorators.defaults dict - the wrapper
+    #                      reads it directly (core_render's
+    #                      input_value["decorators"] tint path)
+    #   # [<name>]         the '# [tint=(...)]' override comment on the
+    #                      value's source line: a leaf child carries it in
+    #                      __overrides__; a primitive field's comment lives on
+    #                      the PARENT parse under __<key>__ (fed to the
+    #                      child's kwargs by draw_collection). Saves update
+    #                      the comment via _patch_leading_override /
+    #                      _patch_field_overrides.
+    # Both skip when absent (same rule as @window below) - a placeholder row
+    # on every parsed value would be permanent noise.
+    def _root_file_loc(ds, span):
+        # Map a span (relative to the root host parse's source) to a file
+        # location: nested parses carry no file_path, so find the ancestor
+        # parse that has file_path + line_offset. The window ds holds it as
+        # _input_value (post-convert), so check both. None → no jump location.
+        while span is not None and ds is not None:
+            for _r in (getattr(ds, "_raw_input_value", None),
+                       getattr(ds, "_input_value", None)):
+                if isinstance(_r, GeneralParse) and getattr(_r, "file_path", None):
+                    return (str(_r.file_path), _r.line_offset + span.start_line)
+            if ds._parent is ds:
+                break
+            ds = ds._parent
+        return None
+
+    _pds, _pwalk = input_value, 4
+    while _pds is not None and _pwalk >= 0:
+        _praw = getattr(_pds, "_raw_input_value", None)
+        if isinstance(_praw, GeneralParse):
+            _pdecos = _praw.get("decorators")
+            _pdefaults = _pdecos.get("defaults") if isinstance(_pdecos, dict) else None
+            _pname = getattr(getattr(_praw.get("__cst__"), "name", None),
+                             "value", None)
+            # The name-carry guard covers viewing ClassParse's own parse -
+            # the class_to_show row already shows it there.
+            if (isinstance(_pdefaults, dict) and _pdefaults and _pname
+                    and f"@defaults({_pname})" not in sources):
+                _add_source(f"@defaults({_pname})", _pdefaults, TypeCodec,
+                            location=_root_file_loc(_pds, getattr(_praw, "span", None)),
+                            kind="code class default")
+            _povs = _praw.get("__overrides__")
+            if _pds is input_value:
+                # The view targets the parse itself - its own leading comment.
+                _ov_dict, _ov_name = _povs, _pname
+                _ov_span = getattr(_praw, "span", None)
+            else:
+                # Primitive leaf - the parent parse holds its comment under
+                # __<key>__; the leaf's parent key rides in its kwargs (the
+                # 'key' entry draw_collection passes every child).
+                _tkey = (input_value._kwargs or {}).get("key")
+                _ov_dict = (_povs.get(f"__{_tkey}__")
+                            if isinstance(_povs, dict) and isinstance(_tkey, str)
+                            else None)
+                _ov_name = _tkey
+                # _child_spans maps field keys to their assignment's span
+                # (_record_child) - jump lands on the field's line, the
+                # comment's one above.
+                _ov_span = (getattr(_praw, "_child_spans", None) or {}).get(_tkey)
+            if isinstance(_ov_dict, dict) and _ov_dict and _ov_name:
+                _add_source(f"# [{_ov_name}]", _ov_dict, TypeCodec,
+                            location=_root_file_loc(_pds, _ov_span),
+                            kind="code comment")
+            break
+        # LIVE-VIEW windows/markers: the value flowing through them is a
+        # runtime capture, not a parse node - but the marker stamps the owning
+        # scope's parse dict on the draw_state (live_root/live_key, the same
+        # data its comment-args splat reads), so the site's `# [<key>]`
+        # comment registers as an input source exactly like a primitive
+        # leaf's. Edits write to the editor host's bubbling tree and save
+        # through its normal path.
+        _lroot = getattr(_pds, "live_root", None)
+        if isinstance(_lroot, dict):
+            _lkey = getattr(_pds, "live_key", None)
+            if isinstance(_lkey, str):
+                _lovs = _lroot.get("__overrides__")
+                _lov = (_lovs.get(f"__{_lkey}__")
+                        if isinstance(_lovs, dict) else None)
+                if not isinstance(_lov, dict):
+                    # No override yet - register a lazy entry so the matrix's
+                    # + can create `# [tint=(...)]` the same way it stamps a
+                    # missing @defaults(row).
+                    _lov = _LazyOverrideEntry(_lroot, f"__{_lkey}__")
+                _lspan = (getattr(_lroot, "_child_spans", None) or {}).get(_lkey)
+                _add_source(f"# [{_lkey}]", _lov, TypeCodec,
+                            location=_root_file_loc(_pds, _lspan),
+                            kind="code comment")
+            break
+        if _pds._parent is _pds:
+            break
+        _pds = _pds._parent
+        _pwalk -= 1
     # @window on the class (e.g. `@window(tint=(0.11,0.12,0.14))` on Toggles) -
     # its kwargs drive the window rendering the value, so it's an input source.
     # Same skip-when-absent rule as the fn-side @window below.
@@ -4547,7 +5110,62 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     _window_deco = cm_state.render_func_dict.deep.decorators.window()
     if isinstance(_window_deco, dict) and _window_deco:
         _add_source(f"@window({fn_name})", _window_deco,
-                    DecorationsCodec, location=fn_loc, kind="decoration")
+                    DecorationsCodec, location=fn_loc, kind="window decoration")
+
+
+    cm_state._collect_cache = {
+        "sources": sources, "tints": source_tints,
+        "locations": source_locations, "kinds": source_kinds,
+        "writable": tuple(writable_sources)}
+    cm_state._collect_key = _memo_key
+    return cm_state._collect_cache
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False,
+             temp=True, searchable=True)
+def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True, unique=None, class_to_show=None,
+                   enter_key_pressed=None, **kwargs):
+    """The three editable sources behind this view, in dispatch order:
+
+      1. RENDER FUNCTION — the render_func whose body produced the view, edited
+         whole via FunctionCodec. It isn't on the captured stack (the capture runs
+         in the wrapper BEFORE the body executes, so the innermost frame is the
+         filtered wrapper), so it's read from `_view_func`.
+      2. CALLER — the direct `draw_x(...)` call site that invoked this view, edited
+         via CallerCodec (spans just the call expression). `_call_site` is the
+         nearest real caller (filename, lineno), captured once on menu-open with the
+         render-dispatch machinery already filtered out (caller_site, core_render).
+      3. DECORATIONS — the `@...` block on the value's class, edited via
+         DecorationsCodec. `class_to_show` is resolved by draw_context_menu (the
+         value's own class, or the nearest parent with source for a primitive
+         field); only classes carry decorations, so it's skipped otherwise.
+      4. MODE — the ACTIVE mode's entry kwargs in its enum class source
+         (mode.py), edited via ModeCodec. Which member to show comes from the
+         target's _kwargs ('current_mode', stamped by the wrapper when a mode
+         config matched); skipped when no mode drove this view."""
+
+    srcs = collect_input_sources(input_value, cm_state, class_to_show)
+    sources, source_tints = srcs["sources"], srcs["tints"]
+    source_locations, source_kinds = srcs["locations"], srcs["kinds"]
+    writable_sources = srcs["writable"]
+
+    # ── Recompile (hotswap) - the same Run path code_file_io draws on a file
+    # leaf (folder_files / FILE_TREE). A matrix edit saves SOURCE to disk via
+    # the hosts' chain_out, but the live view function keeps its old defaults
+    # until a hotswap. The button/Run work against the view_host's own
+    # CodeState, the Run compiles the host's live root (the edit already
+    # merged in), not a possibly-stale disk copy. None until the lazy host has
+    # drawn/updated - the button appears a beat after the menu opens.
+    code_state = host_code_state(cm_state.render_func_str)
+    if code_state is not None and code_state.address is not None:
+        clicked = recompile_button(code_state, unique=unique)
+        recompile_status(code_state, draw_state)
+        # Alt+Enter (or the editor's usual Ctrl+Enter) while over the tab -
+        # enter_key_pressed is the menu-subscribed Enter-down InputEvent, same
+        # mechanism as code_file_io's hotkey; modifiers ride on the event.
+        hotkey = bool(enter_key_pressed and (enter_key_pressed.alt or enter_key_pressed.ctrl))
+        run_recompile(input_value._view_func, code_state, draw_state,
+                      start=clicked or hotkey, name=f"recompile{unique}")
 
     # ── Search - the STANDARD searchable path; no special find box. The tab
     # is searchable=True, so Ctrl+F over it opens the framework's floating

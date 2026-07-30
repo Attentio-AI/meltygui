@@ -35,6 +35,7 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.notifications import notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
+from src.lsd.gl_gui.perf_trace import trace as _ptrace, trace_rl as _ptrace_rl
 from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling, _reinstall_children, _DeepAttrMixin
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
@@ -299,6 +300,10 @@ class RenderHost(_DeepAttrMixin, dict):
     def _mark_changed(self):
         self._external_change = True
         self._local_edit_frame = Melty.frame_count   # stamp: a LOCAL edit happened NOW
+        # Debug timeline: who dirtied this host (a symbol-attach bubbling into the
+        # held gp would show up here as _distribute_by_name / _post_symbol_attach).
+        _ptrace_rl(("host-dirty", self.name), f"host DIRTY {self.name} <- {self._caller_trail(frames=5)}",
+                   min_interval=0.05)
         # Invalidate BOTH the window envelope AND the wrapper's own draw_state: the
         # envelope so render_host_view re-runs and calls the wrapper, and the wrapper
         # so its blit-cached body actually re-executes to process the edit (load/save
@@ -528,9 +533,15 @@ class RenderHost(_DeepAttrMixin, dict):
 
             request_render()
 
-        edited = bool((pre_dirty and local_ahead) or self._external_change or r_changed)
+        _ext = self._external_change
+        edited = bool((pre_dirty and local_ahead) or _ext or r_changed)
         self._external_change = False
         if edited:
+            # Change timeline: WHY this host reports an edit to its wrapper - for the
+            # convert (dict) host this is exactly what starts a chain_out.
+            _ptrace(f"host OUTBOUND edited {self.name}",
+                    pre_dirty=pre_dirty, local_ahead=local_ahead,
+                    ext=_ext, r_changed=r_changed)
             # Needed
             note = Note(name="Render host, nested view edited", tint=(1, 1, 1))
             # self._draw_state._parent.invalidate_by_obj(obj=input_value, note=note)
@@ -619,6 +630,48 @@ class RenderHost(_DeepAttrMixin, dict):
         self[self.value_key] = value
 
     # ── Lifecycle: draw the wrapper in this host's window (draw_main calls this) ─
+    def draw_needed(self):
+        """Event-driven pump gate for draw_main's host loop: False when this
+        is a hidden cache host with nothing to do this frame, so keeping
+        dozens of code-cache pairs REGISTERED costs ~nothing (each polled
+        draw is ~0.1ms of pure wrapper/envelope overhead). All real work is
+        already invalidation-driven — the io bodies are use_cache=True, so on
+        a clean frame they blit-replay and do nothing — which makes "has
+        work" exactly:
+          - a flagged edit (_external_change / _pending_external),
+          - the upstream value changed identity (what draw() polls for),
+          - never drawn yet (initial load pending),
+          - the envelope/wrapper tile is invalidated (any ds.invalidate —
+            _mark_changed, run_in_background completions, consumer notifies),
+          - the slow staggered heartbeat (1-in-30): the safety net for
+            signals that don't touch tiles (debounce timers, missed edges) —
+            a missed wake costs ≤~250ms on pipelines already debounced by
+            hundreds of ms, and the save channel can never wedge.
+        Visible hosts (real windows / non-## names / non-evictable) always
+        draw — they are on screen every frame by definition."""
+        if self.window or not getattr(self, "evictable", False) \
+                or not self.name.startswith("##"):
+            return True
+        if self.hidden:
+            return False
+        if self._external_change or self._pending_external:
+            return True
+        iv = self.input_value
+        if isinstance(iv, RenderHost):
+            iv = iv._held()
+        if iv is not self._last_resolved:
+            return True
+        env_ds = getattr(self, "_draw_state", None)
+        wds = self._wrapper_draw_state
+        if env_ds is None or wds is None:
+            return True
+        cache = Melty.cache
+        if cache is not None:
+            for ds in (env_ds, wds):
+                if cache._is_dirty(cache._tiles.get(getattr(ds, "_tile_id", None))):
+                    return True
+        return (Melty.frame_count + (id(self) >> 4)) % 30 == 0
+
     def draw(self, **extra):
         """Drive the wrapper for one frame. Resolve input_value (an upstream proxy →
         its held value), run the wrapper with our private view_func via the window

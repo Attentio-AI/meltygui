@@ -394,6 +394,31 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             return_val = input_value
         same_line()
 
+    # ── Anywhere tint swatch (outlined) ── the set_anywhere loop beside the
+    # legacy chain above: reads the framework-resolved tint
+    # (draw_state._kwargs, in-flight cache included) and writes back to
+    # whichever source DRIVES it — code, comment, decoration, instance attr.
+    # Outlined so the two widgets read apart while both exist; the legacy
+    # chain goes away once this proves out.
+    from src.lsd.gl_gui.view.core_views.new_core_view import (
+        anywhere_value, set_anywhere)
+    _aw_tint = anywhere_value("tint", draw_state)
+    if _aw_tint is not None and (show_tint or (
+            isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
+        draw_state._has_popup = True
+        _aw_ch, _aw_val, _aw_ds = draw_tuple(
+            _aw_tint, show_name=False, show_header=False,
+            name=f"aw_tint##{Melty.get_tile_id()}", return_extras=True)
+        if _aw_ds is not None and _aw_ds.width:
+            imgui.get_window_draw_list().add_rect(
+                _aw_ds.abs_left - 1, _aw_ds.abs_top - 1,
+                _aw_ds.abs_left + _aw_ds.width + 1,
+                _aw_ds.abs_top + _aw_ds.height + 1,
+                imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.5), rounding=3.0)
+        if _aw_ch:
+            set_anywhere("tint", _aw_val, draw_state)
+        same_line()
+
 
     # ── Add button ─────────────────────────────────────────────
     if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):
@@ -662,6 +687,31 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             draw_state.tint = tint_value
             on_change = True
             return_val = input_value
+        same_line()
+
+    # ── Anywhere tint swatch (outlined) ── the set_anywhere loop beside the
+    # legacy chain above: reads the framework-resolved tint
+    # (draw_state._kwargs, in-flight cache included) and writes back to
+    # whichever source DRIVES it — code, comment, decoration, instance attr.
+    # Outlined so the two widgets read apart while both exist; the legacy
+    # chain goes away once this proves out.
+    from src.lsd.gl_gui.view.core_views.new_core_view import (
+        anywhere_value, set_anywhere)
+    _aw_tint = anywhere_value("tint", draw_state)
+    if _aw_tint is not None and (show_tint or (
+            isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
+        draw_state._has_popup = True
+        _aw_ch, _aw_val, _aw_ds = draw_tuple(
+            _aw_tint, show_name=False, show_header=False,
+            name=f"aw_tint##{Melty.get_tile_id()}", return_extras=True)
+        if _aw_ds is not None and _aw_ds.width:
+            imgui.get_window_draw_list().add_rect(
+                _aw_ds.abs_left - 1, _aw_ds.abs_top - 1,
+                _aw_ds.abs_left + _aw_ds.width + 1,
+                _aw_ds.abs_top + _aw_ds.height + 1,
+                imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.5), rounding=3.0)
+        if _aw_ch:
+            set_anywhere("tint", _aw_val, draw_state)
         same_line()
 
     # ── Add button ─────────────────────────────────────────────

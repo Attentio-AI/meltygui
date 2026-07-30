@@ -1214,7 +1214,8 @@ def draw_voxel_controls(input_value=None, vox_ds=None, mapping=None,
     return changed, input_value
 
 
-@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, bg_offset=-4, min_height=293, disable_scroll=True, use_cache=True)
+@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, auto_resize=False, min_width=269,
+             bg_offset=-4, min_height=293, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 draw_state=None,
                 # ── camera + shading: cam_* names dodge the legacy DrawState

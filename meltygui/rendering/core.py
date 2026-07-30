@@ -306,6 +306,15 @@ _AUTO_PARAM_EXCLUDE = {
     'data', 'ref', 'chain', 'initial', 'auto_state',
 }
 
+# Object-attached params: a VALUE OBJECT can set one of these as a
+# plain attribute (e.g. auroras.tint) and the wrapper injects it as a render
+# kwarg - the LOWEST-priority source (setdefault: explicit kwargs, mode,
+# comment args, decorator defaults, this, same as the old hardcoded
+# hasattr(input_value, "tint") elif this replaces). Whitelisted so arbitrary
+# object attrs never leak into kwargs; separate from the set-anywhere
+# whitelist (new_core_view.SET_ANYWHERE_PARAMS).
+OBJ_ATTR_PARAMS = ("tint",)
+
 _EVENT_SUFFIXES = tuple(f"_{a}" for a in ALL_ACTIONS)
 
 
@@ -566,7 +575,6 @@ def render_func(*args, **o_kwargs):
 
         kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
         as_window = kwargs.get("as_window", False)
-        initial_values = kwargs.get("initial", {})
 
         if as_window:
             kwargs['show_bg'] = True
@@ -619,6 +627,25 @@ def render_func(*args, **o_kwargs):
 
         if header_defaults is not None:
             kwargs = header_defaults | kwargs
+
+        # Read AFTER the o_kwargs merge so decorator-level initial={...} is
+        # seen; a caller-passed initial still wins (kwargs takes precedence).
+        initial_values = kwargs.get("initial", {})
+
+        # Object-attached params (OBJ_ATTR_PARAMS): a value object's own
+        # whitelisted attrs (Loras.tint) feed in as ordinary kwargs. This
+        # lives HERE, in the always-run prologue, NEVER in the cache-gated
+        # render path: a kwarg injected only on full renders makes
+        # draw_state._kwargs oscillate between cached and uncached frames
+        # (the tint tab read that as a value ↔ + flicker). setdefault
+        # semantics: every caller/mode/decorator source wins. Dict values carry
+        # their config in __overrides__ instead (fed later, render path).
+        if input_value is not None and not isinstance(input_value, dict):
+            for _oa in OBJ_ATTR_PARAMS:
+                if _oa not in kwargs:
+                    _oav = getattr(input_value, _oa, None)
+                    if _oav is not None:
+                        kwargs[_oa] = _oav
 
         # ExpandMode.MANUAL: the view func always runs (gate in draw_inner_main)
         # and owns its collapsed rendering, so every wrapper shortcut keyed to
@@ -783,7 +810,7 @@ def render_func(*args, **o_kwargs):
         ds_kwargs = copy(kwargs)
         exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
                              "name", "z_offset", "use_cache", "active_layer", "auto_resize",
-                             "unique", "suffix", "collection", "expanded_rect", "z_pos", "tint", "bg_offset",
+                             "unique", "suffix", "collection", "expanded_rect", "z_pos", "bg_offset",
                              "meta", "depth", "next_kwargs", "param_types"]
         for exclude_key in exclude_ds_kwargs:
             ds_kwargs.pop(exclude_key, None)
@@ -1125,7 +1152,7 @@ def render_func(*args, **o_kwargs):
         fixed_size = not draw_state.auto_resize or (kwargs.get("height", None) and not "column" in kwargs) or closable or (
                     kwargs.get("fill_height", None) is not None and not "column" in kwargs)
 
-        auto_resize = kwargs.get("auto_resize", True) or not draw_state.expanded
+        auto_resize = kwargs.get("auto_resize", True if not closable else False) or not draw_state.expanded
         draw_state.auto_resize = auto_resize and not fixed_size
 
         # Restore expanded =================
@@ -1254,7 +1281,7 @@ def render_func(*args, **o_kwargs):
             if _codec is not None:
                 _ck = getattr(_codec, "render_kwargs", None)
                 if _ck:
-                    _ck = {k: v for k, v in _ck.items() if k != "tint"}
+                    _ck = {k: v for k, v in _ck.items() if True}
                     if _ck:
                         kwargs = _ck | kwargs
                 Melty.codec_stack.append(_codec)
@@ -2712,12 +2739,30 @@ def render_func(*args, **o_kwargs):
                     draw_state._input_value = input_value
                     kwargs["input_value"] = draw_state._input_value
 
-                # __overrides__: a collection can carry a key=value store
-                # (parsed from a `# [tint=(red), bg_offset=5]` comment) that
-                # overrides all render kwargs for this view. Uses the finalized
+                # __overrides__: comment-arg render kwargs (`# [tint=(...),
+                # bg_offset=5]`), applied here so the values feed show_bg/tint
+                # and clean_args. Two sources, parent slot first so a dict
+                # child's OWN comment wins:
+                #
+                # 1. A primitive leaf's comment overrides on its PARENT dict
+                #    under __<key>__ (the leaf has no dict of its own to carry
+                #    it). Any call that identifies its slot with collection= +
+                #    key= gets that slot's overrides - draw_collection children
+                #    pass those already, and e.g. the live-view debug window
+                #    names its code-dict slot the same way. No view-side
+                #    routing: naming the slot IS the routing.
+                if isinstance(collection, dict) and "key" in kwargs:
+                    _slot_ov = collection.get("__overrides__")
+                    if isinstance(_slot_ov, dict):
+                        _field_ov = _slot_ov.get(f"__{kwargs['key']}__")
+                        if isinstance(_field_ov, dict):
+                            for _ok, _ov in _field_ov.items():
+                                if not (isinstance(_ok, str) and _ok.startswith("__")):
+                                    kwargs[_ok] = _ov
+
+                # 2. A dict value has its own store. Read the finalized
                 # kwargs["input_value"] (set above for both the positional and
-                # convert_in paths) so direct and converted values are covered;
-                # applied here so the values feed show_bg/tint and clean up.
+                # convert_in paths) so nested and converted dicts are covered.
                 _ov_collection = kwargs.get("input_value")
                 if isinstance(_ov_collection, dict):
                     _overrides = _ov_collection.get("__overrides__")
@@ -2757,10 +2802,6 @@ def render_func(*args, **o_kwargs):
                         if len(new_tint) >= 3:
                             style_manager.set_imgui_tint(*new_tint[:4])
 
-                elif hasattr(input_value, "tint") and input_value.tint is not None and isinstance(input_value.tint,
-                                                                                                  (tuple, list)):
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*input_value.tint)
                 elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
                     if name in collection.__tint__:
                         previous_tint = style_manager.get_tint()

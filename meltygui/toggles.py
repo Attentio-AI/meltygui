@@ -1,7 +1,7 @@
 from enum import Enum
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import tint, Core, defaults
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 
@@ -296,7 +296,7 @@ class Tint:
 @window
 class Swoosh:
     # Nested-window "swoosh" connector (parent outline -> nested view)
-    tint = (1.0, 0.7, 0.2)   # fallback color if no style manager is available
+    tint = (0.94, 0.125, 0.00)   # fallback color if no style manager is available
     value = 1.023              # intensity of the highlight (super-bright yellow)
     saturation = 0.791        # saturation scale applied to the current tint
     alpha = 1.0             # opacity of the swoosh
@@ -377,14 +377,14 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.161, 0.186, 0.261))
+@window(tint=(0.04, 0.09, 0.21))
 class Toggles:
 
-    @defaults(tint=(0.872, 0.699, 0.528))
+    @defaults(tint=(0.572, 0.24, 0.216))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
-        token_match_tint = (0.277, 0.5, 0.5, 0.22)
+        token_match_tint = (0.277, 0.50, 0.50, 0.22)
 
         @staticmethod
         def usage_tint(users):
@@ -405,7 +405,7 @@ class Toggles:
             usage_tint = (0.204, 0.224, 0.239)
             usage_tint = (*usage_tint, v)
             return usage_tint
-
+            
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounds character match - no CST / symbol-usage metadata is
@@ -423,7 +423,6 @@ class Toggles:
         definition_tints = True
         def_block_alpha = 0.148
         def_symbol_alpha = 0.206
-
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
@@ -520,7 +519,7 @@ class Toggles:
         attrib_change_stack_trace = False
         draw_bvh = False
 
-    @defaults(tint=(0.878, 0.762, 0.692))
+    @defaults(tint=(0.57, 0.4161, 0.057))
     class ScrollSettings:
         scroll_speed = 611
         max_increment_fraction = 0.169
@@ -614,16 +613,17 @@ class Toggles:
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
 
-    # While typing, pause the background cst→dict parse at statement boundaries so
+    # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
-    # [tint=(0.872, 0.554, 0.053)]
+
+    # [tint=(0.7555555701255798, 0.46218958497047424, 0.00)]
     yield_to_ui = True
 
     # Timeline logging of the symbol-index / code-host load path: every
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = False
+    symbol_perf_log = True   # TEMP: on while debugging redundant symbol computes / convert.py hang
     attrib_churn_log = False
     debug_threads = False
 
@@ -636,9 +636,9 @@ class Toggles:
     # View Settings
 
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.639
+    brightness = 0.530
     # [tint=(0.025, 0.032, 0.044)]
-    contrast = 2.255
+    contrast = 2.061
 
     debug_z_depth = False
     filters = True
@@ -657,6 +657,9 @@ class Toggles:
 
     # Screenshot output dir (screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
+
+
+    debug_set_anywhere = False
 
 @window
 class LegacyToggles:
