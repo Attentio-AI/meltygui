@@ -2931,7 +2931,7 @@ def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
         return
-    if Melty.frame_count < 3:
+    if Melty.frame_count < 4:
         return  # app startup: never back off the initial parse, just run it
     last = getattr(Melty, "_last_input_time", 0.0)
     if not last or time.monotonic() - last >= _YIELD_QUIET_S:
@@ -7827,29 +7827,29 @@ def shutdown_symbol_index_daemon():
     sys._symbol_index_daemon_started = False
     _save_symbol_store()
 
-
-# Guard on `sys` (shared across the src./lsd. module universes) so the daemon starts
-# exactly once even though this module can be imported under two names.
-# shutdown_symbol_index_daemon clears the guard on teardown, so a clean
-# restart-in-place comes through the True branch with a fresh daemon + event.
-if not getattr(sys, "_symbol_index_daemon_started", False):
-    sys._symbol_index_daemon_started = True
-    _stop_event = _threading.Event()
-    sys._symbol_index_stop = _stop_event
-    _threading.Thread(target=_symbol_index_daemon, args=(_stop_event,),
-                      daemon=True, name="symbol-index-daemon").start()
-else:
-    # Re-exec with a daemon already started (a hotswap of THIS file, or a
-    # restart-in-place where shutdown didn't clear the guard). The exec wiped this
-    # module's _index_refs_cache, but a live daemon re-warms it on its next pass
-    # (and edits self-warm the cache lazily thereafter) - so we no longer need a
-    # full rebuild on every hotswap. Only force one when NO daemon thread is alive
-    # (a true crash), so indexing isn't left cold indefinitely. Name-check rather
-    # than a stored ref so this also sees a daemon started by older bytecode.
-    _daemon_alive = any(t.name == "symbol-index-daemon" and t.is_alive()
-                        for t in _threading.enumerate())
-    if not _daemon_alive:
-        try:
-            SymbolIndexCache.rebuild()
-        except Exception:
-            pass
+#
+# # Guard to `sys` (shared across the src/lsd.py module dupes) so the daemon runs
+# # exactly once even though this file can be imported under two names.
+# # shutdown_symbol_index_daemon clears the guard on teardown, so a clean
+# # restart-in-place comes through the True branch with a fresh daemon + event.
+# if not getattr(sys, "_symbol_index_daemon_started", False):
+#     sys._symbol_index_daemon_started = True
+#     _stop_event = _threading.Event()
+#     sys._symbol_index_stop = _stop_event
+#     _threading.Thread(target=_symbol_index_daemon, args=(_stop_event,),
+#                       daemon=True, name="symbol-index-daemon").start()
+# else:
+#     # Re-exec with the thread already started (a hotswap of THIS file, or a
+#     # restart-in-place where shutdown didn't clear the guard). The exec wiped this
+#     # module's _index_refs_cache, but a LIVE daemon re-warms it on its next pass
+#     # (and subsequent re-warm the cache lazily thereafter) - so we no longer kick a
+#     # full rebuild on every hotswap. Only force one when NO daemon thread is alive
+#     # (a true crash), so indexing isn't left cold indefinitely. Name-check rather
+#     # than a direct ref so it also catches a daemon started by another file.
+#     _daemon_alive = any(t.name == "symbol-index-daemon" and t.is_alive()
+#                         for t in _threading.enumerate())
+#     if not _daemon_alive:
+#         try:
+#             SymbolIndexCache.rebuild()
+#         except Exception:
+#             pass

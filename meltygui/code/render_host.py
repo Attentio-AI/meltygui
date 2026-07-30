@@ -584,7 +584,7 @@ class RenderHost(_DeepAttrMixin, dict):
         for cds in list(self._consumers):
             tid = getattr(cds, "_tile_id", None)
             if tid is not None:
-                Melty.cache.invalidate_up(tid, force=True,
+                Melty.cache.invalidate_up(tid, force=True, max_depth=2,
                                           note=Note(name=name,
                                                     tint=(0.4, 1.0, 0.6), draw_state=cds))
             #     notify("invalidate #8", tag="host", tint=(1, 0, 1))

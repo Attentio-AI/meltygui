@@ -265,8 +265,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if _font_handle is not None:
             imgui.push_font(_font_handle)
             _font_pushed = True
-
-
+            
     # Depth drives name brightness
     depth_scale       = 0.06
     depth_offset      = -30.0

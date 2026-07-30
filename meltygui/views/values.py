@@ -1214,7 +1214,7 @@ dropdown_demo_data = {
 drop_down_selection = None
 
 
-@render_func(use_cache=False, show_bg=True, selectable=False,
+@render_func(use_cache=False, show_bg=True, selectable=False, shadow=False,
              show_tint=True, bg_offset=0, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
@@ -3733,7 +3733,8 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
 @render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
-def draw_int(input_value: int, draw_state=None, min_width=80, wrap=False, min_value=-1000.0, max_value=1000.0, speed=0.1, unique=0):
+def draw_int(input_value: int, draw_state=None, min_width=80, wrap=False, min_value=-1000.0, 
+             max_value=1000.0, speed=0.1, unique=0):
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
     else:
@@ -4738,7 +4739,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         if Core.melty.cache is not None:
             Core.melty.cache.invalidate_up(offset_ds._tile_id, max_depth=5)
         request_render()
-
+        
     input_value._offset_ds = offset_ds
     input_value = offset_ds
 

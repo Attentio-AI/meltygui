@@ -98,12 +98,11 @@ class Tint:
         saturation_factor = 1.2
         value_factor = -0.002
 
-
-
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
+        
     @staticmethod
     def checkbox_bg():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -149,7 +148,7 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.1, 0.8, 0))
+    @defaults(tint=(0.191, 0.428, 0.157))
     def checkbox_text_true():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
@@ -179,7 +178,7 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.9, 0.0, 0))
+    @defaults(tint=(0.478, 0.053, 0.053))
     def dd_text(requested_tint=None):
         if requested_tint is None:
             style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -209,6 +208,52 @@ class Tint:
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+
+    @staticmethod
+    @defaults(tint=(0.45, 0.45, 0.45))
+    def line_number_tint():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.75
+        value_factor = 4.10
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+
+    @staticmethod
+    @defaults(tint=(0.1, 0.12, 0.14))
+    def line_number_bg():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 1.6
+        value_factor = 0.35
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+
+    @staticmethod
+    @defaults(tint=(0.0, 0.325, 0.972))
+    def text_selection():
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 1.313
+        value_factor = 1.714
+        max_value = 0.6
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, 0), max_value))
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
@@ -280,7 +325,7 @@ class Swoosh:
                                 # 0.0 fully to the top/bottom (y) edges. An
                                 # axis with no facing gap can't be bridged, so an
                                 # extreme bias falls back to whichever axis has a gap.
-    ribbon_coverage = 1.04      # each end's band width as a fraction of its own edge
+    ribbon_coverage = 2.13      # each end's band width as a fraction of its own edge
                                 # (clamped at the full edge, so >=1 spans the edge)
     ribbon_max_width = 0     # px cap on either end's band width (0 = uncapped)
     ribbon_curve = 0.33         # s-curve tangent reach as a fraction of the gap the
@@ -292,15 +337,15 @@ class Swoosh:
                                 # ribbons arc as one C and long thin ones keep the
                                 # S (negative = bow "in" against the swerve, 0 = off)
     ribbon_bow_shape = 2.0      # bow profile exponent: <1 broad arc, >1 mid bulge
-    ribbon_alpha = 0.15         # fill opacity of the band (below the fade area)
+    ribbon_alpha = 0.07         # fill opacity of the band (inside the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
                                 # exceeds fade_size x fade_size; alpha then scales
                                 # inversely with area (constant total ink, 0 = off)
-    ribbon_edge_alpha = 0.59    # opacity of the band's two boundary strokes
-    ribbon_edge_fade_length = 350.0  # px: each boundary stroke starts thinning once its
+    ribbon_edge_alpha = 0.05    # opacity of the band's two boundary strokes
+    ribbon_edge_fade_length = 7.4  # px: a boundary stroke starts thinning once its
                                 # own arc length exceeds this; alpha scales inversely
                                 # with length, per stroke (0 = off)
-    ribbon_edge_thickness = 1.4 # boundary stroke thickness in px (0 = no stroke/AA)
+    ribbon_edge_thickness = 2.7 # boundary stroke thickness in px (0 = no stroke/lines)
 
     # When the child overlaps the parent, slide both endpoints along their own
     # rect edge out of the intersection area to flank the reentrant corner of the
@@ -332,14 +377,12 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.167, 0.177, 0.211))
+@window(tint=(0.161, 0.186, 0.261))
 class Toggles:
 
-    @defaults(tint=(0.672, 0.358, 0.041))
+    @defaults(tint=(0.872, 0.699, 0.528))
     class TextEditor:
         enable_spell_check = False
-
-        # [tint=(0.922, 0.0, 0.0)]
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.5, 0.5, 0.22)
 
@@ -359,7 +402,7 @@ class Toggles:
             import colorsys
             t = min(max(users, 1) - 1, 5) / 5.2
             v = max(0.13, 0.88 * t + 0.3)           
-            usage_tint = (0.317, 0.251, 0.0)
+            usage_tint = (0.204, 0.224, 0.239)
             usage_tint = (*usage_tint, v)
             return usage_tint
 
@@ -369,17 +412,18 @@ class Toggles:
         # involved, so it works in any text, mid-edit or unparseable. Flip the
         # flag to disable; the (r, g, b, a) tuple is read live.
         highlight_token_matches = True
-
         # Definition tints: a class/def whose definition carries a tint
         # (@defaults(tint=...), a '# [tint=...]' override comment, or a
         # class-body tint=...) gets a full-body background wash in the editor,
-        # and every occurrence of that symbol - even when its definition lives
-        # in another file - gets a small wash of the same color. The washes take
+        # and every occurrence of that symbol — even when its definition lives
+        # in another file — gets a small wash in the same color. The washes use
         # the tint's rgb with these alphas (the tint's own alpha is a view-
         # background opacity, not meant for text washes). All read live.
+        # [tint=(0.134, 0.47, 0.806, 1.0)]
         definition_tints = True
         def_block_alpha = 0.148
         def_symbol_alpha = 0.206
+
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
@@ -395,7 +439,12 @@ class Toggles:
         # own explicit comment tint if the definition has one, else the
         # mix of its symbol tints). That same color also marks the line's
         # number box in the gutter. 0 disables.
-        def_line_alpha = 0.173
+        def_line_alpha = 0.089
+
+        # When enabled the line tint rect above fills the whole line -
+        # gutter edge to the view's right edge - instead of hugging the
+        # line's text extent (indent → last non-ws column).
+        def_line_full_width = True
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -434,6 +483,7 @@ class Toggles:
         bg_tint_value = 0.432
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
+
 
     @defaults(tint=(0.315, 0.489, 0.322))
     class LoadSave:
@@ -564,9 +614,8 @@ class Toggles:
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
 
-    # While typing, pause the background cst→dict parse on statement boundaries so
+    # While typing, pause the background cst→dict parse at statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
-
     # [tint=(0.872, 0.554, 0.053)]
     yield_to_ui = True
 
@@ -574,7 +623,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = True
+    symbol_perf_log = False
     attrib_churn_log = False
     debug_threads = False
 
@@ -582,7 +631,6 @@ class Toggles:
 
     # [tint=(0.025, 0.372, 0.326)]
     profile_mode = ProfileMode.LIGHT
-
     debug_stale_tint = False
 
     # View Settings

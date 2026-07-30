@@ -746,15 +746,8 @@ def _run_convert(chain, value, route=None, routed=None, **extra):
         if not accepts_var_kw:
             call = {k: v for k, v in call.items() if k in node.__params__}
         try:
-            _t_node0 = time.monotonic()
             result = inner(**call)
-            _dt_node = (time.monotonic() - _t_node0) * 1000.0
-            if _dt_node >= 10.0:
-                _ptrace(f"convert node {getattr(inner, '__name__', str(inner))} "
-                        f"took {_dt_node:.0f}ms")
         except Exception as e:
-            _ptrace(f"convert node {getattr(inner, '__name__', str(inner))} "
-                    f"raised {type(e).__name__} (treated as value)")
             return e, routed
         if isinstance(result, tuple) and len(result) == 2:
             _, value = result
@@ -846,11 +839,7 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
     generation the finished parse actually reflects (not whatever the source is by the
     time the worker returns)."""
     notify(f"_run_chain_in: start", tag="chain_in")
-    _t_ci0 = time.monotonic()
-    _ptrace("chain_in: worker start",
-            len=len(input_value) if isinstance(input_value, str) else type(input_value).__name__)
     result, routed = _run_convert(chain, input_value, **extra)
-    _t_ci_conv = time.monotonic()
     error = result if isinstance(result, Exception) else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
@@ -866,12 +855,6 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
             lint = check_source(input_value, path=lint_path)
         except Exception:
             lint = []
-    _now = time.monotonic()
-    _ptrace(f"chain_in: worker done in {(_now - _t_ci0) * 1000:.0f}ms",
-            convert=f"{(_t_ci_conv - _t_ci0) * 1000:.0f}ms",
-            checks=f"{(_now - _t_ci_conv) * 1000:.0f}ms",
-            error=type(error).__name__ if error is not None else "none",
-            lint=len(lint))
     return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen}
 
 
@@ -1223,8 +1206,6 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             child_kwargs=chain_in_kwargs,
             name=f"chain_in{unique}", start=external_change, inline_first=inline)
         if external_change:
-            _ptrace("chain_in: queued (source changed)", unique=unique,
-                    len=len(input_value) if isinstance(input_value, str) else "-")
             note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
             draw_state._parent.invalidate(note=note)
         external_change = False
@@ -1251,9 +1232,6 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             note = Note(name="Convert in and out, chain in finished", tint=(1, 0.5, 1.0), draw_state=draw_state)
             Melty.cache.invalidate_up(draw_state._tile_id, force=True, note=note)
             notify(f"chain_in finished", tag="chain_in")
-            _ptrace("chain_in: landed on host", unique=unique,
-                    error=type(modes_state.last_error).__name__
-                          if modes_state.last_error is not None else "none")
 
     out_changed, out_value = False, input_value
 
@@ -1273,16 +1251,8 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
     primary = routed.get(primary_key) if primary_key is not None else None
 
     child_kwargs['routed'] = routed
-    _t_vf0 = time.monotonic()
     edited, edited_value = view_func(input_value=primary, external_change=external_change,
                                      inbound_gen=inbound_gen, **child_kwargs)
-    _dt_vf = (time.monotonic() - _t_vf0) * 1000.0
-    if _dt_vf >= 20.0:
-        # The inline-chain route's own view subtree (e.g. the text editor) -
-        # the one long-frame render the cache-route timers don't cover.
-        _ptrace_rl(("vf-slow", unique),
-                   f"view_func {getattr(view_func, '__name__', str(view_func))} "
-                   f"took {_dt_vf:.0f}ms", unique=unique)
     converted_edit = edited_value if (edited and edited_value is not None) else UNSET
     if edited:
         draw_state.invalidate(note=Note(name="convert_in_out, view func edit", tint=(1.0, 0.5, 0), draw_state=draw_state))
@@ -1459,15 +1429,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if getattr(codec, "view_func", None) is not None:
             view_func = codec.view_func
 
-        _t_res0 = time.monotonic()
         address = codec.resolve_address(input_value, draw_state, code_state=code_state)
-        _dt_res = (time.monotonic() - _t_res0) * 1000.0
-        if _dt_res >= 5.0:
-            # Per-frame render-thread call - only slow ones are timeline-worthy.
-            _ptrace_rl(("resolve", id(draw_state)),
-                       f"io: resolve_address ({getattr(codec, '__name__', type(codec).__name__)}) "
-                       f"took {_dt_res:.1f}ms",
-                       name=getattr(input_value, "__name__", None) or type(input_value).__name__)
         code_state.address = address
         top_line_height = 30
         external_change = False
@@ -1486,11 +1448,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 load = True
                 code_state.text_cache = None
                 code_state.mark_file_current()
-                _ptrace("io: initial load fire",
-                        name=getattr(input_value, "__name__", None) or type(input_value).__name__,
-                        file=getattr(getattr(address, "path", None), "name", address.path)
-                             if getattr(address, "path", None) is not None else "-",
-                        span=f"{getattr(address, 'start', None)}-{getattr(address, 'end', None)}")
 
         # str gate on top: even a code codec can briefly hold non-text data.
         if (code_buttons and not auto_recompile_edits
@@ -1550,8 +1507,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state.text_cache = cache_text
                 code_state.mark_file_current()
                 external_change = True
-                _ptrace("io: pulled sibling edit from PendingSave cache (reparse follows)",
-                        file=getattr(getattr(address, "path", None), "name", "-"))
                 draw_state.invalidate_up(max_depth=6)
                 request_render()
 
@@ -1573,17 +1528,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                     code_state.mark_file_current()
                     code_state._save_refused = False
                     external_change = True
-                    _ptrace("io: in-process self-write sync (reparse follows)",
-                            file=getattr(getattr(address, "path", None), "name", "-"))
                     draw_state.invalidate_up(max_depth=6)
                     request_render()
                 else:
                     load = True
                     code_state._loaded_externally = not self_write
                     code_state.mark_file_current()
-                    _ptrace("io: stale file -> reload fire",
-                            external=not self_write,
-                            file=getattr(getattr(address, "path", None), "name", "-"))
             else:
                 imgui.same_line(spacing=0)
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
@@ -1630,10 +1580,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.mark_file_current()
 
         elif changed:
-            _ptrace("io: load landed",
-                    file=getattr(getattr(address, "path", None), "name", "-"),
-                    len=len(new_text) if isinstance(new_text, str) else type(new_text).__name__,
-                    external=code_state._loaded_externally)
             code_state.text_cache = new_text
             code_state.mark_file_current()
             draw_state.invalidate_up(max_depth=6)

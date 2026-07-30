@@ -1476,6 +1476,29 @@ def _scan_def_tint_lines(lines, line, _depth=0):
     return None
 
 
+# symbol -> (def-shape pattern, word pattern) for _verify_def_line; bounded,
+# reset on hotswap.
+_DEF_LINE_PATS = {}
+
+# path-str -> realpath. Paths are stable for a session; per-rebuild realpath
+# syscalls were a measured keystroke cost. Bounded, reset on hotswap.
+_REALPATH_CACHE = {}
+
+
+def _real(p):
+    r = _REALPATH_CACHE.get(p)
+    if r is None:
+        if len(_REALPATH_CACHE) > 4096:
+            _REALPATH_CACHE.clear()
+        import os
+        try:
+            r = os.path.realpath(p)
+        except OSError:
+            r = p
+        _REALPATH_CACHE[p] = r
+    return r
+
+
 def _verify_def_line(lines, line, name):
     """Verify-then-recover for a recorded definition line (the def-side twin
     of _site_span): index positions go stale when the definition FILE is
@@ -1487,8 +1510,17 @@ def _verify_def_line(lines, line, name):
     if not name:
         return line
     comp = str(name).rsplit(".", 1)[-1]
-    pat = re.compile(rf"^\s*(?:(?:class|def)\s+{re.escape(comp)}\b|{re.escape(comp)}\s*[:=][^=])")
-    word = re.compile(rf"\b{re.escape(comp)}\b")
+    # Per-name pattern memo: the compiled f-string patterns thrash re's own
+    # 512-entry cache - at one _verify_def_line per in-file symbol per
+    # keystroke, uncached compiles alone cost ~70ms on a big buffer.
+    pats = _DEF_LINE_PATS.get(comp)
+    if pats is None:
+        if len(_DEF_LINE_PATS) > 4096:
+            _DEF_LINE_PATS.clear()
+        pats = (re.compile(rf"^\s*(?:(?:class|def)\s+{re.escape(comp)}\b|{re.escape(comp)}\s*[:=][^=])"),
+                re.compile(rf"\b{re.escape(comp)}\b"))
+        _DEF_LINE_PATS[comp] = pats
+    pat, word = pats
     i = line - 1
     if 0 <= i < len(lines) and word.search(lines[i]):
         return line
@@ -1499,34 +1531,33 @@ def _verify_def_line(lines, line, name):
     return line
 
 
+# (total_gen, {realpath: gen}) - updated only when the total moves; the old
+# per-call sum scan over pending entries ran once per cross-file symbol
+# per keystroke.
+_PENDING_GEN_MAP = (None, {})
+
+
 def _pending_gen_of(path):
     """PendingSave edit generation for `path` — 0 when it has no queued edits.
     queue_save keys _pending_gen by the address's OWN path value while def
-    paths arrive resolved, so a direct miss falls back to a realpath compare
-    over the (few) pending entries. Runs at collector-rebuild cadence."""
+    paths arrive resolved, so lookups go through a realpath-keyed snapshot
+    map, refreshed only when the total generation moves."""
+    global _PENDING_GEN_MAP
     try:
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     except Exception:
         return 0
-    g = PendingSave.pending_gen_for(path)
-    if g:
-        return g
     gens = PendingSave._pending_gen
     if not gens:
         return 0
-    import os
-    try:
-        rp = os.path.realpath(str(path))
-    except OSError:
-        return 0
-    total = 0
-    for k, v in list(gens.items()):
-        try:
-            if os.path.realpath(str(k)) == rp:
-                total += v
-        except OSError:
-            continue
-    return total
+    total = sum(gens.values())
+    if _PENDING_GEN_MAP[0] != total:
+        m = {}
+        for k, v in list(gens.items()):
+            rp = _real(str(k))
+            m[rp] = m.get(rp, 0) + v
+        _PENDING_GEN_MAP = (total, m)
+    return _PENDING_GEN_MAP[1].get(_real(str(path)), 0)
 
 
 def _pending_total_gen():
@@ -1541,11 +1572,28 @@ def _pending_total_gen():
         return 0
 
 
+# path-str -> (stat_key, lines). One pending-overlay text build per file per
+# state change, shared by every def scan of the file. Without this, each
+# (pos, name) cache missindependently rebuilt current_file_text - and typing bumps
+# the file's pending gen per keystroke, wiping the per-fileite cache, so a
+# file with N tinted defs paid N × O(file) splices per keystroke on the
+# render thread (GIL-held - the cost cProfile smeared into other).
+_XFILE_LINES_CACHE = {}
+
+
 def _scan_def_tint(path, line, name=None):
     """File-reading wrapper around _scan_def_tint_lines. Runs only on a
     cache miss (see _cross_file_def_tint). Reads through PendingSave so a
     tint-comment edit queued in-app (deferred saves never touch disk) is
-    seen immediately; falls back to the disk file."""
+    seen immediately; falls back to the disk file. The lines list is shared
+    per (path, stat/pgen state) via _XFILE_LINES_CACHE."""
+    p = str(path)
+    memo = _XFILE_STAT_MEMO.get(p)
+    stat_key = memo[1] if memo is not None else None
+    got = _XFILE_LINES_CACHE.get(p)
+    if got is not None and stat_key is not None and got[0] == stat_key:
+        lines = got[1]
+        return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name))
     lines = None
     try:
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
@@ -1560,6 +1608,10 @@ def _scan_def_tint(path, line, name=None):
                 lines = f.readlines()
         except OSError:
             return None
+    if stat_key is not None:
+        if len(_XFILE_LINES_CACHE) > 64:
+            _XFILE_LINES_CACHE.clear()
+        _XFILE_LINES_CACHE[p] = (stat_key, lines)
     return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name))
 
 
@@ -1705,20 +1757,36 @@ def _mix_packed(packed, rgb, k):
 # never per frame. In-app edits pending in PendingSave show after disk write.
 _XFILE_TINT_CACHE = {}
 
+# Bumped once per _collect_def_tints rebuild: a path is os.stat'ed at most
+# once per rebuild, not once per symbol referencing it (stat churn is the
+# keystroke path was measured).
+_REBUILD_GEN = 0
+_XFILE_STAT_MEMO = {}   # path-str -> (rebuild_gen, stat_key)
+
 
 def _cross_file_def_tint(path, line, name=None):
     if path is None:
         return None
-    import os
     p = str(path)
-    try:
-        st = os.stat(p)
-    except OSError:
-        return None
-    # Validity = disk stat + PendingSave batch generation: most in-app
-    # edits never touch disk, so the pending gen is what moves when a tint
-    # comment is edited and recompiled without a save-to-disk.
-    stat_key = (st.st_mtime_ns, st.st_size, _pending_gen_of(p))
+    memo = _XFILE_STAT_MEMO.get(p)
+    if memo is not None and memo[0] == _REBUILD_GEN:
+        stat_key = memo[1]
+        if stat_key is None:
+            return None
+    else:
+        import os
+        try:
+            st = os.stat(p)
+        except OSError:
+            _XFILE_STAT_MEMO[p] = (_REBUILD_GEN, None)
+            return None
+        # Validity = disk stat + PendingSave edit generation: deferred in-app
+        # edits never touch disk, so the pending gen is what moves when a tint
+        # comment is edited and recompiled without a save-to-disk.
+        stat_key = (st.st_mtime_ns, st.st_size, _pending_gen_of(p))
+        if len(_XFILE_STAT_MEMO) > 4096:
+            _XFILE_STAT_MEMO.clear()
+        _XFILE_STAT_MEMO[p] = (_REBUILD_GEN, stat_key)
     entry = _XFILE_TINT_CACHE.get(p)
     if entry is None or entry[0] != stat_key:
         entry = (stat_key, {})
@@ -1775,25 +1843,26 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     for l in lines:
         line_start_idx.append(line_start_idx[-1] + len(l) + 1)
 
+    global _REBUILD_GEN
+    _REBUILD_GEN += 1        # one os.stat per external def file per rebuild
+
     blocks, spans = [], []
     tinted_lines = {}                    # file line of a tinted in-buffer def -> tint
     own_block_range = {}                 # any def line -> (buf_start, buf_end) of its block
     node_seen, su_seen = set(), set()
     all_sus = []
     _in_file_memo = {}
+    _view_rp = _real(str(view_path)) if view_path is not None else None
 
     def _def_in_file(d):
         dp = getattr(d, "path", None)
-        if dp is None or view_path is None:
+        if dp is None or _view_rp is None:
             return False
         k = str(dp)
-        if k not in _in_file_memo:
-            import os
-            try:
-                _in_file_memo[k] = os.path.realpath(k) == os.path.realpath(str(view_path))
-            except OSError:
-                _in_file_memo[k] = False
-        return _in_file_memo[k]
+        got = _in_file_memo.get(k)
+        if got is None:
+            got = _in_file_memo[k] = (_real(k) == _view_rp)
+        return got
 
     def _find_def_line(name):
         # Fallback when no SymbolUsage names the def: first `class|def name`
@@ -1870,8 +1939,31 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # comparing colors popped washes in/out during tint drags while the live
     # text and the pending source gen momentarily disagreed.
     su_tint = {}                     # id(su) -> ((r, g, b), scale, drop_range|None)
-    untinted_locals = []             # SymbolUsage - in-file local bindings
-    sites_by_line = {}               # file line -> [(su, column)] for RHS lookup
+    untinted_locals = []             # SymbolUsage — in-file local bindings
+
+    # Per-rebuild memo + heuristic prefilter for live-buffer tint scans: an
+    # explicit tint needs a trailing '#', a class/def/@-shaped line (body /
+    # decorator scan), or a comment/decorator line directly above - any
+    # other line can't produce one, so don't walk it. Shared by the su loop
+    # and the assignment sweep (measured: ~900 unfiltered scans/keystroke).
+    _MISS = object()
+    _scan_memo = {}                  # (buf_line_1based, name) -> res | None
+
+    def _scan_live(bl, name):
+        key = (bl, name)
+        got = _scan_memo.get(key, _MISS)
+        if got is not _MISS:
+            return got
+        vl = _verify_def_line(lines, bl, name) if name else bl
+        i = vl - 1
+        lt = lines[i] if 0 <= i < len(lines) else ""
+        s = lt.lstrip()
+        worth = ("#" in lt or s.startswith(("class ", "def ", "@"))
+                 or (i > 0 and lines[i - 1].lstrip().startswith(("#", "@"))))
+        res = _scan_def_tint_lines(lines, vl) if worth else None
+        _scan_memo[key] = res
+        return res
+    sites_by_line = {}               # file line -> [(su, col)] for RHS lookup
     for su_key, su in all_sus:
         for site in getattr(su, "sites", None) or ():
             sites_by_line.setdefault(site[0], []).append((su, site[1]))
@@ -1891,8 +1983,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
             # pending-save catch-up - mixed-source frames read as flicker.
             bl = d.line - line_offset
             if in_file and 1 <= bl <= len(lines):
-                res = _scan_def_tint_lines(
-                    lines, _verify_def_line(lines, bl, getattr(su, "name", None)))
+                res = _scan_live(bl, getattr(su, "name", None))
                 if res is not None:
                     tint, src_line = res[0], res[1] + line_offset
             else:
@@ -2024,7 +2115,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         start = line_start_idx[bi] + len(m.group(1))
         end = start + len(m.group(2))
         covered = (start, end) in seen_spans
-        res = _scan_def_tint_lines(lines, bi + 1)
+        res = _scan_live(bi + 1, None)
         if res is not None and res[1] == bi + 1:
             rgb, scale = tuple(res[0][:3]), 1.0      # own comment tint wins
             if covered:
@@ -3429,11 +3520,10 @@ def _describe_code_tree(code_tree):
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-1.9, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-2.1, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
-              
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False,
               single_line=False, is_search_box=False,
@@ -3442,16 +3532,14 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
-
-    ds = draw_state   
-    
+    ds = draw_state
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-
+    
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -3467,7 +3555,7 @@ def draw_text(input_value: str, height=None,
     # frame with closed_state toggled, even when the editor is unfocused.
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
-    ac_state = ds._ac_state
+    ac_state = ds._ac_state    
     
     # Same deal for the usage-jump popup (multi-user symbol Ctrl+B).
     if getattr(ds, '_uj_state', None) is None:
@@ -3521,7 +3609,6 @@ def draw_text(input_value: str, height=None,
         # lines keep their normal positions; only the bar was floated. The text
         # clip below is raised by bar_height so glyphs never paint over the bar.
         imgui.set_cursor_screen_pos((_bx, _by + bar_height))
-
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
         _font_handle = Melty.font_mgr.get(font)
@@ -3567,7 +3654,7 @@ def draw_text(input_value: str, height=None,
             v1 = int((_clip[3] - top) / line_px) + 3
         else:
             v0, v1 = 0, nlines - 1
-        v0 = max(0, min(v0, nlines - 1))
+        v0 = max(0, min(v0, nlines - -12))
         v1 = max(v0, min(v1, nlines - 1))
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
@@ -3657,7 +3744,7 @@ def draw_text(input_value: str, height=None,
 
     origin_x = left + gutter_w - ds.text_h_scroll
     origin_y = top
-
+    
     # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
     # ordered (glfw_key, mods) for PRESS/REPEAT this frame), so nothing is
     # dropped on slow frames the way imgui.is_key_pressed (current frame only)
@@ -3684,7 +3771,6 @@ def draw_text(input_value: str, height=None,
             request_render()
     _fired = {k for k, _m in _frame_keys}
     pressed = lambda k: k in _fired
-
     # --- Mouse handling ---
     is_focused = Melty.text_focused_ds is ds
     # A rebuilt cache can hand us a fresh draw_state object for the same tile;
@@ -3751,6 +3837,7 @@ def draw_text(input_value: str, height=None,
                     return True
                 return False
         return False
+
 
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
@@ -3928,7 +4015,7 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 _fired.discard(glfw.KEY_TAB)
-
+                
         # --- Usage-jump picker: navigation & accept --- same key model as the
         # suggestion popup above: while open, Esc/arrows/Enter drive the picker
         # and are consumed before the caret handlers see them.
@@ -4292,6 +4379,8 @@ def draw_text(input_value: str, height=None,
         if changed and getattr(ds, '_uj_open', False):
             ds._uj_open = False
 
+
+
         # --- Code-suggestion popup: toggle visibility + rebuild candidates ---
         # Runs after every text-mutating key so the prefix reflects the final
         # buffer. Produces the list THIS frame's render draws and next frame's
@@ -4534,7 +4623,7 @@ def draw_text(input_value: str, height=None,
         # scrollbar.
         match_top_abs = origin_y + line * line_px
         _scroll_into_view(ds, match_top_abs, match_top_abs + line_px, center=True)
-
+        
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
         # For a multi-line match only the first line drives the horizontal
@@ -4551,7 +4640,6 @@ def draw_text(input_value: str, height=None,
                 # amount needed to reveal it, instead of dragging it to the left.
                 ds.text_h_scroll = max(0.0, match_x_end - text_visible_width + edge_padding)
         request_render()
-
     # --- Horizontal auto-scroll ---
     # Only kicks in when the cursor moved this frame, so middle-drag pans
     # are not snapped back. Brings the cursor into view on a single line.
@@ -4643,17 +4731,22 @@ def draw_text(input_value: str, height=None,
         # a simple band hugging the relevant text wins.)
         _dt_line_a = Toggles.TextEditor.def_line_alpha
         if _dt_line_a > 0:
+            _dt_line_full = Toggles.TextEditor.def_line_full_width
             for _l_line, _l_rgb, _l_sc, _l_s, _l_e in _dt_lines:
                 sy = origin_y + _l_line * line_px
                 ey = sy + line_px
                 if ey < rect_min_y or sy > rect_max_y:
                     continue
-                sx = origin_x + _colx(_l_s)
-                ex = origin_x + _colx(_l_e)
                 _la = _bg_adjust(tuple(_l_rgb[:3]), _bg_f)
                 _l_col = imgui.get_color_u32_rgba(_la[0], _la[1], _la[2],
                                                   _dt_line_a * _l_sc)
-                draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey, _l_col, 3.0)
+                if _dt_line_full:
+                    draw_list.add_rect_filled(rect_min_x, sy, rect_max_x, ey,
+                                              _l_col, 0.0)
+                else:
+                    sx = origin_x + _colx(_l_s)
+                    ex = origin_x + _colx(_l_e)
+                    draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey, _l_col, 3.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
         for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
             _s_line, _ = _index_to_line_col(text, _s_start)
@@ -4675,7 +4768,7 @@ def draw_text(input_value: str, height=None,
 
     # Selection
     if _has_selection(ds):
-        sel_color = (0.2, 0.4, 0.8, 0.4)  # rgba(51, 102, 204, 0.4)
+        sel_color = (*Tint.text_selection()[:3], 0.4)
         lo, hi = _sel_range(ds)
         lines = text.split('\n')
         line_abs_start = 0
@@ -4915,6 +5008,17 @@ def draw_text(input_value: str, height=None,
             if _caret_in and y + line_px >= rect_min_y and y <= rect_max_y:
                 _tv_idx += 1
                 draw_list.add_text(x, y, color, token)
+                # Pass-through widgets (bool) rely on clicks reaching the
+                # editor, so the FIRST click of a double-click places the
+                # caret in the token and lands us here - the hidden widget
+                # can't see the second click. Honor the double-click toggle
+                # for it: flip the literal exactly as draw_bool_token would.
+                if (color_key == 'bool' and token in ('True', 'False')
+                        and x <= io.mouse_pos.x < x + len(token) * char_w
+                        and y <= io.mouse_pos.y < y + line_px
+                        and imgui.is_mouse_double_clicked(0)):
+                    _tv_edit = (src_i, len(token),
+                                'False' if token == 'True' else 'True', False)
             elif y + line_px >= rect_min_y and y <= rect_max_y:
                 _name = f"{ds.name}_tv{_tv_idx}"
                 _tv_idx += 1
@@ -5069,7 +5173,6 @@ def draw_text(input_value: str, height=None,
             Melty.text_focused_ds = ds
             ds.text_cursor_blink_time = time.time()
         changed = True
-
     # A press on a whole-token widget also places the editor caret INSIDE the
     # literal at the clicked column - and focuses the editor - so the literal
     # feels like any other text; the widget's only extra behavior is the drag.
@@ -5146,7 +5249,7 @@ def draw_text(input_value: str, height=None,
                 px, py = nx, ny
                 cx = nx
                 up = not up
-
+                
     # Cursor. Drawn at the caret even while a selection exists, so the active
     # (moving) edge of a drag or shift-selection shows where delete and arrow
     # keys will act from - text_cursor_pos already tracks that location.
@@ -5176,9 +5279,9 @@ def draw_text(input_value: str, height=None,
     # ride origin_y, so they scroll vertically in lockstep with their lines. The
     # cursor's line is brightened for emphasis.
     if show_gutter and gutter_w > 0:
-        gutter_bg = (0.11, 0.129, 0.149, 1.0)  # faint gray column
-        num_color = COLORS['line_no']
-        cur_color = COLORS['default']
+        gutter_bg = (*Tint.line_number_bg()[:3], 1.0)  # dark tinted gray
+        num_color = imgui.get_color_u32_rgba(*Tint.line_number_tint()[:3], 1.0)
+        cur_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 1.0)
         cur_line = _index_to_line_col(text, ds.text_cursor_pos)[0] if is_focused else -1
         # Clamp the column's top to the text body (origin_y) so the fill doesn't
         # ride up over the header bar above it; rect_min_y still works once the
