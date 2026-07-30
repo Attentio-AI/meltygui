@@ -3520,7 +3520,7 @@ def _describe_code_tree(code_tree):
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-2.5, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-1.2, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
@@ -3539,7 +3539,7 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-    
+        
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches

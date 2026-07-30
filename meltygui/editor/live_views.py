@@ -424,7 +424,7 @@ def run_forward_pass(use_gen_pass=True):
 
 
 @window(initial={"width": 350, "height": 540})
-@render_func(tint=(0.27, 0.27, 0.37, 1.00), auto_resize=False)
+@render_func(tint=(0.11, 0.11, 0.26, 1.00), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     from src.lsd.gl_gui.view.mode import Mode

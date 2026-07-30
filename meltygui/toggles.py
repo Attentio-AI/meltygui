@@ -296,7 +296,7 @@ class Tint:
 @window
 class Swoosh:
     # Nested-window "swoosh" connector (parent outline -> nested view)
-    tint = (0.94, 0.125, 0.00)   # fallback color if no style manager is available
+    tint = (0.93, 0.8545676, 0.69)   # fallback color if no style manager is attache
     value = 1.023              # intensity of the highlight (super-bright yellow)
     saturation = 0.791        # saturation scale applied to the current tint
     alpha = 1.0             # opacity of the swoosh
@@ -377,7 +377,7 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.04, 0.09, 0.21))
+@window(tint=(0.85, 0.685, 0.30))
 class Toggles:
 
     @defaults(tint=(0.572, 0.24, 0.216))
@@ -405,7 +405,7 @@ class Toggles:
             usage_tint = (0.204, 0.224, 0.239)
             usage_tint = (*usage_tint, v)
             return usage_tint
-            
+
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounds character match - no CST / symbol-usage metadata is
@@ -492,6 +492,12 @@ class Toggles:
         # custom.ini as the main-file identity / hot-reload cache anchor, so leave
         # this on until the .ini is fully retired.
         ini_save = False
+
+    @defaults(tint=(0.427, 0.541, 0.616))
+    class ContextMenu:
+        # The tab a freshly opened context menu selects, as an index into its
+        # tab bar: 0 Info, 1 Config, 2 view function, 3 Eval, 4 Help, 5 Tint.
+        default_tab = 2
 
     @defaults(tint=(0.631, 0.474, 0.861))
     class InputHandlerToggles:

@@ -213,7 +213,7 @@ def _draw_tree(input_value, draw_state, root):
 
 
 # ── the renderers: draw each held tree; draw leaves edit in Mode.FILE_TREE ───
-@window(input_value=files_proxy, tint=(0.11, 0.38, 0.72), disable_scroll=False, mode=Modes.WINDOW)
+@window(input_value=files_proxy, tint=(0.36, 0.46, 0.59), disable_scroll=False, mode=Modes.WINDOW)
 @render_func(show_bg=True, use_cache=True, shadow=True, selectable=False)
 def draw_folder_files(input_value, draw_state, **kwargs):
     _draw_tree(input_value, draw_state, ROOT)

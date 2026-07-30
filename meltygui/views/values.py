@@ -3335,11 +3335,16 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
              indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
-def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state):
+def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False):
     is_open = False
     changed = False
 
     if input_value is None:
+        # Position BEFORE drawing, exactly like the color branch below - a
+        # first frame that skips the same_line breaks the header row (every
+        # remaining item wraps to a new line) and the early return under the
+        # button never restores it.
+        imgui.same_line(spacing=4)
         if button("", height=21, shadow=False, z_offset=0, corner_radius=4, tint=(0,0,0, 0.1
         ), tint_value=0.14, use_cache=True, show_bg=True, text_pad=7,  name=f"add_tuple##{unique}",
                   show_button_bg=True)[0]:
@@ -3371,6 +3376,14 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state):
                 if not is_open:
                     Melty._popover_open_frame = Melty.frame_count  # grace the opening click
                 request_render()
+            if outline:
+                # Tight ring around the CHIP (the item just drawn) - the
+                # widget's draw_state box is the measured min/max_width
+                # envelope, far wider than the swatch.
+                _omn, _omx = imgui.get_item_rect_min(), imgui.get_item_rect_max()
+                imgui.get_window_draw_list().add_rect(
+                    _omn.x - 1.5, _omn.y - 1.5, _omx.x + 1.5, _omx.y + 1.5,
+                    imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.55), rounding=4.0)
             is_open = Melty.popover_focused_ds is draw_state  # reflect the toggle this frame
 
             # The picker window is closable -> fixed size (auto-resize is off for
@@ -4374,6 +4387,52 @@ class _InstanceAttrSource(dict):
             request_render()
 
 
+class _CodecSource(dict):
+    """The 'codec' source row: the ACTIVE codec's render_kwargs — the
+    wrapper's lowest kwargs merge layer and the provenance color (the green
+    on import views etc.). The codec rides every draw_state as ds._codec.
+    Writes mutate the LIVE class attr in place; render_kwargs is read per
+    call (the _codec_by_type_cache note), so an edit applies immediately —
+    and APP-WIDE: every view rendered under this codec wears it."""
+
+    def __init__(self, codec, target_ds):
+        rk = getattr(codec, "render_kwargs", None)
+        super().__init__(rk if isinstance(rk, dict) else {})
+        self._codec = codec
+        self._target_ds = target_ds
+
+    def __setitem__(self, k, v):
+        rk = getattr(self._codec, "render_kwargs", None)
+        if not isinstance(rk, dict):
+            rk = {}
+            self._codec.render_kwargs = rk
+        rk[k] = v
+        super().__setitem__(k, v)
+        self._target_ds.invalidate_up(max_depth=6)
+        request_render()
+
+
+class _DrawStateAttrSource(dict):
+    """The 'draw state' source row: whitelisted params read from the target
+    draw_state's own fields (ds.tint — the style cascade's last fallback,
+    persisted with window state). The DEFAULT source: SourcePriority ranks it
+    last, so it only ever drives when nothing else sets the param. Writes go
+    setattr-on-the-ds, in place, plus the same subtree invalidation the
+    instance adapter does."""
+
+    def __init__(self, target_ds):
+        from src.lsd.gl_gui.view.core_views.core_render import OBJ_ATTR_PARAMS
+        super().__init__({p: getattr(target_ds, p) for p in OBJ_ATTR_PARAMS
+                          if getattr(target_ds, p, None) is not None})
+        self._target_ds = target_ds
+
+    def __setitem__(self, k, v):
+        setattr(self._target_ds, k, v)
+        super().__setitem__(k, v)
+        self._target_ds.invalidate_up(max_depth=6)
+        request_render()
+
+
 class _LazyOverrideEntry(dict):
     """Stand-in '# [<key>]' source for a site with NO override comment yet.
     Reads as the empty entry dict; the FIRST write (the matrix's + button)
@@ -4444,6 +4503,15 @@ class SourcePriority(Enum):
                                  # injection as INSTANCE_ATTR, where the
                                  # class var shadows it (Python lookup
                                  # order), so it ranks BELOW the instance
+    CODEC = 10                   # the owning codec's render_kwargs - the
+                                 # wrapper's lowest priority MERGE layer
+                                 # (core_render `render_kwargs | kwargs`);
+                                 # loses to every getattr-injected source
+                                 # above, beats only the ds fallback
+    DRAW_STATE = 11              # the draw_state's own field (ds.tint - the
+                                 # style cascade's LAST fallback, persisted
+                                 # in the state) - the default: drives
+                                 # drawing when nothing else sets the param
 
 
 # The tab's kind captions → priority. Kinds are the single naming authority
@@ -4459,6 +4527,8 @@ _KIND_TO_PRIORITY = {
     "window decoration": SourcePriority.WINDOW_DECORATION,   # @window on the func
     "class decoration": SourcePriority.WINDOW_DECORATION,    # @window on the class
     "instance attr": SourcePriority.INSTANCE_ATTR,
+    "codec": SourcePriority.CODEC,
+    "draw state": SourcePriority.DRAW_STATE,
 }
 
 
@@ -4573,7 +4643,14 @@ def anywhere_value(attr_name, draw_state, default=None):
     to anything (our set landing, or someone else's edit) clears the entry
     and live reads resume."""
     _anywhere_recompile_tick(draw_state)
-    live = (draw_state._kwargs or {}).get(attr_name, default)
+    live = (draw_state._kwargs or {}).get(attr_name)
+    if live is None:
+        # The style cascade's own last fallback: the draw_state default
+        # (ds.tint) from the DRAW_STATE tab. Without this, ds-tinted windows
+        # read as "no value" here while still wearing one.
+        live = getattr(draw_state, attr_name, None)
+    if live is None:
+        live = default
     _anywhere_verify_tick(attr_name, draw_state, live)
     pending = getattr(draw_state, "_sa_pending", None)
     entry = pending.get(attr_name) if pending else None
@@ -4992,6 +5069,22 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         if _ia:
             _add_source(f"{type(_raw_obj).__name__} instance", _ia,
                         TypeCodec, kind="instance attr")
+    # CODEC - the active codec's render_kwargs (ds._codec, stashed by the
+    # wrapper for every view): the lowest kwargs merge layer and the
+    # provenance color (import views' green). Skip-when-absent like the
+    # other value-side rows.
+    _codec_obj = getattr(input_value, "_codec", None)
+    if _codec_obj is not None:
+        _cs = _CodecSource(_codec_obj, input_value)
+        if _cs:
+            _add_source(f"codec {getattr(_codec_obj, '__name__', type(_codec_obj).__name__)}",
+                        _cs, TypeCodec, kind="codec")
+    # DRAW STATE - the ds's own kwargs (ds.tint): the lowest source, ranked
+    # last, so windows tinted only by their persisted draw_state (the "blue
+    # window no other claims" case) still resolve to a real, writable row.
+    _dsa = _DrawStateAttrSource(input_value)
+    if _dsa:
+        _add_source("draw_state", _dsa, TypeCodec, kind="draw state")
     # ── Sources parsed off the VALUE itself ──────────────────────────────────
     # The value flowing through the view can be (or sit inside) a parse node
     # of the owning window's's bubbling tree (e.g. a nested ClassParse in
@@ -5450,7 +5543,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     indices = list(range(len(tab_names)))
 
     if not tab_state.selected_tabs:
-        tab_state.selected_tabs = [indices[4]]
+        tab_state.selected_tabs = [indices[Toggles.ContextMenu.default_tab]]
 
     current_mode = input_value._kwargs.get('mode', None)
     mode_tab = str(current_mode)
