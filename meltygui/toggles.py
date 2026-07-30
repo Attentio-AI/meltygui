@@ -379,6 +379,13 @@ class Toggles:
         def_block_alpha = 0.066
         def_symbol_alpha = 0.306
 
+        # Assignment propagation: a local defined FROM tinted symbols takes a
+        # faded blend of their colors (single-symbol assignment averages the distinct
+        # tints), fading a further step per hop so a value's color trail
+        # weakens as it flows. It multiplies the fade alpha per hop.
+        def_tint_propagation = True
+        def_propagation_fade = 0.75
+
     @defaults(tint=(0.388, 0.706, 0.656))
     class LoadSave:
         # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)

@@ -1435,7 +1435,30 @@ def _scan_def_tint_lines(lines, line, _depth=0):
     return None
 
 
-def _scan_def_tint(path, line):
+def _verify_def_line(lines, line, name):
+    """Verify-then-recover for a recorded definition line (the def-side twin
+    of _site_span): index positions go stale when the definition FILE is
+    edited, and a stale line must not silently resolve to the wrong tint (the
+    ownership fallback would hand a shifted field its CLASS's color). If the
+    symbol's last component isn't on the recorded line, find the nearest
+    def-shaped line (`class X` / `def X` / `X = ...` / `X: ...`) that names it
+    within a small window; else keep the original."""
+    if not name:
+        return line
+    comp = str(name).rsplit(".", 1)[-1]
+    pat = re.compile(rf"^\s*(?:(?:class|def)\s+{re.escape(comp)}\b|{re.escape(comp)}\s*[:=][^=])")
+    word = re.compile(rf"\b{re.escape(comp)}\b")
+    i = line - 1
+    if 0 <= i < len(lines) and word.search(lines[i]):
+        return line
+    for off in range(1, 61):
+        for j in (i - off, i + off):
+            if 0 <= j < len(lines) and pat.match(lines[j]):
+                return j + 1
+    return line
+
+
+def _scan_def_tint(path, line, name=None):
     """File-reading wrapper around _scan_def_tint_lines. Runs only on a
     cache miss (see _cross_file_def_tint)."""
     try:
@@ -1443,13 +1466,13 @@ def _scan_def_tint(path, line):
             lines = f.readlines()
     except OSError:
         return None
-    return _scan_def_tint_lines(lines, line)
+    return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name))
 
 
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 3
+_DEF_TINTS_VER = 6
 
 # realpath-str -> ((mtime_ns, size), {def_line: tint | None}). Invalidated by
 # stat key (cheap, content-free - per CLAUDES.md we hash contents); the stat
@@ -1458,7 +1481,7 @@ _DEF_TINTS_VER = 3
 _XFILE_TINT_CACHE = {}
 
 
-def _cross_file_def_tint(path, line):
+def _cross_file_def_tint(path, line, name=None):
     if path is None:
         return None
     import os
@@ -1472,10 +1495,11 @@ def _cross_file_def_tint(path, line):
     if entry is None or entry[0] != stat_key:
         entry = (stat_key, {})
         _XFILE_TINT_CACHE[p] = entry
-    per_line = entry[1]
-    if line not in per_line:
-        per_line[line] = _scan_def_tint(p, line)
-    return per_line[line]
+    per_def = entry[1]
+    key = (line, name)
+    if key not in per_def:
+        per_def[key] = _scan_def_tint(p, line, name)
+    return per_def[key]
 
 
 def _site_span(text, ln, col, name, line_offset):
@@ -1574,10 +1598,10 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         node_seen.add(id(node))
         su_map = node.get("__symbol_usages__")
         if isinstance(su_map, dict):
-            for su in su_map.values():
+            for su_key, su in su_map.items():
                 if id(su) not in su_seen:
                     su_seen.add(id(su))
-                    all_sus.append(su)
+                    all_sus.append((su_key, su))
         for k, v in node.items():
             if k in ("__cst__", "__symbol_usages__", "__overrides__", "decorators"):
                 continue
@@ -1600,8 +1624,15 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
 
     walk(code_tree)
 
-    seen_spans = set()
-    for su in all_sus:
+    # Direct tints per symbol: (rgb, scale) - scale multiplies the wash alpha
+    # at draw time (1.0 for a symbol's own definition tint; propagated locals
+    # see below). untinted collects candidates for propagation.
+    su_tint = {}                     # id(su) -> ((r, g, b), scale)
+    untinted_locals = []             # SymbolUsage - in-file local bindings
+    sites_by_line = {}               # file line -> [(su, column)] for RHS lookup
+    for su_key, su in all_sus:
+        for site in getattr(su, "sites", None) or ():
+            sites_by_line.setdefault(site[0], []).append((su, site[1]))
         d = getattr(su, "definition", None)
         if d is None or not getattr(d, "line", None):
             continue
@@ -1610,20 +1641,82 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
             # Cross-file defs, and in-buffer defs the tree walk didn't tint
             # (plain fields, methods - which inherit their enclosing tinted
             # class via the scanner's ownership fallback), resolve from the
-            # definition file the source through the mtime-keyed cache.
-            tint = _cross_file_def_tint(getattr(d, "path", None), d.line)
-        if tint is None:
-            continue
+            # definition file's source through the mtime-keyed cache. The
+            # name rides along so a stale recorded line is re-anchored to
+            # the symbol's actual def if any ownership fallback fires.
+            tint = _cross_file_def_tint(getattr(d, "path", None), d.line,
+                                        getattr(su, "name", None))
+        if tint is not None:
+            su_tint[id(su)] = (tuple(tint[:3]), 1.0)
+        elif (isinstance(su_key, str) and "\x1f" in su_key and _def_in_file(d)):
+            untinted_locals.append(su)
+
+    # Assignment propagation: a local whose binding line uses tinted symbols
+    # adopts a faded blend of their colors (`is_profiling = Toggles.profile_mode
+    # == ProfileMode.ON` washes as a blend of those tints) - so a value keeps
+    # its color trail as it flows through code. Iterated so a local defined
+    # from an already-propagated local fades one step further per hop.
+    from src.lsd.gl_gui.toggles import Toggles as _Tg
+    fade = getattr(_Tg.TextEditor, "def_propagation_fade", 0.75)
+    if getattr(_Tg.TextEditor, "def_tint_propagation", True):
+        for _pass in range(4):
+            changed = False
+            for su in untinted_locals:
+                if id(su) in su_tint:
+                    continue
+                d = su.definition
+                contribs = []
+                for osu, col in sites_by_line.get(d.line, ()):
+                    if osu is su and col == getattr(d, "column", None):
+                        continue                     # the binding itself
+                    t = su_tint.get(id(osu))
+                    if t is not None:
+                        contribs.append(t)
+                if not contribs:
+                    continue
+                uniq = list(dict.fromkeys(contribs))  # identical colors once
+                n = len(uniq)
+                rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
+                scale = fade * (sum(c[1] for c in uniq) / n)
+                if scale >= 0.2:                      # stop fading into noise
+                    su_tint[id(su)] = (rgb, scale)
+                    changed = True
+            if not changed:
+                break
+
+    seen_spans = set()
+    for su_key, su in all_sus:
+        t = su_tint.get(id(su))
         name = getattr(su, "name", None)
-        if not name:
+        if t is None or not name:
             continue
+        rgb, scale = t
         for site in getattr(su, "sites", None) or ():
             span = _site_span(text, site[0], site[1], name, line_offset)
             if span is not None and span not in seen_spans:
                 seen_spans.add(span)
-                spans.append((span[0], span[1], tint))
+                spans.append((span[0], span[1], rgb, scale))
 
     blocks.sort()
+    # Redundancy filter: inside a tinted class's BLOCK wash, occurrences that
+    # would wash in that same color (the class name itself, fields/methods
+    # inheriting it at their def site) say nothing the block doesn't already
+    # say - drop them. Spans in a DIFFERENT color (a cross-class reference
+    # inside the block) stay, and so does faded propagation locals.
+    if blocks and spans:
+        kept = []
+        for sp in spans:
+            ln = bisect.bisect_right(line_start_idx, sp[0]) - 1
+            rgb = sp[2]
+            for b_line, _b_idx, b_end, b_tint in blocks:
+                if (b_line <= ln <= b_end
+                        and abs(rgb[0] - b_tint[0]) < 1e-6
+                        and abs(rgb[1] - b_tint[1]) < 1e-6
+                        and abs(rgb[2] - b_tint[2]) < 1e-6):
+                    break
+            else:
+                kept.append(sp)
+        spans = kept
     # Longer spans first for equal starts: a dotted path records overlapping
     # sites (`Toggles`, `Toggles.TextEditor`, `Toggles.TextEditor.x`) and the
     # draw order is paint order - the member-chain wash goes down first, then
@@ -4092,7 +4185,7 @@ def draw_text(input_value: str, height=None,
             _b_col = imgui.get_color_u32_rgba(_b_tint[0], _b_tint[1], _b_tint[2], _dt_block_a)
             draw_list.add_rect_filled(sx, sy, rect_max_x, ey, _b_col, 4.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
-        for _s_start, _s_end, _s_tint in _dt_spans:
+        for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
             _s_line, _ = _index_to_line_col(text, _s_start)
             sy = origin_y + _s_line * line_px
             ey = sy + line_px
@@ -4100,7 +4193,10 @@ def draw_text(input_value: str, height=None,
                 continue
             sx = origin_x + _colx(_s_start)
             ex = origin_x + _colx(_s_end)
-            _s_col = imgui.get_color_u32_rgba(_s_tint[0], _s_tint[1], _s_tint[2], _dt_sym_a)
+            # _s_scale < 1 indicates a PROPAGATED tint (reference flow) - same
+            # color family, fainter wash per hop from the tinted definition.
+            _s_col = imgui.get_color_u32_rgba(_s_tint[0], _s_tint[1], _s_tint[2],
+                                              _dt_sym_a * _s_scale)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
 
     # Selection
