@@ -60,17 +60,19 @@ class LiveHandle:
     """Hashable (store_obj, key_path) pair — the input_value of the marker and
     window render_funcs, so draw_state identity and caching key off the site,
     not the (ever-changing) value. `box_w`/`box_h` (the symbol box's pixel
-    size) ride along as plain attrs excluded from hash/eq, re-stamped by the
-    overlay every call: per-site geometry must NOT travel as render_func
-    kwargs — caching/auto-state replays another marker's values there (every
-    box rendered at the last call's width)."""
-    __slots__ = ("store_obj", "key_path", "box_w", "box_h")
+    size) and `tint` (the symbol's definition-tint color at this site, when
+    the hosting editor has one) ride along as plain attrs excluded from
+    hash/eq, re-stamped by the overlay every call: per-site geometry must NOT
+    travel as render_func kwargs — caching/auto-state replays another
+    marker's values there (every box rendered at the last call's width)."""
+    __slots__ = ("store_obj", "key_path", "box_w", "box_h", "tint")
 
-    def __init__(self, store_obj, key_path, box_w=None, box_h=None):
+    def __init__(self, store_obj, key_path, box_w=None, box_h=None, tint=None):
         self.store_obj = store_obj
         self.key_path = key_path
         self.box_w = box_w
         self.box_h = box_h
+        self.tint = tint
 
     def __hash__(self):
         return hash((self.store_obj, self.key_path))
@@ -82,6 +84,28 @@ class LiveHandle:
 
     def __repr__(self):
         return f"LiveHandle({'/'.join(self.key_path)})"
+
+
+def _symbol_tint_at(editor_ds, buf_line0, col):
+    """The definition-tint wash color under (0-based buffer line, col) in the
+    hosting editor, or None. Reads the editor's cached _def_tints spans
+    (buffer-index ranges, sorted by start — see text_editor._collect_def_tints)
+    so the marker can adopt the symbol's own color instead of the stock green."""
+    dt = getattr(editor_ds, "_def_tints", None)
+    key = getattr(editor_ds, "_def_tints_key", None)
+    if not dt or key is None or not dt[1]:
+        return None
+    from src.lsd.gl_gui.view.core_views.text_editor import _line_col_to_index
+    try:
+        idx = _line_col_to_index(key[4], buf_line0, col)
+    except Exception:
+        return None
+    for s, e, rgb, _sc in dt[1]:
+        if s <= idx < e:
+            return rgb
+        if s > idx:
+            break
+    return None
 
 
 def _right_of_window_pos(parent_win, marker_x, gap=10.0):
@@ -131,7 +155,10 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     imgui.set_cursor_screen_pos((x - pad, y - pad))
     draw_live_view_marker(LiveHandle(store_obj, key_path,
                                      box_w=token_cells * char_w + 2 * pad,
-                                     box_h=line_px + 2 * pad),
+                                     box_h=line_px + 2 * pad,
+                                     tint=_symbol_tint_at(draw_state,
+                                                          span.start_line - 1,
+                                                          span.start_col)),
                           name=f"lvm::{draw_state.id}::{'/'.join(key_path)}",
                           editor_ds=draw_state)
 
@@ -143,10 +170,12 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
                           auto_open=True, child_kwargs=None, corner_radius=4.0,
                           left_mouse_down=False, left_mouse_held=False, unique=0,
                           **kwargs):
-    """The anchor box around the symbol being visualized: a plain rect
-    over the live_view call / captured assignment — green when a value has
-    been captured, dim when the site hasn't run yet. Click toggles the value
-    window. The box's pixel size rides on the handle (`handle.box_w/h`, set
+    """The anchor box around the symbol being visualized: a plain rect over
+    the live_view call / captured assignment, drawn ONLY while hovered (the
+    editor stays tidy; the dummy still reserves the hit area every frame).
+    Colored with the symbol's definition tint when the editor has one
+    (handle.tint), else green when a value has been captured; gray when the
+    site hasn't run yet. Click toggles the value window. The box's pixel size rides on the handle (`handle.box_w/h`, set
     by the overlays along with the cursor at the box's top-left) — NOT as
     kwargs: use_cache replays stale kwargs on watcher-driven re-renders, so
     every box would render at some other marker's size.
@@ -173,21 +202,40 @@ def draw_live_view_marker(input_value, draw_state=None, editor_ds=None,
     h = getattr(handle, "box_h", None) or 18.7
     io = imgui.get_io()
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
+    # Hover-edge invalidation (enter/leave only, never per-frame): the
+    # outline is hover-gated now, so a cached tile must repaint exactly when
+    # visibility changes.
+    if getattr(ds, "_lv_hovered", None) != hovered:
+        ds._lv_hovered = hovered
+        ds.invalidate()
     win_ds = getattr(ds, "_lv_window_ds", None)
     if win_ds is not None:
         open_now = not win_ds.closed
     else:
         open_now = False
 
+    # Color: the symbol's own definition tint when the editor has one for
+    # this site (rides the handle, like the geometry), else the stock green;
+    # gray keeps meaning "site hasn't run yet". Brightened while open/hovered
+    # so it still reads as a highlight.
+    sym_tint = getattr(handle, "tint", None)
     if lv is not None:
-        base = (0.36, 0.85, 0.46) if open_now else (0.26, 0.62, 0.34)
+        if sym_tint is not None:
+            base = tuple(min(1.0, c + (0.15 if open_now else 0.0))
+                         for c in sym_tint[:3])
+        else:
+            base = (0.36, 0.85, 0.46) if open_now else (0.26, 0.62, 0.34)
     else:
         base = (0.45, 0.45, 0.45)
     if hovered:
         base = tuple(min(1.0, c + 0.18) for c in base)
-    dl: _DrawList = imgui.get_window_draw_list()
-    dl.add_rect(x, y + 2, x + w, y + h - 3,
-                imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6), rounding=corner_radius)
+    # Outline only under the mouse - the boxes read as clutter when every
+    # instrumented site is permanently framed. hover reveals the affordance.
+    if hovered:
+        dl: _DrawList = imgui.get_window_draw_list()
+        dl.add_rect(x, y + 2, x + w, y + h - 3,
+                    imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6),
+                    rounding=corner_radius)
     imgui.dummy(w, h)
 
     if hovered and imgui.is_mouse_clicked(0):
@@ -336,7 +384,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         draw_live_view_marker(
             LiveHandle(fn, key_path,
                        box_w=max(1, end_col - start_col) * char_w + 2 * pad,
-                       box_h=line_px + 2 * pad),
+                       box_h=line_px + 2 * pad,
+                       tint=_symbol_tint_at(draw_state, rel_line - 1, start_col)),
             name=f"lvs::{draw_state.id}::{fn.__qualname__}::"
                  f"{'/'.join(key_path)}",
             editor_ds=draw_state, auto_open=is_volume(lv.value),
@@ -420,7 +469,7 @@ def run_forward_pass(use_gen_pass=True):
 
 
 @window(initial={"width": 350, "height": 540})
-@render_func(tint=(0.14, 0.19, 0.22), auto_resize=False)
+@render_func(tint=(0.05, 0.131, 0.21), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     from src.lsd.gl_gui.view.mode import Mode

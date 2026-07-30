@@ -36,6 +36,7 @@ from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent, EventA
 from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
+from src.lsd.gl_gui.perf_trace import trace as _ptrace
 
 import OpenGL.GL as gl
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
@@ -3013,6 +3014,9 @@ class Melty:
 
     @classmethod
     def cleanup(cls):
+        import time as _time_mod
+        _t_cleanup0 = _time_mod.monotonic()
+        _ptrace("melty: cleanup start (teardown of the old session)")
         # Drop any hanging MCP connections first, before the teardown below - a
         # client holding a streaming/keep-alive connection can otherwise block
         # shutdown. Lazy import keeps melty free of the mcp_server dependency.
@@ -3032,6 +3036,8 @@ class Melty:
         Monitor.shutdown()
         FileWatch.shutdown()
         cls.glfw_window = None
+        _ptrace(f"melty: cleanup done in "
+                f"{(_time_mod.monotonic() - _t_cleanup0) * 1000:.0f}ms")
 
     @classmethod
     def get_channel(cls, depth=None):

@@ -220,6 +220,37 @@ def global_search_results(root, q, exclude=None, max_depth=30, limit=60):
             continue
         seen.add(low)
         scored.append((dist, len(label), label, ds))
+
+    # Registered windows, indexed directly: the Fast Dock draws its rows as solid
+    # draw_main pixels (no per-row draw_states), so a CLOSED window's name may
+    # appear nowhere in the tree walk above (the old Dock's row draw_states used
+    # to cover it). A window-name result already gets the launch treatment in
+    # go_to_search_result (find_window + open + raise), so the window's own
+    # draw_state is the right thing to return.
+    from src.lsd.gl_gui.toggles import WindowManager as _WM
+    for _mw in list(Core.melty.registered_windows.values()):
+        _wds = _mw.draw_state
+        if _wds is None or id(_wds) in exclude_ids or not getattr(_wds, 'name', None):
+            continue
+        if str(_wds.name) in _WM.excluded_windows:
+            continue
+        label = str(_wds.name).split("##")[0].strip()
+        if not label or not any(c.isalnum() for c in label):
+            continue
+        low = label.lower()
+        if low in seen:
+            continue
+        if q in low:
+            dist = 0
+        elif len(q) >= 4:
+            dist = _fuzzy_substring_distance(q, low)
+            if dist > tol:
+                continue
+        else:
+            continue
+        seen.add(low)
+        scored.append((dist, len(label), label, _wds))
+
     scored.sort(key=lambda t: (t[0], t[1]))
     return [(label, ds) for _, _, label, ds in scored[:limit]]
 
@@ -318,6 +349,15 @@ def search_activate_target(node):
         child = node._children.get(key)
         if child is not None:
             return child
+    # Views that draw their matches as raw draw-list items (no child draw_states
+    # - e.g. the Fast Dock) publish the current match's row rect instead; hand
+    # back a geometry shim so the caller's center-of-rect click lands on the
+    # row rather than the view's center.
+    rect = getattr(node, '_search_current_rect', None)
+    if rect is not None:
+        return types.SimpleNamespace(abs_left=rect[0], abs_top=rect[1],
+                                     width=rect[2], height=rect[3],
+                                     _tile_id=node._tile_id)
     return node
 
 

@@ -332,12 +332,14 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.06, 0.189, 0.289))
+@window(tint=(0.124, 0.158, 0.2))
 class Toggles:
 
-    @defaults(tint=(0.628, 0.347, 0.185))
+    @defaults(tint=(0.7, 0.369, 0.051))
     class TextEditor:
         enable_spell_check = False
+
+        # [tint=(0.772, 0.154, 0.0)]
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.5, 0.5, 0.22)
 
@@ -356,7 +358,7 @@ class Toggles:
             restyle the wash — it is read live, so changes show immediately."""
             import colorsys
             t = min(max(users, 1) - 1, 5) / 5.2
-            v = max(0.11, 0.88 * t + 0.3)           
+            v = max(0.13, 0.88 * t + 0.3)           
             usage_tint = (0.317, 0.251, 0.0)
             usage_tint = (*usage_tint, v)
             return usage_tint
@@ -376,15 +378,48 @@ class Toggles:
         # the tint's rgb with these alphas (the tint's own alpha is a view-
         # background opacity, not meant for text washes). All read live.
         definition_tints = True
-        def_block_alpha = 0.066
-        def_symbol_alpha = 0.306
+        def_block_alpha = 0.054
+        def_symbol_alpha = 0.445
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
         # tints), fading a further step per hop so a value's color trail
-        # weakens as it flows. It multiplies the fade alpha per hop.
+        # weakens as it flows. Fade multiplies the wash alpha per hop -
+        # LOWER = colors die out faster along assignment chains (0.55 puts
+        # hop 1 at 55%, hop 2 at 30%; chains below 20% stop washing at all).
         def_tint_propagation = True
-        def_propagation_fade = 0.75
+        def_propagation_fade = 0.55
+
+        # Line tint behind any line carrying symbol washes: one transparen
+        # full-width rect fitting the line exactly, in the def's color (its
+        # own explicit comment tint if the definition has one, else the
+        # mix of its symbol tints). That same color also marks the line's
+        # number box in the gutter. 0 disables.
+        def_line_alpha = 0.011
+
+        # Glyphs inside a symbol wash lean this fraction toward the wash
+        # color (syntax color stays the base) - the slight text tinting used
+        # app-wide so text reads as part of its panel. 0 disables.
+        def_text_tint_mix = 0.398
+
+        # Tint-comment TEXT color adjustment (hsv factors, the defint-class
+        # version): an override comment gets its own [tint=...] color,
+        # desaturated and darkened by these so it reads as commentary, not
+        # code. Both read live; 1.0/1.0 = the raw tint.
+        comment_tint_saturation = 2.912
+        comment_tint_value = 0.24
+
+        # Background wash color adjustment - applies to ALL def-tint
+        # backgrounds (symbol washes, line bands, block washes, number
+        # boxes, the glyph-mix target) AND, sans the brightness clamp, to
+        # tinted comment text: hsv factors plus a clamp on PERCEIVED
+        # brightness (0.299r+0.587g+0.114b) so text stays visible even when the
+        # tint is very bright (scaled down to max) or very dark (lifted to
+        # min, hue kept). Neutral = 1 / 1 / 0 / 1.
+        bg_tint_saturation = 2.5
+        bg_tint_value = 0.5
+        bg_min_brightness = 0.18
+        bg_max_brightness = 0.13
 
     @defaults(tint=(0.388, 0.706, 0.656))
     class LoadSave:
@@ -405,7 +440,6 @@ class Toggles:
         # Minimum console terminal size, in pixels - independent of the window size.
         min_height = 506.5
         min_width = 94.154
-
 
     @defaults(tint=(0.189, 0.486, 0.944))
     class WindowSettings:
@@ -519,7 +553,7 @@ class Toggles:
     # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
 
-    # [tint=(0.85, 0.411, 0.156)]
+    # [tint=(0.872, 0.554, 0.053)]
     yield_to_ui = True
 
     # Timeline logging of the symbol-index / code-host load path: every
@@ -532,14 +566,14 @@ class Toggles:
 
     slow_down_threads = False
 
-    # [tint=(0.211, 0.761, 0.761)]
+    # [tint=(0.025, 0.372, 0.326)]
     profile_mode = ProfileMode.LIGHT
 
     debug_stale_tint = False
 
     # View Settings
-    brightness = 0.609
-    contrast = 2.157
+    brightness = 0.641
+    contrast = 2.261
 
     debug_z_depth = False
     filters = True

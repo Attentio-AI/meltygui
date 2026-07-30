@@ -154,9 +154,56 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     click = (ev.x, ev.y) if (ev and hasattr(ev, "x")) else None
     clip = getattr(draw_state, "abs_clip_rect", None)
 
+    # ---- name loop-geometry (loop-invariant; only y varies per row) ----
+    sw_x0, sw_x1 = x0 + SWATCH_X, x0 + SWATCH_X + SWATCH_W
+    tg_x1 = x0 + cw - RIGHT_PAD
+    tg_x0 = tg_x1 - TARGET_W
+    nm_x0, nm_x1 = x0 + NAME_X, tg_x0 - name_target_gap
+
+    # ---- local find-bar search ----
+    # The window's find UI (searchable=True) counts matches by walking
+    # draw_states and calling each node's _search_matcher (melty.search_walk)
+    # - rows here aren't draw_states, so this view is its own single matcher
+    # node claiming one slot per matching row name, in the same ordinal order
+    # the row loop draws them, keeping count and current-index aligned.
+    from src.lsd.gl_gui.melty import SearchTerm
+    from src.lsd.gl_gui.view.core_views.new_core_view import _fuzzy_key_match
+    from src.lsd.gl_gui.view.core_views.text_editor import _scroll_into_view
+
+    _names_low = tuple(r[0].split("##")[0].lower() for r in rows)
+
+    def _search_matcher(term, session, _names=_names_low):
+        q = str(term).lower()
+        if q:
+            session.claim(sum(1 for n in _names if _fuzzy_key_match(q, n)))
+
+    draw_state._search_matcher = _search_matcher
+
+    # Session resolution mirrors draw_collection: a forwarded SearchTerm in
+    # search_text, else our own session when this view hosts the find UI.
+    _term = search_text or (draw_state.search_text if draw_state.search_active else "")
+    if isinstance(_term, SearchTerm):
+        _session = _term
+    elif draw_state.search_active and draw_state._search_session is not None:
+        _session = draw_state._search_session
+    else:
+        _session = None
+    _q = str(_term).lower() if (_session is not None and _term) else ""
+    _current_local = draw_state._search_active_local if _q else None
+    _match_ord = 0
+    # Required for Ctrl+Enter (search_activate_target): the current match's
+    # row rect, so the injected "click the target" lands on the row instead of
+    # the view's center.
+    draw_state._search_current_rect = None
+
     edit_name = getattr(draw_state, "tint_edit_name", None)
     edit_row_top = None
     edit_row = None
+    # Highlights are deferred to a second pass AFTER the row loop: the current
+    # match's radial glow spills over neighbouring rows, so drawn in-row it gets
+    # painted over by the later row's background rect. draw_search_highlight
+    # clips its own font out of the glow, so drawing it on top stays legible.
+    highlight_rects = []
 
     for i, (name, mw, wds) in enumerate(rows):
         ry0 = y0 + i * ROW_STRIDE
@@ -164,11 +211,24 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
         if edit_name == name:
             edit_row_top = ry0
             edit_row = (name, mw, wds)
+
+        # Match bookkeeping runs for EVERY row - clipped ones too - so the
+        # ordinal sequence stays aligned with the matcher's count, and the
+        # current match can scroll into view from off-screen.
+        display = name.split("##")[0]
+        is_match = bool(_q) and _fuzzy_key_match(_q, display.lower())
+        is_current = is_match and _current_local is not None and _match_ord == _current_local
+        if is_match:
+            _match_ord += 1
+        if is_current:
+            draw_state._search_current_rect = (nm_x0, ry0, nm_x1 - nm_x0, ROW_H)
+            if _session.scroll_to:
+                _scroll_into_view(draw_state, ry0, ry1, center=True)
+
         if clip is not None and (ry1 < clip[1] or ry0 > clip[3]):
             continue
 
         tint = _row_tint(mw, wds)
-        display = name.split("##")[0]
 
         if name == "Window Manager":
             tx = _mix(style_manager, tint, target_text_value, 1.0, text_saturation)
@@ -176,12 +236,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
                         imgui.get_color_u32_rgba(*tx[:3], 1.0), name)
             continue
 
-        # ---- geometry ----
-        sw_x0, sw_x1 = x0 + SWATCH_X, x0 + SWATCH_X + SWATCH_W
+        # ---- geometry (x is loop-invariant, hoisted above) ----
         sw_y0, sw_y1 = ry0 + (ROW_H - SWATCH_W) / 2.0, ry0 + (ROW_H + SWATCH_W) / 2.0
-        tg_x1 = x0 + cw - RIGHT_PAD
-        tg_x0 = tg_x1 - TARGET_W
-        nm_x0, nm_x1 = x0 + NAME_X, tg_x0 - name_target_gap
 
         in_swatch = sw_x0 <= mx <= sw_x1 and sw_y0 <= my <= sw_y1
         in_target = tg_x0 <= mx <= tg_x1 and ry0 <= my <= ry1
@@ -199,9 +255,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
         dl.add_rect_filled(nm_x0, ry0, nm_x1, ry1,
                            imgui.get_color_u32_rgba(*bg[:3], 1.0), rounding=CORNER)
 
-        if search_text and search_text.lower() in display.lower():
-            draw_search_highlight(dl, nm_x0, ry0, nm_x1, ry1,
-                                  current=False, rounding=CORNER)
+        if is_match:
+            highlight_rects.append((ry0, ry1, is_current))
 
         ts = imgui.calc_text_size(display)
         dl.add_text(nm_x0 + (nm_x1 - nm_x0 - ts[0]) / 2.0 + text_nudge_x,
@@ -269,6 +324,11 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
                     edit_row_top = ry0
                     edit_row = (name, mw, wds)
                 request_render()
+
+    # ---- search highlights (second pass, over every row's background) ----
+    for hy0, hy1, hcur in highlight_rects:
+        draw_search_highlight(dl, nm_x0, hy0, nm_x1, hy1,
+                              current=hcur, rounding=CORNER)
 
     # ---- tint picker popover (only rendered while open - zero idle cost) ----
     if edit_name is not None:

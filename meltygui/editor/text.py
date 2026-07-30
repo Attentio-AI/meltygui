@@ -40,7 +40,8 @@ COLORS = {
     'decorator': _hex('#bbb529'),  # Name.Decorator
     'string': _hex('#6a8759'),  # String
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
-    'comment': _hex('#808080'),  # Comment
+    'comment': _hex('#5e6265'),  # Comment - muted & darker so comments recede
+    'line_no': _hex('#808080'),  # Gutter numbers keep the old comment color
     'number': _hex('#6897bb'),  # Number
     'color3': _hex('#6897bb'),  # merged color tuple `(r, g, b[, a])` (fallback text color)
     'icon': _hex('#56b6c2'),  # Font Awesome / PUA glyph (cyan, distinct from strings)
@@ -717,7 +718,7 @@ def draw_icon_selector(input_value, draw_state=None,
 
 @render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.911, 0.305, 0.0),
              show_name=False, selectable=False, z_offset=3, bg_offset=2)
-def draw_bool_token(input_value, draw_state=None, **kwargs):
+def draw_bool_token(input_value, draw_state=None, text_tint=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
     tokens. Renders the literal exactly as the editor would (same font, grid
     position and keyword color) so it reads as code. Deliberately NO imgui item
@@ -732,7 +733,13 @@ def draw_bool_token(input_value, draw_state=None, **kwargs):
     io = imgui.get_io()
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
     draw_list = imgui.get_window_draw_list()
-    color = COLORS['bool']
+    # text_tint (from the editor, inside a tint-carrying override comment):
+    # the word wears the comment's color instead of keyword-blue, so
+    # widgets inside colored comments stop shouting.
+    if text_tint is not None:
+        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2], 1.0)
+    else:
+        color = COLORS['bool']
     # if hovered:
     #      draw_list.add_line(x, y + h - 1.5, x + w, y + h - 1.5, color, 0.0)
     draw_list.add_text(x, y, color, word)
@@ -766,9 +773,9 @@ def _parse_number_token(s):
         return None, None, None, None
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, z_offset=4,
-             show_name=False, selectable=False, bg_offset=3, tint=(0.043, 0.068, 0.094), wrap=True)
-def draw_number_token(input_value, draw_state=None,
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, z_offset=2,
+             show_name=False, selectable=False, bg_offset=-1, tint=(0.026, 0.041, 0.056), wrap=True)
+def draw_number_token(input_value, draw_state=None, text_tint=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
     """Inline drag widget for a numeric literal — whole-token token_views renderer
@@ -801,9 +808,23 @@ def draw_number_token(input_value, draw_state=None,
     # Editor-look colors: number-blue lettering on a dark frame, like the bool
     # word, with only a subtle hover/active lift instead of imgui's bright blue.
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-    push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)              # number blue
+    # Inside a tint-carrying override comment the editor hands us text_tint:
+    # digits wear the comment's hue and the frame frame dims toward it too, so
+    # number widgets in colored comments stop reading as bright blue sliders.
+    if text_tint is not None:
+        push_style_color(imgui.COLOR_TEXT, text_tint[0], text_tint[1], text_tint[2])
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND,
+                         text_tint[0] * 0.22, text_tint[1] * 0.22, text_tint[2] * 0.22)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED,
+                         text_tint[0] * 0.32, text_tint[1] * 0.32, text_tint[2] * 0.32)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE,
+                         text_tint[0] * 0.42, text_tint[1] * 0.42, text_tint[2] * 0.42)
+        _n_colors = 4
+    else:
+        push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)          # number blue
+        _n_colors = 1
     def _pop_styles():
-        pop_style_color(1)
+        pop_style_color(_n_colors)
         pop_style_var()
 
     imgui.set_next_item_width(draw_state.width)
@@ -1303,9 +1324,11 @@ def _node_tint(node):
         return tuple(ov["tint"])
     dec = node.get("decorators")
     if isinstance(dec, dict):
-        df = dec.get("defaults")
-        if isinstance(df, dict) and _is_color(df.get("tint")):
-            return tuple(df["tint"])
+        # Any decorator carrying tint= counts (@defaults, @window, ...) - the
+        # disk scanner (_tint_from_defaults_line) only matches any '@' line.
+        for df in dec.values():
+            if isinstance(df, dict) and _is_color(df.get("tint")):
+                return tuple(df["tint"])
     if _is_color(node.get("tint")):
         return tuple(node["tint"])
     return None
@@ -1354,20 +1377,34 @@ def _snap_to_def(lines, i, limit=40):
 
 
 def _scan_def_tint_lines(lines, line, _depth=0):
-    """Tint for the definition at 1-based `line` of `lines`, in SOURCE form:
-    the recorded line is first snapped to the real class/def line, then the
-    decorator/comment run above is checked for `@...(tint=...)` /
-    `# [tint=...]`, then a short downward body scan for a `tint = (...)`
-    class var. When the definition carries no tint of its own, it inherits
-    the nearest ENCLOSING tinted class's color (a plain field like
-    `text_focus_stack_trace = False` washes in its class's tint), so every
-    member of a tinted class ties back to it at a glance."""
+    """(tint, src_line) for the definition at 1-based `line` of `lines`, in
+    SOURCE form — or None. The recorded line is first snapped to the real
+    class/def line, then the decorator/comment run above is checked for
+    `@...(tint=...)` / `# [tint=...]`, then a short downward body scan for a
+    `tint = (...)` class var. ONLY explicit tints count — a member without
+    its own tint returns None (no enclosing-class inheritance; the class's
+    color is its block wash, and inherited symbol washes were redundant).
+
+    `src_line` is the (snapped, 1-based) def line the tint was read at.
+    Callers use it structurally — a tinted class's own occurrences are
+    redundant inside its block wash and are never emitted there, independent
+    of color values (color-equality filtering popped during tint drags, when
+    the live tree and the pending source text disagree for a frame)."""
     import ast as _ast
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
     i = line - 1
     if not (0 <= i < len(lines)):
         return None
     i = _snap_to_def(lines, i)
+    # Inline trailing override comment on the def line itself - the most
+    # common store `x = a * b  # [tint=(...)]`), checked first so an explicit
+    # comment tint always beats anything else (including the assignment-
+    # propagation blend, which only runs when no explicit tint resolves).
+    tm = re.search(r"#.*$", lines[i])
+    if tm:
+        parsed = _parse_override_comment(tm.group(0))
+        if parsed and _is_color(parsed.get("tint")):
+            return tuple(parsed["tint"]), i + 1
     comment = []
     j = i - 1
     while j >= 0:
@@ -1379,9 +1416,15 @@ def _scan_def_tint_lines(lines, line, _depth=0):
         if s.startswith("@"):
             t = _tint_from_defaults_line(s)
             if t is not None:
-                return t
+                return t, i + 1
             j -= 1
             continue
+        # A class/def line above is the OWNERSHIP boundary - stop; the
+        # enclosing-class check below handles inheritance (and reports the
+        # class's line as src). Without this, the decorator lookback would
+        # read a decorator on the ENCLOSING class as this def's own tint.
+        if re.match(r"\s*(?:class|def)\s", lines[j]):
+            break
         # Possibly a continuation line of a multi-line decorator; search up a
         # short window for the '@' line that opens it and check the joined
         # statement, so a comment-line decorator above a multi-line one still reads.
@@ -1394,14 +1437,19 @@ def _scan_def_tint_lines(lines, line, _depth=0):
         if q >= 0 and lines[q].strip().startswith("@"):
             t = _tint_from_defaults_line(" ".join(l.strip() for l in lines[q:j + 1]))
             if t is not None:
-                return t
+                return t, i + 1
             j = q - 1
             continue
         break
     if comment:
-        parsed = _parse_override_comment("\n".join(reversed(comment)))
-        if parsed and _is_color(parsed.get("tint")):
-            return tuple(parsed["tint"])
+        # The override comment is the TAIL of the comment run (adjacent to
+        # the def); prose comments above it (`# some comment` stacked on top of
+        # `# [tint=...]`) would poison any whole-run parse - try suffixes.
+        run = list(reversed(comment))
+        for k in range(len(run)):
+            parsed = _parse_override_comment("\n".join(run[k:]))
+            if parsed and _is_color(parsed.get("tint")):
+                return tuple(parsed["tint"]), i + 1
     indent = len(lines[i]) - len(lines[i].lstrip())
     if re.match(r"\s*(?:class|def)\s", lines[i]):
         for k in range(i + 1, min(i + 40, len(lines))):
@@ -1417,21 +1465,14 @@ def _scan_def_tint_lines(lines, line, _depth=0):
                 except (ValueError, SyntaxError):
                     break
                 if _is_color(v):
-                    return tuple(v)
+                    return tuple(v), i + 1
                 break
             if re.match(r"\s*(?:def|class)\s", s):
                 break
-    # Ownership fallback: inherit the nearest enclosing tinted CLASS.
-    if _depth < 4 and indent > 0:
-        j = i - 1
-        while j >= 0:
-            s = lines[j]
-            if s.strip() and len(s) - len(s.lstrip()) < indent:
-                if re.match(r"\s*class\s", s):
-                    return _scan_def_tint_lines(lines, j + 1, _depth + 1)
-                if not s.strip().startswith(("@", "#", ")")):
-                    break
-            j -= 1
+    # Deliberately NO enclosing-class inheritance; a member without its own
+    # tint remains untinted - the class's color is communicated by its BLOCK
+    # wash alone. Inherited symbol washes proved purely redundant (and fed
+    # the same redundancy into assignment propagation).
     return None
 
 
@@ -1458,21 +1499,169 @@ def _verify_def_line(lines, line, name):
     return line
 
 
+def _pending_gen_of(path):
+    """PendingSave edit generation for `path` — 0 when it has no queued edits.
+    queue_save keys _pending_gen by the address's OWN path value while def
+    paths arrive resolved, so a direct miss falls back to a realpath compare
+    over the (few) pending entries. Runs at collector-rebuild cadence."""
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    except Exception:
+        return 0
+    g = PendingSave.pending_gen_for(path)
+    if g:
+        return g
+    gens = PendingSave._pending_gen
+    if not gens:
+        return 0
+    import os
+    try:
+        rp = os.path.realpath(str(path))
+    except OSError:
+        return 0
+    total = 0
+    for k, v in list(gens.items()):
+        try:
+            if os.path.realpath(str(k)) == rp:
+                total += v
+        except OSError:
+            continue
+    return total
+
+
+def _pending_total_gen():
+    """Sum of ALL files' PendingSave edit generations — one cheap monotonic
+    number that moves whenever any in-app deferred edit lands, used in the
+    _def_tints memo key so a tint-comment edit in one file refreshes washes
+    in editors viewing OTHER files. Read per frame; the dict is tiny."""
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        return sum(PendingSave._pending_gen.values())
+    except Exception:
+        return 0
+
+
 def _scan_def_tint(path, line, name=None):
     """File-reading wrapper around _scan_def_tint_lines. Runs only on a
-    cache miss (see _cross_file_def_tint)."""
+    cache miss (see _cross_file_def_tint). Reads through PendingSave so a
+    tint-comment edit queued in-app (deferred saves never touch disk) is
+    seen immediately; falls back to the disk file."""
+    lines = None
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except OSError:
-        return None
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        text = PendingSave.current_file_text(path)
+        if text is not None:
+            lines = text.split("\n")
+    except Exception:
+        lines = None
+    if lines is None:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            return None
     return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name))
 
 
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 6
+_DEF_TINTS_VER = 20
+
+
+# rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
+# tweaking the factors below shows after a swap.
+_COMMENT_TINT_CACHE = {}
+
+# (rgb, factors) -> adjusted rgb for background washes; bounded, reset on
+# hotswap. Factors ride in the key so live toggle tweaks show fresh.
+_BG_ADJ_CACHE = {}
+
+
+def _brightness_clamp(r, g, b, min_b, max_b):
+    """Clamp PERCEIVED brightness (0.299r + 0.587g + 0.114b): too dark is
+    lifted by a uniform add (multiplying near-black does nothing; hue kept),
+    too bright is scaled down — the legibility guard for tinted colors."""
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if lum < min_b:
+        d = min_b - lum
+        return min(1.0, r + d), min(1.0, g + d), min(1.0, b + d)
+    if lum > max_b > 0 and lum > 0:
+        k = max_b / lum
+        return r * k, g * k, b * k
+    return r, g, b
+
+
+def _bg_adjust(rgb, factors):
+    """Background-wash color adjustment: the Tint-class hsv factors
+    (saturation/value multipliers) plus the perceived-brightness clamp —
+    so glyphs stay legible over any tint. `factors` = (sat_f, val_f,
+    min_b, max_b) from Toggles.TextEditor."""
+    key = (rgb, factors)
+    got = _BG_ADJ_CACHE.get(key)
+    if got is not None:
+        return got
+    from src.lsd.gl_gui.toggles import rgb_to_hsv, hsv_to_rgb
+    sat_f, val_f, min_b, max_b = factors
+    r, g, b = rgb[0], rgb[1], rgb[2]
+    if sat_f != 1.0 or val_f != 1.0:
+        h, s, v = rgb_to_hsv(r, g, b)
+        r, g, b = hsv_to_rgb(h, min(max(s * sat_f, 0.0), 1.0),
+                             min(max(v * val_f, 0.0), 1.0))
+    out = _brightness_clamp(r, g, b, min_b, max_b)
+    if len(_BG_ADJ_CACHE) > 2048:
+        _BG_ADJ_CACHE.clear()
+    _BG_ADJ_CACHE[key] = out
+    return out
+
+
+def _comment_tint_color(rgb):
+    """Comment-text variant of an override tint — slightly desaturated and
+    darkened so the colored comment reads as commentary next to the code
+    (the same hsv-factor adjustment pattern as toggles.Tint; factors live in
+    Toggles.TextEditor, read live), then the shared perceived-brightness
+    clamp so a very dark/bright tint's comment stays readable."""
+    from src.lsd.gl_gui.toggles import rgb_to_hsv, hsv_to_rgb, Toggles
+    saturation_factor = getattr(Toggles.TextEditor, 'comment_tint_saturation', 0.72)
+    value_factor = getattr(Toggles.TextEditor, 'comment_tint_value', 0.82)
+
+    h, s, v = rgb_to_hsv(rgb[0], rgb[1], rgb[2])
+    r, g, b = hsv_to_rgb(h,
+                         min(max(s * saturation_factor, 0.0), 1.0),
+                         min(max(v * value_factor, 0.0), 1.0))
+    return _brightness_clamp(r, g, b,
+                             getattr(Toggles.TextEditor, 'bg_min_brightness', 0.0),
+                             getattr(Toggles.TextEditor, 'bg_max_brightness', 1.0))
+
+
+# (packed_abgr, rgb_tuple, k_milli) -> packed. Syntax colors × tint colors ×
+# a handful of k values - tiny, bounded; cleared if it ever balloons.
+_GLYPH_MIX_CACHE = {}
+
+
+def _mix_packed(packed, rgb, k):
+    """Lerp a packed-ABGR glyph color `k` of the way toward `rgb` (0..1
+    floats), keeping alpha — the ever-so-slight text tinting that unifies
+    glyphs with the wash behind them."""
+    key = (packed, rgb, int(k * 1000))
+    got = _GLYPH_MIX_CACHE.get(key)
+    if got is not None:
+        return got
+    r = (packed & 0xFF) / 255.0
+    g = ((packed >> 8) & 0xFF) / 255.0
+    b = ((packed >> 16) & 0xFF) / 255.0
+    a = (packed >> 24) & 0xFF
+    r += (rgb[0] - r) * k
+    g += (rgb[1] - g) * k
+    b += (rgb[2] - b) * k
+    out = ((a << 24)
+           | (min(255, max(0, int(b * 255))) << 16)
+           | (min(255, max(0, int(g * 255))) << 8)
+           | min(255, max(0, int(r * 255))))
+    if len(_GLYPH_MIX_CACHE) > 4096:
+        _GLYPH_MIX_CACHE.clear()
+    _GLYPH_MIX_CACHE[key] = out
+    return out
 
 # realpath-str -> ((mtime_ns, size), {def_line: tint | None}). Invalidated by
 # stat key (cheap, content-free - per CLAUDES.md we hash contents); the stat
@@ -1490,7 +1679,10 @@ def _cross_file_def_tint(path, line, name=None):
         st = os.stat(p)
     except OSError:
         return None
-    stat_key = (st.st_mtime_ns, st.st_size)
+    # Validity = disk stat + PendingSave batch generation: most in-app
+    # edits never touch disk, so the pending gen is what moves when a tint
+    # comment is edited and recompiled without a save-to-disk.
+    stat_key = (st.st_mtime_ns, st.st_size, _pending_gen_of(p))
     entry = _XFILE_TINT_CACHE.get(p)
     if entry is None or entry[0] != stat_key:
         entry = (stat_key, {})
@@ -1549,6 +1741,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
 
     blocks, spans = [], []
     tinted_lines = {}                    # file line of a tinted in-buffer def -> tint
+    own_block_range = {}                 # any def line -> (buf_start, buf_end) of its block
     node_seen, su_seen = set(), set()
     all_sus = []
     _in_file_memo = {}
@@ -1620,14 +1813,27 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                     blk = _block_extent(ln - 1 - line_offset)
                     if blk is not None:
                         blocks.append((*blk, tint))
+                        # Save the block range under both line conventions
+                        # - the index-recorded def line (may be the decorator)
+                        # and the keyword class line (what the scanner's
+                        # src_line reports) - so either lookup below hits.
+                        rng = (blk[0], blk[2])
+                        own_block_range[ln] = rng
+                        own_block_range[blk[0] + 1 + line_offset] = rng
             walk(v, depth + 1)
 
     walk(code_tree)
 
-    # Direct tints per symbol: (rgb, scale) - scale multiplies the wash alpha
-    # at draw time (1.0 for a symbol's own definition tint; propagated locals
-    # see below). untinted collects candidates for propagation.
-    su_tint = {}                     # id(su) -> ((r, g, b), scale)
+    # Collect tints per symbol: (rgb, scale, drop_range) - scale multiplies the
+    # wash alpha at draw time (1.0 for a symbol's own definition tint;
+    # propagated locals fade below). drop_range is the STRUCTURAL redundancy
+    # zone: the buffer line range of the in-file class block this symbol's
+    # tint comes from (its own block for a tinted class, the ENCLOSING class's
+    # block for an inherited field's tint) - spans inside those are never
+    # emitted, so the ancestor already says it. Color-independent on purpose:
+    # comparing colors popped washes in/out during tint drags while the live
+    # text and the pending source gen momentarily disagreed.
+    su_tint = {}                     # id(su) -> ((r, g, b), scale, drop_range|None)
     untinted_locals = []             # SymbolUsage - in-file local bindings
     sites_by_line = {}               # file line -> [(su, column)] for RHS lookup
     for su_key, su in all_sus:
@@ -1636,19 +1842,35 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         d = getattr(su, "definition", None)
         if d is None or not getattr(d, "line", None):
             continue
-        tint = tinted_lines.get(d.line) if _def_in_file(d) else None
+        in_file = _def_in_file(d)
+        tint = tinted_lines.get(d.line) if in_file else None
+        src_line = d.line if tint is not None else None
         if tint is None:
-            # Cross-file defs, and in-buffer defs the tree walk didn't tint
-            # (plain fields, methods - which inherit their enclosing tinted
-            # class via the scanner's ownership fallback), resolve from the
-            # definition file's source through the mtime-keyed cache. The
-            # name rides along so a stale recorded line is re-anchored to
-            # the symbol's actual def if any ownership fallback fires.
-            tint = _cross_file_def_tint(getattr(d, "path", None), d.line,
-                                        getattr(su, "name", None))
+            # Defs INSIDE the viewed buffer scan the LIVE buffer text: the
+            # same text every other layer uses this frame. Going through
+            # PendingSave here (as cross-file does) made su-resolved tints
+            # LAG during tint drags: the pending-save channel is a trailing
+            # writer, so sweep-resolved ones tracked the live value while
+            # su-resolved ones served the queued text and snapped on each
+            # pending-save catch-up - mixed-source frames read as flicker.
+            bl = d.line - line_offset
+            if in_file and 1 <= bl <= len(lines):
+                res = _scan_def_tint_lines(
+                    lines, _verify_def_line(lines, bl, getattr(su, "name", None)))
+                if res is not None:
+                    tint, src_line = res[0], res[1] + line_offset
+            else:
+                # Cross-file defs (and same-file defs OUTSIDE the viewed
+                # buffer) resolve from source through the mtime/pgen-keyed
+                # cache - the name re-anchors a stale recorded line first.
+                res = _cross_file_def_tint(getattr(d, "path", None), d.line,
+                                           getattr(su, "name", None))
+                if res is not None:
+                    tint, src_line = res
         if tint is not None:
-            su_tint[id(su)] = (tuple(tint[:3]), 1.0)
-        elif (isinstance(su_key, str) and "\x1f" in su_key and _def_in_file(d)):
+            rng = own_block_range.get(src_line) if in_file else None
+            su_tint[id(su)] = (tuple(tint[:3]), 1.0, rng)
+        elif (isinstance(su_key, str) and "\x1f" in su_key and in_file):
             untinted_locals.append(su)
 
     # Assignment propagation: a local whose binding line uses tinted symbols
@@ -1665,21 +1887,31 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                 if id(su) in su_tint:
                     continue
                 d = su.definition
-                contribs = []
+                # One voice per column: a dotted chain has the base and the
+                # full member path at the SAME col (`Toggles.profile_mode` →
+                # 'Toggles' and the chain). The MOST SPECIFIC (longest) member
+                # is the value actually bound - it alone speaks for the group,
+                # so `x = Toggles.profile_mode` blends pure profile_mode, and
+                # `x = Toggles.brightness` (untinted member) blends NOTHING
+                # from that column rather than leaking the namespace color.
+                by_col = {}
                 for osu, col in sites_by_line.get(d.line, ()):
                     if osu is su and col == getattr(d, "column", None):
                         continue                     # the binding itself
-                    t = su_tint.get(id(osu))
-                    if t is not None:
-                        contribs.append(t)
+                    cur = by_col.get(col)
+                    if cur is None or len(getattr(osu, "name", None) or "") > \
+                            len(getattr(cur, "name", None) or ""):
+                        by_col[col] = osu
+                contribs = [su_tint[id(o)] for o in by_col.values()
+                            if id(o) in su_tint]
                 if not contribs:
                     continue
-                uniq = list(dict.fromkeys(contribs))  # identical colors once
+                uniq = list(dict.fromkeys((c[0], c[1]) for c in contribs))
                 n = len(uniq)
                 rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
                 scale = fade * (sum(c[1] for c in uniq) / n)
                 if scale >= 0.2:                      # stop fading into noise
-                    su_tint[id(su)] = (rgb, scale)
+                    su_tint[id(su)] = (rgb, scale, None)
                     changed = True
             if not changed:
                 break
@@ -1690,39 +1922,205 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         name = getattr(su, "name", None)
         if t is None or not name:
             continue
-        rgb, scale = t
+        rgb, scale, drop_range = t
+        d = getattr(su, "definition", None)
+        def_line = getattr(d, "line", None) if d is not None else None
         for site in getattr(su, "sites", None) or ():
+            # Structural redundancy: this symbol's tint COMES FROM the
+            # in-buffer class block covering drop_range - occurrences inside
+            # it are never emitted (or filtered after the fact), so nothing
+            # can pop during a tint drag.
+            buf_ln = site[0] - 1 - line_offset
+            if drop_range is not None and drop_range[0] <= buf_ln <= drop_range[1]:
+                continue
             span = _site_span(text, site[0], site[1], name, line_offset)
             if span is not None and span not in seen_spans:
                 seen_spans.add(span)
-                spans.append((span[0], span[1], rgb, scale))
+                # 5th field: is this occurrence ON the definition line the
+                # tint was resolved from? Consumed (and stripped) by the
+                # misresolution filter below.
+                spans.append((span[0], span[1], rgb, scale, site[0] == def_line))
+
+    # Bindings with no symbol-usage entry: a local never referenced afterwards
+    # (`stack = 2*stack_1`, `stack_3 = stack_1 * stack`) gets no
+    # __symbol_usages__ entry at all - the usage graph only tracks referenced
+    # names - so the su-driven assignments and propagation above can't see it.
+    # This text sweep covers them: walk assignment lines top-to-bottom with a
+    # name→tint map seeded from every tinted symbol,
+    #  - an OWN '# [tint=...]' (leading run or trailing) washes at 1.0, and
+    #  - otherwise, inside a def body, the RHS tokens' tints blend exactly
+    #    like su-based propagation (unique colors averaged, fade per hop,
+    #    exact dotted-token match wins - the namespace color never leaks).
+    # Top-to-bottom order makes chains work (stack → stack_3 → ...) and each
+    # result feeds the map for later lines. Su-covered spans are skipped via
+    # seen_spans; su-based-but-untinted bindings get the text blend as a
+    # bonus (their contributors may themselves be su-less).
+    _asn_re = re.compile(r"^(\s*)([A-Za-z_]\w*)\s*[:=](?!=)")
+    _ident_re = re.compile(r"[A-Za-z_][\w.]*")
+    name_tint = {}
+    for su_key, su in all_sus:
+        t = su_tint.get(id(su))
+        nm = getattr(su, "name", None)
+        if t is not None and nm:
+            name_tint[nm] = (t[0], t[1])
+    # Per-line "inside a def body" flags (one linear pass): these stay in
+    # function scope - class-body fields shouldn't pick up RHS blends.
+    _in_def = [False] * len(lines)
+    _scopes = []
+    for bi, lt in enumerate(lines):
+        s = lt.strip()
+        if not s or s.startswith("#"):
+            _in_def[bi] = any(kd == "def" for _, kd in _scopes)
+            continue
+        ind = len(lt) - len(lt.lstrip())
+        while _scopes and _scopes[-1][0] >= ind:
+            _scopes.pop()
+        _in_def[bi] = any(kd == "def" for _, kd in _scopes)
+        m2 = re.match(r"(?:async\s+)?(def|class)\s", s)
+        if m2:
+            _scopes.append((ind, m2.group(1)))
+    mix_on = getattr(_Tg.TextEditor, "def_tint_propagation", True)
+    for bi, lt in enumerate(lines):
+        m = _asn_re.match(lt)
+        if m is None:
+            continue
+        name = m.group(2)
+        start = line_start_idx[bi] + len(m.group(1))
+        end = start + len(m.group(2))
+        covered = (start, end) in seen_spans
+        res = _scan_def_tint_lines(lines, bi + 1)
+        if res is not None and res[1] == bi + 1:
+            rgb, scale = tuple(res[0][:3]), 1.0      # own comment tint wins
+            if covered:
+                # A own-comment RE-binding overrides the su-derived color
+                # from here on: the usage graph ties a local to its FIRST
+                # binding, so a later `# [tint=...]` + rebinding would
+                # otherwise keep it in the first binding's color.
+                for si, sp in enumerate(spans):
+                    if sp[0] >= start and text[sp[0]:sp[1]] == name:
+                        spans[si] = (sp[0], sp[1], rgb, scale, sp[4])
+                name_tint[name] = (rgb, scale)
+                continue
+        elif covered:
+            name_tint.setdefault(name, None)   # su span exists; map set above
+            continue
+        elif mix_on and _in_def[bi]:
+            rhs = lt[m.end():].split("#", 1)[0]
+            contribs = [name_tint[tok] for tok in _ident_re.findall(rhs)
+                        if name_tint.get(tok) is not None]
+            if not contribs:
+                continue
+            uniq = list(dict.fromkeys(contribs))
+            n = len(uniq)
+            rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
+            scale = fade * (sum(c[1] for c in uniq) / n)
+            if scale < 0.2:
+                continue
+        else:
+            continue
+        seen_spans.add((start, end))
+        spans.append((start, end, rgb, scale, True))
+        name_tint[name] = (rgb, scale)
 
     blocks.sort()
-    # Redundancy filter: inside a tinted class's BLOCK wash, occurrences that
-    # would wash in that same color (the class name itself, fields/methods
-    # inheriting it at their def site) say nothing the block doesn't already
-    # say - drop them. Spans in a DIFFERENT color (a cross-class reference
-    # inside the block) stay, and so does faded propagation locals.
+    # Misresolution filter (the same-block/same-tint redundancy is handled
+    # STRUCTURALLY at emission via drop_range - see above): drop an
+    # ASSIGNMENT-TARGET span that is NOT on its own resolved definition line
+    # when it sits inside any tinted block. `name = ...` inside a class
+    # defines the class's attribute, so a wash there colored by a definition
+    # recorded ELSEWHERE is a same-name misresolution (two classes sharing a
+    # field name - the index hands one class's def the OTHER's tint). A def
+    # site that IS its recorded definition keeps its own explicit tint
+    # (a '# [tint=...]' field like profile_mode); faded propagation blends
+    # (scale < 1) are exempt so a long name keeps its color-trail anchor.
     if blocks and spans:
         kept = []
         for sp in spans:
-            ln = bisect.bisect_right(line_start_idx, sp[0]) - 1
-            rgb = sp[2]
-            for b_line, _b_idx, b_end, b_tint in blocks:
-                if (b_line <= ln <= b_end
-                        and abs(rgb[0] - b_tint[0]) < 1e-6
-                        and abs(rgb[1] - b_tint[1]) < 1e-6
-                        and abs(rgb[2] - b_tint[2]) < 1e-6):
-                    break
-            else:
-                kept.append(sp)
+            scale, at_own_def = sp[3], sp[4]
+            if scale >= 1.0 and not at_own_def:
+                ln = bisect.bisect_right(line_start_idx, sp[0]) - 1
+                if any(b[0] <= ln <= b[2] for b in blocks):
+                    ls = line_start_idx[ln]
+                    le = (line_start_idx[ln + 1] - 1
+                          if ln + 1 < len(line_start_idx) else len(text))
+                    if (text[ls:sp[0]].strip() == ""
+                            and re.match(r"\s*(?::[^=\n]+)?=[^=]",
+                                         text[sp[1]:le]) is not None):
+                        continue
+            kept.append(sp)
         spans = kept
+    # Comment-text tints: every override comment carrying tint=(...) gets its
+    # TEXT drawn in that color (not background) - the comment names a color,
+    # so it wears it. [(start_index, end_index, tint)] covering the comment
+    # run (or the trailing-comment tail of an assignment line).
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+    comment_tints = []
+    bi = 0
+    while bi < len(lines):
+        s = lines[bi].strip()
+        if s.startswith("#"):
+            j = bi
+            while j + 1 < len(lines) and lines[j + 1].strip().startswith("#"):
+                j += 1
+            run = lines[bi:j + 1]
+            if any("tint=" in l for l in run):
+                # Prose lines may sit above the override in the same run -
+                # find the first comment SUFFIX; only its lines wear tint.
+                for k in range(len(run)):
+                    parsed = _parse_override_comment(
+                        "\n".join(l.strip() for l in run[k:]))
+                    if parsed and _is_color(parsed.get("tint")):
+                        sb = bi + k
+                        comment_tints.append(
+                            (line_start_idx[sb] + (len(lines[sb]) - len(lines[sb].lstrip())),
+                             line_start_idx[j] + len(lines[j].rstrip()),
+                             tuple(parsed["tint"])[:3]))
+                        break
+            bi = j + 1
+            continue
+        if "tint=" in lines[bi] and "#" in lines[bi]:
+            p = lines[bi].find("#")
+            parsed = _parse_override_comment(lines[bi][p:])
+            if parsed and _is_color(parsed.get("tint")):
+                comment_tints.append((line_start_idx[bi] + p,
+                                      line_start_idx[bi] + len(lines[bi].rstrip()),
+                                      tuple(parsed["tint"])[:3]))
+        bi += 1
+
+    # Per-LINE tints: one very subtle full-width band per line that carries
+    # any symbol wash. A definition ON the line with its own EXPLICIT tint
+    # (at_own_def + full scale - every full-scale tint is explicit now that
+    # inheritance is gone) claims the line outright: `stack = 2 * stack_1`
+    # bands in stack's comment blue, not a stack/stack_1 gradient. Only lines
+    # with no explicit owner mix their span colors (propagation's blend
+    # colors). Runs on the pre-strip 5-tuples for the at_own_def flag.
+    line_mix = {}
+    for sp in spans:
+        ln = bisect.bisect_right(line_start_idx, sp[0]) - 1
+        line_mix.setdefault(ln, []).append(sp)
+    line_tints = []
+    for ln, entries in line_mix.items():
+        own = [e for e in entries if e[4] and e[3] >= 1.0]
+        pick = own if own else entries
+        uniq = list(dict.fromkeys((e[2], e[3]) for e in pick))
+        n = len(uniq)
+        rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
+        # Text extent (buffer indices of first/last non-ws char) - the glow
+        # lights the text on the line, not the full editor width.
+        lt = lines[ln] if 0 <= ln < len(lines) else ""
+        ind = len(lt) - len(lt.lstrip())
+        line_tints.append((ln, rgb, sum(c[1] for c in uniq) / n,
+                           line_start_idx[ln] + ind,
+                           line_start_idx[ln] + max(len(lt.rstrip()), ind + 1)))
+    line_tints.sort()
+    spans = [sp[:4] for sp in spans]
     # Longer spans first for equal starts: a dotted path records overlapping
     # sites (`Toggles`, `Toggles.TextEditor`, `Toggles.TextEditor.x`) and the
     # draw order is paint order - the member-chain wash goes down first, then
     # the base symbol's own color wins on its own token.
     spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
-    return tuple(blocks), tuple(spans)
+    return (tuple(blocks), tuple(spans), tuple(line_tints),
+            tuple(comment_tints))
 
 
 def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
@@ -1731,14 +2129,15 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     map's identity rides in the key so the background usage pass's in-place
     arrival busts the cache."""
     if not isinstance(code_tree, dict):
-        return ((), ())
+        return ((), (), (), ())
     su_top = code_tree.get("__symbol_usages__")
-    key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset, text, str(view_path))
+    key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset, text,
+           str(view_path), _pending_total_gen())
     if getattr(ds, "_def_tints_key", None) != key:
         try:
             ds._def_tints = _collect_def_tints(code_tree, text, line_offset, view_path)
         except Exception:
-            ds._def_tints = ((), ())
+            ds._def_tints = ((), (), (), ())
         ds._def_tints_key = key
     return ds._def_tints
 
@@ -4171,10 +4570,17 @@ def draw_text(input_value: str, height=None,
     # right side at the view edge - and a small wash behind every occurrence
     # of a symbol whose definition (here or in another file) carries a tint,
     # in that definition's color. Ties usages to their definitions at a glance.
+    _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
     if getattr(Toggles.TextEditor, 'definition_tints', False) and not is_search_box:
-        _dt_blocks, _dt_spans = _def_tints(
+        _dt_blocks, _dt_spans, _dt_lines, _dt_comments = _def_tints(
             ds, text, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
+        # Shared background color adjustment (hsv factors + brightness clamp)
+        # for every usage-tint wash below - see _bg_adjust.
+        _bg_f = (getattr(Toggles.TextEditor, 'bg_tint_saturation', 1.0),
+                 getattr(Toggles.TextEditor, 'bg_tint_value', 1.0),
+                 getattr(Toggles.TextEditor, 'bg_min_brightness', 0.0),
+                 getattr(Toggles.TextEditor, 'bg_max_brightness', 1.0))
         _dt_block_a = Toggles.TextEditor.def_block_alpha
         for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
             sy = origin_y + _b_line * line_px
@@ -4182,8 +4588,28 @@ def draw_text(input_value: str, height=None,
             if ey < rect_min_y or sy > rect_max_y:
                 continue
             sx = origin_x + _colx(_b_idx)
-            _b_col = imgui.get_color_u32_rgba(_b_tint[0], _b_tint[1], _b_tint[2], _dt_block_a)
+            _b_rgb = _bg_adjust(tuple(_b_tint[:3]), _bg_f)
+            _b_col = imgui.get_color_u32_rgba(_b_rgb[0], _b_rgb[1], _b_rgb[2], _dt_block_a)
             draw_list.add_rect_filled(sx, sy, rect_max_x, ey, _b_col, 4.0)
+        # Line tint (the subtlest layer, over blocks, under the symbol
+        # washes): one plain wash fitting the line's TEXT extent (indent →
+        # last non-ws char), in the line's color - its explicit comment tint
+        # if the definition has one, else a mix of its symbol tints.
+        # (Full-width and feathered/glow variants were tried and reverted:
+        # a simple band hugging the relevant text wins.)
+        _dt_line_a = getattr(Toggles.TextEditor, 'def_line_alpha', 0.03)
+        if _dt_line_a > 0:
+            for _l_line, _l_rgb, _l_sc, _l_s, _l_e in _dt_lines:
+                sy = origin_y + _l_line * line_px
+                ey = sy + line_px
+                if ey < rect_min_y or sy > rect_max_y:
+                    continue
+                sx = origin_x + _colx(_l_s)
+                ex = origin_x + _colx(_l_e)
+                _la = _bg_adjust(tuple(_l_rgb[:3]), _bg_f)
+                _l_col = imgui.get_color_u32_rgba(_la[0], _la[1], _la[2],
+                                                  _dt_line_a * _l_sc)
+                draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey, _l_col, 3.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
         for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
             _s_line, _ = _index_to_line_col(text, _s_start)
@@ -4195,7 +4621,8 @@ def draw_text(input_value: str, height=None,
             ex = origin_x + _colx(_s_end)
             # _s_scale < 1 indicates a PROPAGATED tint (reference flow) - same
             # color family, fainter wash per hop from the tinted definition.
-            _s_col = imgui.get_color_u32_rgba(_s_tint[0], _s_tint[1], _s_tint[2],
+            _sa = _bg_adjust(tuple(_s_tint[:3]), _bg_f)
+            _s_col = imgui.get_color_u32_rgba(_sa[0], _sa[1], _sa[2],
                                               _dt_sym_a * _s_scale)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
 
@@ -4340,6 +4767,24 @@ def draw_text(input_value: str, height=None,
     # line-segment at a time with a single add_text call rather than per glyph.
     win_line, win_off, tokens, _ = _window()
 
+    # Glyph tinting: glyphs under a definition-tint wash lean ever so
+    # slightly toward the wash color (syntax color stays the base), so text
+    # reads as part of its panel - the same treatment used app-wide. Token
+    # granularity: a symbol is per identifier token, so per-token is exact.
+    # Cost: one bisect + ≤4-span overlap walk per visible token; the mixed
+    # packed color is memoized in _GLYPH_MIX_CACHE.
+    _dt_mix = (getattr(Toggles.TextEditor, 'def_text_tint_mix', 0.0)
+               if _dt_spans else 0.0)
+    _dt_starts = [s[0] for s in _dt_spans] if _dt_mix > 0 else None
+    # Override comments carrying tint=(...) draw their TEXT in that color -
+    # the comment names a definition, so it wears it (text-only, no background).
+    # The tint factors join the memo key so any toggle tweaks repaint.
+    _ct_starts = [c[0] for c in _dt_comments] if _dt_comments else None
+    _ct_factors = (getattr(Toggles.TextEditor, 'comment_tint_saturation', 0.72),
+                   getattr(Toggles.TextEditor, 'comment_tint_value', 0.82),
+                   getattr(Toggles.TextEditor, 'bg_min_brightness', 0.0),
+                   getattr(Toggles.TextEditor, 'bg_max_brightness', 1.0))
+
     x = origin_x
     y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
     src_i = win_off    # ABSOLUTE source index at the start of the current token
@@ -4350,6 +4795,39 @@ def draw_text(input_value: str, height=None,
     _tv_click = None   # (src_index, src_len, right_half) - press landed on a whole-token widget
     for token, color_key in tokens:
         color = COLORS[color_key]
+        # Inside a tint-carrying override comment, the comment text and the
+        # merged color-tuple token (color3 - the picker's `(r, g, b)` text)
+        # wear the comment's adjusted color; other value widgets (numbers,
+        # bools) keep their own token color.
+        if _ct_starts is not None and color_key in ('comment', 'color3'):
+            _ci = bisect.bisect_right(_ct_starts, src_i) - 1
+            if _ci >= 0 and src_i < _dt_comments[_ci][1]:
+                _cc = _dt_comments[_ci][2]
+                _ck = (_cc, _ct_factors)
+                _pk = _COMMENT_TINT_CACHE.get(_ck)
+                if _pk is None:
+                    _cr, _cg, _cb = _comment_tint_color(_cc)
+                    _pk = imgui.get_color_u32_rgba(_cr, _cg, _cb, 1.0)
+                    if len(_COMMENT_TINT_CACHE) > 1024:
+                        _COMMENT_TINT_CACHE.clear()
+                    _COMMENT_TINT_CACHE[_ck] = _pk
+                color = _pk
+        elif _dt_mix > 0:
+            # Spans sort (start, -len): at a shared start the SHORTEST is
+            # last, so bisect lands on the base symbol for a given token; the
+            # short backward walk finds the chain span still covering a
+            # member token at the base's end.
+            _si = bisect.bisect_right(_dt_starts, src_i) - 1
+            for _k in range(_si, max(-1, _si - 4), -1):
+                _sp = _dt_spans[_k]
+                if _sp[1] <= src_i:
+                    continue
+                if _sp[0] <= src_i:
+                    # Mix toward the ADJUSTED wash color - what's actually
+                    # painted behind the glyphs (same _bg_f as the washes).
+                    color = _mix_packed(color, _bg_adjust(tuple(_sp[2][:3]), _bg_f),
+                                        _dt_mix * _sp[3])
+                break
         # Inline token view: a str-keyed token_views entry with a char_width draws
         # a widget INSTEAD of this token's text, occupying char_width cells (see
         # the token-views note above). type-keyed entries are handled by the
@@ -4395,8 +4873,20 @@ def draw_text(input_value: str, height=None,
                 _pad = 0 if _lead else _view.get("pad_px", 0)
                 imgui.set_cursor_screen_pos((x - _pad, y))
                 _w = (_lead * char_w) if _lead else (len(token) * char_w + 2 * _pad)
+                # Inside a tint-carrying override comment, bool/number
+                # widgets adopt the comment's (adjusted) color for clutter
+                # reduction; the same widgets in code keep their own color.
+                _extra = {}
+                if _ct_starts is not None and color_key in ('bool', 'number'):
+                    _wci = bisect.bisect_right(_ct_starts, src_i) - 1
+                    if _wci >= 0 and src_i < _dt_comments[_wci][1]:
+                        _wc = _comment_tint_color(_dt_comments[_wci][2])
+                        _extra['text_tint'] = _wc
+                        if color_key == 'bool':
+                            _extra['tint'] = _wc   # tint wrapper's bg box too
                 try:
-                    _res = _view["renderer"](token, width=_w, height=line_px, name=_name)
+                    _res = _view["renderer"](token, width=_w, height=line_px,
+                                             name=_name, **_extra)
                 except Exception:                    _res = None
                 imgui.set_cursor_screen_pos(_save_cur)
                 if _lead:
@@ -4633,7 +5123,7 @@ def draw_text(input_value: str, height=None,
     # cursor's line is brightened for emphasis.
     if show_gutter and gutter_w > 0:
         gutter_bg = (0.11, 0.129, 0.149, 1.0)  # faint gray column
-        num_color = COLORS['comment']
+        num_color = COLORS['line_no']
         cur_color = COLORS['default']
         cur_line = _index_to_line_col(text, ds.text_cursor_pos)[0] if is_focused else -1
         # Clamp the column's top to the text body (origin_y) so the fill doesn't
@@ -4642,6 +5132,9 @@ def draw_text(input_value: str, height=None,
         gutter_top = max(rect_min_y, origin_y)
         draw_list.push_clip_rect(left, gutter_top, left + gutter_w, rect_max_y, True)
         draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, imgui.get_color_u32_rgba(*gutter_bg))
+        # Line-tint lookup for the heat wash below: a line with a definition
+        # tint draws its number with THAT color instead of the usage heat ramp.
+        _dt_line_map = {l[0]: l for l in _dt_lines} if _dt_lines else {}
         total_lines = text.count('\n') + 1
         for line_idx in range(total_lines):
             ly = origin_y + line_idx * line_px
@@ -4658,11 +5151,20 @@ def draw_text(input_value: str, height=None,
                 num_str = str(line_offset + line_idx + 1)
             nx = left + gutter_w - 6.0 - len(num_str) * char_w
             # Usage heat box (see the aggregation pass above): a rounded wash
-            # across the gutter, painted over every usage span on the line.
+            # around the number, summed over every usage token on the line -
+            # colored by the line's definition tint when it has one, so the
+            # gutter mark matches the line's light.
             heat = _usage_line_heat.get(line_idx)
             if heat:
+                _lt = _dt_line_map.get(line_idx)
+                if _lt is not None:
+                    _ga = _bg_adjust(tuple(_lt[1][:3]), _bg_f)
+                    _hb = imgui.get_color_u32_rgba(_ga[0], _ga[1], _ga[2],
+                                                   0.55 * _lt[2])
+                else:
+                    _hb = _usage_wash_color(heat)
                 draw_list.add_rect_filled(nx - 3.0, ly + 1, left + gutter_w - 3.0,
-                                          ly + line_px - 1, _usage_wash_color(heat), 3.0)
+                                          ly + line_px - 1, _hb, 3.0)
             draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
         draw_list.pop_clip_rect()
 
