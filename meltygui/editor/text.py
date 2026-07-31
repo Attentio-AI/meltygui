@@ -386,6 +386,12 @@ def _ensure_member_completions(ds, text, anchor, address=None):
                     ds._ac_jedi_members = rows
                     ds._ac_jedi_done_key = key
                     ds._ac_jedi_future = None
+                    # Tinted members from the receiver's defining file, so
+                    # members never referenced in THIS buffer still color
+                    # (the buffer usage graph can't know them). Resolved
+                    # once per receiver; the scan itself is stat-cached.
+                    ds._ac_member_tints = _file_name_tints(
+                        _live_receiver_file(ns, rcv))
                     return rows, False
 
     if getattr(ds, '_ac_jedi_req_key', None) != key:
@@ -408,6 +414,7 @@ def _ensure_member_completions(ds, text, anchor, address=None):
     ds._ac_jedi_members = [(name, _JEDI_KIND.get(jtype, jtype)) for name, jtype in raw]
     ds._ac_jedi_done_key = key
     ds._ac_jedi_future = None
+    ds._ac_member_tints = None   # jedi path - no live receiver file to scan
 
     ds.invalidate_up()
     return ds._ac_jedi_members, False
@@ -731,6 +738,7 @@ def draw_bool_token(input_value, draw_state=None, text_tint=None, **kwargs):
     w = max(1.0, draw_state.width)
     h = max(1.0, draw_state.height)
     io = imgui.get_io()
+    
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
     draw_list = imgui.get_window_draw_list()
     # text_tint (from the editor, inside a tint-carrying override comment):
@@ -1376,7 +1384,7 @@ def _snap_to_def(lines, i, limit=40):
     return i
 
 
-def _scan_def_tint_lines(lines, line, _depth=0):
+def _scan_def_tint_lines(lines, line, name=None, _depth=0):
     """(tint, src_line) for the definition at 1-based `line` of `lines`, in
     SOURCE form — or None. The recorded line is first snapped to the real
     class/def line, then the decorator/comment run above is checked for
@@ -1396,6 +1404,21 @@ def _scan_def_tint_lines(lines, line, _depth=0):
     if not (0 <= i < len(lines)):
         return None
     i = _snap_to_def(lines, i)
+    # A class/def line's tint belongs ONLY to the def that line defines. A
+    # local that merely LIVES on the line - a parameter, whose definition
+    # resolves to the def line - must not read the def's decorator/comment
+    # tint as its own (that leak propagated a tinted top_func's color onto
+    # every local whose binding read one of its parameters).
+    if name is not None:
+        dm = re.match(r"\s*(?:async\s+)?(?:class|def)\s+([A-Za-z_]\w*)", lines[i])
+        if dm and dm.group(1) != str(name).rsplit(".", 1)[-1]:
+            return None
+    # Decorator tints belong to definitions only. When the anchor line is NOT
+    # a class/def line (e.g. the assignment sweep matched `is_tree=False,` - a
+    # decorator's CONTINUATION line, or any name=None lookup on a decorated
+    # statement), an '@' line above is a decorator context this line sits
+    # inside, never this line's own tint store.
+    _is_def_line = re.match(r"\s*(?:async\s+)?(?:class|def)\s", lines[i]) is not None
     # Inline trailing override comment on the def line itself - the most
     # common store `x = a * b  # [tint=(...)]`), checked first so an explicit
     # comment tint always beats anything else (including the assignment-
@@ -1414,6 +1437,10 @@ def _scan_def_tint_lines(lines, line, _depth=0):
             j -= 1
             continue
         if s.startswith("@"):
+            if not _is_def_line:
+                # In a decorator's argument list - a kwarg line owns no
+                # tint, and comments further up belong to the decorated def.
+                break
             t = _tint_from_defaults_line(s)
             if t is not None:
                 return t, i + 1
@@ -1435,6 +1462,8 @@ def _scan_def_tint_lines(lines, line, _depth=0):
                 break
             q -= 1
         if q >= 0 and lines[q].strip().startswith("@"):
+            if not _is_def_line:
+                break                       # same decorator-context guard as above
             t = _tint_from_defaults_line(" ".join(l.strip() for l in lines[q:j + 1]))
             if t is not None:
                 return t, i + 1
@@ -1593,7 +1622,7 @@ def _scan_def_tint(path, line, name=None):
     got = _XFILE_LINES_CACHE.get(p)
     if got is not None and stat_key is not None and got[0] == stat_key:
         lines = got[1]
-        return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name))
+        return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name), name)
     lines = None
     try:
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
@@ -1612,13 +1641,13 @@ def _scan_def_tint(path, line, name=None):
         if len(_XFILE_LINES_CACHE) > 64:
             _XFILE_LINES_CACHE.clear()
         _XFILE_LINES_CACHE[p] = (stat_key, lines)
-    return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name))
+    return _scan_def_tint_lines(lines, _verify_def_line(lines, line, name), name)
 
 
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 20
+_DEF_TINTS_VER = 24
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -1798,6 +1827,157 @@ def _cross_file_def_tint(path, line, name=None):
     return per_def[key]
 
 
+# (realpath, pending-gen, before_line) -> net line delta of queued edits fully
+# above; bounded, reset on hotswap.
+_PENDING_DELTA_CACHE = {}
+
+
+def _pending_line_delta(path, before_line):
+    """Net line-count change of PendingSave span edits that sit fully ABOVE
+    0-based file line `before_line` of `path` — the shift between DISK
+    coordinates (addresses / span starts, the in-session invariant) and
+    PENDING-text coordinates (what the symbol index computes sites in, via
+    current_file_text's splices). Added to the buffer's usage offset so sites
+    keep landing on the right buffer lines while an unsaved edit above the
+    span has grown or shrunk the file. Cached per (path, pending gen)."""
+    if path is None or not before_line:
+        return 0
+    gen = _pending_gen_of(path)
+    if not gen:
+        return 0
+    rp = _real(str(path))
+    key = (rp, gen, before_line)
+    got = _PENDING_DELTA_CACHE.get(key)
+    if got is not None:
+        return got
+    delta = 0
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        for addr, (codec, kwargs) in list(PendingSave.pending_saves.items()):
+            data = kwargs.get("data")
+            start, end = getattr(addr, "start", None), getattr(addr, "end", None)
+            if (not isinstance(data, str) or start is None or end is None
+                    or end > before_line):
+                continue
+            if _real(str(addr.path)) != rp:
+                continue
+            d = data[:-1] if data.endswith("\n") else data
+            delta += (d.count("\n") + 1) - (end - start)
+    except Exception:
+        return 0
+    if len(_PENDING_DELTA_CACHE) > 512:
+        _PENDING_DELTA_CACHE.clear()
+    _PENDING_DELTA_CACHE[key] = delta
+    return delta
+
+
+# path-str -> (stat_key, {name: rgb}) - every name in the file whose definition
+# has an explicit tint. One O(file) scan per (disk stat, pending-gen) state;
+# resolved when member completions land, never per frame. Bounded, reset on
+# hotswap.
+_XFILE_NAME_TINTS = {}
+_TINT_OWNER_DEF_RE = re.compile(r"\s*(?:async\s+)?(?:class|def)\s+([A-Za-z_]\w*)")
+_TINT_OWNER_ASSIGN_RE = re.compile(r"\s*([A-Za-z_]\w*)\s*[:=](?!=)")
+
+
+def _file_name_tints(path):
+    """{name: rgb} for every definition in `path` carrying an explicit tint.
+    The autocomplete popup colors member candidates with this when the
+    receiver's class/module lives in `path` — the buffer's usage graph only
+    knows symbols USED in the buffer, so an unused member (`Toggles.
+    yield_to_ui` offered after `Toggles.`) would otherwise show untinted.
+    Each `tint=` marker line is anchored to the def/assignment that owns it,
+    then confirmed through _scan_def_tint_lines so the ownership rules stay
+    canonical (a plain `tint=` kwarg in a call resolves to no tint there)."""
+    if path is None:
+        return None
+    p = str(path)
+    import os
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    stat_key = (st.st_mtime_ns, st.st_size, _pending_gen_of(p))
+    got = _XFILE_NAME_TINTS.get(p)
+    if got is not None and got[0] == stat_key:
+        return got[1]
+    lines = None
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        pend = PendingSave.current_file_text(p)
+        if pend is not None:
+            lines = pend.split("\n")
+    except Exception:
+        lines = None
+    if lines is None:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            return None
+    out = {}
+    for i, raw in enumerate(lines):
+        if "tint=" not in raw:
+            continue
+        # Anchor the marker to the def-shaped line that owns it: the marker
+        # line itself (trailing comment / bare def / assignment), or -
+        # for a comment run or decorator line - the first def/assignment
+        # below (paren-balanced, so multi-line calls are consumed).
+        owner = name = None
+        m = _TINT_OWNER_DEF_RE.match(raw) or _TINT_OWNER_ASSIGN_RE.match(raw)
+        if m is not None:
+            owner, name = i, m.group(1)
+        else:
+            depth = 0
+            for j in range(i, min(i + 40, len(lines))):
+                s = lines[j].strip()
+                if depth == 0 and j > i and not s.startswith(("#", "@")):
+                    m = (_TINT_OWNER_DEF_RE.match(lines[j])
+                         or _TINT_OWNER_ASSIGN_RE.match(lines[j]))
+                    if m is not None:
+                        owner, name = j, m.group(1)
+                    break
+                depth += s.count("(") - s.count(")")
+        if owner is None or name in out:
+            continue
+        res = _scan_def_tint_lines(lines, owner + 1, name)
+        if res is not None:
+            out[name] = tuple(res[0][:3])
+    if len(_XFILE_NAME_TINTS) > 64:
+        _XFILE_NAME_TINTS.clear()
+    _XFILE_NAME_TINTS[p] = (stat_key, out)
+    return out
+
+
+def _live_receiver_file(ns, rcv):
+    """Defining file of the live object `rcv` getattr-resolves to in module
+    namespace `ns`: the module's own __file__ for a module, else the file of
+    the (type's) defining module. None when the walk dead-ends."""
+    parts = [s for s in (rcv or "").split(".") if s]
+    if not parts or not ns:
+        return None
+    obj = ns.get(parts[0])
+    for part in parts[1:]:
+        if obj is None:
+            return None
+        try:
+            obj = getattr(obj, part, None)
+        except Exception:
+            return None
+    if obj is None:
+        return None
+    try:
+        import inspect
+        import sys as _sys
+        if inspect.ismodule(obj):
+            return getattr(obj, "__file__", None)
+        cls = obj if isinstance(obj, type) else type(obj)
+        mod = _sys.modules.get(getattr(cls, "__module__", None) or "")
+        return getattr(mod, "__file__", None)
+    except Exception:
+        return None
+
+
 def _site_span(text, ln, col, name, line_offset):
     """(start_index, end_index) in the buffer for one file-absolute (ln, col)
     occurrence of `name`, or None. Same verify-then-recover logic as
@@ -1914,7 +2094,11 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                 if ln is None:
                     ln = _find_def_line(k)
                 if ln is not None:
-                    tinted_lines[ln] = tint
+                    # Keyed by line but OWNED by name: the su lookup below
+                    # must not assign this tint to a different symbol whose
+                    # definition merely resolves to the same line (parameters
+                    # of a tinted def resolve to the def line).
+                    tinted_lines[ln] = (tint, k.split("#", 1)[0])
                     blk = _block_extent(ln - 1 - line_offset)
                     if blk is not None:
                         blocks.append((*blk, tint))
@@ -1960,7 +2144,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         s = lt.lstrip()
         worth = ("#" in lt or s.startswith(("class ", "def ", "@"))
                  or (i > 0 and lines[i - 1].lstrip().startswith(("#", "@"))))
-        res = _scan_def_tint_lines(lines, vl) if worth else None
+        res = _scan_def_tint_lines(lines, vl, name) if worth else None
         _scan_memo[key] = res
         return res
     sites_by_line = {}               # file line -> [(su, col)] for RHS lookup
@@ -1971,7 +2155,9 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         if d is None or not getattr(d, "line", None):
             continue
         in_file = _def_in_file(d)
-        tint = tinted_lines.get(d.line) if in_file else None
+        rec = tinted_lines.get(d.line) if in_file else None
+        tint = (rec[0] if rec is not None and rec[1] ==
+                str(getattr(su, "name", "") or "").rsplit(".", 1)[-1] else None)
         src_line = d.line if tint is not None else None
         if tint is None:
             # Defs INSIDE the viewed buffer scan the LIVE buffer text: the
@@ -2025,6 +2211,22 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                 for osu, col in sites_by_line.get(d.line, ()):
                     if osu is su and col == getattr(d, "column", None):
                         continue                     # the binding itself
+                    # A name DEFINED on this line is not a read: parameters
+                    # appear on the `def` line, where the (tinted) function's
+                    # own def-site occurrence sits - without this, every
+                    # param of a tinted def blended the def's own color and
+                    # the whole body inherited it hop by hop. The recorded
+                    # definition line may be the DECORATOR definition line
+                    # while the occurrence sits on the def keyword's line, so
+                    # both sides compare through _snap_to_def.
+                    od = getattr(osu, "definition", None)
+                    if (od is not None and getattr(od, "line", None) is not None
+                            and _def_in_file(od)):
+                        obl = od.line - 1 - line_offset
+                        dbl = d.line - 1 - line_offset
+                        if (0 <= obl < len(lines) and 0 <= dbl < len(lines)
+                                and _snap_to_def(lines, obl) == _snap_to_def(lines, dbl)):
+                            continue
                     cur = by_col.get(col)
                     if cur is None or len(getattr(osu, "name", None) or "") > \
                             len(getattr(cur, "name", None) or ""):
@@ -2246,8 +2448,19 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # draw order is paint order - the member-chain wash goes down first, then
     # the base symbol's own color wins on its own token.
     spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    # Exported name→rgb map for consumers outside the wash pipeline (the
+    # autocomplete popup colors its candidate rows with it). Dotted symbols
+    # also register with their last segment (setdefault - an explicit name wins)
+    # so member completions after `Receiver.` match by the last attribute name.
+    name_tints = {}
+    for nm, t in name_tint.items():
+        if t is not None:
+            name_tints[nm] = tuple(t[0][:3])
+    for nm, t in name_tint.items():
+        if t is not None and "." in nm:
+            name_tints.setdefault(nm.rsplit(".", 1)[-1], tuple(t[0][:3]))
     return (tuple(blocks), tuple(spans), tuple(line_tints),
-            tuple(comment_tints))
+            tuple(comment_tints), name_tints)
 
 
 def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
@@ -2256,7 +2469,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     map's identity rides in the key so the background usage pass's in-place
     arrival busts the cache."""
     if not isinstance(code_tree, dict):
-        return ((), (), (), ())
+        return ((), (), (), (), {})
     su_top = code_tree.get("__symbol_usages__")
     key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset, text,
            str(view_path), _pending_total_gen())
@@ -2264,7 +2477,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
         try:
             ds._def_tints = _collect_def_tints(code_tree, text, line_offset, view_path)
         except Exception:
-            ds._def_tints = ((), (), (), ())
+            ds._def_tints = ((), (), (), (), {})
         ds._def_tints_key = key
     return ds._def_tints
 
@@ -3519,8 +3732,8 @@ def _describe_code_tree(code_tree):
 
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
-             show_name=False, with_footer=draw_footer, determines_height=False,
-             selectable=False, searchable=True, bg_offset=-1.2, show_add_delete=False)
+             show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.2,
+             selectable=False, searchable=True, bg_offset=-4.3, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
@@ -3539,16 +3752,28 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-        
+    
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
     # __symbol_usages__). Links are file-absolute, so the buffer's file offset
     # comes from the parse's line_offset when set, else from the jump_to span.
-    _usage_tree = code_tree if code_tree is not None else code_dict
+    # The FILE route passes the syntax-ERROR MARKER dict ({'__error__', ...})
+    # in code_tree while the real (possibly blank-line-repaired) parse rides
+    # in code_dict - the marker must not shadow the parse, or every tree-
+    # derived wash (class blocks, symbol tints) vanishes for the whole
+    # duration of the mid-edit syntax error.
+    _usage_tree = code_tree if (code_tree is not None
+                                and not (isinstance(code_tree, dict)
+                                         and "__error__" in code_tree)) else code_dict
     _usage_off = getattr(_usage_tree, 'line_offset', 0) or 0
     if not _usage_off and jump_to is not None:
         _usage_off = getattr(jump_to, 'start', 0) or 0
+    # Bridge disk→pending coordinates: index sites are computed over the
+    # PENDING file text, while the span start above is a DISK coordinate. An
+    # unsaved disk edit above this span that changed the line count shifts
+    # every site - fold that shift into the offset (0 when nothing is pending).
+    _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
         
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
@@ -3781,10 +4006,6 @@ def draw_text(input_value: str, height=None,
     # rebind focus by tile id so a cache hit doesn't silently drop it.
     if (not is_focused and Melty.text_focused_ds is not None
             and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
-        
-        
-        
-        
         if Toggles.TextEditor.text_focus_stack_trace:
             print(f"[focus-grant] rebind -> {ds.name} ({ds._tile_id}) "
                   f"from ds {id(Melty.text_focused_ds)}")
@@ -3808,7 +4029,6 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_end = len(text)
             ds.text_cursor_pos = len(text)
         
-    
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
         straight in IntelliJ; several open the usage-jump picker under the
@@ -4449,6 +4669,7 @@ def draw_text(input_value: str, height=None,
                 except Exception:
                     raw = []
                 cands = _filter_completions(raw, prefix)
+                ds._ac_member_tints = None
             elif want and (dot_trigger or import_ctx):
                 # Member access (`imgui.`, `foo.bar`) or an import line - the
                 # live module namespace answers instantly when it can; otherwise
@@ -4475,6 +4696,7 @@ def draw_text(input_value: str, height=None,
                     ds._ac_pool = _completion_pool(code_tree, text, _ac_line, _pool_func)
                     ds._ac_pool_key = _pool_key
                 cands = _filter_completions(ds._ac_pool, prefix)
+                ds._ac_member_tints = None   # scope names - member map would mislabel
             else:
                 cands = []
             if cands:
@@ -4705,7 +4927,7 @@ def draw_text(input_value: str, height=None,
     # in that definition's color. Ties usages to their definitions at a glance.
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
     if Toggles.TextEditor.definition_tints and not is_search_box:
-        _dt_blocks, _dt_spans, _dt_lines, _dt_comments = _def_tints(
+        _dt_blocks, _dt_spans, _dt_lines, _dt_comments, _ = _def_tints(
             ds, text, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
         # ALL def-tint washes paint on the UNDER-text channel (same idiom as
@@ -4908,10 +5130,6 @@ def draw_text(input_value: str, height=None,
                 continue
             draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, imgui.get_color_u32_rgba(*bg))
 
-
-
-
-
     # Syntax-highlighted text - only the visible window is tokenized (see
     # `_window`), so this is O(visible) not O(buffer). The loop starts at the
     # window's first line and source offset; tokens above it (the merge-context
@@ -4938,10 +5156,11 @@ def draw_text(input_value: str, height=None,
     # the comment names a definition, so it wears it (text-only, no background).
     # The tint factors join the memo key so any toggle tweaks repaint.
     _ct_starts = [c[0] for c in _dt_comments] if _dt_comments else None
-    _ct_factors = (Toggles.TextEditor.comment_tint_saturation,
-                   Toggles.TextEditor.comment_tint_value,
+    _ct_factors = (Toggles.TextEditor.comment_tint_saturation, 
+                   Toggles.TextEditor.comment_tint_value, 
                    Toggles.TextEditor.comment_min_brightness,
                    Toggles.TextEditor.bg_max_brightness)
+
     x = origin_x
     y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
     src_i = win_off    # ABSOLUTE source index at the start of the current token
@@ -4960,6 +5179,7 @@ def draw_text(input_value: str, height=None,
             _ci = bisect.bisect_right(_ct_starts, src_i) - 1
             if _ci >= 0 and src_i < _dt_comments[_ci][1]:
                 _cc = _dt_comments[_ci][2]
+                
                 _ck = (_cc, _ct_factors)
                 _pk = _COMMENT_TINT_CACHE.get(_ck)
                 if _pk is None:
@@ -5358,7 +5578,29 @@ def draw_text(input_value: str, height=None,
                 and bool(getattr(ds, '_ac_candidates', None)))
     _ac_cands = ds._ac_candidates if _ac_show else []
     _ac_items = {n: n for n in _ac_cands}
+    # Row colors from the definition-tint pass: a candidate whose symbol
+    # carries a tint renders its row in that color, matching the editor's
+    # washes. The name→int map rides the cached _def_tints result already
+    # computed this frame (len guard: an old 4-tuple may linger on a
+    # pre-hotswap draw_state). Cost here is one dict hit per name.
+    _dt = getattr(ds, '_def_tints', None)
+    _nt = _dt[4] if _ac_show and _dt is not None and len(_dt) > 4 else None
+    _mt = getattr(ds, '_ac_member_tints', None) if _ac_show else None
+    _ac_tints = None
+    if _nt or _mt:
+        _ac_tints = {}
+        for n in _ac_cands:
+            # The member map (receiver's defining file) wins - it's exact for
+            # the receiver, while the namespace map's dotted-name last-segment
+            # lookup is only a guess for bare member names.
+            t = (_mt.get(n) if _mt else None) or (_nt.get(n) if _nt else None)
+            if t is not None:
+                _ac_tints[n] = t
+        _ac_tints = _ac_tints or None
     _ac_anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
+
+
+
     _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px, vcols=vcols)
     if _ac_show:
         # Keyboard-vs-hover highlight. The menu paints the keyboard cursor only in
@@ -5381,7 +5623,7 @@ def draw_text(input_value: str, height=None,
                      and _py0 - 2 <= _mp[1] <= _py0 + _pop_ds.height)
         else:
             # First-open-frame fallback before the popup's tile id is found.
-            _pop_h = min(len(_ac_cands) * 24 + 10, 312)        # ~row height, capped
+            _pop_h = min(len(_ac_cands) * 24 + 10, 800)        # ~row height, cap
             _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
                      and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
         _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
@@ -5393,15 +5635,16 @@ def draw_text(input_value: str, height=None,
         ac_state._last_mouse = (_mp[0], _mp[1])
 
     imgui.dummy(draw_state.content_width, max(draw_state._kwargs.get("min_height", 0), text_height))
-
+    
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
     # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
     # background results wake it via the future's done-callback (_ac_on_future).
     ac_changed, ac_pick, _ac_menu_ds = draw_dd_menu(
         _ac_items, name=f"{ds.name}_ac_menu", view_offset=False,
-        temp=True, show_search=False, swoosh=False, closed=not _ac_show, min_height=141, auto_resize=False,
+        temp=True, show_search=False, swoosh=False, closed=not _ac_show, max_height=800,
         window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
+        row_tints=(_ac_tints or None),
         parent_window=draw_state, root_state=ac_state, path_prefix=(),
         return_extras=True)
     # Latch the popup's exact tile id from the call itself (return_extras hands
@@ -5429,7 +5672,7 @@ def draw_text(input_value: str, height=None,
     # It lands before the parent window dispatch on end_frame, so the menu
     # repaints the same frame; request_render backstops bad orderings.
     if _ac_show:
-        _sig = (ds._ac_candidates, ds._ac_kinds, ds._ac_index,
+        _sig = (ds._ac_candidates, ds._ac_kinds, ds._ac_index, _ac_tints,
                 bool(getattr(ac_state, '_kbd_mode', True)))
         if _sig != getattr(ds, '_ac_menu_sig', None):
             ds._ac_menu_sig = _sig
@@ -5496,6 +5739,8 @@ def draw_text(input_value: str, height=None,
         row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None),
         parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13),
         return_extras=True)
+
+
     # Exact tile id from the call above - the old name-prefix scan mis-landed
     # across same-named editors (see the AC popup note above).
     if _uj_menu_ds is not None:

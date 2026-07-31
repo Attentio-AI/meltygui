@@ -260,7 +260,7 @@ class GeneralParse(dict):
 # plain GeneralParse today, while giving these types their own slot to diverge
 # later (the whole point of splitting them out). Same pattern as CallParse below.
 @defaults(disable_scroll=True, show_bg=True, shadow=True, excluded=("decorators"), icon="class",
-          use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+          use_cache=True, tint=(0.512, 0.564, 0.59, 0.064))
 class ClassParse(GeneralParse):
     """A class definition's parsed body, as a GeneralParse subclass.
 
@@ -338,7 +338,7 @@ class CallParse(GeneralParse):
         self.func_name = func_name
 
 
-@defaults(tint=(0.86, 0.3345581, 0.07, 0.7), icon="@", disable_scroll=True)
+@defaults(tint=(0.77, 0.4134631, 0.24, 0.38), icon="@", disable_scroll=True)
 class DecorationParse(CallParse):
     """A decorator application (`@name(...)`), as a CallParse subclass.
 

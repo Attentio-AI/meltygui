@@ -100,7 +100,7 @@ from src.lsd.gl_gui.view.core_conversion.address import (
     Address, _evict_linecache,
 )
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-    record_compile, _enclosing_function, live_apply_edits,
+    record_compile, _enclosing_function, live_apply_edits, _blank_line_variant,
 )
 from src.lsd.gl_gui.view.core_conversion.code_checks import check_source
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
@@ -824,7 +824,8 @@ def _compile_check(text):
         return None
 
 
-def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extra):
+def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
+                  _last_good_src=None, **extra):
     """Background entry point for the forward (chain_in) conversion.
 
     A plain module-level function (NOT a @render_func) so run_in_background can
@@ -840,11 +841,28 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
     time the worker returns)."""
     notify(f"_run_chain_in: start", tag="chain_in")
     result, routed = _run_convert(chain, input_value, **extra)
-    error = result if isinstance(result, Exception) else None
+    parse_failed = isinstance(result, Exception)
+    error = result if parse_failed else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
     if error is None and isinstance(input_value, str):
         error = _compile_check(input_value)
+    # Mid-edit resiliency: a broken keystroke must not blank the structured
+    # views / usage sites / definition tiling downstream. When the input differs
+    # from the last successfully parsed source (`_last_good_src`, threaded from
+    # ModesState) by just ONE line - the line being typed - re-run the conversion
+    # with that line blanked. Line count is preserved, so every other line's
+    # snippet, usage sites and washes stay position-accurate. The ORIGINAL error
+    # still reports (the red-line highlight is truthful) and last_good stays
+    # None (the real input never parsed, so it must not become the baseline).
+    # Only for a failed PARSE - a compile-check-only error still has an exact
+    # parse of the real text, which matches the blanked variant.
+    if parse_failed and isinstance(input_value, str):
+        patched = _blank_line_variant(_last_good_src, input_value)
+        if patched is not None:
+            repaired, routed_repaired = _run_convert(chain, patched, **extra)
+            if not isinstance(repaired, Exception) and _compile_check(patched) is None:
+                routed = routed_repaired
     # Compiled clean - run the static "will this RUN" pass too: undefined names +
     # call-signature mismatches (code_checks.check_source). Only when the host
     # declared a lint_path (a WHOLE-FILE buffer - a span buffer would flag every
@@ -855,7 +873,8 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None, **extr
             lint = check_source(input_value, path=lint_path)
         except Exception:
             lint = []
-    return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen}
+    return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen,
+            "src_good": input_value if error is None else None}
 
 
 def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
@@ -923,6 +942,10 @@ class ModesState:
         # `echo_gen` (that edit's frame) - anything else is an external change (as of now).
         self.echo_str = None
         self.echo_gen = 0
+        # The last source string that parsed clean - the diff against for the
+        # blank-line repair in _run_chain_in. Read with getattr (instances
+        # created before a hotfix added this field persist on draw_modes).
+        self.last_good_src = None
 
 
 def compute_height(draw_state):
@@ -1072,7 +1095,8 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
         # reuse it for chain_out below, or a deferred chain_in run reads back
         # chain_out's mutated values.
         chain_in_kwargs = {**forwarded, "input_value": input_value,
-                           "chain": chain_in, "route": route}
+                           "chain": chain_in, "route": route,
+                           "_last_good_src": getattr(modes_state, "last_good_src", None)}
         # `changed` is the only trigger - code_file_io rolls load / external edit /
         # the Index pulse into it, so we never diff the text or sniff inputs here.
         finished, payload = run_in_background(
@@ -1084,6 +1108,8 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
             # frame's routed (so the columns see the good values immediately).
             modes_state.last_error = payload.get("error")
             modes_state.last_lint = payload.get("lint") or []
+            if payload.get("src_good") is not None:
+                modes_state.last_good_src = payload["src_good"]
             for name, val in payload["routed"].items():
                 modes_state.last_good[name] = val
                 routed[name] = val
@@ -1190,7 +1216,8 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         # the worker snapshot so the result is tagged with the gen actually parsed.
         src_gen = modes_state.echo_gen if (input_value is modes_state.echo_str) else Melty.frame_count
         chain_in_kwargs = {**forwarded, "input_value": input_value,
-                           "chain": chain_in, "route": route, "_src_gen": src_gen}
+                           "chain": chain_in, "route": route, "_src_gen": src_gen,
+                           "_last_good_src": getattr(modes_state, "last_good_src", None)}
         # The FIRST parse of a fresh view runs INLINE, size-gated: parsing is
         # pure-Python, so a worker thread doesn't wall it under the GIL - it
         # just smears the same CPU across stretched frames, pop-in, and a second
@@ -1224,6 +1251,8 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             inbound_gen = payload.get("_src_gen")
             modes_state.last_error = payload.get("error")
             modes_state.last_lint = payload.get("lint") or []
+            if payload.get("src_good") is not None:
+                modes_state.last_good_src = payload["src_good"]
             for name, val in payload["routed"].items():
                 modes_state.last_good[name] = val
                 routed[name] = val
@@ -1398,10 +1427,10 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 
 @render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
-                 auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=True,
+                 auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
-                 recompile=False, run_jedi=False, save_debounce_ms=0, bg_offset=-2,
-                 ensure_import=None, s_key_pressed=None, enter_key_pressed=None, unique=None,
+                 recompile=False, run_jedi=False, save_debounce_ms=0, bg_offset=-0.5,
+                 ensure_import=None, s_key_pressed=None, unique=None,
                  background_load=False, **kwargs):
     edited = False
     try:
@@ -1452,7 +1481,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         # Run (hotkey) and Index (jedi) only make sense on Python code \u2014 the
         # codec decides (TypeCodec family: yes; TextFileCodec: .py paths only;
-        # images/binaries: no). Gates the buttons AND the Ctrl+Enter hotkey.
+        # images/binaries: no). Gates the Run/Index buttons.
         code_buttons = codec.show_code_buttons(address)
 
         if auto_load:
@@ -1704,7 +1733,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # We call them unconditionally every frame so the runner can spawn the
         # thread and surface completion; `start=` is just the trigger edge.
         save_hotkey = bool(s_key_pressed and s_key_pressed.ctrl)
-        recompile_hotkey = bool(enter_key_pressed and enter_key_pressed.ctrl) and code_buttons
 
         # Save: write the edited span back to disk off the main thread. The text is
         # snapshotted into child_kwargs at trigger time, so a later edit can't race
@@ -1774,14 +1802,15 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             note = Note(name="On saved, code_file_io", tint=(0.5, 1.0, 1.0), draw_state=draw_state)
             Melty.cache.invalidate_up(draw_state._parent._tile_id, max_depth=4, note=note)
 
-        # Recompile (hotswap, no disk write): button or Ctrl+Enter. Same
-        # runner with its own loading_state. Deliberately NO edit-driven auto
-        # trigger here: these hosts read back VISIBLE editor panes, so any
-        # `edited`-keyed trigger fires per keystroke (tried and reverted -
+        # Recompile (hotswap, no disk write): the Run button. Ctrl+Enter is
+        # the GLOBAL recompile-all now (draw_main's root host → PendingSave).
+        # Same runner, its own loading_state. Deliberately NO edit-driven auto
+        # trigger here: these hosts also back VISIBLE editor panes, so any
+        # `edited`-keyed condition fires per keystroke (tried and reverted —
         # even origin-tagged edits misfire, since a synced-in keystroke
         # _materializes and reads as a value write). Programmatic writers
         # (set_anywhere) drive run_recompile themselves, writer-side.
-        recompile_start = (recompile) or recompile_hotkey
+        recompile_start = recompile
         run_recompile(input_value, code_state, draw_state, start=recompile_start)
 
     except Exception as e:

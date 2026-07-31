@@ -1650,6 +1650,52 @@ def parse_source_to_general(input_value):
 _PARSE_DEBOUNCE_S = 0.1
 
 
+def _blank_line_variant(last_good, cur):
+    """`cur` with the single line that differs from `last_good` blanked, or
+    None when the texts aren't a one-line-apart pair (different line counts,
+    zero or 2+ differing lines). The one differing line during live typing is
+    the line being edited — blanking it usually restores a parseable buffer
+    while keeping every OTHER line's content and, crucially, line NUMBERS
+    intact (so usage sites / tints resolve unshifted)."""
+    if not last_good or not cur:
+        return None
+    a = last_good.split("\n")
+    b = cur.split("\n")
+    if len(a) != len(b):
+        return None
+    diff = -1
+    for i, (la, lb) in enumerate(zip(a, b)):
+        if la != lb:
+            if diff != -1:
+                return None
+            diff = i
+    if diff == -1:
+        return None
+    b[diff] = ""
+    return "\n".join(b)
+
+
+def _blank_line_reparse(draw_state, input_str):
+    """Mid-edit syntax-error recovery: when the edit differs from the last
+    successfully parsed text by exactly one line, reparse with that line
+    blanked. Returns the repaired parse when it lands, else None (no one-line
+    variant, background job still running, or the variant is broken too —
+    e.g. the blanked line was a block header). The variant is derived once
+    per input string; the parse itself rides the normal background node and
+    its completion wakes the view."""
+    if getattr(draw_state, '_blank_variant_key', None) != input_str:
+        draw_state._blank_variant_key = input_str
+        draw_state._blank_variant = _blank_line_variant(
+            getattr(draw_state, '_last_propagated_str', None), input_str)
+    patched = draw_state._blank_variant
+    if patched is None:
+        return None
+    _c, parse = parse_source_to_general(input_value=patched)
+    if isinstance(parse, Pending) or parse is None:
+        return None
+    return parse
+
+
 @render_func(use_cache=True)
 def str_to_general_parse(input_value, reference=None, changed=False, draw_state=None):
     input_str = str(input_value)
@@ -1680,15 +1726,28 @@ def str_to_general_parse(input_value, reference=None, changed=False, draw_state=
 
     if isinstance(general_parse, Pending) or general_parse is None:
         if isinstance(general_parse, Pending) and general_parse.state == PendingState.ERROR:
-            # Incomplete/invalid syntax mid-edit: keep the edited text live and
-            # surface the error; don't push a broken parse downstream.
+            # Incomplete/invalid syntax mid-edit: before falling back to the
+            # stale reference wholesale, try a one-line repair - if only the
+            # line being typed changed since the last good parse, a variant
+            # with that line blanked usually parses, so usage data / tints on
+            # every other line survive the broken keystrokes. changed stays
+            # False: the repaired parse is display/context only, it must
+            # not propagate into a save or recompile.
+            repaired = _blank_line_reparse(draw_state, input_str)
+            imgui.text_colored("Error parsing code", 1.0, 0.0, 0.0)
+            if repaired is not None:
+                repaired.source = input_str   # keep the REAL edited text live
+                if has_ref:
+                    repaired.address = reference.address
+                return False, repaired
+            # Keep the edited text live on the stale reference.
             if has_ref:
                 reference.source = input_str
-            imgui.text_colored("Error parsing code", 1.0, 0.0, 0.0)
         # Background still running (or nothing changed): keep the previous parse.
         return False, reference if has_ref else None
 
     if not has_ref:
+        draw_state._last_propagated_str = input_str   # blank-line-repair baseline
         return False, general_parse
     general_parse.address = reference.address
     # Propagate changed=True once, on the frame a new parse first lands, so

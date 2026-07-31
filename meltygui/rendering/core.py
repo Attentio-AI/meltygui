@@ -647,6 +647,29 @@ def render_func(*args, **o_kwargs):
                     if _oav is not None:
                         kwargs[_oa] = _oav
 
+        # __overrides__ dict args feed HERE too - same lesson as the
+        # OBJ_ATTR injection above: feeding only in the cache-gated render
+        # path makes draw_state._kwargs oscillate between full and replay
+        # frames (a comment-tinted row read tint=None on replay - the header
+        # swatch and the tint tab showed different values for one ds). The
+        # render-path block still covers convert_in-produced dicts; feeding
+        # twice is idempotent (same values, same keys).
+        _pcol = kwargs.get("collection")
+        if isinstance(_pcol, dict) and "key" in kwargs:
+            _povs = _pcol.get("__overrides__")
+            if isinstance(_povs, dict):
+                _pfov = _povs.get(f"__{kwargs['key']}__")
+                if isinstance(_pfov, dict):
+                    for _ok, _ov in _pfov.items():
+                        if not (isinstance(_ok, str) and _ok.startswith("__")):
+                            kwargs[_ok] = _ov
+        elif isinstance(input_value, dict):
+            _povs = input_value.get("__overrides__")
+            if isinstance(_povs, dict):
+                for _ok, _ov in _povs.items():
+                    if not (isinstance(_ok, str) and _ok.startswith("__")):
+                        kwargs[_ok] = _ov
+
         # ExpandMode.MANUAL: the view func always runs (gate in draw_inner_main)
         # and owns its collapsed rendering, so every wrapper shortcut keyed to
         # "collapsed -> no content" must back off for it: sizes keep flowing,
@@ -2854,6 +2877,7 @@ def render_func(*args, **o_kwargs):
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
                                             depth=Melty.shadow_depth, selected=False,
                                             opacity=1.0 if show_bg else 0.0,
+                                            saturation=kwargs.get("saturation", 1.0),
                                             pressed=False,
                                             style_manager=style_manager, nested_bg=nested_bg)
                         # draw_bg paints into this view's tile rather than owning

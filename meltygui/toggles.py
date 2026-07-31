@@ -377,10 +377,10 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.54, 0.401, 0.05))
+@window(tint=(0.563, 0.58, 0.60))
 class Toggles:
 
-    @defaults(tint=(0.572, 0.24, 0.216))
+    @defaults(tint=(0.456, 0.611, 0.767, 1.00))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
@@ -415,15 +415,17 @@ class Toggles:
         # Definition tints: a class/def whose definition carries a tint
         # (@defaults(tint=...), a '# [tint=...]' override comment, or a
         # class-body tint=...) gets a full-body background wash in the editor,
-        # and every occurrence of that symbol — even when its definition lives
-        # in another file — gets a small wash in the same color. The washes use
+        # and every occurrence of that symbol - even when its definition lives
+        # in another file - gets a small wash of the same color. The washes take
         # the tint's rgb with these alphas (the tint's own alpha is a view-
-        # background opacity, not meant for text washes). All read live.
-        # [tint=(0.134, 0.47, 0.806, 1.0)]
+        # wide opacity, not meant for text washes). All read live
+
+        # [tint=(0.047, 0.492, 0.939, 1.00), show_tint=True]
         definition_tints = True
         def_block_alpha = 0.148
-        def_symbol_alpha = 0.206
-
+        def_symbol_alpha = 0.616
+        def_line_alpha = 0.089
+    
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
         # tints), fading a further step per hop so a value's color trail
@@ -433,12 +435,6 @@ class Toggles:
         def_tint_propagation = True
         def_propagation_fade = 0.705
 
-        # Line tint behind any line carrying symbol washes: one transparen
-        # full-width rect fitting the line exactly, in the def's color (its
-        # own explicit comment tint if the definition has one, else the
-        # mix of its symbol tints). That same color also marks the line's
-        # number box in the gutter. 0 disables.
-        def_line_alpha = 0.089
 
         # When enabled the line tint rect above fills the whole line -
         # gutter edge to the view's right edge - instead of hugging the
@@ -463,13 +459,13 @@ class Toggles:
         # desaturated and darkened by these so it reads as commentary, not
         # code. Both read live; 1.0/1.0 = the raw tint.
         # [tint=(1.0, 0.661, 0.0, 1.0)]
-        comment_tint_saturation = 0.73
+        comment_tint_saturation = 0.49
         # [tint=(0.033, 1.0, 0.0, 1.0)]
-        comment_tint_value = 0.008
+        comment_tint_value = 0.160
         # Legibility floor for tinted COMMENT TEXT - independent of the
         # washes' bg_min_brightness (text needs a higher floor than a
         # background does); the brightness clamp still shares bg_max_brightness.
-        comment_min_brightness = 0.154
+        comment_min_brightness = 0.170
 
         # Background wash color adjustment - applies to ALL def-tint
         # backgrounds (symbol washes, line bands, block washes, number
@@ -482,16 +478,6 @@ class Toggles:
         bg_tint_value = 0.432
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
-
-
-    @defaults(tint=(0.315, 0.489, 0.322))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
-        # as a backout alongside the native-pickle custom.pkl. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
-        # this on until the .ini is fully retired.
-        ini_save = False
 
     @defaults(tint=(0.427, 0.541, 0.616))
     class ContextMenu:
@@ -509,6 +495,16 @@ class Toggles:
         # Minimum console terminal size, in pixels - independent of the window size.
         min_height = 506.5
         min_width = 94.154
+
+
+    @defaults(tint=(0.315, 0.489, 0.322))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
+        # as a backout alongside the native-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the app's identity / hot-reload cache anchor, so leave
+        # this True until the .ini is fully retired.
+        ini_save = False
 
     @defaults(tint=(0.189, 0.486, 0.944))
     class WindowSettings:
@@ -545,31 +541,31 @@ class Toggles:
 
         @defaults(tint=(0.965, 0.6, 0.149))
         class ActiveElement:
-            gradient_color = (1.00, 0.83, 0.00)   # RGB of the halo
-            outline_color = (1.0, 0.85, 0.45)   # RGB of the optional cutout outline
-            falloff = 97.856          # px the glow radiates out past the match edge
-            opacity = 0.142           # peak opacity, right at the cutout edge
+            gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
+            outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline
+            falloff = 26.696          # px the glow radiates out past the match edge
+            opacity = 0.176           # total opacity, reached at the cutout edge
             falloff_exp = 2.105       # >1 = bright at the word, then drops off fast
-            inner_pad = 2.668         # px the cutout is grown beyond the match rect
+            inner_pad = 0.00         # px the cutout is grown beyond the match rect
             cutout_radius = 5.0       # corner radius of the rounded cutout
             rings = 86                # radial tessellation steps (higher = smoother)
             corner_segments = 15       # arc subdivisions at each rounded cutout corner
-            outline_alpha = 0.0       # 0 = rely on the glow's bright inner ring alone
-            outline_thickness = 1.0
+            outline_alpha = 1.00       # 0 = rely on the glow's bright inner rim alone
+            outline_thickness = 1.626
 
         @defaults(tint=(0.36, 0.52, 0.93, 0.484))
         class InactiveElements:
-            gradient_color = (0.87, 0.95, 1.00)  # cooler hue so the active one stands out
+            gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
             outline_color = (0.6, 0.72, 1.0)
-            falloff = 34.0
-            opacity = 0.35
-            falloff_exp = 2.0
-            inner_pad = 1.5
-            cutout_radius = 4.00
+            falloff = 15.664
+            opacity = 0.077
+            falloff_exp = 2.491
+            inner_pad = 0.00
+            cutout_radius = 5.00
             rings = 16
             corner_segments = 5
-            outline_alpha = 0.0
-            outline_thickness = 1.0
+            outline_alpha = 1.00
+            outline_thickness = 1.366
 
     # Global Feature Toggles
     @defaults(tint=(0.378, 0.286, 0.201))

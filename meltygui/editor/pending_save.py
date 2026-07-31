@@ -268,10 +268,14 @@ def draw_pending_saves():
     # name= keeps its draw_state distinct from apply_all_saves' (both calls
     # would otherwise derive the same file-name identity); run_in_thread so
     # the hotswaps run outside the render loop like every other recompile.
+    # result_fade_frames: the check mark + "Recompiled ..." summary hold
+    # briefly, then fade themselves (same fade model as code_file_io's
+    # recompile_status) instead of parking forever.
     RenderFuncs.draw_function(PendingSave.recompile_all, name="recompile_all", icon="",
-                              tint=(0,0,0,1), show_bg=False, shadow=False, run_in_thread=True)
+                              tint=(0,0,0,1), show_bg=False, shadow=False, run_in_thread=True,
+                              result_fade_frames=30)
 
-    for address, (codec, kwargs) in PendingSave.pending_saves.items():
+    for address, (codec, kwargs) in list(PendingSave.pending_saves.items()):
         if address in PendingSave.originals:
             original_data = PendingSave.originals[address]
             # generate code diff using external library (DO NOT USE CODEC) code.diff does not exist.
@@ -300,6 +304,18 @@ def draw_pending_saves():
             file_name = address.path.name
             line_range = f"({address.start}:{address.end})"
             name = f"{file_name} {line_range}"
+            if RenderFuncs.button(f" Revert##{name}", name=f"revert {name}",
+                                  tint=(0.12, 0.002037035, 0.002037035, 0.4))[0]:
+                # Revert: queue the load-time text as a fresh pending edit.
+                # The entry stays in the queue (so sibling views still resolve
+                # their text through pending_data_for and pick up the revert),
+                # but data == original makes it a no-op for the diff view,
+                # recompile_all, and the eventual disk write.
+                PendingSave.queue_save(address, codec, **{**kwargs, "data": old_data})
+                # Deferred saves never touch disk, so no watcher wakes on its
+                # own - dispatch the file event so every view of this file
+                # reloads and picks the reverted text up from the pending cache.
+                PendingSave._wake_file_watchers(address.path)
             RenderFuncs.draw_text(diff_str, show_name=True, name=name,
                                   is_diff=True, line_numbers=line_numbers)
         else:

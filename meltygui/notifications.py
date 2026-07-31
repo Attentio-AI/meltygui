@@ -1,9 +1,12 @@
 import locale
 import time
 from collections import deque, defaultdict
+from itertools import islice
 
 import glfw
 import imgui
+
+from src.lsd.gl_gui.fonts import Font
 
 # Use the system's locale time format (e.g. 12-hour AM/PM if configured)
 # for %X instead of the default "C" locale 24-hour clock.
@@ -100,6 +103,14 @@ def _wrap_text(text, max_width):
     return lines
 
 
+def _entry_height(label, content, content_width, line_height, padding):
+    """Vertical space one stacked entry consumes: wrapped block + bg padding +
+    the inter-entry gap (matches _draw_column_entry's bg_top - padding step)."""
+    label_size = imgui.calc_text_size(label)
+    lines = _wrap_text(content, content_width - (label_size.x + padding))
+    return max(1, len(lines)) * line_height + padding * 3
+
+
 def _draw_column_entry(draw_list, column_left, content_width, line_height, padding,
                        bg_bottom, label, label_color, content, content_color, opacity=1.0):
     """Draw one stacked entry: a left-aligned `label` (time / tag name) followed
@@ -132,45 +143,84 @@ def _draw_column_entry(draw_list, column_left, content_width, line_height, paddi
     return bg_top - padding
 
 
+# Collapsed columns show only this many of the newest toasts; hovering the
+# overlay reveals the full list.
+_COLLAPSED_COUNT = 2
+
+
 def draw_notifications():
-    display_size = imgui.get_io().display_size
+    io = imgui.get_io()
+    display_size = io.display_size
     draw_list = imgui.get_overlay_draw_list()
 
-    padding = 2
-    column_width = 300                          # also the toast max width
-    content_width = column_width - padding * 2  # left-aligned content box
-    line_height = imgui.get_text_line_height()
-    title_color = imgui.get_color_u32_rgba(1, 1, 0, 1)
+    from src.lsd.gl_gui.melty import Melty
+    font_handle = Melty.font_mgr.get(Font.JETBRAINS_MONO_14) if Melty.font_mgr else None
+    if font_handle is not None:
+        imgui.push_font(font_handle)
 
-    for c_idx, (tag, notifications) in enumerate(NotificationCenter.tagged_notifications.items()):
-        if tag in NotificationCenter.ignore_tags:
-            continue
-        column_left = display_size.x - (column_width * (c_idx + 1)) - 10
+    try:
+        padding = 2
+        column_width = 300                          # also the toast max width
+        content_width = column_width - padding * 2  # left-aligned content box
+        line_height = imgui.get_text_line_height()
+        title_color = imgui.get_color_u32_rgba(1, 1, 0, 1)
 
-        # tag title pinned at the bottom of the screen
-        draw_list.add_text(column_left, display_size.y - 30, title_color, tag)
+        tagged_columns = [(tag, notifications) for tag, notifications
+                          in NotificationCenter.tagged_notifications.items()
+                          if tag not in NotificationCenter.ignore_tags]
+        live_entries = [(tag + " ", value_str)
+                        for tag, (value_str, _c, _t, _a) in NotificationCenter.live_values.items()]
 
-        # stack toasts upward from just above the tag title (newest at bottom)
-        bg_bottom = display_size.y - 30 - padding
-        for text, color, time_label, created_at in notifications:
-            opacity = _fade_opacity(created_at)
-            bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
-                                           line_height, padding, bg_bottom,
-                                           time_label, color, text, color, opacity)
+        # Hover test against the fully-expanded overlay region (measured, not
+        # drawn), so the region is the same whether collapsed or expanded - the
+        # expansion can't flicker as it changes the actual area under the mouse.
+        n_columns = len(tagged_columns) + (1 if live_entries else 0)
+        if n_columns == 0:
+            return
+        max_height = 0
+        for _tag, notifications in tagged_columns:
+            max_height = max(max_height, sum(
+                _entry_height(time_label, text, content_width, line_height, padding)
+                for text, _color, time_label, _created_at in notifications))
+        if live_entries:
+            max_height = max(max_height, sum(
+                _entry_height(label, value_str, content_width, line_height, padding)
+                for label, value_str in live_entries))
+        overlay_left = display_size.x - (column_width * n_columns) - 10 - padding
+        overlay_top = display_size.y - 30 - padding - max_height
+        hovered = (io.mouse_pos.x >= overlay_left and io.mouse_pos.y >= overlay_top)
+        limit = None if hovered else _COLLAPSED_COUNT
 
-    # dedicated "Live" column to the left of the tagged notification columns;
-    # each row is one tag's current value, tinted, updated in place over time.
-    if NotificationCenter.live_values:
-        c_idx = len(NotificationCenter.tagged_notifications)
-        column_left = display_size.x - (column_width * (c_idx + 1)) - 10
-        label_color = (0.6, 0.6, 0.6, 1)
+        for c_idx, (tag, notifications) in enumerate(tagged_columns):
+            column_left = display_size.x - (column_width * (c_idx + 1)) - 10
 
-        draw_list.add_text(column_left, display_size.y - 30, title_color, "Live")
+            # tag title pinned to the bottom of the column
+            draw_list.add_text(column_left, display_size.y - 30, title_color, tag)
 
-        bg_bottom = display_size.y - 30 - padding
-        for tag, (value_str, color, _time_label, created_at) in NotificationCenter.live_values.items():
-            opacity = _fade_opacity(created_at)
-            bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
-                                           line_height, padding, bg_bottom,
-                                           tag + " ", label_color, value_str, color, opacity)
+            # stack toasts upward from just above the tag title (newest at bottom)
+            bg_bottom = display_size.y - 30 - padding
+            for text, color, time_label, created_at in islice(notifications, limit):
+                opacity = _fade_opacity(created_at)
+                bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
+                                               line_height, padding, bg_bottom,
+                                               time_label, color, text, color, opacity)
+
+        # dedicated "Live" column to the left of the tagged notification columns;
+        # each entry is a tag's current value, tinted, updated in place over time.
+        if live_entries:
+            c_idx = len(tagged_columns)
+            column_left = display_size.x - (column_width * (c_idx + 1)) - 10
+            label_color = (0.6, 0.6, 0.6, 1)
+
+            draw_list.add_text(column_left, display_size.y - 30, title_color, "Live")
+
+            bg_bottom = display_size.y - 30 - padding
+            for tag, (value_str, color, _time_label, created_at) in NotificationCenter.live_values.items():
+                opacity = _fade_opacity(created_at)
+                bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
+                                               line_height, padding, bg_bottom,
+                                               tag + " ", label_color, value_str, color, opacity)
+    finally:
+        if font_handle is not None:
+            imgui.pop_font()
 

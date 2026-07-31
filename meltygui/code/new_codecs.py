@@ -535,7 +535,7 @@ class ModeCodec(TypeCodec):
 class FunctionCodec(TypeCodec):
     name = "Python Function"
     # The render function's own source (def + body): green.
-    render_kwargs = {"tint": (0.04, 0.45, 0.12, 0.50)}
+    render_kwargs = {"tint": (0.04, 0.45, 0.12, 0.0)}
 
     @staticmethod
     def resolve_address(input_value, draw_state=None, **kwargs):

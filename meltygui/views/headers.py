@@ -361,8 +361,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line(spacing=0)
         imgui.set_item_allow_overlap()
 
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
-
     # ── Tint widget ────────────────────────────────────────────
     # A dict can carry its tint in __overrides__ (parsed from a `# [tint=(...)]`
     # comment); edit that store directly so the change round-trips to source.
@@ -406,15 +404,13 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # so its fresh draw_state re-measures and the row wraps. The outline
         # is drawn by draw_tuple around the chip itself (outline=True) — the
         # widget's draw_state box is far wider than the swatch.
-        _aw_ch, _aw_val = draw_tuple(
+        imgui.same_line(spacing=0)
+        _aw_ch, _aw_val = RenderFuncs.draw_tuple(
             _aw_tint, show_name=False, show_header=False,
-            name=f"aw_tint##{unique}", outline=True, info=_aw_source_info)
-        # Layout FIRST, actions after — nothing between the draw and the
-        # same_line may return, or the next header item starts a new row.
-        same_line()
+            name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
             set_anywhere("tint", _aw_val, draw_state)
-
+        same_line()
 
     # ── Add button ─────────────────────────────────────────────
     if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):
@@ -427,6 +423,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 print(f"Could not instantiate {item_type} for add: {e}")
                 new_item = None
             add_to_collection(input_value, new_item)
+
 
         if show_add_delete:
             if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
@@ -650,9 +647,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line(spacing=0)
         imgui.set_item_allow_overlap()
 
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple
-
-
 
     # ── Tint widget ────────────────────────────────────────────
     # A dict can carry its tint in __overrides__ (parsed from a `# [tint=(...)]`
@@ -691,20 +685,12 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     if _aw_tint is not None and (show_tint or (
             isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
         draw_state._has_popup = True
-        # Named on the header's own `unique` — NEVER Melty.get_tile_id(),
-        # which reflects the current tile pass and shifts during edits
-        # (popover open, forced invalidations), re-keying the widget mid-drag
-        # so its fresh draw_state re-measures and the row wraps. The outline
-        # is drawn by draw_tuple around the chip itself (outline=True) — the
-        # widget's draw_state box is far wider than the swatch.
-        _aw_ch, _aw_val = draw_tuple(
+        _aw_ch, _aw_val = RenderFuncs.draw_tuple(
             _aw_tint, show_name=False, show_header=False,
-            name=f"aw_tint##{unique}", outline=True, info=_aw_source_info)
-        # Layout FIRST, actions after — nothing between the draw and the
-        # same_line may return, or the next header item starts a new row.
-        same_line()
+            name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
             set_anywhere("tint", _aw_val, draw_state)
+        same_line()
 
     # ── Add button ─────────────────────────────────────────────
     if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):

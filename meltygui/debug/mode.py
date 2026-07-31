@@ -419,7 +419,7 @@ class Mode(Enum):
             # draw_text_from_code_cache = draw_text fed the cst node from the
             # global code-host cache (code_cache_for), so usage links and
             # syntax-error highlighting work without an inline chain.
-            kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache, 'tint': (0.31, 0.361, 0.39, 0.1)},
+            kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache},
             recursive=True,
         ),
     }

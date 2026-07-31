@@ -1230,7 +1230,32 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             Core.melty.summon_window(gs, mx, my - 65)
         GlobalSearch._focus_requested = True
         request_render()
-        
+
+    # Ctrl+Enter: recompile ALL pending edits - the per-editor Ctrl+Enter in
+    # code_file_io was retired in favor of this. Same root-handler pattern as
+    # Ctrl+Shift+F above (non_blocking, so it fires even while the view is
+    # closed / cache-blitted or a blocker is in front): open + raise the
+    # Pending Saves window and run the same recompile its button does.
+    if draw_state.on_action("non_blocking_ctrl_enter_down", priority_delta=512):
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from src.lsd.gl_gui.notifications import notify
+        ps_win = Core.melty.open_window("draw_pending_saves")
+        result = PendingSave.recompile_all()
+        notify(result)
+        # Surface the same fading check mark + toast the window's button
+        # shows: stamp the result onto the runner's draw_state (its ds
+        # persists across close/open, found by name under the window). A
+        # never-rendered window has no runner ds yet so the toast covers it.
+        if ps_win is not None:
+            for ds in ps_win.descendants(max_depth=8):
+                if str(getattr(ds, 'name', '')).startswith("recompile_all"):
+                    ds.result = result
+                    ds.misc["_result_frame"] = Melty.frame_count
+                    Core.melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
+                    break
+        request_render()
+
+
     # Ctrl+F root fallback: the per-view Ctrl+F (core_render's searchable
     # block) only registers while the view actually RENDERS - a fully
     # cache-blitted window (an idle code/index pane) never registers, so the
@@ -2342,7 +2367,7 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, pressed=False, nested_bg=False, **kwargs):
+            hovered=False, pressed=False, nested_bg=False, saturation=1.0, **kwargs):
     # -- Constants ---------------------------------
     min_value = -0.272
     depth_wrap = 300
@@ -2461,7 +2486,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:
-        bg_color = style_manager.make_color_style_value(input=bg_style, value=max(min_value, depth_intensity))
+        bg_color = style_manager.make_color_style_value(input=bg_style, saturation=bg_style['saturation'] * saturation,
+                                                        value=max(min_value, depth_intensity))
         bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
 
     packed_fill = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
@@ -3166,7 +3192,7 @@ def draw_usage(input_value: UsageRef):
 
 
 @render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded":False},
-             is_tree=True, show_name=False, indent_size=0, selectable=False, use_cache=False, tint=(0.083, 0.206, 0.083, 0.1),
+             is_tree=True, show_name=False, indent_size=0, selectable=False, use_cache=False, tint=(0.871, 0.917, 0.922, 0.708),
              show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
     changed, value = False, input_value
@@ -3174,14 +3200,20 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     imgui.dummy(0, 0)
     depth = max(0.3, Core.melty.bg_depth)
     depth_scale = 0.047
+    
+    # [tint=(0.883, 0.712, 0.206, 0.34)]
     name_style = {
-        'value': 0.114, 'saturation': 0.68,
-        'alpha': 0.004, 'max_value': 0.787,
+        'value': -0.005, 'saturation': 0.78,
+        'alpha': 0.004, 'max_value': 0.751,
         'depth_factor': 0.41
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    alpha = 0.15
+    
+    # [tint=(0.767, 0.379, 0.379)]
+    alpha = 0.10
+
+    
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
@@ -3613,7 +3645,8 @@ def _format_run_error(exc):
 @render_func(is_default_for=(types.FunctionType, types.MethodType), shadow=True, use_cache=True, show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=False,
-                  show_run_button=True, run_in_thread=False, **kwargs):
+                  show_run_button=True, run_in_thread=False, result_fade_frames=None,
+                  **kwargs):
     """`auto_run`: opt-in compile-and-run — pass any comparable version token
     (e.g. id(fn.__code__)); the function runs whenever the token CHANGES or a
     parameter is edited, no button click. The token is stored before running
@@ -3683,6 +3716,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             def _worker():
                 try:
                     draw_state.result = fn(**params)
+                    draw_state.misc["_result_frame"] = Melty.frame_count
                     draw_state.misc.pop("_run_error", None)
                 except Exception as e:
                     draw_state.misc["_run_error"] = _format_run_error(e)
@@ -3710,6 +3744,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             return
         try:
             draw_state.result = input_value(**draw_state.params)
+            draw_state.misc["_result_frame"] = Melty.frame_count
             draw_state.misc.pop("_run_error", None)
             Core.melty.cache.invalidate_up_current(force=True)
         except Exception as e:
@@ -3732,13 +3767,34 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
                                   bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32))[0]:
         _run()
 
+    # Fading result (result_fade_frames): the check mark + result text hold,
+    # then fade out and clear - modeled on code_file_io's recompile_status
+    # (frame-based fade, invalidate + request_render pump while fading).
+    # None (default) keeps the persistent result pane.
+    result_fade = 1.0
+    if result_fade_frames and draw_state.result is not None:
+        shown_for = float(Melty.frame_count
+                          - draw_state.misc.get("_result_frame", Melty.frame_count))
+        result_fade = min(1.0, max(0.0, 2.0 - shown_for / float(result_fade_frames)))
+        if result_fade > 0.01:
+            draw_state.invalidate()
+            request_render()
+        else:
+            draw_state.result = None
+            draw_state.misc.pop("_result_frame", None)
+
     if run_in_thread and draw_state.misc.get("_run_busy"):
         imgui.same_line(spacing=10)
         imgui.text_colored("", 0.55, 0.75, 1.0, 1.0)
         imgui.new_line()
     elif draw_state.result is not None:
         imgui.same_line(spacing=10)
-        imgui.text_colored("", 0.55, 0.75, 1.0, 1.0)
+        imgui.text_colored("", 0.55, 0.75, 1.0, result_fade)
+        if result_fade_frames and isinstance(draw_state.result, str):
+            # Fading summary rides the button row inline, so hiding it never
+            # reflows the content below (the row holds its height).
+            imgui.same_line(spacing=8)
+            imgui.text_colored(draw_state.result, 0.55, 0.75, 1.0, result_fade)
         imgui.new_line()
     else:
         imgui.same_line()
@@ -3751,7 +3807,8 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
         imgui.text_colored(run_error, 1.0, 0.45, 0.40, 1.0)
         imgui.pop_text_wrap_pos()
 
-    if draw_state.result is not None:
+    if draw_state.result is not None and not (result_fade_frames
+                                              and isinstance(draw_state.result, str)):
         draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
 
     # pop_style_var(3)
@@ -3825,7 +3882,11 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     avoid the mutable-default-arg pitfall; behaves identically to an empty list.)"""
     if collection is None:
         return False, input_value
-        
+
+    # Content-left edge, captured before the dummy/same_line/-10 shift below.
+    # The wrap limit is measured from here so it lines up with content_width.
+    origin_x = imgui.get_cursor_screen_pos()[0]
+
     imgui.dummy(0,0)
     imgui.same_line()
 
@@ -3840,14 +3901,21 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
 
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 10, imgui.get_cursor_screen_pos()[1]))
 
-    # push_style_var(imgui.STYLE_ITEM_SPACING, (2, 0))
-
-    # Mirror button()'s sizing: width = calc_text_size(label_text).x + 15.
-    # spacing matches STYLE_ITEM_SPACING.x set above.
-    spacing = 2
+    # Mirror button()'s sizing: width = calc_text_size(label_text).x + text_pad (15).
     button_padding = 15
     content_width = draw_state.content_width if draw_state is not None else 0
-    row_width = 0.0
+    x_limit = origin_x + content_width if content_width > 0 else None
+
+    # content_width is parent-derived and ignores an explicitly passed width
+    # (the context menu passes width=content_width-282), so it can overshoot
+    # the bar's real right edge. Clamp to the bar's own edge and clip rect.
+    if draw_state is not None:
+        if draw_state.width:
+            view_right = draw_state._abs_left() + draw_state.width - 3
+            x_limit = view_right if x_limit is None else min(x_limit, view_right)
+        clip = draw_state.abs_clip_rect
+        if clip is not None and x_limit is not None:
+            x_limit = min(x_limit, clip[2])
 
     def _tab_text(t):
         return t.name if hasattr(t, 'name') else str(t)
@@ -3874,6 +3942,13 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
 
         tab_width = imgui.calc_text_size(label.split("##")[0]).x + button_padding
 
+        # Wrap before drawing: the previous iteration's same_line() left the
+        # cursor at this tab's real start (with item spacing included), so
+        # comparing live cursor + width against the content right edge needs
+        # no estimated spacing or fudge factor.
+        if i > 0 and x_limit is not None and imgui.get_cursor_screen_pos()[0] + tab_width > x_limit:
+            imgui.new_line()
+
         if active:
             selected_value = 0.23
             clicked = button(label, z_offset=2, name=f"tab_{i}_{unique}",
@@ -3897,22 +3972,9 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
             else:
                 selected = [tab]
 
-        row_width = tab_width if row_width == 0 else row_width + spacing + tab_width
-
-        # Look ahead: if the next tab won't fit on this row, skip same_line()
-        # so imgui's cursor flows to the next line, and reset row_width.
-        if i < len(collection) - 1:
-            label = names[i + 1] if names is not None and i + 1 < len(names) else _tab_text(collection[i + 1])
-            next_w = imgui.calc_text_size(label).x + button_padding
-            if content_width > 0 and row_width + spacing + next_w + 20 > content_width:
-                row_width = 0
-                continue
-
         same_line()
 
     imgui.dummy(0, 0)
-
-    # pop_style_var(1)
 
     if changed:
         Core.melty.refresh_nested_windows(draw_state)
@@ -4516,14 +4578,17 @@ class _LazyOverrideEntry(dict):
 # adjust the order of the elements to reflect the desired behavior of melty.
 # (This is a rough sketch of which sources take priority; reorder freely.)
 class SourcePriority(Enum):
-    MODE = 0
-    RENDER_FUNC = 1              # signature defaults (def draw_x(x=3))
-    WINDOW_DECORATION = 2        # @window(...) on the func or class - outranks
+    LIVE_COMMENT = 0             # the `# [tint=...]` override comment - the
+                                 # wrapper SPLATS it as kwargs after every
+                                 # default layer merges, so at runtime it
+                                 # beats @defaults, callers, and mode alike
+    MODE = 1
+    RENDER_FUNC = 2              # signature defaults (def draw_x(x=3))
+    WINDOW_DECORATION = 3        # @window(...) on the func or class - outranks
                                  # @defaults (the window kwargs drive the
-                                 # window that renders the view)
-    AT_DEFAULT_CODE_TYPE = 3     # @defaults on a @window class in the value tree
-    AT_DEFAULT_OBJ_TYPE = 4      # @defaults on the value's runtime class
-    LIVE_COMMENT = 5             # the `# [tint=...]` override comment
+                                 # window that renders the value)
+    AT_DEFAULT_CODE_TYPE = 4     # @defaults on a PARSED class in the value host
+    AT_DEFAULT_OBJ_TYPE = 5      # @defaults on the value's runtime CLASS
     CALLER = 6                   # call-site kwargs; DEPTH is the natural
                                  # tiebreaker (see _source_priority) - no
                                  # CALLER_0/CALLER_1 members needed
@@ -5415,7 +5480,14 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                                         include_unmatched=True)
         changed, value = draw_param_matrix(matrix, source_tints=source_tints,
                                            source_locations=source_locations,
-                                           source_order=tuple(sources),
+                                           # Rows in SourceKind order, highest
+                                           # (the first candidates) on top;
+                                           # registration order breaks ties
+                                           # (sorted is stable).
+                                           source_order=tuple(sorted(
+                                               sources,
+                                               key=lambda n: _source_priority(
+                                                   source_kinds.get(n)))),
                                            source_dicts=sources,
                                            writable_sources=tuple(writable_sources),
                                            source_kinds=source_kinds,
@@ -5823,8 +5895,10 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, shadow=True, selectable=False,
+
+@render_func(use_cache=True, show_bg=False, shadow=True, selectable=False, tint=(0.162, 0.194, 0.289),
              is_tree=False, show_name=True, with_header=draw_header)
+@window
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-to-open) root popover. Nested dict
@@ -5839,9 +5913,10 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     every frame; we stash the last picked leaf on it for the trigger label."""
     from src.lsd.gl_gui.view.mode import Mode
 
+
+
     # Is THIS dropdown the one whose popover is showing?
     is_open = Melty.popover_focused_ds is draw_state
-
     _DD_DBG = False  # TEMP: default False for dropdown-close investigation
     if _DD_DBG:
         _pf = Melty.popover_focused_ds
@@ -6380,7 +6455,7 @@ def _dd_noop_set(*_a, **_k):
 
 
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
-                 cursor_path, tint=None, row_tags=None, left_pad=10):
+                 cursor_path, tint=None, row_tags=None, row_tints=None, left_pad=10):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -6416,6 +6491,16 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     active = is_cursor if kbd_mode else hovered
     dl = imgui.get_window_draw_list()
     line_h = imgui.get_text_line_height()
+    # Per-row symbol tint (the autocomplete popup's background colors): drawn
+    # as a colored BACKGROUND wash with near-white text over it - the editor's
+    # wash styling - rather than colored text. Under the active highlight so
+    # keyboard/hover selection still reads on tinted rows.
+    row_tint = row_tints.get(value) if row_tints else None
+    _ROW_TINT_A = 0.35
+    if row_tint is not None:
+        dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
+                           imgui.get_color_u32_rgba(*row_tint[:3], _ROW_TINT_A),
+                           rounding=getattr(draw_state, 'corner_radius', 6))
     if active:
         dl.add_rect_filled(x, y, x + w, y + h,
                            imgui.get_color_u32_rgba(1, 1, 1, 0.16),
@@ -6426,10 +6511,15 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # dd_menu_row. Vertically centred in the fixed-height row: set_cursor pins the
     # next row exactly h below (matches the full menu's item_spacing.y=0), so
     # leaves and dd_menu_row branches line up.
-    color = _dd_obj_tint(value, tint)
+    if row_tint is not None:
+        # White nudged toward the wash color: legible on the tinted bar while
+        # still reading as that symbol's hue.
+        color = tuple(min(1.0, c * 0.25 + 0.75) for c in row_tint[:3])
+    else:
+        color = _dd_obj_tint(value, tint)
+        color = Tint.dd_text(requested_tint=color)
     imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) * 0.5))
 
-    color = Tint.dd_text(requested_tint=color)
     if active:
         # Active-row label: lerp toward white so it clears the white@0.16 wash
         # (the wash lightens the row fill while the label is its plain text
@@ -6451,6 +6541,12 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         ty = y + (h - line_h) * 0.5
         if Melty.bg_color_stack:
             r, g, b = Melty.bg_color_stack[-1][:3]
+            if row_tint is not None:
+                # Match the tinted wash under it, else the opaque mask reads
+                # as a gray notch on top of the colored bar.
+                r = r * (1 - _ROW_TINT_A) + row_tint[0] * _ROW_TINT_A
+                g = g * (1 - _ROW_TINT_A) + row_tint[1] * _ROW_TINT_A
+                b = b * (1 - _ROW_TINT_A) + row_tint[2] * _ROW_TINT_A
             if active:
                 r, g, b = r * 0.84 + 0.16, g * 0.84 + 0.16, b * 0.84 + 0.16
             mask = imgui.get_color_u32_rgba(min(max(r, 0.0), 1.0), min(max(g, 0.0), 1.0),
@@ -6468,7 +6564,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
              closable=True, melty_window=False, auto_resize=True, with_header=None, 
              max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
-                 show_search=True, text_align="right", row_tags=None, full_render=False, **kwargs):
+                 show_search=True, text_align="right", row_tags=None, row_tints=None,
+                 full_render=False, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -6554,8 +6651,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     # threaded down so nested sub-menus inherit the same render path.
     row_kwargs = dict(show_bg=False, shadow=False, path_prefix=tuple(path_prefix),
                       root_state=root_state, tint=tint, text_align=text_align, z_offset=0,
-                      row_tags=row_tags, cursor_path=cursor_path, open_path=open_path,
-                      full_render=full_render)
+                      row_tags=row_tags, row_tints=row_tints, cursor_path=cursor_path,
+                      open_path=open_path, full_render=full_render)
 
     if full_render:
         # Render the level's rows through draw_collection so it scrolls +
@@ -6586,7 +6683,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                 result = (True, picked)
         else:
             picked = _dd_leaf_row(key, value, label, draw_state, root_state,
-                                  tuple(path_prefix), cursor_path, tint=tint, row_tags=row_tags)
+                                  tuple(path_prefix), cursor_path, tint=tint,
+                                  row_tags=row_tags, row_tints=row_tints)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result
@@ -6594,8 +6692,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True, show_add_delete=False,
              with_header=None, disable_scroll=True, min_width=300, swoosh=False, z_offset=-3)
 def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
-                root_state=None, tint=None, row_tags=None, cursor_path=(), open_path=(),
-                full_render=True, **kwargs):
+                root_state=None, tint=None, row_tags=None, row_tints=None,
+                cursor_path=(), open_path=(), full_render=True, **kwargs):
     """A single menu row. `input_value` is the row TUPLE (key, value, label,
     is_branch) — draw_collection hands each level's rows in one at a time (so it
     can scroll / virtualize the level for free). `cursor_path` / `open_path` are
@@ -6618,8 +6716,10 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
 
     hovered = draw_state._bounding_hovered
     # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling
-    # back to the menu tint for plain values.
-    tint = _dd_obj_tint(value, tint)
+    # back to the per-row override (autocomplete's symbol tints), then the menu
+    # tint for plain values.
+    row_tint = row_tints.get(value) if row_tints else None
+    tint = _dd_obj_tint(value, row_tint or tint)
     fa_chrevron_right = f"\uf054"
 
     kbd_mode = getattr(root_state, "_kbd_mode", True)
@@ -6699,7 +6799,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
                                        closed=not sub_open, temp=True, use_cache=False,
                                        window_pos=(draw_state.width, -_DD_ROW_H), show_add_delete=False,
                                        parent_window=draw_state, disable_scroll=False,
-                                       full_render=full_render,
+                                       full_render=full_render, row_tints=row_tints,
                                        root_state=root_state, path_prefix=row_path)
         if changed:
             return True, picked
