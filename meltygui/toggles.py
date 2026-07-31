@@ -377,7 +377,7 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.85, 0.685, 0.30))
+@window(tint=(0.54, 0.401, 0.05))
 class Toggles:
 
     @defaults(tint=(0.572, 0.24, 0.216))

@@ -368,31 +368,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # comment); edit that store directly so the change round-trips to source.
     # The override comment is itself the opt-in, so this isn't gated on
     # show_tint (which is only set for top-level windows, not nested classes).
+    # (Legacy per-storage tint chain removed — the anywhere swatch below IS
+    # the tint widget: one loop for every source, set_anywhere on write.)
     _overrides = input_value.get("__overrides__") if isinstance(input_value, dict) else None
-    if isinstance(_overrides, dict) and _overrides.get("tint") is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(_overrides["tint"], show_name=False, show_header=False)
-        if tint_changed:
-            _overrides["tint"] = tint_value
-            on_change = True
-            return_val = input_value
-        same_line()
-    elif hasattr(input_value, "tint") and input_value.tint is not None and show_tint:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
-        if tint_changed:
-            input_value.tint = tint_value
-            on_change = True
-            return_val = input_value
-        same_line()
-    elif show_tint and draw_state.tint is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
-        if tint_changed:
-            draw_state.tint = tint_value
-            on_change = True
-            return_val = input_value
-        same_line()
 
     # ── Anywhere tint swatch (outlined) ── the set_anywhere loop beside the
     # legacy chain above: reads the framework-resolved tint
@@ -401,8 +379,24 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Outlined so the two widgets read apart while both exist; the legacy
     # chain goes away once this proves out.
     from src.lsd.gl_gui.view.core_views.new_core_view import (
-        anywhere_value, set_anywhere)
+        anywhere_value, set_anywhere, get_source_for)
     _aw_tint = anywhere_value("tint", draw_state)
+
+    def _aw_source_info(_ds=draw_state):
+        # Popover caption: the LAST-KNOWN driving source. Reads the cache
+        # set_anywhere maintains; resolves (one collection) only on first
+        # popover open, then caches on the ds — never per frame.
+        _last = getattr(_ds, "_sa_last_source", None)
+        _src = _last.get("tint") if _last else None
+        if _src is None:
+            _src = get_source_for("tint", _ds)
+            if _src is not None:
+                if _last is None:
+                    _last = {}
+                    _ds._sa_last_source = _last
+                _last["tint"] = _src
+        return f"  {_src}" if _src else None  # FA location-arrow
+
     if _aw_tint is not None and (show_tint or (
             isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
         draw_state._has_popup = True
@@ -414,7 +408,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # widget's draw_state box is far wider than the swatch.
         _aw_ch, _aw_val = draw_tuple(
             _aw_tint, show_name=False, show_header=False,
-            name=f"aw_tint##{unique}", outline=True)
+            name=f"aw_tint##{unique}", outline=True, info=_aw_source_info)
         # Layout FIRST, actions after — nothing between the draw and the
         # same_line may return, or the next header item starts a new row.
         same_line()
@@ -665,31 +659,9 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # comment); edit that store directly so the change round-trips to source.
     # The override comment is itself the opt-in, so this isn't gated on
     # show_tint (which is only set for top-level windows, not nested classes).
+    # (Legacy per-storage tint chain removed — the anywhere swatch below IS
+    # the tint widget: one loop for every source, set_anywhere on write.)
     _overrides = input_value.get("__overrides__") if isinstance(input_value, dict) else None
-    if isinstance(_overrides, dict) and _overrides.get("tint") is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(_overrides["tint"], show_name=False, show_header=False)
-        if tint_changed:
-            _overrides["tint"] = tint_value
-            on_change = True
-            return_val = input_value
-        same_line()
-    elif hasattr(input_value, "tint") and input_value.tint is not None and show_tint:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(input_value.tint, show_name=False, show_header=False)
-        if tint_changed:
-            input_value.tint = tint_value
-            on_change = True
-            return_val = input_value
-        same_line()
-    elif show_tint and draw_state.tint is not None:
-        draw_state._has_popup = True
-        tint_changed, tint_value = draw_tuple(draw_state.tint, show_name=False, show_header=False)
-        if tint_changed:
-            draw_state.tint = tint_value
-            on_change = True
-            return_val = input_value
-        same_line()
 
     # ── Anywhere tint swatch (outlined) ── the set_anywhere loop beside the
     # legacy chain above: reads the framework-resolved tint
@@ -698,8 +670,24 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Outlined so the two widgets read apart while both exist; the legacy
     # chain goes away once this proves out.
     from src.lsd.gl_gui.view.core_views.new_core_view import (
-        anywhere_value, set_anywhere)
+        anywhere_value, set_anywhere, get_source_for)
     _aw_tint = anywhere_value("tint", draw_state)
+
+    def _aw_source_info(_ds=draw_state):
+        # Popover caption: the LAST-KNOWN driving source. Reads the cache
+        # set_anywhere maintains; resolves (one collection) only on first
+        # popover open, then caches on the ds — never per frame.
+        _last = getattr(_ds, "_sa_last_source", None)
+        _src = _last.get("tint") if _last else None
+        if _src is None:
+            _src = get_source_for("tint", _ds)
+            if _src is not None:
+                if _last is None:
+                    _last = {}
+                    _ds._sa_last_source = _last
+                _last["tint"] = _src
+        return f"  {_src}" if _src else None  # FA location-arrow
+
     if _aw_tint is not None and (show_tint or (
             isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
         draw_state._has_popup = True
@@ -711,7 +699,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # widget's draw_state box is far wider than the swatch.
         _aw_ch, _aw_val = draw_tuple(
             _aw_tint, show_name=False, show_header=False,
-            name=f"aw_tint##{unique}", outline=True)
+            name=f"aw_tint##{unique}", outline=True, info=_aw_source_info)
         # Layout FIRST, actions after — nothing between the draw and the
         # same_line may return, or the next header item starts a new row.
         same_line()

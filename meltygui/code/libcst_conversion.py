@@ -5515,6 +5515,18 @@ def _extract_decorators(decorators):
     Bare decorators → raw code string
     """
     result = {}
+
+    def _dedup(key):
+        # Stacked same-name decorators (two @defaults on one class) must not
+        # collide - last-write-wins silently ATE the class-level @defaults
+        # under an implicitly-targeted edit. Same #N convention as body locals.
+        if key not in result:
+            return key
+        n = 1
+        while f"{key}#{n}" in result:
+            n += 1
+        return f"{key}#{n}"
+
     for dec in decorators:
         if isinstance(dec.decorator, cst.Call):
             func_name = _call_func_name(dec.decorator)
@@ -5522,13 +5534,13 @@ def _extract_decorators(decorators):
                 fn = Melty._converters.get((cst.Call, dict))
                 if fn is not None:
                     try:
-                        result[func_name] = fn(dec.decorator, result_cls=DecorationParse)
+                        result[_dedup(func_name)] = fn(dec.decorator, result_cls=DecorationParse)
                     except (TypeError, ValueError):
-                        result[func_name] = _cst_node_to_code(dec.decorator)
+                        result[_dedup(func_name)] = _cst_node_to_code(dec.decorator)
         else:
             # Bare decorator: @classmethod, @property, etc.
             code = _cst_node_to_code(dec.decorator)
-            result[code] = code
+            result[_dedup(code)] = code
     return result
 
 
@@ -6146,9 +6158,19 @@ def _patch_decorators(func_node, dec_edits):
     new_decorators = []
     seen = set()
     changed = False
+    _occ = {}
     for dec in func_node.decorators:
         func_name = _call_func_name(dec.decorator) if isinstance(dec.decorator, cst.Call) else None
-        if func_name and func_name in edits:
+        # Occurrence-aware: the nth stacked same-name decorator matches the
+        # extraction's `name#n` lookup key (see _extract_decorators).
+        if func_name:
+            _n = _occ.get(func_name, 0)
+            _occ[func_name] = _n + 1
+            _lookup = func_name if _n == 0 else f"{func_name}#{_n}"
+        else:
+            _lookup = None
+        if func_name and _lookup in edits:
+            func_name = _lookup
             seen.add(func_name)
             edit_sub = dict(edits[func_name])
             kw_pairs = {k: v for k, v in edit_sub.items() if not _is_dunder(k)}
@@ -6184,7 +6206,8 @@ def _patch_decorators(func_node, dec_edits):
     for name, sub in edits.items():
         if name in seen:
             continue
-        new_dec = _build_decorator(name, sub)
+        # A dup key synthesizes under its REAL name (#N is bookkeeping).
+        new_dec = _build_decorator(name.split("#", 1)[0], sub)
         if new_dec is not None:
             new_decorators.append(new_dec)
             changed = True

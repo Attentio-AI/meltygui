@@ -85,7 +85,7 @@ string_proxy, dict_proxy = code_hosts_for(draw_text)
 
 
 @window(disable_scroll=False, use_cache=True)
-@render_func(tint=(0.078, 0.232, 0.439), auto_resize=True)
+@render_func(tint=(0.043, 0.11, 0.20), auto_resize=True)
 def test_code_ui(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're

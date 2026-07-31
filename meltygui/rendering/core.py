@@ -2777,8 +2777,13 @@ def render_func(*args, **o_kwargs):
                         highlight and draw_state.height < 60) or (
                         not draw_state.expanded and not manual_expand)
 
-                # Input value is indexable
-                if isinstance(input_value, dict) and "decorators" in input_value:
+                # Input_value is indexable. isinstance on the VALUE too: a
+                # generic data dict can legitimately carry a 'decorators' KEY
+                # (the inputter's jedi completion map maps name->name, so a
+                # completion literally named "decorators" put the STRING
+                # there - .items() crashed on it).
+                if isinstance(input_value, dict) and isinstance(
+                        input_value.get("decorators"), dict):
                     for decorator_name, decorator_value in input_value["decorators"].items():
                         # A decorator targeting a specific attribute (e.g.
                         # @defaults(attrib="x", tint=...)) carries that child's

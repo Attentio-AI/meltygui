@@ -3230,7 +3230,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
 
 @render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
-def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
+def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwargs):
     """Large immediate-mode HSV colour picker: a saturation/value square plus a
     hue bar. `input_value` is a 3- or 4-float RGB(A) tuple in 0..1; returns
     (changed, new_tuple). Entirely stateless — HSV is derived from the value each
@@ -3326,6 +3326,11 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
         return True, None
     imgui.same_line()
     imgui.text_colored(hex_str, *Tint.subtle_text())
+    if info:
+        # General-purpose caption (the tuple widget's info callback) - bottom
+        # line, under the hex readout.
+        imgui.dummy(0, 2)
+        imgui.text_colored(str(info), 1.0, 1.0, 1.0, 0.45)
     if changed:
         request_render()
         return True, ((r, g, b, a) if has_alpha else (r, g, b))
@@ -3335,7 +3340,8 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, **kwargs):
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
              indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
-def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False):
+def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
+               info=None):
     is_open = False
     changed = False
 
@@ -3390,13 +3396,19 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
             # closable windows), and its content is raw imgui (not child render_funcs)
             # so the framework can't measure it. Size the window to fit the SV square
             # (180) + the N channel drag-floats and the hex line, so nothing clips.
-    picker_h = 180 + 14 + 4 * 26 + 26
+    # info: a general-purpose caption for the popover (e.g. the anywhere
+    # swatch's "last known source"). A CALLABLE resolves only while the
+    # popover is open for a lazy path, so closed swatches never pay for it.
+    _info = None
+    if is_open and info is not None:
+        _info = info() if callable(info) else info
+    picker_h = 180 + 14 + 4 * 26 + 26 + (22 if _info else 0)
     # parent_window=draw_state anchors the popover under the swatch and makes
     # the tuple the picker's ancestor, so clear_focus (which protects the
     # clicked swatch window closure) leaves the popover open when you click
     # the tuple, and dismisses it when you click anywhere else.
     color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
-                                            closed=not is_open, window_pos=(0, 10),
+                                            closed=not is_open, window_pos=(0, 10), info=_info,
                                             parent_window=draw_state, width=216, height=picker_h, mode=Modes.POPOVER)
     if is_open:
         if color_changed:
@@ -4412,6 +4424,28 @@ class _CodecSource(dict):
         request_render()
 
 
+class _ChildKwargsSource(dict):
+    """The child_kwargs row when the parent's class-level @defaults doesn't
+    (yet) carry child_kwargs in SOURCE: displays the live dict, and the first
+    write lazily creates `child_kwargs={...}` inside the class-level defaults
+    PARSE — a non-dunder key, so plain bubbling item-writes wrap the new dict
+    and dirty the host (no __overrides__-style special casing needed). The
+    save + the parent-class recompile stamp then make it code."""
+
+    def __init__(self, defaults_parse, live):
+        super().__init__({k: v for k, v in (live or {}).items()
+                          if isinstance(k, str) and not k.startswith("__")})
+        self._dp = defaults_parse
+
+    def __setitem__(self, k, v):
+        ck = self._dp.get("child_kwargs")
+        if not isinstance(ck, dict):
+            self._dp["child_kwargs"] = {}      # bubbling: wraps + dirties
+            ck = self._dp["child_kwargs"]
+        ck[k] = v
+        super().__setitem__(k, v)
+
+
 class _DrawStateAttrSource(dict):
     """The 'draw state' source row: whitelisted params read from the target
     draw_state's own fields (ds.tint — the style cascade's last fallback,
@@ -4493,22 +4527,27 @@ class SourcePriority(Enum):
     CALLER = 6                   # call-site kwargs; DEPTH is the natural
                                  # tiebreaker (see _source_priority) - no
                                  # CALLER_0/CALLER_1 members needed
-    DECORATION = 7               # @render_func(...) kwargs on the view func
-    INSTANCE_ATTR = 8            # whitelisted live attr on the value object
+    CHILD_KWARGS = 7             # the PARENT view's child_kwargs={...} - an
+                                 # explicit call kwarg on the child, so
+                                 # caller-strength; the dict itself lives at
+                                 # any of the parent's OWN sources, resolved
+                                 # via from_anywhere("child_kwargs", parent)
+    DECORATION = 8               # @render_func(...) kwargs on the render func
+    INSTANCE_ATTR = 9            # whitelisted live attr on the value object
                                  # (core_render.OBJ_ATTR_PARAMS, e.g.
-                                 # Lora.tint) - injected via setdefault, so
-                                 # every kwargs-borne source always wins
-    CLASS_VAR = 9                # class-body assignment on the value's class -
+                                 # Lora.tint) — injected via setdefault, so
+                                 # every kwargs-borne source above wins
+    CLASS_VAR = 10               # class-body assignment on the value's class -
                                  # reaches the view through the SAME getattr
                                  # injection as INSTANCE_ATTR, where the
-                                 # class var shadows it (Python lookup
-                                 # order), so it ranks BELOW the instance
-    CODEC = 10                   # the owning codec's render_kwargs - the
-                                 # wrapper's lowest priority MERGE layer
+                                 # instance attr shadows it (Python lookup
+                                 # order), so it ranks below the instance
+    CODEC = 11                   # the wrapper codec's render_kwargs - the
+                                 # wrapper's lowest kwargs MERGE layer
                                  # (core_render `render_kwargs | kwargs`);
                                  # loses to every getattr-injected source
                                  # above, beats only the ds fallback
-    DRAW_STATE = 11              # the draw_state's own field (ds.tint - the
+    DRAW_STATE = 12              # the draw_state's own field (ds.tint - the
                                  # style cascade's LAST fallback, persisted
                                  # in the state) - the default: drives
                                  # drawing when nothing else sets the param
@@ -4527,6 +4566,8 @@ _KIND_TO_PRIORITY = {
     "window decoration": SourcePriority.WINDOW_DECORATION,   # @window on the func
     "class decoration": SourcePriority.WINDOW_DECORATION,    # @window on the class
     "instance attr": SourcePriority.INSTANCE_ATTR,
+    "attr default": SourcePriority.AT_DEFAULT_OBJ_TYPE,  # @defaults(attr="x", ...)
+    "child kwargs": SourcePriority.CHILD_KWARGS,
     "codec": SourcePriority.CODEC,
     "draw state": SourcePriority.DRAW_STATE,
 }
@@ -4598,8 +4639,12 @@ def _driving_source(srcs, attr_name):
     get_source_for / from_anywhere / set_anywhere so they can never disagree."""
     sources, kinds = srcs["sources"], srcs["kinds"]
     writable = set(srcs["writable"])
+    # `is not None`: a parse'd `param=None` (signature defaults, cleared
+    # kwargs) is DECLARED-UNSET - it must never claim driving over a source
+    # holding a real value (the signature's o_kwargs=None poisoned
+    # from_anywhere for every real setter below it).
     candidates = [sname for sname in sources
-                  if sname in writable and attr_name in sources[sname]]
+                  if sname in writable and sources[sname].get(attr_name) is not None]
     if candidates:
         return min(candidates, key=lambda s: _source_priority(kinds.get(s)))
     return next((s for s in sources
@@ -4747,8 +4792,16 @@ def _anywhere_recompile_tick(draw_state):
         return
     from src.lsd.gl_gui.view.core_conversion.new_converters import (
         host_code_state, run_recompile)
+    # Keep the owning host alive through the wait - it may be an idle-swept
+    # code host that still needs to load and run its chain.
+    pend["host"].notify_on_change(draw_state)
     cs = host_code_state(pend["host"])
     if cs is None or cs.address is None:
+        return
+    if pend["buf"] is None:
+        # Stamped before the host had a code_state - adopt the first buffer we
+        # see as the pre-write baseline and wait for it to change.
+        pend["buf"] = cs.text_cache
         return
     start = False
     if not pend["started"]:
@@ -4760,7 +4813,11 @@ def _anywhere_recompile_tick(draw_state):
     run_recompile(pend["source"], cs, draw_state, start=start,
                   name=f"sa_recompile{draw_state.unique}")
     landed = cs._recompiled_on_frame is not None and         cs._recompiled_on_frame >= pend["start_frame"]
-    if landed or Core.melty.frame_count - pend["start_frame"] > 600:
+    # Timeout only counts AFTER the compile started - comparing an unstarted
+    # timestamp's start_frame=0 against the session frame count cleared every
+    # stamp on its first tick (the trip silently never ran).
+    if landed or (pend["started"]
+                  and Core.melty.frame_count - pend["start_frame"] > 600):
         draw_state._sa_recompile = None
 
 
@@ -4799,6 +4856,14 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None):
     # frames after the round trip lands, live vs what we set.)
 
     sources[target][attr_name] = value
+    # Last-known source, per attr - lazily maintained (stamped here on every
+    # set, read by the popover's lazy resolve on first open): cheap provenance
+    # for display without a per-frame collection.
+    _last = getattr(draw_state, "_sa_last_source", None)
+    if _last is None:
+        _last = {}
+        draw_state._sa_last_source = _last
+    _last[attr_name] = target
     # In-flight display cache (see anywhere_value): remember what we set and
     # what the live value was when we set it. Re-sets during a drag update
     # the UI value but KEEP the original live_at_set: live hasn't moved yet,
@@ -4820,8 +4885,32 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None):
     # (anywhere_value's _anywhere_recompile_tick) starts the recompile when
     # the buffer changes and polls the runner until the hotswap lands.
     cm_state = getattr(draw_state, "_sa_cm_state", None)
+    _t_kind = srcs["kinds"].get(target)
+    if _t_kind in ("child kwargs", "attr default"):
+        # These rows are parse nodes of an ANCESTOR's class (stacked
+        # dict hosts) - which ancestor is not guessable from the ds ( (a
+        # LoraView's parent is a plain dict host), but the written row DOS
+        # its owner: its bubbling root IS the owning dict parse, whose
+        # upstream str host's input is the real source object. Stamp the
+        # deferred hotswap against exactly that; without it the trip never
+        # lands and the pending cache shows the un-landed value forever.
+        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        _row = sources.get(target)
+        _broot = (getattr(_row, "_bubble_root", None)
+                  or getattr(getattr(_row, "_dp", None), "_bubble_root", None))
+        if isinstance(_broot, RenderHost):
+            _sh = _broot.input_value if isinstance(_broot.input_value, RenderHost) else None
+            _src_obj = getattr(_sh, "input_value", None) if _sh is not None else None
+            if _sh is not None and _src_obj is not None:
+                from src.lsd.gl_gui.view.core_conversion.new_converters import host_code_state
+                _cs = host_code_state(_sh)
+                draw_state._sa_recompile = {
+                    "host": _sh, "source": _src_obj, "started": False,
+                    "start_frame": 0,
+                    "buf": _cs.text_cache if _cs is not None else None}
+        return target
     if cm_state is not None:
-        _rc_host, _rc_source = _owning_code_host(cm_state, srcs["kinds"].get(target))
+        _rc_host, _rc_source = _owning_code_host(cm_state, _t_kind)
         if _rc_host is not None and _rc_source is not None:
             from src.lsd.gl_gui.view.core_conversion.new_converters import host_code_state
             _cs = host_code_state(_rc_host)
@@ -5069,6 +5158,58 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         if _ia:
             _add_source(f"{type(_raw_obj).__name__} instance", _ia,
                         TypeCodec, kind="instance attr")
+    # CHILD KWARGS - a parent view can drive this view's params via
+    # child_kwargs={...} (draw_collection merges it into every child call).
+    # The dict itself can be attached to ANY of the PARENT'S own sources (its
+    # caller, decorator, comment, instance attr...), so resolve it with the
+    # registry machinery ON THE PARENT: from_anywhere("child_kwargs",
+    # parent). Cheap gatekeeping: only parents whose live _kwargs actually
+    # carry a child_kwargs dict pay the (per-frame-memoized) parent
+    # check; the root's self-parent loop is excluded. Recursion up the
+    # ancestry terminates the same way: it only walks through parents that
+    # themselves receive child_kwargs.
+    _pds_ck = getattr(input_value, "_parent", None)
+    if _pds_ck is not None and _pds_ck is not input_value:
+        _my_key = (input_value._kwargs or {}).get("key")
+        _ck_live = (_pds_ck._kwargs or {}).get("child_kwargs")
+        _ck_live = _ck_live if isinstance(_ck_live, dict) and _ck_live else None
+        if _ck_live is not None or isinstance(_my_key, str):
+            # Ensure the PARENT's registry exists (fresh sessions have no
+            # _sa_cm_state until something collects it) - memoized per frame,
+            # and this path only runs when a menu/tab is open on a child.
+            _sources_for(_pds_ck)
+            _pcm = getattr(_pds_ck, "_sa_cm_state", None)
+            _pdeco = (_pcm.class_dict.deep.decorators()
+                      if _pcm is not None and _pcm.class_dict is not None else None)
+            _pcls = (_pcm.host_key or (None, None))[1] if _pcm is not None else None
+            _pcls_name = getattr(_pcls, "__name__", "?")
+            _cls_defaults = None       # first non-attr @defaults parse entry
+            if isinstance(_pdeco, dict):
+                for _dk, _dv in _pdeco.items():
+                    if not (isinstance(_dk, str) and _dk.split("#", 1)[0] == "defaults"
+                            and isinstance(_dv, dict)):
+                        continue
+                    _dattr = _dv.get("attr") or _dv.get("attrib")
+                    if _dattr is None:
+                        if _cls_defaults is None:
+                            _cls_defaults = _dv
+                    elif str(_dattr).strip("'\"") == _my_key:
+                        # ATTR-TARGETED @defaults(attr="<this field>", ...):
+                        # its own source row on the field's view.
+                        _add_source(f"@defaults({_pcls_name}.{_my_key})", _dv,
+                                    TypeCodec, kind="attr default")
+        if _ck_live is not None:
+            # CHILD KWARGS - the dict driving this view from the parent.
+            # Prefer the source-backed setter (from_anywhere on the parent);
+            # when source doesn't set it yet, a lazy-write adapter over the
+            # class-level @defaults parse makes the first write EDIT CODE
+            # (the live dict alone silently kept writes runtime-local).
+            _ck_dict = from_anywhere("child_kwargs", _pds_ck, default=None)
+            if not (isinstance(_ck_dict, dict) and _ck_dict):
+                _ck_dict = (_ChildKwargsSource(_cls_defaults, _ck_live)
+                            if isinstance(_cls_defaults, dict) else _ck_live)
+            _add_source("child_kwargs", _ck_dict, TypeCodec,
+                        kind="child kwargs")
     # CODEC - the active codec's render_kwargs (ds._codec, stashed by the
     # wrapper for every view): the lowest kwargs merge layer and the
     # provenance color (import views' green). Skip-when-absent like the
