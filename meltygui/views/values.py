@@ -1238,6 +1238,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Pending Saves window and run the same recompile its button does.
     if draw_state.on_action("non_blocking_ctrl_enter_down", priority_delta=512):
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
         from src.lsd.gl_gui.notifications import notify
         ps_win = Core.melty.open_window("draw_pending_saves")
         result = PendingSave.recompile_all()
@@ -1253,6 +1254,15 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                     ds.misc["_result_frame"] = Melty.frame_count
                     Core.melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
                     break
+        # External changes ride the same hotkey: hotswap every tracked
+        # externally-changed file from disk. recompile_all surfaces its own
+        # check mark + summary in draw_external_changes (_surface_result) and
+        # keeps its entries - only toast the outcome here. Skip the toast for
+        # the idle no-op case so a plain pending-only recompile doesn't grow a
+        # second "nothing to do" banner.
+        ext_result = ExternalChanges.recompile_all()
+        if not ext_result.startswith("Nothing to recompile"):
+            notify(ext_result)
         request_render()
 
 
@@ -2518,7 +2528,7 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
                 draw_state.z_offset = 3.0
         else:
             draw_state.z_offset = 0.0
-
+            
         if hovered and highlight_hovered:
             mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value + 0.05,
                                                        factor=factor, saturation_scale=saturation, alpha=1.0)
@@ -3265,15 +3275,54 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwargs):
     """Large immediate-mode HSV colour picker: a saturation/value square plus a
     hue bar. `input_value` is a 3- or 4-float RGB(A) tuple in 0..1; returns
-    (changed, new_tuple). Entirely stateless — HSV is derived from the value each
-    frame and the edit written straight back (imgui's own is_item_active tracks
-    the drag), so it can be dropped anywhere; draw_tuple wraps it in Mode.POPOVER."""
+    (changed, new_tuple). HSV is derived from the value each frame and the edit
+    written straight back (imgui's own is_item_active tracks the drag), so it
+    can be dropped anywhere; draw_tuple wraps it in Mode.POPOVER. The one piece
+    of state is `draw_state._cp_precise`: the last full-precision RGBA we
+    emitted plus its HSV. RGB→HSV loses hue at black/gray (h collapses to 0)
+    and a driven value can echo back quantized (save/parse round trip, %.3f
+    drag rounding) — so when the incoming value is just an echo of our own
+    edit, we resume from the cache instead of re-deriving."""
     imgui.dummy(0,3)
     vals = list(input_value)
     has_alpha = len(vals) >= 4
     r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
     a = float(vals[3]) if has_alpha else 1.0
-    h, s, v = imgui.color_convert_rgb_to_hsv(r, g, b)
+    # Exact incoming channels - untouched channels are emitted as these, so
+    # an edit to one channel doesn't override the others' cached/rounded
+    # working copies.
+    in_r, in_g, in_b, in_a = r, g, b, a
+
+    # Tolerance for "this is our own value coming back"; covers %.3f drag
+    # rounding (±0.0005) and 1/255 hex quantization (±0.002).
+    ECHO_TOL = 0.002
+    _prec = getattr(draw_state, '_cp_precise', None)
+    is_echo = False
+    if _prec is not None:
+        p_rgba, p_hsv = _prec  # p_rgba is always stored as a 4-tuple
+        is_echo = (abs(p_rgba[0] - r) <= ECHO_TOL and
+                   abs(p_rgba[1] - g) <= ECHO_TOL and
+                   abs(p_rgba[2] - b) <= ECHO_TOL and
+                   abs(p_rgba[3] - a) <= ECHO_TOL)
+
+    if is_echo:
+        # Echo of our own edit - resume the full-precision working value so
+        # our SV/hue markers don't jump on quantization noise, and the cached
+        # hue survives even when the colour is currently black/gray.
+        r, g, b = p_rgba[0], p_rgba[1], p_rgba[2]
+        if has_alpha:
+            a = p_rgba[3]
+        h, s, v = p_hsv
+    else:
+        h, s, v = imgui.color_convert_rgb_to_hsv(r, g, b)
+        if _prec is not None:
+            # External change to black/gray: hue (and at black, saturation)
+            # are undefined in the new value - keep the cached ones for
+            # continuity rather than snapping the markers to red/top-left.
+            if s <= 0.0 or v <= 0.0:
+                h = _prec[1][0]
+            if v <= 0.0:
+                s = _prec[1][1]
 
     SQ, BAR_W, GAP = 180, 18, 8
     dl = imgui.get_window_draw_list()
@@ -3335,13 +3384,16 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     # channel edits RGB directly, overriding the HSV-derived value this frame. ---
     imgui.dummy(0, 4)
     imgui.push_item_width(SQ + GAP + BAR_W)
-    out = []
+    out, edited = [], []
     for lbl, cur in ([("R", r), ("G", g), ("B", b)] + ([("A", a)] if has_alpha else [])):
         imgui.set_next_item_width(draw_state.content_width - 30)
         ch, nv = imgui.drag_float(f"{lbl}##cp_{lbl}", cur, 0.004, 0.0, 1.0, "%.3f")
         if ch:
             changed = True
-        out.append(min(max(nv, 0.0), 1.0))
+        edited.append(ch)
+        # Keep `cur` verbatim unless this row was actually dragged - the
+        # returned value can differ from format rounding even if untouched.
+        out.append(min(max(nv, 0.0), 1.0) if ch else cur)
         imgui.dummy(0,1)
     imgui.pop_item_width()
     r, g, b = out[0], out[1], out[2]
@@ -3364,6 +3416,29 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
         imgui.dummy(0, 2)
         imgui.text_colored(str(info), 1.0, 1.0, 1.0, 0.45)
     if changed:
+        # Untouched channels emit the EXACT incoming value - the working
+        # copies may be truncated/rounded and must never overwrite precise
+        # channels the user didn't edit. An SV/hue drag rewrites RGB
+        # wholesale (that edit scope is all three channels); alpha only
+        # changes when its own row was dragged.
+        if has_alpha and not edited[3]:
+            a = in_a
+        if not hsv_changed:
+            if not edited[0]:
+                r = in_r
+            if not edited[1]:
+                g = in_g
+            if not edited[2]:
+                b = in_b
+            # RGB drags edit the colour directly - refresh the cached HSV,
+            # keeping hue/saturation where the new value leaves them undefined.
+            nh, ns, nv = imgui.color_convert_rgb_to_hsv(r, g, b)
+            if ns <= 0.0 or nv <= 0.0:
+                nh = h
+            if nv <= 0.0:
+                ns = s
+            h, s, v = nh, ns, nv
+        draw_state._cp_precise = ((r, g, b, a), (h, s, v))
         request_render()
         return True, ((r, g, b, a) if has_alpha else (r, g, b))
     return False, input_value
@@ -3642,7 +3717,8 @@ def _format_run_error(exc):
     return text
 
 
-@render_func(is_default_for=(types.FunctionType, types.MethodType), shadow=True, use_cache=True, show_add_delete=False, selectable=False, show_bg=True,
+@render_func(is_default_for=(types.FunctionType, types.MethodType), z_offset=0, use_cache=True, 
+             show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=False,
                   show_run_button=True, run_in_thread=False, result_fade_frames=None,
@@ -3652,6 +3728,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
     parameter is edited, no button click. The token is stored before running
     so a throwing function doesn't retry every frame. `show_run_button=False`
     drops the named run button (the streamlined live-lab look).
+
 
     `run_in_thread=True` runs the function on a daemon worker instead of
     blocking the render loop (long model passes). Single-flight: a click or
@@ -3868,7 +3945,7 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
     return False, input_value
 
 
-@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, z_offset=0, header_same_line=True,
+@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, header_same_line=True,
              disable_scroll=True,
              indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False,
              with_header=draw_header)
@@ -4697,6 +4774,16 @@ def get_value_for_source(attr_name, input_source, draw_state, class_to_show=None
     return input_source, None
 
 
+def _unset_value(v):
+    """True when a stored value can't DRIVE a param: None (declared-unset) or
+    a fully transparent color (an alpha-0 4-tuple — the codec opt-out
+    convention; it renders nothing, so it must not claim the pick)."""
+    if v is None:
+        return True
+    return (isinstance(v, (tuple, list)) and len(v) >= 4
+            and isinstance(v[3], (int, float)) and not v[3])
+
+
 def _driving_source(srcs, attr_name):
     """The source name actually driving `attr_name`: the highest-priority
     (SourcePriority order) WRITABLE source that currently sets it, else the
@@ -4709,7 +4796,8 @@ def _driving_source(srcs, attr_name):
     # holding a real value (the signature's o_kwargs=None poisoned
     # from_anywhere for every real setter below it).
     candidates = [sname for sname in sources
-                  if sname in writable and sources[sname].get(attr_name) is not None]
+                  if sname in writable
+                  and not _unset_value(sources[sname].get(attr_name))]
     if candidates:
         return min(candidates, key=lambda s: _source_priority(kinds.get(s)))
     return next((s for s in sources
@@ -4754,6 +4842,8 @@ def anywhere_value(attr_name, draw_state, default=None):
     and live reads resume."""
     _anywhere_recompile_tick(draw_state)
     live = (draw_state._kwargs or {}).get(attr_name)
+    if _unset_value(live):
+        live = None      # alpha-0 = the codec opt-out; fall through
     if live is None:
         # The style cascade's own last fallback: the draw_state default
         # (ds.tint) from the DRAW_STATE tab. Without this, ds-tinted windows
@@ -5896,7 +5986,8 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 
 
 
-@render_func(use_cache=True, show_bg=False, shadow=True, selectable=False, tint=(0.162, 0.194, 0.289),
+@render_func(use_cache=True, show_bg=False, shadow=True, selectable=False,
+             tint=(0.083, 0.10, 0.144),
              is_tree=False, show_name=True, with_header=draw_header)
 @window
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, text_align="left", **kwargs):
@@ -5915,6 +6006,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
 
 
 
+    # DEBUG
     # Is THIS dropdown the one whose popover is showing?
     is_open = Melty.popover_focused_ds is draw_state
     _DD_DBG = False  # TEMP: default False for dropdown-close investigation

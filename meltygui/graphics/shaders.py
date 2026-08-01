@@ -26,12 +26,18 @@ class ShadowCast:
         'surface_threshold': (GLType.FLOAT, -10.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
         'shadow_strength': (GLType.FLOAT, 0.4),
+        # Scale applied to raw depth-texture reads. Helps the caller bind the
+        # UI's F16 rank mask directly instead of a pre-normalized RGBA8 copy:
+        # 8-bit quantization there was ~6.6 depth slices per quantum, so
+        # caster/receiver gaps rounded differently every time a window's
+        # depth slot changed and shadow intensity visibly wandered.
+        'depth_scale': (GLType.FLOAT, 1.0),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
 void main() {
     vec2 uv = v_texcoord;
-    float receiver_depth = texture(u_texture, uv).r;
+    float receiver_depth = texture(u_texture, uv).r * depth_scale;
      
     if (receiver_depth < surface_threshold) {
         fragColor = vec4(0.0, 0.0, 0.0, 0.0);
@@ -79,7 +85,7 @@ void main() {
                     continue;
                 }
 
-                float scene_depth = texture(u_texture, sample_pos).r;
+                float scene_depth = texture(u_texture, sample_pos).r * depth_scale;
 
                 if (scene_depth >= test_caster_depth - depth_bias) {
                     hits += (0.7 - height_diff * 14.0);
@@ -196,6 +202,10 @@ class ShadowComposite:
         # How aggressively the upsample snaps the shadow to depth edges. Higher =
         # crisper edges (less fringing), lower = softer. Depths are in [0, 1].
         'depth_sharpness': (GLType.FLOAT, 50.0),
+        # Same sample depth scale as ShadowCast's depth_scale - depth_map is the
+        # raw R16 depth mask, and s.a (receiver depth baked by ShadowCast) is
+        # already scaled, so the bilateral compare needs both in the same units.
+        'depth_scale': (GLType.FLOAT, 1.0),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -203,7 +213,7 @@ void main() {
     vec2 uv = v_texcoord;
 
     vec4 color = texture(u_texture, uv);
-    float depth = texture(depth_map, uv).r;
+    float depth = texture(depth_map, uv).r * depth_scale;
 
     // Joint bilateral upsample of the (possibly low-res) shadow map. A plain
     // bilinear fetch smears the shadow silhouette across the crisp rounded-rect

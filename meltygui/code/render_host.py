@@ -203,15 +203,33 @@ class RenderHost(_DeepAttrMixin, dict):
             return True
 
     def _prune_consumers(self, now, k):
-        """Drop consumers that are abs_closed OR haven't re-registered within k
-        frames (the last-seen net for closes abs_closed doesn't catch — orphaned
-        draw_states that simply stopped drawing)."""
+        """Drop consumers that are abs_closed OR whose k-frame liveness net
+        tripped. The net keys on the LATER of two stamps: registration
+        (notify_on_change, body actually ran) and ds.last_seen (the blit
+        compositor stamps it every frame the tile is drawn, even when the body
+        cache-skips). A blit-cached view in an OPEN window stops registering
+        for minutes but keeps compositing, so it survives; a closed dropdown /
+        context-menu popover stops BOTH (and is never abs_closed — popovers
+        don't set closed), so it ages out instead of pinning the host in
+        Melty.render_hosts forever. Registration-only aging (the pre-2026-07
+        net) pruned the blit-cached case too — host swept, external file
+        change had no pump and no consumer, view froze on stale values.
+
+        The net's window is deliberately wider than k: last_seen lags while
+        an ANCESTOR's tile covers the consumer (only the topmost blitted tile
+        gets stamped — measured lags of a few hundred frames on live views),
+        so the raw k=120 would prune covered-but-live consumers and re-open
+        the frozen-view hole. 10·k keeps those safe with ~5x margin while a
+        popover orphan (measured 1000+ frames stale on BOTH stamps) still
+        ages out and lets its host sweep."""
+        k = 10 * k
         cons = self._consumers
         if not isinstance(cons, dict):          # pre-hotswap list shape - reset
             self._consumers = {}
             return
         self._consumers = {ds: seen for ds, seen in cons.items()
-                           if (now - seen) <= k and not self._consumer_closed(ds)}
+                           if not self._consumer_closed(ds)
+                           and (now - max(seen, getattr(ds, 'last_seen', None) or 0)) <= k}
 
     @classmethod
     def sweep(cls):
@@ -507,6 +525,12 @@ class RenderHost(_DeepAttrMixin, dict):
                 self._materialize(input_value)
                 self._awaiting_inbound = False
 
+        if self.value_key not in self:
+            # Nothing held yet (pre-materialize): the renderer draws a blank
+            # where the content will be - stamp the placeholder frame so the
+            # wrapper commit doesn't restore persisted content heights over it
+            # (see Melty.pending_placeholder_frame).
+            Melty.pending_placeholder_frame = Melty.frame_count
         renderer = self.settings_renderer or RenderFuncs.draw_blank
         render_kwargs = {k: v for k, v in kwargs.items() if k != "routed"}
         render_kwargs.setdefault("name", f"{self.name}##held")
@@ -592,10 +616,19 @@ class RenderHost(_DeepAttrMixin, dict):
         # Snapshot: this can run on a background worker (via _materialize) while
         # the render thread rebuilds _consumers in notify_on_change / the sweep -
         # a live dict would raise "changed size during iteration".
+        # max_depth: the consumer renders THIS host's data, so a new value must
+        # invalidate its whole cached subtree - the blit cache has no data
+        # key, children replay purely on tile dirtiness, and a depth-2 cascade
+        # left every deeper view compositing its old capture (the window
+        # re-drew, flickered, and still showed stale data until a hover
+        # invalidated the subtree for real). Depth 8 covers the deepest
+        # consumer trees; the cascade's clip gate already skips scrolled-out
+        # children (invalidate_scrolled_in catches those later), and this
+        # runs once per materialized value, not per frame.
         for cds in list(self._consumers):
             tid = getattr(cds, "_tile_id", None)
             if tid is not None:
-                Melty.cache.invalidate_up(tid, force=True, max_depth=2,
+                Melty.cache.invalidate_up(tid, force=True, max_depth=8,
                                           note=Note(name=name,
                                                     tint=(0.4, 1.0, 0.6), draw_state=cds))
             #     notify("invalidate #8", tag="host", tint=(1, 0, 1))
@@ -649,6 +682,19 @@ class RenderHost(_DeepAttrMixin, dict):
             hundreds of ms, and the save channel can never wedge.
         Visible hosts (real windows / non-## names / non-evictable) always
         draw — they are on screen every frame by definition."""
+        # A file-watch dispatch flagged the wrapper ds (external file change).
+        # The flag alone just bypasses the wrapper's OWN cache gate - but if
+        # the envelope above it is blit-cached, the replay never descends to
+        # the wrapper, the gate is never consulted, and the flag sits
+        # unconsumed forever (the io body never reloads). Invalidate this
+        # host's parent tile chain so the walk actually reaches the wrapper.
+        # Cheap and self-limiting: one host's tiles, and only until the body
+        # runs and clears the flag.
+        wds0 = self._wrapper_draw_state
+        if wds0 is not None and getattr(wds0, "_external_change", False):
+            if Melty.cache is not None and wds0._tile_id is not None:
+                Melty.cache.invalidate_up(wds0._tile_id, force=True, max_depth=4)
+            return True
         if self.window or not getattr(self, "evictable", False) \
                 or not self.name.startswith("##"):
             return True

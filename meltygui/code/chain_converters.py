@@ -10,6 +10,9 @@ These are NEW functions — the old converters in file_converters.py
 and libcst_conversion.py stay untouched for backward compat.
 """
 import inspect
+import os
+import pickle
+import sys
 import threading
 import time
 import tokenize
@@ -38,6 +41,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module, GeneralParse, CallParse, CodeLine,
     ClassParse, FunctionParse, NO_DEFAULT,
 )
+from src.lsd.gl_gui.perf_trace import trace as _ptrace, span as _pspan
 from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
@@ -275,14 +279,207 @@ def class_to_address_incl_overrides(input_value: type, draw_state, changed=False
         return changed, None
 
 
+# ── Cst-dict cache (span parse results) ───────────────────────
+# load_cst_dict's parse (cst.parse_module + cst_module_to_dict, ~230ms for a
+# 2k-line span) is the biggest first-load cost with a few code_file_io views open.
+# Cache one finished GeneralParse per span, with the same shape as the symbol
+# store in libcst_conversion.py:
+#   - restart-in-place: adopted through sys._cst_dict_store (sys is shared
+#     across re-execs, and across the src./lsd. module-name dupes)
+#   - full process restart: pickled to ~/.lsd/cst_dict_cache.pkl on shutdown
+#     (FileWatch.shutdown, next to the symbol-cache flush). A stale pickle
+#     after a crash just means one slow first parse - acceptable.
+# Entries are pickled BYTES, not live objects: edits mutate a GeneralParse in
+# place, so serving a shared object would alias changes onto one dict and let
+# edited state pose as the disk parse. loads() on a hit (~25ms) hands every
+# consumer a fresh copy, and the blob is dumped BEFORE the Address is stamped -
+# address.source is a live function/class and doesn't pickle by reference; the
+# hit path re-stamps the caller's live Address instead. Invalidation is the
+# file's mtime (cheap, content-free - no hash).
+_CST_DICT_PICKLE = Path.home() / ".lsd" / "cst_dict_cache.pkl"
+_CST_DICT_PICKLE_VERSION = 1
+
+
+def _load_cst_dict_store() -> dict:
+    store = getattr(sys, "_cst_dict_store", None)
+    if isinstance(store, dict):
+        _ptrace("cst_cache: adopted live store (restart-in-place)",
+                entries=len(store.get("entries", ())))
+        return store                      # restart-in-place / module dupe: adopt
+    entries = {}
+    with _pspan("cst_cache: warm-start load") as _sp:
+        try:                              # fresh process: warm-start from disk
+            with open(_CST_DICT_PICKLE, "rb") as f:
+                payload = pickle.load(f)
+            if payload.get("version") == _CST_DICT_PICKLE_VERSION:
+                entries = payload["entries"]
+        except Exception as e:
+            _sp.add(failed=type(e).__name__)  # missing/corrupt → cold start
+        _sp.add(entries=len(entries))
+    store = {"entries": entries}
+    sys._cst_dict_store = store
+    return store
+
+
+# (resolved_path, start, end) -> (mtime, pickled GeneralParse bytes)
+_cst_dict_cache: dict = _load_cst_dict_store()["entries"]
+
+
+class DiskSpanText(str):
+    """A span's text EXACTLY as read from disk, stamped with the file mtime it
+    was read at and its span key (TypeCodec.load's plain-disk path). Provenance
+    for the cst-dict cache: every string operation (slice, concat, splice)
+    returns a plain str, so text still carrying `_disk_mtime` is guaranteed
+    pristine disk content — the chain parse cache can trust it with NO content
+    comparison, and an edited buffer can never be served a disk-keyed entry.
+    Carrying the span key here (rather than relying on `jump_to`) matters: the
+    code-host chain only receives jump_to on an Index pulse, so the text itself
+    is the only reliable address carrier on the parse path."""
+    __slots__ = ("_disk_mtime", "_disk_span")   # _disk_span = (realpath, start, end)
+
+
+def chain_parse_cache_has(span_key, disk_mtime):
+    """O(1): would chain_parse_cache_get hit for this pristine buffer? Lets the
+    dispatch site inline a first parse that is really just a ~26ms loads —
+    skipping the async path's frame-hop tax — while a genuine parse stays on
+    the worker."""
+    if span_key is None or disk_mtime is None:
+        return False
+    cached = _cst_dict_cache.get((*span_key, "chain"))
+    return cached is not None and cached[0] == disk_mtime
+
+
+def chain_parse_cache_get(span_key, disk_mtime):
+    """Cached GeneralParse for a PRISTINE disk buffer (see DiskSpanText), or
+    None. `span_key` is the text's `_disk_span`. Validity is entry-mtime == the
+    mtime the buffer was read at — no stat, no content compare; a fresh copy is
+    served per hit (pickle.loads). The gp is served address-less, exactly like
+    a live chain parse without jump_to (`file=<no address>`)."""
+    key = (*span_key, "chain")
+    cached = _cst_dict_cache.get(key)
+    if cached is None or cached[0] != disk_mtime:
+        if cached is not None:
+            _ptrace("cst_cache: chain miss (mtime)", file=Path(span_key[0]).name)
+        return None
+    try:
+        with _pspan("cst_cache: chain hit loads", file=Path(span_key[0]).name,
+                    kb=len(cached[1]) // 1024):
+            gp = pickle.loads(cached[1])
+    except Exception:
+        _cst_dict_cache.pop(key, None)    # stale class shape etc. → reparse
+        return None
+    gp.file_path = Path(span_key[0])
+    return gp
+
+
+def chain_parse_cache_put(span_key, disk_mtime, gp):
+    """Store a chain-produced GeneralParse (parse of pristine disk text only —
+    callers gate on DiskSpanText provenance and a clean parse). The address is
+    detached for the dump (live source objects don't pickle) and restored."""
+    if not isinstance(gp, dict):
+        return
+    key = (*span_key, "chain")
+    # Detach what a fresh session re-derives anyway: the live address (source
+    # objects don't pickle) and the attached symbol index (~40% of the blob -
+    # _ensure_symbol_index re-attaches it from the symbol-usage cache in ~1ms
+    # on the first render of a served parse).
+    saved_addr = getattr(gp, "address", None)
+    saved_sym = getattr(gp, "symbol_usage", None)
+    saved_usages = gp.pop("__symbol_usages__", None)
+    try:
+        gp.address = None
+        gp.symbol_usage = [None]
+        with _pspan("cst_cache: chain dumps", file=Path(span_key[0]).name, min_ms=5.0):
+            blob = pickle.dumps(gp, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        return                            # unpicklable node → just skip caching
+    finally:
+        gp.address = saved_addr
+        gp.symbol_usage = saved_sym
+        if saved_usages is not None:
+            gp["__symbol_usages__"] = saved_usages
+    _cst_dict_cache[key] = (disk_mtime, blob)
+
+
+def _cst_cache_key(ref: Address):
+    """(key, mtime) for a span Address, or (None, None) when uncacheable."""
+    if ref.path is None:
+        return None, None
+    try:
+        resolved = os.path.realpath(str(ref.path))
+        mtime = os.stat(resolved).st_mtime
+    except OSError:
+        return None, None
+    return (resolved, ref.start, ref.end), mtime
+
+
+def save_cst_dict_cache():
+    """Atomic pickle of the span cache. Entries are already address-free bytes,
+    so this is a cheap dict-of-bytes dump. Called from FileWatch.shutdown."""
+    try:
+        # Prune stale entries before persisting: a blob whose stored mtime no
+        # longer matches its file's current mtime can never hit again (the
+        # file changed - and if the span also moved, its replacement lives
+        # under a different key). One stat per file path at shutdown.
+        file_mtimes = {}
+        live = {}
+        for key, (entry_mtime, blob) in dict(_cst_dict_cache).items():
+            path = key[0]
+            if path not in file_mtimes:
+                try:
+                    file_mtimes[path] = os.stat(path).st_mtime
+                except OSError:
+                    file_mtimes[path] = None
+            if file_mtimes[path] == entry_mtime:
+                live[key] = (entry_mtime, blob)
+        with _pspan("cst_cache: save pickle", entries=len(live),
+                    pruned=len(_cst_dict_cache) - len(live)):
+            _CST_DICT_PICKLE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _CST_DICT_PICKLE.with_suffix(".tmp")
+            with open(tmp, "wb") as f:
+                pickle.dump({"version": _CST_DICT_PICKLE_VERSION,
+                             "entries": live}, f)
+            os.replace(tmp, _CST_DICT_PICKLE)
+    except Exception:
+        pass
+
+
 @render_func(background=True)
 def load_cst_module(input_value: Address):
 
-    text = _load_span(input_value)
-    converted_cst = cst.parse_module(text)
-    general_parse = cst_module_to_dict(converted_cst) 
-    general_parse.address = input_value
+    file_label = input_value.path.name if input_value.path else "?"
+    key, mtime = _cst_cache_key(input_value)
+    if key is not None:
+        cached = _cst_dict_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            try:
+                with _pspan("cst_cache: hit loads", file=file_label,
+                            kb=len(cached[1]) // 1024):
+                    general_parse = pickle.loads(cached[1])
+                general_parse.address = input_value
+                general_parse.file_path = input_value.path
+                return True, general_parse
+            except Exception:
+                _cst_dict_cache.pop(key, None)  # changed class shape etc. → reparse
+                _ptrace("cst_cache: hit blob failed, reparsing", file=file_label)
+        else:
+            _ptrace("cst_cache: miss", file=file_label,
+                    reason="no entry" if cached is None else "mtime")
+
+    with _pspan("cst_cache: parse", file=file_label,
+                span=(input_value.start, input_value.end)):
+        text = _load_span(input_value)
+        converted_cst = cst.parse_module(text)
+        general_parse = cst_module_to_dict(converted_cst)
     general_parse.file_path = input_value.path
+    if key is not None:
+        try:
+            with _pspan("cst_cache: dumps", file=file_label, min_ms=5.0):
+                _cst_dict_cache[key] = (mtime, pickle.dumps(
+                    general_parse, protocol=pickle.HIGHEST_PROTOCOL))
+        except Exception:
+            pass                          # unpicklable node → just skip caching
+    general_parse.address = input_value
 
     if Toggles.slow_down_threads:
         for i in range(5):

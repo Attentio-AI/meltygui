@@ -14,6 +14,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight, draw_search_highlight_multi
 from src.lsd.gl_gui.melty import Melty, SearchTerm
+from src.lsd.gl_gui.perf_trace import trace as _ptrace
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.jump_to import draw_jump_to
@@ -150,6 +151,52 @@ def _completion_pool(code_tree, text, line, func=None):
     return pool
 
 
+def _usage_user_counts(ds, tree):
+    """name -> total usage-site count from the buffer's symbol-usage graph —
+    the popup's popularity ranking. Dotted symbols also add their count under
+    the bare last segment so member candidates (offered as bare names after a
+    `.`) rank too. Cached per (tree, su-map) identity on the draw_state; the
+    in-place background usage attach changes id(su_top) and busts it — the
+    same key discipline as _def_tints."""
+    if not isinstance(tree, dict):
+        return None
+    key = (id(tree), id(tree.get("__symbol_usages__")))
+    if getattr(ds, "_ac_users_key", None) == key:
+        return ds._ac_users
+    counts = {}
+    seen = set()
+
+    def walk(node, depth=0):
+        if not isinstance(node, dict) or depth > 64 or id(node) in seen:
+            return
+        seen.add(id(node))
+        su_map = node.get("__symbol_usages__")
+        if isinstance(su_map, dict):
+            for su in su_map.values():
+                if id(su) in seen:
+                    continue
+                seen.add(id(su))
+                nm = getattr(su, "name", None)
+                n = len(getattr(su, "sites", None) or ())
+                if not nm or not n:
+                    continue
+                nm = str(nm)
+                counts[nm] = counts.get(nm, 0) + n
+                last = nm.rsplit(".", 1)[-1]
+                if last != nm:
+                    counts[last] = counts.get(last, 0) + n
+        for k, v in node.items():
+            if k in ("__cst__", "__symbol_usages__", "__overrides__"):
+                continue
+            if isinstance(v, dict):
+                walk(v, depth + 1)
+
+    walk(tree)
+    ds._ac_users = counts
+    ds._ac_users_key = key
+    return counts
+
+
 # Internal completion `kind` → short display tag shown dim on the right of each
 # row. "name" (a bare buffer identifier we couldn't classify) maps to "" so no
 # tag is drawn for it.
@@ -164,22 +211,34 @@ def _kind_tag(kind):
     return _KIND_TAGS.get(kind, kind)
 
 
-def _filter_completions(pool, prefix):
+def _filter_completions(pool, prefix, users=None, tints=None):
     """Filter the ordered (name, kind) `pool` by `prefix`, returning the matching
     (name, kind) rows. Prefix matches (case-insensitive) come before looser
-    substring matches; the pool's own scope ranking is preserved within each
-    group. Empty prefix (right after a `.`) keeps the pool order. The exact word
-    already fully typed is dropped so we never suggest what's on screen."""
+    substring matches. Within each group rows rank: TINTED symbols first (the
+    definition-tint names — the popup's colored rows), then by `users` count
+    (the buffer's usage-graph site totals) descending, then alphabetically —
+    except untinted count-0 rows, which keep the pool's own scope ranking
+    (locals before builtins) via the stable sort. Empty prefix (right after a
+    `.`) keeps one group. The exact word already fully typed is dropped so we
+    never suggest what's on screen."""
     rows = [(n, k) for (n, k) in pool if n != prefix]
     if not prefix:
         # Empty prefix only happens right after a '.', where a pile of dunders is
         # noise - hide them (typing a leading '_' brings them back via the else).
-        ranked = [(n, k) for n, k in rows if not n.startswith("_")]
+        groups = [[(n, k) for n, k in rows if not n.startswith("_")]]
     else:
         p = prefix.lower()
-        starts = [(n, k) for n, k in rows if n.lower().startswith(p)]
-        contains = [(n, k) for n, k in rows if p in n.lower() and not n.lower().startswith(p)]
-        ranked = starts + contains
+        groups = [[(n, k) for n, k in rows if n.lower().startswith(p)],
+                  [(n, k) for n, k in rows if p in n.lower() and not n.lower().startswith(p)]]
+    if users or tints:
+        def _key(row):
+            n = row[0]
+            tinted = 0 if (tints and n in tints) else 1
+            c = users.get(n, 0) if users else 0
+            return (tinted, -c, n.lower() if (c or not tinted) else "")
+        for g in groups:
+            g.sort(key=_key)
+    ranked = [r for g in groups for r in g]
     return ranked[:_AC_MAX_ROWS]
 
 
@@ -723,8 +782,8 @@ def draw_icon_selector(input_value, draw_state=None,
     return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, tint=(0.911, 0.305, 0.0),
-             show_name=False, selectable=False, z_offset=3, bg_offset=2)
+@render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, z_offset=3, tint=(0.911, 0.305, 0.0),
+             show_name=False, selectable=False, bg_offset=0)
 def draw_bool_token(input_value, draw_state=None, text_tint=None, **kwargs):
     """Inline True/False word — whole-token token_views renderer for 'bool'
     tokens. Renders the literal exactly as the editor would (same font, grid
@@ -969,10 +1028,15 @@ def draw_color3_token(input_value, draw_state=None,
 # text click would have given. pad_px widens a REPLACE widget's view N px per
 # side past the token cells (visual breathing room; the grid stays exact).
 DEFAULT_TOKEN_VIEWS = {
-    "icon": {"renderer": draw_icon_selector, "char_width": 3},
-    "bool": {"renderer": draw_bool_token, "char_width": 1, "whole_token": True},
+    # tint: the widget's bg wash, passed as a call kwarg at the draw_text call
+    # sites - decorator-level for the provenance color and no longer reaches
+    # render kwargs.
+    "icon": {"renderer": draw_icon_selector, "char_width": 3,
+             "tint": (0.77, 0.66, 0.20, 1.00)},
+    "bool": {"renderer": draw_bool_token, "char_width": 1, "whole_token": True,
+             "tint": (0.911, 0.305, 0.0)},
     "number": {"renderer": draw_number_token, "char_width": 1, "whole_token": True,
-               "owns_mouse": True, "pad_px": 2},
+               "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
     "color3": {"renderer": draw_color3_token, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
 }
@@ -3733,7 +3797,7 @@ def _describe_code_tree(code_tree):
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.2,
-             selectable=False, searchable=True, bg_offset=-4.3, show_add_delete=False)
+             selectable=False, searchable=True, bg_offset=-1.8, show_add_delete=False)
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
@@ -3746,13 +3810,26 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
+
+    # --- Perf instrumentation (typing latency) --------------------------------
+    # Section marks: each _pf(label) closes the section since the previous mark.
+    # One summary line per edited frame - plus any frame >= 8ms - goes to the
+    # perf_trace output (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
+    # be read against the background reparse/index lines around it.
+    _pf_t0 = time.perf_counter()
+    _pf_marks = []
+    _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
+
+    def _pf(label):
+        _pf_marks.append((label, time.perf_counter()))
+
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-    
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -3838,6 +3915,7 @@ def draw_text(input_value: str, height=None,
         # lines keep their normal positions; only the bar was floated. The text
         # clip below is raised by bar_height so glyphs never paint over the bar.
         imgui.set_cursor_screen_pos((_bx, _by + bar_height))
+    _pf("head+jump_bar")
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
         _font_handle = Melty.font_mgr.get(font)
@@ -3888,7 +3966,8 @@ def draw_text(input_value: str, height=None,
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
-            
+
+        _pf_miss_t = time.perf_counter()
         if syntax_highlight:
             if getattr(ds, '_lo_text', None) != text:
                 ds._lo_offs, ds._lo_open = _update_line_open(
@@ -3911,6 +3990,8 @@ def draw_text(input_value: str, height=None,
             vcols = None
         ds._win_key = key
         ds._win_data = (wl, start_off, toks, vcols)
+        _pf_tok[0] += time.perf_counter() - _pf_miss_t
+        _pf_tok[1] += 1
         return ds._win_data
 
     def _get_vcols():
@@ -4000,6 +4081,7 @@ def draw_text(input_value: str, height=None,
             request_render()
     _fired = {k for k, _m in _frame_keys}
     pressed = lambda k: k in _fired
+    _pf("setup")
     # --- Mouse handling ---
     is_focused = Melty.text_focused_ds is ds
     # A rebuilt cache can hand us a fresh draw_state object for the same tile;
@@ -4175,6 +4257,7 @@ def draw_text(input_value: str, height=None,
             and not getattr(ds, '_uj_open', False)):
         _try_usage_jump(min(ds.text_cursor_pos, max(len(text) - 1, 0)))
 
+    _pf("mouse")
     # --- Keyboard handling ---
     if is_focused:
         shift = io.key_shift
@@ -4658,6 +4741,19 @@ def draw_text(input_value: str, height=None,
             suppressed = sup != -1 and sup == anchor
             was_open = getattr(ds, '_ac_open', False)
             want = req != -1 and req == anchor and not suppressed
+            # Popularity + tint ranking inputs for _filter_completions: usage-
+            # site counts from the buffer's symbol graph (cached per parse
+            # identity) and the tinted-name set (buffer map + the member-file
+            # map, both already computed for the popup's row colors). Only
+            # built while the popup is actually wanted.
+            _ac_users = _usage_user_counts(ds, _usage_tree) if want else None
+            _ac_tinted = None
+            if want:
+                _dtc = getattr(ds, '_def_tints', None)
+                _ntc = _dtc[4] if _dtc is not None and len(_dtc) > 4 else None
+                _mtc = getattr(ds, '_ac_member_tints', None)
+                if _ntc or _mtc:
+                    _ac_tinted = set(_ntc or ()) | set(_mtc or ())
             if want and completion_source is not None:
                 # Eval REPL path - candidates come from the live scope cache
                 # (FuncsMetadata), not the parsed code tree/jedi. Synchronous: the
@@ -4668,7 +4764,7 @@ def draw_text(input_value: str, height=None,
                     raw = completion_source(text, anchor, prefix, dot_trigger) or []
                 except Exception:
                     raw = []
-                cands = _filter_completions(raw, prefix)
+                cands = _filter_completions(raw, prefix, users=_ac_users, tints=_ac_tinted)
                 ds._ac_member_tints = None
             elif want and (dot_trigger or import_ctx):
                 # Member access (`imgui.`, `foo.bar`) or an import line - the
@@ -4679,7 +4775,8 @@ def draw_text(input_value: str, height=None,
                 # keep the body repainting so the future gets polled.
                 members, pending = _ensure_member_completions(ds, text, anchor, jump_to)
                 if members is not None:
-                    cands = _filter_completions(members, prefix)
+                    cands = _filter_completions(members, prefix,
+                                                users=_ac_users, tints=_ac_tinted)
                 else:
                     cands = []   # jedi still resolving; its done-callback wakes us once
             elif want:
@@ -4695,7 +4792,8 @@ def draw_text(input_value: str, height=None,
                     _pool_func = _ac_live_context(ds, text, jump_to)[1]
                     ds._ac_pool = _completion_pool(code_tree, text, _ac_line, _pool_func)
                     ds._ac_pool_key = _pool_key
-                cands = _filter_completions(ds._ac_pool, prefix)
+                cands = _filter_completions(ds._ac_pool, prefix,
+                                            users=_ac_users, tints=_ac_tinted)
                 ds._ac_member_tints = None   # scope names - member map would mislabel
             else:
                 cands = []
@@ -4790,6 +4888,7 @@ def draw_text(input_value: str, height=None,
         _err_markers = []
         _err_msg = None
 
+    _pf("keyboard")
     # --- Find-in-text search ---
     # The term arrives either forwarded from an ancestor search owner (as a
     # SearchTerm carrying the shared cross-view session) or, when this editor
@@ -4870,6 +4969,7 @@ def draw_text(input_value: str, height=None,
                 # amount needed to reveal it, instead of dragging it to the left.
                 ds.text_h_scroll = max(0.0, match_x_end - text_visible_width + edge_padding)
         request_render()
+    _pf("find_search")
     # --- Horizontal auto-scroll ---
     # Only kicks in when the cursor moved this frame, so middle-drag pans
     # are not snapped back. Brings the cursor into view on a single line.
@@ -4906,6 +5006,7 @@ def draw_text(input_value: str, height=None,
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
     origin_x = left + gutter_w - ds.text_h_scroll
 
+    _pf("autoscroll")
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()
     # Text content is clipped to start after the gutter, so highlights never
@@ -5272,6 +5373,8 @@ def draw_text(input_value: str, height=None,
                         _extra['text_tint'] = _wc
                         if color_key == 'bool':
                             _extra['tint'] = _wc   # tint wrapper's bg box too
+                if _view.get("tint") is not None:
+                    _extra.setdefault('tint', _view["tint"])
                 try:
                     _res = _view["renderer"](token, width=_w, height=line_px,
                                              name=_name, **_extra)
@@ -5340,7 +5443,8 @@ def draw_text(input_value: str, height=None,
                         _save_cur = imgui.get_cursor_screen_pos()
                         imgui.set_cursor_screen_pos((_ix, y))
                         try:
-                            _res = _view["renderer"](_ch, width=_cw * char_w, height=line_px, name=_name)
+                            _res = _view["renderer"](_ch, width=_cw * char_w, height=line_px, name=_name,
+                                                     **({'tint': _view["tint"]} if _view.get("tint") is not None else {}))
                         except Exception:
                             _res = None
                         imgui.set_cursor_screen_pos(_save_cur)
@@ -5373,6 +5477,11 @@ def draw_text(input_value: str, height=None,
     # reparses/saves exactly as if it were typed.
     if _tv_edit is not None:
         _es, _el, _ev, _keep_caret = _tv_edit
+        # Timeline: every token-widget splice, with old→new content. A splice
+        # with NO mouse gesture is the echo-storm signature - this line names
+        # the token (and so the widget) that fired.
+        _ptrace("editor token-splice", name=ds.name, at=_es,
+                old=repr(text[_es:_es + _el][:24]), new=repr(_ev[:24]))
         text = text[:_es] + _ev + text[_es + _el:]
         if _keep_caret:
             # Widget widget edit: leave the caret where it is (stamping it into
@@ -5438,6 +5547,7 @@ def draw_text(input_value: str, height=None,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to)
 
+    _pf("draw_body")
     # --- Spell-check squiggles -------------------------------------------------
     # Red wavy lines under unknown words. Gated behind the global toggle and
     # only recomputed when the buffer text changes (cached on the draw_state), so
@@ -5503,6 +5613,7 @@ def draw_text(input_value: str, height=None,
         _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcols=vcols)
 
     draw_list.pop_clip_rect()
+    _pf("squiggles+hint")
     # --- Line-number gutter ---
     # Drawn after the text body in its own clip column (left to → gutter_w) so
     # the numbers stay fixed while code scrolls horizontally under them. Numbers
@@ -5562,6 +5673,7 @@ def draw_text(input_value: str, height=None,
 
     # text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
 
+    _pf("gutter")
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its
     # rows use the normal UI font) so it floats above the code. We reuse the
@@ -5693,6 +5805,7 @@ def draw_text(input_value: str, height=None,
         changed = True
 
 
+    _pf("ac_popup")
     # --- Usage-jump picker (multi-use symbols) ---
     # Same latched window contract as the suggestion popup above: draw_dd_menu
     # is called EVERY frame with closed= toggled. Rows are the symbol's users
@@ -5772,6 +5885,7 @@ def draw_text(input_value: str, height=None,
     if _font_pushed:
         imgui.pop_font()
 
+    _pf("uj_picker")
     # --- Floating error box pinned to the bottom of the view ---
     # The first error message used to ride inline in the jump-to header at the
     # top of the view; instead float it in a box along the bottom edge of the
@@ -5838,5 +5952,12 @@ def draw_text(input_value: str, height=None,
             ds._err_stale = False                  # a fresh parse landed
 
     if changed:
+        # Timeline: WHAT changed. zip is iterator, so the scan stops at the first
+        # differing char; only an (anomalous) identical-text change pays O(n).
+        _old = original_input if isinstance(original_input, str) else ""
+        _di = next((_j for _j, (_a, _b) in enumerate(zip(_old, text)) if _a != _b),
+                   min(len(_old), len(text)))
+        _ptrace("editor CHANGED", name=ds.name, old_len=len(_old), new_len=len(text),
+                diff_at=_di, old=repr(_old[_di:_di + 24]), new=repr(text[_di:_di + 24]))
         return True, text
     return False, original_input

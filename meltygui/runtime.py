@@ -155,7 +155,18 @@ class FileWatch:
     def start(cls):
         cls.handler.on_modified = cls._on_event
         cls.handler.on_created = cls._on_event
+        cls.handler.on_moved = cls._on_moved
         cls.observer.start()
+
+    @classmethod
+    def _on_moved(cls, event):
+        # Editors that save via atomic rename (write .tmp → os.replace target)
+        # never fire on_modified for the target - only a MOVED event whose
+        # dest_path is the real file. Route it through _on_event as a normal
+        # modification of the destination so those saves aren't invisible.
+        dest = getattr(event, "dest_path", None)
+        if dest:
+            cls._on_event(types.SimpleNamespace(src_path=dest))
 
     @classmethod
     def _get_hash(cls, path):
@@ -196,7 +207,17 @@ class FileWatch:
         # sibling file in a watched dir (cached by the symbol index but with no
         # view of its own) is still invalidated. Keyed the same as
         # path_to_draw_states - str(path.resolve) - so event.src_path matches.
-        Melty.code_cache.pop(event.src_path, None)
+        old_text = Melty.code_cache.pop(event.src_path, None)
+        # External-change tracking: the popped cache text is the last content
+        # the studio READ - the diff baseline for an outside edit. Lazy import
+        # (the gui stack can't be imported at melty load); exceptions swallowed
+        # like global_listeners - this runs on the observer thread.
+        if old_text is not None:
+            try:
+                from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+                ExternalChanges.on_file_event(event.src_path, old_text)
+            except Exception:
+                pass
         for listener in list(cls.global_listeners):
             try:
                 listener(event.src_path)
@@ -376,6 +397,12 @@ class FileWatch:
         # symbol results to ~/.lsd/symbol_index.json for instant warm starts.
         shutdown_symbol_index_daemon()
 
+        # Same warm-start treatment for the span parse cache (cst dicts):
+        # flush to ~/.lsd/cst_dict_cache.pkl so a fresh start skips the
+        # cst.parse_module + cst_module_to_dict cost to open a view.
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import save_cst_dict_cache
+        save_cst_dict_cache()
+
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
         PendingSave.apply_all_saves()
 
@@ -430,6 +457,15 @@ class Melty:
     window_drag = False
     on_drag = False
     on_scroll = False
+
+    # Frame guard: some view rendered a VALUE-PENDING placeholder this frame (a
+    # host with nothing held yet, a "Parsing..." line, an unloaded image). While
+    # stamped, the render_func wrapper's auto_resize guard refuses to SHRINK a
+    # draw_state's persisted content_height - the collapse is the placeholder,
+    # not the content, and committing it is what threw away last session's
+    # state and made views re-settle when the value landed. Growth commits
+    # normally, and once the placeholder renders the guard is inert.
+    pending_placeholder_frame = -1
     on_scroll_buffer = deque(maxlen=5)
     last_scroll_time = 0
 
@@ -2921,10 +2957,18 @@ class Melty:
 
             # if Toggles.draw_melty:
             total_layers = 1.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 100.0
-            min_val, max_val = 0.0, total_layers
-            normalized_sub_mask, _, _ = Melty.filter.normalize(
-                Melty.cache._full_mask_tex, min_value=0.0000, max_value=total_layers)
-            diff = ((max_val - min_val) * 65535.0)
+            diff = (total_layers * 65535.0)
+            # The shadow passes sample the R16 rank mask DIRECTLY and scale at
+            # sample time (depth_scale) instead of going through a normalize()
+            # pre-pass. That pass rendered the depth map into an RGBA8 filter
+            # texture: one 8-bit quantum was ~6.6 of shadow_cast's 16 depth
+            # slices, so quantized caster/receiver gaps flipped between k and
+            # k+1 quanta whenever a window's z slot (~3.26 quanta) changed —
+            # shadow intensity visibly wandered on every z reorder — and the
+            # [0,1] clamp flattened all depths above layer ~78. Direct R16
+            # sampling keeps ~0.3-quantum resolution, has no clamp, and drops
+            # a full-screen pass.
+            depth_scale = 1.0 / total_layers
 
             # Render the (expensive) shadow_cast pass at a reduced resolution.
             # shadow_cast's math is in UV space, so a low-res mask produces the

@@ -2,6 +2,7 @@ import ast
 import difflib
 import hashlib
 import inspect
+import os
 import re
 import sys
 import textwrap
@@ -15,7 +16,7 @@ from src.lsd.gl_gui.view.core_conversion.address import (
     Address, _evict_linecache, shift_sibling_linenos, is_editable_source,
     is_writable_file)
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-    _ensure_import_lines, _resolve_call_address, _split_span_at_call)
+    _ensure_import_lines, _resolve_call_address, _split_span_at_call, DiskSpanText)
 from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
 from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -385,7 +386,22 @@ class TypeCodec(Codec):
         # Remember what the span held when it was loaded; save verifies the disk
         # still holds this before splicing over it (see save's conflict guard).
         address._span_fp = _span_fingerprint(span_lines)
-        return newline.join(span_lines)
+        out = newline.join(span_lines)
+        # Plain disk read (no pending overlay reached this path): stamp the
+        # text with the mtime it reflects so the CST's cache can serve /
+        # store its parse with no content comparison (see DiskSpanText). Any
+        # edit decays it to plain str. An explicit source_text is a VERIFIED
+        # self-write of exact disk content, so it carries provenance too.
+        if source_text is None or FileWatch.is_self_write(address.path):
+            try:
+                stamped = DiskSpanText(out)
+                stamped._disk_mtime = address.path.stat().st_mtime
+                stamped._disk_span = (os.path.realpath(str(address.path)),
+                                      address.start, address.end)
+                return stamped
+            except OSError:
+                pass
+        return out
 
 
     @staticmethod
@@ -601,6 +617,20 @@ class FunctionCodec(TypeCodec):
             start0, end0, span_lines = span
             print(f"[editable_source] re-anchored {unwrapped.__name__} to "
                   f"{Path(source_file).name}:{start0 + 1} after external edit")
+        elif span_lines and span_lines[0].lstrip().startswith(("def ", "async def")):
+            # A DEF-ANCHORED span (a span-recompile sets co_firstlineno to the
+            # def line; a full-module compile sets it to the first decorator)
+            # EXCLUDES the decorator lines entirely - the @render_func /
+            # @defaults source then parses EMPTY and its inputint row shows
+            # nothing (the function_dropdown missing-tint-source bug). Re-anchor
+            # by ast, which returns the decorator-INCLUSIVE span and heals
+            # co_firstlineno; a genuinely undecorated function re-anchors to the
+            # wrong lines, so only accept the result when it actually gained a
+            # decorator. Cached per (ref, mtime) like the rest of resolve.
+            _dspan = _reanchor_function(unwrapped, source_file)
+            if (_dspan is not None and _dspan[2]
+                    and _dspan[2][0].lstrip().startswith("@")):
+                start0, _dend0, span_lines = _dspan
 
         address = Address(Path(source_file), start0, start0 + len(span_lines),
                           source=input_value, watcher_ds=draw_state)

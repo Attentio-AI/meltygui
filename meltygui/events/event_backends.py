@@ -495,6 +495,21 @@ class GlfwQueueBackend:
         if moved:
             self.handler.feed_move(mx, my, mx - px, my - py)
         self._prev_mouse_pos = (mx, my)
+        # Missed-release guard: the handler's drag capture latches on is_down,
+        # and is_down only clears via feed_up. GLFW RELEASE can be lost (session
+        # restart mid-press reuses the persistent Melty.event_handler and an
+        # exception happens in _on_button), leaving a phantom drag that continues
+        # every frame with no button held. GLFW's own button state is populated
+        # by the same event stream that drives our callbacks, so a
+        # handler-down / glfw-up disagreement can only mean the release was
+        # lost - synthesize it so the capture unlatches cleanly.
+        for i, name in ImGuiBackend.MOUSE_BUTTONS.items():
+            if self.handler.is_down(name) and \
+                    glfw.get_mouse_button(self.window, i) == glfw.RELEASE:
+                # io.mouse_pos is -FLT_MAX with the cursor off-window; fall
+                # back to the handler's last known position.
+                ux, uy = (mx, my) if mx >= 0 and my >= 0 else self.handler.cursor()
+                self.handler.feed_up(name, ux, uy)
         self.handler.set_modifiers(
             shift=io.key_shift, ctrl=io.key_ctrl, alt=io.key_alt, meta=io.key_super)
         # Only a HELD key/button (typing or a drag) defers the parse; NOT bare

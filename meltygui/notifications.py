@@ -171,9 +171,9 @@ def draw_notifications():
         live_entries = [(tag + " ", value_str)
                         for tag, (value_str, _c, _t, _a) in NotificationCenter.live_values.items()]
 
-        # Hover test against the fully-expanded overlay region (measured, not
-        # drawn), so the region is the same whether collapsed or expanded - the
-        # expansion can't flicker as it changes the actual area under the mouse.
+        # Hover test against the collapsed footprint only of the entries that are
+        # always visible. Expansion grows upward, away from the cursor, so the
+        # mouse stays inside the zone while expanded and it can't flicker.
         n_columns = len(tagged_columns) + (1 if live_entries else 0)
         if n_columns == 0:
             return
@@ -181,7 +181,7 @@ def draw_notifications():
         for _tag, notifications in tagged_columns:
             max_height = max(max_height, sum(
                 _entry_height(time_label, text, content_width, line_height, padding)
-                for text, _color, time_label, _created_at in notifications))
+                for text, _color, time_label, _created_at in islice(notifications, _COLLAPSED_COUNT)))
         if live_entries:
             max_height = max(max_height, sum(
                 _entry_height(label, value_str, content_width, line_height, padding)

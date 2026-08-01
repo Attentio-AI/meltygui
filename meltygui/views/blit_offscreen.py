@@ -95,6 +95,11 @@ class Tile:
     last_invalidated_frame: int = 3
     force_invalidate: bool = False
     mask_layer: int = 0  # Layer at which mask_tex was built (for relative depth offset)
+    # Clip insets (left, top, right, bottom vs the view rect) the mask was
+    # built under. Texels outside the mask clip are 0 (no depth), so when the
+    # live clip recedes (a reveal) the tile must re-render before its shadow
+    # can cover the newly visible area. draw_tile compares against this.
+    mask_clip_insets: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     # Cumulative union (in tile-local coords) of regions blitted from the main
     # framebuffer during the tile's lifetime. None until the first partial blit;
     # once it covers (0,0,size) the tile is fully filled and scroll-driven
@@ -182,6 +187,30 @@ def _create_mask_tex(w: int, h: int, clamp_to_border=False) -> int:
 
 def snap_int(v: float) -> int:
     return int(v)
+
+
+# glClearTexImage (GL 4.4) availability, probed on first use. Zeroing a fresh
+# tile's color+mask textures with it is two calls and no FBO/scissor/colormask
+# state churn, vs the fallback's full _GLState save/restore per tile - which
+# adds up when opening a window creates dozens of tiles in one frame.
+_HAS_CLEAR_TEX_IMAGE = None
+
+
+def _try_clear_tex_images(color_tex: int, mask_tex: int) -> bool:
+    global _HAS_CLEAR_TEX_IMAGE
+    if _HAS_CLEAR_TEX_IMAGE is False:
+        return False
+    try:
+        gl.glClearTexImage(color_tex, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+        gl.glClearTexImage(mask_tex, 0, gl.GL_RED, gl.GL_UNSIGNED_SHORT, None)
+        _HAS_CLEAR_TEX_IMAGE = True
+        return True
+    except Exception:
+        # Pre-4.4 context or missing entry point: remember and fall back to the
+        # FBO clear path. A partial success is fine - the fallback zero-clears
+        # both surfaces in full.
+        _HAS_CLEAR_TEX_IMAGE = False
+        return False
 
 
 def _ceil256(v: int) -> int:
@@ -376,18 +405,21 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             gl.glDeleteRenderbuffers(1, [existing.rbo])
 
     else:
-        st = _GLState()
-        try:
-            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
-            gl.glDisable(gl.GL_SCISSOR_TEST)
-            gl.glClearColor(0, 0, 0, 0.0)
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-            # glTexImage2D(None) values are undefined; the padding for PASS 4
-            # only ever rewrites the logical region, so zero the mask once here
-            # so edge taps at the logical boundary read as mask rank 0.
-            _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
-        finally:
-            st.restore()
+        # glTexImage2D(None) contents are undefined; with padding, PASS 4
+        # only ever overwrites the logical region, so zero both surfaces once
+        # here so edge taps outside the logical boundary read a deterministic
+        # transparent / rank 0.
+        if not _try_clear_tex_images(new_tex, new_mask_tex):
+            st = _GLState()
+            try:
+                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, new_fbo)
+                gl.glDisable(gl.GL_SCISSOR_TEST)
+                gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+                gl.glClearColor(0, 0, 0, 0.0)
+                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+                _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
+            finally:
+                st.restore()
 
     t = Tile(draw_state=draw_state, fbo=new_fbo, tex=new_tex, mask_tex=new_mask_tex, rbo=new_rbo, size=(w, h),
              alloc_size=(aw, ah), dirty=True)
@@ -1075,7 +1107,21 @@ class TileCacheMasked:
                                           stop_at_filled=stop_at_filled,
                                           include_windows=include_windows).values()
         child_keys_list = list(child_keys)
-        child_keys_list.sort(key=lambda x: x[0] if x[0] is not None else 0)
+        # Sort by LIVE abs_top - the same value is_inside_clip uses below -
+        # not the tuple's stored top, which is a snapshot from tile
+        # registration and diverges from live geometry by the accumulated
+        # scroll/move since (observed: stored -892 vs live 1951). The sorted
+        # walk's below-early-return is only sound when the order matches the
+        # clip test's coordinates; with stale keys one wrongly-first child
+        # that is live-below aborted the whole cascade, leaving every visible
+        # descendant un-invalidated (stale composition a hover invalidate).
+        # None tops sort first: is_inside_clip treats them as inside, and they
+        # will never trigger the early-return for the children after them.
+        def _live_top(entry):
+            ds = entry[2]
+            top = ds.abs_top if ds is not None else None
+            return top if top is not None else float("-inf")
+        child_keys_list.sort(key=_live_top)
 
         parent_draw_state = self.key_to_draw_state.get(k, None)
         if parent_draw_state is not None and parent_draw_state._print_last_invalid:
@@ -1691,9 +1737,34 @@ class TileCacheMasked:
             corner_radius = getattr(draw_state, "corner_radius", 6) or 5.0
             x, y = draw_state.abs_left, draw_state.abs_top
             w, h = draw_state.width, draw_state.height
-            cb = draw_state.clipped_by_rect
-            clip = draw_state.abs_clip_rect if (cb is not None and any(cb)) else None
+            # LIVE clip, never clipped_by_rect/abs_clip_rect: those are only
+            # refreshed when the view actually re-renders, so after a parent
+            # resize the stale clip either spills this view's cached depths
+            # outside the parent (stomping windows behind it) or crops the
+            # mask short of the revealed area. The mark must match what
+            # imgui clips the blitted image to - the current live clip.
+            clip = self._get_current_clip_rect_screen()
             clipped = self._clip_rect(x, y, w, h, clip)
+
+            # Reveal detection: the baked mask has 0-depth texels outside the
+            # clip it was built under, so a receding clip needs a re-render
+            # before shadows can cover the revealed strip. Edge-triggered and
+            # deferred until interaction settles - not per-frame.
+            if t is not None and t.mask_tex is not None:
+                if clip is not None:
+                    live_insets = (max(0.0, clip[0] - x), max(0.0, clip[1] - y),
+                                   max(0.0, (x + w) - clip[2]), max(0.0, (y + h) - clip[3]))
+                else:
+                    live_insets = (0.0, 0.0, 0.0, 0.0)
+                baked_insets = getattr(t, "mask_clip_insets", (0.0, 0.0, 0.0, 0.0))
+                revealed = any(li < bi - 0.5 for li, bi in zip(live_insets, baked_insets))
+                settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                           and not imgui.is_mouse_down(2) and not Melty.on_drag)
+                if revealed and settled:
+                    t.mask_clip_insets = live_insets
+                    self.invalidate(rkey, note=Note(name="Clip reveal",
+                                                    reason=f"insets {baked_insets} -> {live_insets}",
+                                                    tint=(1, 0.5, 1)))
             if clipped:
                 cx, cy, cw, ch = clipped
                 if cw > 0 and ch > 0:
@@ -2033,6 +2104,18 @@ class TileCacheMasked:
                     self.invalidate(ctx.key, note=Note(name="Logical resize",
                                                        reason=f"{old_size} -> {ctx.size} in bucket",
                                                        tint=(0.5, 1, 0.5)))
+                elif t is not None and old_t is None:
+                    # Brand-new tile (first appearance of this view): the view
+                    # and any visible descendants rendered fresh this frame and
+                    # their blits are already enqueued below, and the parent's
+                    # body must have run for this view to exist at all, so the
+                    # ancestor chain is either invalid too or gets recomposed
+                    # by the plain ancestor climb. The depth-4 descendant
+                    # sweep would just forced the entire new subtree to render
+                    # fresh a second time on the next frame - the dominant
+                    # cost of opening a new window. Ancestors only.
+                    self.invalidate(ctx.key, note=Note(name="New Tile", reason="fresh tile",
+                                                       tint=(1, 0.5, 0)))
                 else:
                     reason = f"New size old_size{old_size} new_size{ctx.size}" if old_size else "New tile"
                     reason = "t None" if t is None else reason
@@ -2479,34 +2562,28 @@ class TileCacheMasked:
                     clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
                     clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
 
-                    # For cached tiles, use actual tile size from context to avoid stretching
-                    if use_child_cache:
-                        gl.glEnable(gl.GL_SCISSOR_TEST)
-                        gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                        gl.glDisable(gl.GL_BLEND)
+                    gl.glEnable(gl.GL_SCISSOR_TEST)
+                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                    gl.glDisable(gl.GL_BLEND)
 
-                        child_ctx = self._key_to_ctx.get(r.key)
-                        if child_ctx and child_ctx.size:
-                            cx, cy = child_ctx.pos
-                            cw, ch = child_ctx.size
-                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
-                                                                              fb_h)
-                        else:
-                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
-                                                                              fb_h)
+                    # Quad geometry comes from the LIVE draw_state, never the
+                    # _key_to_ctx: the ctx is only refreshed when a view
+                    # actually re-nders (mark_end_offscreen), so after a
+                    # reflow moves a cache-served sibling its ctx.pos is stale
+                    # and the cached depths land at the old position while the
+                    # scissor (this frame's dirty mark) sits at the new one.
+                    # Mirrors PASS 5. Under the not-size_change guard the live
+                    # size equals the tile's logical size, so uv_rect mapping
+                    # stays unstretched.
+                    if (draw_state is not None and draw_state.width is not None
+                            and draw_state.height is not None):
+                        cx, cy = draw_state.abs_left, draw_state.abs_top
+                        cw, ch = draw_state.width, draw_state.height
+                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
+                                                                          fb_h)
                     else:
-                        gl.glEnable(gl.GL_SCISSOR_TEST)
-                        gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                        gl.glDisable(gl.GL_BLEND)
-                        child_ctx = self._key_to_ctx.get(r.key)
-                        if child_ctx and child_ctx.size:
-                            cx, cy = child_ctx.pos
-                            cw, ch = child_ctx.size
-                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
-                                                                              fb_h)
-                        else:
-                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
-                                                                              fb_h)
+                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
+                                                                          fb_h)
 
                     ix0, iy0 = int(floor(sx0)), int(floor(sy0))
                     ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
@@ -2560,6 +2637,8 @@ class TileCacheMasked:
                 # Save _full_sub_mask_tex to tile's mask_tex and remember the layer
                 if p.tile is not None and p.tile.mask_tex is not None:
                     p.tile.mask_layer = p.depth_and_layer
+                    _cb = p.draw_state.clipped_by_rect if p.draw_state is not None else None
+                    p.tile.mask_clip_insets = tuple(_cb) if _cb is not None else (0.0, 0.0, 0.0, 0.0)
 
                     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._scratch_fbo)
                     gl.glFramebufferTexture2D(

@@ -44,6 +44,46 @@ def _diff_lines_with_numbers(diff, base):
     return content_lines, numbers
 
 
+def three_way_merge(base, mine, theirs):
+    """Line-level 3-way merge. Returns the merged text, or None when the two
+    sides' edits overlap — a direct conflict that needs a human.
+
+    Both sides diff against `base` (SequenceMatcher, no autojunk); an edit is
+    a replaced base-line range plus its replacement lines. An edit both sides
+    made identically collapses into one. Overlap is checked on
+    insertion-expanded ranges (a pure insert claims the line it lands before),
+    so an insert INSIDE the other side's edit conflicts, while edits that
+    merely touch end-to-start still splice cleanly. Within one side opcodes
+    are separated by at least one equal line, so expansion never makes a side
+    self-overlap."""
+    base_l = base.splitlines(keepends=True)
+    edits = []
+    for side, text in ((0, mine), (1, theirs)):
+        other_l = text.splitlines(keepends=True)
+        sm = difflib.SequenceMatcher(None, base_l, other_l, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag != "equal":
+                edits.append((i1, i2, tuple(other_l[j1:j2]), side))
+    deduped, seen = [], set()
+    for i1, i2, repl, side in edits:
+        if (i1, i2, repl) in seen:
+            continue                    # both sides made this exact change
+        seen.add((i1, i2, repl))
+        deduped.append((i1, i2, repl, side))
+    # Sweep sorted-by-start edit spans; an overlap with an earlier
+    # opposite-side span shows as start < that side's running max end.
+    max_end = {0: -1, 1: -1}
+    for s, e, side in sorted((i1, max(i2, i1 + 1), side)
+                             for i1, i2, _, side in deduped):
+        if s < max_end[1 - side]:
+            return None
+        max_end[side] = max(max_end[side], e)
+    merged = list(base_l)
+    for i1, i2, repl, _ in sorted(deduped, reverse=True):
+        merged[i1:i2] = repl
+    return "".join(merged)
+
+
 @window(view_func=RenderFuncs.draw_type, disable_scroll=False)
 class PendingSave:
     pending_saves = defaultdict(Any)
@@ -55,7 +95,80 @@ class PendingSave:
 
     @classmethod
     def mark_load(cls, address, data, **kwargs):
+        # A load answered from the pending overlay (codec.load returns the
+        # pending edit, not disk) must NOT re-baseline: basing the result as
+        # the "original" turns a real pending edit into a no-op (data ==
+        # original) - drop_noop_entries_for would then discard it on the next
+        # external write, so the automerge base would be wrong.
+        if isinstance(data, str) and cls.pending_text_for(address) == data:
+            return
         cls.originals[address] = data
+
+    @classmethod
+    def entry_for(cls, address):
+        """The queued entry whose span is `address`: exact (path, start, end)
+        value match first (Address hashes by location), else by the address's
+        `source` — an external write shifts the file, so a freshly resolved
+        address no longer matches the coordinates the edit was queued under,
+        but both still point at the same live object / call site. Returns
+        (queued_address, codec, kwargs) or None."""
+        hit = cls.pending_saves.get(address)
+        if hit is not None:
+            return address, hit[0], hit[1]
+        src = getattr(address, "source", None)
+        if src is None:
+            return None
+        for addr, (codec, kwargs) in list(cls.pending_saves.items()):
+            try:
+                if addr.path == address.path and getattr(addr, "source", None) == src:
+                    return addr, codec, kwargs
+            except Exception:
+                continue
+        return None
+
+    @classmethod
+    def original_for(cls, address):
+        """(matched_address, load-time original text) for `address`, matched
+        like entry_for — the 3-way-merge base. None when this span was never
+        loaded through load_file."""
+        hit = cls.originals.get(address)
+        if hit is not None:
+            return address, hit
+        src = getattr(address, "source", None)
+        if src is None:
+            return None
+        for addr, data in list(cls.originals.items()):
+            try:
+                if addr.path == address.path and getattr(addr, "source", None) == src:
+                    return addr, data
+            except Exception:
+                continue
+        return None
+
+    @classmethod
+    def rebase_entry(cls, old_address, new_address, codec, data, original, **kwargs):
+        """Move a queued edit onto a freshly resolved span: drop the
+        stale-coordinate entry and its load-time original, re-baseline the
+        original to `original` (the CURRENT disk span), and queue `data` under
+        the new address. The automerge path calls this after splicing an
+        external change into a pending edit, so apply_all_saves later splices
+        at coordinates that match the rewritten file."""
+        if old_address != new_address:
+            cls.pending_saves.pop(old_address, None)
+            cls.originals.pop(old_address, None)
+        cls.originals[new_address] = original
+        cls.queue_save(new_address, codec, data=data, **kwargs)
+
+    @classmethod
+    def discard_entry_for(cls, address):
+        """Drop the queued edit (and its baseline) matching `address` — the
+        user chose "Load theirs" on an unmergeable conflict; without this the
+        pending overlay would keep answering loads with the discarded edit."""
+        hit = cls.entry_for(address)
+        if hit is not None:
+            cls.pending_saves.pop(hit[0], None)
+            cls.originals.pop(hit[0], None)
+        cls.originals.pop(address, None)
 
     @classmethod
     def pending_gen_for(cls, path):
@@ -94,6 +207,16 @@ class PendingSave:
         # if prev is None or prev[1].get("data") != kwargs.get("data"):
         #     cls._wake_file_watchers(address.path)
 
+        # The merge/conflict window watches this edge too: a fresh pending edit
+        # may now have tracked external drift. wake() no-ops while that
+        # window is closed, so this hot path (queue_save can fire per edit
+        # frame) pays one attr fetch. Lazy import - merge_files imports us.
+        try:
+            from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
+            MergeFiles.wake()
+        except Exception:
+            pass
+
     @classmethod
     def _wake_file_watchers(cls, path):
         if path is None:
@@ -129,10 +252,13 @@ class PendingSave:
         except OSError:
             return disk
         edits = []
-        for addr, (codec, kwargs) in cls.pending_saves.items():
+        for addr, (codec, kwargs) in list(cls.pending_saves.items()):
             data = kwargs.get("data")
             if not isinstance(data, str):
                 continue
+            if data == cls.originals.get(addr):
+                continue        # no-op entry - must not splice stale text over
+                                # an externally-changed disk (see pending_text_for)
             try:
                 if _P(addr.path).resolve() != rp:
                     continue
@@ -165,12 +291,46 @@ class PendingSave:
         NOT identity: every consumer resolves its OWN Address from the (stable,
         since unwritten) disk to the same coords, so the value match lets a
         sibling see the editor's live edit. None when nothing is queued there."""
-        for addr, (codec, kwargs) in cls.pending_saves.items():
+        for addr, (codec, kwargs) in list(cls.pending_saves.items()):
             if (addr.path == address.path and addr.start == address.start
                     and addr.end == address.end):
-                return kwargs.get("data")
+                data = kwargs.get("data")
+                # A no-op entry (data == its load-time original) answers with
+                # text identical to what disk held at load - worthless as an
+                # overlay, and actively wrong the moment an EXTERNAL write
+                # changes the file: it would shadow the new disk content on
+                # every reload. drop_noop_entries_for skips such entries on
+                # the external-event path, but the drop is a posted render
+                # task and a load triggered by the same event can run FIRST - so
+                # the skip must live here, at the consumption point.
+                if data == cls.originals.get(addr):
+                    return None
+                return data
         return None
 
+
+    @classmethod
+    def drop_noop_entries_for(cls, path):
+        """Remove queued entries for `path` whose data still equals their
+        load-time original — no-op entries (a value toggled and toggled back,
+        or a Revert). Called when an EXTERNAL write lands on the file: a no-op
+        entry has nothing left to preserve, but left queued it SHADOWS the new
+        disk content — pending_text_for keeps answering with the old span
+        text, so every reload of that span (a code host, a sibling editor, the
+        symbol index's current_file_text splice) resurrects the pre-edit file
+        — and at shutdown apply_all_saves would write the stale span back over
+        the external edit. Real pending edits (data != original) stay queued
+        and surface as the editor's changed-on-disk conflict, as before.
+        Render-thread only (callers hop via Melty.post_to_render): the queue
+        is iterated by frame code."""
+        from pathlib import Path as _P
+        try:
+            rp = _P(path).resolve()
+        except OSError:
+            return
+        for addr in [a for a, (codec, kw) in cls.pending_saves.items()
+                     if a.path == rp and kw.get("data") == cls.originals.get(a)]:
+            del cls.pending_saves[addr]
 
     @classmethod
     def apply_all_saves(cls):
@@ -259,12 +419,12 @@ class PendingSave:
         return "\n".join(lines)
 
 
-@window(disable_scroll=False, tint=(0.18712963163852692, 0.2611111, 0.19945986568927765))
+@window(disable_scroll=False, z_offset=0, tint=(0.18712963163852692, 0.2611111, 0.19945986568927765))
 @render_func()
 def draw_pending_saves():
     pass
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-    RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_bg=False, shadow=False)
+    RenderFuncs.draw_function(PendingSave.apply_all_saves, icon="", tint=(0,0,0,1), show_bg=False)
     # name= keeps its draw_state distinct from apply_all_saves' (both calls
     # would otherwise derive the same file-name identity); run_in_thread so
     # the hotswaps run outside the render loop like every other recompile.
@@ -272,7 +432,7 @@ def draw_pending_saves():
     # briefly, then fade themselves (same fade model as code_file_io's
     # recompile_status) instead of parking forever.
     RenderFuncs.draw_function(PendingSave.recompile_all, name="recompile_all", icon="",
-                              tint=(0,0,0,1), show_bg=False, shadow=False, run_in_thread=True,
+                              tint=(0,0,0,1), show_bg=False, run_in_thread=True,
                               result_fade_frames=30)
 
     for address, (codec, kwargs) in list(PendingSave.pending_saves.items()):
@@ -319,5 +479,13 @@ def draw_pending_saves():
             RenderFuncs.draw_text(diff_str, show_name=True, name=name,
                                   is_diff=True, line_numbers=line_numbers)
         else:
-            PendingSave.originals[address] = codec.load(address=address, **kwargs)
+            # Baseline against DISK, never the pending cache: a plain
+            # codec.load answers with the queued edit itself, and stamping the
+            # edit as its own "original" reclassifies the entry as a no-op
+            # (dropped on the next disk write, invisible in this diff) and
+            # poisons the automerge base. source_text pins the load to disk.
+            from src.lsd.gl_gui.melty import Melty
+            disk_text = Melty.read_code(address.path) if address.path is not None else None
+            PendingSave.originals[address] = codec.load(
+                address=address, **{**kwargs, "source_text": disk_text})
             imgui.text("No original data to compare against for address: {}".format(address))

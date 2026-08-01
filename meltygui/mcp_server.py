@@ -192,6 +192,7 @@ MCP_TOOL_TINTS = {
     "restart":          (1.00, 0.80, 0.35, 1.0),
     "restart_launcher": (1.00, 0.55, 0.40, 1.0),
     "hotswap":          (0.55, 0.90, 1.00, 1.0),
+    "recompile_external_changes": (0.55, 1.00, 0.75, 1.0),
     "screenshot":       (0.80, 0.60, 1.00, 1.0),
     "list_windows":     (0.70, 0.75, 0.85, 1.0),
     "eval_python":      (0.45, 0.95, 0.80, 1.0),
@@ -355,6 +356,25 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         notify(f"hotswap requested: {path}", tint=MCP_TOOL_TINTS.get("hotswap", MCP_DEFAULT_TINT), tag="MCP")
         from src.lsd.gl_gui import mcp_hotswap
         return mcp_hotswap.hotswap_file(path, source or None)
+
+    @logged_tool()
+    def recompile_external_changes() -> str:
+        """Hotswap every externally-changed tracked file into the running studio
+        from its on-disk contents — the SAME code path as the External Changes
+        window's recompile_all button (ExternalChanges.recompile_all), so the
+        button and this tool always behave identically.
+
+        Files enter the tracker when the file watcher sees an outside edit to a
+        file the studio has read (draw_external_changes shows them with diffs).
+        Each is whole-module reloaded in place with hotswap-guard rollback.
+        Entries stay tracked after a successful swap — the user dismisses them
+        in the window. Returns the same summary string the button shows.
+        """
+        from src.lsd.gl_gui.notifications import notify
+        notify("recompile external changes requested",
+               tint=MCP_TOOL_TINTS.get("recompile_external_changes", MCP_DEFAULT_TINT), tag="MCP")
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        return ExternalChanges.recompile_all()
 
     @logged_tool()
     def screenshot(window: str):

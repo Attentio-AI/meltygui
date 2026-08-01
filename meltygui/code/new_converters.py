@@ -101,6 +101,7 @@ from src.lsd.gl_gui.view.core_conversion.address import (
 )
 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
     record_compile, _enclosing_function, live_apply_edits, _blank_line_variant,
+    chain_parse_cache_get, chain_parse_cache_put, chain_parse_cache_has,
 )
 from src.lsd.gl_gui.view.core_conversion.code_checks import check_source
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
@@ -115,7 +116,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+from src.lsd.gl_gui.view.core_views.pending_save import PendingSave, three_way_merge
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
@@ -394,6 +395,10 @@ class LoadingState:
         # One-shot timer that wakes the render loop once at the deadline, so we
         # don't busy-spin request_render every frame during the quiet window.
         self._debounce_timer = None
+        # Perf-trace stamps (arm edge time + task label) for the timeline log
+        # below run_in_background - diagnostics only, no behavior.
+        self._armed_t = None
+        self._armed_label = None
 
 
 
@@ -438,6 +443,13 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
     if Melty.frame_count < 4 or main_thread:
         debounce_ms = 0
     if start:
+        # Timeline of the arm edge. _armed_t / _armed_label for the run + report
+        # traces below, so the log shows arm → run (queue wait) → report (frame
+        # hops) as three stamps per task instead of one opaque duration.
+        loading_state._armed_t = time.perf_counter()
+        loading_state._armed_label = getattr(input_value, '__name__', 'task')
+        _ptrace(f"rib: armed {loading_state._armed_label}",
+                debounce_ms=debounce_ms, inline_first=inline_first)
         loading_state._run_next = input_value, child_kwargs
         if debounce_ms:
             # Debounce: defer the launch until the input goes quiet. Re-start on
@@ -484,8 +496,14 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                 # entry/exit, which races the main render thread. Grab the bare inner
                 # function: plain functions pass through unchanged.
                 value = getattr(value, '__wrapped__', value)
+                # Queue wait = arm edge → this thread actually executing (frame
+                # hops + thread spawn + GIL contention live in this gap).
+                _armed = getattr(loading_state, '_armed_t', None)
+                _wait_ms = (time.perf_counter() - _armed) * 1000 if _armed else -1
                 try:
-                    loading_state.cached_result = value(**background_kwargs)
+                    with _pspan(f"rib: run {getattr(value, '__name__', 'task')}",
+                                wait_ms=round(_wait_ms, 1)):
+                        loading_state.cached_result = value(**background_kwargs)
                 except Exception as exc:
                     loading_state.error = exc
                     print_stack_trace(exception=exc)
@@ -546,6 +564,14 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
 
     if loading_state._pending_change and loading_state._run_next is None:
         loading_state._pending_change = False
+        # Report edge: the caller actually OBSERVES the result. total_ms - the
+        # run span's duration = frame-hop / wake latency, the historic silent
+        # cost on the initial-load pipeline.
+        _armed = getattr(loading_state, '_armed_t', None)
+        if _armed is not None:
+            loading_state._armed_t = None
+            _ptrace(f"rib: report {getattr(loading_state, '_armed_label', 'task')}",
+                    total_ms=round((time.perf_counter() - _armed) * 1000, 1))
         note = Note(name="run in background complete, new conv", tint=(0.5, 0.5, 1.0))
 
         # draw_state.invalidate_up(max_depth=4, note=note)
@@ -585,6 +611,9 @@ class CodeState(DictConversion):
         self._loaded_externally = False
         self._external_load_frame = None
         self._external_load_time = None
+        # What the fading external-load stamp says: None = "loaded from disk";
+        # the automerge path sets its own override.
+        self._external_load_label = None
 
     def is_file_stale(self):
         if self.address is None:
@@ -840,6 +869,34 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
     generation the finished parse actually reflects (not whatever the source is by the
     time the worker returns)."""
     notify(f"_run_chain_in: start", tag="chain_in")
+
+    # ── libcst-dict cache over the chain parse ────────────────────────────────────
+    # Only for a PRISTINE disk buffer: DiskCodec.load stamps the loaded text
+    # with the disk mtime it reflects (DiskSpanText); any edit decays it to a
+    # plain str, so provenance - not content comparison - gates the cache. Only
+    # the canonical [string_to_cst_module, cst_module_to_dict] chain counts,
+    # its output routed under the final node's route name. A run_jedi flag
+    # (the explicit Jedi click) always runs the real pass.
+    _disk_mtime = getattr(input_value, "_disk_mtime", None)
+    _disk_span = getattr(input_value, "_disk_span", None)
+    _tail = chain[-1] if chain else None
+    if isinstance(_tail, tuple):
+        _tail = _tail[0]
+    _cacheable = (_disk_mtime is not None and _disk_span is not None
+                  and not extra.get("run_jedi")
+                  and getattr(_tail, "__name__", "") == "cst_module_to_dict")
+    _route = extra.get("route") or {}
+    _out_target = _route.get(_tail)
+    _out_name = _out_target[0] if isinstance(_out_target, tuple) else _out_target
+    if _cacheable and _out_name:
+        _gp = chain_parse_cache_get(_disk_span, _disk_mtime)
+        if _gp is not None:
+            notify(f"cst cache hit: {Path(_disk_span[0]).name}"
+                   f" [{_disk_span[1]}:{_disk_span[2]}]",
+                   tag="cst_cache", tint=(0.4, 0.9, 0.4))
+            return {"routed": {_out_name: _gp}, "error": None, "lint": [],
+                    "_src_gen": _src_gen, "src_good": input_value}
+
     result, routed = _run_convert(chain, input_value, **extra)
     parse_failed = isinstance(result, Exception)
     error = result if parse_failed else None
@@ -873,6 +930,14 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             lint = check_source(input_value, path=lint_path)
         except Exception:
             lint = []
+    # Store the finished parse for the next boot: pristine disk input (see the
+    # provenance gate above) + a clean parse/compile only, so a cache hit can
+    # skip the expensive pass. One dumps (~50ms for a large span) on this
+    # background thread buys every editor startup a ~25ms load instead of the
+    # full seconds.
+    if _cacheable and _out_name and error is None:
+        chain_parse_cache_put(_disk_span, _disk_mtime, routed.get(_out_name))
+
     return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen,
             "src_good": input_value if error is None else None}
 
@@ -1099,10 +1164,16 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
                            "_last_good_src": getattr(modes_state, "last_good_src", None)}
         # `changed` is the only trigger - code_file_io rolls load / external edit /
         # the Index pulse into it, so we never diff the text or sniff inputs here.
+        # inline_first only means a guaranteed cst cache hit (a ~26ms loads); the
+        # first paint lands fully formed instead of paying the async frame-hop
+        # tax. A genuine change (miss) stays on the worker as before.
+        inline = (not chain_in_kwargs.get("run_jedi")
+                  and chain_parse_cache_has(getattr(input_value, "_disk_span", None),
+                                            getattr(input_value, "_disk_mtime", None)))
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
-            name=f"chain_in{unique}", start=external_change)
+            name=f"chain_in{unique}", start=external_change, inline_first=inline)
         if finished and isinstance(payload, dict):
             # Fold the completed outputs into the shared snapshot AND this
             # frame's routed (so the columns see the good values immediately).
@@ -1234,6 +1305,14 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         inline = (not background_load
                   and isinstance(input_value, str)
                   and len(input_value) <= _INLINE_FIRST_PARSE_MAX_CHARS)
+        # A direct cst-cache hit is a ~26ms pickle.loads, not a parse - the
+        # async path's frame-hop tax (~90ms+ per span at boot) costs more than
+        # the work. Inline it even for background_load hosts and big spans.
+        # run_jedi excluded: the Index pulse bypasses the cache and must run
+        # a real (expensive) pass on the worker.
+        if not inline and not chain_in_kwargs.get("run_jedi"):
+            inline = chain_parse_cache_has(getattr(input_value, "_disk_span", None),
+                                           getattr(input_value, "_disk_mtime", None))
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
@@ -1386,7 +1465,8 @@ def external_load_status(code_state, draw_state):
         imgui.same_line(spacing=8)
         imgui.align_text_to_frame_padding()
         sync_icon_fa = "\uf021"
-        imgui.text_colored(f"{sync_icon_fa} loaded from disk {code_state._external_load_time}",
+        label = getattr(code_state, "_external_load_label", None) or "loaded from disk"
+        imgui.text_colored(f"{sync_icon_fa} {label} {code_state._external_load_time}",
                            1.0, 0.75, 0.25, fade_out)
     if fade_out > 0.01:
         draw_state.invalidate()
@@ -1433,9 +1513,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                  ensure_import=None, s_key_pressed=None, unique=None,
                  background_load=False, **kwargs):
     edited = False
+
     try:
         imgui.dummy(0, 0)
-
         if child_kwargs is None:
             child_kwargs = {}
         # ── 1. Resolve the source's line span ─────────────────────────────────────
@@ -1470,7 +1550,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         if getattr(codec, "view_func", None) is not None:
             view_func = codec.view_func
 
-        address = codec.resolve_address(input_value, draw_state, code_state=code_state)
+        # resolve_address runs every frame; min_ms keeps the code-state cache
+        # hits silent while a cold resolve (whole-file getsourcelines tokenize)
+        # shows up on the console.
+        with _pspan("cfio: resolve_address", min_ms=2.0,
+                    codec=type(codec).__name__):
+            address = codec.resolve_address(input_value, draw_state, code_state=code_state)
         code_state.address = address
         top_line_height = 30
         external_change = False
@@ -1489,6 +1574,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 load = True
                 code_state.text_cache = None
                 code_state.mark_file_current()
+                _ptrace("cfio: initial load trigger",
+                        file=address.path.name if address.path else "?",
+                        span=(address.start, address.end))
 
         # str gate on top: even a code codec can briefly hold non-text data.
         if (code_buttons and not auto_recompile_edits
@@ -1534,6 +1622,72 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             self_write = False
         conflict = file_stale and code_state._pending_save
 
+        # ── Automerge: external change under an ACTIVE local edit ─────────────
+        # An external write while this span has a live edit (the unsaved buffer,
+        # or an edit already queued in PendingSave - _pending_save drops once the
+        # save runner queues it) needs to either auto-load (auto_load_edits: disk
+        # replaces the edit in every view) or park on the manual buttons. Try a
+        # line-level 3-way merge first:
+        #   base   = the disk span this edit was sourced from (PendingSave original)
+        #   mine   = the live buffer (conflict) / the queued edit text
+        #   theirs = the span as the rewritten file holds it NOW - read through
+        #            codec.load(source_text=disk), which also re-baselines the
+        #            save guard's _span_cache to the NEW disk
+        # Non-overlapping edits splice: the buffer gets the merged text and the
+        # pending entry re-queues under the freshly loaded address (an external
+        # write shifts span coordinates - rebasing also supports any shutdown
+        # splice). Overlapping edits are a genuine conflict: merge_failed makes
+        # the branches below fall through to the manual Load / Keep-mine buttons
+        # instead of auto-loading over the edit.
+        merge_failed = False
+        if file_stale and not self_write and not code_state._save_refused:
+            entry = PendingSave.entry_for(address)
+            mine = (code_state.text_cache
+                    if conflict and isinstance(code_state.text_cache, str) else None)
+            if mine is None and entry is not None:
+                queued = entry[2].get("data")
+                mine = queued if isinstance(queued, str) else None
+            base_hit = PendingSave.original_for(address) if mine is not None else None
+            if base_hit is not None and isinstance(base_hit[1], str) and mine != base_hit[1]:
+                disk_text = Melty.read_code(address.path)
+                # A failed merge leaves the file stale, so this re-runs every
+                # frame until the user picks a side - memoize on object
+                # identity (all three texts are held objects: the buffer /
+                # queued data, the original entry holds the code_cache text), per
+                # the no-content-hashing rule. Only a real change re-diffs.
+                memo_key = (id(base_hit[1]), id(mine), id(disk_text))
+                memo = draw_state.misc.get("_automerge_memo")
+                if memo is not None and memo[0] == memo_key:
+                    theirs, merged = memo[1], memo[2]
+                else:
+                    theirs = (codec.load(address, source_text=disk_text)
+                              if disk_text is not None else None)
+                    merged = (three_way_merge(base_hit[1], mine, theirs)
+                              if isinstance(theirs, str) else None)
+                    draw_state.misc["_automerge_memo"] = (memo_key, theirs, merged)
+                if merged is not None:
+                    old_addr = entry[0] if entry is not None else base_hit[0]
+                    merge_codec = entry[1] if entry is not None else codec
+                    extra = ({k: v for k, v in entry[2].items() if k != "data"}
+                             if entry is not None else {})
+                    PendingSave.rebase_entry(old_addr, address, merge_codec,
+                                             merged, theirs, **extra)
+                    code_state.text_cache = merged
+                    code_state.mark_file_current()
+                    code_state._pending_save = False
+                    code_state._save_refused = False
+                    code_state._external_load_frame = Melty.frame_count
+                    code_state._external_load_time = datetime.now().strftime("%H:%M:%S")
+                    code_state._external_load_label = "automerged external change"
+                    external_change = True
+                    file_stale = False
+                    conflict = False
+                    draw_state.invalidate_up(max_depth=6)
+                    request_render()
+                else:
+                    merge_failed = True
+                    conflict = True
+
         # ── Cross-view sync via the PendingSave cache (deferred-save model) ────────
         # A sibling view's save now only goes into PendingSave - no disk write,
         # so file_stale (mtime) won't fire for it. queue_save wakes our tile; here
@@ -1551,7 +1705,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 draw_state.invalidate_up(max_depth=6)
                 request_render()
 
-        if file_stale and not code_state._pending_save:
+        if file_stale and not code_state._pending_save and not merge_failed:
             if auto_load_edits:
                 # A VERIFIED self-write (a sibling editor of the same file - the
                 # code-host str_host, another window, a lens save - synced
@@ -1580,6 +1734,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
                     code_state._loaded_externally = not self_write
+                    
 
                 imgui.same_line()
                 if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
@@ -1593,15 +1748,25 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # span-failure guard) through the freshly re-resolved span.
             imgui.same_line(spacing=8)
             imgui.align_text_to_frame_padding()
-            imgui.text_colored("\uf071 changed on disk", 1.0, 0.55, 0.15, 1.0)
+            label = ("\uf071 conflicts with edit" if merge_failed
+                     else "\uf071 changed on disk")
+            imgui.text_colored(label, 1.0, 0.55, 0.15, 1.0)
             imgui.same_line(spacing=4)
             if RenderFuncs.button("Load theirs", width=110, height=top_line_height, name=f"reload{unique}")[0]:
                 load = True
                 code_state._loaded_externally = True
+                code_state._pending_save = False
+                # Without this the pending save keeps answering the load
+                # with the edit being discarded (codec.load prefers it).
+                PendingSave.discard_entry_for(address)
             imgui.same_line()
             if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
                 save = True
                 keep_mine = True
+                # The queued entry sits in pre-external-write coordinates; the
+                # forced save below re-queues the buffer under the freshly
+                # resolved address, so drop the stale-span twin.
+                PendingSave.discard_entry_for(address)
 
         if not auto_save and code_state._pending_save:
             imgui.same_line(spacing=0)
@@ -1623,6 +1788,9 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state.mark_file_current()
 
         elif changed:
+            _ptrace("cfio: load landed",
+                    file=address.path.name if address.path else "?",
+                    chars=len(new_text) if isinstance(new_text, str) else -1)
             code_state.text_cache = new_text
             code_state.mark_file_current()
             draw_state.invalidate_up(max_depth=6)
@@ -1635,9 +1803,15 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state._loaded_externally = False
                 code_state._external_load_frame = Melty.frame_count
                 code_state._external_load_time = datetime.now().strftime("%H:%M:%S")
+                code_state._external_load_label = None
             request_render()
 
         # ── 3. Edit - the actual call ─────────────────────────────────────────────
+        if code_state.text_cache is UNSET or code_state.text_cache is None:
+            # Buffer still loading: this frame renders nothing where the editor
+            # will be - keep ancestors' persisted content_height (see
+            # Melty.pending_placeholder_frame).
+            Melty.pending_placeholder_frame = Melty.frame_count
         if code_state.text_cache is not UNSET and code_state.text_cache is not None:
 
             child_kwargs['jump_to'] = address
@@ -1884,11 +2058,33 @@ def code_hosts_for(ref):
     # transient key was then GC'd and its address recycled, so later id()s collided
     # and silently overwrote (or mis-returned) cache entries. Value-equality keying
     # collapses all those to one entry per distinct source.
+    # Functions/classes key by (module, qualname), not object identity: a
+    # whole-file hotswap re-exec can hand callers a NEW wrapper object for
+    # the same def (draw_state._view_func picks up whichever object the
+    # registries can resolve, and the src./bare twin mirroring makes
+    # that alternate). Identity keying then missed on every recompile and
+    # LEAKED a fresh host pair per swap (the draw_dropdown recreation leak) -
+    # each pair registered in Melty.render_hosts and never collapsed. The
+    # module name is normalized across the src./bare dual identity so both
+    # spellings of the same file share one entry.
+    key = ref
+    if isinstance(ref, (types.FunctionType, type)):
+        mod = getattr(ref, "__module__", "") or ""
+        qualname = getattr(ref, "__qualname__", None)
+        if qualname:
+            if mod.startswith("src."):
+                mod = mod[4:]
+            key = ("code_host", mod, qualname)
     try:
-        pair = _code_host_cache.get(ref)
+        pair = _code_host_cache.get(key)
         cacheable = True
     except TypeError:           # genuinely unhashable ref - skip the cache
         pair, cacheable = None, False
+    if pair is not None and key is not ref and pair[0].input_value is not ref:
+        # Same logical def, different object (post-hotswap identity churn): point
+        # the str_host at the caller's live ref so span editing see the
+        # patched object instead of a stale pre-swap wrapper.
+        pair[0].input_value = ref
     if pair is None:
         from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
         label = getattr(ref, "__name__", None) or type(ref).__name__
@@ -1929,7 +2125,7 @@ def code_hosts_for(ref):
             })
         pair = (str_host, dict_host)
         if cacheable:
-            _code_host_cache[ref] = pair
+            _code_host_cache[key] = pair
         _ptrace(f"host pair created for {label}", cached=cacheable,
                 total_hosts=len(_code_host_cache))
     return pair
@@ -2275,7 +2471,21 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # owns the host, and the sweep would otherwise immediately-register it.
             dict_host.notify_on_change(ds)
             if changed:
-                _str_host[list(_str_host.keys())[0]] = value
+                _key0 = list(_str_host.keys())[0]
+                _held0 = _str_host[_key0]
+                if _held0 == value:
+                    # Echo breaker: a changed=True with byte-identical text must
+                    # not dirty the str host - that write is what feeds the
+                    # startup parse storm (dirty → chain_out → queue_save →
+                    # pending_gen bump → full reparse + usage recompute, per
+                    # frame, for a no-op). Python == short-circuits by length
+                    # and first differing char, so real edits pay ~nothing;
+                    # the full-length compare only matters in the spurious
+                    # case, where it replaces a multi-frame pipeline.
+                    _ptrace("editor changed with IDENTICAL text — host write suppressed",
+                            host=_host_label(dict_host))
+                else:
+                    _str_host[_key0] = value
     # # Re-render this editor when a background parse lands: its cached
     # # subtree is outside the host's own draw loop, so without registering it
     # # the fresh cst_dict sits invisible until an unrelated invalidation.
@@ -2361,7 +2571,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
     imgui.dummy(0, 5)
     names = [getattr(vf, '__name__', str(vf)) for vf in view_funcs]
     tab_changed, new_tabs = RenderFuncs.draw_tab_bar(input_value=tab_state.selected_tabs,
-                                                     tab_height=30, show_bg=False, bg_offset=1,
+                                                     tab_height=30, show_bg=False, bg_offset=0,
                                                      name=f"tab_bar{unique}", names=names,
                                                      collection=view_funcs, as_toggles=False)
     if tab_changed:
@@ -2445,6 +2655,10 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         draw_state.invalidate_up(max_depth=2)
                 else:
                     if not isinstance(gp, dict):
+                        # Placeholder frame: keep every ancestor's persisted
+                        # content_height (see Melty.pending_placeholder_frame) -
+                        # this one-line stand-in doesn't become the measure.
+                        Melty.pending_placeholder_frame = Melty.frame_count
                         imgui.text_colored("Parsing…" if dict_host is not None
                                            else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
                         continue

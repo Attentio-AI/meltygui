@@ -296,8 +296,8 @@ class Tint:
 @window
 class Swoosh:
     # Nested-window "swoosh" connector (parent outline -> nested view)
-    tint = (0.93, 0.8545676, 0.69)   # fallback color if no style manager is attache
-    value = 1.023              # intensity of the highlight (super-bright yellow)
+    tint = (0.54, 0.36911, 0.00)   # fallback color if no style manager is available
+    value = 1.023              # brightness of the highlight (super-bright tint)
     saturation = 0.791        # saturation scale applied to the current tint
     alpha = 1.0             # opacity of the swoosh
     end_thickness = 1.433      # half-width at the anchor endpoints (thick)
@@ -369,7 +369,7 @@ class Swoosh:
     # Distance is measured from each rect (0 when the mouse is inside it). Applies
     # to both the line and ribbon mode.
     mouse_falloff = True               # enable the mouse-based opacity fade
-    mouse_falloff_dist_parent = 25.8   # px: parent-end falloff distance (lower =
+    mouse_falloff_dist_parent = 49.576   # px: parent-end falloff distance (lower =
                                        # the parent side dims sooner as you leave it)
     mouse_falloff_dist_child = 638.1   # px: child-end falloff distance
     mouse_falloff_floor = 0.07         # opacity multiplier when far away (0 = invisible)
@@ -377,7 +377,7 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.563, 0.58, 0.60))
+@window(tint=(0.417, 0.44, 0.47))
 class Toggles:
 
     @defaults(tint=(0.456, 0.611, 0.767, 1.00))
@@ -385,6 +385,7 @@ class Toggles:
         enable_spell_check = False
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
+
 
         @staticmethod
         def usage_tint(users):
@@ -405,13 +406,6 @@ class Toggles:
             usage_tint = (0.204, 0.224, 0.239)
             usage_tint = (*usage_tint, v)
             return usage_tint
-
-        # When the caret rests on an identifier, every OTHER place that exact
-        # token appears in the visible buffer gets this background wash. A dumb,
-        # identifier-bounds character match - no CST / symbol-usage metadata is
-        # involved, so it works in any text, mid-edit or unparseable. Flip the
-        # flag to disable; the (r, g, b, a) tuple is read live.
-        highlight_token_matches = True
         # Definition tints: a class/def whose definition carries a tint
         # (@defaults(tint=...), a '# [tint=...]' override comment, or a
         # class-body tint=...) gets a full-body background wash in the editor,
@@ -420,12 +414,19 @@ class Toggles:
         # the tint's rgb with these alphas (the tint's own alpha is a view-
         # wide opacity, not meant for text washes). All read live
 
-        # [tint=(0.047, 0.492, 0.939, 1.00), show_tint=True]
+        # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
         definition_tints = True
+
+        # When the caret rests on an identifier, every OTHER place that exact
+        # token appears in the visible buffer gets this background wash. A dumb,
+        # identifier-bounded character match - no CST / symbol-DB metadata is
+        # involved, so it works in any text, mid-edit or unparseable. Flip the
+        # toggle to disable; the (r, g, b, a) tint is read live.
+        highlight_token_matches = True
         def_block_alpha = 0.148
         def_symbol_alpha = 0.616
         def_line_alpha = 0.089
-    
+
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
         # tints), fading a further step per hop so a value's color trail
@@ -447,6 +448,7 @@ class Toggles:
         # [tint=(0.278, 0.076, 0.126, 1.0)]
         def_text_tint_mix = 0.293
 
+
         # Glyph-mix TARGET color adjustment (which color text leans toward
         # inside a wash) - same hsv factor pattern as comment_tint_* /
         # bg_tint_*, independent of the wash's own factors; the shared
@@ -460,7 +462,7 @@ class Toggles:
         # code. Both read live; 1.0/1.0 = the raw tint.
         # [tint=(1.0, 0.661, 0.0, 1.0)]
         comment_tint_saturation = 0.49
-        # [tint=(0.033, 1.0, 0.0, 1.0)]
+        # [tint=(0.248, 0.428, 0.119, 1.00), show_tint=True]
         comment_tint_value = 0.160
         # Legibility floor for tinted COMMENT TEXT - independent of the
         # washes' bg_min_brightness (text needs a higher floor than a
@@ -485,7 +487,7 @@ class Toggles:
         # tab bar: 0 Info, 1 Config, 2 view function, 3 Eval, 4 Help, 5 Tint.
         default_tab = 2
 
-    @defaults(tint=(0.631, 0.474, 0.861))
+    @defaults(tint=(0.181, 0.119, 0.294))
     class InputHandlerToggles:
         show_debug = False
 
@@ -567,16 +569,6 @@ class Toggles:
             outline_alpha = 1.00
             outline_thickness = 1.366
 
-    # Global Feature Toggles
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
-
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.rendering (stops per-frame
@@ -587,6 +579,16 @@ class Toggles:
         # re-registered within this many frames (safety net for any abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
+
+    # Global App Toggles
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
 
     show_filled_tiles = False
     gl_check_error = False
@@ -618,7 +620,7 @@ class Toggles:
     # While typing, pause the background cst→dict parse on statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render.
 
-    # [tint=(0.7555555701255798, 0.46218958497047424, 0.00)]
+    # [tint=(0.75, 0.46218, 0.00)]
     yield_to_ui = True
 
     # Timeline logging of the symbol-index / code-host load path: every
@@ -632,7 +634,7 @@ class Toggles:
     slow_down_threads = False
 
     # [tint=(0.025, 0.372, 0.326)]
-    profile_mode = ProfileMode.LIGHT
+    profile_mode = ProfileMode.OFF
     debug_stale_tint = False
 
     # View Settings

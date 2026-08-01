@@ -447,7 +447,11 @@ def render_func(*args, **o_kwargs):
     wanted_params = list(params.keys())
     wanted_params.remove("args") if "args" in wanted_params else None
     wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
-    header_defaults = o_kwargs
+    # Decorator's tint is the function's code-reference color (provenance),
+    # not a render kwarg - keep it out of the call-kwargs merge so invoking the
+    # func never tints the view (or seeds draw_state.tint) from it.
+    merge_o_kwargs = {k: v for k, v in o_kwargs.items() if k != "tint"}
+    header_defaults = merge_o_kwargs
     param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
 
     # Auto-state param names for this func, resolved lazily (DrawState must be
@@ -623,7 +627,7 @@ def render_func(*args, **o_kwargs):
 
         content_margin = ((len(Melty.bg_stack)) * 2.0)
 
-        kwargs = o_kwargs | kwargs
+        kwargs = merge_o_kwargs | kwargs
 
         if header_defaults is not None:
             kwargs = header_defaults | kwargs
@@ -1304,7 +1308,15 @@ def render_func(*args, **o_kwargs):
             if _codec is not None:
                 _ck = getattr(_codec, "render_kwargs", None)
                 if _ck:
-                    _ck = {k: v for k, v in _ck.items() if True}
+                    # An ALPHA-0 tint is a codec's opt-OUT (FunctionCodec: the
+                    # green is provenance color, not a wash) - letting it
+                    # into kwargs drives nothing and yet shadows the
+                    # draw_state fallback and claims the anywhere pick. Real-
+                    # alpha codec tints (caller color, mode override) keep
+                    # washing their views.
+                    _ck = {k: v for k, v in _ck.items()
+                           if not (k == "tint" and isinstance(v, (tuple, list))
+                                   and len(v) >= 4 and not v[3])}
                     if _ck:
                         kwargs = _ck | kwargs
                 Melty.codec_stack.append(_codec)
@@ -1524,6 +1536,42 @@ def render_func(*args, **o_kwargs):
                 if handle_drag is None and corner_drag is not None and not corner_drag.ctrl:
                     handle_drag = corner_drag
 
+                # Press-anchored resize baselines (same reasoning as the
+                # window-move press latch below): the first-drag-frame rebase
+                # discards any delta accumulated during a UI stall between the
+                # press and the first delivered drag frame, leaving the resize
+                # handle many pixels behind the cursor. non_blocking at better
+                # priority observes the press without stealing it from the
+                # window-move press and right-press raise chain; if a child
+                # wins the press chain first, we simply fall back to the
+                # rebase (old behavior).
+                handle_press = draw_state.on_action("non_blocking_left_mouse_down", view_id="window_resize",
+                                                    rect=corner_rect, priority_delta=2)
+                corner_press = draw_state.on_action("non_blocking_right_mouse_down", view_id="corner_drag",
+                                                    priority_delta=1)
+                if handle_press or corner_press:
+                    # A press marks a NEW gesture boundary - drop every piece of
+                    # drag-lifecycle state here. At low framerates the previous
+                    # gesture's last drag frame and this press land in ADJACENT
+                    # frames (or this press and its first drag event on the
+                    # SAME frame), so the "press on the first idle frame"
+                    # branch below never runs and the stale baseline /
+                    # edge-target from the old gesture made the new one leap
+                    # (old_baseline + new_total, and total_dx - stale_x0).
+                    draw_state._resize_target_edge = None
+                    draw_state._resize_target_edge_x0 = None
+                    if handle_drag is None and draw_state.window_pos is not None:
+                        draw_state._initial_window_size = (draw_state.width, draw_state.height)
+                        draw_state._initial_window_pos_resize = (draw_state.window_pos[0],
+                                                                 draw_state.window_pos[1])
+                    else:
+                        # Press and first drag frame compressed together - let
+                        # the rebase in the drag branch re-latch from the
+                        # gesture's own total (continuous, no leap; only the
+                        # press-anchored stall catch-up is lost).
+                        draw_state._initial_window_size = None
+                        draw_state._initial_window_pos_resize = None
+
                 if handle_drag and not auto_resize:
                     if draw_state._initial_window_size is None:
                         # Rebase the size baseline by the drag delta so far so
@@ -1667,7 +1715,10 @@ def render_func(*args, **o_kwargs):
                         overflow = abs_top + draw_state.height - display_h
                         draw_state.window_pos = (draw_state.window_pos[0],
                                                  snap_int(draw_state.window_pos[1] - overflow))
-                else:
+                elif not (handle_press or corner_press):
+                    # Not on the press branch itself - that would wipe the
+                    # press-anchored baselines latched just above before the
+                    # drag's first event arrives.
                     draw_state._initial_window_size = None
                     draw_state._initial_window_pos_resize = None
                     draw_state._resize_target_edge = None
@@ -1714,7 +1765,27 @@ def render_func(*args, **o_kwargs):
                         # a child window move_window_to_front walks up to the
                         # true root, for a root window it's a no-op resolve.
                         Melty.move_window_to_front(draw_state)
-                        print("mve to front")
+                        # Press-anchored move baseline. The first-drag-frame
+                        # rebase below aligns the cursor - right for mid-drag
+                        # (re)adoption, but it permanently discards any delta
+                        # accumulated while the UI wasn't rendering (a stall
+                        # between the press and the first delivered drag frame
+                        # left the window that many pixels behind the cursor).
+                        # Latching at the press makes pos = press_pos + total_d
+                        # catch up in sync. Skip while a drag is already
+                        # driving, so a stray left press during an active
+                        # ctrl-right move can't rebase it mid-flight.
+                        if on_drag is None and corner_drag is None:
+                            draw_state._initial_window_pos = (draw_state.window_pos[0],
+                                                              draw_state.window_pos[1])
+                        else:
+                            # Press with a drag already delivering this frame -
+                            # low-fps combination of release+press+drag, or a
+                            # stray left press during an active ctrl-right
+                            # move. Drop any stale baseline so the drag
+                            # branch's rebase re-latches for the CURRENT
+                            # gesture instead of leaping from the old one's.
+                            draw_state._initial_window_pos = None
 
                     # Bring-to-front on a left press is owned by the non_blocking
                     # raise_press handler above (so a press consumed by an
@@ -1769,7 +1840,14 @@ def render_func(*args, **o_kwargs):
                         abs_top = draw_state._abs_top()
                         if abs_top < 0:
                             draw_state.window_pos = (pos_x, pos_y - abs_top)
-                    else:
+                    elif imgui_active or (left_mouse_down is None and on_held is None):
+                        # Keep the press-anchored baseline alive through the
+                        # pre-activation held frames (button down, or below
+                        # threshold) so it's still there when the drag's first
+                        # event lands after a stall. Clear when the button is
+                        # up, the press never entered this window, or imgui
+                        # owns the gesture (resuming after an imgui
+                        # interruption must rebase for continuity, as before).
                         draw_state._initial_window_pos = None
 
                 # Anchor / pin stamping applies to explicitly-positioned windows
@@ -3026,6 +3104,14 @@ def render_func(*args, **o_kwargs):
                             if Melty.frame_count > 2:
                                 if ctx_ds.last_seen is None:
                                     ctx_ds.closed = False
+                                    # The pin anchors to the target's bounding box
+                                    # top (pin_rect), which sits well above the
+                                    # visible clip when the view is scrolled
+                                    # down - offset the menu to the visible top
+                                    # so it opens on screen. window_pos adds
+                                    # to the pinned base in _abs_rect.
+                                    scroll_down = draw_state.abs_clamped_rect[1] - draw_state.abs_top
+                                    ctx_ds.window_pos = (0, max(0, scroll_down))
                                     # ctx_ds.window_pos = (snap_int(draw_state.width) + 20, 0)
 
                             if ctx_ds.closed:
@@ -3605,7 +3691,16 @@ def render_func(*args, **o_kwargs):
                 return_value = (report_changed, report_value, *return_value[2:])
 
                 if auto_resize:
-                    draw_state.content_height = draw_state._content_rect[1]
+                    # Post-pending guard: while ANY view rendered a pending
+                    # placeholder this frame, refuse to SHRINK a persisted
+                    # content_height - the collapsed measure reflects the
+                    # placeholder, not the content, and committing it wipes the
+                    # restored geometry (the view then visibly re-settles when
+                    # its value lands). See Melty.pending_placeholder_frame.
+                    _measured_h = draw_state._content_rect[1]
+                    if not (Melty.pending_placeholder_frame == Melty.frame_count
+                            and _measured_h < draw_state.content_height):
+                        draw_state.content_height = _measured_h
 
                 draw_state._source["content_height"] = "draw_state._content_rect[1]"
 
