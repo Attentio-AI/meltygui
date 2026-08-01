@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
@@ -408,7 +409,6 @@ class Toggles:
         min_height = 506.5
         min_width = 94.154
 
-
     @defaults(tint=(0.315, 0.489, 0.322))
     class LoadSave:
         # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
@@ -418,14 +418,13 @@ class Toggles:
         # this True until the .ini is fully abandoned.
         ini_save = False
 
-
-    @defaults(tint=(0.189, 0.486, 0.944))
+    @defaults(tint=(0.08, 0.747, 0.85))
     class WindowSettings:
         # Sticky resize: re-anchor the window top to the drag-start position each
         # frame so only the bottom-on-display edge displaces it.
         sticky_drag = True
 
-    @defaults(tint=(0.358, 0.444, 0.348))
+    @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:
         keep_for_frames = 84
         enable = False
@@ -434,7 +433,7 @@ class Toggles:
         attrib_change_stack_trace = False
         draw_bvh = False
 
-    @defaults(tint=(0.633, 0.532, 0.289, 1.0))
+    @defaults(tint=(0.47, 0.463, 0.417))
     class ScrollSettings:
         scroll_speed = 611
         max_increment_fraction = 0.169
@@ -442,11 +441,50 @@ class Toggles:
         bg_offset = 30
         debug_scroll = False
 
-    @defaults(tint=(0.456, 0.611, 0.767, 1.00))
+    @defaults(tint=(0.2, 0.19, 0.179, 1.00))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
+
+        # Syntax error checking: parse/compile-time errors plus the static
+        # "will it compile" lint (undefined names, call-signature mismatches),
+        # drawn as red line markers in the editor. Off = no markers, and the
+        # background lint pass is skipped. The import-path-fix suggestions
+        # ride a separate channel and stay on. Read live.
+        check_syntax_errors = True
+
+        @defaults(tint=(0.181, 0.361, 0.722))
+        class SymbolUsages:
+            # Auto-attach symbol usages to every editor parse (background, fast
+            # path only); the Index button stays as a force refresh.
+            auto_index = True
+
+            # Incremental symbol-usage refresh on live edits: reuse the prior
+            # compute's expensive half (cross-file callers + defs, ~80% of cost)
+            # and rescan only the changed file + new names. Off = full recompute.
+            # Fast path only.
+            incremental_symbol_index = True
+
+            # Per-edit incremental patching on top of the incremental path: re-derive
+            # only the top-level-statement region around the edit (patched parse
+            # artifacts + a region-restricted pass) and merge into the prior
+            # graph - O(edit) per keystroke instead of O(file). A final pass
+            # reconciles when typing goes idle. Off = each live edit runs the
+            # incremental_symbol_index pass.
+            live_incremental_usages = True
+
+            # Position-only fast path: when an edit only added/removed blank
+            # lines, remap the cached line numbers by the delta (~5ms vs ~42ms)
+            # instead of recomputing.
+            offset_symbol_positions = True
+
+            # Add function-local variables (params + in-function bindings) to
+            # the symbol usage graph so they wash + double-click to their users
+            # like any symbol. Cheap now that the editor's line<->index helpers
+            # are O(log n) (see _line_offsets); turn off to drop locals from
+            # the graph if ever needed.
+            local_symbol_usages = True
 
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
@@ -596,7 +634,7 @@ class Toggles:
         # code. Both read live; 1.0/1.0 = the raw tint.
         # [tint=(1.0, 0.661, 0.0, 1.0)]
         comment_tint_saturation = 0.49
-        # [tint=(0.248, 0.428, 0.119, 1.00), show_tint=True]
+        # [tint=(0.3813193440437317, 0.7055555582046509, 0.14895063638687134), show_tint=True]
         comment_tint_value = 0.160
         # Legibility floor for tinted COMMENT TEXT - independent of the
         # washes' bg_min_brightness (text needs a higher floor than a
@@ -614,7 +652,6 @@ class Toggles:
         bg_tint_value = 0.432
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
-
 
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:
@@ -679,31 +716,6 @@ class Toggles:
     gl_check_error = False
     enable_jedi = True
     jedi_correctness = False
-    # Auto-compute symbol usages after every editor parse (recommended, fast path
-    # only); the Index button stays as a force refresh.
-    auto_index = True
-
-    # Incremental symbol-usage refresh on live edits: cache the prior compute's
-    # expensive half (cross-file callers/ces, ~80% of cost) and rescan only the
-    # edited file + new names. Off = full recompute. Fast path only.
-    incremental_symbol_index = True
-
-    # Live-edit span patching on top of the incremental path: re-comcan only the
-    # top-level-statement region around the edit (patched parse artifacts + a
-    # region-restricted pass) and merge against the prior graph - O(edit) per
-    # keystroke instead of O(file). The full pass reconciles once typing goes
-    # idle. Off = every live edit runs the incremental_symbol_index pass.
-    live_incremental_usages = True
-
-
-    # Position-only fast path: when an edit only added/removed blank lines, remap
-    # the cached line numbers by the delta (~5ms vs ~42ms) instead of recomputing.
-    offset_symbol_positions = True
-    # Add function-local variables (params + in-function bindings) to the symbol
-    # usage graph. to hover + double-click to their uses like any symbol. Cheap
-    # now that the editor's line<->index helpers are O(log n) (see _line_starts);
-    # toggle off to drop locals from the graph if ever needed.
-    local_symbol_usages = True
 
     # Build the node→span map from Python's `ast` (C code) instead of libcst's
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).

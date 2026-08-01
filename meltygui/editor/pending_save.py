@@ -222,6 +222,18 @@ class PendingSave:
         except Exception:
             pass
 
+        # Re-lint the file's code-host: what the missing-import checker reports
+        # depends on the file's PENDING text (code_checks._module_level_binds),
+        # so any queued edit - an import added orremoved in some other view,
+        # a revert - may change the right answer for every span of this file
+        # without touching their addresses. Cheap flag + rate-limited consumer
+        # wake per host (see _kick_relint).
+        try:
+            from src.lsd.gl_gui.view.core_conversion.new_converters import _kick_relint
+            _kick_relint(address.path)
+        except Exception:
+            pass
+
     @classmethod
     def _wake_file_watchers(cls, path):
         if path is None:

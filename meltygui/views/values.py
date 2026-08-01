@@ -338,6 +338,59 @@ def group_results_by_window(results, root):
     return groups
 
 
+@render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
+def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=None, unique=0):
+    """Draws a dict as a tab bar: each inner collection gets its own tab (key = tab
+    name, contents via draw_any); all non-collection items are grouped into one
+    final "General" tab."""
+    collection_types = (dict, defaultdict, MutableMapping, types.MappingProxyType, list, tuple, set, deque)
+    tab_keys = [k for k, v in input_value.items() if isinstance(v, collection_types)]
+    general = {k: v for k, v in input_value.items() if not isinstance(v, collection_types)}
+
+    tabs = [str(k) for k in tab_keys]
+    key_by_name = {str(k): k for k in tab_keys}
+    if general:
+        tabs.append("General")
+    if not tabs:
+        return False, input_value
+
+    tab_state.selected_tabs = [t for t in tab_state.selected_tabs if t in tabs]
+    if not tab_state.selected_tabs:
+        tab_state.selected_tabs = [tabs[0]]
+
+    imgui.dummy(0, 5)
+    tab_changed, new_tabs = draw_tab_bar(input_value=tab_state.selected_tabs,
+                                         tab_height=30, show_bg=False, bg_offset=1,
+                                         name=f"tab_bar{unique}", wrap=True,
+                                         collection=tabs, as_toggles=False)
+    if tab_changed:
+        tab_state.selected_tabs = new_tabs
+
+    imgui.dummy(0, 2)
+    changed = False
+    for idx, tab in enumerate(tab_state.selected_tabs):
+        if tab == "General" and tab not in key_by_name:
+            general_changed, new_general = draw_any(general, name=f"Tab: General {unique}", selectable=False,
+                                                    show_name=False, with_header=None, show_header=False,
+                                                    disable_scroll=False, indent_size=0, show_bg=False,
+                                                    use_cache=True, shadow=False, column=idx)
+            if general_changed:
+                for k, v in new_general.items():
+                    input_value[k] = v
+            changed |= general_changed
+        else:
+            key = key_by_name[tab]
+            tab_content_changed, value = draw_any(input_value[key], name=f"Tab: {tab} {unique}", selectable=False,
+                                                  show_name=False, with_header=None, show_header=False,
+                                                  disable_scroll=False, indent_size=0, show_bg=False,
+                                                  use_cache=True, shadow=False, column=idx)
+            if tab_content_changed:
+                input_value[key] = value
+            changed |= tab_content_changed
+
+    return changed, input_value
+
+
 def search_activate_target(node):
     """The draw_state Ctrl+Enter should 'click' for the current search match
     `node` (melty.search_current_node). When the match is one of a collection's
@@ -398,7 +451,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         child_kwargs = {}
 
     changed = False
-
+    
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict,
                                                                               types.MappingProxyType, deque)):
         input_value = input_value.children
@@ -1105,6 +1158,8 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text=
         changed |= mode_changed
 
     return changed, value
+
+
 
 
 @render_func
@@ -3206,10 +3261,10 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded":False},
-             is_tree=True, show_name=False, indent_size=0, selectable=False, use_cache=False, tint=(0.871, 0.917, 0.922, 0.708),
+@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded":False}, icon="",
+             is_tree=True, show_name=False, indent_size=8, selectable=False, use_cache=False, tint=(0.137, 0.683, 0.299, 0.708),
              show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
-def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_16):
+def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_13):
     changed, value = False, input_value
 
     imgui.dummy(0, 0)
@@ -3218,16 +3273,16 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     
     # [tint=(0.883, 0.712, 0.206, 0.34)]
     name_style = {
-        'value': -0.005, 'saturation': 0.78,
-        'alpha': 0.004, 'max_value': 0.751,
-        'depth_factor': 0.41
+        'value': -0.420, 'saturation': 1.06,
+        'alpha': 0.047, 'max_value': 0.704,
+        'depth_factor': 0.34
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     
     # [tint=(0.767, 0.379, 0.379)]
-    alpha = 0.10
-
+    alpha = 1.02
+    
     
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188

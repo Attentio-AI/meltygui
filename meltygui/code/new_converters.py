@@ -70,6 +70,7 @@ hotswaps the live object and flashes a checkmark.
 
 import inspect
 import linecache
+import sys
 import textwrap
 import threading
 import time
@@ -103,7 +104,8 @@ from src.lsd.gl_gui.view.core_conversion.chain_converters import (
     record_compile, _enclosing_function, live_apply_edits, _blank_line_variant,
     chain_parse_cache_get, chain_parse_cache_put, chain_parse_cache_has,
 )
-from src.lsd.gl_gui.view.core_conversion.code_checks import check_source
+from src.lsd.gl_gui.view.core_conversion.code_checks import (
+    check_source, collect_import_suggestions)
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
     _recompile, _recompile_class, _recompile_module,
 )
@@ -858,8 +860,18 @@ def _compile_check(text):
         return None
 
 
+# Process-boot timestamp for the lint/suggestion boot window: within
+# _LINT_BOOT_QUIET_S of the FIRST module load, chain_in skips both passes
+# (lint_deferred) so app load never pays them - the editor reschedules via
+# the relint path once up. globals().get keeps the stamp across hotswap
+# re-execs (module registries survive; a reset clock would re-enable the
+# window on every swap).
+_BOOT_T = globals().get("_BOOT_T") or time.monotonic()
+_LINT_BOOT_QUIET_S = 8.0
+
+
 def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
-                  _last_good_src=None, **extra):
+                  lint_span=False, _last_good_src=None, **extra):
     """Background entry point for the forward (chain_in) conversion.
 
     A plain module-level function (NOT a @render_func) so run_in_background can
@@ -899,7 +911,17 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             notify(f"cst cache hit: {Path(_disk_span[0]).name}"
                    f" [{_disk_span[1]}:{_disk_span[2]}]",
                    tag="cst_cache", tint=(0.4, 0.9, 0.4))
+            # The cache only ever holds CLEAN parses, so error stays None. The
+            # lint pass + the import-suggestion scan read the LIVE process,
+            # so their findings aren't cacheable - but this branch runs INLINE
+            # on the render thread at app load (inline_first with guaranteed
+            # cache hits), so paying a whole-file ast parse + tokenize-based
+            # suggestion there is just the very stall to avoid. Defer instead:
+            # lint_deferred rides the payload, the fold stamps ModesState, and
+            # the editor schedules a _run_relint (worker-side, input-quiet
+            # parked) once the app is up.
             return {"routed": {_out_name: _gp}, "error": None, "lint": [],
+                    "imports": {}, "lint_deferred": lint_path is not None,
                     "_src_gen": _src_gen, "src_good": input_value}
 
     # Park BEFORE the libcst parse: string_to_cst_module is 150–550ms of
@@ -939,12 +961,35 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
     # call-signature mismatches (code_checks.check_source). Only when the host
     # declared a lint_path (a WHOLE-FILE buffer - a span buffer would flag every
     # module-level import it can't see). Same background thread, [(line, msg)].
+    # Lint and import suggestions, parked behind input-quiet first (same
+    # frame-busy protection as the parse above): both passes do whole-buffer
+    # / whole-file work (lint-mode check_source and the suggestion scan each
+    # consult _module_text_binds - a possible whole-file ast parse - and the
+    # scan tokenizes the buffer), and running them mid-typing-burst
+    # GIL-convoys the render thread. No-op on the inline render-thread path.
+    # During APP LOAD (boot window) they're skipped outright - every host's
+    # chain parse lands in one GIL-hungry burst there - and delayed through
+    # the same lint_deferred → relint on the cache-hit branch above.
     lint = []
-    if error is None and lint_path is not None and isinstance(input_value, str):
+    imports = {}
+    _lintable = lint_path is not None and isinstance(input_value, str)
+    _defer_lint = (_lintable
+                   and time.monotonic() - _BOOT_T < _LINT_BOOT_QUIET_S)
+    if _lintable and not _defer_lint:
+        _yield_to_ui()
+        if error is None and Toggles.TextEditor.check_syntax_errors:
+            try:
+                lint = check_source(input_value, path=lint_path,
+                                    only_missing_imports=lint_span)
+            except Exception:
+                lint = []
+        # Import suggestions - a SEPARATE channel from errors, computed
+        # regardless of parse state (tokenize-based, so a half-typed `json.`
+        # line still yields its fix - the IDE type-`json.`-press-Enter flow).
         try:
-            lint = check_source(input_value, path=lint_path)
+            imports = collect_import_suggestions(input_value, path=lint_path)
         except Exception:
-            lint = []
+            imports = {}
     # Store the finished parse for the next boot: pristine disk input (see the
     # provenance gate above) + a clean parse/compile only, so a cache hit can
     # skip the expensive pass. One dumps (~50ms for a large span) on this
@@ -953,8 +998,84 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
     if _cacheable and _out_name and error is None:
         chain_parse_cache_put(_disk_span, _disk_mtime, routed.get(_out_name))
 
-    return {"routed": routed, "error": error, "lint": lint, "_src_gen": _src_gen,
+    return {"routed": routed, "error": error, "lint": lint, "imports": imports,
+            "lint_deferred": _defer_lint, "_src_gen": _src_gen,
             "src_good": input_value if error is None else None}
+
+
+def _run_relint(input_value=None, lint_path=None, lint_span=False):
+    """Background lint-only pass over a span buffer — no reparse, no chain.
+
+    What the lint and the import suggestions report depends on the FILE's
+    pending text (code_checks._module_text_binds), so an import added/removed
+    in another view — or a reverted pending entry — changes the right answer
+    without any edit to this span. PendingSave.queue_save kicks the file's
+    hosts (_kick_relint) and draw_text_from_code_cache runs this to refresh
+    ModesState.last_lint / last_imports alone."""
+    try:
+        if not isinstance(input_value, str) or lint_path is None:
+            return {"lint": [], "imports": {}}
+        # Park until input goes quiet - a kicked relint must never be GIL
+        # convoy an actively-typing render thread (no-op when idle).
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
+        _yield_to_ui()
+        lint = []
+        if Toggles.TextEditor.check_syntax_errors:
+            try:
+                lint = check_source(input_value, path=lint_path,
+                                    only_missing_imports=lint_span)
+            except Exception:
+                lint = []
+        # Suggestions alone - tokenize-based, runs through a mid-edit
+        # syntax error (check_source returns [] on those; that's fine, the
+        # error marker itself comes from the parse pass, not from here).
+        # full=True: a relint fires because the FILE's pending state changed
+        # (import added/removed/reverted), which invalidates the incremental
+        # scan's cached verdicts - rescan from scratch.
+        imports = collect_import_suggestions(input_value, path=lint_path,
+                                             full=True)
+        return {"lint": lint, "imports": imports}
+    except Exception:
+        return {"lint": [], "imports": {}}
+
+
+def _kick_relint(path):
+    """Flag every code host linting `path` to re-run its lint pass. Called
+    from PendingSave.queue_save (any pending edit to the file may change what
+    the lint should report) — which fires per queued keystroke save and
+    redundantly during chain_out echo bursts, so this must stay CHEAP:
+    setting the flag is free and idempotent; the consumer wake (which
+    invalidates the cached editor bodies so the flag is actually seen) is
+    rate-limited per host. An editor being typed in re-runs anyway and
+    consumes the flag without the wake; the wake only matters for the
+    idle-editor case (an import reverted in the pending window), where one
+    wake per second is plenty."""
+    target = str(path)
+    woke = False
+    now = time.monotonic()
+    for _sh, dh in list(_code_host_cache.values()):
+        lp = (dh.child_kwargs.get("run_chain_kwargs") or {}).get("lint_path")
+        if lp is None:
+            continue
+        rp = getattr(dh, "_lint_rp", None)
+        if rp is None:
+            try:
+                rp = str(Path(lp).resolve())
+            except OSError:
+                rp = lp
+            dh._lint_rp = rp
+        if rp != target:
+            continue
+        dh._relint_pending = True
+        if now - getattr(dh, "_last_relint_notify", 0.0) >= 1.0:
+            dh._last_relint_notify = now
+            woke = True
+            try:
+                dh._notify_consumers(name="relint kick")
+            except Exception:
+                pass
+    if woke:
+        request_render()
 
 
 def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
@@ -1023,6 +1144,16 @@ class ModesState:
         self.last_good = {}
         self.last_error = None
         self.last_lint = []
+        # {1-based line: [import statements]} from the separate suggestions
+        # channel (get_import_suggestions) - the editor's Alt+Enter data.
+        # Swapped per finished run, never mutated in place (identity keys the
+        # editor's applied-fix reset). Read with getattr (pre-hotswap
+        # instances persist on draw_states).
+        self.last_imports = {}
+        # True when the last chain_in SKIPPED the lint/suggestions pass (the
+        # inline cst-cache-hit path at app load) - the editor turns this into
+        # a deferred _run_relint once the boot delay passes.
+        self._lint_deferred = False
         # Round-trip generation tracking (kills the value-flicker). Every conversion
         # carries the Melty.frame_count of the LOCAL EDIT that originated it, so a
         # chain-in result can be ordered against the host's latest edit and a stale parse
@@ -1204,6 +1335,8 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
             # frame's routed (so the columns see the good values immediately).
             modes_state.last_error = payload.get("error")
             modes_state.last_lint = payload.get("lint") or []
+            modes_state.last_imports = payload.get("imports") or {}
+            modes_state._lint_deferred = bool(payload.get("lint_deferred"))
             if payload.get("src_good") is not None:
                 modes_state.last_good_src = payload["src_good"]
             for name, val in payload["routed"].items():
@@ -1367,6 +1500,8 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             inbound_gen = payload.get("_src_gen")
             modes_state.last_error = payload.get("error")
             modes_state.last_lint = payload.get("lint") or []
+            modes_state.last_imports = payload.get("imports") or {}
+            modes_state._lint_deferred = bool(payload.get("lint_deferred"))
             if payload.get("src_good") is not None:
                 modes_state.last_good_src = payload["src_good"]
             for name, val in payload["routed"].items():
@@ -1803,6 +1938,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 load = True
                 code_state._loaded_externally = True
                 code_state._pending_save = False
+
                 # Without this the pending save keeps answering the load
                 # with the edit being discarded (codec.load prefers it).
                 PendingSave.discard_entry_for(address)
@@ -1844,6 +1980,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state._pending_save = False
             code_state._save_refused = False
             external_change = True
+            
             if code_state._loaded_externally:
                 # This load was triggered by a disk change (not the initial
                 # load) - stamp the fading "loaded from disk" label.
@@ -2150,15 +2287,28 @@ def code_hosts_for(ref):
         #                           child_kwargs={"auto_load_edits": False, "auto_load":True})   # auto-reload on external file change
         #
 
-        # MODULE/FILE refs get the static name/signature lint (code_checks): the
-        # buffer is self-contained, so an unresolved name really is a NameError.
-        # A span ref (function/class/CallSite) sees none of its module's imports
-        # and would flag every one - no lint_path, no lint.
-        lint_path = None
+        # Whole-FILE refs get the full static name/signature lint (code_dict):
+        # the buffer is self-contained, so an unresolved name really is a
+        # NameError. A span ref (function/class/CallSite) sees none of its
+        # module's defs, so it gets the MISSING-IMPORT-ONLY pass instead
+        # (lint_span): with the enclosing module's path as lint_path, the
+        # module's current text can suppress every name the module actually
+        # defines, and only names an import would fix are reported - but only
+        # when that module is live in sys.modules (otherwise nothing
+        # suppresses, so no lint at all).
+        lint_path, lint_span = None, False
         if isinstance(ref, Path) and ref.suffix == ".py":
             lint_path = str(ref)
         elif isinstance(ref, types.ModuleType):
             lint_path = getattr(ref, "__file__", None)
+        elif isinstance(ref, (types.FunctionType, type)):
+            # Only real def/class refs: an INSTANCE ref (CallSite, ...) reports
+            # its CLASS's defining module via __module__, not the edited file -
+            # linting against that namespace would be wrong, so those stay
+            # lint-free as before.
+            ref_mod = sys.modules.get(getattr(ref, "__module__", None) or "")
+            lint_path = getattr(ref_mod, "__file__", None)
+            lint_span = lint_path is not None
         dict_host = RenderHost(
             io_function=convert_in_and_out_value, input_value=str_host, evictable=True,
             name=f"##code_cache_{label}{tag}_dict",
@@ -2167,8 +2317,15 @@ def code_hosts_for(ref):
                 "chain_in": [string_to_cst_module, cst_module_to_dict],
                 "chain_out": [dict_to_cst_module, cst_module_to_string],
                 "route": {cst_module_to_dict: ("code_dict", "jump_to", "run_jedi", "drive")},
-                **({"run_chain_kwargs": {"lint_path": lint_path}} if lint_path else {}),
+                **({"run_chain_kwargs": {"lint_path": lint_path,
+                                         "lint_span": lint_span}} if lint_path else {}),
             })
+        # Pre-delay the host's first relint: the deferred initial lint (the
+        # cst-cache-hit path skips the scan - see _run_chain_in) must be
+        # happen while the app is still starting. The launch floor in
+        # draw_text_from_code_cache triggers a run once now > _last_relint_t +
+        # 1s, so stamping creation+4 here holds the first to ~5s.
+        dict_host._last_relint_t = time.monotonic() + 4.0
         pair = (str_host, dict_host)
         if cacheable:
             _code_host_cache[key] = pair
@@ -2275,7 +2432,7 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     if dict_host is None or not isinstance(code_dict, dict):
         return
     if not (Toggles.enable_jedi
-            and Toggles.auto_index
+            and Toggles.TextEditor.SymbolUsages.auto_index
             and not Toggles.jedi_correctness):
         return
     from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
@@ -2395,7 +2552,7 @@ def _wake_stale_code_hosts(gen):
     _index_host_in_place); a small sleep between hosts keeps their index
     passes from stacking into one GIL burst against the render thread."""
     if not (Toggles.enable_jedi
-            and Toggles.auto_index
+            and Toggles.TextEditor.SymbolUsages.auto_index
             and not Toggles.jedi_correctness):
         return
     _t_wake0 = time.monotonic()
@@ -2428,6 +2585,75 @@ def _register_index_bump_hook():
 
 
 _register_index_bump_hook()
+
+
+def _host_relint_and_fixes(dict_host, _str_host, wds):
+    """The code host's lint-refresh + suggestions pull, shared by BOTH editor
+    routes (draw_text_from_code_cache and the NEW_CODE tabs' text pane).
+    Returns the {line: [import stmts]} for draw_text's import_fixes, or None.
+
+    Lint-only refresh (no reparse): a pending edit anywhere in this FILE (an
+    import removed in another view, a reverted entry) changes what the
+    missing-import lint should report — queue_save sets _relint_pending via
+    _kick_relint and wakes us through the host's consumer registry. Runs
+    check_source + the suggestion scan alone on a worker and swaps
+    ModesState.last_lint / last_imports; callers' marker extraction sees the
+    fresh lists the same frame they land.
+
+    A cst-cache-hit boot skipped both passes entirely (lint_deferred) — that
+    converts into a pending relint here. Launch floor: kicks can arrive per
+    queued keystroke save (echo bursts included); one relint per second per
+    host is plenty — when suppressed the flag stays LATCHED, so a later
+    frame runs the trailing state and the final answer is never lost."""
+    for v in (getattr(wds, "misc", None) or {}).values():
+        if isinstance(v, ModesState) and getattr(v, '_lint_deferred', False):
+            v._lint_deferred = False
+            dict_host._relint_pending = True
+    _relint = bool(getattr(dict_host, '_relint_pending', False))
+    if _relint:
+        _rl_now = time.monotonic()
+        if _rl_now - getattr(dict_host, '_last_relint_t', 0.0) < 1.0:
+            _relint = False         # retry soon - flag stays set
+        else:
+            dict_host._relint_pending = False
+            dict_host._last_relint_t = _rl_now
+    _lk = dict_host.child_kwargs.get('run_chain_kwargs') or {}
+    if _lk.get('lint_path') and len(_str_host.values()) > 0:
+        _rl_done, _rl_payload = run_in_background(
+            _run_relint,
+            child_kwargs={'input_value': list(_str_host.values())[0],
+                          'lint_path': _lk.get('lint_path'),
+                          'lint_span': _lk.get('lint_span', False)},
+            name=f"relint{id(dict_host)}", start=_relint, debounce_ms=400)
+        if _rl_done and isinstance(_rl_payload, dict):
+            for v in (getattr(wds, "misc", None) or {}).values():
+                if isinstance(v, ModesState):
+                    if v.last_lint != _rl_payload["lint"]:
+                        v.last_lint = _rl_payload["lint"]
+                    _rl_imports = _rl_payload.get("imports") or {}
+                    if getattr(v, "last_imports", None) != _rl_imports:
+                        v.last_imports = _rl_imports
+    for v in (getattr(wds, "misc", None) or {}).values():
+        if isinstance(v, ModesState):
+            # The suggestions channel rides to draw_text as its own kwarg
+            # (import_fixes) - independent of the error markers.
+            return getattr(v, "last_imports", None) or None
+    return None
+
+
+def _error_markers(err, lint):
+    """The (line, msg) marker list for the editor: the parse/compile error,
+    then the lint findings. Errors only — import suggestions travel on their
+    own channel (ModesState.last_imports → draw_text's import_fixes)."""
+    markers = []
+    if err is not None:
+        line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
+                or getattr(err, "raw_line", None) or 1)
+        msg = (getattr(err, "message", None) or getattr(err, "msg", None)
+               or str(err))
+        markers.append((line, msg))
+    markers += list(lint or ())
+    return markers
 
 
 def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
@@ -2464,6 +2690,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
         # keeps the last GOOD parse alongside, so the editor highlights the
         # offending line without losing its structure.
         wds = getattr(dict_host, "_wrapper_draw_state", None)
+        import_fixes = _host_relint_and_fixes(dict_host, _str_host, wds)
         for v in (getattr(wds, "misc", None) or {}).values():
             if isinstance(v, ModesState):
                 err = v.last_error
@@ -2482,19 +2709,10 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                     if memo is not None and memo[0] is err and memo[1] is lint:
                         cache_error = memo[2]
                     else:
-                        # The parse/compile error first (lint only runs on a
-                        # clean compile, so in practice it's one or the other),
-                        # then the static name/signature findings - all un
-                        # __errors__, with the first mirrored into the single
-                        # __error__/__line__ pair older readers use.
-                        markers = []
-                        if err is not None:
-                            line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
-                                    or getattr(err, "raw_line", None) or 1)
-                            msg = (getattr(err, "message", None) or getattr(err, "msg", None)
-                                   or str(err))
-                            markers.append((line, msg))
-                        markers += list(lint or ())
+                        # The parse/compile error, then the lint findings -
+                        # all in __errors__, with the first mirrored into the
+                        # single __error__/__line__ keys the editors use.
+                        markers = _error_markers(err, lint)
                         cache_error = {"__error__": markers[0][1], "__line__": markers[0][0],
                                        "__errors__": markers}
                         dict_host._err_view_memo = (err, lint, cache_error)
@@ -2524,6 +2742,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
         if len(_str_host.values()) > 0:
             changed, value, ds = RenderFuncs.draw_text(list(_str_host.values())[0], code_dict=code_dict,
                                                        code_tree=cache_error, error=error,
+                                                       import_fixes=import_fixes,
                                                        return_extras=True, **{**kwargs, "is_tree": False})
             # Every frame's editor draws: mark as a LIVE user so the idle sweep
             # keeps the host registered (and repaint it when a background parse
@@ -2583,13 +2802,7 @@ def _host_code_tree_error(dict_host):
         memo = getattr(dict_host, "_err_view_memo", None)
         if memo is not None and memo[0] is err and memo[1] is lint:
             return memo[2]
-        markers = []
-        if err is not None:
-            line = (getattr(err, "editor_line", None) or getattr(err, "lineno", None)
-                    or getattr(err, "raw_line", None) or 1)
-            msg = (getattr(err, "message", None) or getattr(err, "msg", None) or str(err))
-            markers.append((line, msg))
-        markers += list(lint or ())
+        markers = _error_markers(err, lint)
         cache_error = {"__error__": markers[0][1], "__line__": markers[0][0], "__errors__": markers}
         dict_host._err_view_memo = (err, lint, cache_error)
         return cache_error
@@ -2621,7 +2834,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
     window's auto_load_edits picks it up; a text edit saves here and the
     cache's file watch re-parses."""
     _t_tabs0 = time.monotonic()
-    view_funcs = [RenderFuncs.draw_collection, RenderFuncs.draw_text]
+    view_funcs = [RenderFuncs.draw_collection_as_tabs, RenderFuncs.draw_text]
     # Drop entries that didn't survive (de)serialization, then default to two
     # tabs (structured | text), matching draw_with_view_funcs.
     tab_state.selected_tabs = [t for t in tab_state.selected_tabs if t is not None]
@@ -2690,6 +2903,12 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                 _ptrace("tabs: first parse visible", host=_host_label(dict_host))
         elif dict_host is not None and _ponce(("parse-wait", _host_label(dict_host))):
             _ptrace("tabs: waiting for first parse", host=_host_label(dict_host))
+        # Relint machinery + the import-suggestions pull run here too - this
+        # route's text pane wires draw_text directly (below), NOT through
+        # draw_text_from_code_cache, so without this the Alt-Enter quick-fix
+        # data never reached it (the live_view_forward NEW_CODE path).
+        import_fixes = _host_relint_and_fixes(
+            dict_host, _str_host, getattr(dict_host, "_wrapper_draw_state", None))
         cache_error = _host_code_tree_error(dict_host)
 
         raw_changed, raw_value = False, input_value
@@ -2703,10 +2922,11 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                     # usages, code_tree → the syntax/lint error highlight, error → the
                     # recompile/runtime highlight (the same trio draw_text_from_code_cache
                     # hands draw_text, now via the parent _str_host).
-                    m_changed, m_out = RenderFuncs.draw_collection(
+                    m_changed, m_out = RenderFuncs.draw_collection_as_tabs(
                         input_value=_str_host,
                         child_kwargs={"error": error, "view_func": RenderFuncs.draw_text, "is_tree": False,
                                       "code_dict": gp, "code_tree": cache_error, "child_kwargs": {"is_tree": False},
+                                      "import_fixes": import_fixes,
                                       "run_jedi": run_jedi, "jump_to": kwargs.get("jump_to")},
                         show_header=False, show_name=False,
                         width=col_width, **size_kwargs,

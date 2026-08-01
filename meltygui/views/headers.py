@@ -275,7 +275,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     spinner_icon_0 = ""
     spinner_icon_1 = ""
 
-
     draw_list = imgui.get_window_draw_list()
     spinner_icon_idx = Melty.frame_count % 2
     spinner_icon = [spinner_icon_0, spinner_icon_1][spinner_icon_idx]
@@ -351,7 +350,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     else:
         imgui.same_line(spacing=0)
 
-
     # ── Type / unique labels ───────────────────────────────────
     if show_type:
         imgui.text_colored(f"({input_value.__class__.__name__})", *type_label_tint)
@@ -408,7 +406,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # widget's draw_state box is far wider than the swatch.
         imgui.same_line(spacing=0)
         _aw_ch, _aw_val = RenderFuncs.draw_tuple(
-            _aw_tint, show_name=False, show_header=False,
+            draw_state._kwargs.get("tint", None), show_name=False, show_header=False,
             name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
             set_anywhere("tint", _aw_val, draw_state)
@@ -713,7 +711,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
         draw_state._has_popup = True
         _aw_ch, _aw_val = RenderFuncs.draw_tuple(
-            _aw_tint, show_name=False, show_header=False,
+            draw_state._kwargs.get("tint", None), show_name=False, show_header=False,
             name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
             set_anywhere("tint", _aw_val, draw_state)

@@ -1249,6 +1249,7 @@ def render_func(*args, **o_kwargs):
         _pushed_search = False
         if _has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None:
             style_manager.set_imgui_tint(*draw_state.current_tint)
+            kwargs["tint"] = draw_state.current_tint
         try:
 
             def set_default(key, default_value, type=None):
@@ -2917,6 +2918,8 @@ def render_func(*args, **o_kwargs):
                                                                                                  False):
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*draw_state.tint)
+
+                kwargs["tint"] = style_manager.get_tint()
 
                 nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                 from src.lsd.gl_gui.view.core_views.new_core_view import compute_bg_color

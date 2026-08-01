@@ -97,6 +97,7 @@ class _RenderFuncs:
     draw_blank = _LazyRenderFunc("draw_blank")
     draw_bool = _LazyRenderFunc("draw_bool")
     draw_collection = _LazyRenderFunc("draw_collection")
+    draw_collection_as_tabs = _LazyRenderFunc("draw_collection_as_tabs")
     draw_comment = _LazyRenderFunc("draw_comment")
     draw_context_menu = _LazyRenderFunc("draw_context_menu")
     draw_debug_label = _LazyRenderFunc("draw_debug_label")

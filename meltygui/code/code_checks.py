@@ -948,82 +948,217 @@ def _module_text_binds(path):
     return binds
 
 
-def _buffer_text_binds(text, name):
-    """Best-effort "does the BUFFER bind `name` somewhere" textual scan — a
-    local var, param, def/class, loop/with target. Used where the buffer's
-    parse can't be trusted (mid-edit syntax errors), so it errs on silence."""
+def _buffer_bound_names(text):
+    """Every name the buffer text plausibly BINDS — local vars, params,
+    def/class names, loop/with targets — in FOUR regex passes total (findall,
+    C-speed), never per-name. Approximate on purpose, erring toward "bound"
+    (a bound name is merely never suggested — silence beats noise). Used
+    where the buffer's parse can't be trusted (mid-edit syntax errors)."""
     import re
-    e = re.escape(name)
-    return bool(
-        re.search(rf"(?m)^\s*(?:def|class)\s+{e}\b", text)
-        or re.search(rf"(?m)^\s*{e}\s*(?:=[^=]|,|\s*=$)", text)
-        or re.search(rf"\b(?:as|for)\s+{e}\b", text)
-        or re.search(rf"(?m)^\s*(?:def\s+\w+|lambda)\s*\([^)]*\b{e}\b", text))
+    bound = set()
+    bound.update(re.findall(r"(?m)^\s*(?:def|class)\s+(\w+)", text))
+    bound.update(re.findall(r"(?m)^\s*(\w+)\s*(?:=[^=]|,|=$)", text))
+    bound.update(re.findall(r"\b(?:as|for)\s+(\w+)", text))
+    for params in re.findall(r"(?m)^\s*(?:def\s+\w+|lambda)\s*\(([^)]*)", text):
+        bound.update(re.findall(r"\w+", params))
+    return bound
 
 
-def collect_import_suggestions(text, path=None):
-    """{1-based line: [import statements]} for every symbol the buffer USES
-    but nothing binds — the editor's Alt+Enter quick-fix data. A SEPARATE
-    channel from the error lint: errors say what's wrong, this says what
-    would fix a missing name, and the two travel side by side.
-
-    Tokenize-based, so it works mid-edit: a dangling `json.` is a SYNTAX
-    error that stops every parse-based pass, but tokenizing doesn't care —
-    which is exactly the IDE workflow (type `json.`, Alt+Enter, keep
-    typing). Base identifiers only (not attributes after a dot, not
-    assignment targets, not keywords / def / import clauses); a name
-    survives only when neither the module's current text
-    (_module_text_binds — pending-save inclusive) nor the buffer itself
-    (_buffer_text_binds) accounts for it AND an import statement would bind
-    it (_suggest_import)."""
+def _tokenize_lenient(slice_text):
+    """[(type, string, rel_line)] NAME/OP tokens for a slice. Whole-slice
+    tokenize first; where it BREAKS (a mid-edit dedent mismatch — e.g. an
+    appended line shallower than the line above — or an unterminated string)
+    the remaining lines are tokenized INDIVIDUALLY, stripped so indentation
+    can't fault. The scan's filters only use prev/next context within a
+    line, so per-line context is enough; without the salvage every line
+    after the break silently vanished from the scan."""
     import io
+    import tokenize as _tokenize
+    out = []
+    broke = False
+    try:
+        for tok in _tokenize.generate_tokens(io.StringIO(slice_text).readline):
+            if tok.type in (_tokenize.NAME, _tokenize.OP):
+                out.append((tok.type, tok.string, tok.start[0]))
+    except (_tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        broke = True
+    lines = slice_text.split("\n")
+    # Salvage ONLY small slices (the incremental region case, where the break
+    # is the edit). A whole-buffer scan that breaks mid-file must NOT be
+    # salvaged: per-line mode has no string context, so thousands of
+    # docstring lines below the break would tokenize as code and flood the
+    # UI with prose "suggestions". Losing the below-break findings for
+    # one mid-edit scan is the old, silent behavior - the incremental state
+    # keeps the previous findings for those lines anyway.
+    if broke and len(lines) <= 200:
+        resume = max((ln for _t, _s, ln in out), default=0) + 1
+        for idx in range(resume - 1, len(lines)):
+            stripped = lines[idx].strip()
+            if not stripped:
+                continue
+            try:
+                for tok in _tokenize.generate_tokens(
+                        io.StringIO(stripped + "\n").readline):
+                    if tok.type in (_tokenize.NAME, _tokenize.OP):
+                        out.append((tok.type, tok.string, idx + 1))
+            except (_tokenize.TokenError, IndentationError, SyntaxError,
+                    ValueError):
+                continue
+    return out
+
+
+def _scan_slice(slice_text, line_offset, bound, path):
+    """{absolute 1-based line: [import stmts]} for one text slice — the
+    tokenize-based candidate pass shared by the full and incremental scans.
+    Base identifiers only (not attributes after a dot, not assignment
+    targets, not keywords / import / decorator lines); a name survives when
+    neither the module's current text (_module_text_binds) nor `bound` (the
+    buffer's own bindings) accounts for it AND an import statement would
+    bind it (_suggest_import, cached per name)."""
     import keyword
     import tokenize as _tokenize
-    toks = []
-    try:
-        for tok in _tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type in (_tokenize.NAME, _tokenize.OP):
-                toks.append(tok)
-    except (_tokenize.TokenizeError, IndentationError, SyntaxError, ValueError):
-        pass                        # use whatever tokenized before the break
+    toks = _tokenize_lenient(slice_text)
     if not toks:
         return {}
-    file_binds = _module_text_binds(path) if path else None
-    lines = text.split("\n")
+    file_binds = None
+    file_binds_ready = False
+    lines = slice_text.split("\n")
     verdict = {}                    # name -> [stmts] or None (checked once)
     out = {}
-    for i, tok in enumerate(toks):
-        s = tok.string
-        if tok.type != _tokenize.NAME or keyword.iskeyword(s):
+    for i, (kind, s, rel_line) in enumerate(toks):
+        if kind != _tokenize.NAME or keyword.iskeyword(s):
             continue
-        lineno = tok.start[0]
-        stripped = (lines[lineno - 1].strip()
-                    if 1 <= lineno <= len(lines) else "")
+        stripped = (lines[rel_line - 1].strip()
+                    if 1 <= rel_line <= len(lines) else "")
         if stripped.startswith(("import ", "from ", "@")):
             continue                # import block / decorator lines
-        prev = toks[i - 1].string if i > 0 else None
-        nxt = toks[i + 1].string if i + 1 < len(toks) else None
+        prev = toks[i - 1][1] if i > 0 else None
+        nxt = toks[i + 1][1] if i + 1 < len(toks) else None
         if prev in (".", "def", "class", "as", "import", "from"):
             continue                # attr / binding position
         if nxt == "=":              # plain assignment target (== is one token)
             continue
         if s not in verdict:
             stmts = None
-            if s not in _BUILTIN_NAMES \
-                    and not (file_binds is not None and s in file_binds) \
-                    and not _buffer_text_binds(text, s):
-                try:
-                    stmts = _suggest_import(s) or None
-                except Exception:
-                    stmts = None
+            if s not in _BUILTIN_NAMES and s not in bound:
+                if not file_binds_ready:
+                    # Lazy: most slices resolve every name via builtins/bound
+                    # and never need the (cached/throttled) file parse.
+                    file_binds = _module_text_binds(path) if path else None
+                    file_binds_ready = True
+                if not (file_binds is not None and s in file_binds):
+                    try:
+                        stmts = _suggest_import(s) or None
+                    except Exception:
+                        stmts = None
             verdict[s] = stmts
         stmts = verdict[s]
         if stmts:
-            row = out.setdefault(lineno, [])
+            row = out.setdefault(line_offset + rel_line, [])
             for st in stmts:
                 if st not in row:
                     row.append(st)
     return out
+
+
+# Incremental scan state, one entry per lint_path: the last scan text, its
+# result, and the buffer's bound-name set. Two buffers sharing a path (two
+# span editors of one file) are back to full rescans - never wrong.
+_inc_scan_state = {}
+
+# An edit region larger than this re-runs the full scan instead (the diff
+# bookkeeping stops being cheaper than one pass).
+_INC_MAX_REGION_CHARS = 4096
+
+
+def collect_import_suggestions(text, path=None, full=False):
+    """{1-based line: [import statements]} for every symbol the buffer USES
+    but nothing binds — the editor's Alt+Enter quick-fix data, a SEPARATE
+    channel from the error lint. Tokenize-based, so it works mid-edit (a
+    dangling `json.` breaks the parse, not the tokenizer).
+
+    INCREMENTAL per keystroke: the previous text/result are kept per path,
+    the edit is located by common prefix/suffix (C-speed string ops), only
+    the changed LINES are re-tokenized, and every unchanged line's findings
+    are shifted, not recomputed — so a keystroke costs O(changed region),
+    never O(buffer). `full=True` (the relint path — the file's import block
+    may have changed) and structural cases (first scan, big paste, edits
+    inside triple-quoted strings, tokenizer trouble) run the whole pass."""
+    key = str(path) if path else None
+    st = _inc_scan_state.get(key) if key else None
+    if not full and st is not None:
+        old = st["text"]
+        if old is text or old == text:
+            return st["result"]
+        inc = _incremental_scan(st, old, text, path)
+        if inc is not None:
+            if key:
+                _inc_scan_state[key] = inc
+            return inc["result"]
+    bound = _buffer_bound_names(text)
+    result = _scan_slice(text, 0, bound, path)
+    if key:
+        _inc_scan_state[key] = {"text": text, "result": result, "bound": bound}
+    return result
+
+
+def _incremental_scan(st, old, text, path):
+    """The O(changed region) path: new state dict, or None → run a full scan.
+
+    The changed region is the line span between the common prefix and common
+    suffix. Findings on lines before it are kept as-is, lines after it shift
+    by the line-count delta, and the region itself is re-tokenized in
+    isolation. The bound-name set only GROWS here (bindings added in the
+    region); a binding DELETED elsewhere keeps its name suppressed until the
+    next full scan — the relint kick that follows every queued save runs one
+    within ~a second, so the miss is transient. An edit inside a triple-
+    quoted string would tokenize prose as code, so an odd quote count before
+    the region skips its rescan (pure line-shift instead)."""
+    # Common prefix/suffix by CHUNKED slice compares (C-speed memcmp) - a
+    # per-char Python loop here costs ~25ms on a 300k buffer, which is
+    # the exact per-keystroke stall this incremental path aims to kill.
+    max_p = min(len(old), len(text))
+    p = 0
+    for step in (1 << 16, 1 << 12, 1 << 8, 1 << 4, 1):
+        while p + step <= max_p and old[p:p + step] == text[p:p + step]:
+            p += step
+    max_s = max_p - p
+    s = 0
+    for step in (1 << 16, 1 << 12, 1 << 8, 1 << 4, 1):
+        while (s + step <= max_s
+               and old[len(old) - s - step:len(old) - s]
+               == text[len(text) - s - step:len(text) - s]):
+            s += step
+    if len(text) - s - p > _INC_MAX_REGION_CHARS:
+        return None                 # big paste/rewrite - full scan is cheaper
+    pre_lines = text.count("\n", 0, p)
+    old_total = old.count("\n") + 1
+    new_total = text.count("\n") + 1
+    suf_lines = text.count("\n", len(text) - s) if s else 0
+    delta = new_total - old_total
+    result = {}
+    for ln, stmts in st["result"].items():
+        if ln <= pre_lines:
+            result[ln] = stmts
+        elif ln > old_total - suf_lines:
+            result[ln + delta] = stmts
+    # Region slice, rounded to whole lines.
+    start_idx = text.rfind("\n", 0, p) + 1
+    end_idx = len(text) - s
+    nl = text.find("\n", end_idx)
+    slice_end = len(text) if nl == -1 else nl
+    slice_text = text[start_idx:slice_end]
+    bound = st["bound"]
+    in_string = (text.count('"""', 0, start_idx)
+                 + text.count("'''", 0, start_idx)) % 2 == 1
+    if slice_text and not in_string:
+        region_bound = _buffer_bound_names(slice_text)
+        if region_bound - bound:
+            bound = bound | region_bound
+        findings = _scan_slice(slice_text, pre_lines, bound, path)
+        for ln, stmts in findings.items():
+            result[ln] = stmts
+    return {"text": text, "result": result, "bound": bound}
 
 
 # ── entry point ──────────────────────────────────────────────────────────────

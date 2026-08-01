@@ -4492,8 +4492,8 @@ def draw_text(input_value: str, height=None,
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
-        token_views = DEFAULT_TOKEN_VIEWS   # global experiment settings (see a
-
+        token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see a        
+        
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -4539,9 +4539,12 @@ def draw_text(input_value: str, height=None,
     # any exception routed in via the mode route (e.g. draw_modes hands us the
     # chain_in failure so the offending source line lights up here). Computed up
     # front so the message can ride along into the file header bar.
-    _ct_errors = _code_tree_errors(code_tree) if code_tree is not None else None
-    _err_markers = list(_ct_errors) if _ct_errors else []
-    _err_markers += _exception_errors(error)
+    if Toggles.TextEditor.check_syntax_errors:
+        _ct_errors = _code_tree_errors(code_tree) if code_tree is not None else None
+        _err_markers = list(_ct_errors) if _ct_errors else []
+        _err_markers += _exception_errors(error)
+    else:
+        _ct_errors, _err_markers = None, []
     # Import quick-fix bookkeeping. `_qf_fixes` maps line → candidate import
     # statements, fed from the SEPARATE suggestions channel (`import_fixes`,
     # from ModesState.last_imports) - independent of the error markers, so a
@@ -4747,7 +4750,7 @@ def draw_text(input_value: str, height=None,
 
     origin_x = left + gutter_w - ds.text_h_scroll
     origin_y = top
-    
+
     # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
     # ordered (glfw_key, mods) for PRESS/REPEAT this frame), so nothing is
     # dropped on slow frames the way imgui.is_key_pressed (current frame only)

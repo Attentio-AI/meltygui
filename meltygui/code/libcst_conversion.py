@@ -260,8 +260,8 @@ class GeneralParse(dict):
 # tint/bg/shadow. Declaring them here keeps the visual treatment identical to a
 # plain GeneralParse today, while giving these types their own slot to diverge
 # later (the whole point of splitting them out). Same pattern as CallParse below.
-@defaults(disable_scroll=True, show_bg=True, shadow=True, excluded=("decorators"), icon="class",
-          use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
+@defaults(disable_scroll=True, show_bg=True, show_tint=True, shadow=True, excluded=("decorators"), icon="class",
+          use_cache=True)
 class ClassParse(GeneralParse):
     """A class definition's parsed body, as a GeneralParse subclass.
 
@@ -1960,9 +1960,9 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # they attach in the SAME flat dict as the module/member symbols so they stay
     # in sync. `local_keys` also lets the bare-name scan skip resolving a local
     # against the module namespace (a local shadows a same-named global). Gated by
-    # Toggles.local_symbol_usages.
+    # Toggles.TextEditor.SymbolUsages.local_symbol_usages.
     from src.lsd.gl_gui.toggles import Toggles
-    if Toggles.local_symbol_usages:
+    if Toggles.TextEditor.SymbolUsages.local_symbol_usages:
         local_bounds, local_global = _local_var_bindings(file_tree, start_line, end_line)
         local_keys = local_bounds.keys() - local_global
     else:
@@ -2316,7 +2316,8 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     span (an edit that adds/removes lines shifts the (start,end) key, but defs +
     callers are keyed by symbol NAME and valid across spans at one generation — so
     a line-break edit reuses the expensive half instead of cold-recomputing it).
-    Gated by Toggles.incremental_symbol_index for A/B against the full recompute.
+    Gated by Toggles.TextEditor.SymbolUsages.incremental_symbol_index for A/B
+    against the full recompute.
 
     fast_only=True returns ONLY the cheap outcomes — an exact cache hit or a
     blank-line position offset — and `_NEEDS_RECOMPUTE` the moment a real
@@ -2371,7 +2372,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # are added). `src_key` is tracked so we can read its buffer-text snapshot for
     # the position-offset fast path and evict it when the view shifts off it.
     prev = src = src_key = None
-    if not accurate and Toggles.incremental_symbol_index:
+    if not accurate and Toggles.TextEditor.SymbolUsages.incremental_symbol_index:
         if cached is not None and cached[0][2] is False and cached[0][3] == gen:
             src, src_key = cached, key
         else:
@@ -2382,7 +2383,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
             # result's buffer positions by a count delta. _line_offset_map returns
             # None on any substantial change, falling through to the full
             # recompute below.
-            if Toggles.offset_symbol_positions:
+            if Toggles.TextEditor.SymbolUsages.offset_symbol_positions:
                 old_text = _span_text.get(src_key)
                 # fast_only render-thread gate: only a line-COUNT change can be a
                 # position-only offset, so a within-line edit skips the O(file)
@@ -3685,7 +3686,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         # would run this compute DURING the drag): the gp ships unstamped, and
         # the editor-side nudge re-indexes it the moment the drag ends.
         wants_auto = (Toggles.enable_jedi
-                      and Toggles.auto_index
+                      and Toggles.TextEditor.SymbolUsages.auto_index
                       and not Toggles.jedi_correctness)
         auto = (wants_auto
                 and _index_generation > 0
