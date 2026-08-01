@@ -197,6 +197,260 @@ def _usage_user_counts(ds, tree):
     return counts
 
 
+# callable -> "(a, b)" suffix (or None). Keyed by the object itself (strong
+# ref keeps id stable - id-keyed caches bit us before, see live_view capture);
+# bounded, reset on hotswap.
+_SIG_CACHE = {}
+
+
+def _callable_param_suffix(obj):
+    """'(param, param2)' display suffix for a callable, or None. Parameter
+    NAMES only (*args/**kw starred), leading self/cls dropped, long lists
+    ellipsized — this is popup decoration, not signature help."""
+    try:
+        got = _SIG_CACHE.get(obj, _SIG_MISS)
+    except TypeError:
+        return None                      # unhashable callable - skip
+    if got is not _SIG_MISS:
+        return got
+    import inspect
+    s = None
+    try:
+        names = []
+        for p in inspect.signature(obj).parameters.values():
+            n = p.name
+            if p.kind == p.VAR_POSITIONAL:
+                n = "*" + n
+            elif p.kind == p.VAR_KEYWORD:
+                n = "**" + n
+            names.append(n)
+        if names and names[0] in ("self", "cls"):
+            names = names[1:]
+        s = "(" + ", ".join(names) + ")"
+        if len(s) > 48:
+            s = s[:47] + "…)"
+    except (TypeError, ValueError):
+        s = None
+    if len(_SIG_CACHE) > 4096:
+        _SIG_CACHE.clear()
+    _SIG_CACHE[obj] = s
+    return s
+
+
+_SIG_MISS = object()
+
+
+def _ac_param_suffixes(ds, text, cands, anchor, dot_trigger, address):
+    """{name: '(a, b)'} for the callable candidates in `cands`, resolved from
+    the live module namespace (bare names) or the live dotted receiver (after
+    a '.'). Display-only decoration for the popup rows. Per-row cost is a
+    dict/getattr lookup plus the memoized signature; receivers are only
+    walked when they resolve to a module or class, so no instance property
+    can fire."""
+    ns, _func = _ac_live_context(ds, text, address)
+    base = None
+    if dot_trigger:
+        from src.lsd.gl_gui.func_metadata import _receiver_before
+        base = _live_receiver_obj(ns, _receiver_before(text, anchor))
+        import types as _types
+        if not isinstance(base, (type, _types.ModuleType)):
+            base = None
+    if base is None and not ns:
+        return None
+    out = {}
+    for name, _kind in cands:
+        try:
+            obj = getattr(base, name, None) if base is not None else ns.get(name)
+        except Exception:
+            continue
+        if not callable(obj) or isinstance(obj, type):
+            continue                     # classes are out; funcs/methods only
+        s = _callable_param_suffix(obj)
+        if s:
+            out[name] = s
+    return out or None
+
+
+# Flattened snippet map, memoized on the Toggles.TextEditor.AC_SNIPPETS dict:
+# (memo key, {trigger: [Snippet]}, max trigger len). Rebuilt when a hotswap /
+# live edit changes the dict, so new shortcuts work on the next keystroke.
+_SNIP_FLAT = (None, {}, 0)
+
+
+def _snippet_triggers():
+    """{trigger: [Snippet]} from Toggles.TextEditor.AC_SNIPPETS. Keys may be
+    one trigger string or a tuple of alias triggers; values a Snippet or a
+    list of them."""
+    global _SNIP_FLAT
+    from src.lsd.gl_gui.toggles import Toggles
+    m = getattr(Toggles.TextEditor, "AC_SNIPPETS", None) or {}
+    key = (id(m), len(m))
+    if _SNIP_FLAT[0] != key:
+        import dataclasses
+        flat = {}
+        for k, v in m.items():
+            snips = list(v) if isinstance(v, (list, tuple)) else [v]
+            keys = (k,) if isinstance(k, str) else tuple(str(t) for t in k)
+            # Empty labels fall back to the key's word-like trigger (the
+            # natural row name for ("white", "(")), else the insert text -
+            # labels are the row identity (popup items / accept lookup), so
+            # entries sharing a label must not collapse onto ''.
+            word = next((t for t in keys if t.replace("_", "").isalnum()), None)
+            snips = [dataclasses.replace(s, label=(word or s.insert))
+                     if not s.label else s for s in snips]
+            for trig in keys:
+                flat.setdefault(trig, []).extend(snips)
+        _SNIP_FLAT = (key, flat, max((len(t) for t in flat), default=0))
+    return _SNIP_FLAT[1]
+
+
+def _snippet_context(ds, text, cursor, changed):
+    """The armed snippet-trigger site at `cursor`, or None. Arms on the edit
+    that leaves a trigger ending exactly at the caret; stays armed — the
+    chars typed after the trigger become the popup's filter prefix — until
+    the caret leaves the site, the trigger text changes under it, or the
+    prefix stops looking like a filter (newline / >40 chars). Deliberately
+    NOT gated on comments/strings: comment templates ('#[') are the point.
+    Returns (trigger_start, filter_prefix, [Snippet])."""
+    trigs = _snippet_triggers()
+    if not trigs:
+        ds._ac_snip_site = None
+        return None
+    site = getattr(ds, "_ac_snip_site", None)
+    if changed:
+        head = text[max(0, cursor - _SNIP_FLAT[2]):cursor]
+        for t in trigs:
+            if not head.endswith(t):
+                continue
+            start = cursor - len(t)
+            # Word boundary: an identifier-char trigger ('t') must not arm
+            # mid-word - typing 'tint' would otherwise treat its last 't' as
+            # a fresh trigger and accept would splice inside the word
+            # ('tintint=('). Symbol triggers ('#[') arm anywhere.
+            if (t and (t[0].isalnum() or t[0] == "_") and start > 0
+                    and (text[start - 1].isalnum() or text[start - 1] == "_")):
+                continue
+            site = (start, t)
+            break
+    if site is None:
+        return None
+    start, t = site
+    end = start + len(t)
+    if (start < 0 or text[start:end] != t or cursor < end
+            or cursor - end > 40):
+        ds._ac_snip_site = None
+        return None
+    pfx = text[end:cursor]
+    if "\n" in pfx:
+        ds._ac_snip_site = None
+        return None
+    ds._ac_snip_site = site
+    return start, pfx, trigs[t]
+
+
+def _punct_run(s):
+    """True when `s` is nothing but punctuation — the only characters the
+    snippet overtype dedupe may drop (brackets/closers), never content."""
+    return bool(s) and all(not c.isalnum() and not c.isspace() and c != "_"
+                           for c in s)
+
+
+_BRACKET_OF = {")": "(", "]": "[", "}": "{"}
+
+
+def _unmatched_openers(s):
+    """{opener: count} of unmatched (, [, { in `s` — the overtype credits a
+    replaced span / head trim contributes (see _ac_pick_insert)."""
+    counts = {"(": 0, "[": 0, "{": 0}
+    for c in s:
+        if c in counts:
+            counts[c] += 1
+        else:
+            o = _BRACKET_OF.get(c)
+            if o and counts[o] > 0:
+                counts[o] -= 1
+    return counts
+
+
+def _ac_pick_insert(ds, pick, following="", preceding="", replaced="",
+                    line_prefix=None):
+    """(text_to_insert, caret_offset) for an accepted popup pick: a snippet's
+    template (with $0 stripped, caret at its position) when `pick` is one of
+    the current popup's snippet rows, else the identifier itself.
+
+    `preceding`/`following` are the buffer text just around the replaced
+    span. Overtype dedupe for chaining snippets inside existing structure:
+    drop the longest PUNCTUATION prefix of the template already sitting
+    before the span ('(1.0…' typed inside 'tint=(' must not double the
+    paren) and the longest punctuation tail the following text already
+    starts with (')]' closers). With a $0 the tail scan stays behind the
+    caret; without one the whole template end is eligible and the caret
+    lands before the pre-existing closers."""
+    snips = getattr(ds, "_ac_snips", None)
+    sn = snips.get(pick) if snips else None
+    if sn is None:
+        return pick, len(pick), []
+    ins = sn.insert
+    # Multi-line snippets auto-indent like paste does (_reindent_paste):
+    # first line over the trigger site, later lines re-indented up to it.
+    # `line_prefix` is the text before the anchor on its line - pure
+    # whitespace anchors there (the paste rule); a mid-line site anchors the
+    # continuation lines to the anchor COLUMN instead. Runs BEFORE the $0
+    # extraction so the caret lands correctly in the re-indented text.
+    if "\n" in ins and line_prefix is not None:
+        target = (line_prefix if not line_prefix.strip()
+                  else " " * len(line_prefix))
+        ins = _reindent_paste(ins, target)
+    # Tab stops: $0...$9 mark caret positions, visited in NUMERIC order (the
+    # first is where accept leaves the caret; Tab hops between the rest -
+    # see the tab_stop handler in the key logic). All markers are stripped;
+    # offsets are into the stripped text.
+    _marks = [(int(m.group(1)), m.start()) for m in re.finditer(r"\$(\d)", ins)]
+    had_caret = bool(_marks)
+    if had_caret:
+        _off = {}
+        for idx, (n, p) in enumerate(sorted(_marks, key=lambda t: t[1])):
+            _off.setdefault(n, p - 2 * idx)
+        ins = re.sub(r"\$(\d)", "", ins)
+        stops = [_off[n] for n in sorted(_off)]
+    else:
+        stops = [len(ins)]
+    # Bracket credits: a template CLOSER may only be deduped against the
+    # following text when its opener is double-provided - the following
+    # closer must be genuinely free, not the closer of an existing bracket
+    # (accepting 'tint=(...)' inside `f(tint|)` must not drop ')', or f( ends
+    # up unclosed). Credits come from unmatched openers in the REPLACED span
+    # (the '# [' trigger being re-inserted frees its old ']') and from
+    # head-trimmed openers (the '(' we skipped re-insertion frees one ')').
+    credits = _unmatched_openers(replaced)
+    if preceding:
+        for k in range(min(len(ins), len(preceding)), 0, -1):
+            head = ins[:k]
+            if _punct_run(head) and preceding.endswith(head):
+                for c in head:
+                    if c in credits:
+                        credits[c] += 1
+                ins = ins[k:]
+                stops = [max(0, s - k) for s in stops]
+                break
+    tail = ins[max(stops):] if had_caret else ins
+    if tail and following:
+        for k in range(len(tail), 0, -1):
+            t = tail[-k:]
+            if not (_punct_run(t) and following.startswith(t)):
+                continue
+            need = {}
+            for c in t:
+                o = _BRACKET_OF.get(c)
+                if o:
+                    need[o] = need.get(o, 0) + 1
+            if all(credits.get(o, 0) >= n for o, n in need.items()):
+                ins = ins[:len(ins) - k]
+                break
+    stops = [min(s, len(ins)) for s in stops]
+    return ins, stops[0], stops[1:]
+
+
 # Internal completion `kind` → short display tag shown dim on the right of each
 # row. "name" (a bare buffer identifier we couldn't classify) maps to "" so no
 # tag is drawn for it.
@@ -1188,30 +1442,14 @@ def _collect_usage_spans(code_tree, text, line_offset=0, view_path=None):
                     if skey in seen_sites:
                         continue
                     seen_sites.add(skey)
-                    buf_line = ln - 1 - line_offset
-                    if buf_line < 0:
+                    # Shared verify-then-recover (see _site_span): same-line
+                    # search first, then nearby lines - index sites are
+                    # PENDING coords and lag the buffer by a few lines under
+                    # rapid line-count edits.
+                    sp = _site_span(text, ln, col, name, line_offset)
+                    if sp is None:
                         continue
-                    idx = _line_col_to_index(text, buf_line, col)
-                    end = idx + len(name)
-                    if text[idx:end] != name:
-                        # The fast import-index records the STATEMENT start col
-                        # (e.g. the `class` keyword), not the symbol's own col -
-                        # and the buffer may have drifted since the pass ran.
-                        # Recover by finding the name (word-bounded) in the
-                        # site's line; give up on that site if it's not there.
-                        ls = _get_line_start(text, min(idx, len(text)))
-                        le = _get_line_end(text, ls)
-                        p = text.find(name, ls, le)
-                        while p != -1:
-                            b_ok = p == 0 or not (text[p - 1].isalnum() or text[p - 1] == '_')
-                            a = p + len(name)
-                            a_ok = a >= len(text) or not (text[a].isalnum() or text[a] == '_')
-                            if b_ok and a_ok:
-                                break
-                            p = text.find(name, p + 1, le)
-                        if p == -1:
-                            continue
-                        idx, end = p, p + len(name)
+                    idx, end = sp
                     # This occurrence is the declaration when its file line (and,
                     # for locals, col) is the definition's AND the definition lives
                     # in this file.
@@ -1228,23 +1466,198 @@ def _collect_usage_spans(code_tree, text, line_offset=0, view_path=None):
     return spans
 
 
+# Minimum seconds between O(buffer) span/tint recomputes per editor - the
+# debounce window _usage_spans and _def_tints serve last-good results inside.
+_TINT_RECOMPUTE_MIN_S = 0.25
+
+# NO recompute while typing is hot (last input younger than this): during a
+# burst the index sites' coordinate base (PENDING text) lags the new buffer
+# by many lines, so a recompute mid-burst both DROPS spans (verification
+# before even the 12-line recovery) and MIS-LOCS the ones it recovers -
+# while the splice remap of the held set tracks every keystroke exactly. The
+# recompute runs once input quiets and pending/index have caught up.
+_TINT_INPUT_QUIET_S = 0.35
+
+
+def _typing_hot():
+    last = getattr(Melty, "_last_input_time", 0.0)
+    return bool(last) and time.monotonic() - last < _TINT_INPUT_QUIET_S
+
+
+def _text_splice(old_text, new_text):
+    """The single covering splice turning old_text into new_text:
+    (p, old_end, d_chars, d_lines, edit_line, old_end_line) — common prefix
+    ends at p, common suffix begins at old_end in OLD coords; or None when
+    equal. A multi-region diff still yields one covering splice, so remapping
+    stays correct (entries inside it are dropped, not misplaced). Used to keep
+    the DEBOUNCED wash/highlight span sets glued to the text between real
+    recomputes — without it they drew at pre-edit indices and visibly slid off
+    the glyphs while typing."""
+    if old_text is new_text:
+        return None
+    lo, ln = len(old_text), len(new_text)
+    n = min(lo, ln)
+    # Block-compare (C-level slice ==) to narrow down to a short char loop - a
+    # Python char loop over a 124k buffer would cost ~10ms per keystroke.
+    B = 4096
+    p = 0
+    while p + B <= n and old_text[p:p + B] == new_text[p:p + B]:
+        p += B
+    stop = min(n, p + B)
+    while p < stop and old_text[p] == new_text[p]:
+        p += 1
+    if p == n and lo == ln:
+        return None
+    s = 0
+    max_s = n - p
+    while s + B <= max_s and old_text[lo - s - B:lo - s] == new_text[ln - s - B:ln - s]:
+        s += B
+    sstop = min(max_s, s + B)
+    while s < sstop and old_text[lo - 1 - s] == new_text[ln - 1 - s]:
+        s += 1
+    old_end = lo - s
+    d = ln - lo
+    d_lines = (new_text.count("\n", p, ln - s) - old_text.count("\n", p, old_end))
+    edit_line = old_text.count("\n", 0, p)
+    old_end_line = old_text.count("\n", 0, old_end)
+    return p, old_end, d, d_lines, edit_line, old_end_line
+
+
+def _shift_usage_spans(spans, splice):
+    """Remap [(start, end, su, at_def)] through a text splice: spans before it
+    keep, after it shift, overlapping it drop (the real recompute re-derives
+    them at the next debounce expiry)."""
+    p, old_end, d, _dl, _el, _oel = splice
+    out = []
+    for sp in spans:
+        if sp[1] <= p:
+            out.append(sp)
+        elif sp[0] >= old_end:
+            out.append((sp[0] + d, sp[1] + d) + sp[2:])
+    return tuple(out)
+
+
+def _shift_def_tints(res, splice):
+    """Remap a cached _collect_def_tints result through a text splice — index
+    entries shift like _shift_usage_spans; line entries shift by the splice's
+    line delta; the block containing the edit keeps its head and stretches its
+    end (typing inside a tinted class must not drop its wash)."""
+    blocks, spans, line_tints, comment_tints, name_tints = res
+    p, old_end, d, dl, el, oel = splice
+
+    nb = []
+    for (bl, idx, bend, tint) in blocks:
+        if bend < el:
+            nb.append((bl, idx, bend, tint))
+        elif bl > oel:
+            nb.append((bl + dl, idx + d, bend + dl, tint))
+        elif bl < el or (bl == el and idx <= p):
+            nb.append((bl, idx, bend + dl, tint))   # edit inside the block
+        # else: block head inside the edited region - drop until recompute
+
+    def _idx_spans(entries):
+        out = []
+        for sp in entries:
+            if sp[1] <= p:
+                out.append(sp)
+            elif sp[0] >= old_end:
+                out.append((sp[0] + d, sp[1] + d) + sp[2:])
+        return tuple(out)
+
+    nl = []
+    for (ln, rgb, sc, si, ei) in line_tints:
+        if ln < el and ei <= p:
+            nl.append((ln, rgb, sc, si, ei))
+        elif ln > oel and si >= old_end:
+            nl.append((ln + dl, rgb, sc, si + d, ei + d))
+        # else: the edited line's band - drop until recompute
+    return (tuple(nb), _idx_spans(spans), tuple(nl),
+            _idx_spans(comment_tints), name_tints)
+
+
 def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
     """Cached-per-(code_tree, text) wrapper around _collect_usage_spans. The
     top-level __symbol_usages__ map's identity rides in the key: the background
     usage pass fills it in-place on an already-rendered code_tree (fresh dict
     per compute), so its arrival must bust the cache even though the tree and
-    text are unchanged."""
+    text are unchanged.
+
+    Debounced like _def_tints: the collect walks every usage in the buffer
+    (~15ms on a 2200-line file) on the render thread, so a key change inside
+    _TINT_RECOMPUTE_MIN_S serves the last-good span set and re-requests a
+    frame for the trailing recompute — per-keystroke cost becomes a few
+    recomputes per second."""
     if code_tree is None:
         return ()
     su_top = code_tree.get("__symbol_usages__") if isinstance(code_tree, dict) else None
-    key = (id(code_tree), id(su_top), line_offset, text, str(view_path))
-    if getattr(ds, '_usage_spans_key', None) != key:
-        try:
-            ds._usage_spans = _collect_usage_spans(code_tree, text, line_offset, view_path)
-        except Exception:
-            ds._usage_spans = ()
-        ds._usage_spans_key = key
-        ds._usage_tc = {}     # per-(su, at_def) jump-target counts; dies with span set
+    # NO text in the key: a text-only change is handled CORRECTLY by the splice
+    # remap below, while a recompute against the same (stale) tree re-verifies
+    # stale index sites against the new text and DROPS everything below an
+    # inserted newline - the highlights-blink-out-on-Enter bug. Recompute ONLY
+    # when a fresh tree from background attach actually arrives (identity change),
+    # which carries refreshed positions and rebuilds exactly.
+    key = (id(code_tree), id(su_top), line_offset, str(view_path))
+    _old_key = getattr(ds, '_usage_spans_key', None)
+    if _old_key != key:
+        now = time.monotonic()
+        if (getattr(ds, "_usage_spans", None) is not None
+                and (_typing_hot()
+                     or now - getattr(ds, "_usage_spans_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
+            request_render()   # typing/debounced: serve held (remapped below), retry later
+        else:
+            # Collect against the TREE'S OWN text when the buffer has moved on:
+            # a reparse that lands mid-burst carries sites for the text it was
+            # parsed from (gp.source) - verifying these against the NEWER buffer
+            # dropped every span below the edits (highlights blinking out while
+            # holding Enter). Collecting on the matching text base instead;
+            # the splice remap then shifts the result to the current buffer
+            # exactly. Guard: a totally-different source (the DEDENTED
+            # code-host route) yields one giant covering splice - fall back to
+            # the buffer collect there instead of dropping everything.
+            _base, _sp_bt = text, None
+            _src = getattr(code_tree, 'source', None)
+            if isinstance(_src, str) and _src != text:
+                _cand = _text_splice(_src, text)
+                if _cand is not None and (_cand[1] - _cand[0]) <= 512 and abs(_cand[2]) <= 512:
+                    _base, _sp_bt = _src, _cand
+            try:
+                _fresh = _collect_usage_spans(code_tree, _base, line_offset, view_path)
+            except Exception:
+                _fresh = ()
+            if _sp_bt is not None:
+                _fresh = _shift_usage_spans(_fresh, _sp_bt)
+            # DEBUG timeline: a recompute that sheds >30% of the held spans is
+            # the blink-out signature - name WHICH key component moved and
+            # which text base was collected on.
+            _prev_n = len(getattr(ds, "_usage_spans", ()) or ())
+            if _prev_n >= 10 and len(_fresh) < _prev_n * 0.7:
+                _why = ("cold" if _old_key is None else ",".join(
+                    n for n, i in (("tree", 0), ("su", 1), ("off", 2), ("path", 3))
+                    if _old_key[i] != key[i]))
+                _ptrace("usage spans DROP on recompute", prev=_prev_n,
+                        new=len(_fresh), changed=_why,
+                        base=("source" if _sp_bt is not None else
+                              "text" if _base is text else "source=text"),
+                        src_is_str=isinstance(_src, str))
+            ds._usage_spans = _fresh
+            ds._usage_spans_key = key
+            ds._usage_spans_time = now
+            ds._usage_spans_text = text
+            ds._usage_tc = {}   # per-(su, at_def) jump-target counts; valid per span set
+    # Text drift since the held set was computed (typing between reparses):
+    # remap through the edit so spans track the buffer. Chained per keystroke;
+    # the stored text always reflects what the stored spans are aligned to.
+    prev_text = getattr(ds, "_usage_spans_text", None)
+    if (prev_text is not None and prev_text is not text
+            and getattr(ds, "_usage_spans", None)):
+        splice = _text_splice(prev_text, text)
+        if splice is not None:
+            _n0 = len(ds._usage_spans)
+            ds._usage_spans = _shift_usage_spans(ds._usage_spans, splice)
+            if _n0 >= 10 and len(ds._usage_spans) < _n0 * 0.7:
+                _ptrace("usage spans DROP on remap", prev=_n0,
+                        new=len(ds._usage_spans), splice=str(splice))
+        ds._usage_spans_text = text
     return ds._usage_spans
 
 
@@ -1673,6 +2086,10 @@ def _pending_total_gen():
 # render thread (GIL-held - the cost cProfile smeared into other).
 _XFILE_LINES_CACHE = {}
 
+# [calls, line-list rebuilds] — read by _collect_def_tints' slow-rebuild trace
+# to say how much of a rebuild went to cross-file scanning.
+_XFILE_SCAN_N = [0, 0]
+
 
 def _scan_def_tint(path, line, name=None):
     """File-reading wrapper around _scan_def_tint_lines. Runs only on a
@@ -1681,6 +2098,7 @@ def _scan_def_tint(path, line, name=None):
     seen immediately; falls back to the disk file. The lines list is shared
     per (path, stat/pgen state) via _XFILE_LINES_CACHE."""
     p = str(path)
+    _XFILE_SCAN_N[0] += 1
     memo = _XFILE_STAT_MEMO.get(p)
     stat_key = memo[1] if memo is not None else None
     got = _XFILE_LINES_CACHE.get(p)
@@ -1701,6 +2119,7 @@ def _scan_def_tint(path, line, name=None):
                 lines = f.readlines()
         except OSError:
             return None
+    _XFILE_SCAN_N[1] += 1
     if stat_key is not None:
         if len(_XFILE_LINES_CACHE) > 64:
             _XFILE_LINES_CACHE.clear()
@@ -1711,7 +2130,7 @@ def _scan_def_tint(path, line, name=None):
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 24
+_DEF_TINTS_VER = 25
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -2013,10 +2432,9 @@ def _file_name_tints(path):
     return out
 
 
-def _live_receiver_file(ns, rcv):
-    """Defining file of the live object `rcv` getattr-resolves to in module
-    namespace `ns`: the module's own __file__ for a module, else the file of
-    the (type's) defining module. None when the walk dead-ends."""
+def _live_receiver_obj(ns, rcv):
+    """The live object the dotted receiver `rcv` getattr-resolves to in module
+    namespace `ns`, or None when the walk dead-ends."""
     parts = [s for s in (rcv or "").split(".") if s]
     if not parts or not ns:
         return None
@@ -2028,6 +2446,14 @@ def _live_receiver_file(ns, rcv):
             obj = getattr(obj, part, None)
         except Exception:
             return None
+    return obj
+
+
+def _live_receiver_file(ns, rcv):
+    """Defining file of the live object `rcv` getattr-resolves to in module
+    namespace `ns`: the module's own __file__ for a module, else the file of
+    the (type's) defining module. None when the walk dead-ends."""
+    obj = _live_receiver_obj(ns, rcv)
     if obj is None:
         return None
     try:
@@ -2042,6 +2468,19 @@ def _live_receiver_file(ns, rcv):
         return None
 
 
+# How far (in lines, each direction) _site_span searches for a drifted name.
+# Index sites are PENDING-text coords refreshed a few times a second, so under
+# rapid line-count typing (hold Enter) they lag the buffer by a handful of
+# lines; same-line-only recovery dropped every index-sited symbol below the
+# caret (the Toggles.profile_mode-loses-its-wash bug) while fresher-sited
+# spans survived. Nearest-first, word-boundary matched - recovering onto a
+# nearby occurrence of the SAME name is benign (dedupe collapses overlaps).
+# Quiet-time safety net only (recomputes are suppressed while typing is hot -
+# see _typing_hot); residual drift during quiet is a line or less, so a wide
+# window mostly buys re-anchors on long names.
+_SITE_RECOVER_LINES = 4
+
+
 def _site_span(text, ln, col, name, line_offset):
     """(start_index, end_index) in the buffer for one file-absolute (ln, col)
     occurrence of `name`, or None. Same verify-then-recover logic as
@@ -2052,21 +2491,37 @@ def _site_span(text, ln, col, name, line_offset):
         return None
     idx = _line_col_to_index(text, buf_line, col)
     end = idx + len(name)
-    if text[idx:end] != name:
-        ls = _get_line_start(text, min(idx, len(text)))
-        le = _get_line_end(text, ls)
+    if text[idx:end] == name:
+        return idx, end
+    starts = _line_starts(text)
+    nlines = len(starts)
+
+    def _find_on_line(bl):
+        if not (0 <= bl < nlines):
+            return None
+        ls = starts[bl]
+        le = starts[bl + 1] - 1 if bl + 1 < nlines else len(text)
         p = text.find(name, ls, le)
         while p != -1:
             b_ok = p == 0 or not (text[p - 1].isalnum() or text[p - 1] == "_")
             a = p + len(name)
             a_ok = a >= len(text) or not (text[a].isalnum() or text[a] == "_")
             if b_ok and a_ok:
-                break
+                return p
             p = text.find(name, p + 1, le)
-        if p == -1:
-            return None
-        idx, end = p, p + len(name)
-    return idx, end
+        return None
+
+    p = _find_on_line(buf_line)
+    if p is None:
+        for off in range(1, _SITE_RECOVER_LINES + 1):
+            p = _find_on_line(buf_line + off)
+            if p is None:
+                p = _find_on_line(buf_line - off)
+            if p is not None:
+                break
+    if p is None:
+        return None
+    return p, p + len(name)
 
 
 def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
@@ -2082,6 +2537,16 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     One tree walk (same shape/guards as _collect_usage_spans); block extents
     come from a single split of the buffer text. Rebuilds only when the cached
     key in _def_tints changes (per edit/parse), never per frame."""
+    # Slow-rebuild trace: phase markers, reported only when the whole rebuild
+    # crosses 100ms (the 3s main-thread hit of 2026-07-31 hid in here).
+    _pt0 = time.perf_counter()
+    _pcpu0 = time.thread_time()
+    _pmarks = []
+    _pxf0 = tuple(_XFILE_SCAN_N)
+
+    def _pm(label):
+        _pmarks.append((label, time.perf_counter()))
+
     lines = text.split("\n")
     line_start_idx = [0]
     for l in lines:
@@ -2175,7 +2640,9 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                         own_block_range[blk[0] + 1 + line_offset] = rng
             walk(v, depth + 1)
 
+    _pm("init")
     walk(code_tree)
+    _pm("walk")
 
     # Collect tints per symbol: (rgb, scale, drop_range) - scale multiplies the
     # wash alpha at draw time (1.0 for a symbol's own definition tint;
@@ -2196,19 +2663,30 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # and the assignment sweep (measured: ~900 unfiltered scans/keystroke).
     _MISS = object()
     _scan_memo = {}                  # (buf_line_1based, name) -> res | None
+    # su-loop profile: [verify_s, scan_s, xfile_s, worst (ms, line, name)] -
+    # feeds the SLOW-rebuild trace so a blow-up names its exact helper + symbol.
+    _live_prof = [0.0, 0.0, 0.0, None]
 
     def _scan_live(bl, name):
         key = (bl, name)
         got = _scan_memo.get(key, _MISS)
         if got is not _MISS:
             return got
+        _t1 = time.perf_counter()
         vl = _verify_def_line(lines, bl, name) if name else bl
+        _t2 = time.perf_counter()
+        _live_prof[0] += _t2 - _t1
         i = vl - 1
         lt = lines[i] if 0 <= i < len(lines) else ""
         s = lt.lstrip()
         worth = ("#" in lt or s.startswith(("class ", "def ", "@"))
                  or (i > 0 and lines[i - 1].lstrip().startswith(("#", "@"))))
         res = _scan_def_tint_lines(lines, vl, name) if worth else None
+        _t3 = time.perf_counter()
+        _live_prof[1] += _t3 - _t2
+        _ms = (_t3 - _t1) * 1000.0
+        if _live_prof[3] is None or _ms > _live_prof[3][0]:
+            _live_prof[3] = (round(_ms, 1), bl, str(name))
         _scan_memo[key] = res
         return res
     sites_by_line = {}               # file line -> [(su, col)] for RHS lookup
@@ -2240,8 +2718,10 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                 # Cross-file defs (and same-file defs OUTSIDE the viewed
                 # buffer) resolve from source through the mtime/pgen-keyed
                 # cache - the name re-anchors a stale recorded line first.
+                _t1 = time.perf_counter()
                 res = _cross_file_def_tint(getattr(d, "path", None), d.line,
                                            getattr(su, "name", None))
+                _live_prof[2] += time.perf_counter() - _t1
                 if res is not None:
                     tint, src_line = res
         if tint is not None:
@@ -2250,6 +2730,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         elif (isinstance(su_key, str) and "\x1f" in su_key and in_file):
             untinted_locals.append(su)
 
+    _pm("su_loop")
     # Assignment propagation: a local whose binding line uses tinted symbols
     # adopts a faded blend of their colors (`is_profiling = Toggles.profile_mode
     # == ProfileMode.ON` washes as a blend of those tints) - so a value keeps
@@ -2309,6 +2790,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
             if not changed:
                 break
 
+    _pm("propagation")
     seen_spans = set()
     for su_key, su in all_sus:
         t = su_tint.get(id(su))
@@ -2348,6 +2830,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # result feeds the map for later lines. Su-covered spans are skipped via
     # seen_spans; su-based-but-untinted bindings get the text blend as a
     # bonus (their contributors may themselves be su-less).
+    _pm("emit_spans")
     _asn_re = re.compile(r"^(\s*)([A-Za-z_]\w*)\s*[:=](?!=)")
     _ident_re = re.compile(r"[A-Za-z_][\w.]*")
     name_tint = {}
@@ -2415,6 +2898,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         spans.append((start, end, rgb, scale, True))
         name_tint[name] = (rgb, scale)
 
+    _pm("asn_sweep")
     blocks.sort()
     # Misresolution filter (the same-block/same-tint redundancy is handled
     # STRUCTURALLY at emission via drop_range - see above): drop an
@@ -2523,6 +3007,24 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     for nm, t in name_tint.items():
         if t is not None and "." in nm:
             name_tints.setdefault(nm.rsplit(".", 1)[-1], tuple(t[0][:3]))
+    _pm("tail")
+    _ptot = (time.perf_counter() - _pt0) * 1000.0
+    if _ptot >= 100.0:
+        _prev = _pt0
+        _bd = []
+        for _lbl, _tm in _pmarks:
+            _bd.append(f"{_lbl}={(_tm - _prev) * 1000.0:.0f}")
+            _prev = _tm
+        _ptrace("def_tints SLOW rebuild", total_ms=round(_ptot, 1),
+                cpu_ms=round((time.thread_time() - _pcpu0) * 1000.0, 1),
+                lines=len(lines), sus=len(all_sus),
+                xf_scans=_XFILE_SCAN_N[0] - _pxf0[0],
+                xf_builds=_XFILE_SCAN_N[1] - _pxf0[1],
+                live_scans=len(_scan_memo),
+                verify_ms=round(_live_prof[0] * 1000.0, 1),
+                scan_ms=round(_live_prof[1] * 1000.0, 1),
+                xf_ms=round(_live_prof[2] * 1000.0, 1),
+                worst=_live_prof[3], breakdown=" ".join(_bd))
     return (tuple(blocks), tuple(spans), tuple(line_tints),
             tuple(comment_tints), name_tints)
 
@@ -2531,18 +3033,65 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     """Cached-per-(code_tree, text) wrapper around _collect_def_tints — the
     exact key discipline of _usage_spans: the top-level __symbol_usages__
     map's identity rides in the key so the background usage pass's in-place
-    arrival busts the cache."""
+    arrival busts the cache.
+
+    The pending-gen key component excludes THIS file's own gen: typing here
+    bumps the file's gen once per keystroke (on the bg save thread, so the
+    bump lands a frame AFTER the text-change miss), and keying on the raw
+    total made every keystroke pay the O(buffer) collect twice. Own edits
+    are already covered by `text` / tree identity; the gen term only needs
+    to catch tint-comment edits queued in OTHER files (read through the
+    _XFILE PendingSave caches). A tint edit in another SPAN of this same
+    file refreshes on the next tree/text churn instead of instantly.
+
+    Recompute is additionally debounced (_TINT_RECOMPUTE_MIN_S): a key
+    change inside the window serves the last-good result and re-requests a
+    frame, so the trailing recompute lands once the window expires —
+    fast typing pays the collect a few times a second, not per keystroke.
+    Stale spans can sit a hair off the glyphs for that window; they're
+    translucent washes, and the background parse churn already did this."""
     if not isinstance(code_tree, dict):
         return ((), (), (), (), {})
     su_top = code_tree.get("__symbol_usages__")
-    key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset, text,
-           str(view_path), _pending_total_gen())
+    # NO text in the key - same reasoning as _usage_spans: text-only churn is
+    # handled exactly by the shift remap; a recompute on a stale tree
+    # re-verified stale sites against shifted text which which washes out on
+    # every inserted newline. Fresh tree / symbol attach / cross-file pending
+    # gen still recompute.
+    key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset,
+           str(view_path), _pending_total_gen() - _pending_gen_of(view_path))
     if getattr(ds, "_def_tints_key", None) != key:
-        try:
-            ds._def_tints = _collect_def_tints(code_tree, text, line_offset, view_path)
-        except Exception:
-            ds._def_tints = ((), (), (), (), {})
-        ds._def_tints_key = key
+        now = time.monotonic()
+        if (getattr(ds, "_def_tints", None) is not None
+                and (_typing_hot()
+                     or now - getattr(ds, "_def_tints_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
+            request_render()   # typing/debounced: serve held (remapped below), retry later
+        else:
+            # Collect on the tree's own text + remap to the buffer - same
+            # root-cause fix as _usage_spans (see there).
+            _base, _sp_bt = text, None
+            _src = getattr(code_tree, 'source', None)
+            if isinstance(_src, str) and _src != text:
+                _cand = _text_splice(_src, text)
+                if _cand is not None and (_cand[1] - _cand[0]) <= 512 and abs(_cand[2]) <= 512:
+                    _base, _sp_bt = _src, _cand
+            try:
+                _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
+            except Exception:
+                _fresh = ((), (), (), (), {})
+            if _sp_bt is not None:
+                _fresh = _shift_def_tints(_fresh, _sp_bt)
+            ds._def_tints = _fresh
+            ds._def_tints_key = key
+            ds._def_tints_time = now
+            ds._def_tints_text = text
+    # Glue the held washes to the new text (see _usage_spans).
+    prev_text = getattr(ds, "_def_tints_text", None)
+    if prev_text is not None and prev_text is not text:
+        splice = _text_splice(prev_text, text)
+        if splice is not None:
+            ds._def_tints = _shift_def_tints(ds._def_tints, splice)
+        ds._def_tints_text = text
     return ds._def_tints
 
 
@@ -3817,8 +4366,10 @@ def draw_text(input_value: str, height=None,
     # perf_trace output (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
     # be read against the background reparse/index lines around it.
     _pf_t0 = time.perf_counter()
+    _pf_cpu0 = time.thread_time()   # wall≫cpu in the summary = GIL starvation
     _pf_marks = []
     _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
+    _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
 
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
@@ -3857,7 +4408,7 @@ def draw_text(input_value: str, height=None,
     # frame with closed_state toggled, even when the editor is unfocused.
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
-    ac_state = ds._ac_state    
+    ac_state = ds._ac_state
     
     # Same deal for the usage-jump popup (multi-user symbol Ctrl+B).
     if getattr(ds, '_uj_state', None) is None:
@@ -3878,15 +4429,12 @@ def draw_text(input_value: str, height=None,
     # applied AFTER the keyboard recompute below, so it can read this frame's
     # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
 
-
-
-
-
     # Jump-to-source button drawn inline at the top (before the monospace font
     # push, so it uses the normal UI font), above the text body. The first error
     # message (if any) is no longer shown inline here - it floats in a bar pinned
     # to the bottom of the view (see the error footer after the body is drawn).
     bar_height = 0.0
+    
     _err_msg = None
     if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
@@ -3966,6 +4514,7 @@ def draw_text(input_value: str, height=None,
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
+
 
         _pf_miss_t = time.perf_counter()
         if syntax_highlight:
@@ -4079,6 +4628,8 @@ def draw_text(input_value: str, height=None,
         # rendering while a key is held so imgui's repeat cadence is sampled.
         if _any_down:
             request_render()
+            
+            
     _fired = {k for k, _m in _frame_keys}
     pressed = lambda k: k in _fired
     _pf("setup")
@@ -4160,6 +4711,9 @@ def draw_text(input_value: str, height=None,
         # never land here - it's in its own window, so this hover-routed
         # event doesn't fire.
         ds._uj_open = False
+        # ...and abandons any pending snippet tabstops: a placed caret means
+        # the user left the fill-in flow, and a later edit must indent fresh.
+        ds._ac_tabstops = None
         # ...and disarms the param hint: a caret placed by CLICK never shows it,
         # even inside the function it's armed for. It re-arms on the next edit
         # within parens, or Ctrl+P (see the signature-help block).
@@ -4315,13 +4869,28 @@ def draw_text(input_value: str, height=None,
                     while _replace_to < len(text) and (text[_replace_to].isalnum()
                                                        or text[_replace_to] == '_'):
                         _replace_to += 1
-                text = text[:anchor] + chosen + text[_replace_to:]
-                ds.text_cursor_pos = anchor + len(chosen)
+                _ins, _coff, _extra = _ac_pick_insert(ds, chosen,
+                                                      following=text[_replace_to:_replace_to + 64],
+                                                      preceding=text[max(0, anchor - 64):anchor],
+                                                      replaced=text[anchor:_replace_to],
+                                                      line_prefix=text[_get_line_start(text, anchor):anchor])
+                text = text[:anchor] + _ins + text[_replace_to:]
+                ds.text_cursor_pos = anchor + _coff
+                # Remaining $N stops: END-relative so fill-in typing at an
+                # earlier stop never shifts them (see the Tab-stop handler).
+                ds._ac_tabstops = [len(text) - (anchor + s) for s in _extra] or None
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 ds.text_cursor_blink_time = time.time()
                 ds._ac_open = False
                 ds._ac_request_anchor = -1
+                # Disarm the snippet site: the trigger char (if kept by the
+                # overtype deducer, e.g. '(') still sits at its recorded spot
+                # and the inserted text can match the trigger as a substring,
+                # so the stale site would keep the popup alive. A FRESH trigger
+                # ending at the new caret (a 0 landing right after '(') still
+                # re-arms next frame - deliberate chaining.
+                ds._ac_snip_site = None
                 changed = True
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
@@ -4384,6 +4953,25 @@ def draw_text(input_value: str, height=None,
             changed = True
 
 
+        # --- Snippet tabstops: Tab hops to the next $N of the last accepted
+        # template. Stops are stored END-relative (len(text) - pos): fill-in
+        # typing at an earlier stop shifts everything after the caret equally,
+        # so a later stop's distance from the new END is invariant. Esc or
+        # a click abandons the remaining stops (handlers elsewhere).
+        if (pressed(glfw.KEY_ESCAPE) and getattr(ds, '_ac_tabstops', None)):
+            ds._ac_tabstops = None      # not consumed - Esc has its other handlers
+        if (pressed(glfw.KEY_TAB) and not ctrl and not shift
+                and getattr(ds, '_ac_tabstops', None)):
+            _endrel = ds._ac_tabstops.pop(0)
+            if not ds._ac_tabstops:
+                ds._ac_tabstops = None
+            _pos = max(0, min(len(text), len(text) - _endrel))
+            ds.text_cursor_pos = _pos
+            ds.text_selection_start = _pos
+            ds.text_selection_end = _pos
+            ds.text_cursor_blink_time = time.time()
+            _fired.discard(glfw.KEY_TAB)
+
         # --- Tab / Shift+Tab ---
         if pressed(glfw.KEY_TAB) and not ctrl:
             ds.text_cursor_blink_time = time.time()
@@ -4421,46 +5009,67 @@ def draw_text(input_value: str, height=None,
             changed = True
 
 
-        # --- Enter --- (skipped for single-line fields like the search box,
-        # where Enter is reserved for find-next / Shift+Enter find-prev).
+        # --- Enter / Shift+Enter --- (skipped for single-line fields like the
+        # search box, where Enter is reserved for find-next / Shift+Enter
+        # find-prev).
         # Ctrl+Enter is reserved for recompile (general_go_to_address), so we
         # don't insert a newline when Ctrl is held.
         if (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and not single_line and not ctrl:
             ds.text_cursor_blink_time = time.time()
-            if _has_selection(ds):
-                text, ds.text_cursor_pos = _delete_selection(text, ds)
-            pos = ds.text_cursor_pos
-            # Bracket-aware auto-indent. Inside an unclosed (, [ or { align to
-            # that bracket's scope (just past the opener, or a hanging indent
-            # when nothing follows it) so multi-line signatures / lists / dicts
-            # line up instead of snapping to the line's own indent. If the caret
-            # is instead on a continuation line continuation bracket already CLOSED on
-            # this line, dedent back to the statement's opening-line indent
-            # (e.g. after `...)` of a multi-line decorator snaps back to col 0).
-            # Otherwise keep the current line's indentation.
-            indent = _open_bracket_indent(text, pos)
-            if indent is None:
-                opener = _unclosed_opener(text, _get_line_start(text, pos))
-                indent = _get_indent(text, opener) if opener is not None \
-                    else _get_indent(text, pos)
-            # The remainder of the current line moves down to the new line. Strip
-            # ITS leading spaces (only up to this line's end - NOT the next
-            # line's indent) so they don't stack on top of the indent we insert.
-            # Without this, whitespace right of the caret compounds with every
-            # Enter: the new line ends up `indent + trailing` wide, the caret
-            # lands mid-whitespace, and the next Enter measures that larger indent
-            # - marching the caret ever rightward instead of fixing the line's
-            # indentation.
-            tail = pos
-            line_end = text.find('\n', pos)
-            stop = line_end if line_end != -1 else len(text)
-            while tail < stop and text[tail] == ' ':
-                tail += 1
-            text = text[:pos] + '\n' + ' ' * indent + text[tail:]
-            ds.text_cursor_pos = pos + 1 + indent
-            ds.text_selection_start = ds.text_cursor_pos
-            ds.text_selection_end = ds.text_cursor_pos
-            changed = True
+            if shift:
+                # Shift+Enter: start a new line BELOW without splitting the
+                # current one - the caret escapes trailing closers like `)]`
+                # instead of dragging them along. Indent is computed at the
+                # line END with the same bracket cue as plain Enter, so a
+                # still-open ([{ on this line gets the scope indent and a
+                # balanced line keeps its own indentation.
+                eol = text.find('\n', ds.text_cursor_pos)
+                pos = eol if eol != -1 else len(text)
+                indent = _open_bracket_indent(text, pos)
+                if indent is None:
+                    opener = _unclosed_opener(text, _get_line_start(text, pos))
+                    indent = _get_indent(text, opener) if opener is not None \
+                        else _get_indent(text, pos)
+                text = text[:pos] + '\n' + ' ' * indent + text[pos:]
+                ds.text_cursor_pos = pos + 1 + indent
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
+                changed = True
+            else:
+                if _has_selection(ds):
+                    text, ds.text_cursor_pos = _delete_selection(text, ds)
+                pos = ds.text_cursor_pos
+                # Bracket-aware auto-indent. Inside an unclosed (, [, or { align to
+                # that bracket's scope (everything past the opener, or a fixed indent
+                # when nothing follows it) so multi-line signatures / lists / dicts
+                # line up instead of snapping to the line's own indent. If the caret
+                # is instead on a continuation line whose bracket already CLOSED on
+                # this line, dedent back to the statement's opening-line indent
+                # (e.g. after `...)` in a multi-line decorator → back to col 0).
+                # Otherwise keep the current line's indentation.
+                indent = _open_bracket_indent(text, pos)
+                if indent is None:
+                    opener = _unclosed_opener(text, _get_line_start(text, pos))
+                    indent = _get_indent(text, opener) if opener is not None \
+                        else _get_indent(text, pos)
+                # The remainder of the current line moves down to the new line. Strip
+                # ITS leading spaces (only up to the line's end - never the next
+                # line's indent) so they don't stack on top of the indent we insert.
+                # Without this, whitespace sitting after the caret compounds on every
+                # Enter: the new line ends up `indent + trailing` wide, the caret
+                # sits mid-whitespace, and the next Enter measures that larger indent
+                # - marching the caret ever rightward instead of keeping the line's
+                # indentation.
+                tail = pos
+                line_end = text.find('\n', pos)
+                stop = line_end if line_end != -1 else len(text)
+                while tail < stop and text[tail] == ' ':
+                    tail += 1
+                text = text[:pos] + '\n' + ' ' * indent + text[tail:]
+                ds.text_cursor_pos = pos + 1 + indent
+                ds.text_selection_start = ds.text_cursor_pos
+                ds.text_selection_end = ds.text_cursor_pos
+                changed = True
 
 
         # --- Backspace ---
@@ -4698,9 +5307,17 @@ def draw_text(input_value: str, height=None,
         # nav reads. `_ac_anchor` is the span an accepted pick overwrites.
         if ac_enabled:
             prefix, anchor, dot_trigger = _completion_context(text, ds.text_cursor_pos)
+            # Snippet shortcut site (Toggles.TextEditor.AC_SNIPPETS), opened by
+            # typing a trigger like '#['. Computed before the suppress reset so
+            # an Esc at the SNIPPET anchor isn't instantly forgotten (the
+            # completion anchor is a different position).
+            _snip = _snippet_context(ds, text, ds.text_cursor_pos, changed)
             sup = getattr(ds, '_ac_suppress_anchor', -1)
-            if sup != -1 and sup != anchor:
+            if (sup != -1 and sup != anchor
+                    and not (_snip is not None and sup == _snip[0])):
                 ds._ac_suppress_anchor = sup = -1  # caret moved on; allow reopen
+            if _snip is not None and sup == _snip[0]:
+                _snip = None                       # Esc'd at the snippet site
             # IDE trigger model (IntelliJ-style): the popup opens as you TYPE -
             # a '.' (member access), an identifier char (scope completion), or
             # inside an import line (module completion) - or explicitly on
@@ -4754,7 +5371,32 @@ def draw_text(input_value: str, height=None,
                 _mtc = getattr(ds, '_ac_member_tints', None)
                 if _ntc or _mtc:
                     _ac_tinted = set(_ntc or ()) | set(_mtc or ())
-            if want and completion_source is not None:
+            if _snip is None:
+                ds._ac_snips = None    # accept must not treat identifiers as snippets
+            if _snip is not None:
+                # Snippet popup - only at its site: triggers like '#['
+                # have no identifier completions, and the accept path replaces
+                # the WHOLE snippet with the template. anchor/prefix are
+                # remapped to the snippet site so the shared candidate-set
+                # block below (and Esc suppression) work there.
+                anchor, prefix = _snip[0], _snip[1]
+                ds._ac_snips = {s.label: s for s in _snip[2]}
+                # A snippet stays offered while the typed filter fits its
+                # LABEL or its INSERT text — so typing the expansion itself
+                # ('tint=(') keeps the row alive (accept replaces the whole
+                # [anchor, caret) span, so nothing duplicates). Map order is
+                # the ranking; these lists are hand-authored and tiny.
+                _p = prefix.lower()
+                cands = []
+                for s in _snip[2]:
+                    _ins_l = s.insert.replace("$0", "").lower()
+                    # Fully typed = the filter is the TAIL of the insert:
+                    # nothing left for accept to replace, so stop suggesting.
+                    if ((_p in s.label.lower() or _p in _ins_l)
+                            and not (_p and _ins_l.endswith(_p))):
+                        cands.append((s.label, "snip"))
+                ds._ac_member_tints = None
+            elif want and completion_source is not None:
                 # Eval REPL path - candidates come from the live scope cache
                 # (FuncsMetadata), not the parsed code tree/jedi. Synchronous: the
                 # source resolves member access via the recorded type's dict
@@ -4822,6 +5464,17 @@ def draw_text(input_value: str, height=None,
                 ds._ac_prefix = prefix
                 ds._ac_candidates = names
                 ds._ac_kinds = {n: _kind_tag(k) for n, k in cands}
+                if _snip is not None:
+                    # Snippet labels preview their expansion dim (detail wins).
+                    # Leading space: the suffix draws flush after the label
+                    # (right for noparams, wrong for a label).
+                    ds._ac_params = {s.label: " " + (s.detail or s.insert)
+                                     for s in _snip[2]}
+                else:
+                    # Dim '(param, param2)' suffixes for callable rows —
+                    # resolved live, memoized per callable in _SIG_CACHE.
+                    ds._ac_params = _ac_param_suffixes(ds, text, cands, anchor,
+                                                       dot_trigger, jump_to)
                 ac_state.cursor_path = (names[ds._ac_index],)
                 ac_state.open_path = ()
             else:
@@ -5028,9 +5681,14 @@ def draw_text(input_value: str, height=None,
     # in that definition's color. Ties usages to their definitions at a glance.
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
     if Toggles.TextEditor.definition_tints and not is_search_box:
+        _t_dt = time.perf_counter()
+        _k_dt = getattr(ds, "_def_tints_key", None)
         _dt_blocks, _dt_spans, _dt_lines, _dt_comments, _ = _def_tints(
             ds, text, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
+        _pf_info['dt_call_ms'] = round((time.perf_counter() - _t_dt) * 1000.0, 1)
+        _pf_info['dt_miss'] = _k_dt is not getattr(ds, "_def_tints_key", None)
+        _pf_info['dt_n'] = (len(_dt_blocks), len(_dt_lines), len(_dt_spans))
         # ALL def-tint washes paint on the UNDER-text channel (same idiom as
         # the cursor-token highlight below): translucent rects must never be
         # able to land over glyphs - the tile pipeline composites re-renders
@@ -5097,6 +5755,7 @@ def draw_text(input_value: str, height=None,
         if Melty.channels_split:
             draw_list.channels_set_current(Core.melty.get_channel() + 1)
 
+    _pf("body:washes")
     # Selection
     if _has_selection(ds):
         sel_color = (*Tint.text_selection()[:3], 0.4)
@@ -5118,6 +5777,7 @@ def draw_text(input_value: str, height=None,
                 draw_list.add_rect_filled(sx, sy, ex, sy + line_px, imgui.get_color_u32_rgba(*sel_color))
             line_abs_start = line_abs_end + 1
 
+    _pf("body:selection")
     # Token-occurrence highlight: when the caret rests on an identifier that
     # appears more than once, wash a subtle background behind every place that
     # exact token shows up - INCLUDING the one under the caret. A dumb,
@@ -5145,6 +5805,7 @@ def draw_text(input_value: str, height=None,
                     ex = origin_x + _colx(_me)
                     draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _tm_color, 3.0)
 
+    _pf("body:tok_match")
     # Symbol-usage heat, PER LINE: instead of washing each symbol occurrence
     # inline, the jump-target counts (_usage_target_count - the same list
     # _try_usage_jump would show) of every usage span on a line are SUMMED and
@@ -5154,7 +5815,10 @@ def draw_text(input_value: str, height=None,
     # on a symbol still resolves per-span. Counts are gathered here (spans are
     # buffer-indexed) and drawn in the gutter pass below.
     _u_vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+    _t_us = time.perf_counter()
     _uspans = _usage_spans(ds, text, _usage_tree, _usage_off, _u_vpath)
+    _pf_info['us_call_ms'] = round((time.perf_counter() - _t_us) * 1000.0, 1)
+    _pf_info['us_n'] = len(_uspans)
     _usage_line_heat = {}
     if _uspans:
         _u_vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
@@ -5167,6 +5831,7 @@ def draw_text(input_value: str, height=None,
             if n:
                 _usage_line_heat[u_line] = _usage_line_heat.get(u_line, 0) + n
 
+    _pf("body:usage_heat")
     # Search match highlights (drawn under the text so glyphs stay readable).
     # The current match radiates a circular gradient glow with its rect cut out
     # so the matched text stays visible; the rest get a thin border. Look is
@@ -5200,6 +5865,7 @@ def draw_text(input_value: str, height=None,
                 draw_search_highlight_multi(draw_list, segs,
                                             current=(m_idx == current_local))
 
+    _pf("body:search_hl")
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under
     # the glyphs so the code stays readable. The message itself rides in the file
@@ -5231,6 +5897,7 @@ def draw_text(input_value: str, height=None,
                 continue
             draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, imgui.get_color_u32_rgba(*bg))
 
+    _pf("body:err_diff")
     # Syntax-highlighted text - only the visible window is tokenized (see
     # `_window`), so this is O(visible) not O(buffer). The loop starts at the
     # window's first line and source offset; tokens above it (the merge-context
@@ -5472,6 +6139,7 @@ def draw_text(input_value: str, height=None,
             start = nl + 1
         src_i += len(token)
 
+    _pf("body:glyphs")
     # An inline view (e.g. the icon dropdown) changed its value - splice the new
     # text in for the view's source char and report the edit, so the framework
     # reparses/saves exactly as if it were typed.
@@ -5547,7 +6215,7 @@ def draw_text(input_value: str, height=None,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to)
 
-    _pf("draw_body")
+    _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------
     # Red wavy lines under unknown words. Gated behind the global toggle and
     # only recomputed when the buffer text changes (cached on the draw_state), so
@@ -5698,14 +6366,21 @@ def draw_text(input_value: str, height=None,
     _dt = getattr(ds, '_def_tints', None)
     _nt = _dt[4] if _ac_show and _dt is not None and len(_dt) > 4 else None
     _mt = getattr(ds, '_ac_member_tints', None) if _ac_show else None
+    # Snippet rows carry their own author-set tint (Snippet.tint) - it wins
+    # over the symbol maps (a snippet label isn't a symbol).
+    _sn = getattr(ds, '_ac_snips', None) if _ac_show else None
     _ac_tints = None
-    if _nt or _mt:
+    if _nt or _mt or _sn:
         _ac_tints = {}
         for n in _ac_cands:
             # The member map (receiver's defining file) wins - it's exact for
             # the receiver, while the namespace map's dotted-name last-segment
             # lookup is only a guess for bare member names.
-            t = (_mt.get(n) if _mt else None) or (_nt.get(n) if _nt else None)
+            t = None
+            if _sn:
+                _s = _sn.get(n)
+                t = tuple(_s.tint[:3]) if _s is not None and getattr(_s, 'tint', None) else None
+            t = t or (_mt.get(n) if _mt else None) or (_nt.get(n) if _nt else None)
             if t is not None:
                 _ac_tints[n] = t
         _ac_tints = _ac_tints or None
@@ -5757,6 +6432,7 @@ def draw_text(input_value: str, height=None,
         window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
         row_tints=(_ac_tints or None),
+        row_suffixes=(getattr(ds, '_ac_params', None) if _ac_show else None),
         parent_window=draw_state, root_state=ac_state, path_prefix=(),
         return_extras=True)
     # Latch the popup's exact tile id from the call itself (return_extras hands
@@ -5796,12 +6472,19 @@ def draw_text(input_value: str, height=None,
         ds._ac_menu_sig = None   # force one repaint on the next open
     if ac_changed and isinstance(ac_pick, str):
         anchor = ds._ac_anchor
-        text = text[:anchor] + ac_pick + text[ds.text_cursor_pos:]
-        ds.text_cursor_pos = anchor + len(ac_pick)
+        _ins, _coff, _extra = _ac_pick_insert(
+            ds, ac_pick, following=text[ds.text_cursor_pos:ds.text_cursor_pos + 64],
+            preceding=text[max(0, anchor - 64):anchor],
+            replaced=text[anchor:ds.text_cursor_pos],
+            line_prefix=text[_get_line_start(text, anchor):anchor])
+        text = text[:anchor] + _ins + text[ds.text_cursor_pos:]
+        ds.text_cursor_pos = anchor + _coff
+        ds._ac_tabstops = [len(text) - (anchor + s) for s in _extra] or None
         ds.text_selection_start = ds.text_cursor_pos
         ds.text_selection_end = ds.text_cursor_pos
         ds._ac_open = False
         ds._ac_request_anchor = -1
+        ds._ac_snip_site = None   # same disarm as a keyboard accept
         changed = True
 
 
@@ -5950,6 +6633,27 @@ def draw_text(input_value: str, height=None,
         _sp = getattr(ds, '_err_stale_pair', (None, None))
         if not (error is _sp[0] and code_tree is _sp[1]):
             ds._err_stale = False                  # a fresh parse landed
+
+    _pf("errbox+tail")
+    # Emit the per-section breakdown for every edited frame (typing latency is the
+    # target) plus any anomalous slow frame, so idle repaints are silent.
+    _pf_total_ms = (time.perf_counter() - _pf_t0) * 1000.0
+    if changed or _pf_total_ms >= 8.0:
+        _prev_t = _pf_t0
+        _parts = []
+        for _lbl, _tm in _pf_marks:
+            _ms = (_tm - _prev_t) * 1000.0
+            _prev_t = _tm
+            if _ms >= 0.05:
+                _parts.append((_lbl, _ms))
+        _parts.sort(key=lambda p: -p[1])
+        _bd = " ".join(f"{_l}={_m:.1f}" for _l, _m in _parts)
+        if _pf_tok[1]:
+            _bd += f" (tokenize_miss={_pf_tok[0] * 1000.0:.1f}x{_pf_tok[1]})"
+        _ptrace("draw_text perf", name=ds.name, total_ms=round(_pf_total_ms, 1),
+                cpu_ms=round((time.thread_time() - _pf_cpu0) * 1000.0, 1),
+                changed=changed, lines=text.count('\n') + 1, breakdown=_bd,
+                **_pf_info)
 
     if changed:
         # Timeline: WHAT changed. zip is iterator, so the scan stops at the first

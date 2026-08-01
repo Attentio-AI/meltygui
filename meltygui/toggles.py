@@ -1,9 +1,23 @@
+from dataclasses import dataclass
 from enum import Enum
 
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+
+
+@dataclass(frozen=True)
+class Snippet:
+    """One code-suggestion snippet row (see Toggles.TextEditor.AC_SNIPPETS):
+    `label` is the popup row text, `insert` REPLACES the typed trigger on
+    accept — put `$0` where the caret should land (defaults to the end) —
+    `detail` is the dim right-hand preview (falls back to `insert`), and
+    `tint` optionally colors the row like a tinted symbol (rgb or rgba)."""
+    label: str
+    insert: str
+    detail: str = ""
+    tint: tuple = None
 
 
 class SwooshMode(Enum):
@@ -310,7 +324,6 @@ class Swoosh:
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
 
-
     # Ribbon mode: replace the thin connector line with a full band bridging the
     # two views' facing edges, s-curving between them when the views are offset
     # (see Melty._draw_ribbon). Each end is sized from ITS OWN edge length, so
@@ -380,12 +393,134 @@ class Swoosh:
 @window(tint=(0.417, 0.44, 0.47))
 class Toggles:
 
+    @defaults(tint=(0.427, 0.541, 0.616))
+    class ContextMenu:
+        # Which tab a freshly opened context menu selects, as an index into its
+        # tab bar: 0 Info, 1 Config, 2 view function, 3 Eval, 4 Input, 5 Tint.
+        default_tab = 2
+
+    @defaults(tint=(0.181, 0.119, 0.294))
+    class InputHandlerToggles:
+        show_debug = False
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum logical terminal size, in pixels - independent of the window size.
+        min_height = 506.5
+        min_width = 94.154
+
+    @defaults(tint=(0.315, 0.489, 0.322))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
+        # as a backout alongside the data-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main-file identity / fast-reload cache anchor, so leave
+        # this True until the .ini is fully abandoned.
+        ini_save = False
+
+    @defaults(tint=(0.189, 0.486, 0.944))
+    class WindowSettings:
+        # Sticky resize: re-anchor the window top to the drag-start position each
+        # frame so only the bottom-on-display edge displaces it.
+        sticky_drag = True
+
+    @defaults(tint=(0.358, 0.444, 0.348))
+    class InvalidateTracker:
+        keep_for_frames = 84
+        enable = False
+        draw_rect = True
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
+        draw_bvh = False
+
+
+    @defaults(tint=(0.57, 0.4161, 0.057))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # seconds
+        bg_offset = 30
+        debug_scroll = False
+
     @defaults(tint=(0.456, 0.611, 0.767, 1.00))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
 
+        # --- Code-suggestion snippets ---------------------------------
+        # trigger -> snippet rows offered when the text just typed ends
+        # with the trigger. The key is one trigger, or a TUPLE of
+        # exclusive triggers; the value is a list of Snippet rows. `insert`
+        # replaces the whole trigger; `$0` places the final caret. Adding
+        # a shortcut = adding one entry here (read live, hotswap-safe).
+        AC_SNIPPETS = {
+            ("#"): [
+                Snippet("", "# [$0]", "# [ ... ]", tint=(0.161, 0.027, 0.047)),
+            ],
+            ("#[", "# ["): [
+                Snippet("", "# [tint=($0), show_tint=True]", tint=(0.756, 0.283, 0.08, 1.0)),
+            ],
+            ("t"): [
+                Snippet("black", "tint=(0.0, 0.0, 0.0, 1.0)", "", tint=(0.05, 0.05, 0.05)),
+                Snippet("white", "tint=(1.0, 1.0, 1.0, 1.0)", "", tint=(1.0, 1.0, 1.0)),
+            ],
+
+            ("white", "("): [
+                Snippet("", "(1.0, 1.0, 1.0, 1.0)", ""),
+            ],
+            ("black", "("): [
+                Snippet("", "(0.0, 0.0, 0.0, 1.0)", "", tint=(0.05, 0.05, 0.05)),
+            ],
+            ("blue", "("): [
+                Snippet("", "(0.071, 0.354, 0.511)", "", tint=(0.071, 0.354, 0.511)),
+
+            ],
+
+
+            # --- Melty view-authoring idioms (lifted from new_core_view.py) ---
+            ("@r",): [
+                Snippet("render_func view",
+                        "@render_func(use_cache=True, show_bg=True, with_header=draw_header)\n"
+                        "def draw_$0(input_value, draw_state=None, **kwargs):\n\n    return False, None",
+                        "view skeleton", tint=(0.93, 0.56, 0.23)),
+                Snippet("render_func default-for",
+                        "@render_func(is_default_for=$0, use_cache=True, show_bg=True)",
+                        "typed renderer", tint=(0.209, 0.383, 0.181)),
+            ],
+            ("dl",): [
+                Snippet("", "dl = imgui.get_window_draw_list()", ""),
+            ],
+            ("rect",): [
+                Snippet("", "dl.add_rect_filled(x, y, x + w, y + h, imgui.get_color_u32_rgba($0), "
+                            "rounding=getattr(draw_state, 'corner_radius', 6))",
+                        ""),
+            ],
+            ("pos",): [
+                Snippet("", "pos = imgui.get_cursor_screen_pos()", ""),
+            ],
+            ("u32",): [
+                Snippet("", "imgui.get_color_u32_rgba($0)", ""),
+            ],
+            ("txc",): [
+                Snippet("", "imgui.text_colored($0, 1.0, 1.0, 1.0, 1.0)", ""),
+            ],
+            ("ga",): [
+                Snippet("", "getattr(draw_state, '$0', None)", ""),
+            ],
+            ("in",): [
+                Snippet("invalidate_up",
+                        "Melty.cache.invalidate_up(draw_state._tile_id, max_depth=$0)",
+                        "", tint=(0.55, 0.20, 0.15)),
+
+                Snippet("Melty.cache.invalidate",
+                        "Melty.cache.invalidate(draw_state._tile_id)",
+                        "", tint=(0.55, 0.20, 0.15)),
+            ],
+            ("r"): [
+                Snippet("", "request_render()", ""),
+            ],
+        }
 
         @staticmethod
         def usage_tint(users):
@@ -426,6 +561,9 @@ class Toggles:
         def_block_alpha = 0.148
         def_symbol_alpha = 0.616
         def_line_alpha = 0.089
+
+
+
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
@@ -481,55 +619,6 @@ class Toggles:
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
 
-    @defaults(tint=(0.427, 0.541, 0.616))
-    class ContextMenu:
-        # The tab a freshly opened context menu selects, as an index into its
-        # tab bar: 0 Info, 1 Config, 2 view function, 3 Eval, 4 Help, 5 Tint.
-        default_tab = 2
-
-    @defaults(tint=(0.181, 0.119, 0.294))
-    class InputHandlerToggles:
-        show_debug = False
-
-
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum console terminal size, in pixels - independent of the window size.
-        min_height = 506.5
-        min_width = 94.154
-
-
-    @defaults(tint=(0.315, 0.489, 0.322))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
-        # as a backout alongside the native-pickle custom.pkl. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the app's identity / hot-reload cache anchor, so leave
-        # this True until the .ini is fully retired.
-        ini_save = False
-
-    @defaults(tint=(0.189, 0.486, 0.944))
-    class WindowSettings:
-        # Sticky resize: reamp the window top to the drag-start position each
-        # frame so only the bottom-on-display clamp displaces it.
-        sticky_drag = True
-
-    @defaults(tint=(0.358, 0.444, 0.348))
-    class InvalidateTracker:
-        keep_for_frames = 26
-        enable = False
-        draw_rect = True
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
-        draw_bvh = False
-
-    @defaults(tint=(0.57, 0.4161, 0.057))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # px
-        bg_offset = 30
-        debug_scroll = False
 
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:
@@ -603,10 +692,10 @@ class Toggles:
     # edited file + new names. Off = full recompute. Fast path only.
     incremental_symbol_index = True
 
+
     # Position-only fast path: when an edit only added/removed blank lines, remap
     # the cached line numbers by the delta (~5ms vs ~42ms) instead of recomputing.
     offset_symbol_positions = True
-
     # Add function-local variables (params + in-function bindings) to the symbol
     # usage graph. to hover + double-click to their uses like any symbol. Cheap
     # now that the editor's line<->index helpers are O(log n) (see _line_starts);
@@ -618,7 +707,7 @@ class Toggles:
     new_position_map = True
 
     # While typing, pause the background cst→dict parse on statement boundaries so
-    # the render thread gets the GIL uncontended. Never sleeps render.
+    # the render thread gets the GIL uncontended. Never affects render
 
     # [tint=(0.75, 0.46218, 0.00)]
     yield_to_ui = True
@@ -634,11 +723,10 @@ class Toggles:
     slow_down_threads = False
 
     # [tint=(0.025, 0.372, 0.326)]
-    profile_mode = ProfileMode.OFF
+    profile_mode = ProfileMode.LIGHT
     debug_stale_tint = False
 
-    # View Settings
-
+    # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
     brightness = 0.530
     # [tint=(0.025, 0.032, 0.044)]

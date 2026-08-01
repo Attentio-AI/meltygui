@@ -62,6 +62,32 @@ def _bucket(v: int) -> int:
     return min(MAX_TILE_DIM, ((int(v) + TILE_BUCKET - 1) // TILE_BUCKET) * TILE_BUCKET)
 
 
+def _bucket_h(v: int) -> int:
+    """Height bucket, graduated: tall tiles (a 6000px code editor) round to
+    256 so per-line content growth (±23px per Enter/Backspace) stays
+    within-bucket ~10 keystrokes at a time instead of realloc'ing a
+    multi-MB texture every other line. Small tiles keep the tight 32px
+    bucket — a 256px floor there would waste ~1MB per short row tile."""
+    b = 256 if v >= 1024 else TILE_BUCKET
+    return min(MAX_TILE_DIM, ((int(v) + b - 1) // b) * b)
+
+
+def _bump_note(t, site):
+    """DEBUG (perpetual-dirty hunt): rate-limited trace naming WHICH code path
+    bumped an armed tile's last_invalidated_frame. Arm a view by setting
+    `_bump_trace_armed = True` on its draw_state (the tabs instrumentation in
+    new_converters does this for the structured pane). ~one getattr when
+    unarmed; remove with the rest of the debug lines when the hunt closes."""
+    try:
+        ds = getattr(t, "draw_state", None)
+        if ds is not None and getattr(ds, "_bump_trace_armed", False):
+            from src.lsd.gl_gui.perf_trace import trace_rl
+            trace_rl(("bump", id(t), site), f"BUMP {site} name={getattr(ds, 'name', None)!r}",
+                     min_interval=0.2)
+    except Exception:
+        pass
+
+
 def _tile_alloc(t) -> Tuple[int, int]:
     # getattr: tolerates Tile instances created before alloc_size existed
     # (hotswap onto a live session).
@@ -287,7 +313,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         return existing
 
     aw = _bucket(w)
-    ah = _bucket(h)
+    ah = _bucket_h(h)
 
     if existing and _tile_alloc(existing) == (aw, ah):
         # Same bucket: update the logical size in place - no GL realloc, no
@@ -324,11 +350,25 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             finally:
                 st.restore()
 
+        # DEBUG (perpetual-dirty hunt): a within-bucket logical resize bumps
+        # last_invalidated_frame below with NO Note so no invalidate() call -
+        # if a view's size wiggles 1px every frame this is a silent
+        # self-sustaining dirty loop (+ request_render forever). Name it.
+        try:
+            from src.lsd.gl_gui.perf_trace import trace_rl as _ib_trace
+            _ib_trace(("inbucket", id(existing)),
+                      f"in-bucket resize {existing.size} -> {(w, h)} "
+                      f"name={getattr(draw_state, 'name', None)!r} "
+                      f"hsrc={getattr(draw_state, '_source', {}).get('height')!r}",
+                      min_interval=0.5)
+        except Exception:
+            pass
         existing.size = (w, h)
         # Always stamp alloc_size: also upgrades a pre-bucketing tile whose
         # exact size happened to be bucket-aligned (getattr fallback saw
         # alloc == size for it).
         existing.alloc_size = (aw, ah)
+        _bump_note(existing, "in-bucket-resize")
         if existing.filled_bbox is not None:
             # Clamp to the new logical dims. On a shrink an old full-coverage
             # bbox now covers the new logical rect (reads fully filled, the
@@ -436,6 +476,7 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         t.filled_bbox = (0, 0, cw, ch) if cw > 0 and ch > 0 else None
     else:
         t.filled_bbox = None
+    _bump_note(t, "tile-recreate")
     t.last_invalidated_frame = max(t.last_invalidated_frame, frame_id + 1)
     request_render()
     return t
@@ -1135,6 +1176,7 @@ class TileCacheMasked:
                 if child != k:
                     pt = self._tiles.get(child)
                     if pt is not None:
+                        _bump_note(pt, f"casc-from:{k[:48]}:{getattr(note, 'name', None)}")
                         pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1 + frame_delta)
                         pt.dirty = self._is_dirty(pt)
                         pt.force_invalidate = True
@@ -1229,6 +1271,7 @@ class TileCacheMasked:
         t = self._tiles.get(k)
         if t is not None:
             target_frame = self._frame_id + 1
+            _bump_note(t, f"invalidate:{getattr(note, 'name', None)}")
             t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
             t.dirty = self._is_dirty(t)
 
@@ -1252,6 +1295,7 @@ class TileCacheMasked:
                     if parent_draw_state is not None and parent_draw_state._print_last_invalid:
                         print_stack_trace()
                     pt.force_invalidate = True
+                    _bump_note(pt, f"anc-of:{k[:48]}:{getattr(note, 'name', None)}")
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1 + frame_delta)
                     pt.dirty = self._is_dirty(pt)
                     if Toggles.InvalidateTracker.enable:
@@ -1262,6 +1306,7 @@ class TileCacheMasked:
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
             if t is not None:
+                _bump_note(t, "invalidate_all")
                 t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id + 1)
                 t.force_invalidate = True
                 # self.force_invalid.append(t)
@@ -2116,9 +2161,39 @@ class TileCacheMasked:
                     # cost of opening a new window. Ancestors only.
                     self.invalidate(ctx.key, note=Note(name="New Tile", reason="fresh tile",
                                                        tint=(1, 0.5, 0)))
+                elif (t is not None and old_size is not None
+                      and int(old_size[0]) == int(ctx.size[0])):
+                    # Cross-bucket HEIGHT-ONLY resize (typing adds/removes a
+                    # line in a tall code view): every width - and so every
+                    # child's wrap/layout - is unchanged; children below the
+                    # edit only TRANSLATE, and their own tiles recomposite at
+                    # the new positions. This view's draw already ran THIS
+                    # frame (the content change invalidated it) and its blit
+                    # is enqueued below, so like the fresh-tile path the
+                    # depth-4 descendant sweep only forced the whole subtree
+                    # (e.g. the structured code-dict pane) to re-render again
+                    # next frame - ~16-20ms per Enter/Backspace. Ancestors
+                    # only.
+                    self.invalidate(ctx.key, note=Note(
+                        name="New Tile", tint=(1, 0.5, 0),
+                        reason=f"height-only {old_size} -> {ctx.size}"))
                 else:
                     reason = f"New size old_size{old_size} new_size{ctx.size}" if old_size else "New tile"
                     reason = "t None" if t is None else reason
+                    # DEBUG (height oscillation bug): a cross-bucket resize on a
+                    # SETTLED view means two writers disagree about its height -
+                    # log which writer set it this frame (ds._source provenance)
+                    # so an every-frame flip names the offending involved.
+                    if old_size is not None:
+                        try:
+                            from src.lsd.gl_gui.perf_trace import trace_rl as _nt_trace
+                            _ds = ctx.draw_state
+                            _nt_trace(("newtile", ctx.key),
+                                      f"NEW-TILE {reason} name={getattr(_ds, 'name', None)!r} "
+                                      f"hsrc={getattr(_ds, '_source', {}).get('height')!r}",
+                                      min_interval=0.2)
+                        except Exception:
+                            pass
 
                     self.invalidate_up(ctx.key, max_depth=4, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
                 self._tiles[ctx.key] = t

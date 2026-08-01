@@ -88,6 +88,11 @@ def three_way_merge(base, mine, theirs):
 class PendingSave:
     pending_saves = defaultdict(Any)
     originals = defaultdict(Any)
+    # Result lines from the last absorb_external_changes run (MERGED /
+    # ADOPTED / CONFLICT per file). Shown in draw_pending_saves until
+    # dismissed - unlike the button's save summary, a merge rewrites the
+    # queue, so its outcome must stay inspectable.
+    merge_results = []
     # Monotonic per-file edit counter, bumped on every queue_save. A cheap,
     # content-free cache-invalidation signal (see CLAUDE.md - never hash files):
     # readers of current_file_text key on this instead of hashing the text.
@@ -306,6 +311,23 @@ class PendingSave:
                 if data == cls.originals.get(addr):
                     return None
                 return data
+        # A whole-file pending entry (absorb_external_changes queues one per
+        # tracked external change) holds merged edits that are NOT on disk - a
+        # span consumer reloading from disk would lose them. Serve the slice
+        # from the merged text. Span coords are valid against it: absorb runs
+        # inside recompile_all, whose module hotswap resyncs live linenos to
+        # the merged source (the same coords the consumer resolved from).
+        if address.start is not None:
+            for addr, (codec, kwargs) in list(cls.pending_saves.items()):
+                if addr.start is not None or addr.path != address.path:
+                    continue
+                data = kwargs.get("data")
+                if not isinstance(data, str) or data == cls.originals.get(addr):
+                    return None
+                lines = data.split("\n")
+                if address.end is not None and address.end > len(lines):
+                    return None     # bad coords - never serve a short slice
+                return "\n".join(lines[address.start:address.end])
         return None
 
 
@@ -368,9 +390,187 @@ class PendingSave:
         cls.pending_saves.update(survivors)
 
     @classmethod
+    def absorb_external_changes(cls):
+        """Fold every tracked external change into the pending queue and
+        return the per-file result lines.
+
+        For each ExternalChanges entry: 3-way merge with base = the external
+        baseline, mine = that baseline with this file's real pending span
+        edits spliced in (both sides share coordinates by construction —
+        pending spans were resolved against the pre-write disk, which IS the
+        baseline; see merge_files.py), theirs = current disk. A clean merge
+        replaces the file's span entries with ONE whole-file pending entry
+        (source = the live module, so recompile_all hotswaps it and
+        apply_all_saves writes it at shutdown) and marks the external entry
+        absorbed — the entry stays VISIBLE in the external window until the
+        user dismisses it; the marker only stops re-absorbing. An overlap is left
+        completely untouched: both trackers keep their entries and the Merge
+        window keeps showing the conflict.
+
+        Texts are newline-normalized to '\\n' (same convention as
+        current_file_text). Runs on recompile_all's worker thread."""
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        results = []
+        for path in list(ExternalChanges.originals):
+            line = cls.resolve_external(path)
+            if line is not None:
+                results.append(line)
+        if results:
+            cls.merge_results = results
+            cls._wake_windows()
+        return results
+
+    @classmethod
+    def resolve_external(cls, path, prefer=None):
+        """Resolve ONE tracked external change into a whole-file pending
+        entry and return its result line (None when there's nothing to do —
+        untracked path, or drift that healed back to the baseline).
+
+        prefer=None runs the 3-way merge; an overlap returns the CONFLICT
+        line and mutates NOTHING. The Merge window's accept buttons force a
+        side instead: prefer='mine' keeps the pending version verbatim (the
+        external drift is overwritten on recompile/shutdown-save);
+        prefer='theirs' takes the disk version and DROPS the file's pending
+        edits. Every resolution ends the same way: the file's span entries
+        are replaced by one whole-file pending entry (source = the live
+        module, so recompile_all hotswaps it and apply_all_saves writes it),
+        and the ExternalChanges entry is marked absorbed — NOT popped: the
+        external window must keep showing what an outside program changed
+        until the user dismisses it. The marker (checked here on the auto
+        path) is what stops the next recompile from re-merging the same
+        drift; a new external write expires it."""
+        from pathlib import Path as _P
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        from src.lsd.gl_gui.mcp_hotswap import _resolve_module
+        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
+            ModuleCodec, TextFileCodec, _span_fingerprint)
+        from src.lsd.gl_gui.view.core_conversion.address import Address
+
+        def _norm(t):
+            return str(t).replace("\r\n", "\n").replace("\r", "\n")
+
+        baseline = ExternalChanges.originals.get(path)
+        if baseline is None:
+            return None
+        name = _P(path).name
+        disk = Melty.read_code(path)
+        if disk is None:
+            return f"SKIPPED {name}: deleted or unreadable"
+        if prefer is None and ExternalChanges.is_absorbed(path, disk):
+            return None         # this exact drift is already in the queue
+        base_n, disk_n = _norm(baseline), _norm(disk)
+        if base_n == disk_n:
+            # Drifted back to baseline - nothing to absorb, drop the entry
+            # (same self-heal the external window does at render time).
+            ExternalChanges.originals.pop(path, None)
+            return None
+        try:
+            rp = _P(path).resolve()
+        except OSError:
+            return f"SKIPPED {name}: unresolvable path"
+
+        absorbed = []
+        for addr, (codec, kwargs) in list(cls.pending_saves.items()):
+            data = kwargs.get("data")
+            if not isinstance(data, str):
+                continue
+            if data == cls.originals.get(addr):
+                continue                    # no-op entry - nothing at stake
+            try:
+                if _P(addr.path).resolve() != rp:
+                    continue
+            except Exception:
+                continue
+            absorbed.append((addr, data))
+
+        whole = [d for a, d in absorbed if a.start is None]
+        if whole:
+            mine = _norm(whole[-1])
+        elif absorbed:
+            # Splice bottom-up (highest start first) so an applied span
+            # never overlap a not-yet-applied span above it - same order as
+            # current_file_text / apply_all_saves.
+            lines = base_n.split("\n")
+            for addr, data in sorted(((a, d) for a, d in absorbed
+                                      if a.start is not None),
+                                     key=lambda x: -x[0].start):
+                d = _norm(data)
+                if d.endswith("\n"):
+                    d = d[:-1]
+                lines[addr.start:addr.end] = d.split("\n")
+            mine = "\n".join(lines)
+        else:
+            mine = base_n
+
+        if prefer == "mine":
+            merged = mine
+        elif prefer == "theirs":
+            merged = disk_n
+        else:
+            merged = disk_n if mine == base_n \
+                else three_way_merge(base_n, mine, disk_n)
+            if merged is None:
+                return (f"CONFLICT {name}: {len(absorbed)} pending edit(s) "
+                        f"overlap the external change — see Merge window")
+
+        module = _resolve_module(path)
+        address = Address(rp, source=module if module is not None else str(rp))
+        merge_codec = ModuleCodec if module is not None else TextFileCodec
+        if module is None:
+            address._allow_write = True     # plain-file gate, see codec.save
+        for addr, _data in absorbed:
+            cls.pending_saves.pop(addr, None)
+            cls.originals.pop(addr, None)
+        cls.originals[address] = base_n
+        # Fingerprint the DISK this merge was computed against. Every other
+        # pending entry gets _span_fp stamped in codec.load, which lets
+        # codec.save's changed-on-disk refusal (SaveConflict) - a fresh
+        # Address here left it None, so the merged whole-file entry was the
+        # ONE entry that was UNTROANDED: external drift landing after the
+        # merge (and before the next absorb) was silently overwritten by
+        # apply_all_saves (which also runs on the app-state save, not just
+        # shutdown). With the stamp, that flush defers the entry instead and
+        # the next merge absorbs the new drift.
+        address._span_fp = _span_fingerprint(disk_n.split("\n"))
+        cls.queue_save(address, merge_codec, data=merged)
+        ExternalChanges.mark_absorbed(path, disk)
+        if prefer == "mine":
+            return (f"KEPT OURS {name}: pending version queued — the external "
+                    f"change will be overwritten")
+        if prefer == "theirs":
+            return (f"TOOK THEIRS {name}: disk version queued, dropped "
+                    f"{len(absorbed)} pending edit(s)")
+        if absorbed:
+            return f"MERGED {name}: external change + {len(absorbed)} pending edit(s)"
+        return f"ADOPTED {name}: external change is now a pending edit"
+
+    @classmethod
+    def _wake_windows(cls):
+        """Worker-thread wake after absorb rewrites the queue: force both
+        windows' subtrees to re-capture (the pending window shows new
+        entries + merge results; the external window gained absorbed markers —
+        its _external_change flag is the established cache bypass)."""
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+            win = Melty.find_window("draw_pending_saves")
+            if win is not None:
+                Melty.cache.invalidate_up(win._tile_id, force=True, max_depth=8)
+            ds = ExternalChanges._window_ds
+            if ds is not None:
+                ds._external_change = True
+            request_render()
+        except Exception:
+            pass
+
+    @classmethod
     def recompile_all(cls):
-        """Hotswap every changed pending edit into the running process — no
-        disk write; the queue stays intact for apply_all_saves at shutdown.
+        """Absorb tracked external changes into the queue (see
+        absorb_external_changes), then hotswap every changed pending edit into
+        the running process — no disk write; the queue stays intact for
+        apply_all_saves at shutdown.
 
         Rides the editor Run button's worker (recompile_source): each queued
         span recompiles its OWN live object in place (class / function /
@@ -381,6 +581,8 @@ class PendingSave:
         from src.lsd.gl_gui.view.core_conversion.new_converters import recompile_source
         from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
         from src.lsd.gl_gui.view.core_conversion.chain_converters import record_compile
+
+        merge_lines = cls.absorb_external_changes()
 
         compiled, failures, skipped = [], [], 0
         # Snapshot: this runs in a worker thread (draw_function run_in_thread)
@@ -409,14 +611,91 @@ class PendingSave:
             else:
                 failures.append(f"{label}: {type(err).__name__}: {err}")
 
-        if not (compiled or failures or skipped):
+        if not (compiled or failures or skipped or merge_lines):
             return "Nothing to recompile — no changed pending edits."
-        lines = [f"Recompiled {len(compiled)}: {', '.join(compiled)}"] if compiled else []
+        lines = list(merge_lines)
+        if compiled:
+            lines.append(f"Recompiled {len(compiled)}: {', '.join(compiled)}")
         if skipped:
             lines.append(f"Skipped {skipped} non-code edit(s)")
         for failure in failures:
             lines.append(f"FAILED {failure}")
         return "\n".join(lines)
+
+    @classmethod
+    def recompile_all_ui(cls):
+        """Run recompile_all exactly as a CLICK on the Pending Saves window's
+        recompile button does: same runner draw_state, same lifecycle — the
+        _run_busy spinner while running, then result + _result_frame stamped
+        for the fading check mark + summary (draw_function's run_in_thread
+        worker protocol, including _run_error on an exception). The recompile
+        itself runs on the CALLING thread (MCP handler / hotkey worker — the
+        established off-render path) while the render thread paints the busy
+        state. Callers: the MCP recompile tool and draw_main's Ctrl+Enter.
+
+        Reveals the window first (posted to the render thread) so the summary
+        is actually seen; if the window has never rendered, the runner ds
+        appears on that reveal frame and is picked up by a short retry —
+        worst case the summary is only the returned string. Single-flight via
+        the button's own _run_busy latch."""
+        import time
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+
+        def _find_runner():
+            try:
+                win = Melty.find_window("draw_pending_saves")
+                if win is None:
+                    return None
+                for d in win.descendants(max_depth=8):
+                    if str(getattr(d, 'name', '')).startswith("recompile_all"):
+                        return d
+            except Exception:
+                return None
+            return None
+
+        def _reveal():
+            try:
+                from src.lsd.gl_gui.view.core_views.new_core_view import Core
+                Core.melty.open_window("draw_pending_saves")
+            except Exception:
+                pass
+
+        try:
+            Melty.post_to_render(_reveal)
+        except Exception:
+            pass
+        request_render()
+        ds = _find_runner()
+        if ds is None:                      # never-rendered window: the reveal
+            for _ in range(10):             # frame creates the runner ds
+                time.sleep(0.05)
+                ds = _find_runner()
+                if ds is not None:
+                    break
+        if ds is not None:
+            if ds.misc.get("_run_busy"):
+                return "recompile already running — try again shortly"
+            ds.misc["_run_busy"] = True
+            Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
+            request_render()
+        try:
+            summary = cls.recompile_all()
+        except Exception as e:
+            summary = f"recompile FAILED: {type(e).__name__}: {e}"
+            if ds is not None:
+                ds.misc["_run_error"] = summary
+        else:
+            if ds is not None:
+                ds.result = summary
+                ds.misc["_result_frame"] = Melty.frame_count
+                ds.misc.pop("_run_error", None)
+        finally:
+            if ds is not None:
+                ds.misc.pop("_run_busy", None)
+                Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
+            request_render()
+        return summary
 
 
 @window(disable_scroll=False, z_offset=0, tint=(0.18712963163852692, 0.2611111, 0.19945986568927765))
@@ -434,6 +713,16 @@ def draw_pending_saves():
     RenderFuncs.draw_function(PendingSave.recompile_all, name="recompile_all", icon="",
                               tint=(0,0,0,1), show_bg=False, run_in_thread=True,
                               result_fade_frames=30)
+
+    # Result of the last external-change absorb (recompile_all's merge pass).
+    # Persistent, no fading if a save rewrote the file - the per-file
+    # MERGED / ADOPTED / CONFLICT outcome stays visible until dismissed.
+    if PendingSave.merge_results:
+        if RenderFuncs.button(" Dismiss##merge_results", name="dismiss merge_results",
+                              tint=(0.12, 0.002037035, 0.002037035, 0.4))[0]:
+            PendingSave.merge_results = []
+        RenderFuncs.draw_text("\n".join(PendingSave.merge_results), show_name=True,
+                              name="external merge results")
 
     for address, (codec, kwargs) in list(PendingSave.pending_saves.items()):
         if address in PendingSave.originals:
@@ -462,7 +751,8 @@ def draw_pending_saves():
             diff_str = "".join(content_lines)
 
             file_name = address.path.name
-            line_range = f"({address.start}:{address.end})"
+            line_range = (f"({address.start}:{address.end})"
+                          if address.start is not None else "(whole file)")
             name = f"{file_name} {line_range}"
             if RenderFuncs.button(f" Revert##{name}", name=f"revert {name}",
                                   tint=(0.12, 0.002037035, 0.002037035, 0.4))[0]:

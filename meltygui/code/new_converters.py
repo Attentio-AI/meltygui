@@ -439,8 +439,11 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
         old-value-written-during-save bug).
 
     Debounce: `debounce_ms` defers the launch until the trigger goes quiet (a
-    one-shot timer wakes the loop at the deadline — never per-frame polling)."""
-    if Melty.frame_count < 4 or main_thread:
+    one-shot timer wakes the loop at the deadline — never per-frame polling).
+    It only ever applies to RE-runs: while there's no result yet (first load),
+    the launch is immediate, so a debounced caller never trades first-paint
+    latency for burst-coalescing."""
+    if Melty.frame_count < 4 or main_thread or loading_state.cached_result is UNSET:
         debounce_ms = 0
     if start:
         # Timeline of the arm edge. _armed_t / _armed_label for the run + report
@@ -897,6 +900,16 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             return {"routed": {_out_name: _gp}, "error": None, "lint": [],
                     "_src_gen": _src_gen, "src_good": input_value}
 
+    # Park BEFORE the libcst parse: string_to_cst_module is 150–550ms of
+    # library-internal GIL-held CPU with no yield points inside - a run
+    # launching just as the GUI resumes has plowed through it and convoyed
+    # the render thread (the residual 145–750ms frames after frame-busy
+    # parking landed everywhere else). Waiting for quiet first turns that into
+    # a parse that runs while the editor is idle. No-op on the inline-first
+    # (main-thread) path - _yield_to_ui never sleeps the host/main thread.
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
+    _yield_to_ui()
+
     result, routed = _run_convert(chain, input_value, **extra)
     parse_failed = isinstance(result, Exception)
     error = result if parse_failed else None
@@ -977,6 +990,15 @@ def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
 # 215ms of parse+compile); beyond it the first parse runs async so a
 # pathological buffer can't freeze its first frame for seconds.
 _INLINE_FIRST_PARSE_MAX_CHARS = 128 * 1024
+
+# Typing debounce for chain_in re-parses: every keystroke fires a START edge,
+# and with no debounce a big buffer queues a full str→dict→convert per key -
+# the workers stack up, round-robin the GIL with the render thread, and a
+# normally-15ms render-thread compute measures seconds of wall time (first 3s
+# frame of 2026-07-31). 300ms sits above the inter-key gap of fast typing, so
+# each burst coalesces to ONE reparse when the input goes quiet; first parses
+# are exempt (run_in_background zeroes debounce until a first result returns).
+_CHAIN_IN_DEBOUNCE_MS = 300
 
 
 class ModesState:
@@ -1173,7 +1195,8 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
-            name=f"chain_in{unique}", start=external_change, inline_first=inline)
+            name=f"chain_in{unique}", start=external_change, inline_first=inline,
+            debounce_ms=_CHAIN_IN_DEBOUNCE_MS)
         if finished and isinstance(payload, dict):
             # Fold the completed outputs into the shared snapshot AND this
             # frame's routed (so the columns see the good values immediately).
@@ -1286,6 +1309,17 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         # frame (echo_gen); otherwise it's an external change as of now. Threaded through
         # the worker snapshot so the result is tagged with the gen actually parsed.
         src_gen = modes_state.echo_gen if (input_value is modes_state.echo_str) else Melty.frame_count
+        # Identical-snapshot re-arm suppression: a no-op host write can re-fire
+        # the same edge with the SAME string object that's already armed/run -
+        # observed as back-to-back runs on one pending snapshot, the second
+        # re-parsing a byte-identical buffer (~550ms pure re-burn during the
+        # syntax-error hold). Identity only - any real edit is a new source -
+        # and a run_jedi trigger (an Index click) always passes.
+        if (external_change and not forwarded.get("run_jedi")
+                and input_value is getattr(modes_state, "_last_armed_src", None)):
+            external_change = False
+        elif external_change:
+            modes_state._last_armed_src = input_value
         chain_in_kwargs = {**forwarded, "input_value": input_value,
                            "chain": chain_in, "route": route, "_src_gen": src_gen,
                            "_last_good_src": getattr(modes_state, "last_good_src", None)}
@@ -1316,7 +1350,8 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         finished, payload = run_in_background(
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
-            name=f"chain_in{unique}", start=external_change, inline_first=inline)
+            name=f"chain_in{unique}", start=external_change, inline_first=inline,
+            debounce_ms=_CHAIN_IN_DEBOUNCE_MS)
         if external_change:
             _ptrace(f"chain_in START edge (unique={unique})", src_gen=src_gen,
                     echo=(input_value is modes_state.echo_str))
@@ -1554,7 +1589,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         # hits silent while a cold resolve (whole-file getsourcelines tokenize)
         # shows up on the console.
         with _pspan("cfio: resolve_address", min_ms=2.0,
-                    codec=type(codec).__name__):
+                    codec=getattr(codec, '__name__', type(codec).__name__)):
             address = codec.resolve_address(input_value, draw_state, code_state=code_state)
         code_state.address = address
         top_line_height = 30
@@ -1702,7 +1737,13 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 code_state.text_cache = cache_text
                 code_state.mark_file_current()
                 external_change = True
-                draw_state.invalidate_up(max_depth=6)
+                # Ancestors-only: external_change flows into the view host's
+                # draw= bypassing a body run, and the subtree that renders
+                # from the hosts updates through its own data flow. The old
+                # depth-6 force sweep from here rebuilt the structured pane on
+                # EVERY keystroke (this sync runs per key because the editor's
+                # str_host queues one PendingSave per edit).
+                draw_state.invalidate(note=Note(name="pending-sync", tint=(1, 0.6, 0.2)))
                 request_render()
 
         if file_stale and not code_state._pending_save and not merge_failed:
@@ -1723,7 +1764,11 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                     code_state.mark_file_current()
                     code_state._save_refused = False
                     external_change = True
-                    draw_state.invalidate_up(max_depth=6)
+                    # Ancestors-only: same reasoning as the pending-sync above:
+                    # this self-write sync also lands once per keystroke save,
+                    # and the depth-6 force sweep rebuilt the structured pane
+                    # every time. external_change -> draw= re-runs the view.
+                    draw_state.invalidate(note=Note(name="self-write mem-sync", tint=(1, 0.6, 0.2)))
                     request_render()
                 else:
                     load = True
@@ -2177,11 +2222,25 @@ def _post_symbol_attach(dict_host, gen, flat):
             return
         with _pspan("attach: distribute on render thread", min_ms=2.0,
                     host=_host_label(dict_host), names=len(flat) if flat else 0):
+            # Same-names attach (per-keystroke offset remap: positions moved,
+            # symbol set identical) skips the consumer sweep - the editor reads
+            # usage data LIVE each draw (us_call in draw_text_span), so it
+            # tracks positions without a repaint order, and the depth-8 swe
+            # sweep was rebuilding the structured pane on every keystroke. A
+            # different name set (new/removed symbol) still notifies so usage
+            # highlights/links appear and disappear promptly.
+            prev = getattr(gp, "symbol_usage", None)
+            same_names = (isinstance(prev, dict) and isinstance(flat, dict)
+                          and prev.keys() == flat.keys())
             gp._symbol_gen = gen
             if flat:
                 gp.symbol_usage = flat
                 _distribute_by_name(gp, flat)
-            dict_host._notify_consumers(name="symbol index attached")
+            if not same_names:
+                dict_host._notify_consumers(name="symbol index attached")
+            else:
+                _ptrace("attach: names unchanged — consumer sweep skipped",
+                        host=_host_label(dict_host))
 
     Melty.post_to_render(_attach)
 
@@ -2634,7 +2693,9 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
         cache_error = _host_code_tree_error(dict_host)
         
         raw_changed, raw_value = False, input_value
+        _pane_ms = {}
         for idx, view_func in enumerate(tab_state.selected_tabs):
+            _t_pane0 = time.monotonic()
             with cols.cell(idx, height=avail_h) as col_width:
                 if getattr(view_func, "__name__", "") == "draw_text":
                     # The host's parse + errors flow to the draw_text leaf through
@@ -2652,7 +2713,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                     if m_changed:
                         notify("text changed", tag="save bug", tint=(1, 1, 0.5))
                         raw_changed, raw_value = True, m_out
-                        draw_state.invalidate_up(max_depth=2)
+                        # draw_state.invalidate_up(max_depth=2)
                 else:
                     if not isinstance(gp, dict):
                         # Placeholder frame: keep every ancestor's persisted
@@ -2662,11 +2723,41 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         imgui.text_colored("Parsing…" if dict_host is not None
                                            else "No parse for this source", 0.6, 0.6, 0.6, 1.0)
                         continue
+                    # No draw= forwarding: code_file_io passes draw=True the frame
+                    # after every keystroke (its reconvert delay), and the one-shot
+                    # cache bypass rebuilt this whole structured pane per key
+                    # (~13-23ms for Toggles' 110 rows). The pane's content (gp)
+                    # only changes when a chain_in parse lands, and that landing
+                    # already force-invalidates this subtree (dict_host's
+                    # _notify_consumers) - so the pane refreshes once per debounced
+                    # parse instead of per keystroke.
+                    # Debug (dict-pane keystroke cost): snapshot the pane's tile
+                    # state before the call - was it dirty (someone invalidated
+                    # it) or clean (cache gate re-ran the body anyway)?
+                    _dbg_key = getattr(draw_state, "_dbg_dict_key", None)
+                    _dbg_t = (Melty.cache._tiles.get(_dbg_key)
+                              if _dbg_key and Melty.cache is not None else None)
+                    _pane_ms["dict_pre"] = (
+                        f"dirty={_dbg_t.dirty}/inv=f{_dbg_t.last_invalidated_frame}"
+                        f"/clean=f{_dbg_t.last_clean_frame}/now=f{Melty.frame_count}"
+                        if _dbg_t is not None else "tile=?")
                     m_changed, m_out = RenderFuncs.draw_collection(
-                        gp, excluded=["__cst__"], child_kwargs={"show_bg":True, "shadow":False, "use_cache":True, "z_offset":0}, show_system=False, draw=draw,
+                        gp, excluded=["__cst__"], child_kwargs={"show_bg":True, "shadow":False, "use_cache":True, "z_offset":0}, show_system=False,
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,
                         name=f"draw_collection##{unique}", selectable=False)
+                    if _dbg_key is None and Melty.cache is not None:
+                        # One-time: resolve the pane's tile key by name and arm the
+                        # framework's invalidation stack-print on its draw_state.
+                        _nm = f"draw_collection##{unique}"
+                        for _k, _ds2 in Melty.cache.key_to_draw_state.items():
+                            if _ds2 is not None and getattr(_ds2, "name", None) == _nm:
+                                draw_state._dbg_dict_key = _k
+                                # Arm the tile-bump tracer (blit_offscreen's
+                                # _bump_trace): every code path that dirties this
+                                # pane's tile names itself in the perf log.
+                                _ds2._bump_trace_armed = True
+                                break
                     if m_changed:
                         notify("dict changed", tag="save bug", tint=(1,1,0.5))
                         # A rebuilt top-level dict (reorder / add / delete) replaces the
@@ -2677,12 +2768,23 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                             gp = m_out
                         live_apply_edits(root_input, gp)
                         draw_state.invalidate_up(max_depth=2)
+            _pane_ms[getattr(view_func, "__name__", str(idx))] = \
+                (time.monotonic() - _t_pane0) * 1000.0
 
         cols.finish()
     _dt_tabs = (time.monotonic() - _t_tabs0) * 1000.0
-    if _dt_tabs >= 20.0 and dict_host is not None:
-        # Render-thread stall inside the tabs subtree this frame (structured
-        # collection build + text pane together).
-        _ptrace_rl(("tabs-slow", id(dict_host)),
-                   f"tabs frame took {_dt_tabs:.0f}ms", host=_host_label(dict_host))
+    if dict_host is not None and (
+            _dt_tabs >= 10.0
+            or (isinstance(_pane_ms.get("draw_collection"), float)
+                and _pane_ms["draw_collection"] >= 3.0)):
+        # Render-thread stall inside the tabs subtree this frame; per-pane
+        # split so a slow frame names the cause (text editor vs structured
+        # collection) instead of one opaque total. Unratelimited while the
+        # dict pane burns time, so a typing session shows every occurrence
+        # (bounded by keystroke cost: dict_pre shows the pane tile's dirty
+        # state going in).
+        _panes = " ".join(f"{k}={v:.0f}ms" if isinstance(v, float) else f"{k}={v}"
+                          for k, v in _pane_ms.items())
+        _ptrace(f"tabs frame took {_dt_tabs:.0f}ms [{_panes}]",
+                host=_host_label(dict_host))
     return False, None

@@ -359,22 +359,25 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
 
     @logged_tool()
     def recompile_external_changes() -> str:
-        """Hotswap every externally-changed tracked file into the running studio
-        from its on-disk contents — the SAME code path as the External Changes
-        window's recompile_all button (ExternalChanges.recompile_all), so the
-        button and this tool always behave identically.
+        """Recompile everything the studio has queued — pending edits AND
+        tracked external changes — the SAME code path as clicking the Pending
+        Saves window's recompile button (PendingSave.recompile_all_ui drives
+        the button's own runner draw_state: busy spinner while running, then
+        the fading check mark + summary), so the button and this tool always
+        behave identically. The window is revealed so the result is visible.
 
-        Files enter the tracker when the file watcher sees an outside edit to a
-        file the studio has read (draw_external_changes shows them with diffs).
-        Each is whole-module reloaded in place with hotswap-guard rollback.
-        Entries stay tracked after a successful swap — the user dismisses them
-        in the window. Returns the same summary string the button shows.
+        External changes are first 3-way merged with any overlapping pending
+        edits and queued as whole-file pending entries (MERGED / ADOPTED /
+        CONFLICT lines land in the window's persistent merge display); the
+        external window keeps showing absorbed drift until the user dismisses
+        it. Each entry then hotswaps in place with hotswap-guard rollback.
+        Returns the same summary string the button shows.
         """
         from src.lsd.gl_gui.notifications import notify
-        notify("recompile external changes requested",
+        notify("recompile requested",
                tint=MCP_TOOL_TINTS.get("recompile_external_changes", MCP_DEFAULT_TINT), tag="MCP")
-        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
-        return ExternalChanges.recompile_all()
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        return PendingSave.recompile_all_ui()
 
     @logged_tool()
     def screenshot(window: str):

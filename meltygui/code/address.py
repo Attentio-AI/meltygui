@@ -44,21 +44,40 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 _PROJECT_ROOT = Path(__file__).resolve().parents[5]
 
 
+# str(source_file) -> bool. Whether a path is project source never changes
+# within a session, but resolve() walks every path component with an
+# lstat+readlink - ~30 GIO round-trips - and this gate runs per FRAME per code
+# view (resolve_address). Under a CPU-bound background thread each round-trip
+# waits up to a poll interval, so the uncached gate alone stretched frames by
+# hundreds of ms (all-thread sampling 2026-07-31: ~half the render thread's
+# slow samples were in realpath under this call). Bounded and cleared on hotswap.
+_EDITABLE_SOURCE_CACHE = {}
+
+
 def is_editable_source(source_file) -> bool:
     """True only for source inside the project tree. Library code (site-packages
     / dist-packages / the venv / the stdlib) is read-only to the editor, so we
     never resolve or write to it."""
+    key = str(source_file)
+    got = _EDITABLE_SOURCE_CACHE.get(key)
+    if got is not None:
+        return got
     try:
         p = Path(source_file).resolve()
     except (OSError, ValueError):
         return False
+    ok = True
     if {"site-packages", "dist-packages"} & set(p.parts):
-        return False
-    try:
-        p.relative_to(_PROJECT_ROOT)
-    except ValueError:
-        return False
-    return True
+        ok = False
+    else:
+        try:
+            p.relative_to(_PROJECT_ROOT)
+        except ValueError:
+            ok = False
+    if len(_EDITABLE_SOURCE_CACHE) > 4096:
+        _EDITABLE_SOURCE_CACHE.clear()
+    _EDITABLE_SOURCE_CACHE[key] = ok
+    return ok
 
 
 def is_writable_file(path) -> bool:

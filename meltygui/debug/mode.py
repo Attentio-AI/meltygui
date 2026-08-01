@@ -151,6 +151,7 @@ class Mode(Enum):
         )
     }
 
+
     WINDOW_MANAGER_SORTED = {
         defaultdict: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True},

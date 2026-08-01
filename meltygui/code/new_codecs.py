@@ -22,6 +22,7 @@ from src.lsd.gl_gui.view.core_conversion.file_converters import _detect_newline
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
 from src.lsd.gl_gui.melty import Melty, FileWatch
+from src.lsd.gl_gui.perf_trace import trace_rl as _ptrace_rl
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.shader_library.shader_manager.texture_manager import PIL_TO_GL_FORMAT, PendingTexture
 
@@ -329,6 +330,14 @@ class TypeCodec(Codec):
         if cached is not None and cached[0] is input_value and cached[1] == mtime:
             return cached[2]
 
+        # Timeline: WHY the cached address lookup stale - this miss path pays a
+        # whole Python getsourcelines call on the render thread, so a miss
+        # per keystroke (e.g. the trailing disk save moving mtime) is a big hitch.
+        _why = ("cold" if cached is None
+                else "identity" if cached[0] is not input_value
+                else f"mtime {cached[1]}->{mtime}")
+        _ptrace_rl(("addr-resolve", id(draw_state)), f"addr re-resolve ({_why})",
+                   target=getattr(input_value, '__name__', '?'))
         _evict_linecache(source_file)
         try:
             source_lines, start_lineno = inspect.getsourcelines(unwrapped)
@@ -579,6 +588,12 @@ class FunctionCodec(TypeCodec):
         if cached is not None and cached[0] is input_value and cached[1] == mtime:
             return cached[2]
 
+        # Same miss-reason timeline as TypeCodec.resolve_address above.
+        _why = ("cold" if cached is None
+                else "identity" if cached[0] is not input_value
+                else f"mtime {cached[1]}->{mtime}")
+        _ptrace_rl(("addr-resolve", id(draw_state)), f"addr re-resolve ({_why})",
+                   target=getattr(input_value, '__name__', '?'))
         _evict_linecache(source_file)
         try:
             source_lines, start_lineno = inspect.getsourcelines(unwrapped)

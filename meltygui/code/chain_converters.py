@@ -1444,6 +1444,20 @@ def _module_for_file(target_path):
 # co_firstlineno scan is otherwise repeated every time the caller row is shown.
 _ENCLOSING_FN_CACHE = {}
 
+# str(path) -> resolved Path. Session-stable; resolve() is ~30 syscall/GIL
+# round-trips per _enclosing_function(), per frame under the live-view
+# overlay (the other half of the 2026-07-31 render-thread realpath samples).
+_RESOLVED_PATH_CACHE = {}
+
+
+def _resolved(path_str):
+    got = _RESOLVED_PATH_CACHE.get(path_str)
+    if got is None:
+        if len(_RESOLVED_PATH_CACHE) > 4096:
+            _RESOLVED_PATH_CACHE.clear()
+        got = _RESOLVED_PATH_CACHE[path_str] = Path(path_str).resolve()
+    return got
+
 
 def _enclosing_function(filename, lineno):
     """The live function object whose `def` encloses (filename, lineno) — the
@@ -1451,7 +1465,7 @@ def _enclosing_function(filename, lineno):
     caller lens hotswap that function after a literal in its body is edited.
     Returns None for closures/nested funcs not reachable from module vars."""
     try:
-        target = Path(filename).resolve()
+        target = _resolved(str(filename))
     except (OSError, ValueError):
         return None
     try:
@@ -1475,7 +1489,7 @@ def _enclosing_function(filename, lineno):
         if code is None:
             return
         try:
-            same = Path(code.co_filename).resolve() == target
+            same = _resolved(code.co_filename) == target
         except (OSError, ValueError):
             same = code.co_filename == str(target)
         if same and code.co_firstlineno <= lineno and code.co_firstlineno > best["line"]:

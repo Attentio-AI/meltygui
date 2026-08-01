@@ -463,6 +463,7 @@ def draw_function_live(input_value, draw_state=None, unique=None,
         fn = inspect.unwrap(fn)
     except Exception:
         pass
+        
     if not callable(fn) or getattr(fn, "__code__", None) is None:
         imgui.text("draw_function_live: needs a plain function")
         return False, input_value

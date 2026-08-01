@@ -156,27 +156,34 @@ class span:
     Extra context can be attached mid-span via .add(k=v); an exception inside
     the span is noted on the line and re-raised."""
 
-    __slots__ = ("label", "min_ms", "fields", "t0")
+    __slots__ = ("label", "min_ms", "fields", "t0", "c0")
 
     def __init__(self, label: str, min_ms: float = 0.0, **fields):
         self.label = label
         self.min_ms = min_ms
         self.fields = fields
         self.t0 = 0.0
+        self.c0 = 0.0
 
     def add(self, **fields):
         self.fields.update(fields)
 
     def __enter__(self):
         self.t0 = time.monotonic()
+        self.c0 = time.thread_time()
         return self
 
     def __exit__(self, exc_type, exc, tb):
         try:
             dt_ms = (time.monotonic() - self.t0) * 1000.0
             if dt_ms >= self.min_ms:
+                # cpu ≪ wall on a slow span = this thread was GIL-starved, not
+                # doing the work - the span label is then the victim, not the
+                # culprit (see the 2026-07-31 stall hunts).
+                cpu_ms = (time.thread_time() - self.c0) * 1000.0
                 suffix = " EXC=" + exc_type.__name__ if exc_type is not None else ""
-                trace(f"{self.label} took {dt_ms:.1f}ms{suffix}", **self.fields)
+                trace(f"{self.label} took {dt_ms:.1f}ms (cpu {cpu_ms:.1f}ms){suffix}",
+                      **self.fields)
         except Exception:
             pass
         return False

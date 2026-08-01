@@ -25,6 +25,16 @@ class ExternalChanges:
     # last opened the file - not just the latest write.
     originals = {}
     _window_ds = None   # draw_external_changes' draw_state - the wake target
+    # path → (id(baseline), id(disk text)) stamped when a recompile absorbed
+    # this exact drift into the pending queue (PendingSave.resolve_external).
+    # Absorbing must not hide the entry - the window keeps showing what an
+    # external program changed until the user dismisses it. The marker only
+    # stops re-processing: absorb skips the file while the ids still match,
+    # and find_conflicts won't call the absorbed drift a conflict. Both ids
+    # are content-free change signals (baseline is setdefault-once; the
+    # watcher pops code_cache on every write, so a NEW external edit yields a
+    # new disk object and the marker naturally expires).
+    absorbed = {}
 
     @classmethod
     def on_file_event(cls, src_path, old_text):
@@ -67,67 +77,39 @@ class ExternalChanges:
     @classmethod
     def dismiss_all(cls):
         cls.originals.clear()
+        cls.absorbed.clear()
+
+    @classmethod
+    def mark_absorbed(cls, path, disk_text):
+        """Record that the CURRENT drift of `path` (baseline → `disk_text`,
+        the held read_code object) has been folded into the pending queue."""
+        baseline = cls.originals.get(path)
+        if baseline is not None:
+            cls.absorbed[path] = (id(baseline), id(disk_text))
+
+    @classmethod
+    def is_absorbed(cls, path, disk_text):
+        """True while `path`'s tracked drift is exactly the one a recompile
+        already absorbed — expires the moment either side changes object."""
+        baseline = cls.originals.get(path)
+        return (baseline is not None
+                and cls.absorbed.get(path) == (id(baseline), id(disk_text)))
 
     @classmethod
     def recompile_all(cls):
-        """Hotswap every tracked externally-changed file into the running
-        process from its on-disk contents — the same whole-module in-place
-        reload the MCP hotswap tool uses (hotswap-guard rollback included; runs
-        on the button's worker thread, the established off-render path).
-        Entries are NOT dismissed — recompiling absorbs the change into the
-        live process, but the tracker keeps showing what drifted from the
-        baseline until the user dismisses it (same model as draw_pending_saves,
-        whose recompile leaves the save queue intact)."""
-        from pathlib import Path as _P
-        from src.lsd.gl_gui.mcp_hotswap import hotswap_file
-        ok_names, failures = [], []
-        for path in list(cls.originals):
-            try:
-                status = hotswap_file(path)
-            except Exception as e:
-                status = f"{type(e).__name__}: {e}"
-            if str(status).startswith("hotswapped"):
-                ok_names.append(_P(path).name)
-            else:
-                failures.append(f"{_P(path).name}: {status}")
-        # Wake the window so it re-renders with the fresh diffs (same
-        # wake as on_file_event - this runs on a worker thread).
-        ds = cls._window_ds
-        if ds is not None:
-            ds._external_change = True
-        request_render()
-        if not (ok_names or failures):
-            summary = "Nothing to recompile — no tracked external changes."
-        else:
-            lines = [f"Recompiled {len(ok_names)}: {', '.join(ok_names)}"] if ok_names else []
-            for failure in failures:
-                lines.append(f"FAILED {failure}")
-            summary = "\n".join(lines)
-        cls._surface_result(summary)
-        return summary
-
-    @classmethod
-    def _surface_result(cls, result):
-        """Stamp `result` onto the window's recompile_all runner draw_state so
-        the fading check mark + summary show exactly as a button click's would
-        (same stamp draw_main's Ctrl+Enter does for the Pending Saves window).
-        Redundant-but-idempotent for the button path (its run_in_thread runner
-        writes the same result on completion); it's what makes an MCP-driven
-        recompile visible in the window. No-op if the window never rendered —
-        the caller's returned summary / toast covers that."""
-        try:
-            from src.lsd.gl_gui.melty import Melty
-            win = Melty.find_window("draw_external_changes")
-            if win is None:
-                return
-            for ds in win.descendants(max_depth=8):
-                if str(getattr(ds, 'name', '')).startswith("recompile_all"):
-                    ds.result = result
-                    ds.misc["_result_frame"] = Melty.frame_count
-                    Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
-                    break
-        except Exception:
-            pass
+        """External changes are no longer hotswapped directly from here (the
+        raw whole-module reload bypassed the pending machinery and caused
+        stale-tile invalidation issues). Delegate to the Pending Saves window:
+        PendingSave.recompile_all first absorbs every tracked external change
+        (3-way merged with any overlapping pending edits, then queued as a
+        whole-file pending entry — absorb_external_changes), then hotswaps the
+        queue through the established per-entry path. recompile_all_ui drives
+        the Pending Saves button's own runner draw_state (busy spinner,
+        fading check mark + summary), so any caller of this alias gets the
+        exact button-click UI. Kept for backward compatibility — the MCP
+        recompile tool now calls PendingSave.recompile_all_ui directly."""
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        return PendingSave.recompile_all_ui()
 
 
 # Hotswap / dual-identity guard. A hotswap re-executes this file - under the
@@ -143,6 +125,7 @@ for _n in ("src.lsd.gl_gui.view.core_views.external_changes",
     if _twin is not None and _twin is not ExternalChanges:
         ExternalChanges.originals = _twin.originals
         ExternalChanges._window_ds = _twin._window_ds
+        ExternalChanges.absorbed = getattr(_twin, "absorbed", ExternalChanges.absorbed)
         break
 
 
@@ -153,12 +136,6 @@ def draw_external_changes(draw_state=None):
     ExternalChanges._window_ds = draw_state
     RenderFuncs.draw_function(ExternalChanges.dismiss_all, icon="",
                               tint=(0, 0, 0, 1), show_bg=False, shadow=False)
-    # Mirrors draw_pending_saves' recompile_all: run_in_thread keeps the
-    # hotswaps off the render loop; result_fade_frames shows the fading
-    # "Recompiled ..." summary instead of keeping there forever.
-    RenderFuncs.draw_function(ExternalChanges.recompile_all, name="recompile_all", icon="",
-                              tint=(0, 0, 0, 1), show_bg=False, shadow=False, run_in_thread=True,
-                              result_fade_frames=30)
 
     # DEBUG: what the tracker will actually see. A file only gets a baseline if
     # its text sat in Melty.code_cache when the fs event fired (old_lines is the
@@ -204,9 +181,11 @@ def draw_external_changes(draw_state=None):
     # tiles - without this, the next frame replays the pre-event tile and the
     # fresh diff flickers away. When the rendered diff actually changes,
     # force-invalidate this window's own subtree so the tiles re-capture.
-    # id(current) is a reliable content change signal: code_cache holds each text
-    # until the watcher pops it, and every re-read is a new str instance.
-    sig = tuple((p, id(c)) for p, _, c in entries)
+    # id(current) is a content-free change signal: code_cache holds each text
+    # until the watcher pops it, and every re-read is a new str object. The
+    # absorption marker joins the sig so the "absorbed" annotation appearing
+    # (same texts, new baseline) still re-captures the tiles.
+    sig = tuple((p, id(c), ExternalChanges.absorbed.get(p)) for p, _, c in entries)
     if draw_state.misc.get("_ext_sig") != sig:
         draw_state.misc["_ext_sig"] = sig
         Melty.cache.invalidate_up(draw_state._tile_id, force=True, max_depth=6)
@@ -217,6 +196,7 @@ def draw_external_changes(draw_state=None):
             if RenderFuncs.button(f" Dismiss##{path}", name=f"dismiss {path}",
                                   tint=(0.12, 0.002037035, 0.002037035, 0.4))[0]:
                 ExternalChanges.originals.pop(path, None)
+                ExternalChanges.absorbed.pop(path, None)
             RenderFuncs.draw_text(f"{path}: deleted or unreadable", name=f"{file_name}##{path}")
             continue
         new_lines = current.splitlines(keepends=True)
@@ -238,5 +218,11 @@ def draw_external_changes(draw_state=None):
             # entry drops, and the next external edit re-baselines from
             # whatever the cache holds then.
             ExternalChanges.originals.pop(path, None)
+            ExternalChanges.absorbed.pop(path, None)
+        if ExternalChanges.is_absorbed(path, current):
+            RenderFuncs.draw_text("absorbed into pending queue (recompiled) — "
+                                  "Dismiss to clear",
+                                  name=f"absorbed {path}", tint=(0.45, 0.75, 0.45),
+                                  show_bg=False)
         RenderFuncs.draw_text(diff_str, show_name=True, name=f"{file_name}##{path}",
                               is_diff=True, line_numbers=line_numbers)

@@ -1144,7 +1144,11 @@ def _symbol_refs_worker(file_path: str, start_line: int, end_line: int, text=Non
 def _rebuild_symbol_usages(raw: dict) -> dict:
     """Rebuild {symbol: SymbolUsage} from the worker's plain-tuple output."""
     result = {}
+    _n = 0   # ~540ms unbroken for 569 syms (Path/UsageRef per caller) — yield
     for sym, e in raw.items():
+        _n += 1
+        if not (_n & 63):
+            _yield_to_ui()
         dp, dl, dc, dm = e["definition"]
         definition = UsageRef(path=_Path(dp) if dp else None, line=dl, column=dc, module_name=dm)
         callers = [UsageRef(path=_Path(c[0]) if c[0] else None, line=c[1], column=c[2],
@@ -1305,6 +1309,7 @@ def _collect_refs(tree) -> list:
     Name = ast.Name; Attribute = ast.Attribute
     FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
     ClassDef = ast.ClassDef
+    _n = 0   # nodes visited - periodic input-aware GIL yield (see _yield_to_ui)
 
     def _attr_chain(node):
         # Names in a dotted Name/Attribute value-chain's root first, or None if it
@@ -1320,7 +1325,11 @@ def _collect_refs(tree) -> list:
         return None
 
     def walk(node, scope):
+        nonlocal _n
         for child in iter_child(node):
+            _n += 1
+            if not (_n & 4095):
+                _yield_to_ui()
             t = child.__class__
             if t is Name:
                 out_append(("name", child.id, child.lineno, child.col_offset, scope))
@@ -1444,7 +1453,17 @@ def _imported_name_objects(tree) -> dict:
             for a in node.names:
                 if a.name == "*":
                     continue
-                obj = getattr(mod, a.name, None)
+                # __dict__.get, NEVER getattr: ~45 loaded modules have a lazy
+                # module-level __getattr__ (numpy, torch.*, huggingface_hub),
+                # and getattr on an absent name RUNS real import machinery -
+                # seconds of GIL-bound module init. This tree is parsed from the
+                # PENDING buffer, so mid-edit it could name anything ("from numpy
+                # import lina") - the multi-second post-syntax-error stalls of
+                # 2026-07-31 were exactly such a getattr. Submodules imported
+                # as names live in sys.modules, not always in the parent module.
+                obj = mod.__dict__.get(a.name)
+                if obj is None:
+                    obj = sys.modules.get(f"{node.module}.{a.name}")
                 if obj is not None:
                     out.setdefault(a.asname or a.name, obj)
         elif isinstance(node, ast.Import):
@@ -1731,12 +1750,25 @@ def _file_parse_artifacts(resolved, owning, text):
     cached = _file_parse_cache.get(resolved)
     if cached is not None and cached[0] == sig:
         return cached[1]
+    # UI-aware back-off between (and inside, via _collect_refs) the steps:
+    # this build runs per pending_gen bump on the app's bg worker, and its
+    # unbroken 60–550ms GIL hold was the per-keystroke frame freeze while the
+    # symbols pass trailed fast typing. Park it here means the worker resumes when
+    # input goes quiet and the result eventually lands so nothing goes stale.
+    _t0 = _time.monotonic()
+    _yield_to_ui()
     try:
         tree = ast.parse(text)
     except Exception:
         return None
+    _t1 = _time.monotonic()
+    _yield_to_ui()
     imports = _imported_name_objects(tree)
+    _t2 = _time.monotonic()
+    _yield_to_ui()
     refs = _collect_refs(tree)
+    _t3 = _time.monotonic()
+    _yield_to_ui()
     od = getattr(owning, "__dict__", None) or {}
 
     def look(n):
@@ -1744,6 +1776,14 @@ def _file_parse_artifacts(resolved, owning, text):
         return v if v is not None else imports.get(n)
 
     bindings = _local_class_bindings(tree, look)
+    _t4 = _time.monotonic()
+    if _t4 - _t0 >= 0.3:
+        _ptrace(f"artifacts SLOW build in {(_t4 - _t0) * 1000:.0f}ms",
+                file=resolved.name,
+                parse_ms=round((_t1 - _t0) * 1000, 1),
+                imports_ms=round((_t2 - _t1) * 1000, 1),
+                refs_ms=round((_t3 - _t2) * 1000, 1),
+                bindings_ms=round((_t4 - _t3) * 1000, 1))
     artifacts = (tree, imports, refs, bindings)
     _file_parse_cache[resolved] = (sig, artifacts)
     return artifacts
@@ -1968,7 +2008,12 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     def _lookup_base(name, scope):
         b = _bindings.get((scope, name))
         return b if b is not None else _lookup(name)
+    _ref_n = 0   # periodic frame/input-aware GIL yield - a 2200-line span walks
+                 # thousands of refs + getattr chains in one unbroken hold
     for (kind, payload, line, col, scope) in file_refs:
+        _ref_n += 1
+        if not (_ref_n & 2047):
+            _yield_to_ui()
         if not (start_line <= line <= end_line):
             continue
         if kind == "name":
@@ -2052,6 +2097,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             # +20ms delay per span.
             _s0 = _time.monotonic()
             _time.sleep(0.001)
+            _yield_to_ui()   # also park if a frame is mid-draw / typing is live
             # Measured, not assumed: under GIL contention a 1ms sleep can take
             # far longer - the yield IS the contention signal.
             _scan_slept += _time.monotonic() - _s0
@@ -2166,6 +2212,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         if si and si % 32 == 0:
             _s0 = _time.monotonic()
             _time.sleep(0.001)   # GIL yield - inspect.getsourcelines per symbol adds up
+            _yield_to_ui()       # + park while a frame is mid-draw / typing is live
             _def_slept += _time.monotonic() - _s0
         out[nm] = {
             "sites": sites[nm],
@@ -2266,6 +2313,22 @@ def compute_symbol_usages_for_address(address, fast_only=False):
     return _compute_symbol_usages(resolved, start, end, pending_gen, fast_only=fast_only)
 
 
+# In-flight recompute registry: key -> (sig, started monotonic), lock-guarded
+# (recomputes run on several threads at once: chain_in workers, the
+# symbol-index-attach thread, the warmer). Kills the duplicate-concurrent
+# recompute: only ONE recompute per (file, span) key runs at a time,
+# regardless of sig. During a typing burst each keystroke bumps
+# pending_gen, so miss-matched dedup let each generation launch its own
+# full cold pass - ~10 concurrent GIL-starved workers turned a ~2s ind
+# pass into 10s+. Losers serve the prior cached graph (stale-but-valid,
+# the same principle as the parse-failed hold): if the sig moved while the
+# winner ran, its stored (older-sig) entry misses the next probe and that
+# probe launches the single trailing recompute.
+_usage_inflight: dict = {}
+_usage_inflight_lock = threading.Lock()
+_USAGE_INFLIGHT_MAX_AGE_S = 30.0   # a wedged worker must never block recomputes forever
+
+
 def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False) -> dict:
     """Cache + A/B branch core: {symbol: SymbolUsage} for a [start, end] span.
     Toggles.jedi_correctness picks the resolver — jedi (accurate, slow:
@@ -2301,6 +2364,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     _t_probe = _time.monotonic()
+    _t_pcpu = _time.thread_time()   # wall≫cpu in the traces below indicates GIL starvation
     accurate = Toggles.jedi_correctness
     try:
         mtime = resolved.stat().st_mtime
@@ -2378,9 +2442,26 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
         # costs O(file) (pending-overlay text build + content hash), so surface
         # what it burns per frame while the deferred recompute is pending.
         _ptrace_rl(("probe-miss", key),
-                   f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame)",
+                   f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame, "
+                   f"cpu {(_time.thread_time() - _t_pcpu) * 1000:.1f}ms)",
                    file=resolved.name, span=f"{start}-{end}")
         return _NEEDS_RECOMPUTE       # only exact-hit + offset are cheap; defer the rest
+    # In-flight dedup: a recompute for this span is already running on another
+    # thread - even at an OLDER sig (pending_gen moves per keystroke; racing a
+    # concurrent full pass just GIL-starves both). Serve the prior cached graph;
+    # when the winner stores an outdated-sig result, the next probe misses it
+    # and runs the one trailing recompute at the latest sig.
+    with _usage_inflight_lock:
+        _fl = _usage_inflight.get(key)
+        if (_fl is not None
+                and _time.monotonic() - _fl[1] < _USAGE_INFLIGHT_MAX_AGE_S):
+            _ptrace(f"usage recompute dedup (in flight, "
+                    f"{'same' if _fl[0] == sig else 'older'} sig)",
+                    file=resolved.name, span=f"{start}-{end}")
+            return (src[1] if src is not None
+                    else cached[1] if cached is not None else {})
+        _usage_inflight[key] = (sig, _time.monotonic())
+
     # Past every fast path, this is a real incremental/full recompute. Time and
     # notify only here, so cache hits / offsets stay silent.
     recompute_start = _time.monotonic()
@@ -2388,35 +2469,44 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     _ptrace(f"usage recompute start ({_mode}, miss={_why})",
             file=resolved.name, span=f"{start}-{end}", pending_gen=pending_gen)
     try:
-        raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
-               else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
-    except Exception as _e:
-        raw = {}
-        _ptrace(f"usage recompute RAISED {type(_e).__name__}: {_e}",
-                file=resolved.name, span=f"{start}-{end}")
-    # In-progress edit with a syntax error: HOLD the last-good graph instead of
-    # discarding it. Return the emptygraph (so the editor knows the graph
-    # washed) WITHOUT caching over the good entry - leaving it intact means the
-    # next valid parse recomputes incrementally from it rather than raw, and a
-    # never-evicted broken {} snapshot can't poison the offset/reuse paths. A
-    # valid empty span (raw == {}) still caches normally below.
-    if raw is _PARSE_FAILED:
-        _ptrace(f"usage recompute: buffer parse failed after "
-                f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms — holding last-good",
-                file=resolved.name, span=f"{start}-{end}")
-        held = (src[1] if src is not None
-                else cached[1] if cached is not None else {})
-        return held
-    usages = _rebuild_symbol_usages(raw)
-    _ptrace(f"usage recompute done ({_mode}) in "
-            f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms",
-            file=resolved.name, span=f"{start}-{end}", names=len(usages))
-    notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
-           f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
-    # The view moved to `key`; the shifted sibling we reused is now dead weight.
-    _store_usages(key, sig, usages, text, chash=chash,
-                  evict=src_key if (src_key is not None and src_key != key) else None)
-    return usages
+        try:
+            raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
+                   else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
+        except Exception as _e:
+            raw = {}
+            _ptrace(f"usage recompute RAISED {type(_e).__name__}: {_e}",
+                    file=resolved.name, span=f"{start}-{end}")
+        # In-progress edit with a parse parse: HOLD the last-good graph instead of
+        # discarding it. Serve the prior result (so the editor keeps the references
+        # alive) WITHOUT caching over the good entry - leaving it intact means the
+        # next valid parse recomputes incrementally from it rather than cold, and a
+        # never-evicted broken {} snapshot can't poison the cache/reuse paths. A
+        # genuinely empty span (raw == {}) still caches normally below.
+        if raw is _PARSE_FAILED:
+            _ptrace(f"usage recompute: buffer parse failed after "
+                    f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms — holding last-good",
+                    file=resolved.name, span=f"{start}-{end}")
+            held = (src[1] if src is not None
+                    else cached[1] if cached is not None else {})
+            return held
+        usages = _rebuild_symbol_usages(raw)
+        _ptrace(f"usage recompute done ({_mode}) in "
+                f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms",
+                file=resolved.name, span=f"{start}-{end}", names=len(usages))
+        notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
+               f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
+        # The view moved to `key`; the best sibling we reused is now dead weight.
+        _store_usages(key, sig, usages, text, chash=chash,
+                      evict=src_key if (src_key is not None and src_key != key) else None)
+        return usages
+    finally:
+        # Always pop the in-flight registration - including the parse-failed hold
+        # and a raised recompute - or the dedup would serve stale graphs for
+        # _USAGE_INFLIGHT_MAX_AGE_S after a failure. Only pop our own sig: a
+        # NEWER recompute may have already registered over it.
+        with _usage_inflight_lock:
+            if _usage_inflight.get(key, (None, 0))[0] == sig:
+                _usage_inflight.pop(key, None)
 
 
 def _best_same_file_prev(resolved, start, end, gen, exclude_key):
@@ -2447,7 +2537,11 @@ def _raw_from_usages(usages: dict) -> dict:
     every definition + caller, so the expensive half is recovered from it rather
     than stored twice. Only the two keys _symbol_refs_index reads are rebuilt."""
     out = {}
+    _n = 0
     for nm, su in usages.items():
+        _n += 1
+        if not (_n & 63):
+            _yield_to_ui()
         d = su.definition
         out[nm] = {
             "definition": ((str(d.path) if d.path else None, d.line, d.column,
@@ -2507,7 +2601,11 @@ def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None
     falls back to a recompute; a def line that's absent (it became blank — can't
     happen for a real declaration) keeps its old value rather than force one."""
     out = {}
+    _n = 0
     for nm, su in usages.items():
+        _n += 1
+        if not (_n & 63):
+            _yield_to_ui()
         new_sites = []
         for (l, c) in su.sites:
             nl = line_map.get(l)
@@ -2990,17 +3088,34 @@ _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 fr
 _yield_slept = threading.local()
 
 
+# A frame stuck "in flight" longer than this stops parking workers - escape
+# hatch for a stuck/aborted frame that never cleared _frame_draw_start.
+_FRAME_BUSY_MAX_S = 0.5
+
+
+def _ui_busy() -> bool:
+    """Back-off condition for background workers: recent keyboard/mouse input
+    (the parse trails typing), OR a render frame currently mid-draw (the frame
+    crosses hundreds of GIL-releasing GL calls; a CPU-bound worker makes every
+    one of them wait a switch interval — the measured present-stall convoy)."""
+    now = time.monotonic()
+    last = getattr(Melty, "_last_input_time", 0.0)
+    if last and now - last < _YIELD_QUIET_S:
+        return True
+    fs = getattr(Melty, "_frame_draw_start", 0.0)
+    return bool(fs) and (now - fs) < _FRAME_BUSY_MAX_S
+
+
 def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
         return
     if Melty.frame_count < 4:
         return  # app startup: never back off the initial parse, just run it
-    last = getattr(Melty, "_last_input_time", 0.0)
-    if not last or time.monotonic() - last >= _YIELD_QUIET_S:
-        return  # no recent input - fast path, no back-off
-    # Recent input. Only a background worker may sleep here; sleeping the
-    # render/GL thread (or main) would freeze the very UI we mean to protect.
+    if not _ui_busy():
+        return  # no recent input, no frame mid-draw - fast path: no back-off
+    # Only the background worker may sleep here; sleeping the render/GL thread
+    # (or main) would freeze the very UI we mean to protect.
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return
@@ -3010,9 +3125,23 @@ def _yield_to_ui():
         return
     _t0 = time.monotonic()
     while Toggles.yield_to_ui:
-        if time.monotonic() - getattr(Melty, "_last_input_time", 0.0) >= _YIELD_QUIET_S:
+        now = time.monotonic()
+        _input_busy = (getattr(Melty, "_last_input_time", 0.0)
+                       and now - Melty._last_input_time < _YIELD_QUIET_S)
+        _fs = getattr(Melty, "_frame_draw_start", 0.0)
+        _frame_busy = bool(_fs) and (now - _fs) < _FRAME_BUSY_MAX_S
+        if _input_busy:
+            pass                              # typing: park as long as it takes
+        elif _frame_busy and now - _t0 < 0.25:
+            pass                              # frame mid-draw: park, but FAIRLY -
+                                              # a continuously-rendering view
+                                              # (voxel anim) must not starve the
+                                              # worker, so cap this reason per call
+        else:
             break
-        time.sleep(_YIELD_SLICE_S)
+        # Small slice: a parked worker must resume within a few ms of the frame
+        # ending, or the park itself throttles background throughput hard.
+        time.sleep(0.004)
     _yield_slept.t = getattr(_yield_slept, "t", 0.0) + (time.monotonic() - _t0)
 
 
@@ -7863,6 +7992,13 @@ class SymbolIndexCache:
             cls.last_secs = round(_time.perf_counter() - t0, 3)
             cls.builds += 1
             cls.building = False
+        # Timeline: any build that burns real CPU. The steady-state no-op pass
+        # is ~8ms and stays silent, but a cold/slow build is exactly the sort
+        # of unlogged GIL-blocking bg work that makes render-bound code measure
+        # seconds of wall time - it should be visible in the interleaved log.
+        if cls.last_secs >= 0.05 or real:
+            _ptrace(f"warmer: build done in {cls.last_secs * 1000:.0f}ms",
+                    files=cls.src_files, reparsed=cls.last_reparsed, real=real)
         # Notify ONLY when the safety reconcile caught a genuine content change -
         # FileWatch is the primary detector now so this is rare. Steadyy no-op
         # passes and cold re-warms (after a hotswap) reparse files but move no

@@ -2399,7 +2399,7 @@ def render_func(*args, **o_kwargs):
                             closed=False,
                             auto_resize=True,
                             swoosh=False,
-                            tint=draw_state.tint,
+                            tint=(1.0, 1.0, 1.0),
                             mode=Mode.WINDOW_CLEAN,
                             # Pin live to this view's VISIBLE box: Pin.CLIP
                             # intersects the view's rect with the window, so the

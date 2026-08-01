@@ -261,10 +261,14 @@ class FileWatch:
 
     @classmethod
     def register_draw_state(cls, draw_state, path: Path):
-        resolved = str(path.resolve())
-
+        # Early-out BEFORE the resolve - this runs per frame per code view, and
+        # path.resolve() is ~30 syscall/GIL round-trips - under a CPU-bound bg
+        # thread that stretched frames (2026-07-31 stall sampling). The check
+        # never depends on `resolved` (a re-register with a DIFFERENT path
+        # also returned here), so hoisting it is behavior-identical.
         if draw_state in cls.draw_state_to_path:
             return
+        resolved = str(path.resolve())
 
         old_path = cls.draw_state_to_path.pop(draw_state, None)
         if old_path:
@@ -1229,11 +1233,17 @@ class Melty:
             for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
                 if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
                     if focused is not None:
+                        # Editor-anchored: invalidate_up on the FOCUSED view
+                        # re-runs its own subtree (token views catch the key
+                        # edge) and its invalidate() leg force-marks every
+                        # ancestor on the parent-key path, so the cached window
+                        # still re-descends into the editor. Targeting the
+                        # parent WINDOW here instead force-swept the window's
+                        # ENTIRE subtree - the autocomplete code-dict pane
+                        # included, a 16-20ms rebuild - on every frame any key
+                        # was held (level check, not edge).
                         note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
-                        if focused.parent_window is not None:
-                            cls.cache.invalidate_up(focused.parent_window._tile_id, force=True, note=note)
-                        note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
-                        cls.cache.invalidate(focused._tile_id, force=True, note=note)
+                        cls.cache.invalidate_up(focused._tile_id, force=True, note=note)
                         request_render()
                         break
 
@@ -1262,11 +1272,14 @@ class Melty:
                 _need = True
 
             if _need:
-                if pop.parent_window is not None:
-                    cls.cache.invalidate_up(pop.parent_window._tile_id, force=True)
+                # Owner-anchored (same reason as the text-focus block above):
+                # invalidate_up on the popover owner re-runs the menu subtree and
+                # the ancestor climb re-descends the window below it. The parent-
+                # WINDOW sweep this replaces force-invalidated every sibling
+                # subtree per held nav key - Enter is a nav too, so with the
+                # one popup open that was a full dict-pane rebuild per
+                # frame ("Unnamed invalidate_up" in the bump trace).
                 cls.cache.invalidate_up(pop._tile_id, force=True)
-
-
                 request_render()
 
         mouse_pos = imgui.get_mouse_pos()
@@ -2982,8 +2995,9 @@ class Melty:
             ) if downscale > 1 else None
 
             shadow_raw = Melty.filter.shadow_cast(
-                normalized_sub_mask,
+                Melty.cache._full_mask_tex,
                 max_steps=diff / 2.0,
+                depth_scale=depth_scale,
                 output_size=shadow_size,
             )
 
@@ -2996,7 +3010,8 @@ class Melty:
                     input_framebuffer=0,
                     output_framebuffer=0,
                     shadow_map=shadow_raw,
-                    depth_map=normalized_sub_mask,
+                    depth_map=Melty.cache._full_mask_tex,
+                    depth_scale=depth_scale,
                     shadow_opacity=0.9,
                     shadow_color=(0.0, 0.02, 0.05),  # Slightly blue shadow
                     shadow_size=(float(composite_shadow_size[0]),

@@ -275,6 +275,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     spinner_icon_0 = ""
     spinner_icon_1 = ""
 
+
     draw_list = imgui.get_window_draw_list()
     spinner_icon_idx = Melty.frame_count % 2
     spinner_icon = [spinner_icon_0, spinner_icon_1][spinner_icon_idx]
@@ -292,6 +293,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     name_rounding       = 2.696
     max_name_chars      = 40
     min_name_text_width = 62
+    
 
     # Type / unique label colors
     type_label_tint   = (3.672, 1.944, 2.861, 1.0)
@@ -812,6 +814,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                            imgui.get_cursor_screen_pos()[1], spinner_color, spinner_icon)
         imgui.dummy(15, 15)
         imgui.same_line()
+
 
     end_x = imgui.get_cursor_screen_pos()[0]
 

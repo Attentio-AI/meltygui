@@ -1238,31 +1238,17 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Pending Saves window and run the same recompile its button does.
     if draw_state.on_action("non_blocking_ctrl_enter_down", priority_delta=512):
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
-        from src.lsd.gl_gui.notifications import notify
-        ps_win = Core.melty.open_window("draw_pending_saves")
-        result = PendingSave.recompile_all()
-        notify(result)
-        # Surface the same fading check mark + toast the window's button
-        # shows: stamp the result onto the runner's draw_state (its ds
-        # persists across close/open, found by name under the window). A
-        # never-rendered window has no runner ds yet so the toast covers it.
-        if ps_win is not None:
-            for ds in ps_win.descendants(max_depth=8):
-                if str(getattr(ds, 'name', '')).startswith("recompile_all"):
-                    ds.result = result
-                    ds.misc["_result_frame"] = Melty.frame_count
-                    Core.melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
-                    break
-        # External changes ride the same hotkey: hotswap every tracked
-        # externally-changed file from disk. recompile_all surfaces its own
-        # check mark + summary in draw_external_changes (_surface_result) and
-        # keeps its entries - only toast the outcome here. Skip the toast for
-        # the idle no-op case so a plain pending-only recompile doesn't grow a
-        # second "nothing to do" banner.
-        ext_result = ExternalChanges.recompile_all()
-        if not ext_result.startswith("Nothing to recompile"):
-            notify(ext_result)
+        # One worker drives the button's exact UI lifecycle (reveal, busy
+        # spinner, fading, notification + toast) - recompile_all_ui is the
+        # delegate entry the MCP button uses too. recompile_all itself absorbs
+        # external changes now, so the separate ExternalChanges.recompile_all
+        # call is gone (through the delegate it would recompile TWICE). The
+        # worker toasts the summary for the never-rendered-window case.
+        def _hotkey_recompile():
+            from src.lsd.gl_gui.notifications import notify
+            notify(PendingSave.recompile_all_ui())
+        threading.Thread(target=_hotkey_recompile, daemon=True,
+                         name="ctrl_enter_recompile").start()
         request_render()
 
 
@@ -1439,7 +1425,23 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     #             max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)
     draw_any(Core.melty.cache.snapshot_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
 
-    normalized_sub_mask, _, _ = Core.melty.filter.normalize(Core.melty.cache._full_mask_tex)
+    # The normalize is a FULL-SCREEN GPU min-max reduction (~6-8ms CPU + real
+    # GPU fill per frame). Only run it while the debug window is actually open
+    # - it was burning that every frame feeding a CLOSED window. The window ds
+    # is looked up once and cached; a just-reopened window shows the reduce pass
+    # from its last frame (one frame of blank).
+    global _full_mask_win_ds
+    try:
+        _full_mask_win_ds
+    except NameError:
+        _full_mask_win_ds = None
+    if _full_mask_win_ds is None or getattr(_full_mask_win_ds, 'name', None) != 'full_mask_tex':
+        _full_mask_win_ds = next((d for d in Core.melty.cache.key_to_draw_state.values()
+                                  if getattr(d, 'name', None) == 'full_mask_tex'), None)
+    if _full_mask_win_ds is None or not getattr(_full_mask_win_ds, 'closed', False):
+        normalized_sub_mask, _, _ = Core.melty.filter.normalize(Core.melty.cache._full_mask_tex)
+    else:
+        normalized_sub_mask = None
     draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
              max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
 
@@ -6547,7 +6549,8 @@ def _dd_noop_set(*_a, **_k):
 
 
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
-                 cursor_path, tint=None, row_tags=None, row_tints=None, left_pad=10):
+                 cursor_path, tint=None, row_tags=None, row_tints=None,
+                 row_suffixes=None, left_pad=10):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -6621,6 +6624,15 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     color = *(color[:3]), 1.0
     imgui.text_colored(str(label), *color)
 
+    # Dim '(param, param2)' suffix right after a callable's signature (autocomplete
+    # rows): same tint as the label but reduced alpha, so it's subtle on
+    # plain, tinted and active rows alike. imgui text (not raw dl.add_text) so
+    # the row's measured width includes it and auto-resize fits the popup.
+    sfx = row_suffixes.get(value) if row_suffixes else None
+    if sfx:
+        imgui.same_line(spacing=0)
+        imgui.text_colored(sfx, color[0], color[1], color[2], 0.45)
+
     imgui.set_cursor_screen_pos((x, y + h))
 
     # Dimmed tag, right-aligned (autocomplete's func/class/... label). Opaque
@@ -6657,6 +6669,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
              max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
+                 row_suffixes=None,
                  full_render=False, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
@@ -6743,7 +6756,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     # threaded down so nested sub-menus inherit the same render path.
     row_kwargs = dict(show_bg=False, shadow=False, path_prefix=tuple(path_prefix),
                       root_state=root_state, tint=tint, text_align=text_align, z_offset=0,
-                      row_tags=row_tags, row_tints=row_tints, cursor_path=cursor_path,
+                      row_tags=row_tags, row_tints=row_tints, row_suffixes=row_suffixes,
+                      cursor_path=cursor_path,
                       open_path=open_path, full_render=full_render)
 
     if full_render:
@@ -6776,7 +6790,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         else:
             picked = _dd_leaf_row(key, value, label, draw_state, root_state,
                                   tuple(path_prefix), cursor_path, tint=tint,
-                                  row_tags=row_tags, row_tints=row_tints)
+                                  row_tags=row_tags, row_tints=row_tints,
+                                  row_suffixes=row_suffixes)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result
@@ -7219,4 +7234,3 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
     return_val = view_func(input_value, **kwargs)
 
     return return_val
-
