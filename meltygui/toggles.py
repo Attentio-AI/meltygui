@@ -408,6 +408,7 @@ class Toggles:
         min_height = 506.5
         min_width = 94.154
 
+
     @defaults(tint=(0.315, 0.489, 0.322))
     class LoadSave:
         # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
@@ -416,6 +417,7 @@ class Toggles:
         # custom.ini as the main-file identity / fast-reload cache anchor, so leave
         # this True until the .ini is fully abandoned.
         ini_save = False
+
 
     @defaults(tint=(0.189, 0.486, 0.944))
     class WindowSettings:
