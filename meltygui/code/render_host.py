@@ -41,6 +41,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
+
 _UNSET = object()
 
 

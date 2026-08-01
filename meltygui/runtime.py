@@ -737,6 +737,9 @@ class Melty:
     # stencil-mask out higher-layer windows per channel during its deferred pass.
     _overlay_channels_active = False
     _overlay_channel_ranges: list = []
+    # Per-frame dense rank map: raw window z index (window_index) -> overlay
+    # channel. Rebuilt in end_frame; read by overlay_window_channel().
+    _overlay_channel_map: dict = {}
     _overlay_probe_logged = False
     _debug_overlay_test = True  # controlled sub-top overlay to verify masking
 
@@ -906,6 +909,30 @@ class Melty:
         the unmasked global channel; the renderer masks channel C with every
         window whose layer_channel is greater than C."""
         return max(0, min(int(layer), cls.max_depth - 1))
+
+    @classmethod
+    def overlay_window_channel(cls, raw_index) -> int:
+        """Overlay channel for a window's raw z index (window_index),
+        compressed through this frame's dense rank map so z ordering survives
+        the max_layer channel budget. Raw indices grow fast with nesting
+        (layer_offset stacks +4 per level), and routing them straight into
+        channels overflowed the min(index, max_layer - 1) clamp: everything
+        past the clamp collapsed onto the top channel, which the stencil pass
+        never masks — so a deep-nested window's outline/swoosh drew above the
+        very top window, and windows sharing the clamped channel couldn't mask
+        each other. Ranks keep every distinct raw index on its own channel,
+        strictly below any window above it, capped at max_layer - 2 so the
+        global top channel stays reserved for unmasked overlays."""
+        if raw_index is None:
+            return cls.max_layer - 2
+        ch = cls._overlay_channel_map.get(raw_index)
+        if ch is None:
+            # Index not present when the frame map was built (e.g. a window
+            # registered mid-frame): rank it against the known indices. It may
+            # tie for a neighbor's channel, which just means no masking
+            # between those two - the z-map behavior for equal indices.
+            ch = sum(1 for k in cls._overlay_channel_map if k < raw_index)
+        return min(ch, cls.max_layer - 2)
 
     @classmethod
     def bvh_query(cls, x, y):
@@ -2423,7 +2450,7 @@ class Melty:
         # end_frame draws - FPS counter, selection rects, debug text - don't
         # accidentally land on whatever per-window channel a view last set.
         if cls._overlay_channels_active:
-            imgui.get_overlay_draw_list().channels_set_current(cls.max_depth - 1)
+            imgui.get_overlay_draw_list().channels_set_current(cls.max_layer - 1)
 
         Melty.mode_stack = []
 
@@ -2489,6 +2516,25 @@ class Melty:
             DragDrop.frame_update()
         except Exception as dnd_e:
             print(f"DragDrop.frame_update failed: {dnd_e}")
+
+        # Rebuild the dense overlay channel map for this frame (see
+        # overlay_window_channel): one entry per distinct window z index that
+        # will render this frame - top-level registered windows plus every
+        # dispatched nested window (whose window_index will be
+        # abs_layer + its position in the by-layer list, mirroring the
+        # _nested_index stamp in the dispatch loop below). Built after
+        # DragDrop.frame_update so a re-registered floating drag window is
+        # included.
+        raw_window_indices = set()
+        for w in cls.registered_windows.values():
+            w_ds = getattr(w, 'draw_state', None)
+            if w_ds is not None and not w_ds.closed and w_ds.layer is not None:
+                raw_window_indices.add(w_ds.window_index)
+        for l_idx, l_ds_list in cls.root_draw_states_by_layer.items():
+            for d_idx in range(len(l_ds_list)):
+                raw_window_indices.add(l_idx + d_idx)
+        cls._overlay_channel_map = {
+            raw: rank for rank, raw in enumerate(sorted(raw_window_indices))}
 
         # Which swoosh(es) the mouse is over: walk up from the BVH-hovered
         # draw_state (begin_frame's bvh_query hit, so occlusion and hidden
@@ -2583,7 +2629,7 @@ class Melty:
                         # any higher-layer window (matches the renderer's mask).
                         layer_index = draw_state.window_index
 
-                        overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
+                        overlay_dl.channels_set_current(Melty.overlay_window_channel(offset_ds.window_index))
 
                         # Color the highlight using the *parent* window's tint:
                         # the nested view doesn't always carry a tint of its own.
@@ -2672,7 +2718,7 @@ class Melty:
                     child_outline_col = imgui.get_color_u32_rgba(
                         *child_rgb, Tint.highlight_outline_alpha)
 
-                    overlay_dl.channels_set_current(min(draw_state.window_index, Melty.max_layer -1))
+                    overlay_dl.channels_set_current(Melty.overlay_window_channel(draw_state.window_index))
 
                     # Live endpoint positions for both ends - see the note on the
                     # parent highlight box above. Either end can be a child of
@@ -2795,7 +2841,7 @@ class Melty:
             # channel (same as the nested-view highlight and swoosh) so a
             # higher-layer window stencil-masks it, rather than the rect
             # floating on top of everything on the global top channel.
-            overlay.channels_set_current(min(cls.max_layer - 1, selected_ds.window_index))
+            overlay.channels_set_current(cls.overlay_window_channel(selected_ds.window_index))
 
             # Color from the view's storable tint, brightened the same way as
             # the highlight boxes (current_tint may be None -> falls back to
@@ -3285,7 +3331,16 @@ class Melty:
                     siblings.append(nested)
 
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
-            if window_z_pos != cls.pending_move_to_front[1].layer:
+            # layer == top_layer can't prove "already front": a window CLOSED
+            # while front keeps its boosted layer (closed windows never
+            # re-render, so nothing re-stamps it) while other windows get
+            # raised above it in registered_windows order. The first
+            # open_window() would then be skipped here and the window reopens
+            # buried; the render pass re-stamps its registry index as layer,
+            # which is why a SECOND raise worked. Only skip when the window is
+            # is actually the top (last) registry entry.
+            already_front = next(reversed(Melty.registered_windows), None) == window_key
+            if window_z_pos != cls.pending_move_to_front[1].layer or not already_front:
                 old_layer = cls.pending_move_to_front[1].layer
                 cls.pending_move_to_front[1].layer = window_z_pos
                 draw_state = cls.pending_move_to_front[1]

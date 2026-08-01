@@ -483,7 +483,20 @@ class TypeCodec(Codec):
         inserted = 0
         insert_idx = None
         if ensure_import is not None:
-            lines, inserted, insert_idx = _ensure_import_lines(lines, ensure_import[0], ensure_import[1])
+            # Three shapes: (module, name) - the legacy @defaults;; a full
+            # statement string ("import numpy as np" - the editor's
+            # missing-import quick-fix); or a list of either (several fixes
+            # queued on one entry before the flush).
+            _eis = (ensure_import if isinstance(ensure_import, list)
+                    else [ensure_import])
+            for _ei in _eis:
+                if isinstance(_ei, str):
+                    lines, _ins, _idx = _ensure_import_lines(lines, _ei)
+                else:
+                    lines, _ins, _idx = _ensure_import_lines(lines, _ei[0], _ei[1])
+                inserted += _ins
+                if _idx is not None:
+                    insert_idx = _idx if insert_idx is None else min(insert_idx, _idx)
 
         final_text = newline.join(lines)
 
@@ -504,14 +517,19 @@ class TypeCodec(Codec):
             if inserted:  # import landed above our span
                 address.start = old_start + inserted
                 address.end = new_end + inserted
+            # The shift anchor is normally the span's live source; an entry
+            # whose source is deliberately NON-code (like auto-import insertion
+            # - a plain marker string so recompile_all never hotswaps it) can
+            # carry the module to shift as `_shift_source` instead.
+            _shift_src = getattr(address, "_shift_source", None) or address.source
             # Shift siblings below for the body span change (original coords)...
-            shift_sibling_linenos(address.source, address.path,
+            shift_sibling_linenos(_shift_src, address.path,
                                   after_lineno=resolved_old_end, delta=delta)
             # ...then the import insert moved our def AND everything below it down,
             # so shift the saved source too (include_saved) - else its own
             # co_firstlineno goes stale and the next resolve walks back to line 0.
             if inserted and insert_idx is not None:
-                shift_sibling_linenos(address.source, address.path,
+                shift_sibling_linenos(_shift_src, address.path,
                                       after_lineno=insert_idx, delta=inserted,
                                       include_saved=True)
         else:

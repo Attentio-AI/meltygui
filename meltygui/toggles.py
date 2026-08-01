@@ -6,7 +6,6 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defa
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 
-
 @dataclass(frozen=True)
 class Snippet:
     """One code-suggestion snippet row (see Toggles.TextEditor.AC_SNIPPETS):
@@ -433,8 +432,7 @@ class Toggles:
         attrib_change_stack_trace = False
         draw_bvh = False
 
-
-    @defaults(tint=(0.57, 0.4161, 0.057))
+    @defaults(tint=(0.633, 0.532, 0.289, 1.0))
     class ScrollSettings:
         scroll_speed = 611
         max_increment_fraction = 0.169
@@ -482,7 +480,7 @@ class Toggles:
             ("@r",): [
                 Snippet("render_func view",
                         "@render_func(use_cache=True, show_bg=True, with_header=draw_header)\n"
-                        "def draw_$0(input_value, draw_state=None, **kwargs):\n\n    return False, None",
+                        "def draw_$0(input_value, draw_state=None, **kwargs):\n    $1\n    return False, None",
                         "view skeleton", tint=(0.93, 0.56, 0.23)),
                 Snippet("render_func default-for",
                         "@render_func(is_default_for=$0, use_cache=True, show_bg=True)",
@@ -562,9 +560,6 @@ class Toggles:
         def_symbol_alpha = 0.616
         def_line_alpha = 0.089
 
-
-
-
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
         # tints), fading a further step per hop so a value's color trail
@@ -573,7 +568,6 @@ class Toggles:
         # hop 1 at 55%, hop 2 at 30%; chains below 20% stop washing at all).
         def_tint_propagation = True
         def_propagation_fade = 0.705
-
 
         # When enabled the line tint rect above fills the whole line -
         # gutter edge to the view's right edge - instead of hugging the
@@ -692,6 +686,13 @@ class Toggles:
     # edited file + new names. Off = full recompute. Fast path only.
     incremental_symbol_index = True
 
+    # Live-edit span patching on top of the incremental path: re-comcan only the
+    # top-level-statement region around the edit (patched parse artifacts + a
+    # region-restricted pass) and merge against the prior graph - O(edit) per
+    # keystroke instead of O(file). The full pass reconciles once typing goes
+    # idle. Off = every live edit runs the incremental_symbol_index pass.
+    live_incremental_usages = True
+
 
     # Position-only fast path: when an edit only added/removed blank lines, remap
     # the cached line numbers by the delta (~5ms vs ~42ms) instead of recomputing.
@@ -706,17 +707,21 @@ class Toggles:
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
 
-    # While typing, pause the background cst→dict parse on statement boundaries so
-    # the render thread gets the GIL uncontended. Never affects render
-
+    # While typing, pause the background cst→dict parse at statement boundaries so
+    # the render thread gets the GIL uncontended. Never sleeps render
     # [tint=(0.75, 0.46218, 0.00)]
     yield_to_ui = True
+
+    # Automatic 3-way merge of external file changes against pending/live edits
+    # (code_file_io's automerge + PendingSave's recompile-time absorb). Off =
+    # fall back to the manual Merge window / Merge / Keep-mine buttons.
+    auto_merge = False
 
     # Timeline logging of the symbol-index / code-host load path: every
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = True   # TEMP: on while debugging redundant symbol computes / convert.py hang
+    symbol_perf_log = False   # TEMP: on while debugging redundant symbol computes / convert_outcomes
     attrib_churn_log = False
     debug_threads = False
 

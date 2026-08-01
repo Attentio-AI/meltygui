@@ -7,12 +7,12 @@ import time
 import glfw
 import imgui
 
-from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin, DropDownState
+from src.lsd.gl_gui.model.core_model.draw_state import DropDownState
 from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
-from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight, draw_search_highlight_multi
+from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight_multi
 from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.perf_trace import trace as _ptrace
 from src.lsd.gl_gui.fonts import Font
@@ -4329,6 +4329,117 @@ def _exception_errors(error):
     return [(line, msg)]
 
 
+def _missing_name(msg):
+    """The undefined name a lint marker reports ("name 'np' is not defined
+    ...") — '' when the message has another shape."""
+    m = str(msg)
+    if m.startswith("name '"):
+        end = m.find("'", 6)
+        if end > 6:
+            return m[6:end]
+    return ""
+
+
+def _apply_import_fix(stmt, jump_to, text):
+    """Apply one missing-import quick-fix statement. Returns (changed, text).
+
+    Whole-file buffer (no span on the address): insert the statement into the
+    BUFFER after its leading import block and return the new text — the
+    editor's normal edit→save path persists it, and the reparse clears the
+    marker statically.
+
+    Span buffer (a function/class edited on its own): the import belongs at
+    the top of the FILE, outside the buffer. Two coordinated effects:
+      * exec the statement into every live module loaded from the file (both
+        src.-prefixed identities — see the dual-identity memory), so the code
+        actually runs and the next lint pass sees the name bound;
+      * queue the import as a REAL PendingSave entry — a zero-width span at
+        the end of the file's leading import block (disk coordinates), whose
+        data is the statement. It shows up in the pending diff immediately,
+        current_file_text splices it for every whole-file consumer, and the
+        regular flush (apply_all_saves) writes it like any other edit. One
+        accumulating entry per file (marked `_auto_import`) so several fixes
+        never collide on the same address; its source is a plain marker
+        string so recompile_all skips it (the exec above already did the live
+        half), with the module riding on `_shift_source` so codec.save still
+        shifts live linenos when the write lands."""
+    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+        _ensure_import_lines)
+    path = getattr(jump_to, 'path', None)
+    start = getattr(jump_to, 'start', None)
+    if path is None or start is None:
+        lines = text.split('\n')
+        new_lines, inserted, _ = _ensure_import_lines(lines, stmt)
+        if not inserted:
+            return False, text
+        return True, '\n'.join(new_lines)
+
+    # ── Span buffer: live-module exec + pending file-top insert ──────────────
+    import os
+    import sys as _sys
+    target = str(path)
+    try:
+        target_real = os.path.realpath(target)
+    except OSError:
+        target_real = target
+    live_mod = None
+    for mod in list(_sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        if f is not None and (f == target or f == target_real):
+            try:
+                exec(compile(stmt, "<auto-import>", "exec"), vars(mod))
+            except Exception:
+                continue            # a failing import must never break the session
+            try:
+                if live_mod is None or len(vars(mod)) > len(vars(live_mod)):
+                    live_mod = mod  # richest identity is the one that really ran
+            except TypeError:
+                pass
+
+    try:
+        from pathlib import Path as _P
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
+            TypeCodec, _span_fingerprint)
+        from src.lsd.gl_gui.view.core_conversion.address import Address
+        rp = _P(target_real)
+        # Dedup against the file as it WOULD save - disk plus every queued
+        # edit (including an earlier auto-import entry).
+        merged = PendingSave.current_file_text(rp)
+        if merged is not None:
+            _, _would_insert, _ = _ensure_import_lines(merged.split('\n'), stmt)
+            if not _would_insert:
+                return False, text
+        # One accumulating entry per file: a second fix appends its line.
+        for addr, (codec, kw) in list(PendingSave.pending_saves.items()):
+            if getattr(addr, '_auto_import', False) and addr.path == rp:
+                data = kw.get('data') or ''
+                if stmt not in data.split('\n'):
+                    new_data = (data + '\n' + stmt) if data else stmt
+                    PendingSave.queue_save(addr, codec,
+                                           **{**kw, 'data': new_data})
+                return False, text
+        # Fresh entry: insertion point in DISK lines (pending entries splice
+        # into disk text - see current_file_text / apply_all_saves).
+        disk = Melty.read_code(rp)
+        if disk is None:
+            return False, text
+        disk_lines = disk.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        _, _ins, _idx = _ensure_import_lines(disk_lines, stmt)
+        if not _ins:
+            return False, text
+        address = Address(rp, start=_idx, end=_idx, source=f"auto-import:{rp}")
+        address._auto_import = True
+        address._shift_source = live_mod
+        address._span_fp = _span_fingerprint([])   # a zero-width span is empty
+        PendingSave.originals[address] = ""
+        PendingSave.queue_save(address, TypeCodec, data=stmt)
+    except Exception:
+        pass                        # the live exec above already fixed the session
+    return False, text
+
+
 def _describe_code_tree(code_tree):
     """One-line readout of what round-tripped into draw_text as code_tree, for
     the debug indicator."""
@@ -4341,6 +4452,7 @@ def _describe_code_tree(code_tree):
     if isinstance(code_tree, dict):
         return f"{name} ({len(code_tree)} keys)"
     return name
+
 
 
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
@@ -4356,21 +4468,22 @@ def draw_text(input_value: str, height=None,
               draw_state=None, request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.149, font=Font.JETBRAINS_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
+              import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
 
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
-    # One summary line per edited frame - plus any frame >= 8ms - goes to the
-    # perf_trace output (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
+    # One summary line per edited frame — plus any frame >= 8ms — goes to the
+    # per_trace timeline (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
     # be read against the background reparse/index lines around it.
     _pf_t0 = time.perf_counter()
     _pf_cpu0 = time.thread_time()   # wall≫cpu in the summary = GIL starvation
     _pf_marks = []
     _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
-
+    
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
 
@@ -4414,6 +4527,10 @@ def draw_text(input_value: str, height=None,
     if getattr(ds, '_uj_state', None) is None:
         ds._uj_state = DropDownState()
     uj_state = ds._uj_state
+    # Similarly for the import quick-fix chooser (Alt+Enter on a missing-import line).
+    if getattr(ds, '_qf_state', None) is None:
+        ds._qf_state = DropDownState()
+    qf_state = ds._qf_state
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
     from src.lsd.gl_gui.toggles import Toggles
@@ -4425,6 +4542,33 @@ def draw_text(input_value: str, height=None,
     _ct_errors = _code_tree_errors(code_tree) if code_tree is not None else None
     _err_markers = list(_ct_errors) if _ct_errors else []
     _err_markers += _exception_errors(error)
+    # Import quick-fix bookkeeping. `_qf_fixes` maps line → candidate import
+    # statements, fed from the SEPARATE suggestions channel (`import_fixes`,
+    # from ModesState.last_imports) - independent of the error markers, so a
+    # transient error like a half-typed `json.` never hides the fix. Applied
+    # fixes are remembered per payload IDENTITY (`_qf_applied`) and filtered
+    # out immediately - a spanless fix doesn't change the buffer, so the
+    # stale suggestion/marker would otherwise linger until the next scan; a
+    # fresh scan (new identity) resets the memory and re-offers anything the
+    # fix didn't actually cure.
+    if getattr(ds, '_qf_applied_ct', None) != (id(code_tree), id(import_fixes)):
+        ds._qf_applied_ct = (id(code_tree), id(import_fixes))
+        ds._qf_applied = set()
+    if getattr(ds, '_qf_applied', None):
+        _err_markers = [(l, m) for l, m in _err_markers
+                        if _missing_name(m) not in ds._qf_applied]
+    _qf_fixes = {}
+    if import_fixes:
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+        for _ln, _stmts in import_fixes.items():
+            try:
+                _ln = int(_ln)
+            except (TypeError, ValueError):
+                continue
+            _row = [_s for _s in _stmts
+                    if not (ds._qf_applied and _import_bound_name(_s) in ds._qf_applied)]
+            if _row:
+                _qf_fixes[_ln] = _row
     # Suppression (clearing _err_markers and _err_msg while keyboard editing) is
     # applied AFTER the keyboard recompute below, so it can read this frame's
     # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
@@ -4629,7 +4773,6 @@ def draw_text(input_value: str, height=None,
         if _any_down:
             request_render()
             
-            
     _fired = {k for k, _m in _frame_keys}
     pressed = lambda k: k in _fired
     _pf("setup")
@@ -4639,6 +4782,7 @@ def draw_text(input_value: str, height=None,
     # rebind focus by tile id so a cache hit doesn't silently drop it.
     if (not is_focused and Melty.text_focused_ds is not None
             and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
+    
         if Toggles.TextEditor.text_focus_stack_trace:
             print(f"[focus-grant] rebind -> {ds.name} ({ds._tile_id}) "
                   f"from ds {id(Melty.text_focused_ds)}")
@@ -4698,8 +4842,8 @@ def draw_text(input_value: str, height=None,
                     return True
                 return False
         return False
-
-
+        
+    
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
@@ -4924,6 +5068,70 @@ def draw_text(input_value: str, height=None,
                 ds._uj_open = False
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
+
+        # --- Import quick-fix (Alt+Enter) --- same key model as the popups
+        # above. While the chooser is open, Esc/arrows/Enter drive it (keys
+        # consumed before the caret handlers). Otherwise Alt+Enter with the
+        # caret on a missing-import site applies the single fix directly, or
+        # opens the chooser when several imports could bind the name.
+        _alt = getattr(io, 'key_alt', False)
+        _qf_enter = pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)
+        if getattr(ds, '_qf_open', False):
+            _qf_opts = getattr(ds, '_qf_options', None) or []
+            _qf_idx = getattr(ds, '_qf_index', 0)
+            if pressed(glfw.KEY_ESCAPE):
+                ds._qf_open = False
+                _fired.discard(glfw.KEY_ESCAPE)
+            elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _qf_opts:
+                step = 1 if pressed(glfw.KEY_DOWN) else -1
+                _qf_idx = (_qf_idx + step) % len(_qf_opts)
+                ds._qf_index = _qf_idx
+                qf_state._kbd_mode = True
+                qf_state.cursor_path = (_qf_opts[_qf_idx],)
+                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                _dd_scroll_cursor_into_view(
+                    Melty.cache.key_to_draw_state.get(getattr(ds, '_qf_menu_tile', None)),
+                    _qf_idx)
+                _fired.discard(glfw.KEY_UP)
+                _fired.discard(glfw.KEY_DOWN)
+                request_render()
+            elif _qf_enter and _qf_opts and not ctrl:
+                _stmt = _qf_opts[min(_qf_idx, len(_qf_opts) - 1)]
+                _fx_changed, _fx_text = _apply_import_fix(_stmt, jump_to, text)
+                from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+                ds._qf_applied.add(_import_bound_name(_stmt))
+                if _fx_changed:
+                    ds.text_cursor_pos += len(_fx_text) - len(text)
+                    text = _fx_text
+                    changed = True
+                ds._qf_open = False
+                _fired.discard(glfw.KEY_ENTER)
+                _fired.discard(glfw.KEY_KP_ENTER)
+                request_render()
+        elif _alt and _qf_enter and not ctrl and not is_search_box:
+            _caret_ln = text.count('\n', 0, ds.text_cursor_pos) + 1
+            _qf_opts = _qf_fixes.get(_caret_ln) or []
+            if len(_qf_opts) == 1:
+                _fx_changed, _fx_text = _apply_import_fix(_qf_opts[0], jump_to, text)
+                from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+                ds._qf_applied.add(_import_bound_name(_qf_opts[0]))
+                if _fx_changed:
+                    ds.text_cursor_pos += len(_fx_text) - len(text)
+                    text = _fx_text
+                    changed = True
+                _fired.discard(glfw.KEY_ENTER)
+                _fired.discard(glfw.KEY_KP_ENTER)
+                request_render()
+            elif len(_qf_opts) > 1:
+                ds._qf_options = list(_qf_opts)
+                ds._qf_index = 0
+                ds._qf_anchor = ds.text_cursor_pos
+                ds._qf_open = True
+                qf_state._kbd_mode = True
+                qf_state.cursor_path = (_qf_opts[0],)
+                _fired.discard(glfw.KEY_ENTER)
+                _fired.discard(glfw.KEY_KP_ENTER)
+                request_render()
         # --- Typed characters --- drained in order, using each key event's own
         # modifiers so fast shift-typing across a slow frame stays shifted.
         typed_dot_this_frame = False
@@ -5298,8 +5506,6 @@ def draw_text(input_value: str, height=None,
         # anchor it hangs off) are stale the moment the text shifts.
         if changed and getattr(ds, '_uj_open', False):
             ds._uj_open = False
-
-
 
         # --- Code-suggestion popup: toggle visibility + rebuild candidates ---
         # Runs after every text-mutating key so the prefix reflects the final
@@ -5878,6 +6084,39 @@ def draw_text(input_value: str, height=None,
             if ey1 < rect_min_y or ey0 > rect_max_y:
                 continue
             draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, imgui.get_color_u32_rgba(*err_bg))
+    # Import quick-fix popover: caret parked on a line using a symbol an
+    # import could bind → a small floating hint at the end of that line.
+    # Deliberately independent of the error markers (the suggestions travel
+    # on their own channel, and a parser error may sit on a DIFFERENT line
+    # than the half-typed `json.`). Alt+Enter applies the fix (or opens the
+    # chooser widget when several imports could bind the name - see the
+    # keyboard block and the _qf draw_dd_menu below).
+    if True:
+        if _qf_fixes and Melty.text_focused_ds is draw_state \
+                and not getattr(ds, '_qf_open', False):
+            _po_ln = text.count('\n', 0, ds.text_cursor_pos) + 1
+            _po_opts = _qf_fixes.get(_po_ln)
+            if _po_opts:
+                _po_ls = 0
+                for _ in range(_po_ln - 1):
+                    _po_ls = text.find('\n', _po_ls) + 1
+                _po_le = text.find('\n', _po_ls)
+                _po_line_text = text[_po_ls:] if _po_le == -1 else text[_po_ls:_po_le]
+                _po_label = (f"Alt+Enter  {_po_opts[0]}" if len(_po_opts) == 1
+                             else f"Alt+Enter  {len(_po_opts)} imports…")
+                _po_w, _po_h = imgui.calc_text_size(_po_label)
+                _po_x = origin_x + imgui.calc_text_size(_po_line_text).x + 28
+                _po_y = origin_y + (_po_ln - 1) * line_px
+                if rect_min_y <= _po_y <= rect_max_y:
+                    draw_list.add_rect_filled(
+                        _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
+                        imgui.get_color_u32_rgba(0.13, 0.16, 0.24, 0.96), 5.0)
+                    draw_list.add_rect(
+                        _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
+                        imgui.get_color_u32_rgba(0.45, 0.60, 0.90, 0.55), 5.0)
+                    draw_list.add_text(_po_x, _po_y,
+                                       imgui.get_color_u32_rgba(0.72, 0.82, 1.0, 1.0),
+                                       _po_label)
 
     # Diff washes: in is_diff mode each line's leading marker (the +/- left over
     # from the unified diff, with the ---/+++/@@ headers already stripped by the
@@ -6565,6 +6804,49 @@ def draw_text(input_value: str, height=None,
         _open_usage_ref(uj_pick)
         ds._uj_open = False
 
+    # --- Import quick-fix chooser --- same latched-window contract as the two
+    # popups above: draw_dd_menu called EVERY frame with closed= toggled. Rows
+    # are the candidate import statements for the caret line's missing name;
+    # a pick - mouse or Enter (handled in the key block) - applies the fix.
+    _qf_show = (Melty.text_focused_ds is draw_state
+                and getattr(ds, '_qf_open', False)
+                and bool(getattr(ds, '_qf_options', None)))
+    _qf_items = {s: s for s in (ds._qf_options if _qf_show else [])}
+    _qf_anchor = getattr(ds, '_qf_anchor', ds.text_cursor_pos)
+    _qf_x, _qf_y = _char_pos_to_xy(text, _qf_anchor, origin_x, origin_y, line_px, vcols=vcols)
+    qf_changed, qf_pick, _qf_menu_ds = draw_dd_menu(
+        _qf_items, name=f"{ds.name}_qf_menu", view_offset=False,
+        temp=True, show_search=False, swoosh=False, closed=not _qf_show, max_height=400,
+        window_pos=(_qf_x - draw_state.abs_left, _qf_y - draw_state.abs_top + line_px),
+        text_align="left", parent_window=draw_state, root_state=qf_state,
+        path_prefix=(), return_extras=True)
+    if _qf_menu_ds is not None:
+        ds._qf_menu_tile = _qf_menu_ds._tile_id
+    # Change-gated repaint - one invalidate per real change edge (options swap,
+    # arrow nav); same design as the popups above.
+    if _qf_show:
+        _sig = (tuple(ds._qf_options), getattr(ds, '_qf_index', 0))
+        if _sig != getattr(ds, '_qf_menu_sig', None):
+            ds._qf_menu_sig = _sig
+            _mt = getattr(ds, '_qf_menu_tile', None)
+            # if _mt is not None:
+                # Melty.cache.invalidate_up(_mt, force=True)
+                # request_render()
+    else:
+        ds._qf_menu_sig = None      # force one repaint on the next open
+    if qf_changed and isinstance(qf_pick, str):
+        _fx_changed, _fx_text = _apply_import_fix(qf_pick, jump_to, text)
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
+        if getattr(ds, '_qf_applied', None) is None:
+            ds._qf_applied = set()
+        ds._qf_applied.add(_import_bound_name(qf_pick))
+        if _fx_changed:
+            ds.text_cursor_pos += len(_fx_text) - len(text)
+            text = _fx_text
+            changed = True
+        ds._qf_open = False
+        request_render()
+
     if _font_pushed:
         imgui.pop_font()
 
@@ -6605,6 +6887,7 @@ def draw_text(input_value: str, height=None,
         imgui.set_cursor_screen_pos((bx0 + pad_x, by0 + pad_y))
         imgui.text_colored(msg, 1.0, 0.5, 0.46, 1.0)
         imgui.set_cursor_screen_pos(_save_cursor)
+        
 
     # window_pos is an offset from the parent window's absolute origin. The menu
     # window carries an intrinsic ~one-row top offset (draw_dropdown back-compensates

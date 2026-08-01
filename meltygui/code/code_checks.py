@@ -7,7 +7,12 @@ this pass only adds the NameError / TypeError / AttributeError class of
 mistakes those let through:
 
   * a Name load that no enclosing scope, builtin, or live-module global binds
-    ("name 'myvarr' is not defined")
+    ("name 'myvarr' is not defined"). When the name is satisfiable by an
+    import — an importable top-level module, or a name other live modules got
+    from an import (`np`, `Path`, ...) — the message carries the exact fixing
+    statement after a "missing import:" marker, e.g.
+    "name 'np' is not defined — missing import: import numpy as np", so the
+    editor can both style it distinctly and offer the auto-import fix.
   * a call to a function/class DEFINED IN THIS BUFFER whose arguments can't
     bind (unknown kwarg, too many positionals, missing required args)
   * the same signature check against LIVE objects — a bare imported name
@@ -50,6 +55,7 @@ import builtins
 import inspect
 import os
 import sys
+import time
 import types
 
 # Names every module/frame sees without a visible binding.
@@ -135,6 +141,7 @@ class _Collector:
         self.declared_attrs = set() # dotted paths the buffer itself makes visible:
                                     # `import a.b` / `from a.b import c` / `a.b = ...`
         self.star_import = False
+        self.star_modules = []      # `from X import *` source module names
         self._name_guard = 0        # >0 inside try guarded by except NameError
         self._type_guard = 0        # >0 inside try guarded by except TypeError/AttributeError
 
@@ -282,6 +289,11 @@ class _Collector:
         for alias in node.names:
             if alias.name == "*":
                 self.star_import = True
+                # Which module the * came from (None for relative imports) -
+                # _module_text_binds resolves the export list through the
+                # LIVE module so a star import doesn't force the whole
+                # binds answer to "unknowable".
+                self.star_modules.append(node.module if not node.level else None)
             else:
                 scope.bind(alias.asname or alias.name, is_import=True)
                 if node.module and not node.level:
@@ -776,14 +788,271 @@ def _check_call_live(ctx, call, scope):
     return _match_spec(fname, spec, call) if spec is not None else None
 
 
+# ── import suggestions - a SEPARATE channel from errors ─────────────────────
+#
+# These are what the editor's quick-fix reads ({line: [statements]},
+# built by collect_import_suggestions below), never encoded into error
+# messages: an error describes what's wrong ("expected NAME", "name 'json' is
+# not defined") whereas suggestions propose a fix, and the two travel side by
+# side through the chain payload (`lint` vs `imports`).
+
+# How many candidate statements a symbol gets (the editor shows them in a
+# dropdown; past a handful they're meaningless, their choice).
+_MAX_IMPORT_CANDIDATES = 4
+
+_import_suggestion_cache = {}   # name -> [import statements] (possibly empty)
+
+
+def _suggest_import(name):
+    """The import statements that would bind `name`, best-ranked first — []
+    when nothing importable answers to it (then it's just a typo/unassigned
+    variable).
+
+    Three probes, cheapest first, results cached per name:
+      * `name` is a top-level module already loaded in this process
+      * other LIVE modules bind `name` — to a module (`np` → numpy ⇒
+        `import numpy as np`) or to an object its defining module really
+        exports (`Path` ⇒ `from pathlib import Path`); candidates rank by how
+        many live modules vote for them
+      * `name` is an importable-but-not-yet-loaded module (find_spec — path
+        search only, nothing executes)
+    """
+    if name in _import_suggestion_cache:
+        return _import_suggestion_cache[name]
+    stmts = []
+    if name in sys.modules and "." not in name:
+        stmts.append(f"import {name}")
+    votes = {}
+    for mod in list(sys.modules.values()):
+        try:
+            obj = vars(mod).get(name, _MISS)
+        except TypeError:
+            continue
+        if obj is _MISS:
+            continue
+        if isinstance(obj, types.ModuleType):
+            top = obj.__name__
+            if top.endswith("." + name) and (stmts
+                                             or top == f"{getattr(mod, '__name__', '')}.{name}"):
+                # A nested `*.json`-style module, either the binder's own
+                # submodule attribute (datasets.utils.json - not an alias
+                # vote), or trumped by the exact top-level module when one
+                # exists (`import json` beats any wrapper of it).
+                continue
+            cand = (f"import {top}" if top == name
+                    else f"import {top} as {name}")
+        else:
+            owner = getattr(obj, "__module__", None)
+            owner_mod = sys.modules.get(owner) if owner else None
+            if (owner_mod is None
+                    or getattr(owner_mod, name, _MISS) is not obj):
+                continue            # not really importable as `name` from there
+            cand = f"from {owner} import {name}"
+        votes[cand] = votes.get(cand, 0) + 1
+    for cand, _n in sorted(votes.items(), key=lambda kv: -kv[1]):
+        if cand not in stmts:
+            stmts.append(cand)
+    if not stmts:
+        import importlib.util
+        try:
+            if "." not in name and importlib.util.find_spec(name) is not None:
+                stmts.append(f"import {name}")
+        except Exception:
+            pass
+    stmts = stmts[:_MAX_IMPORT_CANDIDATES]
+    _import_suggestion_cache[name] = stmts
+    return stmts
+
+
+_file_binds_cache = {}   # str(path) -> (mtime_ns, pending_gen, binds, mono_ts)
+
+# Freshness floor for the binds cache: within this window a cached answer is
+# served even when (mtime, pending_gen) moved on. pending_gen bumps on EVERY
+# queued keystroke save (and redundantly during chain_out echo bursts), so
+# keying on it alone would re-run the whole-file ast parse near-continuously
+# while typing. Import-block changes are rare and human-paced - a second of
+# staleness is invisible, the saved parses are not.
+_FILE_BINDS_MIN_INTERVAL_S = 1.0
+
+
+def _module_text_binds(path):
+    """Module-scope names the file's CURRENT text binds — pending-save
+    inclusive, so an import removed (or added) in an unsaved edit changes the
+    answer immediately. This, not the live namespace, is the truth for "does
+    the module still import X": the live module keeps a binding forever once
+    an import RAN, so lint suppression keyed on it could never re-flag a
+    removed import.
+
+    None when the text is unreadable/unparseable or holds a star import —
+    callers fall back to the live namespace (err on silence, exactly the old
+    behavior). Cached on (mtime_ns, pending_gen) per CLAUDE.md's no-content-
+    hash rule, with a time floor (_FILE_BINDS_MIN_INTERVAL_S) so gen churn
+    can't re-parse the file continuously; runs on the lint's worker."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    now = time.monotonic()
+
+    def _fresh(hit):
+        return hit is not None and (
+            (hit[0] == st.st_mtime_ns and hit[1] == gen)
+            or now - hit[3] < _FILE_BINDS_MIN_INTERVAL_S)
+
+    gen = 0
+    text = None
+    key = str(path)
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from pathlib import Path as _P
+        rp = _P(path).resolve()
+        key = str(rp)
+        gen = PendingSave.pending_gen_for(rp)
+        hit = _file_binds_cache.get(key)
+        if _fresh(hit):
+            return hit[2]
+        text = PendingSave.current_file_text(rp)
+    except Exception:
+        hit = _file_binds_cache.get(key)
+        if _fresh(hit):
+            return hit[2]
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            text = None
+    binds = None
+    if text is not None:
+        try:
+            file_col = _Collector()
+            file_col.run(ast.parse(text))
+            binds = set(file_col.module.binds)
+            # Star imports don't make the answer unknowable: resolve each
+            # source to its LIVE module's export list (__all__, else
+            # public names). Only an unloaded/relative star source degrades
+            # to None (fall back to live-ns suppression).
+            for sm in file_col.star_modules:
+                mod = sys.modules.get(sm) if sm else None
+                if mod is None:
+                    binds = None
+                    break
+                names = getattr(mod, "__all__", None)
+                if names is None:
+                    names = [n for n in vars(mod) if not n.startswith("_")]
+                binds.update(names)
+            if binds is not None:
+                binds = frozenset(binds)
+        except (SyntaxError, ValueError, RecursionError, TypeError):
+            binds = None
+    _file_binds_cache[key] = (st.st_mtime_ns, gen, binds, now)
+    return binds
+
+
+def _buffer_text_binds(text, name):
+    """Best-effort "does the BUFFER bind `name` somewhere" textual scan — a
+    local var, param, def/class, loop/with target. Used where the buffer's
+    parse can't be trusted (mid-edit syntax errors), so it errs on silence."""
+    import re
+    e = re.escape(name)
+    return bool(
+        re.search(rf"(?m)^\s*(?:def|class)\s+{e}\b", text)
+        or re.search(rf"(?m)^\s*{e}\s*(?:=[^=]|,|\s*=$)", text)
+        or re.search(rf"\b(?:as|for)\s+{e}\b", text)
+        or re.search(rf"(?m)^\s*(?:def\s+\w+|lambda)\s*\([^)]*\b{e}\b", text))
+
+
+def collect_import_suggestions(text, path=None):
+    """{1-based line: [import statements]} for every symbol the buffer USES
+    but nothing binds — the editor's Alt+Enter quick-fix data. A SEPARATE
+    channel from the error lint: errors say what's wrong, this says what
+    would fix a missing name, and the two travel side by side.
+
+    Tokenize-based, so it works mid-edit: a dangling `json.` is a SYNTAX
+    error that stops every parse-based pass, but tokenizing doesn't care —
+    which is exactly the IDE workflow (type `json.`, Alt+Enter, keep
+    typing). Base identifiers only (not attributes after a dot, not
+    assignment targets, not keywords / def / import clauses); a name
+    survives only when neither the module's current text
+    (_module_text_binds — pending-save inclusive) nor the buffer itself
+    (_buffer_text_binds) accounts for it AND an import statement would bind
+    it (_suggest_import)."""
+    import io
+    import keyword
+    import tokenize as _tokenize
+    toks = []
+    try:
+        for tok in _tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in (_tokenize.NAME, _tokenize.OP):
+                toks.append(tok)
+    except (_tokenize.TokenizeError, IndentationError, SyntaxError, ValueError):
+        pass                        # use whatever tokenized before the break
+    if not toks:
+        return {}
+    file_binds = _module_text_binds(path) if path else None
+    lines = text.split("\n")
+    verdict = {}                    # name -> [stmts] or None (checked once)
+    out = {}
+    for i, tok in enumerate(toks):
+        s = tok.string
+        if tok.type != _tokenize.NAME or keyword.iskeyword(s):
+            continue
+        lineno = tok.start[0]
+        stripped = (lines[lineno - 1].strip()
+                    if 1 <= lineno <= len(lines) else "")
+        if stripped.startswith(("import ", "from ", "@")):
+            continue                # import block / decorator lines
+        prev = toks[i - 1].string if i > 0 else None
+        nxt = toks[i + 1].string if i + 1 < len(toks) else None
+        if prev in (".", "def", "class", "as", "import", "from"):
+            continue                # attr / binding position
+        if nxt == "=":              # plain assignment target (== is one token)
+            continue
+        if s not in verdict:
+            stmts = None
+            if s not in _BUILTIN_NAMES \
+                    and not (file_binds is not None and s in file_binds) \
+                    and not _buffer_text_binds(text, s):
+                try:
+                    stmts = _suggest_import(s) or None
+                except Exception:
+                    stmts = None
+            verdict[s] = stmts
+        stmts = verdict[s]
+        if stmts:
+            row = out.setdefault(lineno, [])
+            for st in stmts:
+                if st not in row:
+                    row.append(st)
+    return out
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
-def check_source(text, path=None, max_reports=40):
+def check_source(text, path=None, max_reports=40, only_missing_imports=False):
     """[(line, message)] for problems that would survive compile() but blow up
     at run time. Empty list when clean — or when the buffer isn't checkable
-    (syntax error here means the parse/compile pass already reported it)."""
+    (syntax error here means the parse/compile pass already reported it).
+
+    only_missing_imports=True is the SPAN-buffer mode (a function/class source
+    edited on its own): the buffer legitimately uses names its module's import
+    block binds, so a generic undefined-name report would flag every one. With
+    `path` = the enclosing module's file, the live-module namespace suppresses
+    everything the module actually binds; what's left is only reported when an
+    import statement would fix it (the missing-import classification below) —
+    a bare typo stays silent, as do the call-signature / attr passes (their
+    builtin fallback can't see module-level shadowing from inside a span)."""
     try:
         tree = ast.parse(text)
+    except IndentationError:
+        # A method/nested span arrives at its class-body indent - dedent and
+        # retry (line numbers survive; textwrap.dedent strips only the common
+        # prefix). string_to_cst_module does its own dedent, but this is the
+        # lint's mirror of the same normalization.
+        import textwrap
+        try:
+            tree = ast.parse(textwrap.dedent(text))
+        except (SyntaxError, ValueError):
+            return []
     except (SyntaxError, ValueError):
         return []
     col = _Collector()
@@ -804,14 +1073,42 @@ def check_source(text, path=None, max_reports=40):
             seen.add((line, msg))
             reports.append((line, msg))
 
+    # Span mode checks "does the module bind this" against the file's
+    # CURRENT text (pending/inclusive), not its live namespace: a module keeps
+    # a live binding forever once an import happens, so live-ns suppression would
+    # never re-flag an import the user removed. None (unreadable / mid-edit /
+    # star import) falls back to the live namespace as usual.
+    file_binds = (_module_text_binds(path)
+                  if only_missing_imports and path else None)
+
     if not col.star_import:
         for scope in col.scopes:
             for name, lineno in scope.loads:
-                if name in _BUILTIN_NAMES or name in live_names:
+                if name in _BUILTIN_NAMES:
                     continue
                 if _resolves(scope, name):
                     continue
+                if file_binds is not None and name in file_binds:
+                    continue        # the module's current text binds it
+                if file_binds is None and only_missing_imports and name in live_names:
+                    continue        # no readable file text - old suppression
+                try:
+                    fixable = bool(_suggest_import(name))
+                except Exception:
+                    fixable = False  # classification must never break the lint
+                # A fixable name reports even when the live namespace still
+                # carries it (a removed import, or an exec-injected binding
+                # the SOURCE never declares): the file wouldn't run from
+                # scratch. The fix itself rides the SEPARATE suggestions
+                # channel (collect_import_suggestions), not the message.
+                if not fixable and (name in live_names or only_missing_imports):
+                    continue        # injected-at-runtime / a module global we
+                                    # can't see - unfixable, stay silent
                 report(lineno, f"name '{name}' is not defined")
+
+    if only_missing_imports:
+        reports.sort()
+        return reports[:max_reports]
 
     for call, scope, guarded in col.calls:
         msg = _check_call_static(call, scope)

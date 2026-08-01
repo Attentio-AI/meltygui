@@ -508,8 +508,16 @@ class PendingSave:
         elif prefer == "theirs":
             merged = disk_n
         else:
-            merged = disk_n if mine == base_n \
-                else three_way_merge(base_n, mine, disk_n)
+            # Auto 3-way merge gated behind Toggles.auto_merge (suspected in
+            # editor.py); off → overlapping pending edits report as a
+            # conflict for the manual Merge window instead of merging silently.
+            from src.lsd.gl_gui.toggles import Toggles
+            if mine == base_n:
+                merged = disk_n
+            elif Toggles.auto_merge:
+                merged = three_way_merge(base_n, mine, disk_n)
+            else:
+                merged = None
             if merged is None:
                 return (f"CONFLICT {name}: {len(absorbed)} pending edit(s) "
                         f"overlap the external change — see Merge window")

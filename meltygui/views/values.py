@@ -59,6 +59,7 @@ from src.shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 
 
+
 @render_func(use_cache=True, show_bg=True, width=20, height=22, tile_mode=TileMode.MAX,
              auto_resize=False, just_shadow=True, selectable=False, no_cursor=True, temp=True)
 def empty(input_val):
@@ -395,7 +396,9 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     if child_kwargs is None:
         child_kwargs = {}
+
     changed = False
+
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict,
                                                                               types.MappingProxyType, deque)):
         input_value = input_value.children
@@ -2656,7 +2659,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
     box_h = 21
     text_inset = 8
     cursor_start = imgui.get_cursor_pos_x()
-
+    
     if input_value:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), 1.0)
         text_color = (*Tint.checkbox_text_true(), 1.0)
@@ -3952,7 +3955,7 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
              indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False,
              with_header=draw_header)
 def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235, tint_saturation=0.372, unique=None,
-                 collection=None, as_toggles=False, tints=None, draw_state=None):
+                 collection=None, as_toggles=False, tints=None, width=None, draw_state=None):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
     Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width.
 
@@ -3985,16 +3988,16 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     content_width = draw_state.content_width if draw_state is not None else 0
     x_limit = origin_x + content_width if content_width > 0 else None
 
-    # content_width is parent-derived and ignores an explicitly passed width
-    # (the context menu passes width=content_width-282), so it can overshoot
-    # the bar's real right edge. Clamp to the bar's own edge and clip rect.
-    if draw_state is not None:
-        if draw_state.width:
-            view_right = draw_state._abs_left() + draw_state.width - 3
-            x_limit = view_right if x_limit is None else min(x_limit, view_right)
-        clip = draw_state.abs_clip_rect
-        if clip is not None and x_limit is not None:
-            x_limit = min(x_limit, clip[2])
+    # An explicitly passed width is a real constraint content_width knows
+    # nothing about (the context menu passes width=content_width-282) — clamp
+    # to it. draw_state.width and abs_clip_rect are NOT constraints here: with
+    # wrap=True the wrapper writes the measured content extent back into
+    # draw_state.width (and the clip rect derives from it), so clamping to
+    # them ratchets the bar narrower on every reflow until each tab fits on
+    # its own row.
+    if width and draw_state is not None:
+        view_right = draw_state._abs_left() + width - 3
+        x_limit = view_right if x_limit is None else min(x_limit, view_right)
 
     def _tab_text(t):
         return t.name if hasattr(t, 'name') else str(t)

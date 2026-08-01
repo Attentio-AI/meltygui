@@ -538,9 +538,28 @@ def _import_stmt_end(lines, i):
     return i, stmt
 
 
-def _ensure_import_lines(lines, module, name):
-    """If `name` isn't already imported in `lines`, insert `from module import
-    name` after the file's leading import block. Returns
+def _import_bound_name(stmt):
+    """The local name an import statement binds: `import x` → x, `import x as
+    y` → y, `from m import x [as y]` → x/y. Best-effort tokens, '' on noise."""
+    toks = stmt.replace(",", " ").split()
+    if "as" in toks:
+        i = toks.index("as")
+        return toks[i + 1] if i + 1 < len(toks) else ""
+    if toks[:1] == ["from"] and "import" in toks:
+        i = toks.index("import")
+        return toks[i + 1].split(".")[0] if i + 1 < len(toks) else ""
+    if toks[:1] == ["import"] and len(toks) > 1:
+        return toks[1].split(".")[0]
+    return ""
+
+
+def _ensure_import_lines(lines, module, name=None):
+    """If the import's bound name isn't already imported in `lines`, insert the
+    statement after the file's leading import block. Two call shapes:
+    (lines, module, name) inserts `from module import name` (the legacy
+    @defaults path); (lines, stmt) with name=None inserts the full statement
+    verbatim (`import json`, `import numpy as np`, `from x import y` — the
+    editor's missing-import quick-fix). Returns
     (lines, inserted_count, insert_idx) — insert_idx is the 0-indexed line the
     import landed on (None when nothing was inserted), so the caller can shift
     co_firstlineno of every code object below it.
@@ -549,6 +568,13 @@ def _ensure_import_lines(lines, module, name):
     the run of leading import/comment/blank/docstring lines as the import block
     and inserts after it. Continuation-aware (backslash + parens) so it never
     inserts in the middle of a multi-line import."""
+    if name is None:
+        stmt_text = module
+        name = _import_bound_name(stmt_text)
+        if not name:
+            return lines, 0, None
+    else:
+        stmt_text = f"from {module} import {name}"
     # ── Dedup: is `name` already imported? (join continuations before checking) ──
     i = 0
     while i < len(lines):
@@ -596,7 +622,7 @@ def _ensure_import_lines(lines, module, name):
             continue
         break  # first real code - stop scanning the import block
     new_lines = list(lines)
-    new_lines.insert(insert_idx, f"from {module} import {name}")
+    new_lines.insert(insert_idx, stmt_text)
     return new_lines, 1, insert_idx
 
 

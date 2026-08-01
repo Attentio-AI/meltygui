@@ -160,9 +160,12 @@ class SplitOverlayRenderer(GlfwRenderer):
             cmd_spans.append((running, running + cmd.elem_count, cmd))
             running += cmd.elem_count
 
-        # (layer_channel, draw_state) for every registered window with a laid
-        # out rect. used to punch holes for windows above each channel.
-        top_channel = Melty.max_layer - 1  # global overlay is above all layers
+        # (channel, draw_state) for every registered window with a laid-out
+        # rect - used to punch holes for windows below each channel. Channels
+        # go through Melty.overlay_window_channel - the SAME dense rank map the
+        # views routed their overlays with - so the "higher than" comparison
+        # below stays exact instead of collapsing at the max_layer clamp.
+        top_channel = Melty.max_layer - 1  # global overlay is above all windows
         window_channels = []
         for w in Melty.registered_windows.values():
             ds = getattr(w, "draw_state", None)
@@ -170,15 +173,20 @@ class SplitOverlayRenderer(GlfwRenderer):
                 continue
             if ds.abs_left is None or ds.abs_top is None or ds.width is None or ds.height is None:
                 continue
-            window_channels.append((ds.window_index, ds))
+            window_channels.append((Melty.overlay_window_channel(ds.window_index), ds))
 
         for r in Melty.root_draw_states.values():
             for ds in r:
                 if ds is None or ds.closed:
                     continue
+                # A window hidden because its spawner scrolled out of view
+                # isn't dispatched (no pixels this frame), so its stale rect
+                # does not punch stencil holes in lower channels.
+                if getattr(ds, "_hidden_offscreen", False):
+                    continue
                 if ds.abs_left is None or ds.abs_top is None or ds.width is None or ds.height is None:
                     continue
-                window_channels.append((ds.window_index, ds))
+                window_channels.append((Melty.overlay_window_channel(ds.window_index), ds))
 
         if self.debug_static_mask:
             sx, sy, sw, sh = self.debug_static_rect

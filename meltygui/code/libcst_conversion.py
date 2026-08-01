@@ -51,6 +51,7 @@ def register(fn):
         Melty._converters[(from_type, to_type)] = fn
     return fn
 
+
 # Sentinel for arguments with no default value.
 # Shows up in the dict so the UI can display the parameter name,
 # but signals "no default" on the reverse path.
@@ -62,13 +63,12 @@ class NoDefault():
     Shows up in the dict so the UI can display the parameter name,
     but signals "no default" on the reverse path.
     """
+
     def __repr__(self):
         return "NO_DEFAULT"
 
 
 NO_DEFAULT = NoDefault()
-
-
 
 
 class Comment(str):
@@ -112,7 +112,7 @@ class Comment(str):
 
 
 @defaults(tint=(0.83, 0.58, 0.20, 0.0), shadow=False, is_tree=False, use_cache=True, show_bg=False,
- view_func=RenderFuncs.draw_text, align_header=False)
+          view_func=RenderFuncs.draw_text, align_header=False)
 class CodeLine(str):
     """A raw line/expression of code that couldn't be reduced to a Python value,
     as a str subclass for differentiated dispatch.
@@ -130,7 +130,7 @@ class CodeLine(str):
     """
 
 
-@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable":False}, 
+@defaults(tint=(0.7, 0.406749, 0.0264792, 0.09), shadow=True, child_kwargs={"editable": False},
           z_offset=0, name_color=(1.0, 0.479, 0.0), font=Font.JETBRAINS_MONO_19, drop_tail_height=0.0,
           is_tree=False, bg_offset=1, header_same_line=True)
 class Conditional(dict):
@@ -156,6 +156,7 @@ class Conditional(dict):
         keys = ",".join(sorted(str(k) for k in self.keys() if not str(k).startswith("_")))
         return f"Conditional:{self.condition}:{keys}"
 
+
 @defaults(tint=(0.02764737419784069, 0.33023256063461304, 0.2669007480144501, 0.232))
 class Loop(dict):
     """A for-loop block's contents, as a dict subclass.
@@ -175,19 +176,19 @@ class Loop(dict):
 
     def __init__(self, *args, target=None, iter=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.target = target    # e.g. "i", "x, y"
-        self.iter = iter        # e.g. "range(10)", "items"
+        self.target = target  # e.g. "i", "x, y"
+        self.iter = iter  # e.g. "range(10)", "items"
         self._bg_hash_cache: str | None = None
 
-
     def __bg_hash__(self) -> str:
-            if self._bg_hash_cache is None:
-                # hash() on a str uses a fast SipHash - O(n) once, then O(1)
-                self._bg_hash_cache = str(hash(self.iter + self.target))
-            return self._bg_hash_cache
+        if self._bg_hash_cache is None:
+            # hash() on a str uses a fast SipHash - O(n) once, then O(1)
+            self._bg_hash_cache = str(hash(self.iter + self.target))
+        return self._bg_hash_cache
 
 
-@defaults(tint=(0.1, 0.1, 0.1, 0.0), shadow=True, is_tree=False, header_same_line=True, name_color=(1.0, 0.479, 0.0), bg_offset=-3, show_bg=True)
+@defaults(tint=(0.1, 0.1, 0.1, 0.0), shadow=True, is_tree=False, header_same_line=True, name_color=(1.0, 0.479, 0.0),
+          bg_offset=-3, show_bg=True)
 class Try(dict):
     """A try / except / else / finally branch's contents, as a dict subclass.
 
@@ -260,7 +261,7 @@ class GeneralParse(dict):
 # plain GeneralParse today, while giving these types their own slot to diverge
 # later (the whole point of splitting them out). Same pattern as CallParse below.
 @defaults(disable_scroll=True, show_bg=True, shadow=True, excluded=("decorators"), icon="class",
-          use_cache=True, tint=(0.512, 0.564, 0.59, 0.064))
+          use_cache=True, tint=(0.009, 0.2495, 0.39, 0.172))
 class ClassParse(GeneralParse):
     """A class definition's parsed body, as a GeneralParse subclass.
 
@@ -314,7 +315,8 @@ class FunctionParse(GeneralParse):
     """
 
 
-@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, shadow=False, z_offset=1, child_kwargs={"font":Font.JETBRAINS_MONO_19})
+@defaults(tint=(0.04, 0.17, 0.25, 0.016), bg_offset=2, font=Font.JETBRAINS_MONO_19, is_tree=False, shadow=False,
+          z_offset=1, child_kwargs={"font": Font.JETBRAINS_MONO_19})
 class CallParse(GeneralParse):
     """A function call's arguments, as a GeneralParse subclass.
 
@@ -338,7 +340,7 @@ class CallParse(GeneralParse):
         self.func_name = func_name
 
 
-@defaults(tint=(0.77, 0.4134631, 0.24, 0.38), icon="@", disable_scroll=True)
+@defaults(tint=(0.86, 0.3345581, 0.07, 0.7), icon="@", disable_scroll=True)
 class DecorationParse(CallParse):
     """A decorator application (`@name(...)`), as a CallParse subclass.
 
@@ -549,13 +551,13 @@ _xref_cache: dict[_Path, tuple[float, dict[str, list[UsageRef]]]] = {}
 
 DISABLE_JEDI = False
 
-
 # ── Jedi subprocess pool ──────────────────────────────────────
 # Runs jedi in a child process so CPU-intensive parso parsing
 # doesn't hold the main process GIL.
 
 from concurrent.futures import ProcessPoolExecutor as _PPE
 from concurrent.futures import Future as _Future
+
 # Two pools, same forkserver context. "index" (4 workers) runs the heavy
 # symbol-index and usage jobs; "ac" (1 worker) is reserved for INTERACTIVE jobs
 # (member completion, signature help). Interactive jobs have their own pool for
@@ -663,8 +665,8 @@ def _jedi_project():
     The repo root is on added_sys_path so `from src.lsd... import X` still
     resolves during inference."""
     import jedi
-    src = _SRC_PREFIX.rstrip("/lsd")          # .../latent-descent/src
-    repo = str(_Path(src).parent)          # .../latent-descent
+    src = _SRC_PREFIX.rstrip("/lsd")  # .../latent-descent/src
+    repo = str(_Path(src).parent)  # .../latent-descent
     return jedi.Project(path=src, added_sys_path=[repo, src])
 
 
@@ -974,7 +976,7 @@ def _disk_cache_enabled() -> bool:
     time (see _load_symbol_store below) where the import can still be mid-cycle,
     so a failure must not silently disable warm-start."""
     try:
-        from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
+        from src.lsd.gl_gui.toggles import Toggles  # late: avoid import cycle
         return Toggles.symbol_index_disk_cache
     except Exception:
         return True
@@ -983,17 +985,17 @@ def _disk_cache_enabled() -> bool:
 def _load_symbol_store() -> dict:
     store = getattr(sys, "_symbol_index_store", None)
     if isinstance(store, dict):
-        store.setdefault("hashes", {})    # bump; backfill the hash dict if older
+        store.setdefault("hashes", {})  # adopt; backfill the hash dict if older
         _ptrace("store: adopted live symbol store (restart-in-place)",
                 spans=len(store.get("spans", ())), gen=store.get("gen"))
-        return store                      # restart-in-place: adopt live dicts
+        return store  # restart-in-place: adopt those dicts
     spans, gen, mtimes, hashes = {}, 0, {}, {}
-    if not _disk_cache_enabled():         # cache off: no warm-start, stay cold
+    if not _disk_cache_enabled():  # cache off: skip warm-start, stay cold
         store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
         sys._symbol_index_store = store
         return store
     with _pspan("store: warm-start load") as _sp:
-        try:                                  # fresh process: warm-start from disk
+        try:  # fresh process: warm-start from pick
             import pickle
             with open(_SYMBOL_INDEX_PICKLE, "rb") as f:
                 payload = pickle.load(f)
@@ -1001,7 +1003,7 @@ def _load_symbol_store() -> dict:
                 spans = payload["spans"]
                 gen = payload["gen"]
                 mtimes = payload["mtimes"]
-                hashes = payload.get("hashes", {})   # absent in pre-hash pickles
+                hashes = payload.get("hashes", {})  # absent in pre-hash pickles
         except Exception as e:
             _sp.add(failed=type(e).__name__)  # missing/corrupt/stale-format → cold
         _sp.add(spans=len(spans), gen=gen)
@@ -1016,7 +1018,7 @@ def _save_symbol_store():
     object ids, meaningless outside this exact process state. Shallow-copies
     the dicts first so a concurrent cache write can't fail the dump (values
     are immutable tuples)."""
-    if not _disk_cache_enabled():         # cache off: keep the pickle untouched
+    if not _disk_cache_enabled():  # cache off: keep the pickle clean
         return
     with _pspan("store: save pickle", min_ms=5.0, spans=len(_symbol_usage_cache)):
         try:
@@ -1035,8 +1037,9 @@ def _save_symbol_store():
 
 
 _symbol_store = _load_symbol_store()
-_symbol_usage_cache: dict = _symbol_store["spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (mtime, pending_gen, accurate, gen)
-_mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at last counted change
+_symbol_usage_cache: dict = _symbol_store[
+    "spans"]  # (resolved_path, start, end) -> (sig, {sym: SymbolUsage}); sig = (mtime, pending_gen, accurate, gen)
+_mtime_snapshot: dict = _symbol_store["mtimes"]  # resolved_path -> mtime at last counted change
 
 # Content hash (whole current file text) each cached span was computed from, keyed
 # by the same span key. PERSISTED alongside the spans (a parallel dict, so the
@@ -1050,7 +1053,7 @@ _mtime_snapshot: dict = _symbol_store["mtimes"]     # resolved_path -> mtime at 
 # edited and re-indexed. Content hashing for invalidation is normally banned
 # here - Lukas allowed it for THIS cache given the recompute cost; it's only on
 # a MISS, never to detect a hit.
-_span_hashes: dict = _symbol_store["hashes"]        # (resolved_path, start, end) -> 16-byte content hash
+_span_hashes: dict = _symbol_store["hashes"]  # (resolved_path, start, end) -> 16-byte content hash
 
 
 def _content_hash(text: str) -> bytes:
@@ -1059,6 +1062,7 @@ def _content_hash(text: str) -> bytes:
     use and stable across sessions (builtin hash() is per-process-salted)."""
     import hashlib
     return hashlib.blake2b(text.encode("utf-8"), digest_size=16).digest()
+
 
 # The exact buffer text a cached span result was computed from, indexed by the
 # same span key. Drives the position-only fast path (_line_offset_map): on a
@@ -1144,11 +1148,7 @@ def _symbol_refs_worker(file_path: str, start_line: int, end_line: int, text=Non
 def _rebuild_symbol_usages(raw: dict) -> dict:
     """Rebuild {symbol: SymbolUsage} from the worker's plain-tuple output."""
     result = {}
-    _n = 0   # ~540ms unbroken for 569 syms (Path/UsageRef per caller) — yield
     for sym, e in raw.items():
-        _n += 1
-        if not (_n & 63):
-            _yield_to_ui()
         dp, dl, dc, dm = e["definition"]
         definition = UsageRef(path=_Path(dp) if dp else None, line=dl, column=dc, module_name=dm)
         callers = [UsageRef(path=_Path(c[0]) if c[0] else None, line=c[1], column=c[2],
@@ -1180,7 +1180,7 @@ def _symbol_refs_local(file_path: str, start_line: int, end_line: int) -> dict:
 # `import x; x.Sym` chains, `from x import *`, `self.member` instance access, and
 # locals. Toggle Toggles.jedi_correctness to A/B-test the full jedi path.
 
-_index_refs_cache: dict = {}   # resolved_path -> (mtime, [(kind, key, line, col, scope)])
+_index_refs_cache: dict = {}  # resolved_path -> (mtime, [(kind, key, line, col, scope)])
 
 # Perf-trace metric: bumps every time _file_index_refs actually re-parses a
 # file (mtime cache miss). Callers snapshot it around their scan loop to report
@@ -1196,8 +1196,8 @@ _index_refs_reparses = 0
 # for every span! Keyed exactly like the usage cache: mtime (disk writes),
 # pending_gen (deferred edits that never touch disk), index gen (cross-file / live
 # object moves). One entry per file (overwritten on a sig change), so it's bounded
-# by the number of distinct files that had a span opened.
-_file_parse_cache: dict = {}   # resolved_path -> (mtime, (tree, imports, refs, bindings))
+# by the number of distinct files that had a span computed.
+_file_parse_cache: dict = {}  # resolved_path -> (sig, (tree, imports, refs, bindings))
 
 # Per-class definition LINE, cached by (defining file, qualname) and invalidated
 # on the file's mtime. `inspect.getsourcelines(obj)` ast.parses the .src file it
@@ -1206,7 +1206,7 @@ _file_parse_cache: dict = {}   # resolved_path -> (mtime, (tree, imports, refs, 
 # heavily-referenced span (Mode) resolves dozens of classes from stable src. The
 # cache skips the re-parse when the def file is unchanged. Key on qualname (not id),
 # so it survives object churn and mtime guards staleness.
-_def_line_cache: dict = {}     # (defining_file, qualname|id) -> (mtime, lineno)
+_def_line_cache: dict = {}  # (defining_file, qualname|id) -> (mtime, lineno)
 
 # Bumped by the background cache warmer (build_index_cache) whenever any src
 # file's mtime moved past _mtime_snapshot (a REAL content change - a mere
@@ -1241,7 +1241,7 @@ def _wait_for_no_drag(max_wait=30.0, poll=0.05, label=""):
     waited = 0.0
     while getattr(Melty, "window_drag", False) or getattr(Melty, "on_drag", False):
         if waited >= max_wait:
-            if waited > 0:      # instant probes (max_wait=0) stay silent
+            if waited > 0:  # instant probes (max_wait=0) stay silent
                 _ptrace(f"drag-wait GAVE UP after {waited:.2f}s", where=label)
             return False
         _time.sleep(poll)
@@ -1306,10 +1306,11 @@ def _collect_refs(tree) -> list:
     out = []
     out_append = out.append
     iter_child = ast.iter_child_nodes
-    Name = ast.Name; Attribute = ast.Attribute
-    FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
+    Name = ast.Name;
+    Attribute = ast.Attribute
+    FunctionDef = ast.FunctionDef;
+    AsyncFunctionDef = ast.AsyncFunctionDef
     ClassDef = ast.ClassDef
-    _n = 0   # nodes visited - periodic input-aware GIL yield (see _yield_to_ui)
 
     def _attr_chain(node):
         # Names in a dotted Name/Attribute value-chain's root first, or None if it
@@ -1325,11 +1326,7 @@ def _collect_refs(tree) -> list:
         return None
 
     def walk(node, scope):
-        nonlocal _n
         for child in iter_child(node):
-            _n += 1
-            if not (_n & 4095):
-                _yield_to_ui()
             t = child.__class__
             if t is Name:
                 out_append(("name", child.id, child.lineno, child.col_offset, scope))
@@ -1349,7 +1346,7 @@ def _collect_refs(tree) -> list:
                     if chain is not None:
                         out_append(("attr", (chain, child.attr),
                                     child.lineno, child.col_offset, scope))
-                walk(child, scope)          # also records the base case beneath
+                walk(child, scope)  # also capture the base Name beneath
             elif t is FunctionDef or t is AsyncFunctionDef or t is ClassDef:
                 out_append(("name", child.name, child.lineno, child.col_offset, scope))
                 walk(child, child.name)
@@ -1402,9 +1399,13 @@ def _local_class_bindings(tree, look):
     Only Name / attribute-chain annotations and RHS resolve; Subscript (List[X]),
     calls, and literals are skipped (conservative). Last binding in a scope wins."""
     bindings = {}
-    Name = ast.Name; Attribute = ast.Attribute
-    FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
-    ClassDef = ast.ClassDef; Assign = ast.Assign; AnnAssign = ast.AnnAssign
+    Name = ast.Name;
+    Attribute = ast.Attribute
+    FunctionDef = ast.FunctionDef;
+    AsyncFunctionDef = ast.AsyncFunctionDef
+    ClassDef = ast.ClassDef;
+    Assign = ast.Assign;
+    AnnAssign = ast.AnnAssign
     iter_child = ast.iter_child_nodes
 
     def bind(scope, name, node):
@@ -1446,24 +1447,14 @@ def _imported_name_objects(tree) -> dict:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             if node.level:
-                continue                      # relative import; not used in src
+                continue  # relative import - not used in src
             mod = sys.modules.get(node.module or "")
             if mod is None:
                 continue
             for a in node.names:
                 if a.name == "*":
                     continue
-                # __dict__.get, NEVER getattr: ~45 loaded modules have a lazy
-                # module-level __getattr__ (numpy, torch.*, huggingface_hub),
-                # and getattr on an absent name RUNS real import machinery -
-                # seconds of GIL-bound module init. This tree is parsed from the
-                # PENDING buffer, so mid-edit it could name anything ("from numpy
-                # import lina") - the multi-second post-syntax-error stalls of
-                # 2026-07-31 were exactly such a getattr. Submodules imported
-                # as names live in sys.modules, not always in the parent module.
-                obj = mod.__dict__.get(a.name)
-                if obj is None:
-                    obj = sys.modules.get(f"{node.module}.{a.name}")
+                obj = getattr(mod, a.name, None)
                 if obj is not None:
                     out.setdefault(a.asname or a.name, obj)
         elif isinstance(node, ast.Import):
@@ -1532,23 +1523,25 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
             # Locals bound to a class (alias or typed param) so aing
             # through them resolves; falls back to the global/import namespace.
             bindings = _local_class_bindings(tree, look)
+
             def look_base(name, scope):
                 b = bindings.get((scope, name))
                 return b if b is not None else look(name)
+
             for (kind, payload, line, col, scope) in raw_refs:
                 if kind == "name":
                     obj = look(payload)
                     refs.append(("name", id(obj) if obj is not None else None, line, col, scope))
                 else:
                     b = payload[0]
-                    if b.__class__ is tuple:        # dotted: `A.B` -> getattr-walk
+                    if b.__class__ is tuple:  # dotted base `A.B` -> getattr-walk
                         base = look_base(b[0], scope)
                         try:
                             for part in b[1:]:
                                 if base is None:
                                     break
                                 base = getattr(base, part, None)
-                        except Exception:           # a property on the chain raised
+                        except Exception:  # a property on the chain failed
                             base = None
                     else:
                         base = look_base(b, scope)
@@ -1559,7 +1552,7 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
     if not use_text:
         _index_refs_cache[path] = (mtime, refs)
     _dt_refs = (_time.monotonic() - _t_refs0) * 1000.0
-    if _dt_refs >= 20.0:   # individual slow file - worth a (rate-limited) line
+    if _dt_refs >= 20.0:  # individual slow file - worth a (rate-limited) trace
         _ptrace_rl(("file-refs", path), f"file refs re-parse {_dt_refs:.0f}ms",
                    min_interval=2.0, file=path.name)
     return refs
@@ -1594,7 +1587,7 @@ def _collect_targets(file_tree, module, s: int, e: int):
             if isinstance(child, ast.ClassDef):
                 obj = cd.get(child.name)
                 add(child.name, child.lineno, child.col_offset, container, obj)
-                walk(child, obj, class_obj=obj)        # entering a class
+                walk(child, obj, class_obj=obj)  # entering a class
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 obj = cd.get(child.name)
                 add(child.name, child.lineno, child.col_offset, container, obj)
@@ -1663,7 +1656,7 @@ def _member_def_site(base, attr):
         pass
     try:
         lines, start = inspect.getsourcelines(base)
-        pre = f"self.{attr}"      # instance attr defined in a method body
+        pre = f"self.{attr}"  # instance attr assigned in a method body
         for i, ln in enumerate(lines):
             s = ln.lstrip()
             if s.startswith(attr) and len(s) > len(attr) and s[len(attr)] in ' =:(':
@@ -1707,9 +1700,9 @@ def _const_def_site(name, obj, modules):
             continue
         for i, ln in enumerate(text.splitlines(), 1):
             if not ln or ln[0].isspace() or not ln.startswith(name):
-                continue                       # only column-0 (module-level) lines
+                continue  # only column-0 (module-level) defs
             rest = ln[len(name):].lstrip()
-            if rest[:1] in ('=', ':'):         # assignment / annotation, not `import`
+            if rest[:1] in ('=', ':'):  # assignment or annotation, not `+=`
                 return f, i
     return None, 0
 
@@ -1750,25 +1743,12 @@ def _file_parse_artifacts(resolved, owning, text):
     cached = _file_parse_cache.get(resolved)
     if cached is not None and cached[0] == sig:
         return cached[1]
-    # UI-aware back-off between (and inside, via _collect_refs) the steps:
-    # this build runs per pending_gen bump on the app's bg worker, and its
-    # unbroken 60–550ms GIL hold was the per-keystroke frame freeze while the
-    # symbols pass trailed fast typing. Park it here means the worker resumes when
-    # input goes quiet and the result eventually lands so nothing goes stale.
-    _t0 = _time.monotonic()
-    _yield_to_ui()
     try:
         tree = ast.parse(text)
     except Exception:
         return None
-    _t1 = _time.monotonic()
-    _yield_to_ui()
     imports = _imported_name_objects(tree)
-    _t2 = _time.monotonic()
-    _yield_to_ui()
     refs = _collect_refs(tree)
-    _t3 = _time.monotonic()
-    _yield_to_ui()
     od = getattr(owning, "__dict__", None) or {}
 
     def look(n):
@@ -1776,14 +1756,6 @@ def _file_parse_artifacts(resolved, owning, text):
         return v if v is not None else imports.get(n)
 
     bindings = _local_class_bindings(tree, look)
-    _t4 = _time.monotonic()
-    if _t4 - _t0 >= 0.3:
-        _ptrace(f"artifacts SLOW build in {(_t4 - _t0) * 1000:.0f}ms",
-                file=resolved.name,
-                parse_ms=round((_t1 - _t0) * 1000, 1),
-                imports_ms=round((_t2 - _t1) * 1000, 1),
-                refs_ms=round((_t3 - _t2) * 1000, 1),
-                bindings_ms=round((_t4 - _t3) * 1000, 1))
     artifacts = (tree, imports, refs, bindings)
     _file_parse_cache[resolved] = (sig, artifacts)
     return artifacts
@@ -1804,13 +1776,25 @@ def _local_var_bindings(file_tree, start_line, end_line):
     FUNCTION count. Functions/classes that don't overlap the span are pruned, so
     the walk is O(span), not O(file)."""
     Name = ast.Name
-    FunctionDef = ast.FunctionDef; AsyncFunctionDef = ast.AsyncFunctionDef
-    ClassDef = ast.ClassDef; iter_child = ast.iter_child_nodes
-    Assign = ast.Assign; AnnAssign = ast.AnnAssign; AugAssign = ast.AugAssign
-    NamedExpr = ast.NamedExpr; For = ast.For; AsyncFor = ast.AsyncFor
-    With = ast.With; AsyncWith = ast.AsyncWith; ExceptHandler = ast.ExceptHandler
-    comprehension = ast.comprehension; Tuple = ast.Tuple; List = ast.List
-    Starred = ast.Starred; Global = ast.Global; Nonlocal = ast.Nonlocal
+    FunctionDef = ast.FunctionDef;
+    AsyncFunctionDef = ast.AsyncFunctionDef
+    ClassDef = ast.ClassDef;
+    iter_child = ast.iter_child_nodes
+    Assign = ast.Assign;
+    AnnAssign = ast.AnnAssign;
+    AugAssign = ast.AugAssign
+    NamedExpr = ast.NamedExpr;
+    For = ast.For;
+    AsyncFor = ast.AsyncFor
+    With = ast.With;
+    AsyncWith = ast.AsyncWith;
+    ExceptHandler = ast.ExceptHandler
+    comprehension = ast.comprehension;
+    Tuple = ast.Tuple;
+    List = ast.List
+    Starred = ast.Starred;
+    Global = ast.Global;
+    Nonlocal = ast.Nonlocal
     bounds = {}
     declared_global = set()
 
@@ -1820,7 +1804,7 @@ def _local_var_bindings(file_tree, start_line, end_line):
         if cur is None or line < cur[0]:
             bounds[k] = (line, col)
 
-    def targets(node):           # Name leaves of an assignment/for/with target
+    def targets(node):  # Name leaves of an assignment/for/with target
         t = node.__class__
         if t is Name:
             yield node
@@ -1836,7 +1820,7 @@ def _local_var_bindings(file_tree, start_line, end_line):
             if t is FunctionDef or t is AsyncFunctionDef:
                 cend = getattr(child, "end_lineno", child.lineno) or child.lineno
                 if child.lineno > end_line or cend < start_line:
-                    continue                     # span-pruned: O(span), not O(file)
+                    continue  # span-pruned: O(span), not O(file)
                 a = child.args
                 params = (*a.posonlyargs, *a.args, *a.kwonlyargs)
                 if a.vararg: params += (a.vararg,)
@@ -1848,7 +1832,7 @@ def _local_var_bindings(file_tree, start_line, end_line):
                 cend = getattr(child, "end_lineno", child.lineno) or child.lineno
                 if child.lineno > end_line or cend < start_line:
                     continue
-                walk(child, child.name, False)   # class body: not a function scope
+                walk(child, child.name, False)  # class body: not a function body
             elif t is Global or t is Nonlocal:
                 for nm in child.names:
                     declared_global.add((scope, nm))
@@ -1966,7 +1950,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     artifacts = _file_parse_artifacts(resolved, owning, text)
     _t_art = _time.monotonic() - _t_art0
     if artifacts is None:
-        return _PARSE_FAILED          # buffer didn't parse - caller holds last-good
+        return _PARSE_FAILED  # buffer doesn't parse - caller holds no-good
     file_tree, _file_imports, file_refs, _bindings = artifacts
     obj_targets, mem_targets, obj_by_name, sites, def_lines = _collect_targets(
         file_tree, owning, start_line, end_line)
@@ -1983,7 +1967,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         local_keys = local_bounds.keys() - local_global
     else:
         local_bounds, local_global, local_keys = {}, set(), set()
-    local_sites = {}                        # (scope, name) -> [(line, col), ...]
+    local_sites = {}  # (scope, name) -> [(line, col), ...]
     # Also target objects REFERENCED (not defined) in the span, so usage sites
     # link back too (the REVERSE direction):
     #  - bare names - decorators (@window/@defaults), used enums (ProfileMode)
@@ -1997,23 +1981,20 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         v = od.get(n)
         return v if v is not None else _file_imports.get(n)
 
-    member_bases = {}                       # dotted name -> base object
+    member_bases = {}  # dotted name -> base object
     # Members DEFINED in the span (from _collect_targets); a reference to the
     # inside the span keeps the definition's site, not a re-registration. Snapshot
     # now so the loop can still record EVERY occurrence of a REFERENCED member.
     defined_member_keys = frozenset(mem_targets)
+
     # _file_imports / file_refs / _bindings come from the shared parse above
     # (locals bound to a class -> member access on them resolves; falls back
     # to the module/import namespace).
     def _lookup_base(name, scope):
         b = _bindings.get((scope, name))
         return b if b is not None else _lookup(name)
-    _ref_n = 0   # periodic frame/input-aware GIL yield - a 2200-line span walks
-                 # thousands of refs + getattr chains in one unbroken hold
+
     for (kind, payload, line, col, scope) in file_refs:
-        _ref_n += 1
-        if not (_ref_n & 2047):
-            _yield_to_ui()
         if not (start_line <= line <= end_line):
             continue
         if kind == "name":
@@ -2036,7 +2017,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 sites.setdefault(payload, []).append((line, col))
         elif kind == "attr":
             base_repr, attr = payload
-            if base_repr.__class__ is tuple:    # dotted base `A.B` -> getattr-walk
+            if base_repr.__class__ is tuple:  # dotted base `A.B` -> re-walk
                 base = _lookup_base(base_repr[0], scope)
                 try:
                     for part in base_repr[1:]:
@@ -2054,7 +2035,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             key = (id(base), attr)
             if key in defined_member_keys:  # span-defined member: sites come from the def
                 continue
-            nm = mem_targets.get(key)       # canonical name; None until first reference
+            nm = mem_targets.get(key)  # canonical name; None until first reference
             if nm is None:
                 nm = f"{base_str}.{attr}"
                 mem_targets[key] = nm
@@ -2097,7 +2078,6 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             # +20ms delay per span.
             _s0 = _time.monotonic()
             _time.sleep(0.001)
-            _yield_to_ui()   # also park if a frame is mid-draw / typing is live
             # Measured, not assumed: under GIL contention a 1ms sleep can take
             # far longer - the yield IS the contention signal.
             _scan_slept += _time.monotonic() - _s0
@@ -2131,7 +2111,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         # (which must re-resolve any definition living in the EDITED file).
         obj = obj_by_name.get(nm)
         base = member_bases.get(nm)
-        if obj is not None:                       # module-level: real source via inspect
+        if obj is not None:  # module-level: real def from inspect
             try:
                 # Unwrap decorator chains (render_func etc.) for inspect:
                 # getsourcelines follows __wrapped__ internally but
@@ -2141,7 +2121,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 # consistent. ValueError = unwrap's cycle guard.
                 target = inspect.unwrap(obj)
                 df = inspect.getsourcefile(target)
-                dl = _cached_def_line(target, df)   # cached; skips per-class re-parse
+                dl = _cached_def_line(target, df)  # cached; skips per-class re-parse
                 dm = getattr(target, "__module__", "") or mod_name
             except Exception:
                 # No inspect source: either a plain CONSTANT (int/str/tuple) or a
@@ -2157,8 +2137,8 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 dm = mod_name
                 if df is None:
                     df, dl = rp_str, def_lines.get(nm, 0)
-        elif base is not None:                    # reverse ref: member on an
-            df, dl = _member_def_site(base, nm.rsplit('.', 1)[-1])   # external base (an attr)
+        elif base is not None:  # reverse ref: member of an
+            df, dl = _member_def_site(base, nm.rsplit('.', 1)[-1])  # external base (leaf attr)
             dm = (getattr(base, '__module__', None)
                   or getattr(base, '__name__', '') or '')
             if df is None:
@@ -2171,7 +2151,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 except Exception:
                     df = None
                 dl = 0
-        else:                                     # class member: defined in this file
+        else:  # class member: defined in this file
             df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
         return (df, dl, 0, dm)
 
@@ -2185,7 +2165,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
 
     _t_def0 = _time.monotonic()
     _def_slept = 0.0
-    for si, nm in enumerate(sites):               # every target name has sites
+    for si, nm in enumerate(sites):  # every seen name has sites
         pe = reuse.get(nm)
         if pe is not None:
             # Reuse the expensive parts: callers in OTHER files (everything not in
@@ -2211,8 +2191,7 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             continue
         if si and si % 32 == 0:
             _s0 = _time.monotonic()
-            _time.sleep(0.001)   # GIL yield - inspect.getsourcelines per symbol adds up
-            _yield_to_ui()       # + park while a frame is mid-draw / typing is live
+            _time.sleep(0.001)  # GIL yield - inspect.getsourcelines per def adds up
             _def_slept += _time.monotonic() - _s0
         out[nm] = {
             "sites": sites[nm],
@@ -2299,10 +2278,10 @@ def compute_symbol_usages_for_address(address, fast_only=False):
         return _NEEDS_RECOMPUTE if fast_only else {}
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     resolved = _Path(address.path).resolve()
-    start = (getattr(address, "start", 0) or 0) + 1     # address.start is a 0-indexed lower bound
+    start = (getattr(address, "start", 0) or 0) + 1  # address.start is a 0-indexed slice bound
     end = getattr(address, "end", None)
     pending_gen = PendingSave.pending_gen_for(address.path)
-    if end is None:                                     # whole-file span
+    if end is None:  # whole-file span
         text = PendingSave.current_file_text(resolved)
         if text is None:
             return _NEEDS_RECOMPUTE if fast_only else {}
@@ -2311,22 +2290,6 @@ def compute_symbol_usages_for_address(address, fast_only=False):
     # recompute path only - the cheap fast paths (exact cache hit, content-hash
     # rescue, position offset) stay silent.
     return _compute_symbol_usages(resolved, start, end, pending_gen, fast_only=fast_only)
-
-
-# In-flight recompute registry: key -> (sig, started monotonic), lock-guarded
-# (recomputes run on several threads at once: chain_in workers, the
-# symbol-index-attach thread, the warmer). Kills the duplicate-concurrent
-# recompute: only ONE recompute per (file, span) key runs at a time,
-# regardless of sig. During a typing burst each keystroke bumps
-# pending_gen, so miss-matched dedup let each generation launch its own
-# full cold pass - ~10 concurrent GIL-starved workers turned a ~2s ind
-# pass into 10s+. Losers serve the prior cached graph (stale-but-valid,
-# the same principle as the parse-failed hold): if the sig moved while the
-# winner ran, its stored (older-sig) entry misses the next probe and that
-# probe launches the single trailing recompute.
-_usage_inflight: dict = {}
-_usage_inflight_lock = threading.Lock()
-_USAGE_INFLIGHT_MAX_AGE_S = 30.0   # a wedged worker must never block recomputes forever
 
 
 def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False) -> dict:
@@ -2361,10 +2324,9 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     the render thread (UI stays current) and falls back to the deferred path on
     the sentinel. A within-line edit is rejected by a cheap line-count check
     before the O(file) offset map even runs."""
-    from src.lsd.gl_gui.toggles import Toggles   # lazy to avoid import cycle
+    from src.lsd.gl_gui.toggles import Toggles  # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     _t_probe = _time.monotonic()
-    _t_pcpu = _time.thread_time()   # wall≫cpu in the traces below indicates GIL starvation
     accurate = Toggles.jedi_correctness
     try:
         mtime = resolved.stat().st_mtime
@@ -2376,7 +2338,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     cached = _symbol_usage_cache.get(key)
     if cached is not None and cached[0] == sig:
         return cached[1]
-    text = PendingSave.current_file_text(resolved)   # disk + pending overlay (miss only)
+    text = PendingSave.current_file_text(resolved)  # disk + pending overlay (MISS only)
     if text is None:
         return _NEEDS_RECOMPUTE if fast_only else {}
     chash = _content_hash(text)
@@ -2442,26 +2404,9 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
         # costs O(file) (pending-overlay text build + content hash), so surface
         # what it burns per frame while the deferred recompute is pending.
         _ptrace_rl(("probe-miss", key),
-                   f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame, "
-                   f"cpu {(_time.thread_time() - _t_pcpu) * 1000:.1f}ms)",
+                   f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame)",
                    file=resolved.name, span=f"{start}-{end}")
-        return _NEEDS_RECOMPUTE       # only exact-hit + offset are cheap; defer the rest
-    # In-flight dedup: a recompute for this span is already running on another
-    # thread - even at an OLDER sig (pending_gen moves per keystroke; racing a
-    # concurrent full pass just GIL-starves both). Serve the prior cached graph;
-    # when the winner stores an outdated-sig result, the next probe misses it
-    # and runs the one trailing recompute at the latest sig.
-    with _usage_inflight_lock:
-        _fl = _usage_inflight.get(key)
-        if (_fl is not None
-                and _time.monotonic() - _fl[1] < _USAGE_INFLIGHT_MAX_AGE_S):
-            _ptrace(f"usage recompute dedup (in flight, "
-                    f"{'same' if _fl[0] == sig else 'older'} sig)",
-                    file=resolved.name, span=f"{start}-{end}")
-            return (src[1] if src is not None
-                    else cached[1] if cached is not None else {})
-        _usage_inflight[key] = (sig, _time.monotonic())
-
+        return _NEEDS_RECOMPUTE  # only exact-hit + offset are live; defer the rest
     # Past every fast path, this is a real incremental/full recompute. Time and
     # notify only here, so cache hits / offsets stay silent.
     recompute_start = _time.monotonic()
@@ -2469,44 +2414,35 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     _ptrace(f"usage recompute start ({_mode}, miss={_why})",
             file=resolved.name, span=f"{start}-{end}", pending_gen=pending_gen)
     try:
-        try:
-            raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
-                   else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
-        except Exception as _e:
-            raw = {}
-            _ptrace(f"usage recompute RAISED {type(_e).__name__}: {_e}",
-                    file=resolved.name, span=f"{start}-{end}")
-        # In-progress edit with a parse parse: HOLD the last-good graph instead of
-        # discarding it. Serve the prior result (so the editor keeps the references
-        # alive) WITHOUT caching over the good entry - leaving it intact means the
-        # next valid parse recomputes incrementally from it rather than cold, and a
-        # never-evicted broken {} snapshot can't poison the cache/reuse paths. A
-        # genuinely empty span (raw == {}) still caches normally below.
-        if raw is _PARSE_FAILED:
-            _ptrace(f"usage recompute: buffer parse failed after "
-                    f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms — holding last-good",
-                    file=resolved.name, span=f"{start}-{end}")
-            held = (src[1] if src is not None
-                    else cached[1] if cached is not None else {})
-            return held
-        usages = _rebuild_symbol_usages(raw)
-        _ptrace(f"usage recompute done ({_mode}) in "
-                f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms",
-                file=resolved.name, span=f"{start}-{end}", names=len(usages))
-        notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
-               f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
-        # The view moved to `key`; the best sibling we reused is now dead weight.
-        _store_usages(key, sig, usages, text, chash=chash,
-                      evict=src_key if (src_key is not None and src_key != key) else None)
-        return usages
-    finally:
-        # Always pop the in-flight registration - including the parse-failed hold
-        # and a raised recompute - or the dedup would serve stale graphs for
-        # _USAGE_INFLIGHT_MAX_AGE_S after a failure. Only pop our own sig: a
-        # NEWER recompute may have already registered over it.
-        with _usage_inflight_lock:
-            if _usage_inflight.get(key, (None, 0))[0] == sig:
-                _usage_inflight.pop(key, None)
+        raw = (_symbol_refs_worker(str(resolved), start, end, text) if accurate
+               else _symbol_refs_index(str(resolved), start, end, text, prev=prev))
+    except Exception as _e:
+        raw = {}
+        _ptrace(f"usage recompute RAISED {type(_e).__name__}: {_e}",
+                file=resolved.name, span=f"{start}-{end}")
+    # In-progress edit with a syntax error: hold the last-good graph instead of
+    # discarding it. Return the prior result (so the editor keeps the references
+    # live) WITHOUT caching over the good entry - leaving it intact means the
+    # next valid parse recomputes and builds from it rather than cold, and a
+    # never-evicted broken {} snapshot can't trip the offset/reuse paths. A
+    # genuinely empty span (raw == {}) still caches cleanly below.
+    if raw is _PARSE_FAILED:
+        _ptrace(f"usage recompute: buffer parse failed after "
+                f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms — holding last-good",
+                file=resolved.name, span=f"{start}-{end}")
+        held = (src[1] if src is not None
+                else cached[1] if cached is not None else {})
+        return held
+    usages = _rebuild_symbol_usages(raw)
+    _ptrace(f"usage recompute done ({_mode}) in "
+            f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms",
+            file=resolved.name, span=f"{start}-{end}", names=len(usages))
+    notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
+           f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
+    # The view moved to `key`; the old sibling we reused is now dead weight.
+    _store_usages(key, sig, usages, text, chash=chash,
+                  evict=src_key if (src_key is not None and src_key != key) else None)
+    return usages
 
 
 def _best_same_file_prev(resolved, start, end, gen, exclude_key):
@@ -2517,12 +2453,12 @@ def _best_same_file_prev(resolved, start, end, gen, exclude_key):
     shifted sibling reuses cleanly (names it lacks just recompute). Returns
     (key, entry) or (None, None). The cache is small (≈one entry per open editor
     span), so the linear scan is negligible."""
-    best = None   # (overlap, key, entry)
+    best = None  # (overlap, key, entry)
     for k, entry in _symbol_usage_cache.items():
         if k == exclude_key or k[0] != resolved:
             continue
         s = entry[0]
-        if s[2] is not False or s[3] != gen:      # different resolver / generation
+        if s[2] is not False or s[3] != gen:  # wrong resolver / generation
             continue
         ov = min(end, k[2]) - max(start, k[1])
         if ov > 0 and (best is None or ov > best[0]):
@@ -2537,11 +2473,7 @@ def _raw_from_usages(usages: dict) -> dict:
     every definition + caller, so the expensive half is recovered from it rather
     than stored twice. Only the two keys _symbol_refs_index reads are rebuilt."""
     out = {}
-    _n = 0
     for nm, su in usages.items():
-        _n += 1
-        if not (_n & 63):
-            _yield_to_ui()
         d = su.definition
         out[nm] = {
             "definition": ((str(d.path) if d.path else None, d.line, d.column,
@@ -2568,17 +2500,17 @@ def _line_offset_map(old_text: str, new_text: str) -> dict | None:
     oi = ni = 0
     mapping = {}
     while True:
-        while oi < nO and not old_lines[oi].strip():   # skip blanks in old
+        while oi < nO and not old_lines[oi].strip():  # skip blanks in old
             oi += 1
-        while ni < nN and not new_lines[ni].strip():   # skip blanks in new
+        while ni < nN and not new_lines[ni].strip():  # skip blanks in new
             ni += 1
         if oi >= nO and ni >= nN:
-            return mapping                              # both done: matched
+            return mapping  # both exhausted: match
         if oi >= nO or ni >= nN:
-            return None                                 # non-blank counts differ
+            return None  # non-blank counts differ
         if old_lines[oi] != new_lines[ni]:
-            return None                                 # non-blank content changed
-        mapping[oi + 1] = ni + 1                        # 1-based line numbers
+            return None  # non-blank content changed
+        mapping[oi + 1] = ni + 1  # 1-based line numbers
         oi += 1
         ni += 1
 
@@ -2601,11 +2533,7 @@ def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None
     falls back to a recompute; a def line that's absent (it became blank — can't
     happen for a real declaration) keeps its old value rather than force one."""
     out = {}
-    _n = 0
     for nm, su in usages.items():
-        _n += 1
-        if not (_n & 63):
-            _yield_to_ui()
         new_sites = []
         for (l, c) in su.sites:
             nl = line_map.get(l)
@@ -2614,16 +2542,16 @@ def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None
             new_sites.append((nl, c))
         new_callers = []
         for ref in su.callers:
-            if ref.path == resolved:                    # in-file caller: buffer pos
+            if ref.path == resolved:  # in-file caller: buffer pos
                 nl = line_map.get(ref.line)
                 if nl is None:
                     return None
                 new_callers.append(UsageRef(path=ref.path, line=nl, column=ref.column,
                                             scope=ref.scope, module_name=ref.module_name))
             else:
-                new_callers.append(ref)                 # other file: unchanged, reuse
+                new_callers.append(ref)  # other file: unchanged, kee
         d = su.definition
-        if d is not None and d.path == resolved:        # in-file def: buffer line, remap
+        if d is not None and d.path == resolved:  # in-file def: buffer line, remap
             ndl = line_map.get(d.line)
             if ndl is not None:
                 d = UsageRef(path=d.path, line=ndl, column=d.column,
@@ -2669,10 +2597,10 @@ def invalidate_usage_cache(path: _Path | str | None = None) -> None:
 
 
 def _get_cross_file_usages(
-    file_path: _Path,
-    defined_names: set[str],
-    source: str,
-    line_offset: int = 0,
+        file_path: _Path,
+        defined_names: set[str],
+        source: str,
+        line_offset: int = 0,
 ) -> dict[str, list[UsageRef]]:
     if DISABLE_JEDI:
         return {}
@@ -2719,8 +2647,8 @@ def _get_cross_file_usages(
 # ── Combined collection ───────────────────────────────────────
 
 def _collect_usages(
-    tree: cst.Module | cst.ClassDef,
-    top_scope: str = "<module>",
+        tree: cst.Module | cst.ClassDef,
+        top_scope: str = "<module>",
 ) -> dict[str, list[UsageRef]]:
     """Collect intra-module usages (the libcst visit).
 
@@ -2794,7 +2722,7 @@ def _populate_xrefs(gp, file_path: _Path) -> None:
                and k not in ("decorators", "parameters", "locals")}
     if defined:
         xrefs = _get_cross_file_usages(file_path, defined, source="",
-                                        line_offset=0)
+                                       line_offset=0)
         for name, refs in xrefs.items():
             gp.usages.setdefault(name, []).extend(refs)
 
@@ -3079,7 +3007,7 @@ def _active_positions():
 # The parse resumes once input goes quiet. Gated on Toggles.yield_to_ui. It NEVER
 # sleeps the render/GL or main thread (that would freeze the very UI we're
 # protecting) - only the background worker the code actually runs on.
-_YIELD_QUIET_S = 0.5   # resume once keyboard input has been quiet this long
+_YIELD_QUIET_S = 0.5  # resume once keyboard input has been quiet this long
 _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 frame)
 
 # Per-thread accumulation of time _yield_to_ui actually slept, so a conversion
@@ -3088,60 +3016,29 @@ _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 fr
 _yield_slept = threading.local()
 
 
-# A frame stuck "in flight" longer than this stops parking workers - escape
-# hatch for a stuck/aborted frame that never cleared _frame_draw_start.
-_FRAME_BUSY_MAX_S = 0.5
-
-
-def _ui_busy() -> bool:
-    """Back-off condition for background workers: recent keyboard/mouse input
-    (the parse trails typing), OR a render frame currently mid-draw (the frame
-    crosses hundreds of GIL-releasing GL calls; a CPU-bound worker makes every
-    one of them wait a switch interval — the measured present-stall convoy)."""
-    now = time.monotonic()
-    last = getattr(Melty, "_last_input_time", 0.0)
-    if last and now - last < _YIELD_QUIET_S:
-        return True
-    fs = getattr(Melty, "_frame_draw_start", 0.0)
-    return bool(fs) and (now - fs) < _FRAME_BUSY_MAX_S
-
-
 def _yield_to_ui():
-    from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
+    from src.lsd.gl_gui.toggles import Toggles  # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
         return
     if Melty.frame_count < 4:
         return  # app startup: never back off the initial parse, just run it
-    if not _ui_busy():
-        return  # no recent input, no frame mid-draw - fast path: no back-off
-    # Only the background worker may sleep here; sleeping the render/GL thread
-    # (or main) would freeze the very UI we mean to protect.
+    last = getattr(Melty, "_last_input_time", 0.0)
+    if not last or time.monotonic() - last >= _YIELD_QUIET_S:
+        return  # no recent input - fast path, no back-off
+    # Recent input. Only the background worker may sleep here; sleeping the
+    # render/GL thread (or main) would freeze the very UI we mean to protect.
     cur = threading.current_thread()
     if cur is threading.main_thread():
         return
     from src.lsd.gl_gui import gl_state
-    glt = getattr(gl_state, "_gl_thread", None)   # read, don't claim (assert_gl_thread claims)
+    glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim (is_current_thread claims)
     if glt is None or cur is glt:
         return
     _t0 = time.monotonic()
     while Toggles.yield_to_ui:
-        now = time.monotonic()
-        _input_busy = (getattr(Melty, "_last_input_time", 0.0)
-                       and now - Melty._last_input_time < _YIELD_QUIET_S)
-        _fs = getattr(Melty, "_frame_draw_start", 0.0)
-        _frame_busy = bool(_fs) and (now - _fs) < _FRAME_BUSY_MAX_S
-        if _input_busy:
-            pass                              # typing: park as long as it takes
-        elif _frame_busy and now - _t0 < 0.25:
-            pass                              # frame mid-draw: park, but FAIRLY -
-                                              # a continuously-rendering view
-                                              # (voxel anim) must not starve the
-                                              # worker, so cap this reason per call
-        else:
+        if time.monotonic() - getattr(Melty, "_last_input_time", 0.0) >= _YIELD_QUIET_S:
             break
-        # Small slice: a parked worker must resume within a few ms of the frame
-        # ending, or the park itself throttles background throughput hard.
-        time.sleep(0.004)
+        time.sleep(_YIELD_SLICE_S)
     _yield_slept.t = getattr(_yield_slept, "t", 0.0) + (time.monotonic() - _t0)
 
 
@@ -3213,7 +3110,8 @@ def _build_ast_span_map(module, source=None):
                 for small in cs.body:
                     if ai >= n:
                         break
-                    an = ast_stmts[ai]; ai += 1
+                    an = ast_stmts[ai];
+                    ai += 1
                     s = sp(an)
                     out[small] = s
                     spans.append(s)
@@ -3231,7 +3129,8 @@ def _build_ast_span_map(module, source=None):
                     out[cs] = Span(spans[0].start_line, spans[0].start_col,
                                    spans[-1].end_line, spans[-1].end_col)
             elif isinstance(cs, (cst.FunctionDef, cst.ClassDef)):
-                an = ast_stmts[ai]; ai += 1
+                an = ast_stmts[ai];
+                ai += 1
                 out[cs] = sp(an)
                 bl, bnode = body_list(cs)
                 if isinstance(cs, cst.FunctionDef):
@@ -3239,9 +3138,11 @@ def _build_ast_span_map(module, source=None):
                 out[bnode] = list_sp(getattr(an, "body", []))
                 pair(bl, getattr(an, "body", []))
             elif isinstance(cs, cst.If):
-                pair_if(cs, ast_stmts[ai]); ai += 1
+                pair_if(cs, ast_stmts[ai]);
+                ai += 1
             elif isinstance(cs, (cst.For, cst.While)):
-                an = ast_stmts[ai]; ai += 1
+                an = ast_stmts[ai];
+                ai += 1
                 out[cs] = sp(an)
                 if isinstance(cs, cst.For) and getattr(an, "iter", None) is not None:
                     out[cs.iter] = sp(an.iter)
@@ -3250,15 +3151,18 @@ def _build_ast_span_map(module, source=None):
                 pair(bl, getattr(an, "body", []))
                 pair_else(cs.orelse, getattr(an, "orelse", []))
             elif isinstance(cs, cst.Try):
-                pair_try(cs, ast_stmts[ai]); ai += 1
+                pair_try(cs, ast_stmts[ai]);
+                ai += 1
             elif isinstance(cs, cst.With):
-                an = ast_stmts[ai]; ai += 1
+                an = ast_stmts[ai];
+                ai += 1
                 out[cs] = sp(an)
                 bl, bnode = body_list(cs)
                 out[bnode] = list_sp(getattr(an, "body", []))
                 pair(bl, getattr(an, "body", []))
             else:
-                out[cs] = sp(ast_stmts[ai]); ai += 1
+                out[cs] = sp(ast_stmts[ai]);
+                ai += 1
 
     def pair_if(cs_if, ast_if):
         if not isinstance(ast_if, ast.If):
@@ -3313,7 +3217,7 @@ class _position_map:
     def __enter__(self):
         self._prev = getattr(_span_scope, "positions", None)
         try:
-            from src.lsd.gl_gui.toggles import Toggles   # lazy: breaks import cycle
+            from src.lsd.gl_gui.toggles import Toggles  # TODO: avoid import cycle
             if Toggles.new_position_map:
                 _span_scope.positions = _build_ast_span_map(self._module, self._source)
             else:
@@ -3636,7 +3540,7 @@ def completions_at(code_tree, line):
             out.append((name, kind))
 
     chain = _scope_chain_for_line(code_tree, line + 1)  # spans are 1-indexed
-    for scope in reversed(chain[1:]):                   # innermost enclosing first
+    for scope in reversed(chain[1:]):  # innermost scope first
         for name, kind in _scope_local_names(scope):
             add(name, kind)
     for name, kind in _direct_member_names(code_tree):  # module level
@@ -3667,7 +3571,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         print("Expected cst.Module, got", type(input_value).__name__, file=sys.stderr)
         return input_value
     _t_start = time.monotonic()
-    _yield_slept.t = 0.0          # this parser's cumulative yield-to-UI sleep
+    _yield_slept.t = 0.0  # this conversion's cumulative yield-to-UI sleep
     source_code = input_value.code
     _t_codegen = time.monotonic()
     readable = GeneralParse(source=source_code)
@@ -3692,7 +3596,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         call_seen: dict[str, int] = {}
 
         for stmt in input_value.body:
-            _yield_to_ui()   # back off mid-parse while the user is typing
+            _yield_to_ui()  # back off mid-parse while the user is typing
             if isinstance(stmt, cst.SimpleStatementLine):
                 # Leading comments (override comments routed to the field below)
                 _extract_leading_comments(stmt, readable, skip_overrides=True)
@@ -3775,7 +3679,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # file's cached spans so a re-click is a true refresh.
     _sym_note = None
     if address is not None:
-        from src.lsd.gl_gui.toggles import Toggles   # lazy: avoid import cycle
+        from src.lsd.gl_gui.toggles import Toggles  # TODO: avoid import cycle
         # The drag probe (max_wait=0) drops the index pass while the user is
         # mid-gesture (a structured tint drag echoes through chain_in, which
         # would run this compute DURING the drag): the gp ships unstamped, and
@@ -3803,7 +3707,7 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                 # nudge doesn't re-trigger on a span with no visible symbols.
                 readable._symbol_gen = _index_generation
                 if flat:
-                    readable.symbol_usage = flat   # whole-span flat (debugging)
+                    readable.symbol_usage = flat  # whole-module flat (debug access)
                     _distribute_by_name(readable, flat)
                 _sym_note = f"{(time.monotonic() - _t_sym0) * 1000:.0f}ms/{len(flat)}syms"
             except Exception as _e:
@@ -3874,7 +3778,6 @@ def dict_to_cst_module(input_value: dict) -> cst.Module:
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  Standalone wrappers for convert_in / convert_out chains                    ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
-
 
 
 def dict_to_cst(value) -> cst.Module:
@@ -4171,8 +4074,10 @@ def _classdef_is_enum(value: cst.ClassDef) -> bool:
     EnumMeta/EnumType metaclasses. A mixed-in base (`class C(str, Enum)`) still
     matches on its Enum base. Good enough for routing/styling — false positives are
     only cosmetic, and the codebase's enums all subclass Enum/RelaxedEnum."""
+
     def _enumish(name: str) -> bool:
         return name.endswith("Enum") or name.endswith("Flag")
+
     for base in value.bases:
         if _enumish(_base_last_name(base.value)):
             return True
@@ -4219,7 +4124,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
 
     # Body-level assignments, nested classes, and comments
     for stmt in value.body.body:
-        _yield_to_ui()   # back off re-parse while the user is typing
+        _yield_to_ui()  # back off mid-class while the user is typing
         if isinstance(stmt, cst.SimpleStatementLine):
             _extract_leading_comments(stmt, readable, skip_overrides=True)
 
@@ -4835,7 +4740,7 @@ def _extract_block_assignments(stmts):
     # scope get hidden ##N suffixes instead of colliding (see _block_key).
     block_occ: dict[str, int] = {}
     for stmt in stmts:
-        _yield_to_ui()   # back off mid-parse while the user is typing
+        _yield_to_ui()  # back off mid-parse while the user is typing
         if isinstance(stmt, cst.SimpleStatementLine):
             # Leading comments (standalone lines above the statement);
             # override comments are routed to the field below instead.
@@ -4930,6 +4835,7 @@ def _comment_line_groups(lines):
     around it group into comment blocks. A lone comment line is a group of
     one, so single comments round-trip exactly as before.
     """
+
     def _is_comment(ll):
         return isinstance(ll, cst.EmptyLine) and ll.comment is not None
 
@@ -5239,6 +5145,7 @@ def _iter_direct_comment_texts(node):
     Leading/header lines yield per GROUP ('\\n'-joined, matching
     _extract_comment_lines), so a multi-line override reads as one text.
     """
+
     def _group_texts(lines):
         for _s, _e, run in _comment_line_groups(lines):
             yield "\n".join(ll.comment.value for ll in run)
@@ -5422,14 +5329,15 @@ def _extract_if_chain(if_node, result, counters):
     reverse walk aligned).
     """
     # if
-    if_idx = counters["if"]; counters["if"] += 1
+    if_idx = counters["if"];
+    counters["if"] += 1
     key = f"if##{if_idx}"
     body = _extract_block_assignments(if_node.body.body)
     branch = Conditional(condition=key)
     cond_key = _condition_key(if_node.test, "if")
     branch[cond_key] = _condition_to_editable(if_node.test)
     branch.update(body)
-    _merge_child_spans(branch, body)               # update() copies items, not _child_spans
+    _merge_child_spans(branch, body)  # update() copies items, not _child_spans
     _record_child(branch, cond_key, branch[cond_key], if_node.test)
     _stamp_span(branch, _union_span([if_node.test, if_node.body]))
     result[key] = branch
@@ -5439,7 +5347,8 @@ def _extract_if_chain(if_node, result, counters):
     while orelse is not None:
         if isinstance(orelse, cst.If):
             # elif
-            elif_idx = counters["elif"]; counters["elif"] += 1
+            elif_idx = counters["elif"];
+            counters["elif"] += 1
             key = f"elif##{elif_idx}"
             body = _extract_block_assignments(orelse.body.body)
             branch = Conditional(condition=key)
@@ -5454,7 +5363,8 @@ def _extract_if_chain(if_node, result, counters):
         elif isinstance(orelse, cst.Else):
             # else - only surfaced when it has a body (no condition to edit
             # otherwise). The counter still advances so the reverse walk aligns.
-            else_idx = counters["else"]; counters["else"] += 1
+            else_idx = counters["else"];
+            counters["else"] += 1
             key = f"else##{else_idx}"
             body = _extract_block_assignments(orelse.body.body)
             if body:
@@ -5644,18 +5554,6 @@ def _extract_decorators(decorators):
     Bare decorators → raw code string
     """
     result = {}
-
-    def _dedup(key):
-        # Stacked same-name decorators (two @defaults on one class) must not
-        # collide - last-write-wins silently ATE the class-level @defaults
-        # under an implicitly-targeted edit. Same #N convention as body locals.
-        if key not in result:
-            return key
-        n = 1
-        while f"{key}#{n}" in result:
-            n += 1
-        return f"{key}#{n}"
-
     for dec in decorators:
         if isinstance(dec.decorator, cst.Call):
             func_name = _call_func_name(dec.decorator)
@@ -5663,13 +5561,13 @@ def _extract_decorators(decorators):
                 fn = Melty._converters.get((cst.Call, dict))
                 if fn is not None:
                     try:
-                        result[_dedup(func_name)] = fn(dec.decorator, result_cls=DecorationParse)
+                        result[func_name] = fn(dec.decorator, result_cls=DecorationParse)
                     except (TypeError, ValueError):
-                        result[_dedup(func_name)] = _cst_node_to_code(dec.decorator)
+                        result[func_name] = _cst_node_to_code(dec.decorator)
         else:
             # Bare decorator: @classmethod, @property, etc.
             code = _cst_node_to_code(dec.decorator)
-            result[_dedup(code)] = code
+            result[code] = code
     return result
 
 
@@ -6048,7 +5946,8 @@ def _patch_if_chain_direct(if_node, block_edits, counters, comment_text_map=None
     changed = False
 
     # If
-    if_idx = counters["if"]; counters["if"] += 1
+    if_idx = counters["if"];
+    counters["if"] += 1
     key = f"if##{if_idx}"
     if key in block_edits:
         branch_edits = block_edits[key]
@@ -6082,7 +5981,8 @@ def _patch_orelse_direct(node, block_edits, counters, comment_text_map=None):
         return node
 
     if isinstance(orelse, cst.If):
-        elif_idx = counters["elif"]; counters["elif"] += 1
+        elif_idx = counters["elif"];
+        counters["elif"] += 1
         key = f"elif##{elif_idx}"
         new_orelse = orelse
         if key in block_edits:
@@ -6103,7 +6003,8 @@ def _patch_orelse_direct(node, block_edits, counters, comment_text_map=None):
             return node.with_changes(orelse=new_orelse)
 
     elif isinstance(orelse, cst.Else):
-        else_idx = counters["else"]; counters["else"] += 1
+        else_idx = counters["else"];
+        counters["else"] += 1
         key = f"else##{else_idx}"
         if key in block_edits:
             new_body = _patch_body_direct(orelse.body, block_edits[key], comment_text_map)
@@ -6287,19 +6188,9 @@ def _patch_decorators(func_node, dec_edits):
     new_decorators = []
     seen = set()
     changed = False
-    _occ = {}
     for dec in func_node.decorators:
         func_name = _call_func_name(dec.decorator) if isinstance(dec.decorator, cst.Call) else None
-        # Occurrence-aware: the nth stacked same-name decorator matches the
-        # extraction's `name#n` lookup key (see _extract_decorators).
-        if func_name:
-            _n = _occ.get(func_name, 0)
-            _occ[func_name] = _n + 1
-            _lookup = func_name if _n == 0 else f"{func_name}#{_n}"
-        else:
-            _lookup = None
-        if func_name and _lookup in edits:
-            func_name = _lookup
+        if func_name and func_name in edits:
             seen.add(func_name)
             edit_sub = dict(edits[func_name])
             kw_pairs = {k: v for k, v in edit_sub.items() if not _is_dunder(k)}
@@ -6335,8 +6226,7 @@ def _patch_decorators(func_node, dec_edits):
     for name, sub in edits.items():
         if name in seen:
             continue
-        # A dup key synthesizes under its REAL name (#N is bookkeeping).
-        new_dec = _build_decorator(name.split("#", 1)[0], sub)
+        new_dec = _build_decorator(name, sub)
         if new_dec is not None:
             new_decorators.append(new_dec)
             changed = True
@@ -7101,7 +6991,7 @@ def _attr_no_trigger(obj, attr):
     Modules are read through __dict__ (PEP 562 lazy imports live behind
     __getattr__, which we must not trigger); classes/objects use normal getattr
     so inherited members still resolve."""
-    if isinstance(obj, type(sys)):            # a module
+    if isinstance(obj, type(sys)):  # a module
         d = getattr(obj, "__dict__", None)
         return d.get(attr) if d is not None else None
     return getattr(obj, attr, None)
@@ -7144,9 +7034,9 @@ def _build_src_scope():
             if om not in src_names:
                 continue
             if om == modname:
-                scope[name] = obj                  # canonical definition wins
+                scope[name] = obj  # src definition wins
             else:
-                scope.setdefault(name, obj)         # src re-export fills gaps
+                scope.setdefault(name, obj)  # src re-export fills gaps
     return scope
 
 
@@ -7188,7 +7078,7 @@ def _resolve_as_enum(parts):
     cls = scope.get(parts[0])
     if cls is None:
         return _UNREADABLE
-    for attr_name in parts[1:-1]:        # walk to the class (skip the MEMBER)
+    for attr_name in parts[1:-1]:  # walk to the class (not the MEMBER)
         cls = _attr_no_trigger(cls, attr_name)
         if cls is None:
             return _UNREADABLE
@@ -7868,7 +7758,7 @@ def _bump_generation():
 _watch_pending: set = set()
 _watch_timer = None
 _watch_lock = _threading_spans.Lock()
-_WATCH_DEBOUNCE_S = 0.6      # a save arrives as a truncate+flush event burst
+_WATCH_DEBOUNCE_S = 0.6  # a save arrives as a truncate+touch event burst
 
 
 def _on_watch_event(src_path):
@@ -7913,7 +7803,7 @@ def _process_watch_events():
             continue
         mod = mod_map.get(rp)
         if mod is None:
-            continue            # not a loaded module - outside the index
+            continue  # not a loaded module - outside the index
         prev = _index_refs_cache.get(rp)
         _file_index_refs(rp, mod)
         entry = _index_refs_cache.get(rp)
@@ -7937,7 +7827,7 @@ def _register_index_watch():
         from src.lsd.gl_gui.melty import FileWatch
         listeners = getattr(FileWatch, "global_listeners", None)
         if listeners is None:
-            return              # older melty.py still loaded - reconcile pass covers us
+            return  # older melty.py still loaded - reconcile pass covers us
         listeners[:] = [f for f in listeners
                         if getattr(f, "__name__", "") != "_on_watch_event"]
         listeners.append(_on_watch_event)
@@ -7958,14 +7848,14 @@ class SymbolIndexCache:
     """Keeps the fast caller-index cache warm on a background thread, so the
     editor's Index button is instant. Flip `auto` off to stop the periodic
     refresh; call rebuild() for a one-shot. Status fields below are live."""
-    auto = True              # keep the cache fresh in the background
-    interval_s = 300.0       # SLOW safety reconcile only - the FileWatch
-                             # listener (_on_watch_event) is the primary
-                             # change detector now, re-indexing exactly the
-                             # files that changed within ~0.6s of the save
-    startup_delay_s = 10.00    # start immediately; the loop's immediate second
+    auto = True  # keep the cache warm in the background
+    interval_s = 300.0  # SLOW safety reconcile only - the FileWatch
+    # listener (_on_watch_event) is the primary
+    # change detector now, re-indexing exactly the
+    # files that moved within ~0.6s of a save
+    startup_delay_s = 10.00  # build immediately; the loop's immediate second
     src_files = 0
-                             # pass catches modules that import after us
+    # pass catches modules that import after us
     # ── status (written by the worker) ──
     building = False
     last_reparsed = 0
@@ -7992,13 +7882,6 @@ class SymbolIndexCache:
             cls.last_secs = round(_time.perf_counter() - t0, 3)
             cls.builds += 1
             cls.building = False
-        # Timeline: any build that burns real CPU. The steady-state no-op pass
-        # is ~8ms and stays silent, but a cold/slow build is exactly the sort
-        # of unlogged GIL-blocking bg work that makes render-bound code measure
-        # seconds of wall time - it should be visible in the interleaved log.
-        if cls.last_secs >= 0.05 or real:
-            _ptrace(f"warmer: build done in {cls.last_secs * 1000:.0f}ms",
-                    files=cls.src_files, reparsed=cls.last_reparsed, real=real)
         # Notify ONLY when the safety reconcile caught a genuine content change -
         # FileWatch is the primary detector now so this is rare. Steadyy no-op
         # passes and cold re-warms (after a hotswap) reparse files but move no

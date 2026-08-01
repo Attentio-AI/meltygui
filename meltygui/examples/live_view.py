@@ -34,6 +34,8 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_collection
 from src.lsd.gl_gui.view.mode import Mode
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+import json
+from pathlib import Path
 
 
 # ── Toy code under instrumentation ───────────────────────────────────────────
@@ -206,7 +208,7 @@ def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
 def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
     import torch
     torch.manual_seed(35)
-   
+
     # [tint=(0.0, 0.2, 0.5)]
     q = torch.randn(heads, seq, dim)
     # [tint=(0.611, 0.292, 0.451)]
@@ -220,6 +222,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
     focus = attn.amax(dim=-1).mean(dim=-1)    
     def some_text():
         pass
+
     return attn, focus
 
 
