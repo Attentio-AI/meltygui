@@ -2810,7 +2810,7 @@ def _host_code_tree_error(dict_host):
 
 
 @render_func(use_cache=True, show_bg=False, selectable=False, disable_scroll=True,
-             shadow=False, indent_size=0, with_footer=None)
+             shadow=False, indent_size=0, with_footer=None, bg_offset=0)
 def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabState = None,
                               unique=None, draw_state: DrawState = None, column_widths=None,
                               column_edges=None, draw=False, error=None,
@@ -2922,7 +2922,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                     # usages, code_tree → the syntax/lint error highlight, error → the
                     # recompile/runtime highlight (the same trio draw_text_from_code_cache
                     # hands draw_text, now via the parent _str_host).
-                    m_changed, m_out = RenderFuncs.draw_collection_as_tabs(
+                    m_changed, m_out = RenderFuncs.draw_collection(
                         input_value=_str_host,
                         child_kwargs={"error": error, "view_func": RenderFuncs.draw_text, "is_tree": False,
                                       "code_dict": gp, "code_tree": cache_error, "child_kwargs": {"is_tree": False},
@@ -2964,7 +2964,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         if _dbg_t is not None else "tile=?")
                     m_changed, m_out = RenderFuncs.draw_collection(
                         gp, excluded=["__cst__"],
-                        child_kwargs={"show_bg": True, "shadow": False, "use_cache": True, "z_offset": 0},
+                        child_kwargs={"show_bg": False, "shadow": False, "folder_type":(dict), "use_cache": True, "z_offset": 0, "view_func":RenderFuncs.draw_collection_as_tabs},
                         show_system=False,
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,

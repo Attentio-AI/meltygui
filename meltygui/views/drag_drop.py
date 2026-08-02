@@ -115,18 +115,28 @@ class DragDrop:
         coll_ds = draw_state._collection_draw_state
         if coll_ds is None or draw_state.closable:
             return
-        if not draw_state.header_height:
+        # Headerless items (e.g. tab-bar buttons) opt in with dnd_handle=True
+        # in their kwargs: the whole rect becomes the drag handle instead of
+        # the header band.
+        whole_rect = (draw_state._kwargs or {}).get("dnd_handle", False)
+        if not draw_state.header_height and not whole_rect:
             return
         if (draw_state.abs_left is None or draw_state.abs_top is None
                 or not draw_state.width):
             return
         if not isinstance(coll_ds._raw_input_value, (dict, list)):
             return
+        if whole_rect:
+            rect = (draw_state.abs_left, draw_state.abs_top,
+                    draw_state.abs_left + draw_state.width,
+                    draw_state.abs_top + (draw_state.height or 0))
+        else:
+            rect = draw_state.get_header_rect()
         # priority_delta=1 beats lower-depth subscriptions (e.g. a text
         # editor's selection drag registered over its whole body) to the
         # header band only.
         draw_state.on_action(_EVENTS, view_id=_VIEW_ID,
-                             rect=draw_state.get_header_rect(),
+                             rect=rect,
                              priority_delta=1)
 
     @classmethod
@@ -412,7 +422,12 @@ class DragDrop:
 
     @classmethod
     def _is_drop_collection(cls, draw_state):
-        if getattr(getattr(draw_state, "_view_func", None), "__name__", None) != "draw_collection":
+        # draw_collection by name; any other view may participate by stamping
+        # _dnd_drop_target = True on its draw_state each render (it must also
+        # maintain ds._children ordered by collection key, with each child's
+        # `key` kwarg matching - same contract draw_collection fulfills).
+        if (getattr(getattr(draw_state, "_view_func", None), "__name__", None) != "draw_collection"
+                and not getattr(draw_state, "_dnd_drop_target", False)):
             return False
         coll = draw_state._raw_input_value
         if not isinstance(coll, (dict, list)):
@@ -436,6 +451,11 @@ class DragDrop:
         # probe x at the cursor (still a point on the top edge), so horizontal
         # collection-selection and the slot-inclusion test are unchanged - only
         # the vertical probe moves up to the view's top.
+        # Horizontal collections use the same probe: (mx, my) after the shift
+        # below is the point on the dragged view's TOP edge closest to the
+        # mouse (the cursor x always lies within the view's x-span), so
+        # vertical slot lines snap to where the cursor is along the bar, not
+        # to wherever the view's left edge happens to float.
         my = my - cls.grab_offset[1]
         for rid in melty._bvh.intersection((mx - r, my - r, mx + r, my + r)):
             if rid in seen:
@@ -443,6 +463,8 @@ class DragDrop:
             seen.add(rid)
             ds = melty._bvh_id_to_ds.get(rid)
             if ds is None or ds.closed or ds.abs_closed:
+                continue
+            if cls._under_hidden_ancestor(ds):
                 continue
             if not cls._is_drop_collection(ds):
                 continue
@@ -464,10 +486,40 @@ class DragDrop:
             cls.nearest = nearest
 
     @classmethod
+    def _under_hidden_ancestor(cls, ds):
+        """True when the collection sits under an ancestor that isn't showing
+        its subtree: a COLLAPSED (or closed-closable) view anywhere up the
+        _parent chain, or a window hidden offscreen (_hidden_offscreen, the
+        spawner-scrolled-away case). abs_closed can't catch either — it only
+        hops parent_window to parent_window, so a collection nested inside a
+        collapsed plain view still read as open while its children's stale
+        BVH geometry kept contributing slot lines (the 'random lines
+        everywhere' leak). _hidden_offscreen is also honored on the ds ITSELF
+        (a view a parent stopped rendering — e.g. a deselected tab's content —
+        stamps it; see draw_collection_as_tabs). The walk stops on the root's
+        _parent self-loop."""
+        if getattr(ds, '_hidden_offscreen', False):
+            return True
+        prev, node = ds, ds._parent
+        for _ in range(64):
+            if node is None or node is prev:
+                return False
+            if not node.expanded or (node.closed and node.closable):
+                return True
+            if getattr(node, '_hidden_offscreen', False):
+                return True
+            prev, node = node, node._parent
+        return False
+
+    @classmethod
     def _collection_slots(cls, ds, mx, my, out):
         """Append every slot of one collection: above its first live row,
         between consecutive rows, and below the last (an empty/collapsed
-        collection gets a single append-at-end slot under its header)."""
+        collection gets a single append-at-end slot under its header).
+        Horizontal collections (horizontal=True kwarg, or _dnd_horizontal
+        stamped on the ds) get vertical insertion lines instead: one at each
+        child's left edge plus one after the last child, anchored per-child so
+        wrapped rows just work."""
         coll = ds._raw_input_value
         clip = ds.abs_clip_rect
         if clip is None:
@@ -491,6 +543,27 @@ class DragDrop:
         cr, cb = min(cr, disp[0]), min(cb, disp[1])
         if cr <= cl or cb <= ct:
             return
+
+        # Owner-painted slots: a view whose visual gaps the framework can't
+        # derive from _children (e.g. draw_collection_as_tabs, whose _children
+        # are the tab BUTTONS while the open tabs' content stacks vertically)
+        # refreshes ds._dnd_extra_slots each render - entries
+        # (e_idx, a0, a1, cross, vertical), same geometry the slot tuple
+        # carries. They go through the same radius/occlude/band gauntlet and
+        # simply compete by distance alongside the _children-derived slots.
+        extra = getattr(ds, "_dnd_extra_slots", None)
+        if extra:
+            for e_idx, a0, a1, cross, vert in extra:
+                if vert:
+                    v0, v1 = max(ct, a0), min(cb, a1)
+                    if v1 > v0:
+                        cls._add_vslot(out, ds, e_idx, v0, v1, cross,
+                                       cl - 6, cr + 6, mx, my)
+                else:
+                    h0, h1 = max(cl, a0), min(cr, a1)
+                    if h1 > h0:
+                        cls._add_slot(out, ds, e_idx, h0, h1, cross,
+                                      ct - 6, cb + 6, mx, my)
 
         if isinstance(coll, dict):
             keys = list(coll.keys())
@@ -533,8 +606,31 @@ class DragDrop:
             visible_h = child.height or 0
             if not child.expanded:
                 visible_h = min(visible_h, child.header_height or visible_h)
-            rows.append((idx, top, top + visible_h, child.abs_left))
+            left = child.abs_left
+            right = (left + (child.width or 0)) if left is not None else None
+            rows.append((idx, top, top + visible_h, left, right))
         rows.sort(key=lambda r: (r[1], r[0]))
+
+        horizontal = bool((ds._kwargs or {}).get("horizontal")) or getattr(ds, "_dnd_horizontal", False)
+        if horizontal and rows:
+            # Reading order: row y first, then x within it - the append
+            # slot must sit after the visually last child, not the max index.
+            rows.sort(key=lambda r: (r[1], r[3] if r[3] is not None else 0))
+            x_min, x_max = cl - 6, cr + 6
+            for idx, top, bottom, left, _right in rows:
+                if left is None:
+                    continue
+                y0, y1 = max(ct, top), min(cb, bottom)
+                if y1 <= y0:
+                    continue
+                cls._add_vslot(out, ds, idx, y0, y1, left - 2, x_min, x_max,
+                               mx, my)
+            last_idx, top, bottom, _left, right = rows[-1]
+            y0, y1 = max(ct, top), min(cb, bottom)
+            if right is not None and y1 > y0:
+                cls._add_vslot(out, ds, last_idx + 1, y0, y1, right + 3,
+                               x_min, x_max, mx, my)
+            return
 
         # Indent each slot line to where this collection's rows actually sit so
         # the line's left edge tracks the content indent - a nested collection's
@@ -563,16 +659,21 @@ class DragDrop:
         # abs_top - an exact screen coordinate regardless of how tall (or
         # collapsed) the rows above it are. Heights only ever matter to
         # the single append-at-end slot under the last row.
-        for idx, top, _bottom, left in rows:
+        for idx, top, _bottom, left, _right in rows:
             x0 = _slot_x0(left)
             if x1 <= x0:
                 continue
             cls._add_slot(out, ds, idx, x0, x1, top - 2, y_min, y_max, mx, my)
-        last_idx, _top, last_bottom, last_left = rows[-1]
+        last_idx, _top, last_bottom, last_left, _last_right = rows[-1]
         x0 = _slot_x0(last_left)
         if x1 > x0:
             cls._add_slot(out, ds, last_idx + 1, x0, x1, last_bottom + 3,
                           y_min, y_max, mx, my)
+
+    # Slot tuple format (shared by _draw_slots/_commit):
+    #   (dist, a0, a1, cross, ds, insert_idx, vertical)
+    # horizontal line: a0..a1 = x span at y=cross; vertical: a0..a1 = y span
+    # at x=cross.
 
     @classmethod
     def _add_slot(cls, out, ds, insert_idx, x0, x1, y, y_min, y_max, mx, my):
@@ -590,7 +691,23 @@ class DragDrop:
         # accurate, handles half-covered windows per usual.
         if cls._slot_occluded(ds, min(max(mx, x0), x1), y):
             return
-        out.append((dist, x0, x1, y, ds, insert_idx))
+        out.append((dist, x0, x1, y, ds, insert_idx, False))
+
+    @classmethod
+    def _add_vslot(cls, out, ds, insert_idx, y0, y1, x, x_min, x_max, mx, my):
+        """Vertical insertion line (horizontal collections). Probe: (mx, my)
+        is the point on the dragged view's top edge closest to the mouse —
+        cursor x, view top for y (see _compute_slots) — so the nearest slot
+        follows the cursor along the bar."""
+        if x < x_min or x > x_max:
+            return
+        dy = max(y0 - my, 0.0, my - y1)
+        dist = math.hypot(mx - x, dy)
+        if dist > DROP_RADIUS:
+            return
+        if cls._slot_occluded(ds, x, min(max(my, y0), y1)):
+            return
+        out.append((dist, y0, y1, x, ds, insert_idx, True))
 
     @classmethod
     def _slot_occluded(cls, coll_ds, x, y):
@@ -640,7 +757,7 @@ class DragDrop:
         ix1, iy1 = ix0 + (w or 0), iy0 + (h or 0)
 
         for slot in cls.slots:
-            dist, x0, x1, y, _ds, _idx = slot
+            dist, a0, a1, cross, _ds, _idx, vert = slot
             nearest = slot is cls.nearest
             # Color each line from its own collection's stashed tint - the
             # same brightened-tint helper the swoosh and selection highlights
@@ -653,6 +770,25 @@ class DragDrop:
                 fade = max(0.0, 1.0 - dist / DROP_RADIUS)
                 col = imgui.get_color_u32_rgba(*rgb, 0.10 + 0.40 * fade)
                 thickness = 2.0
+            if vert:
+                # Vertical insertion line at x=cross spanning y a0..a1
+                # (horizontal collections). Same carve-out around the floating
+                # dragged window, axes swapped.
+                x, y0, y1 = cross, a0, a1
+                if ix0 - 2.0 <= x <= ix1 + 2.0:
+                    if iy0 > y0:
+                        overlay.add_line(x, y0, x, min(y1, iy0), col, thickness)
+                    if iy1 < y1:
+                        overlay.add_line(x, max(y0, iy1), x, y1, col, thickness)
+                else:
+                    overlay.add_line(x, y0, x, y1, col, thickness)
+                if nearest:
+                    if not (iy0 <= y0 <= iy1 and ix0 - 4 <= x <= ix1 + 4):
+                        overlay.add_circle_filled(x, y0, 3.5, col)
+                    if not (iy0 <= y1 <= iy1 and ix0 - 4 <= x <= ix1 + 4):
+                        overlay.add_circle_filled(x, y1, 3.5, col)
+                continue
+            x0, x1, y = a0, a1, cross
             if iy0 - 2.0 <= y <= iy1 + 2.0:
                 # Line crosses the window's band: keep the spans beside it.
                 if ix0 > x0:
@@ -761,7 +897,7 @@ class DragDrop:
         wrapper tail intercepts the target draw_state's next return and
         reports (True, reordered_collection), undo-manager style."""
         melty = Core.melty
-        _dist, _x0, _x1, _y, target_ds, insert_idx = cls.nearest
+        _dist, _a0, _a1, _cross, target_ds, insert_idx, _vert = cls.nearest
         src_ds, key = cls.source_ds, cls.key
 
         if target_ds is src_ds:

@@ -406,7 +406,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # widget's draw_state box is far wider than the swatch.
         imgui.same_line(spacing=0)
         _aw_ch, _aw_val = RenderFuncs.draw_tuple(
-            draw_state._kwargs.get("tint", None), show_name=False, show_header=False,
+            _aw_tint, show_name=False, show_header=False,
             name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
             set_anywhere("tint", _aw_val, draw_state)
@@ -711,7 +711,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             isinstance(_overrides, dict) and _overrides.get("tint") is not None)):
         draw_state._has_popup = True
         _aw_ch, _aw_val = RenderFuncs.draw_tuple(
-            draw_state._kwargs.get("tint", None), show_name=False, show_header=False,
+            _aw_tint, show_name=False, show_header=False,
             name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
             set_anywhere("tint", _aw_val, draw_state)
@@ -889,4 +889,3 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             if RenderFuncs.button(f"\uf1f8##del{unique}", tint=(0.12,0.002037035,0.002037035,0.4), name=f"\uf1f8##del{unique}")[0]:
                 Melty.to_delete(key, collection)
             same_line(spacing=0.0)
-

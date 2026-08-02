@@ -97,6 +97,7 @@ class TabState(DictConversion):
     def __init__(self):
         super().__init__()
         self.selected_tabs = []
+        self.tab_tints = {}
 
 
 @no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)

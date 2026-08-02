@@ -233,7 +233,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(disable_scroll=True, shadow=True, show_bg=True, z_offset=1, use_cache=True)
+@defaults(disable_scroll=True, shadow=True, z_offset=1, use_cache=True, child_kwargs={'show_bg': False})
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -260,7 +260,7 @@ class GeneralParse(dict):
 # tint/bg/shadow. Declaring them here keeps the visual treatment identical to a
 # plain GeneralParse today, while giving these types their own slot to diverge
 # later (the whole point of splitting them out). Same pattern as CallParse below.
-@defaults(disable_scroll=True, show_bg=True, show_tint=True, shadow=True, excluded=("decorators"), icon="class",
+@defaults(disable_scroll=True, show_tint=True, shadow=True, excluded=("decorators"),
           use_cache=True)
 class ClassParse(GeneralParse):
     """A class definition's parsed body, as a GeneralParse subclass.
@@ -338,6 +338,8 @@ class CallParse(GeneralParse):
     def __init__(self, *args, func_name=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.func_name = func_name
+        
+        
 
 
 @defaults(tint=(0.86, 0.3345581, 0.07, 0.7), icon="@", disable_scroll=True)

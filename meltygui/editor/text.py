@@ -4249,6 +4249,15 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
             view_bottom = node.abs_top + (node.height or 0)
             sx, sy = node.scroll_offset
             if center:
+                # Already fully visible (inside the margins)? Leave the scroll
+                # alone. Centering unconditionally rewrote scroll_offset on
+                # every search keystroke - mid-render, while invalidated
+                # ancestors were still remeasuring - so the view jittered by a
+                # frame each keypress. Only recenter when the band is actually
+                # out-of the viewport.
+                if (top_abs >= view_top + margin
+                        and bottom_abs <= view_bottom - margin):
+                    return
                 # Align the band's midline with the viewport's midline (Y only,
                 # horizontal sx untouched). Clamped at the content ends below.
                 delta = ((top_abs + bottom_abs) * 0.5) - ((view_top + view_bottom) * 0.5)
@@ -4472,7 +4481,6 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
-
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
@@ -4483,7 +4491,7 @@ def draw_text(input_value: str, height=None,
     _pf_marks = []
     _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
-    
+
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
 
@@ -4493,7 +4501,7 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see a        
-        
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches

@@ -6,6 +6,7 @@ from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
+import torch
 
 @dataclass(frozen=True)
 class Snippet:
@@ -393,11 +394,98 @@ class Swoosh:
 @window(tint=(0.417, 0.44, 0.47))
 class Toggles:
 
+    @defaults(tint=(0.08, 0.747, 0.85))
+    class WindowSettings:
+        # Sticky resize: re-anchor the window top to the drag-start position each
+        # frame so only the full-on-display clamp displaces it.
+        sticky_drag = True
+
     @defaults(tint=(0.427, 0.541, 0.616))
     class ContextMenu:
         # Which tab a freshly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view function, 3 Eval, 4 Input, 5 Tint.
         default_tab = 2
+
+    @defaults(tint=(0.47, 0.463, 0.417))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # ms
+        bg_offset = 30
+        debug_scroll = False
+
+    @defaults(tint=(0.478, 0.265, 0.265))
+    class InvalidateTracker:
+        keep_for_frames = 84
+        enable = False
+        draw_rect = True
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
+        draw_bvh = False
+
+    @defaults(tint=(0.315, 0.489, 0.322))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
+        # as a backout alongside the native-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
+        # this True until the .ini is fully retired.
+        ini_save = False
+
+    @defaults(tint=(0.65, 0.385, 0.069, 1.0))
+    class SearchSettings:
+        # Auto-scroll to the current match while the search string is being
+        # edited. When False, typing only recounts/highlights in place; the
+        # view scrolls to the current match only on explicit navigation
+        # (Enter / Shift+Enter / the find bar's arrows).
+        scroll_while_typing = True
+
+        # Search matches are highlighted with a circular gradient "glow" that
+        # radiates out from the matched rectangle (rounded-rect cutout), with the
+        # rect edges cut out so the matched text stays readable. The CURRENT
+        # match uses ActiveElement; every other match uses InactiveElements, so
+        # the two can be tuned (color/falloff/opacity/...) independently. Glows
+        # combine where they overlap. Applies in both the text editor (draw_text)
+        # and collections (draw_collection rows). See view/core_views/search_glow.py.
+
+        @defaults(tint=(0.965, 0.6, 0.149))
+        class ActiveElement:
+            gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
+            outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline
+            falloff = 26.696          # px the glow radiates out past the match edge
+            opacity = 0.176           # peak opacity, right at the cutout edge
+            falloff_exp = 2.105       # >1 = bright at the center, then drops off fast
+            inner_pad = 0.00         # px the cutout is grown into the match rect
+            cutout_radius = 5.0       # corner radius of the rounded cutout
+            rings = 86                # radial tessellation steps (higher = better)
+            corner_segments = 15       # arc subdivisions at each rounded cutout corner
+            outline_alpha = 1.00       # 0 = rely on the glow's bright inner rim alone
+            outline_thickness = 1.626
+
+        @defaults(tint=(0.36, 0.52, 0.93, 0.484))
+        class InactiveElements:
+            gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
+            outline_color = (0.6, 0.72, 1.0)
+            falloff = 15.664
+            opacity = 0.077
+            falloff_exp = 2.491
+            inner_pad = 0.00
+            cutout_radius = 5.00
+            rings = 16
+            corner_segments = 5
+            outline_alpha = 1.00
+            outline_thickness = 1.366
+
+    @defaults(tint=(0.27, 0.7, 0.52))
+    class HostLifecycle:
+        # Deregister a RenderHost from Melty.app_hosts (stops per-frame
+        # draw/parse) once none of its user windows are active. Host + parse
+        # stay cached; reopening re-registers (notify_on_change → register).
+        deregister_idle = True
+        # A consumer is gone when its window is abs_closed, or it hasn't
+        # re-registered within this many frames (safety net for closes abs_closed
+        # fails). Also the birth grace before a new host can be swept.
+        idle_frames = 120
 
     @defaults(tint=(0.181, 0.119, 0.294))
     class InputHandlerToggles:
@@ -409,39 +497,17 @@ class Toggles:
         min_height = 506.5
         min_width = 94.154
 
-    @defaults(tint=(0.315, 0.489, 0.322))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
-        # as a backout alongside the data-pickle custom.pkl. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main-file identity / fast-reload cache anchor, so leave
-        # this True until the .ini is fully abandoned.
-        ini_save = False
+    # --- App Toggles
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
 
-    @defaults(tint=(0.08, 0.747, 0.85))
-    class WindowSettings:
-        # Sticky resize: re-anchor the window top to the drag-start position each
-        # frame so only the bottom-on-display edge displaces it.
-        sticky_drag = True
+        max_preferred_header_width = 70
+        preferred_header_width = 132
 
-    @defaults(tint=(0.478, 0.265, 0.265))
-    class InvalidateTracker:
-        keep_for_frames = 84
-        enable = False
-        draw_rect = True
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
-        draw_bvh = False
-
-    @defaults(tint=(0.47, 0.463, 0.417))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # seconds
-        bg_offset = 30
-        debug_scroll = False
-
-    @defaults(tint=(0.2, 0.19, 0.179, 1.00))
+    @defaults(tint=(0.59, 0.541, 0.474))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
@@ -653,65 +719,6 @@ class Toggles:
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
 
-    @defaults(tint=(0.65, 0.385, 0.069, 1.0))
-    class SearchSettings:
-        # Search matches are highlighted with a radial gradient "glow" that
-        # radiates out from the matched rectangle (rounded-rect cutout), with the
-        # rect itself blurred out so the matched text stays readable. The CURRENT
-        # match uses ActiveElement; every other match uses InactiveElements, so
-        # the two can be tuned (color/falloff/opacity/...) independently. Glows
-        # combine where they overlap. Applies in both the text editor (draw_text)
-        # and collections (draw_collection_line). See view/core_views/search_glow.py.
-
-        @defaults(tint=(0.965, 0.6, 0.149))
-        class ActiveElement:
-            gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
-            outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline
-            falloff = 26.696          # px the glow radiates out past the match edge
-            opacity = 0.176           # total opacity, reached at the cutout edge
-            falloff_exp = 2.105       # >1 = bright at the word, then drops off fast
-            inner_pad = 0.00         # px the cutout is grown beyond the match rect
-            cutout_radius = 5.0       # corner radius of the rounded cutout
-            rings = 86                # radial tessellation steps (higher = smoother)
-            corner_segments = 15       # arc subdivisions at each rounded cutout corner
-            outline_alpha = 1.00       # 0 = rely on the glow's bright inner rim alone
-            outline_thickness = 1.626
-
-        @defaults(tint=(0.36, 0.52, 0.93, 0.484))
-        class InactiveElements:
-            gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
-            outline_color = (0.6, 0.72, 1.0)
-            falloff = 15.664
-            opacity = 0.077
-            falloff_exp = 2.491
-            inner_pad = 0.00
-            cutout_radius = 5.00
-            rings = 16
-            corner_segments = 5
-            outline_alpha = 1.00
-            outline_thickness = 1.366
-
-    @defaults(tint=(0.27, 0.7, 0.52))
-    class HostLifecycle:
-        # Deregister a RenderHost from Melty.rendering (stops per-frame
-        # draw/parse) once none of its consumer windows are active. Host + parse
-        # stay cached; reopening re-registers (close_on_change → register).
-        deregister_idle = True
-        # A consumer is gone when its window is abs_closed, or it hasn't
-        # re-registered within this many frames (safety net for any abs_closed
-        # misses). Also the birth grace before a new host can be swept.
-        idle_frames = 120
-
-    # Global App Toggles
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
-
     show_filled_tiles = False
     gl_check_error = False
     enable_jedi = True
@@ -756,7 +763,6 @@ class Toggles:
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
-    ignore_call_from = ()
 
     # Shadow settings
     shadow_downscale = 2
@@ -771,6 +777,7 @@ class Toggles:
 
 
     debug_set_anywhere = False
+    ignore_call_from = ()
 
 @window
 class LegacyToggles:

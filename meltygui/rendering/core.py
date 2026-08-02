@@ -108,7 +108,7 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
     return value
 
 
-# Horizontal scrollbar content_width is increased when a scrollbar is active, so
+# Horizontal space content_width always gives up on scrollableable views, so
 # content doesn't render underneath the bar. Sized to cover the track plus its
 # right-edge margin in draw_overlay_scrollbar.
 SCROLLBAR_RESERVE = 10.0
@@ -2122,10 +2122,14 @@ def render_func(*args, **o_kwargs):
                     draw_state.content_width = single_line_avail
                     draw_state._source["content_width"] = "single_line_avail"
 
-                # When a scrollbar is showing (scroll_visible reflects last frame's
-                # scroll state), reserve room for it so content doesn't draw under
-                # the bar. disable_scroll views never get a bar, so skip them.
-                if draw_state.scroll_visible and not kwargs.get("disable_scroll", False):
+                # Always reserve room for the scrollbar on any view that could
+                # scroll (height externally limited, scrolling not disabled),
+                # whether or not the bar is currently showing - content width
+                # must not shift when the bar appears/disappears.
+                can_scroll = (not kwargs.get("disable_scroll", False)
+                              and (not draw_state.auto_resize
+                                   or kwargs.get("max_height", None) is not None))
+                if can_scroll:
                     draw_state.content_width = max(0, draw_state.content_width - SCROLLBAR_RESERVE)
                     draw_state._source["content_width"] += " - scrollbar"
 
@@ -2439,13 +2443,21 @@ def render_func(*args, **o_kwargs):
                     # matches into this SearchTerm as they render; its .total is
                     # read back into text_search_count after the body (below).
                     term_str = draw_state.search_text or ""
+                    # full_search drives the recount-current-match walk below;
+                    # scroll additionally yanks the view to the selected match.
+                    # A term change (typing) always recounts, but only scrolls
+                    # when scroll_while_typing allows it; explicit navigation
+                    # (Enter / arrows → _search_nav_pending) always scrolls.
                     scroll = False
+                    full_search = False
                     if draw_state._search_last_term != term_str:
                         draw_state._search_last_term = term_str
                         draw_state.text_search_current = 0
-                        scroll = True
+                        full_search = True
+                        scroll = Toggles.SearchSettings.scroll_while_typing
                     if draw_state._search_nav_pending:
                         draw_state._search_nav_pending = False
+                        full_search = True
                         scroll = True
                     session = SearchTerm(term_str, current=draw_state.text_search_current,
                                          scroll_to=scroll)
@@ -2473,7 +2485,7 @@ def render_func(*args, **o_kwargs):
                     # the rebuilt views have rendered their matchers - no new state,
                     # so no scroll yank (the scroll/invalidate is gated to a
                     # full-search frame below).
-                    _recount = (session.scroll_to
+                    _recount = (full_search
                                 or (term_str and draw_state.text_search_count == 0))
                     if _recount:
                         _q = str(session)
@@ -2919,7 +2931,8 @@ def render_func(*args, **o_kwargs):
                     previous_tint = style_manager.get_tint()
                     style_manager.set_imgui_tint(*draw_state.tint)
 
-                kwargs["tint"] = style_manager.get_tint()
+                if previous_tint is not None:
+                    kwargs["tint"] = style_manager.get_tint()
 
                 nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                 from src.lsd.gl_gui.view.core_views.new_core_view import compute_bg_color
@@ -4115,13 +4128,13 @@ def render_func(*args, **o_kwargs):
 
         # A view that auto-sizes to its content can never overflow ITSELF: its
         # height tracks the content, so abs_content_height ~= height and the
-        # comparison below is a perpetual virtual-tie. During scroll that tie
-        # flutters True for a single frame, which sets scroll_visible, which
-        # makes the wrapper subtract SCROLLBAR_RESERVE from content_width that
-        # frame (source "available_width" -> "available_width - scrollbar") -
-        # the one-frame width twitch. Only a view whose height is externally
+        # comparison below becomes a perpetual near-tie that flutters True for
+        # single frames during scroll. Only a view whose height is externally
         # bounded (a window/closable, a passed or fill height, or a clamping
         # max_height) can actually overflow and thus needs its own scrollbar.
+        # (SCROLLBAR_RESERVE is subtracted from content_width unconditionally
+        # for scroll-capable views in the renderer - scroll_visible only
+        # controls whether the bar is drawn, never the width.)
         _max_h = kwargs.get("max_height", None)
         _height_bounded = (not draw_state.auto_resize
                            or (_max_h is not None and draw_state.abs_content_height > _max_h))
@@ -4853,6 +4866,5 @@ def jet_color(val: float):
     g = min(four_value - 0.5, -four_value + 3.5)
     b = min(four_value + 0.5, -four_value + 2.5)
     return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
-
 
 

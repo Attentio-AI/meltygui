@@ -53,7 +53,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
     annotation_item_type
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
-from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view
+from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view, _brightness_clamp
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
@@ -338,14 +338,51 @@ def group_results_by_window(results, root):
     return groups
 
 
-@render_func(use_cache=False, show_bg=False, disable_scroll=True, shadow=False, selectable=False)
-def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=None, unique=0):
+@render_func(use_cache=False, show_bg=False, indent_size=2, disable_scroll=True,
+             shadow=False, selectable=False, bg_offset=1)
+def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=None, unique=0,
+                            excluded=None, included=None, show_excluded=False, show_system=False,
+                            folder_type=None):
     """Draws a dict as a tab bar: each inner collection gets its own tab (key = tab
     name, contents via draw_any); all non-collection items are grouped into one
-    final "General" tab."""
-    collection_types = (dict, defaultdict, MutableMapping, types.MappingProxyType, list, tuple, set, deque)
-    tab_keys = [k for k, v in input_value.items() if isinstance(v, collection_types)]
-    general = {k: v for k, v in input_value.items() if not isinstance(v, collection_types)}
+    final "General" tab.
+
+    folder_type: a type or tuple of types that get their own tab, overriding
+    the default "any collection" rule — e.g. folder_type=(dict, GeneralParse)
+    puts dicts and GeneralParses in tabs while tuples/lists land in General.
+
+    Item filtering matches draw_collection: `excluded` names are hidden,
+    `included` names always show (overriding every hide rule), the type's
+    __excluded_attrs__ hide unless Toggles.show_excluded, and _underscored_
+    keys hide unless show_system. show_excluded=True disables all hiding."""
+    if excluded is None:
+        excluded = set()
+    if included is None:
+        included = set()
+    excl_attrs = getattr(type(input_value), "__excluded_attrs__", None)
+
+    def _key_visible(key):
+        key_str = str(key).split("##")[0]
+        if key_str in included:
+            return True
+        if show_excluded:
+            return True
+        if (excl_attrs is not None and not Toggles.show_excluded
+                and key_str in excl_attrs):
+            return False
+        if key_str in excluded:
+            return False
+        if not show_system and (key_str.startswith("_") or key_str.endswith("_")):
+            return False
+        return True
+
+    if folder_type is not None:
+        tab_types = folder_type
+    else:
+        tab_types = (dict, defaultdict, MutableMapping, types.MappingProxyType, list, tuple, set, deque)
+    visible = [(k, v) for k, v in input_value.items() if _key_visible(k)]
+    tab_keys = [k for k, v in visible if isinstance(v, tab_types)]
+    general = {k: v for k, v in visible if not isinstance(v, tab_types)}
 
     tabs = [str(k) for k in tab_keys]
     key_by_name = {str(k): k for k in tab_keys}
@@ -358,35 +395,161 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     if not tab_state.selected_tabs:
         tab_state.selected_tabs = [tabs[0]]
 
+    # Tab tints come from each child's render kwargs (via return_extras below).
+    # The bar draws before the children, so tints lag by one frame; they're held
+    # on tab_state (serialized) so tabs retain their color across sessions.
+    if getattr(tab_state, "tab_tints", None) is None:
+        tab_state.tab_tints = {}
+    tints = [tab_state.tab_tints.get(t) for t in tabs]
+    
+    indent_size = 6
     imgui.dummy(0, 5)
-    tab_changed, new_tabs = draw_tab_bar(input_value=tab_state.selected_tabs,
-                                         tab_height=30, show_bg=False, bg_offset=1,
-                                         name=f"tab_bar{unique}", wrap=True,
-                                         collection=tabs, as_toggles=False)
+    spacing = 8
+
+    # Framework DragDrop: this draw_state IS the drop collection (its
+    # input_value is the dict a Reorder/Insert applies to via
+    # Melty.dnd_requests + the undo tail - undo included). The tab buttons
+    # register as its whole-rect drag items; _dnd_horizontal makes the slot
+    # lines vertical gaps between tabs. dnd_keys maps each tab to its
+    # (dict key, dict index) - insert indices in the slots are then already
+    # dict-space, with non-collection keys being skipped. The synthetic
+    # General tab gets None: not draggable and contributes no slot.
+    draw_state._dnd_drop_target = True
+    draw_state._dnd_horizontal = True
+    dict_keys = list(input_value.keys())
+    dnd_keys = []
+    for t in tabs:
+        k = key_by_name.get(t) if not (t == "General" and t not in key_by_name) else None
+        dnd_keys.append((k, dict_keys.index(k)) if k is not None else None)
+
+    tab_changed, new_tabs, bar_ds = draw_tab_bar(input_value=tab_state.selected_tabs,
+                                                 tab_height=30, show_bg=False, bg_offset=1,
+                                                 name=f"tab_bar{unique}", wrap=True,
+                                                 collection=tabs, tints=tints, as_toggles=False,
+                                                 dnd_collection_ds=draw_state, dnd_keys=dnd_keys,
+                                                 return_extras=True)
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
+    # The bar's view is cached, but the dragged button must be baked through
+    # the bar's body at the gesture edges (pickup: pick up the floating window
+    # kwargs + bake the placeholder; drop: restore the inline button). Between
+    # the edges DragDrop._keep_alive re-registers the floating window on its
+    # layer, so no per-frame invalidation is needed.
+    dnd_active_here = _drag_drop.DragDrop.active and _drag_drop.DragDrop.source_ds is draw_state
+    if dnd_active_here != getattr(draw_state, "_tab_dnd_was_active", False):
+        draw_state._tab_dnd_was_active = dnd_active_here
+        if bar_ds is not None:
+            # bar_ds.invalidate()
+            request_render()
+
     imgui.dummy(0, 2)
     changed = False
-    for idx, tab in enumerate(tab_state.selected_tabs):
+    # Rendered content views in visual order, as (dict_index, draw_state) -
+    # for the between-content drop slots published below.
+    content_stack = []
+    # Selected tabs stack vertically in tab-bar order (no columns).
+    for tab in tabs:
+        if tab not in tab_state.selected_tabs:
+            continue
+        content_dragged = False
         if tab == "General" and tab not in key_by_name:
-            general_changed, new_general = draw_any(general, name=f"Tab: General {unique}", selectable=False,
-                                                    show_name=False, with_header=None, show_header=False,
-                                                    disable_scroll=False, indent_size=0, show_bg=False,
-                                                    use_cache=True, shadow=False, column=idx)
+            general_changed, new_general, child_ds = draw_any(general, name=f"Tab: General {unique}",
+                                                              disable_scroll=False, indent_size=indent_size,
+                                                              use_cache=True, return_extras=True)
             if general_changed:
                 for k, v in new_general.items():
                     input_value[k] = v
             changed |= general_changed
         else:
             key = key_by_name[tab]
-            tab_content_changed, value = draw_any(input_value[key], name=f"Tab: {tab} {unique}", selectable=False,
-                                                  show_name=False, with_header=None, show_header=False,
-                                                  disable_scroll=False, indent_size=0, show_bg=False,
-                                                  use_cache=True, shadow=False, column=idx)
+            # With several tabs open, each content view is ALSO a drag item of
+            # this dict (key= and _collection_draw_state to make its header a
+            # pickup handle from DragDrop.register_item) - dragging a stacked
+            # collection reorders the tabs just like dragging a tab button.
+            # The item_ds identity check disambiguates the two views sharing
+            # (collection, key): only the one actually picked up floats.
+            multi = len(tab_state.selected_tabs) > 1
+            content_extra = {}
+            content_dragged = False
+            if multi:
+                content_extra["key"] = key
+                prev_ds = (getattr(draw_state, "_tab_child_ds", None) or {}).get(tab)
+                if (prev_ds is not None and _drag_drop.DragDrop.item_ds is prev_ds
+                        and _drag_drop.DragDrop.is_dragged_child(draw_state, key)):
+                    content_dragged = True
+                    content_extra.update(_drag_drop.DragDrop.dragged_item_kwargs())
+
+            content_extra["use_cache"] = True
+            tab_content_changed, value, child_ds = draw_any(input_value[key], name=f"{tab}",
+                                                            disable_scroll=False, indent_size=indent_size,
+                                                             return_extras=True,
+                                                            **content_extra)
+            if child_ds is not None:
+                # Membership follows multi-select: cleared when only one tab
+                # is open so the lone content view stops being a pickup handle.
+                child_ds._collection_draw_state = draw_state if multi else None
+                if not content_dragged:
+                    content_stack.append((dict_keys.index(key), child_ds))
+            if content_dragged:
+                # The dragged content deferred to a floating window - hold its
+                # vertical slot open at its pickup rect (placeholder draws its
+                # own item spacing).
+                _drag_drop.DragDrop.draw_placeholder(False, spacing,
+                                                     style_manager=Core.melty.style_manager,
+                                                     draw_bg=draw_bg)
             if tab_content_changed:
                 input_value[key] = value
             changed |= tab_content_changed
+
+        if not content_dragged:
+            # (the placeholder path already added its own item spacing)
+            imgui.dummy(0, spacing)
+
+        if child_ds is not None:
+            # Track each tab's content draw_state so deselected tabs can be
+            # marked hidden below (they stop rendering but keep stale
+            # geometry, which leaked DragDrop drop lines).
+            if getattr(draw_state, "_tab_child_ds", None) is None:
+                draw_state._tab_child_ds = {}
+            draw_state._tab_child_ds[tab] = child_ds
+            child_ds._hidden_offscreen = False
+
+        child_tint = child_ds._kwargs.get("tint", None) if child_ds is not None else None
+        if child_tint is not None and tab_state.tab_tints.get(tab) != child_tint:
+            tab_state.tab_tints[tab] = child_tint
+            draw_state.invalidate()
+
+    # Deselected tabs' content: not collapsed, not closed, but no longer
+    # rendered - so nothing downstream knows it's invisible. Stamp
+    # _hidden_offscreen (the same flag end_frame uses for spawner-scrolled
+    # nested tiles) so DragDrop's slot sweep skips their whole subtrees.
+    hidden_reg = getattr(draw_state, "_tab_child_ds", None)
+    if hidden_reg:
+        for t, t_ds in hidden_reg.items():
+            if t not in tab_state.selected_tabs or t not in tabs:
+                t_ds._hidden_offscreen = True
+
+    # Publish drop slots BETWEEN the stacked content views (the framework only
+    # derives slots from _children, which here are the tab buttons): one
+    # horizontal line above each content (insert before its dict key) and one
+    # below the last (append after it). Rebuilt from live geometry every
+    # render, so they track scroll/reflow; a dragged content is excluded (its
+    # home slot is the cancel target). Insert indices are dict-space,
+    # same as the bar slots.
+    extra_slots = []
+    for idx, c_ds in content_stack:
+        top, left = c_ds.abs_top, c_ds.abs_left
+        if top is None or left is None or not c_ds.width:
+            continue
+        extra_slots.append((idx, left, left + c_ds.width, top - 2, False))
+    if extra_slots:
+        last_idx, last_ds = content_stack[-1]
+        if last_ds.abs_top is not None and last_ds.abs_left is not None and last_ds.width:
+            extra_slots.append((last_idx + 1, last_ds.abs_left,
+                                last_ds.abs_left + last_ds.width,
+                                last_ds.abs_top + (last_ds.height or 0) + 3, False))
+    draw_state._dnd_extra_slots = extra_slots
 
     return changed, input_value
 
@@ -2576,7 +2739,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.16, text_value=1.023, saturation=1.2, text_saturation=0.8, text_align="center",
-           search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15):
+           search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15,
+           max_bg_brightness=0.25):
 
     if color is not None:
         if not isinstance(color, tuple) or len(color) < 3:
@@ -2595,6 +2759,11 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
         else:
             mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value,
                                                        factor=factor, saturation_scale=saturation, alpha=1.0)
+        # Brightness guard: cap the bg's perceived brightness (scale-preserving,
+        # same clamp as the window's tint washes) so the bright text keeps
+        # contrast even when a vivid/near-white color is passed in.
+        mixed_color = _brightness_clamp(mixed_color[0], mixed_color[1], mixed_color[2],
+                                        0.0, max_bg_brightness)
         text_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=text_value + (1.5 if hovered else 0.0),
                                                   factor=factor, saturation_scale=text_saturation, alpha=1.0)
     else:
@@ -4010,16 +4179,29 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
              indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False,
              with_header=draw_header)
 def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235, tint_saturation=0.372, unique=None,
-                 collection=None, as_toggles=False, tints=None, width=None, draw_state=None):
+                 collection=None, as_toggles=False, tints=None, excluded=None, width=None,
+                 dnd_collection_ds=None, dnd_keys=None,
+                 draw_state=None):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
     Tabs wrap onto a new row when the cumulative width would exceed draw_state.content_width.
 
     tints: optional list of (r, g, b) tint colors, one per tab in `collection`. Entries that are
     None (or beyond the list) fall back to the neutral grey. (Defaults to None rather than [] to
-    avoid the mutable-default-arg pitfall; behaves identically to an empty list.)"""
+    avoid the mutable-default-arg pitfall; behaves identically to an empty list.)
+
+    dnd_collection_ds + dnd_keys: opt tabs into the framework DragDrop. Each
+    tab button registers as a whole-rect drag item of `dnd_collection_ds` (the
+    draw_state whose input_value is the collection being reordered — the
+    Reorder/Insert lands on ITS return via Melty.dnd_requests). dnd_keys is a
+    list parallel to `collection`: (key, collection_index) per tab, or None
+    for tabs that aren't draggable (e.g. a synthetic General tab). The owner
+    must stamp _dnd_drop_target/_dnd_horizontal on dnd_collection_ds so slot
+    lines render vertically between the tabs."""
     if collection is None:
         return False, input_value
-
+        
+    if excluded is None: 
+        excluded = set()
     # Content-left edge, captured before the dummy/same_line/-10 shift below.
     # The wrap limit is measured from here so it lines up with content_width.
     origin_x = imgui.get_cursor_screen_pos()[0]
@@ -4027,6 +4209,7 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     imgui.dummy(0,0)
     imgui.same_line()
 
+    # [tint=(0.894, 0.568, 0.204, 1.0), show_tint=True]
     io = imgui.get_io()
     changed = False
     selected = list(input_value)
@@ -4037,8 +4220,12 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
         names = list(input_value.keys())
 
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 10, imgui.get_cursor_screen_pos()[1]))
+    # First-row start x after the -10 shift; wrapped rows realign to this
+    # (new_line() alone resets to the window content x, which is ~10px right).
+    row_start_x = imgui.get_cursor_screen_pos()[0]
 
     # Mirror button()'s sizing: width = calc_text_size(label_text).x + text_pad (15).
+    # [tint=(0.124, 0.65, 0.087, 1.0), show_tint=True]
     button_padding = 15
     content_width = draw_state.content_width if draw_state is not None else 0
     x_limit = origin_x + content_width if content_width > 0 else None
@@ -4060,6 +4247,9 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     for i, tab in enumerate(collection):
         raw = _tab_text(tab)
         # label_text = raw.replace("_", " ")
+        
+        if i in excluded:
+            continue
         label = f"{raw}"
         if names is not None and i < len(names):
             label = f"{names[i]}"
@@ -4085,19 +4275,76 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
         # no estimated spacing or fudge factor.
         if i > 0 and x_limit is not None and imgui.get_cursor_screen_pos()[0] + tab_width > x_limit:
             imgui.new_line()
+            imgui.set_cursor_screen_pos((row_start_x, imgui.get_cursor_screen_pos()[1]))
+
+        # Framework drag-and-drop: this button acts as a whole-rect drag
+        # item of dnd_collection_ds (key= is what DragDrop._begin picks up).
+        # While IT is the dragged child it renders with the floating-window
+        # kwargs (detached, fixed to pickup size, glued to the cursor) and a
+        # plain dummy holds its slot open in the flow.
+        dnd = None
+        dragged = False
+        dnd_extra = {}
+        if dnd_collection_ds is not None and dnd_keys is not None and i < len(dnd_keys):
+            dnd = dnd_keys[i]
+        _tx, _ty = imgui.get_cursor_screen_pos()
+        btn_height = tab_height
+        if dnd is not None:
+            dnd_extra = {"key": dnd[0], "dnd_handle": True, "return_extras": True}
+            # Same (collection, key) can be carried by two views - this button
+            # and the tab's stacked content view (draw_collection_as_tabs
+            # multi-select). Only the view actually picked up detaches, so
+            # require the dragged item to BE this button's draw state.
+            dragged = (_drag_drop.DragDrop.is_dragged_child(dnd_collection_ds, dnd[0])
+                       and _drag_drop.DragDrop.item_ds is dnd_collection_ds._children.get(dnd[1]))
+            if dragged:
+                dnd_extra.update(_drag_drop.DragDrop.dragged_item_kwargs())
+                # dragged_item_kwargs pins width/height to the pickup size -
+                # height would collide with the explicit height= below, so
+                # route it through btn_height (the pinned button size).
+                btn_height = dnd_extra.pop("height", btn_height)
 
         if active:
             selected_value = 0.23
-            clicked = button(label, z_offset=2, name=f"tab_{i}_{unique}",
-                             height=tab_height - 3, tint_value=new_value + selected_value - 0.03,
-                             color=tab_color, factor=tab_factor, draw=True)[0]
+            btn_res = button(label, z_offset=2, name=f"tab_{i}_{unique}",
+                             height=btn_height, tint_value=new_value + selected_value - 0.03,
+                             color=tab_color, factor=tab_factor, draw=True, **dnd_extra)
         else:
             saturation = 1.0 if tinted else 0.3
-            clicked = button(label, indent_size=0, height=tab_height, draw=True, z_offset=0.0,
+            btn_res = button(label, indent_size=0, height=btn_height, draw=True, z_offset=0.0,
                              alpha=0.0 if tinted else 0.0, tint_value=new_value if not tinted else 0.1, saturation=saturation,
                              name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
                              text_value=1.0 if not tinted else 0.9,
-                             shadow=False)[0]
+                             shadow=False, **dnd_extra)
+        clicked = btn_res[0]
+
+        if dnd is not None:
+            # A draggable tab must not change the selection on mouse-DOWN (a
+            # drag pickup would eat a multi-select). Override the button's
+            # down-click and select on CLICKED instead: the input handler only
+            # passes it for a release within MOVE_MAX_DISTANCE of the press,
+            # so a press that becomes a drag never selects.
+            clicked = False
+            if not dragged and draw_state is not None:
+                clicked = draw_state.on_action(
+                    "left_mouse_clicked", view_id=f"tab_click_{i}",
+                    rect=(_tx, _ty, _tx + tab_width, _ty + tab_height),
+                    priority_delta=2) is not None
+            btn_ds = btn_res[2] if len(btn_res) == 3 else None
+            if btn_ds is not None:
+                # Fulfill the drop-collection contract on the OWNER's ds (see
+                # DragDrop._is_drop_collection): children keyed by collection
+                # index, backlinked for register_item/_begin.
+                btn_ds._collection_draw_state = dnd_collection_ds
+                if dnd_collection_ds._children is None:
+                    dnd_collection_ds._children = {}
+                dnd_collection_ds._children[dnd[1]] = btn_ds
+            if dragged:
+                # The dragged button deferred to a floating window and drew
+                # nothing inline - hold its slot open at the current flow
+                # position so the bar doesn't reflow mid-drag.
+                imgui.dummy(tab_width, tab_height)
+                clicked = False
 
         if clicked:
             changed = True
@@ -4724,16 +4971,23 @@ class SourcePriority(Enum):
     WINDOW_DECORATION = 3        # @window(...) on the func or class - outranks
                                  # @defaults (the window kwargs drive the
                                  # window that renders the value)
-    AT_DEFAULT_CODE_TYPE = 4     # @defaults on a PARSED class in the value host
-    AT_DEFAULT_OBJ_TYPE = 5      # @defaults on the value's runtime CLASS
-    CALLER = 6                   # call-site kwargs; DEPTH is the natural
+    CALLER = 4                   # call-site kwargs - EXPLICITLY passed, so in
+                                 # the wrapper's gauntlet they beat every
+                                 # injected default layer, @defaults included
+                                 # (verified live: draw_all_tabs_from_cache's
+                                 # child_kwargs= wins over the GeneralParse
+                                 # class @defaults). DEPTH is the cal
                                  # tiebreaker (see _source_priority) - no
                                  # CALLER_0/CALLER_1 members needed
-    CHILD_KWARGS = 7             # the PARENT view's child_kwargs={...} - an
+    CHILD_KWARGS = 5             # the PARENT view's child_kwargs={...} - an
                                  # explicit call kwarg on the child, so
-                                 # caller-strength; the dict itself lives at
-                                 # any of the parent's OWN sources, resolved
-                                 # via from_anywhere("child_kwargs", parent)
+                                 # caller-strength: above @defaults for the
+                                 # same reason as CALLER; the dict itself
+                                 # lives at any of the parent's OWN sources,
+                                 # resolved via from_anywhere("child_kwargs",
+                                 # parent)
+    AT_DEFAULT_CODE_TYPE = 6     # @defaults on a PARSED class in the code tree
+    AT_DEFAULT_OBJ_TYPE = 7      # @defaults on the value's runtime class
     DECORATION = 8               # @render_func(...) kwargs on the render func
     INSTANCE_ATTR = 9            # whitelisted live attr on the value object
                                  # (core_render.OBJ_ATTR_PARAMS, e.g.
@@ -5392,7 +5646,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
             # Ensure the PARENT's registry exists (fresh sessions have no
             # _sa_cm_state until something collects it) - memoized per frame,
             # and this path only runs when a menu/tab is open on a child.
-            _sources_for(_pds_ck)
+            _psrcs = _sources_for(_pds_ck)
             _pcm = getattr(_pds_ck, "_sa_cm_state", None)
             _pdeco = (_pcm.class_dict.deep.decorators()
                       if _pcm is not None and _pcm.class_dict is not None else None)
@@ -5414,17 +5668,25 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
                         _add_source(f"@defaults({_pcls_name}.{_my_key})", _dv,
                                     TypeCodec, kind="attr default")
         if _ck_live is not None:
-            # CHILD KWARGS - the dict driving this view from the parent.
-            # Prefer the source-backed setter (from_anywhere on the parent);
-            # when source doesn't set it yet, a lazy-write adapter over the
-            # class-level @defaults parse makes the first write EDIT CODE
-            # (the live dict alone silently kept writes runtime-local).
-            _ck_dict = from_anywhere("child_kwargs", _pds_ck, default=None)
+            # CHILD KWARGS — the dict driving this view from the parent.
+            # Prefer the CODE-backed setter (the first source DRIVING
+            # child_kwargs - from_anywhere's pick, inlined so the same target
+            # also yields the row's jump location: the caller line /
+            # @defaults class line the dict lives at). If no source sets it
+            # yet, a lazy-create adapter over the class-level @defaults dict
+            # makes the first write EDIT CODE (the live dict alone silently
+            # kept writes in memory).
+            _ck_target = _driving_source(_psrcs, "child_kwargs")
+            _ck_dict = (_psrcs["sources"][_ck_target].get("child_kwargs")
+                        if _ck_target is not None else None)
+            _ck_loc = (_psrcs["locations"].get(_ck_target)
+                       if _ck_target is not None else None)
             if not (isinstance(_ck_dict, dict) and _ck_dict):
                 _ck_dict = (_ChildKwargsSource(_cls_defaults, _ck_live)
                             if isinstance(_cls_defaults, dict) else _ck_live)
+                _ck_loc = getattr(_pcm, "class_loc", None) if _pcm is not None else None
             _add_source("child_kwargs", _ck_dict, TypeCodec,
-                        kind="child kwargs")
+                        location=_ck_loc, kind="child kwargs")
     # CODEC - the active codec's render_kwargs (ds._codec, stashed by the
     # wrapper for every view): the lowest kwargs merge layer and the
     # provenance color (import views' green). Skip-when-absent like the
