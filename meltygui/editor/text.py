@@ -20,7 +20,6 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.jump_to import draw_jump_to
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import draw
 
 
 def _hex(h):
@@ -87,6 +86,106 @@ WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
 #     pool - resolves `self.`, just-typed locals, import statements).
 
 _IDENT_RE = re.compile(r'[A-Za-z_]\w*')
+# Buffer-scan variant: identifiers NOT preceded by a '.' - an attribute spelling
+# (`my_object.dog`) names a member of some OTHER thing, not a scope symbol, so
+# it must not surface as a bare suggestion. A name that also occurs bare
+# somewhere still matches there and stays in the pool.
+_BARE_IDENT_RE = re.compile(r'(?<![.\w])[A-Za-z_]\w*')
+# Comment strip for the same scan - comment prose must never become
+# suggestions. Single-line strings are matched FIRST and kept, so a '#' inside
+# one can't eat the code after it; a bare '#' then drops the rest of the line.
+# One C-speed sub, no lexer state - cheap enough for the per-keystroke pool
+# rebuild. A '#' inside a still-unterminated string or a multi-line triple
+# quote is over-stripped, but that only ever drops STRING words, never bare.
+_SCAN_COMMENT_RE = re.compile(
+    r'''("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|#[^\n]*''')
+
+
+def _strip_comments(text):
+    # \1 keeps a matched string alternate; for a bare match the group didn't
+    # participate and sub() substitutes empty; all C-speed, no per-match lambda.
+    return _SCAN_COMMENT_RE.sub(r'\1', text)
+
+
+_SCOPE_HEAD_RE = re.compile(r'^(\s*)(def|class)\s+([A-Za-z_]\w*)')
+
+
+def _blank_foreign_scopes(lines, caret_line):
+    """Blank (in place) every buffer region whose names are invisible at
+    0-indexed `caret_line`, mirroring Python's lookup rules:
+
+    - a def/class block NOT containing the caret is blanked whole; only a
+      TOP-LEVEL block keeps its name (a module-level def/class is referencable
+      from anywhere, a nested one only through its container),
+    - a caret-containing CLASS whose caret sits in a nested def/class also has
+      its direct body lines blanked — class-scope names never resolve bare
+      from inside a method (`enable_jedi` in a Toggles method is a NameError).
+
+    Pure indentation walk over the live buffer, so it also covers just-typed
+    defs the parse hasn't caught up to (and the no-parse fallback, where the
+    scan is the only candidate source). Trailing blank lines are trimmed from
+    a block before the containment test, so a caret on an empty line between
+    two defs counts as OUTSIDE the one above."""
+    n = len(lines)
+
+    def block_end(i, indent):
+        j = i + 1
+        while j < n:
+            s = lines[j]
+            if s.strip() and len(s) - len(s.lstrip()) <= indent:
+                break
+            j += 1
+        while j - 1 > i and not lines[j - 1].strip():
+            j -= 1
+        return j
+
+    def walk(lo, hi, blank_direct):
+        i = lo
+        while i < hi:
+            m = _SCOPE_HEAD_RE.match(lines[i])
+            if m is None:
+                if blank_direct and i != caret_line:
+                    lines[i] = ""
+                i += 1
+                continue
+            indent = len(m.group(1))
+            end = block_end(i, indent)
+            if i <= caret_line < end:
+                # Is the caret on one of this block's DIRECT lines, or in
+                # a nested def/class of it?
+                nested = False
+                j = i + 1
+                while j < end:
+                    m2 = _SCOPE_HEAD_RE.match(lines[j])
+                    if m2 is not None:
+                        e2 = block_end(j, len(m2.group(1)))
+                        if j <= caret_line < e2:
+                            nested = True
+                            break
+                        j = max(e2, j + 1)
+                    else:
+                        j += 1
+                if blank_direct:
+                    # The surrounding class body is invisible from the caret,
+                    # and this block's NAME is one of its attrs - drop the
+                    # name but keep the rest of the line (the def's params
+                    # are real scope names for the caret inside it).
+                    lines[i] = m.group(1) + m.group(2) + lines[i][m.end():]
+                walk(i + 1, end,
+                     blank_direct=(m.group(2) == "class" and nested))
+            else:
+                # A blanked block keeps its NAME - it's a binding in the
+                # scope we're walking (module global, parent-def local, or a
+                # class attr when the caret is directly in that class body),
+                # and the caret-line cap downstream drops it when it's bound
+                # below the caret. Under blank_direct the surrounding class
+                # block itself is invisible, so the name goes too.
+                lines[i] = "" if blank_direct else m.group(3)
+                for k in range(i + 1, end):
+                    lines[k] = ""
+            i = end
+    walk(0, n, False)
+    return lines
 # Identifier immediately to the left of a position - the half-typed word the
 # popup filters by (and the span an accepted suggestion replaces).
 _PREFIX_RE = re.compile(r'[A-Za-z_]\w*$')
@@ -129,20 +228,23 @@ def _completion_pool(code_tree, text, line, func=None):
             seen.add(name)
             pool.append((name, kind))
 
-    scan_text = text
     if code_tree is not None:
         try:
             for name, kind in completions_at(code_tree, line):
                 add(name, kind)
         except Exception:
             pass  # never let a parse hiccup kill typing
-        # With a parse the buffer scan only backfills JUST-TYPED locals the
-        # tree hasn't caught up to - those sit at or above the caret, so cap
-        # the scan there. This keeps names completions_at position-filtered
-        # (locals defined below the caret) from re-entering as "name" rows.
-        # No tree → scan everything; it's the only source source.
-        scan_text = "\n".join(text.split("\n")[:line + 1])
-    for name in _IDENT_RE.findall(scan_text):
+    # The buffer scan only backfills JUST-TYPED names the tree hasn't caught up
+    # to (or could, when there's no parse) - but a name is only a valid
+    # suggestion where it's in scope. Blank def/class blocks that don't enclose
+    # the caret (their locals/params are invisible here; block names survive),
+    # and with a tree also cap at the caret's line - a name bound below it in
+    # the caret's own scope isn't defined yet. Without a tree the cap is
+    # skipped: later module-level names ARE valid, and the tree isn't going to
+    # supply them.
+    lines = _blank_foreign_scopes(text.split("\n"), line)
+    scan_text = "\n".join(lines[:line + 1] if code_tree is not None else lines)
+    for name in _BARE_IDENT_RE.findall(_strip_comments(scan_text)):
         add(name, "name")
     for name in dir(_builtins):
         if not name.startswith("_"):
@@ -1325,8 +1427,54 @@ def _parse_col_shift(buffer_text, parse_source):
     return 0
 
 
+def _lv_line_map(parse_source, buffer_text):
+    """Line-number bridge, parse-space → buffer-space, for the token overlays:
+    while a chain_in merge is in flight the buffer has moved (Enter presses,
+    typing) but node spans are still in the HELD parse's coordinates — without
+    the bridge every live-view marker sits on stale lines for the whole
+    debounce+merge window. Prefix/suffix line diff, tolerant of whitespace-
+    only-line differences (the parse source is dedent-normalized). Returns
+    map(line) -> line | None (None = inside the changed region: no
+    trustworthy anchor, that marker skips the frame), or None overall when
+    the texts already line up (no bridging needed)."""
+    if not parse_source or not buffer_text or parse_source is buffer_text:
+        return None
+    a = parse_source.split("\n")
+    b = buffer_text.split("\n")
+    na, nb = len(a), len(b)
+
+    def eq(x, y2):
+        # STRIPPED comparison: the code-host route parses spans DEDENTED
+        # (see _parse_col_shift) and blank lines ws-normalized - raw equality
+        # marked every line of a method span as changed, mapped every anchor to
+        # None, and blanked the live views entirely. Stripped equality keeps
+        # the diff positional; a false boundary line costs at most a
+        # one-line marker shift for one merge window.
+        return x.strip() == y2.strip()
+
+    pre = 0
+    m = min(na, nb)
+    while pre < m and eq(a[pre], b[pre]):
+        pre += 1
+    if pre == na and na == nb:
+        return None
+    suf = 0
+    while suf < (na - pre) and suf < (nb - pre) and eq(a[na - 1 - suf], b[nb - 1 - suf]):
+        suf += 1
+    delta = nb - na
+    safe_tail = na - suf            # 1-based old lines > safe_tail shift by delta
+
+    def _map(line):
+        if line <= pre:
+            return line
+        if line > safe_tail:
+            return line + delta
+        return None
+    return _map
+
+
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
-                          line_offset=0, jump_to=None):
+                          line_offset=0, jump_to=None, buffer_text=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
@@ -1338,6 +1486,17 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     type_specs = [(k, v) for k, v in token_views.items() if isinstance(k, type)]
     if not type_specs:
         return
+    # Parse→buffer line bridge (see _lv_line_map), rebuilt only when either
+    # text object changes - one ~1ms diff per view, then cached.
+    line_map = None
+    if buffer_text is not None:
+        _src = getattr(code_tree, "source", None)
+        _ck = (id(_src), id(buffer_text))
+        if getattr(ds, "_lv_lmap_key", None) == _ck:
+            line_map = ds._lv_lmap
+        else:
+            line_map = _lv_line_map(_src, buffer_text)
+            ds._lv_lmap_key, ds._lv_lmap = _ck, line_map
     seen = set()
 
     def walk(node, depth=0):
@@ -1348,14 +1507,18 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
         if span is not None:
             for ktype, spec in type_specs:
                 if isinstance(node, ktype):
-                    y = origin_y + (span.start_line - 1) * line_px
+                    _sl = line_map(span.start_line) if line_map else span.start_line
+                    if _sl is None:
+                        break   # starts inside the changed region - skip this frame
+                    y = origin_y + (_sl - 1) * line_px
                     h = (span.end_line - span.start_line + 1) * line_px
                     x = origin_x + getattr(span, 'start_col', 0) * char_w
                     try:
                         spec["renderer"](x=x, y=y, w=max(0.0, ds.content_width - (x - origin_x)),
                                          h=h, draw_state=ds, char_w=char_w, line_px=line_px,
                                          node=node, span=span, root=code_tree,
-                                         line_offset=line_offset, jump_to=jump_to)
+                                         line_offset=line_offset, jump_to=jump_to,
+                                         line_map=line_map)
                     except Exception:
                         pass
                     break
@@ -4501,8 +4664,6 @@ def draw_text(input_value: str, height=None,
     _pf_marks = []
     _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
-    
-    
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
 
@@ -4534,14 +4695,14 @@ def draw_text(input_value: str, height=None,
     # unsaved disk edit above this span that changed the line count shifts
     # every site - fold that shift into the offset (0 when nothing is pending).
     _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
-        
+
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
     if getattr(ds, '_ac_state', None) is None:
         ds._ac_state = DropDownState()
     ac_state = ds._ac_state
-    
+
     # Same deal for the usage-jump popup (multi-user symbol Ctrl+B).
     if getattr(ds, '_uj_state', None) is None:
         ds._uj_state = DropDownState()
@@ -4606,6 +4767,7 @@ def draw_text(input_value: str, height=None,
     # filters the fast rows below, so a just-applied fix isn't re-offered per
     # keystroke while the file's bind cache catches up.
     _active_fixes = import_fixes
+
     if Toggles.TextEditor.fast_syntax_check:
         _fi = getattr(ds, '_fast_imports_state', None)
         if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
@@ -4631,6 +4793,7 @@ def draw_text(input_value: str, height=None,
     # message (if any) is no longer shown inline here - it floats in a bar pinned
     # to the bottom of the view (see the error footer after the body is drawn).
     bar_height = 0.0
+
     _err_msg = None
     if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
@@ -4823,7 +4986,7 @@ def draw_text(input_value: str, height=None,
         # rendering while a key is held so imgui's repeat cadence is sampled.
         if _any_down:
             request_render()
-            
+
     _fired = {k for k, _m in _frame_keys}
     pressed = lambda k: k in _fired
     _pf("setup")
@@ -4833,7 +4996,7 @@ def draw_text(input_value: str, height=None,
     # rebind focus by tile id so a cache hit doesn't silently drop it.
     if (not is_focused and Melty.text_focused_ds is not None
             and getattr(Melty.text_focused_ds, '_tile_id', None) == ds._tile_id):
-    
+
         if Toggles.TextEditor.text_focus_stack_trace:
             print(f"[focus-grant] rebind -> {ds.name} ({ds._tile_id}) "
                   f"from ds {id(Melty.text_focused_ds)}")
@@ -4856,7 +5019,7 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_start = 0
             ds.text_selection_end = len(text)
             ds.text_cursor_pos = len(text)
-        
+
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
         straight in IntelliJ; several open the usage-jump picker under the
@@ -4893,8 +5056,8 @@ def draw_text(input_value: str, height=None,
                     return True
                 return False
         return False
-        
-    
+
+
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
@@ -4916,7 +5079,7 @@ def draw_text(input_value: str, height=None,
         ds.text_cursor_blink_time = time.time()
         click_pos = _xy_to_char_index(text, io.mouse_pos.x, io.mouse_pos.y,
                                       origin_x, origin_y, line_px, vcols=_get_vcols())
-        
+
         now = time.time()
         within_window = (now - ds.text_double_click_time < 0.3
                          and abs(click_pos - ds.text_last_click_pos) <= 1)
@@ -5266,8 +5429,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
             changed = True
-
-
+        
         # --- Enter / Shift+Enter --- (skipped for single-line fields like the
         # search box, where Enter is reserved for find-next / Shift+Enter
         # find-prev).
@@ -5685,11 +5847,19 @@ def draw_text(input_value: str, height=None,
                 # re-runs every frame while the popup is open (keep-alive
                 # invalidate); without this we'd re-walk the parse and build the
                 # LineMap each frame just to filter by prefix.
+                # The tree is _usage_tree, NOT raw code_tree: parsers can
+                # deliver the parse as code_dict (code_tree=None) or shadow it
+                # with the syntax-error marker - raw code_tree there dropped
+                # every scope/position filter and the pool fell back to an
+                # unfiltered whole-buffer list. _usage_tree already resolves
+                # that. Its node spans are BUFFER-relative (only usage SITES
+                # are file-absolute), so the buffer caret line is the right
+                # coordinate to pass - no _usage_off here.
                 _ac_line = _index_to_line_col(text, ds.text_cursor_pos)[0]
-                _pool_key = (id(code_tree), _ac_line, len(text))
+                _pool_key = (id(_usage_tree), _ac_line, len(text))
                 if getattr(ds, '_ac_pool_key', None) != _pool_key:
                     _pool_func = _ac_live_context(ds, text, jump_to)[1]
-                    ds._ac_pool = _completion_pool(code_tree, text, _ac_line, _pool_func)
+                    ds._ac_pool = _completion_pool(_usage_tree, text, _ac_line, _pool_func)
                     ds._ac_pool_key = _pool_key
                 cands = _filter_completions(ds._ac_pool, prefix,
                                             users=_ac_users, tints=_ac_tinted)
@@ -5865,7 +6035,7 @@ def draw_text(input_value: str, height=None,
         # scrollbar.
         match_top_abs = origin_y + line * line_px
         _scroll_into_view(ds, match_top_abs, match_top_abs + line_px, center=True)
-        
+
         # Horizontal: default back to the line start (h_scroll 0) while paging
         # through results, scrolling to only when the match wouldn't fit.
         # For a multi-line match only the first line drives the horizontal
@@ -5883,6 +6053,8 @@ def draw_text(input_value: str, height=None,
                 ds.text_h_scroll = max(0.0, match_x_end - text_visible_width + edge_padding)
         request_render()
     _pf("find_search")
+
+
     # --- Horizontal auto-scroll ---
     # Only kicks in when the cursor moved this frame, so middle-drag pans
     # are not snapped back. Brings the cursor into view on a single line.
@@ -6126,6 +6298,7 @@ def draw_text(input_value: str, height=None,
                                             current=(m_idx == current_local))
 
     _pf("body:search_hl")
+
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under
     # the glyphs so the code stays readable. The message itself rides in the file
@@ -6240,7 +6413,7 @@ def draw_text(input_value: str, height=None,
             _ci = bisect.bisect_right(_ct_starts, src_i) - 1
             if _ci >= 0 and src_i < _dt_comments[_ci][1]:
                 _cc = _dt_comments[_ci][2]
-                
+
                 _ck = (_cc, _ct_factors)
                 _pk = _COMMENT_TINT_CACHE.get(_ck)
                 if _pk is None:
@@ -6429,8 +6602,10 @@ def draw_text(input_value: str, height=None,
                 break
             x = origin_x
             y += line_px
+        
             start = nl + 1
         src_i += len(token)
+    
 
     _pf("body:glyphs")
     # An inline view (e.g. the icon dropdown) changed its value - splice the new
@@ -6506,7 +6681,8 @@ def draw_text(input_value: str, height=None,
         _tv_shift = _parse_col_shift(text, getattr(_tv_tree, 'source', '') or '')
         _draw_cst_token_views(_tv_tree, token_views, origin_x + _tv_shift * char_w,
                               origin_y, line_px, char_w, ds,
-                              line_offset=_usage_off, jump_to=jump_to)
+                              line_offset=_usage_off, jump_to=jump_to,
+                              buffer_text=text)
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------
@@ -6550,7 +6726,7 @@ def draw_text(input_value: str, height=None,
                 px, py = nx, ny
                 cx = nx
                 up = not up
-                
+
     # Cursor. Drawn at the caret even while a selection exists, so the active
     # (moving) edge of a drag or shift-selection shows where delete and arrow
     # keys will act from - text_cursor_pos already tracks that location.
@@ -6715,7 +6891,7 @@ def draw_text(input_value: str, height=None,
         ac_state._last_mouse = (_mp[0], _mp[1])
 
     imgui.dummy(draw_state.content_width, max(draw_state._kwargs.get("min_height", 0), text_height))
-    
+
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
     # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
     # background results wake it via the future's done-callback (_ac_on_future).
@@ -6779,8 +6955,7 @@ def draw_text(input_value: str, height=None,
         ds._ac_request_anchor = -1
         ds._ac_snip_site = None   # same disarm as a keyboard accept
         changed = True
-
-
+        
     _pf("ac_popup")
     # --- Usage-jump picker (multi-use symbols) ---
     # Same latched window contract as the suggestion popup above: draw_dd_menu
@@ -6941,7 +7116,6 @@ def draw_text(input_value: str, height=None,
         imgui.set_cursor_screen_pos((bx0 + pad_x, by0 + pad_y))
         imgui.text_colored(msg, 1.0, 0.5, 0.46, 1.0)
         imgui.set_cursor_screen_pos(_save_cursor)
-        
 
     # window_pos is an offset from the parent window's absolute origin. The menu
     # window carries an intrinsic ~one-row top offset (draw_dropdown back-compensates

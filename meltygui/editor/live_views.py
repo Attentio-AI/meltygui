@@ -301,7 +301,18 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # repaint.
     watch(fn, None, draw_state)
 
-    origin_y = y - (span.start_line - 1) * line_px
+    # Parse→buffer line bridge (dispatch passes it while a merge is in
+    # flight): the given y is already mapped, so deriving origin from the
+    # MAPPED start keeps origin == buffer line 1; each anchor then maps
+    # individually - lines above an edit stay, lines below shift, lines
+    # within the changed region skip the frame. Content lookups keep the
+    # PARSE-space line: outside the changed region both texts hold the
+    # identical line, by construction of the diff.
+    _lmap = kwargs.get("line_map")
+    _sl = _lmap(span.start_line) if _lmap else span.start_line
+    if _sl is None:
+        return
+    origin_y = y - (_sl - 1) * line_px
     origin_x = x - getattr(span, "start_col", 0) * char_w
     source_lines = (getattr(root, "source", "") or "").split("\n")
     for key_path, value in live_values_for(fn).items():
@@ -313,6 +324,9 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         if anchor is None:
             continue
         rel_line, start_col, end_col = anchor
+        _ml = _lmap(rel_line) if _lmap else rel_line
+        if _ml is None:
+            continue        # anchor inside the mid-edit region - skip a frame
         if end_col is None:
             # No span (line:N key) - box the line's text, first non-space
             # to end ("line highlight").
@@ -341,7 +355,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         pad = 2.0
         imgui.set_cursor_screen_pos(
             (origin_x + start_col * char_w - pad,
-             origin_y + (rel_line - 1) * line_px - pad))
+             origin_y + (_ml - 1) * line_px - pad))
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
         # point of the lab) so a run pops them unprompted; scalars/configs
         # stay quiet click-to-open boxes so 19 locals don't bury the def.

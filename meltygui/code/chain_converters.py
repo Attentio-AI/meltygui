@@ -388,9 +388,15 @@ def chain_parse_cache_put(span_key, disk_mtime, gp):
     saved_addr = getattr(gp, "address", None)
     saved_sym = getattr(gp, "symbol_usage", None)
     saved_usages = gp.pop("__symbol_usages__", None)
+    # The incremental-merge value memo keys on live node ids - meaningless
+    # (and sizeable) after an unpickle. The stmt tables STAY: they are plain
+    # line data, so a warm-started gp merges incrementally right away.
+    saved_memo = getattr(gp, "_value_memo", None)
     try:
         gp.address = None
         gp.symbol_usage = [None]
+        if saved_memo is not None:
+            gp._value_memo = None
         with _pspan("cst_cache: chain dumps", file=Path(span_key[0]).name, min_ms=5.0):
             blob = pickle.dumps(gp, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception:
@@ -398,6 +404,8 @@ def chain_parse_cache_put(span_key, disk_mtime, gp):
     finally:
         gp.address = saved_addr
         gp.symbol_usage = saved_sym
+        if saved_memo is not None:
+            gp._value_memo = saved_memo
         if saved_usages is not None:
             gp["__symbol_usages__"] = saved_usages
     _cst_dict_cache[key] = (disk_mtime, blob)
@@ -415,9 +423,53 @@ def _cst_cache_key(ref: Address):
     return (resolved, ref.start, ref.end), mtime
 
 
+def _harvest_live_span_parses():
+    """Re-cache the LIVE code hosts' held parses under the FINAL disk state.
+    chain_parse_cache_put otherwise only fires on pristine-disk loads, so any
+    file edited during the session keeps its stale launch-mtime entry and
+    cold-parses (~250ms+ for a big span) on every boot. At shutdown — called
+    AFTER apply_all_saves flushed pending edits — a clean, error-free held gp
+    corresponds to the just-written disk content; re-key it to the current
+    mtime so the next launch hits. Any coordinate drift just yields a
+    harmless miss (mtime/key won't match), never a wrong serve."""
+    try:
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            _code_host_cache, host_code_state, ModesState)
+    except Exception:
+        return
+    stored = 0
+    for _key, pair in list(_code_host_cache.items()):
+        try:
+            sh, dh = pair
+            gp = dh._held()
+            if not isinstance(gp, dict) or gp.get("__cst__") is None:
+                continue
+            cs = host_code_state(sh)
+            addr = getattr(cs, "address", None)
+            if (addr is None or getattr(addr, "path", None) is None
+                    or getattr(cs, "_pending_save", False)
+                    or getattr(cs, "_save_refused", False)):
+                continue
+            wds = getattr(dh, "_wrapper_draw_state", None)
+            ms = next((v for v in (getattr(wds, "misc", None) or {}).values()
+                       if isinstance(v, ModesState)), None)
+            if ms is not None and ms.last_error is not None:
+                continue          # held/errored gp - predates the buffer
+            span_key, mtime = _cst_cache_key(addr)
+            if span_key is None:
+                continue
+            chain_parse_cache_put(span_key, mtime, gp)
+            stored += 1
+        except Exception:
+            continue
+    _ptrace("cst_cache: harvested live hosts at shutdown", stored=stored)
+
+
 def save_cst_dict_cache():
     """Atomic pickle of the span cache. Entries are already address-free bytes,
-    so this is a cheap dict-of-bytes dump. Called from FileWatch.shutdown."""
+    so this is a cheap dict-of-bytes dump. Called from FileWatch.shutdown
+    (AFTER apply_all_saves — the harvest keys on final disk mtimes)."""
+    _harvest_live_span_parses()
     try:
         # Prune stale entries before persisting: a blob whose stored mtime no
         # longer matches its file's current mtime can never hit again (the

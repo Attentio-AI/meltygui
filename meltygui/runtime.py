@@ -401,14 +401,17 @@ class FileWatch:
         # symbol results to ~/.lsd/symbol_index.json for instant warm starts.
         shutdown_symbol_index_daemon()
 
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        PendingSave.apply_all_saves()
+
         # Same warm-start treatment for the span parse cache (cst dicts):
         # flush to ~/.lsd/cst_dict_cache.pkl so a fresh start skips the
         # cst.parse_module + cst_module_to_dict cost to open a view.
+        # After apply_all_saves: the shutdown harvest re-keys the live hosts'
+        # parses to the FINAL disk mtimes - before the flush they'd be keyed
+        # to a disk state the pending writes are about to replace.
         from src.lsd.gl_gui.view.core_conversion.chain_converters import save_cst_dict_cache
         save_cst_dict_cache()
-
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-        PendingSave.apply_all_saves()
 
 
 class Melty:

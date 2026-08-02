@@ -338,8 +338,6 @@ class CallParse(GeneralParse):
     def __init__(self, *args, func_name=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.func_name = func_name
-        
-        
 
 
 @defaults(tint=(0.86, 0.3345581, 0.07, 0.7), icon="@", disable_scroll=True)
@@ -3214,7 +3212,7 @@ def _build_ast_span_map(module, source=None):
     def pair_if(cs_if, ast_if):
         if not isinstance(ast_if, ast.If):
             return
-        out[cs_if] = sp(ast_if)   # whole-statement span (incremental merge)
+        out[cs_if] = sp(ast_if)  # whole-statement span (incremental merge)
         out[cs_if.test] = sp(ast_if.test)
         out[cs_if.body] = list_sp(ast_if.body)
         pair(list(cs_if.body.body), ast_if.body)
@@ -3234,7 +3232,7 @@ def _build_ast_span_map(module, source=None):
     def pair_try(cs_try, ast_try):
         if not isinstance(ast_try, (ast.Try, getattr(ast, "TryStar", ast.Try))):
             return
-        out[cs_try] = sp(ast_try)   # whole-statement span (incremental merge)
+        out[cs_try] = sp(ast_try)  # whole-statement span (incremental merge)
         out[cs_try.body] = list_sp(ast_try.body)
         pair(list(cs_try.body.body), ast_try.body)
         for h_cs, h_ast in zip(cs_try.handlers, ast_try.handlers):
@@ -3318,11 +3316,13 @@ def _stamp_span(node_obj, cst_node):
 
 def _record_child(container, key, value, cst_node):
     """Record the span of a LEAF child (`container[key]`, source `cst_node`) in
-    the container's `_child_spans` map. Skipped for dict-valued children — those
-    are containers that carry their own `.span` and are found by tree walk.
-    Lets literal assignments (a plain int/str/bool that can't hold a `.span`) be
-    located by line."""
-    if isinstance(value, dict):
+    the container's `_child_spans` map. Skipped for dict-valued children that
+    carry their own `.span` — those are found by tree walk. A dict value
+    WITHOUT one (e.g. a local assigned a plain dict literal) is recorded here
+    too, or it would have no position at all — the completion filter treats a
+    span-less local as always-visible. LineMap ignores `_child_spans` entries
+    for dict values, so this only feeds the by-key span lookups."""
+    if isinstance(value, dict) and getattr(value, "span", None) is not None:
         return
     span = _span_of(cst_node)
     if span is None:
@@ -3511,8 +3511,9 @@ def _direct_member_names(scope):
 def _scope_local_names(scope, before_line=None):
     """(name, kind) the given scope dict introduces. Functions expose their
     `parameters` + `locals`; module/class scopes expose their direct members.
-    `before_line` (1-indexed, parse-relative) filters locals to those defined
-    at or above that line — params are always in scope and never filtered."""
+    `before_line` (1-indexed, parse-relative) filters locals — and class/module
+    direct members — to those defined at or above that line; params are always
+    in scope and never filtered. A member without a recorded span is kept."""
     params, locs = scope.get("parameters"), scope.get("locals")
     if isinstance(params, dict) or isinstance(locs, dict):  # function scope
         out = []
@@ -3521,7 +3522,18 @@ def _scope_local_names(scope, before_line=None):
         if isinstance(locs, dict):
             out += list(_flatten_local_names(locs, before_line))
         return out
-    return _direct_member_names(scope)
+    if before_line is None:
+        return _direct_member_names(scope)
+    cs = getattr(scope, "_child_spans", None) or {}
+    out = []
+    for k, v in scope.items():
+        if not _is_symbol_key(k):
+            continue
+        span = cs.get(k) or (getattr(v, "span", None) if isinstance(v, dict) else None)
+        if isinstance(span, Span) and span.start_line > before_line:
+            continue  # class-body member sits below the caret
+        out.append((k, _classify(v)))
+    return out
 
 
 def _scope_chain_for_line(root, rel_line):
@@ -3608,13 +3620,17 @@ def completions_at(code_tree, line):
             out.append((name, kind))
 
     chain = _scope_chain_for_line(code_tree, line + 1)  # spans are 1-indexed
-    # The caret's own scope filters its locals by position - a local assigned
-    # BELOW the caret isn't defined yet there. Enclosing function scopes don't:
-    # closures bind late, so their later assignments exist by the time innermost
-    # runs (and module/class members are added unfiltered below for the same
-    # reason).
+    # The caret's own scope filters its members by position - a name bound
+    # BELOW the caret isn't exist yet there (function locals AND class-body
+    # members alike). Enclosing FUNCTION scopes don't: closures bind late, so
+    # their later locals exist by the time inner code runs (module members are
+    # offered unfiltered below for the same reason). Enclosing CLASS scopes are
+    # skipped ignored - Python's name lookup never reaches a class scope from
+    # code nested inside it (bare `Member` in a method throws a NameError).
     innermost = chain[-1]
     for scope in reversed(chain[1:]):  # innermost scope first
+        if scope is not innermost and isinstance(scope.get("__cst__"), cst.ClassDef):
+            continue
         before = line + 1 if scope is innermost else None
         for name, kind in _scope_local_names(scope, before_line=before):
             add(name, kind)
@@ -3625,8 +3641,13 @@ def completions_at(code_tree, line):
     symbols = getattr(code_tree, "symbol_usage", None)  # jedi, only if indexed
     if isinstance(symbols, dict):
         for k, su in symbols.items():
-            # Key is collision-proof (a local's is scope+name+line); the completion
-            # candidate is the bare spelling on the SymbolUsage.
+            # Skip scope-variable entries (keyed scope\x1fname\x1fdefline): they
+            # cover enclosing scope's locals at any position, so offering their
+            # bare spelling risks outer scopes' / not-yet-defined names. The
+            # caret's own locals already came from the scope walk above,
+            # position-filtered. Dotted member spellings fail _is_symbol_key.
+            if isinstance(k, str) and "\x1f" in k:
+                continue
             add(getattr(su, "name", k), "symbol")
     return out
 
@@ -3833,10 +3854,10 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     notify(f"cst→dict{_inc_mark} {_total_ms:.0f}ms"
            + (f" (parked {_slept_ms:.0f}ms)" if _slept_ms >= 1 else "")
            + f"  {source_code.count(chr(10)) + 1} lines"
-           f"  {_Path(_ap).name if _ap else 'no-address'}",
+             f"  {_Path(_ap).name if _ap else 'no-address'}",
            tint=((1.0, 0.3, 0.2) if _work_ms >= 300
                  else (1.0, 0.65, 0.2) if _work_ms >= 60
-                 else (0.6, 0.75, 0.6)),
+           else (0.6, 0.75, 0.6)),
            tag="cst")
     return readable
 
@@ -3885,7 +3906,7 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
             d0 = pos.get(("dec_start", body[idx]))
             if d0:
                 s0 = min(s0, d0)
-            return s0 - len(body[idx].leading_lines)   # 1-based
+            return s0 - len(body[idx].leading_lines)  # 1-based
 
         j0 = None
         for j in range(len(body)):
@@ -3916,10 +3937,10 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
             ts1 = text_start(j1)
             if ts1 is None:
                 return _inc_fallback("span-unplaced-next")
-            hi_excl = ts1 - 1                  # 0-based exclusive
+            hi_excl = ts1 - 1  # 0-based exclusive
         else:
-            hi_excl = fd_span.end_line         # def's last line (1b) == 0b excl
-        lo = ts0 - 1                           # 0-based inclusive
+            hi_excl = fd_span.end_line  # def's last line (1b) == 0bexcl
+        lo = ts0 - 1  # 0-based inclusive
         if last_row > hi_excl or lo >= hi_excl:
             return _inc_fallback("span-bounds")
         new_hi = hi_excl + delta
@@ -4023,7 +4044,7 @@ def _shift_gp_spans(roots, extra_spans, delta):
             for k, v in o.items():
                 if k == "__cst__":
                     continue
-                bump(getattr(k, "span", None))     # dict keys carry spans
+                bump(getattr(k, "span", None))  # Comment keys carry spans
                 if isinstance(v, (dict, list, tuple)) or hasattr(v, "span") \
                         or hasattr(v, "_child_spans"):
                     stack.append(v)
@@ -4127,13 +4148,13 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         while pre < m and a[pre] == b[pre]:
             pre += 1
         if pre == na and pre == nb:
-            return _inc_fallback("identical")                       # identical - let safe-skip handle
+            return _inc_fallback("identical")  # identical: let safe-skip handle
         suf = 0
         while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
             suf += 1
         delta = nb - na
-        first_row = pre + 1                   # 1-based first changed old row
-        last_row = na - suf                   # 1-based last changed old row
+        first_row = pre + 1  # 1-based first changed old row
+        last_row = na - suf  # 1-based last changed old row
         # Statement range [i0, i1) covers the changed rows - every span in
         # the region must be known, and the edit must not reach into the
         # module header (i0 == 0 file-start) or past the last statement.
@@ -4144,7 +4165,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
             if e0 >= first_row:
                 i0 = i
                 break
-        if not i0:                            # None or 0: header-adjacent
+        if not i0:  # None or 0: header-adjacent
             if (i0 == 0 and len(table) == 1
                     and isinstance(old_mod.body[0], cst.FunctionDef)):
                 # A function edited in its own span host: one top-level
@@ -4161,7 +4182,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
                 break
             i1 += 1
         if i1 == i0:
-            i1 = i0 + 1     # gap-only edit: the tail is the next stmt's leading lines
+            i1 = i0 + 1  # gap-only edit: the gap is the next stmt's leading lines
 
         def _stmt_text_start(idx):
             # 0-based line index where statement idx's LIBCST text begins. The ast
@@ -4179,14 +4200,14 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         if old_lo is None or old_lo < 0:
             return _inc_fallback("bad-region-start")
         if i1 < len(table):
-            old_hi_excl = _stmt_text_start(i1)   # 0-based exclusive region end
+            old_hi_excl = _stmt_text_start(i1)  # 0-based exclusive old end
             if old_hi_excl is None:
                 return _inc_fallback("unplaced-next-stmt")
         else:
-            old_hi_excl = na                     # region runs to end of file
+            old_hi_excl = na  # region runs to end of file
         if last_row > old_hi_excl or old_lo >= old_hi_excl:
             return _inc_fallback("footer-or-degenerate")
-        new_hi = old_hi_excl + delta             # exclusive 0-based end, new text
+        new_hi = old_hi_excl + delta  # exclusive 0-based end of new text
         if new_hi <= old_lo or new_hi > nb:
             return _inc_fallback("bounds")
         region_lines = b[old_lo:new_hi]
@@ -4222,14 +4243,14 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         if region_mod.header:
             region_body[0] = region_body[0].with_changes(
                 leading_lines=list(region_mod.header)
-                + list(region_body[0].leading_lines))
+                              + list(region_body[0].leading_lines))
         tail_body = list(old_mod.body[i1:])
         if region_mod.footer and i1 < len(table):
             if not tail_body:
                 return _inc_fallback("footer-no-home")
             tail_body[0] = tail_body[0].with_changes(
                 leading_lines=list(region_mod.footer)
-                + list(tail_body[0].leading_lines))
+                              + list(tail_body[0].leading_lines))
         new_body = list(old_mod.body[:i0]) + region_body + tail_body
         if i1 < len(table):
             new_mod = old_mod.with_changes(body=new_body)
@@ -4299,15 +4320,15 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         # statement tables for the NEXT merge
         len_r = len(rt)
         merged._stmt_lines = (
-            table[:i0]
-            + [((s0 + old_lo, e0 + old_lo) if s0 is not None else (None, None))
-               for (s0, e0) in rt]
-            + [((s0 + delta, e0 + delta) if s0 is not None else (None, None))
-               for (s0, e0) in table[i1:]])
+                table[:i0]
+                + [((s0 + old_lo, e0 + old_lo) if s0 is not None else (None, None))
+                   for (s0, e0) in rt]
+                + [((s0 + delta, e0 + delta) if s0 is not None else (None, None))
+                   for (s0, e0) in table[i1:]])
         merged._stmt_key_counts = (
-            counts[:i0]
-            + [k0 + c for c in rc[:-1]]
-            + [k0 + region_total + (c - k1) for c in counts[i1:]])
+                counts[:i0]
+                + [k0 + c for c in rc[:-1]]
+                + [k0 + region_total + (c - k1) for c in counts[i1:]])
         # ── span shifts (in place; shared state - visited-set guarded) ──
         _shift_gp_spans([region_gp[k] for k in region_keys if k in region_gp],
                         [region_cs[k] for k in region_keys if k in region_cs],

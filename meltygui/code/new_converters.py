@@ -1035,11 +1035,18 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
                 "safe_skip": True, "lint_deferred": False,
                 "_src_gen": _src_gen, "src_good": None}
 
+    # Narrowed to the byte-identical echo ONLY: blank-line edits used to take
+    # this skip too, but the skip keeps the held parse's spans UNSHIFTED - the
+    # editor's washes tolerate that (they remap editor-side), while the
+    # live-view markers anchor directly off gp _child_spans and stayed pinned
+    # to stale lines through any amount of Enter-typing. Blank-line edits now
+    # fall through to the incremental merge below, which shifts every span
+    # correctly for ~50-100ms per debounced burst.
     if (Toggles.TextEditor.skip_reparse_on_blank_edits
             and not extra.get("run_jedi")
             and isinstance(input_value, str)
-            and _safe_newline_delta(_last_good_src, input_value)):
-        notify("chain_in: newline-only edit — reparse skipped", tag="chain_in")
+            and _last_good_src is not None and _last_good_src == input_value):
+        notify("chain_in: identical echo — reparse skipped", tag="chain_in")
         return {"routed": {}, "error": None, "lint": [], "imports": {},
                 "safe_skip": True, "lint_deferred": False,
                 "_src_gen": _src_gen, "src_good": None}

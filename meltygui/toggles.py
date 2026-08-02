@@ -404,9 +404,12 @@ class Toggles:
 
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
+        
+    
 
         # [tint=(0.17, 0.168, 0.244), show_tint=True]
         freeze_cst_dict = False
+    
         # Fast-path syntax check: re-run a bare compile() over the buffer
         # INLINE on every edit and swap the red marker immediately, instead of
         # hiding it until the debounced background reparse lands (~300ms after
@@ -424,7 +427,7 @@ class Toggles:
         # every edit. Over-cap buffers fall back to the changed-region path
         # below (import suggestions stay debounced-only there). Read live.
         fast_check_max_chars = 128 * 1024
-        
+    
         # Changed-region fast check for buffers OVER fast_check_max_chars:
         # diff old vs new text (including prefix/suffix lines), expand the edit
         # to its enclosing top-level block(s), and compile just that snippet
@@ -708,7 +711,9 @@ class Toggles:
     class ContextMenu:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
+        
         default_tab = 2
+
 
     @defaults(tint=(0.47, 0.463, 0.417))
     class ScrollSettings:
@@ -780,7 +785,7 @@ class Toggles:
             corner_segments = 5
             outline_alpha = 1.00
             outline_thickness = 1.366
-
+            
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.render_hosts (stops its background
@@ -801,6 +806,8 @@ class Toggles:
         # Minimum logical terminal size, in pixels - independent of the window size.
         min_height = 506.5
         min_width = 94.154
+        
+        
         
         
     # Global App Toggles
