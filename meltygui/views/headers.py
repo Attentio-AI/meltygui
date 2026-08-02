@@ -376,7 +376,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # whichever source DRIVES it — code, comment, decoration, instance attr.
     # Outlined so the two widgets read apart while both exist; the legacy
     # chain goes away once this proves out.
-    from src.lsd.gl_gui.view.core_views.new_core_view import (
+    from src.lsd.gl_gui.view.core_views.anywhere import (
         anywhere_value, set_anywhere, get_source_for)
     _aw_tint = anywhere_value("tint", draw_state)
 
@@ -688,7 +688,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # whichever source DRIVES it — code, comment, decoration, instance attr.
     # Outlined so the two widgets read apart while both exist; the legacy
     # chain goes away once this proves out.
-    from src.lsd.gl_gui.view.core_views.new_core_view import (
+    from src.lsd.gl_gui.view.core_views.anywhere import (
         anywhere_value, set_anywhere, get_source_for)
     _aw_tint = anywhere_value("tint", draw_state)
 

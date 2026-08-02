@@ -312,7 +312,7 @@ _AUTO_PARAM_EXCLUDE = {
 # comment args, decorator defaults, this, same as the old hardcoded
 # hasattr(input_value, "tint") elif this replaces). Whitelisted so arbitrary
 # object attrs never leak into kwargs; separate from the set-anywhere
-# whitelist (new_core_view.SET_ANYWHERE_PARAMS).
+# whitelist (anywhere.SET_ANYWHERE_PARAMS).
 OBJ_ATTR_PARAMS = ("tint",)
 
 _EVENT_SUFFIXES = tuple(f"_{a}" for a in ALL_ACTIONS)
@@ -3090,6 +3090,13 @@ def render_func(*args, **o_kwargs):
                             draw_state.context_menu_open = not draw_state.context_menu_open
                             if draw_state.context_menu_ds is not None:
                                 draw_state.context_menu_ds.closed = not draw_state.context_menu_open
+                                if draw_state.context_menu_open:
+                                    # Reopen at the pin anchor. window_pos is
+                                    # also where a drag of the menu starts, and
+                                    # the draw_state outlives the open, so a
+                                    # stale offset would otherwise anchor the
+                                    # menu that far from its spawner.
+                                    draw_state.context_menu_ds.window_pos = (0, 0)
                         if draw_state.context_menu_open:
                             # (The depth menus are pushed in the inline pass - see the
                             # `active_window is None` block - not here in the full-render
@@ -3120,15 +3127,16 @@ def render_func(*args, **o_kwargs):
                             if Melty.frame_count > 2:
                                 if ctx_ds.last_seen is None:
                                     ctx_ds.closed = False
-                                    # The pin anchors to the target's bounding box
-                                    # top (pin_rect), which sits well above the
-                                    # visible clip when the view is scrolled
-                                    # down - offset the menu to the visible top
-                                    # so it opens on screen. window_pos adds
-                                    # to the pinned base in _abs_rect.
-                                    scroll_down = draw_state.abs_clamped_rect[1] - draw_state.abs_top
-                                    ctx_ds.window_pos = (0, max(0, scroll_down))
-                                    # ctx_ds.window_pos = (snap_int(draw_state.width) + 20, 0)
+                                    # No scroll adjustment here: the pin
+                                    # anchors to the view's raw box top, which
+                                    # sits far above the visible clip when the
+                                    # view is scrolled, but DrawState._pinned_base_y
+                                    # now bounds that anchor to the clip window
+                                    # so the menu stays pinned to it. Adding
+                                    # (clamped_top - abs_top) on top of the bound
+                                    # double-compensated and opened the menu a
+                                    # scroll-height BELOW its spawner.
+                                    ctx_ds.window_pos = (0, 0)
 
                             if ctx_ds.closed:
                                 draw_state.context_menu_open = False

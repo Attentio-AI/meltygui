@@ -423,7 +423,7 @@ class Toggles:
         # every edit. Over-cap buffers fall back to the changed-region path
         # below (import suggestions stay debounced-only there). Read live.
         fast_check_max_chars = 128 * 1024
-    
+
         # Changed-region fast check for buffers OVER fast_check_max_chars:
         # diff old vs new text (including prefix/suffix lines), expand the edit
         # to its enclosing top-level block(s), and compile just that snippet
@@ -502,7 +502,7 @@ class Toggles:
             # Auto-attach symbol usages to every editor parse (background, fast
             # path only); the Index button stays as a force refresh.
             auto_index = True
-            
+
             # Incremental symbol-usage refresh on live edits: reuse the prior
             # compute's expensive half (cross-file callers + defs, ~80% of cost)
             # and rescan only the changed file + new names. Off = full recompute.
@@ -528,7 +528,6 @@ class Toggles:
             # are O(log n) (see _line_offsets); turn off to drop locals from
             # the graph if ever needed.
             local_symbol_usages = True
-        
 
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
@@ -634,7 +633,7 @@ class Toggles:
 
         # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
         definition_tints = True
-        
+
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounded character match - no CST / symbol-DB metadata is
@@ -664,14 +663,14 @@ class Toggles:
         # app-wide so text reads as part of its panel. 0 disables.
         # [tint=(0.278, 0.076, 0.126, 1.0)]
         def_text_tint_mix = 0.293
-        
+
         # Glyph-mix TARGET color adjustment (which color text leans toward
         # inside a wash) - same hsv factor pattern as comment_tint_* /
         # bg_tint_*, independent of the wash's own factors; the shared
         # brightness clamp (bg_min/max) still applies after. 1/1 = raw tint.
         text_tint_saturation = 1.0
         text_tint_value = 1.0
-    
+
         # Tint-comment TEXT color adjustment (hsv factors, the Tint-class
         # pattern): an override comment wears its own [tint=...] color,
         # desaturated and darkened by these so it reads as commentary, not
@@ -707,7 +706,7 @@ class Toggles:
     class ContextMenu:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
-        
+
         default_tab = 2
 
 
@@ -718,16 +717,6 @@ class Toggles:
         acceleration_threshold = 0.036  # seconds
         bg_offset = 30
         debug_scroll = False
-
-
-    @defaults(tint=(0.478, 0.265, 0.265))
-    class InvalidateTracker:
-        keep_for_frames = 84
-        enable = False
-        draw_rect = True
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
-        draw_bvh = False
 
     @defaults(tint=(0.315, 0.489, 0.322))
     class LoadSave:
@@ -780,7 +769,7 @@ class Toggles:
             corner_segments = 5
             outline_alpha = 1.00
             outline_thickness = 1.366
-            
+
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.render_hosts (stops its background
@@ -801,10 +790,20 @@ class Toggles:
         # Minimum logical terminal size, in pixels - independent of the window size.
         min_height = 506.5
         min_width = 94.154
-        
-        
-        
-        
+
+
+    @defaults(tint=(0.478, 0.265, 0.265))
+    class InvalidateTracker:
+        keep_for_frames = 84
+        enable = False
+        draw_rect = True
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
+        draw_bvh = False
+
+
+
+
     # Global App Toggles
     @defaults(tint=(0.63, 0.44, 0.2))
     class GC:
@@ -835,7 +834,7 @@ class Toggles:
 
     show_filled_tiles = False
     gl_check_error = False
-    
+
     # [tint=(0.04, 0.286, 0.422), show_tint=True]
     enable_jedi = True
     jedi_correctness = False
@@ -890,7 +889,7 @@ class Toggles:
 
     # Screenshot output dir (screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
-    
+
 
 
     debug_set_anywhere = False

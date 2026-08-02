@@ -4654,7 +4654,6 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
-    
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
@@ -4667,14 +4666,13 @@ def draw_text(input_value: str, height=None,
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
-        
+    
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # an experiment fallback (see a     
-        
     
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
@@ -4875,9 +4873,7 @@ def draw_text(input_value: str, height=None,
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
-            
-            
-
+    
         _pf_miss_t = time.perf_counter()
         if syntax_highlight:
             if getattr(ds, '_lo_text', None) != text:
