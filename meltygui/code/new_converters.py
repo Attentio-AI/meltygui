@@ -1132,8 +1132,14 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
         _yield_to_ui()
         _lint_fn = (check_source_incremental
                     if Toggles.TextEditor.incremental_lint else check_source)
+        # _last_good_src gate: a buffer's FIRST parse (app launch, fresh
+        # window) skips lint entirely - the incremental lint's seeding step is
+        # a full check_source per file, and paying it for every open editor at
+        # boot was the launch stall. The first EDIT reconvert (which always
+        # carries a parse) seeds it instead, parked until input goes quiet.
         if (error is None and Toggles.TextEditor.check_syntax_errors
                 and Toggles.TextEditor.enable_lint
+                and _last_good_src is not None
                 and (Toggles.TextEditor.incremental_lint
                      or len(input_value) <= Toggles.TextEditor.lint_max_chars)):
             try:
@@ -1183,8 +1189,21 @@ def _run_relint(input_value=None, lint_path=None, lint_span=False):
         # see Toggles.TextEditor.lint_max_chars for the trade-off.
         _small = len(input_value) <= Toggles.TextEditor.lint_max_chars
         _inc = Toggles.TextEditor.incremental_lint
+        # Launch gate: the boot-deferred relint fires for every open buffer -
+        # only run (and seed) the lint on files actually EDITED this session
+        # (queue_save bumps the pending generation). The import-suggestion
+        # scan below still runs, warming the fast-path cache as before.
+        _edited = True
+        try:
+            from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+            from pathlib import Path as _P
+            _lp = _P(lint_path)
+            _edited = (PendingSave.pending_gen_for(_lp) > 0
+                       or PendingSave.pending_gen_for(_lp.resolve()) > 0)
+        except Exception:
+            pass
         lint = []
-        if (Toggles.TextEditor.check_syntax_errors
+        if (Toggles.TextEditor.check_syntax_errors and _edited
                 and Toggles.TextEditor.enable_lint and (_small or _inc)):
             _lint_fn = check_source_incremental if _inc else check_source
             try:
@@ -2620,6 +2639,19 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
         return
     from src.lsd.gl_gui.view.core_conversion import libcst_conversion as _lc
     gen = _lc._index_generation
+    # An incremental merge carried the previous flat symbol map but could not
+    # redistribute the leaf-node __symbol_usages__ (shared-dict mutation from
+    # the worker - see _carry_symbols). Run the frame-boundary attach on the
+    # carried map now - at a STALE generation on purpose: the carried sites
+    # predate the merge's changes, so this map washes immediately (verified
+    # sites survive, drifted ones drop) while still reading as "needs a symbol
+    # pass" - the deferred recompute fires and lands at input-quiet.
+    if getattr(code_dict, "_needs_distribute", False):
+        _flat = getattr(code_dict, "symbol_usage", None)
+        code_dict._needs_distribute = False
+        if isinstance(_flat, dict) and _flat:
+            _post_symbol_attach(dict_host, max(0, gen - 1), _flat)
+            return
     if gen < 1:
         _ptrace_rl("ensure-gen0",
                    "ensure-index: waiting for first warmer build (gen=0)",

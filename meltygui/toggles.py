@@ -401,15 +401,11 @@ class Toggles:
         enable_spell_check = False
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
-
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
-        
-    
 
         # [tint=(0.17, 0.168, 0.244), show_tint=True]
         freeze_cst_dict = False
-    
         # Fast-path syntax check: re-run a bare compile() over the buffer
         # INLINE on every edit and swap the red marker immediately, instead of
         # hiding it until the debounced background reparse lands (~300ms after
@@ -418,7 +414,7 @@ class Toggles:
         # fast_check_max_chars skip it and keep the debounced-only behavior.
         # No effect with check_syntax_errors off. Read live.
         fast_syntax_check = True
-
+        
         # Size cap for the fast path above: buffers larger than this skip the
         # inline per-keystroke compile() + import scan and stay on the
         # debounced background pass. compile() is O(buffer) on the render
@@ -532,6 +528,7 @@ class Toggles:
             # are O(log n) (see _line_offsets); turn off to drop locals from
             # the graph if ever needed.
             local_symbol_usages = True
+        
 
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
@@ -667,8 +664,7 @@ class Toggles:
         # app-wide so text reads as part of its panel. 0 disables.
         # [tint=(0.278, 0.076, 0.126, 1.0)]
         def_text_tint_mix = 0.293
-
-
+        
         # Glyph-mix TARGET color adjustment (which color text leans toward
         # inside a wash) - same hsv factor pattern as comment_tint_* /
         # bg_tint_*, independent of the wash's own factors; the shared
@@ -771,7 +767,6 @@ class Toggles:
             corner_segments = 15       # arc subdivisions in each rounded cutout corner
             outline_alpha = 1.00       # 0 = rely on the glow's bright inner halo alone
             outline_thickness = 1.626
-
         @defaults(tint=(0.36, 0.52, 0.93, 0.484))
         class InactiveElements:
             gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
@@ -895,6 +890,7 @@ class Toggles:
 
     # Screenshot output dir (screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
+    
 
 
     debug_set_anywhere = False

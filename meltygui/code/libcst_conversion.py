@@ -2408,8 +2408,29 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
         _ptrace_rl(("probe-miss", key),
                    f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame)",
                    file=resolved.name, span=f"{start}-{end}")
-        return _NEEDS_RECOMPUTE  # only exact-hit + offset are live; defer the rest
-    # Past every fast path, this is a real incremental/full recompute. Time and
+        return _NEEDS_RECOMPUTE  # only exact-hit + offset are cheap; defer the rest
+    # Typing quiet-gate (the cst-merge lesson): a recompute launched mid-burst
+    # holds the GIL for 150ms-4s against the render thread and is obsolete by
+    # the next keystroke anyway. Serve the held result uncached - the editor's
+    # nudge retries every frame, but the real refresh lands the moment typing
+    # goes quiet. A cold miss (nothing held) returns {} uncached and seeds at
+    # quiet instead.
+    _held_prior = (src[1] if src is not None
+                   else cached[1] if cached is not None else None)
+    _li = getattr(Melty, "_last_input_time", 0.0)
+    if _li and _time.monotonic() - _li < 0.5:
+        _ptrace_rl(("usage-typing-hold", key),
+                   "usage recompute deferred (typing) — holding last-good",
+                   file=resolved.name, span=f"{start}-{end}")
+        return _held_prior if _held_prior is not None else {}
+    # In-flight dedup: concurrent triggers for the same span stacked multi-
+    # second recomputes back-to-back (observed 4.0+2.8+4.3s). Later callers
+    # defer; the winner stores the fresh result for everyone.
+    _ifl = _usage_inflight.get(key)
+    if _ifl is not None and _time.monotonic() - _ifl < 10.0:
+        return _held_prior if _held_prior is not None else {}
+    _usage_inflight[key] = _time.monotonic()   # self-expires after a second
+    # Past every fast path — this is a real incremental/full recompute. Time and
     # notify only here, so cache hits / offsets stay silent.
     recompute_start = _time.monotonic()
     _mode = "jedi" if accurate else ("incremental" if prev is not None else "cold")
@@ -2429,6 +2450,7 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # never-evicted broken {} snapshot can't trip the offset/reuse paths. A
     # genuinely empty span (raw == {}) still caches cleanly below.
     if raw is _PARSE_FAILED:
+        _usage_inflight.pop(key, None)
         _ptrace(f"usage recompute: buffer parse failed after "
                 f"{(_time.monotonic() - recompute_start) * 1000:.0f}ms — holding last-good",
                 file=resolved.name, span=f"{start}-{end}")
@@ -2444,7 +2466,13 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # The view moved to `key`; the old sibling we reused is now dead weight.
     _store_usages(key, sig, usages, text, chash=chash,
                   evict=src_key if (src_key is not None and src_key != key) else None)
+    _usage_inflight.pop(key, None)
     return usages
+
+
+# Spans with a real recompute currently running - later concurrent triggers
+# return the held result instead of stacking another multi-second pass.
+_usage_inflight = globals().get("_usage_inflight") or {}
 
 
 def _best_same_file_prev(resolved, start, end, gen, exclude_key):
@@ -3542,7 +3570,20 @@ def _scope_chain_for_line(root, rel_line):
     can't be located (e.g. unsaved edits shifted it past the parsed spans)."""
     chain = [root]
     try:
-        ref = LineMap(root).node_at_line(rel_line)
+        # LineMap build is O(tree), and completions run per keystroke: cache
+        # it on the root. A reparse makes a NEW root (attr gone with it);
+        # in-place mutations (usage stats, live edits) never move spans.
+        # Set after the pool path only - parses are pickled into the per-dict
+        # cache right after conversion, before any completion runs, so the
+        # cached LineMap never rides in a pickle.
+        lm = getattr(root, "_completion_line_map", None)
+        if lm is None or lm.root is not root:
+            lm = LineMap(root)
+            try:
+                root._completion_line_map = lm
+            except Exception:
+                pass  # plain dict - rebuild per call
+        ref = lm.node_at_line(rel_line)
     except Exception:
         return chain
     if ref is None:
@@ -3583,6 +3624,38 @@ class _ImportNameCollector(cst.CSTVisitor):
             return
         for alias in node.names:
             self.names.append(self._bound(alias))
+
+
+# Import parsing, source-side: one C-speed pass instead of a full libcst
+# visitor. `from x import (a, b as c)` groups may span lines (the [^)]* eats
+# newlines); plain `import`/`from` bodies stop at end of line.
+_IMPORT_STMT_RE = re.compile(
+    r'(?m)^[ \t]*(?:from[ \t]+[\w.]+[ \t]+import[ \t]+(\([^)]*\)|[^\n#]+)'
+    r'|import[ \t]+([^\n#]+))')
+
+
+def _import_names_from_source(text):
+    """Bound names introduced by import statements in `text` — the regex
+    equivalent of _imported_names for when the raw source is at hand:
+    `import a.b as c` → c; `import a.b` → a; `from x import y, z as w` → y, w.
+    A `from x import *` contributes nothing (same as the visitor)."""
+    out = []
+    for m in _IMPORT_STMT_RE.finditer(text):
+        body, is_from = (m.group(1), True) if m.group(1) is not None \
+            else (m.group(2), False)
+        for part in body.strip("()").split(","):
+            part = part.strip()
+            if not part or part == "*":
+                continue
+            if " as " in part:
+                name = part.rsplit(" as ", 1)[1].strip()
+            elif is_from:
+                name = part
+            else:
+                name = part.split(".", 1)[0].strip()
+            if name.isidentifier():
+                out.append(name)
+    return out
 
 
 def _imported_names(module_cst):
@@ -3636,18 +3709,59 @@ def completions_at(code_tree, line):
             add(name, kind)
     for name, kind in _direct_member_names(code_tree):  # module level
         add(name, kind)
-    for name in _imported_names(code_tree.get("__cst__")):
+    # Import names come from a regex scan of the parse SOURCE, cached on the
+    # tree (a reparse makes a new tree object). Never a libcst visitor here
+    # (_imported_names): that walks the whole Module - hundreds of ms on a big
+    # file - and this path runs per keystroke on the render thread; even
+    # cached, its cold cost would explode once per parse landing. The visitor
+    # stays as the fallback when the tree carries no source.
+    imports = getattr(code_tree, "_completion_import_names", None)
+    if imports is None:
+        src_txt = getattr(code_tree, "source", None)
+        imports = (_import_names_from_source(src_txt) if isinstance(src_txt, str)
+                   else _imported_names(code_tree.get("__cst__")))
+        try:
+            code_tree._completion_import_names = imports
+        except Exception:
+            pass  # plain dict - recompute per call
+    for name in imports:
         add(name, "import")
     symbols = getattr(code_tree, "symbol_usage", None)  # jedi, only if indexed
     if isinstance(symbols, dict):
+        # Two exclusions keep the index from undoing the scope/position rules
+        # above, which already offer every in-buffer name correctly:
+        #   - local-variable entries (key is scope\x1fname\x1fdefpos) cover
+        #     every function's locals at any position - bare spellings of
+        #     other functions' / not-yet-defined names;
+        #   - any entry whose DEFINITION sits inside this buffer (a class
+        #     member like `WindowSettings` defined below the caret would
+        #     re-enter position-blind lookup as 'symbol').
+        # What survives is the index's real value set: names defined OUTSIDE
+        # the buffer (elsewhere in the file or cross-project). Dotted member
+        # spellings pass _is_symbol_key.
+        # Buffer extent in file lines: line_offset (0-indexed first file line,
+        # stamped with file_path) + the parse source's line count. NOT
+        # `code_tree.address` - in some parses that attribute resolves to a
+        # class-body ANNOTATION (typing.Any | ...), not an Address.
+        lo = getattr(code_tree, "line_offset", None)
+        src_txt = getattr(code_tree, "source", None)
+        hi = lo + src_txt.count("\n") if (lo is not None
+                                          and isinstance(src_txt, str)) else None
+        fp = getattr(code_tree, "file_path", None)
+        try:
+            fp_res = str(_Path(fp).resolve()) if fp is not None else None
+        except Exception:
+            fp_res = None
         for k, su in symbols.items():
-            # Skip scope-variable entries (keyed scope\x1fname\x1fdefline): they
-            # cover enclosing scope's locals at any position, so offering their
-            # bare spelling risks outer scopes' / not-yet-defined names. The
-            # caret's own locals already came from the scope walk above,
-            # position-filtered. Dotted member spellings fail _is_symbol_key.
             if isinstance(k, str) and "\x1f" in k:
                 continue
+            if fp_res is not None and lo is not None and hi is not None:
+                d = getattr(su, "definition", None)
+                dp = getattr(d, "path", None)
+                dl = getattr(d, "line", None)
+                if (dp is not None and dl is not None and str(dp) == fp_res
+                        and lo <= dl - 1 <= hi):
+                    continue  # defined in this buffer - scope walk owns it
             add(getattr(su, "name", k), "symbol")
     return out
 
@@ -3814,6 +3928,11 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                       and not Toggles.jedi_correctness)
         auto = (wants_auto
                 and _index_generation > 0
+                # Never inside an incremental reconvert: the merge carries the
+                # previous symbols (_carry_symbols), and one refresh lands us
+                # input-quiet — running the pass here added 170-650ms to every
+                # ~50-100ms merge.
+                and getattr(_inc_memo, "pair", None) is None
                 and _wait_for_no_drag(max_wait=0.0))
         if wants_auto and not auto:
             # WHY the parse ships unstamped: the two cases read very
@@ -3870,6 +3989,25 @@ _INC_CST_MAX_REGION = 64 * 1024
 _INC_CST_MAX_DEPTH = 200
 
 
+def _carry_symbols(prev_gp, gp):
+    """Hold-last-good for the SYMBOL layer, mirroring the cst-dict hold: a
+    successful incremental merge builds a fresh gp, which would otherwise
+    ship symbol-less — washes/links vanish per merge until a full re-index.
+    Carry the previous parse's flat {symbol: SymbolUsage} map so flat
+    consumers keep working instantly. _symbol_gen deliberately NOT carried
+    (a current-looking stamp told the ensure pass "indexed and covered by
+    the chain's reparse" — but merges skip the auto pass, so sites drifted
+    and the span collector's verification dropped every wash). The per-node
+    __symbol_usages__ maps are NOT redistributed here either: distribution
+    into shared sub-dicts from the worker is the resize-during-render-
+    iteration hazard — the flag below makes the editor's ensure pass run
+    the frame-boundary attach instead."""
+    flat = getattr(prev_gp, "symbol_usage", None)
+    if isinstance(flat, dict) and flat:
+        gp.symbol_usage = flat
+        gp._needs_distribute = True
+
+
 def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
     """Single-FunctionDef span buffers (a function edited in its own host):
     module-level splicing has nothing to split, so splice INSIDE the def —
@@ -3890,7 +4028,13 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
             return _inc_fallback("span-no-body")
         pos = _pos_map_for(prev_gp)
         if pos is None:
-            return _inc_fallback("span-no-pos-map")
+            # A gp served from the pickle cache has no retained pos - one
+            # ~60ms rebuild here beats the ~250ms full parse it forced, and
+            # every later edit merges from the retained copy.
+            pos = _build_ast_span_map(old_mod, "\n".join(a))
+            if not pos:
+                return _inc_fallback("span-no-pos-map")
+            _retain_pos_map(prev_gp, pos)
         na, nb = len(a), len(b)
         delta = nb - na
         first_row, last_row = pre + 1, na - suf
@@ -3917,7 +4061,41 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
                 j0 = j
                 break
         if j0 is None:
-            return _inc_fallback("span-after-last-stmt")
+            # Edit entirely BELOW the last statement: trailing blank lines /
+            # comments - MODULE FOOTER territory. Rebuild just the footer;
+            # every span and key is untouched, and the merged gp is a cheap
+            # re-wrap of the previous one with a fresh identity.
+            tail_start = fd_span.end_line          # 0-based first tail row
+            if first_row <= tail_start:
+                return _inc_fallback("span-after-last-stmt")
+            tail_text = "\n".join(b[tail_start:])
+            try:
+                tail_mod = cst.parse_module(tail_text)
+            except cst.ParserSyntaxError:
+                notify("cst merge: held last-good (region unparseable)",
+                       tint=(1.0, 0.65, 0.2), tag="cst")
+                return prev_gp
+            if tail_mod.body:
+                return _inc_fallback("span-tail-not-blank")
+            new_mod = old_mod.with_changes(footer=tail_mod.header)
+            from src.lsd.gl_gui.toggles import Toggles as _T
+            if getattr(_T.TextEditor, "verify_incremental_cst", True):
+                if new_mod.code != new_src:
+                    return _inc_fallback("span-verify-mismatch")
+            merged = GeneralParse(source=new_src)
+            merged.update(prev_gp)
+            merged["__cst__"] = new_mod
+            for _attr in ("file_path", "line_offset", "_child_spans",
+                          "_stmt_lines", "_stmt_key_counts", "_value_memo"):
+                if hasattr(prev_gp, _attr):
+                    setattr(merged, _attr, getattr(prev_gp, _attr))
+            _sp_prev = getattr(prev_gp, "span", None)
+            if isinstance(_sp_prev, Span):
+                merged.span = Span(_sp_prev.start_line, _sp_prev.start_col,
+                                   _sp_prev.end_line + delta, _sp_prev.end_col)
+            _retain_pos_map(merged, pos)
+            _carry_symbols(prev_gp, merged)
+            return merged
         ts0 = text_start(j0)
         if ts0 is None:
             return _inc_fallback("span-unplaced-stmt")
@@ -3941,6 +4119,13 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
         else:
             hi_excl = fd_span.end_line  # def's last line (1b) == 0bexcl
         lo = ts0 - 1  # 0-based inclusive
+        eof_region = False
+        if j1 >= len(body) and last_row > hi_excl:
+            # The edit reaches past the last statement's text (Enter at the
+            # bottom, trailing blanks): take the region to end-of-text; the
+            # wrapper's footer becomes the module footer below.
+            hi_excl = na
+            eof_region = True
         if last_row > hi_excl or lo >= hi_excl:
             return _inc_fallback("span-bounds")
         new_hi = hi_excl + delta
@@ -3949,7 +4134,11 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
         region_text = "\n".join(b[lo:new_hi])
         if len(region_text) > _INC_CST_MAX_REGION:
             return _inc_fallback("span-region-too-big")
-        if not region_text.endswith("\n"):
+        # Rows are newline-terminated by EOF: when the region stops short of
+        # EOF the separator newline to the next row must ALWAYS be appended -
+        # an endswith guard missed it for blank-tailed regions and dropped
+        # one newline per splice (span-verify-mismatch on Enter-at-bottom).
+        if new_hi < nb:
             region_text += "\n"
         wrap_text = "def __melty_inc_wrap__():\n" + region_text
         try:
@@ -3975,7 +4164,19 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
             return _inc_fallback("span-empty-region")
         new_inner = list(body[:j0]) + region_stmts + list(body[j1:])
         new_fd = fd.with_changes(body=fd.body.with_changes(body=new_inner))
-        new_mod = old_mod.with_changes(body=[new_fd])
+        if eof_region:
+            new_mod = old_mod.with_changes(body=[new_fd],
+                                           footer=wrap_mod.footer)
+        elif wrap_mod.footer and j1 >= len(body):
+            # Region ends at the def's last statement but its text carried
+            # trailing blank lines (Enter at the bottom of the function) -
+            # those parse into the wrapper's footer and are module-footer
+            # territory here: prepend to the kept footer or they vanish.
+            new_mod = old_mod.with_changes(
+                body=[new_fd],
+                footer=list(wrap_mod.footer) + list(old_mod.footer))
+        else:
+            new_mod = old_mod.with_changes(body=[new_fd])
         if getattr(Toggles.TextEditor, "verify_incremental_cst", True):
             if new_mod.code != new_src:
                 return _inc_fallback("span-verify-mismatch")
@@ -3995,16 +4196,31 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
         except Exception:
             pass
         _inc_memo.pair = (old_memo, new_memo)
+        _inc_memo.pending = []
         try:
             gp = cst_module_to_dict(new_mod, _source=new_src)
         finally:
             _inc_memo.pair = None
+            _pending_shifts = getattr(_inc_memo, "pending", None) or []
+            _inc_memo.pending = None
         if not isinstance(gp, GeneralParse):
             return _inc_fallback("span-convert-failed")
         gp._value_memo = new_memo
+        # Apply the pending memo re-anchors now that the conversion is a
+        # confirmed success - one tight loop of integer span writes instead
+        # of scattered mutation across the whole (interleavable) walk.
+        for _val, _fresh in _pending_shifts:
+            _stale = getattr(_val, "span", None)
+            if isinstance(_stale, Span):
+                _d = _fresh.start_line - _stale.start_line
+                if _d:
+                    _shift_gp_spans([_val], [], _d)
+            else:
+                _val.span = _fresh
         for attr in ("file_path", "line_offset"):
             if hasattr(prev_gp, attr):
                 setattr(gp, attr, getattr(prev_gp, attr))
+        _carry_symbols(prev_gp, gp)
         return gp
     except Exception as _e:
         return _inc_fallback(f"span-exception:{type(_e).__name__}")
@@ -4148,7 +4364,12 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         while pre < m and a[pre] == b[pre]:
             pre += 1
         if pre == na and pre == nb:
-            return _inc_fallback("identical")  # identical: let safe-skip handle
+            # Normalized-identical: the RAW texts differ only in whitespace-
+            # only lines, which the parser blanks anyway - the held gp IS the
+            # correct result. Serving it (rather than falling through to a
+            # ~250ms full parse of identical content) also advances the
+            # caller's src_good baseline past the ws-only churn.
+            return prev_gp  # identical - the safe-skip handle
         suf = 0
         while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
             suf += 1
@@ -4166,7 +4387,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
                 i0 = i
                 break
         if not i0:  # None or 0: header-adjacent
-            if (i0 == 0 and len(table) == 1
+            if (len(table) == 1
                     and isinstance(old_mod.body[0], cst.FunctionDef)):
                 # A function edited in its own span host: one top-level
                 # statement - splice INSIDE the def instead.
@@ -7532,13 +7753,16 @@ def _cst_to_python_or_raw(node):
         new_m[id(node)] = hit
         if isinstance(val, dict):
             fresh = _span_of(node)
-            stale = getattr(val, "span", None)
-            if fresh is not None and isinstance(stale, Span):
-                d = fresh.start_line - stale.start_line
-                if d:
-                    _shift_gp_spans([val], [], d)
-            elif fresh is not None:
-                val.span = fresh
+            if fresh is not None:
+                # DEFERRED re-anchor: these value objects are SHARED with the
+                # live gp the render thread is drawing right now, and this
+                # run may yet fail verification or be superseded by the next
+                # edit. Record the fresh position; _funcdef_span_incremental
+                # applies every shift in one batch only after the conversion
+                # succeeded - failed/aborted runs never touch shared state.
+                pending = getattr(_inc_memo, "pending", None)
+                if pending is not None:
+                    pending.append((val, fresh))
         return val
     val = _cst_to_python_or_raw_impl(node)
     new_m[id(node)] = (node, val)
