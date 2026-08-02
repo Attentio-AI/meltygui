@@ -105,7 +105,7 @@ from src.lsd.gl_gui.view.core_conversion.chain_converters import (
     chain_parse_cache_get, chain_parse_cache_put, chain_parse_cache_has,
 )
 from src.lsd.gl_gui.view.core_conversion.code_checks import (
-    check_source, collect_import_suggestions)
+    check_source, check_source_incremental, collect_import_suggestions)
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
     _recompile, _recompile_class, _recompile_module,
 )
@@ -870,8 +870,91 @@ _BOOT_T = globals().get("_BOOT_T") or time.monotonic()
 _LINT_BOOT_QUIET_S = 8.0
 
 
+def _region_compile_check(old, new, max_chars):
+    """Changed-region syntax check for buffers too big to compile whole per
+    keystroke. Diffs `old` → `new` by common prefix/suffix LINES, expands the
+    changed span to its enclosing top-level block(s) (nearest column-0 lines),
+    and compiles just that snippet through _compile_check (which dedents and
+    fake-function-wraps, so a mid-file block checks clean standalone).
+
+    Differential by design: a region cut through a triple-quoted string or a
+    bracketed continuation fails to compile for reasons that aren't the user's
+    edit — so a NEW failure only counts when the SAME region from the OLD text
+    compiled clean. Returns (status, err, span):
+      "clean"     — new region compiles; no syntax error introduced here
+      "error"     — new region fails, old was clean: err carries a REAL
+                    SyntaxError with lineno mapped to buffer coordinates
+      "ambiguous" — both fail (extraction artifact, or an error predating this
+                    edit): err is the new failure, caller decides
+      "skip"      — no line change (span None), or region over max_chars
+                    (span still reported: no compile ran, but the caller can
+                    keep shifting a held error around the unchecked edit)
+    `span` is (start, end_old, delta): the checked block as 0-based OLD-text
+    line bounds (end exclusive) plus the edit's line-count delta — what a
+    caller needs to keep a held error from ANOTHER region alive across this
+    edit (clear it only inside the span; shift it by delta below the span)."""
+    a = old.split("\n")
+    b = new.split("\n")
+    na, nb = len(a), len(b)
+    pre = 0
+    m = min(na, nb)
+    while pre < m and a[pre] == b[pre]:
+        pre += 1
+    if pre == na and pre == nb:
+        return "skip", None, None
+    suf = 0
+    while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
+        suf += 1
+    lo, hi = pre, nb - suf
+    # Expand to enclosing top-level block(s): up to the nearest column-0 line
+    # at/above the first changed line, down to (exclusive) the first column-0
+    # line at/after the changed span. Lines outside the changed span are
+    # common to both texts (prefix/suffix aligned), so the same region slices
+    # out of `old` at a suffix-shifted end index.
+    start = min(lo, nb - 1)
+    while start > 0 and (not b[start] or b[start][0] in " \t"):
+        start -= 1
+    end = hi
+    while end < nb and (not b[end] or b[end][0] in " \t"):
+        end += 1
+    end_old = end + (na - nb)
+    span = (start, max(start, end_old), nb - na)
+    region_new = "\n".join(b[start:end])
+    region_old = "\n".join(a[start:max(start, end_old)])
+    if len(region_new) > max_chars or len(region_old) > max_chars:
+        return "skip", None, span
+    err_new = _compile_check(region_new)
+    if err_new is None:
+        return "clean", None, span
+    if getattr(err_new, "lineno", None):
+        err_new.lineno = start + err_new.lineno   # region → buffer line
+    return (("error" if _compile_check(region_old) is None else "ambiguous"),
+            err_new, span)
+
+
+def _safe_newline_delta(last_good, cur):
+    """True when `cur` differs from `last_good` ONLY by added/removed blank
+    (whitespace-only) lines, or is byte-identical — the safe mutation class:
+    it cannot change the parse structure or introduce a syntax error (blank
+    lines are ignored by the grammar; inside a string literal a newline is
+    still valid syntax), so chain_in can skip its whole reparse for it.
+
+    Deliberately O(buffer): two C-speed splits + one list compare, microseconds
+    against the 150-550ms GIL-held parse it avoids. This is edit CLASSIFICATION
+    on a background worker replacing strictly larger work — not the render-path
+    content-hash cache invalidation CLAUDE.md forbids."""
+    if not last_good or not cur:
+        return False
+    if last_good == cur:
+        return True   # byte-identical echo - nothing to reparse
+    a = [l for l in last_good.split("\n") if l.strip()]
+    b = [l for l in cur.split("\n") if l.strip()]
+    return a == b
+
+
 def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
-                  lint_span=False, _last_good_src=None, **extra):
+                  lint_span=False, _last_good_src=None, _last_good_routed=None,
+                  **extra):
     """Background entry point for the forward (chain_in) conversion.
 
     A plain module-level function (NOT a @render_func) so run_in_background can
@@ -886,6 +969,10 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
     generation the finished parse actually reflects (not whatever the source is by the
     time the worker returns)."""
     notify(f"_run_chain_in: start", tag="chain_in")
+    # Imported once for the WHOLE body: a branch-local import would make the
+    # name function-local everywhere, and the lint section's call then throws
+    # UnboundLocalError whenever the incremental branch skipped the import.
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
 
     # ── libcst-dict cache over the chain parse ────────────────────────────────────
     # Only for a PRISTINE disk buffer: DiskCodec.load stamps the loaded text
@@ -924,18 +1011,77 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
                     "imports": {}, "lint_deferred": lint_path is not None,
                     "_src_gen": _src_gen, "src_good": input_value}
 
-    # Park BEFORE the libcst parse: string_to_cst_module is 150–550ms of
-    # library-internal GIL-held CPU with no yield points inside - a run
-    # launching just as the GUI resumes has plowed through it and convoyed
-    # the render thread (the residual 145–750ms frames after frame-busy
-    # parking landed everywhere else). Waiting for quiet first turns that into
-    # a parse that runs while the editor is idle. No-op on the inline-first
-    # (main-thread) path - _yield_to_ui never sleeps the host/main thread.
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
-    _yield_to_ui()
+    # ── Safe-mutation skip ─────────────────────────────────────────────────
+    # A newline-only edit vs the last successfully parsed source can't change
+    # the parse structure or introduce a syntax error - rerunning the GIL-held
+    # libcst parse + dict conversion + lint for it only convoys the render
+    # thread. Skip the full chain: the fold sites keep the held result and the
+    # src_good baseline (the good source), so the first content edit afterwards
+    # diffs non-safe against it and runs the one full parse it always would
+    # have. Position consumers tolerate a shifted window (the usage graph
+    # pure-shift-patches per keystroke; error/lint markers sit stale-hidden
+    # mid-edit; the definition's incremental fast path owns the responsive marker). A
+    # run_jedi pulse (explicit Index click) always runs the real pass.
+    # EXPERIMENT (Toggles.TextEditor.freeze_cst_dict): once a baseline parse
+    # exists, answer EVERY reconvert with a safe-skip - the parse/conversion
+    # never re-runs on edits, so the view runs on the frozen first good tree.
+    # The Index pulse still forces a real pass (explicit user action, and the
+    # one way to manually refresh the frozen tree while editing).
+    if (Toggles.TextEditor.freeze_cst_dict
+            and not extra.get("run_jedi")
+            and _last_good_src is not None):
+        notify("chain_in: cst dict FROZEN — reconvert skipped", tag="chain_in")
+        return {"routed": {}, "error": None, "lint": [], "imports": {},
+                "safe_skip": True, "lint_deferred": False,
+                "_src_gen": _src_gen, "src_good": None}
 
-    result, routed = _run_convert(chain, input_value, **extra)
-    parse_failed = isinstance(result, Exception)
+    if (Toggles.TextEditor.skip_reparse_on_blank_edits
+            and not extra.get("run_jedi")
+            and isinstance(input_value, str)
+            and _safe_newline_delta(_last_good_src, input_value)):
+        notify("chain_in: newline-only edit — reparse skipped", tag="chain_in")
+        return {"routed": {}, "error": None, "lint": [], "imports": {},
+                "safe_skip": True, "lint_deferred": False,
+                "_src_gen": _src_gen, "src_good": None}
+
+    # ── Incremental cst→dict (Toggles.TextEditor.incremental_cst_parse) ─────
+    # In the canonical chain with a previous good parse available, try the
+    # O(edited statements) merge (cst_dict_incremental_update): re-convert
+    # only the changed top-level statements and splice into the old parse -
+    # skipping the 150-550ms whole-buffer libcst parse + dict conversion.
+    # None (any doubt: header/footer present, over-sized region, verification
+    # failure) falls through to the full conversion below.
+    _inc_gp = None
+    if (Toggles.TextEditor.incremental_cst_parse
+            and not extra.get("run_jedi")
+            and isinstance(input_value, str) and _last_good_src
+            and _last_good_routed is not None and _out_name
+            and getattr(_tail, "__name__", "") == "cst_module_to_dict"):
+        _prev_gp = _last_good_routed.get(_out_name)
+        if _prev_gp is not None:
+            from src.lsd.gl_gui.notifications import lag_span
+            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                cst_dict_incremental_update)
+            with lag_span("incremental cst merge", 30):
+                _inc_gp = cst_dict_incremental_update(
+                    _prev_gp, _last_good_src, input_value)
+
+    if _inc_gp is not None:
+        notify("chain_in: incremental cst merge", tag="chain_in")
+        result, routed = _inc_gp, {_out_name: _inc_gp}
+        parse_failed = False
+    else:
+        # Park BEFORE the libcst parse: string_to_cst_module is 150–550ms of
+        # module-internal GIL-held CPU with no yield points inside - a run
+        # launching just as the user resumes typing plowed through it and convoyed
+        # the render thread (the residual 145–750ms frames after frame-busy
+        # parking landed everywhere else). Waiting for input HERE turns that into
+        # a parse that runs while the user is idle. No-op on the inline-first
+        # (render-thread) path - _yield_to_ui never sleeps the render thread worker.
+        _yield_to_ui()
+
+        result, routed = _run_convert(chain, input_value, **extra)
+        parse_failed = isinstance(result, Exception)
     error = result if parse_failed else None
     # cst parsed clean - run the compiler check, to surface the syntax errors libcst
     # is too lenient to flag (duplicate args/kwargs, ...). Same red-highlight path.
@@ -977,17 +1123,23 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
                    and time.monotonic() - _BOOT_T < _LINT_BOOT_QUIET_S)
     if _lintable and not _defer_lint:
         _yield_to_ui()
-        if error is None and Toggles.TextEditor.check_syntax_errors:
+        _lint_fn = (check_source_incremental
+                    if Toggles.TextEditor.incremental_lint else check_source)
+        if (error is None and Toggles.TextEditor.check_syntax_errors
+                and Toggles.TextEditor.enable_lint
+                and (Toggles.TextEditor.incremental_lint
+                     or len(input_value) <= Toggles.TextEditor.lint_max_chars)):
             try:
-                lint = check_source(input_value, path=lint_path,
-                                    only_missing_imports=lint_span)
+                lint = _lint_fn(input_value, path=lint_path,
+                                only_missing_imports=lint_span)
             except Exception:
                 lint = []
         # Import suggestions - a SEPARATE channel from errors, computed
         # regardless of parse state (tokenize-based, so a half-typed `json.`
         # line still yields its fix - the IDE type-`json.`-press-Enter flow).
         try:
-            imports = collect_import_suggestions(input_value, path=lint_path)
+            imports = (collect_import_suggestions(input_value, path=lint_path)
+                       if Toggles.TextEditor.enable_import_scan else {})
         except Exception:
             imports = {}
     # Store the finished parse for the next boot: pristine disk input (see the
@@ -1019,11 +1171,18 @@ def _run_relint(input_value=None, lint_path=None, lint_span=False):
         # convoy an actively-typing render thread (no-op when idle).
         from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _yield_to_ui
         _yield_to_ui()
+        # Over the lint cap the O(buffer) passes downgrade: no check_source,
+        # and the import rescan runs the incremental step instead of full -
+        # see Toggles.TextEditor.lint_max_chars for the trade-off.
+        _small = len(input_value) <= Toggles.TextEditor.lint_max_chars
+        _inc = Toggles.TextEditor.incremental_lint
         lint = []
-        if Toggles.TextEditor.check_syntax_errors:
+        if (Toggles.TextEditor.check_syntax_errors
+                and Toggles.TextEditor.enable_lint and (_small or _inc)):
+            _lint_fn = check_source_incremental if _inc else check_source
             try:
-                lint = check_source(input_value, path=lint_path,
-                                    only_missing_imports=lint_span)
+                lint = _lint_fn(input_value, path=lint_path,
+                                only_missing_imports=lint_span)
             except Exception:
                 lint = []
         # Suggestions alone - tokenize-based, runs through a mid-edit
@@ -1032,8 +1191,9 @@ def _run_relint(input_value=None, lint_path=None, lint_span=False):
         # full=True: a relint fires because the FILE's pending state changed
         # (import added/removed/reverted), which invalidates the incremental
         # scan's cached verdicts - rescan from scratch.
-        imports = collect_import_suggestions(input_value, path=lint_path,
-                                             full=True)
+        imports = (collect_import_suggestions(input_value, path=lint_path,
+                                               full=_small)
+                   if Toggles.TextEditor.enable_import_scan else {})
         return {"lint": lint, "imports": imports}
     except Exception:
         return {"lint": [], "imports": {}}
@@ -1316,6 +1476,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
         # chain_out's mutated values.
         chain_in_kwargs = {**forwarded, "input_value": input_value,
                            "chain": chain_in, "route": route,
+                           "_last_good_routed": modes_state.last_good,
                            "_last_good_src": getattr(modes_state, "last_good_src", None)}
         # `changed` is the only trigger - code_file_io rolls load / external edit /
         # the Index pulse into it, so we never diff the text or sniff inputs here.
@@ -1330,7 +1491,14 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
             child_kwargs=chain_in_kwargs,
             name=f"chain_in{unique}", start=external_change, inline_first=inline,
             debounce_ms=_CHAIN_IN_DEBOUNCE_MS)
-        if finished and isinstance(payload, dict):
+        if finished and isinstance(payload, dict) and payload.get("safe_skip"):
+            # Newline-only edit: the worker skipped the chain because the buffer is
+            # the last good source plus/minus blank lines, so it's clean. Keep
+            # the held parse / lint / imports / baseline and just clear any
+            # lingering error (the broken line was reverted, not reparsed).
+            modes_state.last_error = None
+            chain_in_error = None
+        elif finished and isinstance(payload, dict):
             # Fold the completed outputs into the shared snapshot AND this
             # frame's routed (so the columns see the good values immediately).
             modes_state.last_error = payload.get("error")
@@ -1457,6 +1625,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             modes_state._last_armed_src = input_value
         chain_in_kwargs = {**forwarded, "input_value": input_value,
                            "chain": chain_in, "route": route, "_src_gen": src_gen,
+                           "_last_good_routed": modes_state.last_good,
                            "_last_good_src": getattr(modes_state, "last_good_src", None)}
         # The FIRST parse of a fresh view runs INLINE, size-gated: parsing is
         # pure-Python, so a worker thread doesn't wall it under the GIL - it
@@ -1493,7 +1662,14 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             note = Note(name="convert_in_out, chain in start", tint=(1, 0.5, 0))
             draw_state._parent.invalidate(note=note)
         external_change = False
-        if finished and isinstance(payload, dict):
+        if finished and isinstance(payload, dict) and payload.get("safe_skip"):
+            # Newline-only edit: chain skipped host-side (see the safe-
+            # mutation skip in _run_chain_in). Keep the held error / lint /
+            # imports / baseline and clear any lingering error; inbound_gen
+            # stays None - there is no fresh parsed value to order/accept.
+            modes_state.last_error = None
+            chain_in_error = None
+        elif finished and isinstance(payload, dict):
             # The generation this finished parse reflects (origin edit frame, or "now" for
             # an external change) - pass to the view_func so its accept/reject ordering
             # compares against the user's latest LOCAL edit and drops a stale parse.

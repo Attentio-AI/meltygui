@@ -10,6 +10,8 @@ These are NEW functions — the old converters in file_converters.py
 and libcst_conversion.py stay untouched for backward compat.
 """
 import inspect
+from src.lsd.gl_gui.notifications import lag_traced
+
 import os
 import pickle
 import sys
@@ -939,6 +941,7 @@ def _apply_module_parse(mod, parsed) -> bool:
     return applied
 
 
+@lag_traced("live_apply_edits", 50)
 def live_apply_edits(source, gp) -> None:
     """Entry point: drive the LIVE source object from its edited cst_dict.
 

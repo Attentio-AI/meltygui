@@ -7,6 +7,8 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defa
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 import torch
+import json
+
 
 @dataclass(frozen=True)
 class Snippet:
@@ -394,138 +396,114 @@ class Swoosh:
 @window(tint=(0.417, 0.44, 0.47))
 class Toggles:
 
-    @defaults(tint=(0.08, 0.747, 0.85))
-    class WindowSettings:
-        # Sticky resize: re-anchor the window top to the drag-start position each
-        # frame so only the full-on-display clamp displaces it.
-        sticky_drag = True
-
-    @defaults(tint=(0.427, 0.541, 0.616))
-    class ContextMenu:
-        # Which tab a freshly opened context menu selects, as an index into its
-        # tab bar: 0 Info, 1 Config, 2 view function, 3 Eval, 4 Input, 5 Tint.
-        default_tab = 2
-
-    @defaults(tint=(0.47, 0.463, 0.417))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # ms
-        bg_offset = 30
-        debug_scroll = False
-
-    @defaults(tint=(0.478, 0.265, 0.265))
-    class InvalidateTracker:
-        keep_for_frames = 84
-        enable = False
-        draw_rect = True
-        invalidate_stack_trace = False
-        attrib_change_stack_trace = False
-        draw_bvh = False
-
-    @defaults(tint=(0.315, 0.489, 0.322))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
-        # as a backout alongside the native-pickle custom.pkl. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
-        # this True until the .ini is fully retired.
-        ini_save = False
-
-    @defaults(tint=(0.65, 0.385, 0.069, 1.0))
-    class SearchSettings:
-        # Auto-scroll to the current match while the search string is being
-        # edited. When False, typing only recounts/highlights in place; the
-        # view scrolls to the current match only on explicit navigation
-        # (Enter / Shift+Enter / the find bar's arrows).
-        scroll_while_typing = True
-
-        # Search matches are highlighted with a circular gradient "glow" that
-        # radiates out from the matched rectangle (rounded-rect cutout), with the
-        # rect edges cut out so the matched text stays readable. The CURRENT
-        # match uses ActiveElement; every other match uses InactiveElements, so
-        # the two can be tuned (color/falloff/opacity/...) independently. Glows
-        # combine where they overlap. Applies in both the text editor (draw_text)
-        # and collections (draw_collection rows). See view/core_views/search_glow.py.
-
-        @defaults(tint=(0.965, 0.6, 0.149))
-        class ActiveElement:
-            gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
-            outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline
-            falloff = 26.696          # px the glow radiates out past the match edge
-            opacity = 0.176           # peak opacity, right at the cutout edge
-            falloff_exp = 2.105       # >1 = bright at the center, then drops off fast
-            inner_pad = 0.00         # px the cutout is grown into the match rect
-            cutout_radius = 5.0       # corner radius of the rounded cutout
-            rings = 86                # radial tessellation steps (higher = better)
-            corner_segments = 15       # arc subdivisions at each rounded cutout corner
-            outline_alpha = 1.00       # 0 = rely on the glow's bright inner rim alone
-            outline_thickness = 1.626
-
-        @defaults(tint=(0.36, 0.52, 0.93, 0.484))
-        class InactiveElements:
-            gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
-            outline_color = (0.6, 0.72, 1.0)
-            falloff = 15.664
-            opacity = 0.077
-            falloff_exp = 2.491
-            inner_pad = 0.00
-            cutout_radius = 5.00
-            rings = 16
-            corner_segments = 5
-            outline_alpha = 1.00
-            outline_thickness = 1.366
-
-    @defaults(tint=(0.27, 0.7, 0.52))
-    class HostLifecycle:
-        # Deregister a RenderHost from Melty.app_hosts (stops per-frame
-        # draw/parse) once none of its user windows are active. Host + parse
-        # stay cached; reopening re-registers (notify_on_change → register).
-        deregister_idle = True
-        # A consumer is gone when its window is abs_closed, or it hasn't
-        # re-registered within this many frames (safety net for closes abs_closed
-        # fails). Also the birth grace before a new host can be swept.
-        idle_frames = 120
-
-    @defaults(tint=(0.181, 0.119, 0.294))
-    class InputHandlerToggles:
-        show_debug = False
-
-    @defaults(tint=(0.652, 0.672, 0.733))
-    class TerminalSettings:
-        # Minimum logical terminal size, in pixels - independent of the window size.
-        min_height = 506.5
-        min_width = 94.154
-
-    # --- App Toggles
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
-
     @defaults(tint=(0.59, 0.541, 0.474))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
 
-        # Syntax error checking: parse/compile-time errors plus the static
-        # "will it compile" lint (undefined names, call-signature mismatches),
-        # drawn as red line markers in the editor. Off = no markers, and the
-        # background lint pass is skipped. The import-path-fix suggestions
-        # ride a separate channel and stay on. Read live.
+        # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
+
+        # [tint=(0.17, 0.168, 0.244), show_tint=True]
+        freeze_cst_dict = False
+        # Fast-path syntax check: re-run a bare compile() over the buffer
+        # INLINE on every edit and swap the red marker immediately, instead of
+        # hiding it until the debounced background reparse lands (~300ms after
+        # typing goes idle). compile() is a C parser - no libcst - so a
+        # typical span buffer takes well under 1ms; buffers over
+        # fast_check_max_chars skip it and keep the debounced-only behavior.
+        # No effect with check_syntax_errors off. Read live.
+        fast_syntax_check = True
+
+        # Size cap for the fast path above: buffers larger than this skip the
+        # inline per-keystroke compile() + import scan and stay on the
+        # debounced background pass. compile() is O(buffer) on the render
+        # thread — measured ~0.07ms @ 2KB, ~1.2ms @ 18KB, ~11ms @ 128KB — so
+        # this bounds the worst-case frame hit. 0 disables the fast path on
+        # every edit. Over-cap buffers fall back to the changed-region path
+        # below (import suggestions stay debounced-only there). Read live.
+        fast_check_max_chars = 128 * 1024
+        
+        # Changed-region fast check for buffers OVER fast_check_max_chars:
+        # diff old vs new text (including prefix/suffix lines), expand the edit
+        # to its enclosing top-level block(s), and compile just that snippet
+        # (dedent + fake-functioning - the _compile_check machinery) -
+        # real-time syntax markers on very large files at O(edited block)
+        # cost. Differential: the whole region must compile clean for a new
+        # failure to be reported, so a region cut mid-string or mid-bracket
+        # can never false-flag. Read live.
+        fast_check_changed_region = True
+
+        # Whole-buffer static lint cap: check_source (undefined names /
+        # call-signature checks) and the relint's full import rescan are
+        # O(buffer) GIL-held passes (~90ms + ~40ms on a 340KB file) that the
+        # relint's re-runs per queued keystroke save - a recurring render-
+        # thread convoy on big files. Buffers over this cap skip check_source
+        # and downgrade the full import rescan to the incremental step; the
+        # fast-path syntax markers and import popovers are unaffected.
+        # Trade-off over the cap: an import REMOVED elsewhere in the file can
+        # keep its name wrongly suppressed until a full pass runs again.
+        # Read live (worker-side).
+        lint_max_chars = 64 * 1024
+
+        # Master switch for the static lint (check_source: undefined names /
+        # call-signature checks) in both the chain_in and relint passes —
+        # independent of incremental_lint / lint_max_chars, for isolating
+        # other pipeline features while profiling. Off = lint never runs;
+        # syntax-error markers and import suggestions are unaffected.
+        # [tint=(0.256, 0.189, 0.244, 1.0), show_tint=True]
+        enable_lint = True
+
+        # Master switch for the import-suggestions scan (the Alt+Enter
+        # quick-fix channel) in the chain_in / relint passes and the editor's
+        # per-keystroke fast path - for isolating pipeline features while
+        # profiling. Off = no scans run and the suggestion data dries up after
+        # the next pass; error markers and lint are unaffected.
+        enable_import_scan = True
+
+        # Incremental cst→dict conversion: when a previous good parse exists,
+        # re-convert only the changed top-level statements and splice them
+        # into the held parse + module cst (cst_dict_incremental_update) -
+        # O(edited statements) instead of the 150-550ms whole-buffer parse.
+        # Falls back to the full conversion on any doubt. Read live.
+        incremental_cst_parse = True
+
+        # Fidelity gate for the merge above: regenerate the spliced module's
+        # code and require it to EQUAL the new buffer (one O(file) codegen,
+        # ~a sixth of full-parse cost) - any comment/whitespace attribution
+        # drift falls back to the full parse instead of corrupting the
+        # round-trip. Turn off once trusted for the last bit of speed.
+        verify_incremental_cst = True
+
+        # Incremental static lint: per-path re-diff - findings outside the
+        # edited top-level block are kept (line-shifted), only the block
+        # itself is re-linted, and the live-module + pending-binds fallbacks
+        # resolving cross-buffer names (the same way span lint already
+        # works). ~1ms per edit instead of the ~90ms whole-buffer pass, after
+        # a one-time full pass per path - so with this ON, big buffers lint
+        # again (lint_max_chars stops skipping them). Trade-off: a binding
+        # added/removed OUTSIDE the edited block doesn't re-verify findings
+        # elsewhere until the next full pass. Read live (worker-side).
+        incremental_lint = True
+
+        # Chain_in no-mutation skip: a newline-only edit (blank lines added
+        # or removed, or a byte-identical echo) can't change the parse
+        # structure or introduce a syntax error, so the full reparse -
+        # 150-550ms of GIL-held libcst + dict conversion + compile that
+        # convoys the render thread - is skipped inline for it. The held
+        # parse and its src_good baseline stay put, so the first CONTENT edit
+        # afterwards is non-safe against it and pays the one full parse it
+        # always would have. Read live (on the chain_in worker).
+        skip_reparse_on_blank_edits = True
+
 
         @defaults(tint=(0.181, 0.361, 0.722))
         class SymbolUsages:
             # Auto-attach symbol usages to every editor parse (background, fast
             # path only); the Index button stays as a force refresh.
             auto_index = True
-
+            
             # Incremental symbol-usage refresh on live edits: reuse the prior
             # compute's expensive half (cross-file callers + defs, ~80% of cost)
             # and rescan only the changed file + new names. Off = full recompute.
@@ -554,10 +532,11 @@ class Toggles:
 
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
-        # with the trigger. The key is one trigger, or a TUPLE of
-        # exclusive triggers; the value is a list of Snippet rows. `insert`
-        # replaces the whole trigger; `$0` places the final caret. Adding
+        # with the trigger. The key is one trigger string or a TUPLE of
+        # alias triggers; the value is a list of Snippet rows. `insert`
+        # replaces the whole trigger; `$0` marks the final caret. Adding
         # a shortcut = adding one entry here (read live, hotswap-safe).
+        # [expanded=False]
         AC_SNIPPETS = {
             ("#"): [
                 Snippet("", "# [$0]", "# [ ... ]", tint=(0.161, 0.027, 0.047)),
@@ -655,7 +634,7 @@ class Toggles:
 
         # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
         definition_tints = True
-
+        
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounded character match - no CST / symbol-DB metadata is
@@ -693,7 +672,7 @@ class Toggles:
         # brightness clamp (bg_min/max) still applies after. 1/1 = raw tint.
         text_tint_saturation = 1.0
         text_tint_value = 1.0
-
+    
         # Tint-comment TEXT color adjustment (hsv factors, the Tint-class
         # pattern): an override comment wears its own [tint=...] color,
         # desaturated and darkened by these so it reads as commentary, not
@@ -719,8 +698,143 @@ class Toggles:
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
 
+    @defaults(tint=(0.08, 0.747, 0.85))
+    class WindowSettings:
+        # Sticky resize: re-anchor the window top at the drag-start point each
+        # frame so only the min-on-display clamp displaces it.
+        sticky_drag = True
+
+    @defaults(tint=(0.427, 0.541, 0.616))
+    class ContextMenu:
+        # Which tab a newly opened context menu selects, as an index into its
+        # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
+        default_tab = 2
+
+    @defaults(tint=(0.47, 0.463, 0.417))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # seconds
+        bg_offset = 30
+        debug_scroll = False
+
+
+    @defaults(tint=(0.478, 0.265, 0.265))
+    class InvalidateTracker:
+        keep_for_frames = 84
+        enable = False
+        draw_rect = True
+        invalidate_stack_trace = False
+        attrib_change_stack_trace = False
+        draw_bvh = False
+
+    @defaults(tint=(0.315, 0.489, 0.322))
+    class LoadSave:
+        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
+        # as a backout alongside the native-pickle custom pickle. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
+        # this True until the .ini is fully retired.
+        ini_save = False
+
+    @defaults(tint=(0.65, 0.385, 0.069, 1.0))
+    class SearchSettings:
+        # Auto-scroll to the current match while the search term is being
+        # typed. When False, typing only recounts/highlights in place; the
+        # view scrolls to the current match only on explicit navigation
+        # (Enter / Shift+Enter / the find bar's arrows).
+        scroll_while_typing = True
+
+        # Search matches are highlighted with a circular gradient "glow" that
+        # radiates out from the matched rectangle (rounded-rect cutout), with the
+        # rect itself cut out so the matched text stays readable. The CURRENT
+        # match uses ActiveElement; every other match uses InactiveElements, so
+        # the two can be tuned (color/falloff/alpha/...) independently. Glows
+        # combine where they overlap. Applies in both the text editor (draw_text)
+        # and collections (draw_collection rows). See view/core_views/search_glow.py.
+
+        @defaults(tint=(0.965, 0.6, 0.149))
+        class ActiveElement:
+            gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
+            outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline
+            falloff = 26.696          # px the glow radiates out past the match edge
+            opacity = 0.176           # peak opacity, % at the cutout edge
+            falloff_exp = 2.105       # >1 = bright inside the word, then drops off fast
+            inner_pad = 0.00         # px the cutout is grown beyond the match rect
+            cutout_radius = 5.0       # corner radius of the rounded cutout
+            rings = 86                # radial tessellation steps (higher = smoother)
+            corner_segments = 15       # arc subdivisions in each rounded cutout corner
+            outline_alpha = 1.00       # 0 = rely on the glow's bright inner halo alone
+            outline_thickness = 1.626
+
+        @defaults(tint=(0.36, 0.52, 0.93, 0.484))
+        class InactiveElements:
+            gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
+            outline_color = (0.6, 0.72, 1.0)
+            falloff = 15.664
+            opacity = 0.077
+            falloff_exp = 2.491
+            inner_pad = 0.00
+            cutout_radius = 5.00
+            rings = 16
+            corner_segments = 5
+            outline_alpha = 1.00
+            outline_thickness = 1.366
+
+    @defaults(tint=(0.27, 0.7, 0.52))
+    class HostLifecycle:
+        # Deregister a RenderHost from Melty.render_hosts (stops its background
+        # draw/parse) once none of its consumer windows are active. Host + parse
+        # stay cached; reopening re-registers (notify_on_change → register).
+        deregister_idle = True
+        # A consumer is gone when its window is abs_closed, or it hasn't
+        # re-registered within this many frames (safety net for closes abs_closed
+        # misses). Also the birth grace before a new host can be swept.
+        idle_frames = 120
+
+    @defaults(tint=(0.181, 0.119, 0.294))
+    class InputHandlerToggles:
+        show_debug = False
+
+    @defaults(tint=(0.652, 0.672, 0.733))
+    class TerminalSettings:
+        # Minimum logical terminal size, in pixels - independent of the window size.
+        min_height = 506.5
+        min_width = 94.154
+        
+        
+    # Global App Toggles
+    @defaults(tint=(0.63, 0.44, 0.2))
+    class GC:
+        # Deliberate collector scheduling (gc_manager.tick in Melty.end_frame):
+        # gen2's auto-trigger is deferred and full collects run at
+        # input-idle instead of landing mid-keystroke (the observed 3.3s
+        # gen2 stall in the render thread). Off = stock collector.
+        manage = True
+        # Auto gen2 threshold while managed - effectively "manual threshold";
+        # the idle collector below is what actually runs full passes.
+        gen2_threshold = 1000000
+        # Seconds of input quiet before the boot freeze / an idle collect.
+        idle_seconds = 15.0
+        # Minimum spacing between idle collects.
+        idle_collect_s = 120.0
+        # Never freeze/collect before the app has been up this long (caches
+        # still filling - freezing mid-load would pin a half-built graph).
+        boot_delay_s = 30.0
+
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
+
     show_filled_tiles = False
     gl_check_error = False
+    
+    # [tint=(0.04, 0.286, 0.422), show_tint=True]
     enable_jedi = True
     jedi_correctness = False
 

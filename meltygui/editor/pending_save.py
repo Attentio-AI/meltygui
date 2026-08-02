@@ -1,4 +1,6 @@
 import difflib
+from src.lsd.gl_gui.notifications import lag_traced
+
 import re
 import types
 from collections import defaultdict
@@ -183,6 +185,7 @@ class PendingSave:
         return cls._pending_gen.get(path, 0)
 
     @classmethod
+    @lag_traced("queue_save", 30)
     def queue_save(cls, address, codec, **kwargs):
         prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
@@ -367,6 +370,7 @@ class PendingSave:
             del cls.pending_saves[addr]
 
     @classmethod
+    @lag_traced("apply_all_saves", 50)
     def apply_all_saves(cls):
         from src.lsd.gl_gui.view.core_conversion.new_codecs import SaveConflict
         from src.lsd.gl_gui.notifications import notify

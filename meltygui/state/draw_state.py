@@ -1118,6 +1118,48 @@ class DrawState(DictConversion):
         object.__setattr__(self, '_anc_scroll_key', key)
         return sx, sy
 
+    def _pinned_base_y(self, base_y, anchor_y):
+        """Bound a pinned nested window's vertical ANCHOR to its parent window:
+        the float's BOTTOM can't ride above the window's top, and its TOP can't
+        drop below the window's bottom. (Display top/height when there is no
+        parent window.)
+
+        Pinned floats (context menus, live-value windows — pin_to_clip set)
+        follow their spawner: pin_rect reads the target's live abs, so a tall
+        spawner (e.g. a big scrolling draw_text) that scrolls drags the float
+        clean out of the window with it — the spawning VIEW routinely sits far
+        above/below the window's own box. Bounding against the WINDOW (not the
+        display, not the view) keeps the float within a window-height of travel
+        past each edge, so it's always adjacent to the window it belongs to.
+
+        Clamps the ANCHOR (base_y), NOT the final abs top: window_pos_y (the
+        user's drag) is deliberately left out of the bound, so a click-drag
+        still moves the window freely — clamping the sum ate vertical drag and
+        left a dead zone on the way back. Same shape as the swoosh, which
+        clamps its parent anchor to the window edge."""
+        if not self.closable:
+            return base_y
+        win = self.parent_window
+        if win is not None and win is not self:
+            win_top, win_h = win._abs_top(), win.height or 0
+        else:
+            disp = Core.melty.display_size
+            win_top, win_h = 0, (disp[1] if disp is not None else 0)
+        floor_y = win_top - (self.height or 0) - anchor_y
+        ceil_y = win_top + win_h - anchor_y
+        if floor_y <= base_y <= ceil_y:
+            return base_y
+        try:
+            # Exempt the floating DnD window: glue_window_to_cursor assumes abs
+            # is linear in window_pos, and a clamp makes its per-frame
+            # correction accumulate without bound (see _cap_to_display).
+            from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
+            if DragDrop.is_dragged_item(self):
+                return base_y
+        except Exception:
+            pass
+        return floor_y if base_y < floor_y else ceil_y
+
     def _cap_to_display(self, pos, axis):
         """Cap a nested window's computed abs position so at least a sliver of
         its box stays on the display. Nested windows follow their spawning
@@ -1205,7 +1247,7 @@ class DrawState(DictConversion):
         if base is not None:
             # Pin to the clip rect corner rather than the scrolled position of
             # the declaring view (which top_offset tracks).
-            this_top = window_pos_y + base[1] + anchor[1]
+            this_top = window_pos_y + self._pinned_base_y(base[1], anchor[1]) + anchor[1]
             if (self.pin_to_clip is Pin.CLIP and self.height is not None
                     and self.parent_window is not None and self.parent_window is not self):
                 # Box-level clamp: see _abs_left. Keeps the bottom edge from
@@ -1234,7 +1276,7 @@ class DrawState(DictConversion):
         if base is not None:
             # Pin to the clip rect corner rather than the scrolled position of
             # the declaring view (which top_offset tracks).
-            this_top = window_pos_y + base[1] + anchor[1]
+            this_top = window_pos_y + self._pinned_base_y(base[1], anchor[1]) + anchor[1]
             if (self.pin_to_clip is Pin.CLIP and self.height is not None
                     and self.parent_window is not None and self.parent_window is not self):
                 # Box-level clamp: see _abs_left. Keeps the bottom edge from

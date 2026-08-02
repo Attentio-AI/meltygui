@@ -19,6 +19,8 @@ from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.jump_to import draw_jump_to
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
+from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.view.core_views.new_core_view import draw
 
 
 def _hex(h):
@@ -127,13 +129,20 @@ def _completion_pool(code_tree, text, line, func=None):
             seen.add(name)
             pool.append((name, kind))
 
+    scan_text = text
     if code_tree is not None:
         try:
             for name, kind in completions_at(code_tree, line):
                 add(name, kind)
         except Exception:
             pass  # never let a parse hiccup kill typing
-    for name in _IDENT_RE.findall(text):
+        # With a parse the buffer scan only backfills JUST-TYPED locals the
+        # tree hasn't caught up to - those sit at or above the caret, so cap
+        # the scan there. This keeps names completions_at position-filtered
+        # (locals defined below the caret) from re-entering as "name" rows.
+        # No tree → scan everything; it's the only source source.
+        scan_text = "\n".join(text.split("\n")[:line + 1])
+    for name in _IDENT_RE.findall(scan_text):
         add(name, "name")
     for name in dir(_builtins):
         if not name.startswith("_"):
@@ -4468,6 +4477,7 @@ def _describe_code_tree(code_tree):
              disable_scroll=False, with_header=draw_header, shadow=False, 
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.2,
              selectable=False, searchable=True, bg_offset=-1.8, show_add_delete=False)
+@window
 def draw_text(input_value: str, height=None,
               left_mouse_down=False, 
               left_mouse_drag=False, left_mouse_held=False,
@@ -4491,7 +4501,8 @@ def draw_text(input_value: str, height=None,
     _pf_marks = []
     _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
-
+    
+    
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
 
@@ -4500,7 +4511,7 @@ def draw_text(input_value: str, height=None,
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
-        token_views = DEFAULT_TOKEN_VIEWS   # global experiment fallback (see a        
+        token_views = DEFAULT_TOKEN_VIEWS   # an experiment fallback (see a     
 
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
@@ -4553,6 +4564,22 @@ def draw_text(input_value: str, height=None,
         _err_markers += _exception_errors(error)
     else:
         _ct_errors, _err_markers = None, []
+    # Fast-path syntax markers (Toggles.TextEditor.fast_syntax_check): the
+    # staleness section at the end of the body re-runs a bare compile() per
+    # edit and leaves (buffer, SyntaxError-or-None) on ds._fast_err_state.
+    # When that record reflects THIS buffer (identity - every real edit is a
+    # new string), a found error replaces the background markers outright:
+    # they describe an older buffer, this one carries the current line, and
+    # being current it survives the stale-hide below. A clean fast check
+    # replaces nothing - parsing/lint markers keep the normal debounced flow
+    # (compile() says nothing about lint findings).
+    _fast_fresh_err = False
+    if (Toggles.TextEditor.check_syntax_errors
+            and Toggles.TextEditor.fast_syntax_check):
+        _fs = getattr(ds, '_fast_err_state', None)
+        if _fs is not None and _fs[0] is input_value and _fs[1] is not None:
+            _err_markers = _exception_errors(_fs[1])
+            _fast_fresh_err = True
     # Import quick-fix bookkeeping. `_qf_fixes` maps line → candidate import
     # statements, fed from the SEPARATE suggestions channel (`import_fixes`,
     # from ModesState.last_imports) - independent of the error markers, so a
@@ -4568,10 +4595,25 @@ def draw_text(input_value: str, height=None,
     if getattr(ds, '_qf_applied', None):
         _err_markers = [(l, m) for l, m in _err_markers
                         if _missing_name(m) not in ds._qf_applied]
+    # Fast-path import suggestions (Toggles.TextEditor.fast_syntax_check): the
+    # per-edit section at the end of the body leaves (buffer, {line: [stmts]},
+    # background-payload-at-scan-time) on ds._fast_imports_state. It feeds the
+    # quick-fix rows when it reflects THIS buffer AND the background channel
+    # hasn't swapped in a new payload since the scan (identity on both) - a
+    # landed relint is irrelevant (it re-reads the file's pending binds);
+    # the fast scan only bridges the debounce gap. The applied-fix memory
+    # (_qf_applied) still keys on the background payload identity above and
+    # filters the fast rows below, so a just-applied fix isn't re-offered per
+    # keystroke while the file's bind cache catches up.
+    _active_fixes = import_fixes
+    if Toggles.TextEditor.fast_syntax_check:
+        _fi = getattr(ds, '_fast_imports_state', None)
+        if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
+            _active_fixes = _fi[1]
     _qf_fixes = {}
-    if import_fixes:
+    if _active_fixes:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
-        for _ln, _stmts in import_fixes.items():
+        for _ln, _stmts in _active_fixes.items():
             try:
                 _ln = int(_ln)
             except (TypeError, ValueError):
@@ -4589,7 +4631,6 @@ def draw_text(input_value: str, height=None,
     # message (if any) is no longer shown inline here - it floats in a bar pinned
     # to the bottom of the view (see the error footer after the body is drawn).
     bar_height = 0.0
-    
     _err_msg = None
     if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
@@ -4669,7 +4710,6 @@ def draw_text(input_value: str, height=None,
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
-
 
         _pf_miss_t = time.perf_counter()
         if syntax_highlight:
@@ -5752,7 +5792,10 @@ def draw_text(input_value: str, height=None,
     # so its line numbers are out of date or it may already be fixed. The stale
     # flag is set + cleared at the end of the body (see "Parse-error staleness").
     # Also hide while a completion/signature popup is up (code mid-edit).
-    if (getattr(ds, '_err_stale', False)
+    # A fresh fast-path marker (see the block up top) is exempt from the stale
+    # hide - it was computed against this very text - but still yields to the
+    # popup suppression like every other marker.
+    if ((getattr(ds, '_err_stale', False) and not _fast_fresh_err)
             or (is_focused and (getattr(ds, '_ac_open', False)
                                 or getattr(ds, '_ac_sig_show', False)))):
         _err_markers = []
@@ -6923,6 +6966,105 @@ def draw_text(input_value: str, height=None,
         if not getattr(ds, '_err_stale', False):
             ds._err_stale = True
             ds._err_stale_pair = _parse_pair       # this parse is now outdated
+        # Fast-path syntax check (consumed by the marker block up top): re-check
+        # the edited buffer inline so the NEXT frame shows/clears a red marker
+        # immediately instead of waiting out the background reparse debounce.
+        # Only for code buffers already in the error path (syntax_highlight
+        # + a resolved file - never plain-text fields), size-capped
+        # (fast_check_max_chars, another toggle) because compile() is O(buffer)
+        # on the render thread. _compile_check dedents and handles in-function
+        # errors, so span buffers check clean.
+        _fast_ok = (Toggles.TextEditor.check_syntax_errors
+                    and Toggles.TextEditor.fast_syntax_check
+                    and syntax_highlight and jump_to is not None
+                    and not single_line)
+        if _fast_ok and len(text) <= Toggles.TextEditor.fast_check_max_chars:
+            from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
+            ds._fast_err_state = (text, _compile_check(text))
+            # Import-suggestion fast path (consumed by the quick-fix block up
+            # top): a warm incremental scan is O(changed region) per keystroke
+            # (~0.4ms). Gated on has_scan_state - a path's first scan is
+            # O(buffer tokenize + module-binds parse), ~1s max, and must be
+            # to the background workers; they warm the incremental fast-path state
+            # and this path takes over from the next keystroke on. The current
+            # background payload rides along so the top block can tell when a
+            # landed relint/reparse superseded this scan.
+            try:
+                from src.lsd.gl_gui.view.core_conversion.code_checks import (
+                    collect_import_suggestions, has_scan_state)
+                _fi_path = getattr(jump_to, 'path', None)
+                if has_scan_state(_fi_path):
+                    _fi_scan = collect_import_suggestions(text, path=_fi_path)
+                    ds._fast_imports_state = (text, _fi_scan or {}, import_fixes)
+                else:
+                    ds._fast_imports_state = None
+            except Exception:
+                ds._fast_imports_state = None
+        elif (_fast_ok and _prev_text is not None
+                and Toggles.TextEditor.fast_check_changed_region):
+            # Over-cap buffer: compile only the changed top-level span, diffed
+            # against the pre-edit text (_prev_text - still the OLD buffer
+            # here; ds._err_prev_text was already advanced above). The
+            # heuristic in _region_compile_check means a region cut mid-
+            # string/bracket reports "ambiguous", not a false error. Held-
+            # error rules: a fresh failure over a previously-clean region is
+            # real (show it); both-fail keeps an already-held error alive
+            # (same-function still being typed, fresh line mapping); a clean
+            # region clears a held error only if it LIVES IN that region -
+            # one found in a DIFFERENT region stays across the edit, its
+            # line shifted by the edit's delta when the edit sat above it, so
+            # big-file errors never wait out the background debounce to
+            # reappear. "skip" (huge paste) drops the held state - the buffer
+            # changed structurally and the background parse re-flags.
+            from src.lsd.gl_gui.view.core_conversion.new_converters import (
+                _region_compile_check)
+            _r_status, _r_err, _r_span = _region_compile_check(
+                _prev_text, text, Toggles.TextEditor.fast_check_max_chars)
+            _held = getattr(ds, '_fast_err_state', None)
+            _held_err = _held[1] if _held is not None else None
+            # A held error OUTSIDE the edited span survives every outcome:
+            # above the edit its line is unchanged, below it shifts by the
+            # edit's delta. Inside the span its fate depends on the status
+            # (or stays None): clean clears it, error/ambiguous re-map it
+            # to the fresh compile, skip defers it to the background parse.
+            _keep, _inside = None, False
+            _ln = getattr(_held_err, 'lineno', None) if _held_err else None
+            if _ln is not None and _r_span is not None:
+                _s, _e_old, _dlt = _r_span
+                _inside = _s < _ln <= _e_old
+                if not _inside:
+                    if _ln > _e_old:
+                        _held_err.lineno = _ln + _dlt
+                    _keep = _held_err
+            if _r_status == "error":
+                ds._fast_err_state = (text, _r_err)
+            elif _r_status == "ambiguous" and _held_err is not None:
+                # Same error re-type gets a fresh line mapping; a held
+                # error from ANOTHER region keeps the extraction artifact.
+                ds._fast_err_state = (text, _r_err if _inside else _keep)
+            else:
+                ds._fast_err_state = (text, _keep)
+            # Import-suggestion fast path for over-cap buffers too: the
+            # scanner's warm incremental step is O(changed region) regardless
+            # of buffer size - only its full fallback (first scan, big paste,
+            # tokenizer trouble) is O(buffer). incremental_only refuses
+            # exactly that fallback: a None result leaves the fast state
+            # unset and the debounced background channel authoritative (its
+            # next scan re-warms the incremental state).
+            try:
+                from src.lsd.gl_gui.view.core_conversion.code_checks import (
+                    collect_import_suggestions, has_scan_state)
+                _fi_path = getattr(jump_to, 'path', None)
+                _fi_scan = (collect_import_suggestions(text, path=_fi_path,
+                                                       incremental_only=True)
+                            if has_scan_state(_fi_path) else None)
+                ds._fast_imports_state = (None if _fi_scan is None
+                                          else (text, _fi_scan, import_fixes))
+            except Exception:
+                ds._fast_imports_state = None
+        else:
+            ds._fast_err_state = None
+            ds._fast_imports_state = None
     elif getattr(ds, '_err_stale', False):
         _sp = getattr(ds, '_err_stale_pair', (None, None))
         if not (error is _sp[0] and code_tree is _sp[1]):

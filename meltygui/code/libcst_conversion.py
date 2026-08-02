@@ -25,7 +25,7 @@ from libcst._nodes.internal import CodegenState as _CodegenState
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.modes import Modes, _LazyMode
-from src.lsd.gl_gui.notifications import notify
+from src.lsd.gl_gui.notifications import notify, lag_traced
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.path_finder import convert, PendingState
@@ -233,7 +233,7 @@ class Except(dict):
         return f"Except:{self.header}:{keys}"
 
 
-@defaults(disable_scroll=True, shadow=True, z_offset=1, use_cache=True, child_kwargs={'show_bg': False})
+@defaults(disable_scroll=True, shadow=False, use_cache=True, child_kwargs={'show_bg': False})
 class GeneralParse(dict):
     def __init__(self, *args, source="", file_path=None, line_offset=0, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2266,6 +2266,7 @@ _NEEDS_RECOMPUTE = object()
 _PARSE_FAILED = object()
 
 
+@lag_traced("symbol usages (in-proc jedi)", 50)
 def compute_symbol_usages_for_address(address, fast_only=False):
     """Build {symbol: SymbolUsage} (callers + definition) for an address's source
     span, via in-process jedi. The entry point for the editor's manual trigger;
@@ -2581,6 +2582,7 @@ def _store_usages(key, sig, usages, text, chash=None, evict=None) -> None:
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     """Drop cached cross-file references for a path, or all if None."""
     print("Invalidating usage cache for", path if path else "ALL PATHS")
+    print_stack_trace()
     if path is None:
         _xref_cache.clear()
         _symbol_usage_cache.clear()
@@ -2745,7 +2747,26 @@ def _cst_node_to_code(node):
     """Get the source code string for a CST expression node.
 
     Uses direct codegen instead of wrapping in a Module — ~5x faster.
-    """
+    Memoized by node identity while the incremental span reconvert is active
+    (_inc_memo, see _cst_to_python_or_raw): the output is position-independent
+    text, so nodes shared across the body splice reuse it verbatim — the
+    per-statement source strings _extract_block_assignments builds were the
+    dominant reconvert cost (~1600 codegens per pass on a big function).
+    _inc_memo is defined later in the module; module-level calls at import
+    time see no pair and take the plain path."""
+    pair = getattr(globals().get("_inc_memo"), "pair", None) if "_inc_memo" in globals() else None
+    if pair is not None:
+        old_m, new_m = pair
+        key = ("c", id(node))
+        hit = old_m.get(key)
+        if hit is not None and hit[0] is node:
+            new_m[key] = hit
+            return hit[1]
+        state = _CodegenState(default_indent="    ", default_newline="\n")
+        node._codegen(state)
+        code = "".join(state.tokens)
+        new_m[key] = (node, code)
+        return code
     state = _CodegenState(default_indent="    ", default_newline="\n")
     node._codegen(state)
     return "".join(state.tokens)
@@ -2945,6 +2966,7 @@ def cst_module_to_str(value: cst.Module) -> str:
 # wrapper is built with unsafe_skip_copy=True so the provider keys on the SAME
 # node objects the extractors walk - a deep copy would make every lookup miss.
 
+import re as _re_ws
 import threading as _threading_spans
 from libcst.metadata import (MetadataWrapper as _MetadataWrapper,
                              PositionProvider as _PositionProvider)
@@ -3022,6 +3044,22 @@ _yield_slept = threading.local()
 def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles  # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
+        return
+    # The incremental span reconvert is the LIGHT path built to run during
+    # typing (~60-90ms memo-assisted) - parking it at statement boundaries
+    # multiplied its wall time up to 40x (observed 4.1s) for no GIL benefit
+    # worth the latency. Instead of parking, hand the GIL off: sleep(0)
+    # forces a GIL yield so the render thread interleaves between statements -
+    # the merge stops paying one solid 100ms+ GIL hold (for 200ms frames) and
+    # costs multiple per-statement slices. Full parses keep parking as before.
+    _im = globals().get("_inc_memo")
+    if _im is not None and getattr(_im, "pair", None) is not None:
+        # Throttled: a handoff every 8th statement keeps the max contiguous
+        # hold at a few ms, avoiding ~400 GIL round-trips per merge.
+        _n = getattr(_im, "yield_n", 0) + 1
+        _im.yield_n = _n
+        if _n % 8 == 0:
+            time.sleep(0)
         return
     if Melty.frame_count < 4:
         return  # app startup: never back off the initial parse, just run it
@@ -3135,6 +3173,12 @@ def _build_ast_span_map(module, source=None):
                 an = ast_stmts[ai];
                 ai += 1
                 out[cs] = sp(an)
+                # Decorator-inclusive lineno (ast lineno points at def/class,
+                # decorators sit ABOVE it) so the incremental cst merge with
+                # the true logical start of the statement node.
+                _decs = getattr(an, "decorator_list", None)
+                if _decs:
+                    out[("dec_start", cs)] = _decs[0].lineno
                 bl, bnode = body_list(cs)
                 if isinstance(cs, cst.FunctionDef):
                     out[cs.params] = params_sp(an) or sp(an)
@@ -3170,6 +3214,7 @@ def _build_ast_span_map(module, source=None):
     def pair_if(cs_if, ast_if):
         if not isinstance(ast_if, ast.If):
             return
+        out[cs_if] = sp(ast_if)   # whole-statement span (incremental merge)
         out[cs_if.test] = sp(ast_if.test)
         out[cs_if.body] = list_sp(ast_if.body)
         pair(list(cs_if.body.body), ast_if.body)
@@ -3189,6 +3234,7 @@ def _build_ast_span_map(module, source=None):
     def pair_try(cs_try, ast_try):
         if not isinstance(ast_try, (ast.Try, getattr(ast, "TryStar", ast.Try))):
             return
+        out[cs_try] = sp(ast_try)   # whole-statement span (incremental merge)
         out[cs_try.body] = list_sp(ast_try.body)
         pair(list(cs_try.body.body), ast_try.body)
         for h_cs, h_ast in zip(cs_try.handlers, ast_try.handlers):
@@ -3431,16 +3477,30 @@ def _is_scope_node(d):
         d.get("__cst__"), (cst.FunctionDef, cst.ClassDef, cst.Module))
 
 
-def _flatten_local_names(locals_dict):
+def _flatten_local_names(locals_dict, before_line=None):
     """(name, 'local') for every assignment in a function's `locals` sub-dict,
     descending through control-flow blocks (keyed by non-identifier headings like
-    'if cond:') but never into a nested data value or scope."""
+    'if cond:') but never into a nested data value or scope. With `before_line`
+    (1-indexed, relative to the parse source) locals whose recorded span starts
+    AFTER that line are skipped — not yet defined at the caret. A local without
+    a recorded span is kept: never over-filter on missing position data."""
+    child_spans = getattr(locals_dict, "_child_spans", None) or {}
     for k, v in locals_dict.items():
         if _is_symbol_key(k):
+            if before_line is not None:
+                span = child_spans.get(k)
+                if span is None and isinstance(v, dict):
+                    span = getattr(v, "span", None)
+                if isinstance(span, Span) and span.start_line > before_line:
+                    continue
             yield k, "local"
         elif (isinstance(k, str) and not k.isidentifier()
               and isinstance(v, dict) and "__cst__" not in v):
-            yield from _flatten_local_names(v)
+            if before_line is not None:
+                span = getattr(v, "span", None)
+                if isinstance(span, Span) and span.start_line > before_line:
+                    continue  # the whole control-flow block starts below the caret
+            yield from _flatten_local_names(v, before_line)
 
 
 def _direct_member_names(scope):
@@ -3448,16 +3508,18 @@ def _direct_member_names(scope):
     return [(k, _classify(v)) for k, v in scope.items() if _is_symbol_key(k)]
 
 
-def _scope_local_names(scope):
+def _scope_local_names(scope, before_line=None):
     """(name, kind) the given scope dict introduces. Functions expose their
-    `parameters` + `locals`; module/class scopes expose their direct members."""
+    `parameters` + `locals`; module/class scopes expose their direct members.
+    `before_line` (1-indexed, parse-relative) filters locals to those defined
+    at or above that line — params are always in scope and never filtered."""
     params, locs = scope.get("parameters"), scope.get("locals")
     if isinstance(params, dict) or isinstance(locs, dict):  # function scope
         out = []
         if isinstance(params, dict):
             out += [(k, "param") for k in params if _is_symbol_key(k)]
         if isinstance(locs, dict):
-            out += list(_flatten_local_names(locs))
+            out += list(_flatten_local_names(locs, before_line))
         return out
     return _direct_member_names(scope)
 
@@ -3529,6 +3591,9 @@ def completions_at(code_tree, line):
         enclosing scope (params/locals, innermost out) → class members →
         module-level names → imports → jedi-resolved cross-project symbols
 
+    The caret's own scope only offers locals already defined at `line` (by
+    recorded span); enclosing/module scopes stay unfiltered (late binding).
+
     `kind` ∈ {param, local, member, func, class, var, import, symbol}. Pure read
     over the digestible dict tree + line/span index + `__cst__` imports + (when
     present) `symbol_usage`; cheap enough to call per keystroke. Returns [] for a
@@ -3543,8 +3608,15 @@ def completions_at(code_tree, line):
             out.append((name, kind))
 
     chain = _scope_chain_for_line(code_tree, line + 1)  # spans are 1-indexed
+    # The caret's own scope filters its locals by position - a local assigned
+    # BELOW the caret isn't defined yet there. Enclosing function scopes don't:
+    # closures bind late, so their later assignments exist by the time innermost
+    # runs (and module/class members are added unfiltered below for the same
+    # reason).
+    innermost = chain[-1]
     for scope in reversed(chain[1:]):  # innermost scope first
-        for name, kind in _scope_local_names(scope):
+        before = line + 1 if scope is innermost else None
+        for name, kind in _scope_local_names(scope, before_line=before):
             add(name, kind)
     for name, kind in _direct_member_names(code_tree):  # module level
         add(name, kind)
@@ -3575,7 +3647,10 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         return input_value
     _t_start = time.monotonic()
     _yield_slept.t = 0.0  # this conversion's cumulative yield-to-UI sleep
-    source_code = input_value.code
+    # _source: the module's full code, when the caller already holds it (the
+    # incremental span reconvert verified the splice against it) - skips a
+    # whole-module codegen.
+    source_code = kwargs.get("_source") or input_value.code
     _t_codegen = time.monotonic()
     readable = GeneralParse(source=source_code)
     _stamp_span(readable, input_value)
@@ -3587,6 +3662,11 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # PositionProvider / the node span so extractors can stamp source spans
     # (.span / _child_spans) with the line ↔ node map.
     with _position_map(input_value, source=source_code), _module_scope(_build_src_scope()):
+        # Retain this conversion's position map for the incremental update
+        # merge (statement boundaries and dec_start lookups against the PREVIOUS
+        # parse). Held off-gp (id-keyed, weakref.memoized) so gp pickling
+        # (the cst-dict cache) never sees them.
+        _retain_pos_map(readable, _active_positions())
         # Module header comments (top-of-file, before first statement)
         _extract_comment_lines(input_value.header, readable)
 
@@ -3598,8 +3678,26 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
         local_sigs = _collect_local_signatures(input_value.body)
         call_seen: dict[str, int] = {}
 
+        # Incremental-merge bookkeeping (cst_dict_incremental_update): each
+        # top-level statement, its source line span and how many gp keys
+        # existed BEFORE it ran - so a later edit can identify exactly which
+        # statements/keys a merged region owns. counts has len(body)+1
+        # entries (final total appended outside the loop).
+        _stmt_lines = []
+        _stmt_key_counts = []
+        _positions_now = _active_positions() or {}
+
         for stmt in input_value.body:
             _yield_to_ui()  # back off mid-parse while the user is typing
+            _stmt_key_counts.append(len(readable))
+            _sp_stmt = _positions_now.get(stmt)
+            if _sp_stmt is not None:
+                _dstart = _positions_now.get(("dec_start", stmt))
+                _stmt_lines.append((min(_sp_stmt.start_line, _dstart)
+                                    if _dstart else _sp_stmt.start_line,
+                                    _sp_stmt.end_line))
+            else:
+                _stmt_lines.append((None, None))
             if isinstance(stmt, cst.SimpleStatementLine):
                 # Leading comments (override comments routed to the field below)
                 _extract_leading_comments(stmt, readable, skip_overrides=True)
@@ -3654,6 +3752,9 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                     except (TypeError, ValueError):
                         pass
 
+        _stmt_key_counts.append(len(readable))
+        readable._stmt_lines = _stmt_lines
+        readable._stmt_key_counts = _stmt_key_counts
         readable["__cst__"] = input_value
         # readable.usages = _collect_usages(input_value, top_scope="<module>")
     _t_converted = time.monotonic()
@@ -3716,14 +3817,507 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
             except Exception as _e:
                 _sym_note = f"FAILED:{type(_e).__name__}"
     _ap = getattr(address, "path", None)
-    _ptrace(f"cst→dict done in {(time.monotonic() - _t_start) * 1000:.0f}ms",
+    _total_ms = (time.monotonic() - _t_start) * 1000
+    _ptrace(f"cst→dict done in {_total_ms:.0f}ms",
             file=_Path(_ap).name if _ap else "<no address>",
             lines=source_code.count("\n") + 1,
             codegen=f"{(_t_codegen - _t_start) * 1000:.0f}ms",
             convert=f"{(_t_converted - _t_codegen) * 1000:.0f}ms",
             yielded=f"{getattr(_yield_slept, 't', 0.0) * 1000:.0f}ms",
             symbols=_sym_note or "off")
+    _slept_ms = getattr(_yield_slept, 't', 0.0) * 1000
+    _im = globals().get("_inc_memo")
+    _inc_mark = " inc" if (_im is not None
+                           and getattr(_im, "pair", None) is not None) else ""
+    _work_ms = _total_ms - _slept_ms
+    notify(f"cst→dict{_inc_mark} {_total_ms:.0f}ms"
+           + (f" (parked {_slept_ms:.0f}ms)" if _slept_ms >= 1 else "")
+           + f"  {source_code.count(chr(10)) + 1} lines"
+           f"  {_Path(_ap).name if _ap else 'no-address'}",
+           tint=((1.0, 0.3, 0.2) if _work_ms >= 300
+                 else (1.0, 0.65, 0.2) if _work_ms >= 60
+                 else (0.6, 0.75, 0.6)),
+           tag="cst")
     return readable
+
+
+# Largest changed region (chars) an incremental cst merge will re-convert;
+# past it the full parse is cheaper-per-value and the fallback runs.
+_INC_CST_MAX_REGION = 64 * 1024
+# Force a full reconvert after this many incremental merges as a cheap backstop
+# against deep metadata drift that per-merge text verification can't see.
+_INC_CST_MAX_DEPTH = 200
+
+
+def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
+    """Single-FunctionDef span buffers (a function edited in its own host):
+    module-level splicing has nothing to split, so splice INSIDE the def —
+    swap the changed body statements (region re-parsed under a throwaway
+    `def` wrapper so its 4-space indentation and continuation whitespace stay
+    byte-exact), then re-run the REAL cst_module_to_dict over the spliced
+    module with the node-identity value memo primed from the previous
+    conversion (_inc_memo / _cst_to_python_or_raw). Correctness is the full
+    converter's own — it IS a full conversion of the true new module, so key
+    numbering (`x#1`), ordering and spans come out exact; the memo only skips
+    re-deriving values whose nodes survive the splice. The first reconvert
+    after a plain full parse finds an empty memo and just seeds it."""
+    from src.lsd.gl_gui.toggles import Toggles
+    try:
+        fd = old_mod.body[0]
+        body = list(getattr(fd.body, "body", None) or ())
+        if not body:
+            return _inc_fallback("span-no-body")
+        pos = _pos_map_for(prev_gp)
+        if pos is None:
+            return _inc_fallback("span-no-pos-map")
+        na, nb = len(a), len(b)
+        delta = nb - na
+        first_row, last_row = pre + 1, na - suf
+        fd_span = pos.get(fd)
+        if fd_span is None:
+            return _inc_fallback("span-unplaced-def")
+
+        def text_start(idx):
+            st = pos.get(body[idx])
+            if st is None:
+                return None
+            s0 = st.start_line
+            d0 = pos.get(("dec_start", body[idx]))
+            if d0:
+                s0 = min(s0, d0)
+            return s0 - len(body[idx].leading_lines)   # 1-based
+
+        j0 = None
+        for j in range(len(body)):
+            sp = pos.get(body[j])
+            if sp is None:
+                return _inc_fallback("span-unplaced-stmt")
+            if sp.end_line >= first_row:
+                j0 = j
+                break
+        if j0 is None:
+            return _inc_fallback("span-after-last-stmt")
+        ts0 = text_start(j0)
+        if ts0 is None:
+            return _inc_fallback("span-unplaced-stmt")
+        if first_row < ts0:
+            return _inc_fallback("span-signature-edit")
+        j1 = j0
+        while j1 < len(body):
+            spj = pos.get(body[j1])
+            if spj is None:
+                return _inc_fallback("span-unplaced-stmt")
+            if spj.start_line > last_row:
+                break
+            j1 += 1
+        if j1 == j0:
+            j1 = j0 + 1
+        if j1 < len(body):
+            ts1 = text_start(j1)
+            if ts1 is None:
+                return _inc_fallback("span-unplaced-next")
+            hi_excl = ts1 - 1                  # 0-based exclusive
+        else:
+            hi_excl = fd_span.end_line         # def's last line (1b) == 0b excl
+        lo = ts0 - 1                           # 0-based inclusive
+        if last_row > hi_excl or lo >= hi_excl:
+            return _inc_fallback("span-bounds")
+        new_hi = hi_excl + delta
+        if new_hi <= lo or new_hi > nb:
+            return _inc_fallback("span-bounds")
+        region_text = "\n".join(b[lo:new_hi])
+        if len(region_text) > _INC_CST_MAX_REGION:
+            return _inc_fallback("span-region-too-big")
+        if not region_text.endswith("\n"):
+            region_text += "\n"
+        wrap_text = "def __melty_inc_wrap__():\n" + region_text
+        try:
+            wrap_mod = cst.parse_module(wrap_text)
+        except cst.ParserSyntaxError:
+            # Mid-p-ping broken region: a full reparse of the buffer would
+            # fail identically, so there's nothing to (re)convert - keep the
+            # previous gp intact as this run's result. The caller's compile
+            # check still reports the error (accurate line, and src_good
+            # stays None so the baseline doesn't advance); the first update
+            # that parses again runs correctly against the last-good
+            # baseline, covering the whole accumulated region.
+            notify("cst merge: held last-good (region unparseable)",
+                   tint=(1.0, 0.65, 0.2), tag="cst")
+            return prev_gp
+        if wrap_mod.code != wrap_text:
+            return _inc_fallback("span-region-not-lossless")
+        if (len(wrap_mod.body) != 1
+                or not isinstance(wrap_mod.body[0], cst.FunctionDef)):
+            return _inc_fallback("span-wrap-shape")
+        region_stmts = list(wrap_mod.body[0].body.body)
+        if not region_stmts:
+            return _inc_fallback("span-empty-region")
+        new_inner = list(body[:j0]) + region_stmts + list(body[j1:])
+        new_fd = fd.with_changes(body=fd.body.with_changes(body=new_inner))
+        new_mod = old_mod.with_changes(body=[new_fd])
+        if getattr(Toggles.TextEditor, "verify_incremental_cst", True):
+            if new_mod.code != new_src:
+                return _inc_fallback("span-verify-mismatch")
+        old_memo = getattr(prev_gp, "_value_memo", None) or {}
+        new_memo = {}
+        # Seed the codegen memo for the WHOLE spliced FunctionDef: it's a
+        # fresh node every merge, so cst_funcdef_to_dict's
+        # FunctionParse.source codegen (~27ms on draw_text) missed every
+        # time. Its code is just the (verified) new source minus the
+        # module header/footer renderings.
+        try:
+            _blank = cst.Module(body=[])
+            _hdr = "".join(_blank.code_for_node(l) for l in new_mod.header)
+            _ftr = "".join(_blank.code_for_node(l) for l in new_mod.footer)
+            _fd_code = new_src[len(_hdr): (len(new_src) - len(_ftr)) or None]
+            new_memo[("c", id(new_fd))] = (new_fd, _fd_code)
+        except Exception:
+            pass
+        _inc_memo.pair = (old_memo, new_memo)
+        try:
+            gp = cst_module_to_dict(new_mod, _source=new_src)
+        finally:
+            _inc_memo.pair = None
+        if not isinstance(gp, GeneralParse):
+            return _inc_fallback("span-convert-failed")
+        gp._value_memo = new_memo
+        for attr in ("file_path", "line_offset"):
+            if hasattr(prev_gp, attr):
+                setattr(gp, attr, getattr(prev_gp, attr))
+        return gp
+    except Exception as _e:
+        return _inc_fallback(f"span-exception:{type(_e).__name__}")
+
+
+def _shift_gp_spans(roots, extra_spans, delta):
+    """Shift every Span reachable from `roots` (gp subtrees) by `delta` lines,
+    in place, each span once (spans are shared between .span attrs and
+    _child_spans maps — the visited set covers both). Only dict/list/tuple
+    containers are descended; __cst__ values are skipped (libcst nodes carry
+    no absolute positions)."""
+    if not delta:
+        return
+    seen = set()
+
+    def bump(sp):
+        if isinstance(sp, Span) and id(sp) not in seen:
+            seen.add(id(sp))
+            sp.start_line += delta
+            sp.end_line += delta
+
+    for sp in extra_spans:
+        bump(sp)
+    stack = list(roots)
+    while stack:
+        o = stack.pop()
+        oid = id(o)
+        if oid in seen:
+            continue
+        seen.add(oid)
+        bump(getattr(o, "span", None))
+        cs = getattr(o, "_child_spans", None)
+        if isinstance(cs, dict):
+            for v in cs.values():
+                bump(v)
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == "__cst__":
+                    continue
+                bump(getattr(k, "span", None))     # dict keys carry spans
+                if isinstance(v, (dict, list, tuple)) or hasattr(v, "span") \
+                        or hasattr(v, "_child_spans"):
+                    stack.append(v)
+        elif isinstance(o, (list, tuple)):
+            for v in o:
+                if isinstance(v, (dict, list, tuple)) or hasattr(v, "span"):
+                    stack.append(v)
+
+
+_gp_pos_maps = {}
+
+
+def _retain_pos_map(gp, pos):
+    """{cst node: Span} of a finished conversion, kept per gp id. Weakref
+    finalize evicts with the gp; the size cap is a backstop for anything
+    non-weakref-able."""
+    if pos is None:
+        return
+    if len(_gp_pos_maps) > 64:
+        _gp_pos_maps.clear()
+    key = id(gp)
+    _gp_pos_maps[key] = pos
+    try:
+        import weakref
+        weakref.finalize(gp, _gp_pos_maps.pop, key, None)
+    except TypeError:
+        pass
+
+
+def _pos_map_for(gp):
+    return _gp_pos_maps.get(id(gp))
+
+
+_WS_ONLY_LINE = _re_ws.compile(r"(?m)^[ \t]+$")
+
+
+def _norm_blank_lines(text):
+    """textwrap.dedent's blank-line normalization, alone: whitespace-only
+    lines become empty. string_to_cst_module dedents every buffer, so the
+    parsed module's code differs from the RAW input in exactly this way —
+    the incremental merge must diff/splice/verify in the same normalized
+    space, or any buffer containing a trailing-space blank line hard-fails
+    verification on every edit (observed live as span-verify-mismatch on
+    draw_text). Line count is unchanged, so spans are unaffected."""
+    return _WS_ONLY_LINE.sub("", text)
+
+
+def _inc_fallback(reason):
+    """The incremental cst merge bailed — say why in the "cst" column so a
+    stream of full parses is diagnosable at a glance. Returns None (the
+    caller's fallback-to-full-parse sentinel)."""
+    notify(f"cst merge fallback: {reason}", tint=(0.75, 0.6, 0.35), tag="cst")
+    return None
+
+
+def cst_dict_incremental_update(prev_gp, old_src, new_src):
+    """O(edited statements) replacement for a full cst→dict reconvert.
+
+    Diffs old→new source by lines, maps the changed rows onto whole top-level
+    STATEMENTS via the tables the full parse stamped (_stmt_lines /
+    _stmt_key_counts), re-parses and re-converts just those statements'
+    text, and splices the result into the previous GeneralParse:
+
+      * gp keys: [keys of stmts before] + [fresh region keys] + [keys after],
+        preserving statement order (dict order IS statement order downstream);
+      * module __cst__: old module with the region's body statements swapped
+        in (libcst is lossless, so dict_to_cst_module round-trips the REAL
+        new text — verified below);
+      * spans: fresh region entries shift region→module coordinates; kept
+        entries below the edit shift by the line delta, in place.
+
+    Returns the merged gp, or None → caller runs the normal full conversion.
+    Fidelity gate: when Toggles.TextEditor.verify_incremental_cst is on, the
+    spliced module must regenerate EXACTLY the new source (one O(file)
+    codegen, ~a sixth of the full-parse cost) — any header/footer/comment
+    attribution drift falls back to the full parse instead of corrupting the
+    round-trip. All validation happens before any in-place mutation."""
+    from src.lsd.gl_gui.toggles import Toggles
+    try:
+        # Normalize FIRST (see _norm_blank_lines): the held module was parsed
+        # from dedent-normalized text, so raw-space diffs would misplace the
+        # region and the byte-exact verification could never pass.
+        old_src = _norm_blank_lines(old_src)
+        new_src = _norm_blank_lines(new_src)
+        table = getattr(prev_gp, "_stmt_lines", None)
+        counts = getattr(prev_gp, "_stmt_key_counts", None)
+        old_mod = prev_gp.get("__cst__")
+        if (not table or not counts or old_mod is None
+                or not isinstance(old_src, str) or not isinstance(new_src, str)
+                or len(counts) != len(table) + 1
+                or len(table) != len(old_mod.body)):
+            return _inc_fallback("no-tables")
+        depth = getattr(prev_gp, "_inc_depth", 0)
+        if depth >= _INC_CST_MAX_DEPTH:
+            return _inc_fallback("depth-cap")
+        a = old_src.split("\n")
+        b = new_src.split("\n")
+        na, nb = len(a), len(b)
+        pre = 0
+        m = min(na, nb)
+        while pre < m and a[pre] == b[pre]:
+            pre += 1
+        if pre == na and pre == nb:
+            return _inc_fallback("identical")                       # identical - let safe-skip handle
+        suf = 0
+        while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
+            suf += 1
+        delta = nb - na
+        first_row = pre + 1                   # 1-based first changed old row
+        last_row = na - suf                   # 1-based last changed old row
+        # Statement range [i0, i1) covers the changed rows - every span in
+        # the region must be known, and the edit must not reach into the
+        # module header (i0 == 0 file-start) or past the last statement.
+        i0 = None
+        for i, (s0, e0) in enumerate(table):
+            if s0 is None:
+                continue
+            if e0 >= first_row:
+                i0 = i
+                break
+        if not i0:                            # None or 0: header-adjacent
+            if (i0 == 0 and len(table) == 1
+                    and isinstance(old_mod.body[0], cst.FunctionDef)):
+                # A function edited in its own span host: one top-level
+                # statement - splice INSIDE the def instead.
+                return _funcdef_span_incremental(
+                    prev_gp, old_mod, a, b, pre, suf, new_src)
+            return _inc_fallback("first-stmt-or-header")
+        i1 = i0
+        while i1 < len(table):
+            s1, e1 = table[i1]
+            if s1 is None:
+                return _inc_fallback("unplaced-stmt")
+            if s1 > last_row:
+                break
+            i1 += 1
+        if i1 == i0:
+            i1 = i0 + 1     # gap-only edit: the tail is the next stmt's leading lines
+
+        def _stmt_text_start(idx):
+            # 0-based line index where statement idx's LIBCST text begins. The ast
+            # span starts on the code line, but libcst attaches the preceding
+            # blank/comment lines to the node as leading_lines - the true
+            # inter-statement boundary lies above them (an ast-end boundary
+            # would leave those lines in BOTH the region and the kept node,
+            # duplicating them on merge).
+            s0 = table[idx][0]
+            if s0 is None:
+                return None
+            return s0 - 1 - len(old_mod.body[idx].leading_lines)
+
+        old_lo = _stmt_text_start(i0)
+        if old_lo is None or old_lo < 0:
+            return _inc_fallback("bad-region-start")
+        if i1 < len(table):
+            old_hi_excl = _stmt_text_start(i1)   # 0-based exclusive region end
+            if old_hi_excl is None:
+                return _inc_fallback("unplaced-next-stmt")
+        else:
+            old_hi_excl = na                     # region runs to end of file
+        if last_row > old_hi_excl or old_lo >= old_hi_excl:
+            return _inc_fallback("footer-or-degenerate")
+        new_hi = old_hi_excl + delta             # exclusive 0-based end, new text
+        if new_hi <= old_lo or new_hi > nb:
+            return _inc_fallback("bounds")
+        region_lines = b[old_lo:new_hi]
+        region_text = "\n".join(region_lines)
+        if len(region_text) > _INC_CST_MAX_REGION:
+            return _inc_fallback("region-too-big")
+        if new_hi < nb:
+            region_text += "\n"
+        try:
+            region_mod = cst.parse_module(region_text)
+        except cst.ParserSyntaxError:
+            # Same hold as the span path: broken region → nothing derivable
+            # from a full parse either; serve the previous gp and let the
+            # integrity check report the failure.
+            notify("cst merge: held last-good (region unparseable)",
+                   tint=(1.0, 0.65, 0.2), tag="cst")
+            return prev_gp
+        # Basic fidelity gate: the region itself must be lossless standalone
+        # (a region whose text leaks into module body/footer would drift).
+        if region_mod.code != region_text:
+            return _inc_fallback("region-not-lossless")
+        region_body = list(region_mod.body)
+        if not region_body:
+            return _inc_fallback("empty-region")
+        # The region's leading gap lines (blanks/comments before its first
+        # statement) parse into Module.header - a body-only splice would lose
+        # them. Fold them into the first statement's leading_lines (both are
+        # EmptyLineNodes). Symmetrically, region tail lines that parse
+        # into Module.footer fold into the NEXT kept statement's leading
+        # lines (or the module footer when the region runs to end of file).
+        # Any mis-attribution these folds could cause fails the full-text
+        # verification below and falls back to the full parse.
+        if region_mod.header:
+            region_body[0] = region_body[0].with_changes(
+                leading_lines=list(region_mod.header)
+                + list(region_body[0].leading_lines))
+        tail_body = list(old_mod.body[i1:])
+        if region_mod.footer and i1 < len(table):
+            if not tail_body:
+                return _inc_fallback("footer-no-home")
+            tail_body[0] = tail_body[0].with_changes(
+                leading_lines=list(region_mod.footer)
+                + list(tail_body[0].leading_lines))
+        new_body = list(old_mod.body[:i0]) + region_body + tail_body
+        if i1 < len(table):
+            new_mod = old_mod.with_changes(body=new_body)
+        else:
+            new_mod = old_mod.with_changes(body=new_body,
+                                           footer=region_mod.footer)
+        if getattr(Toggles.TextEditor, "verify_incremental_cst", True):
+            if new_mod.code != new_src:
+                return _inc_fallback("verify-mismatch")
+        region_gp = cst_module_to_dict(region_mod)
+        if not isinstance(region_gp, GeneralParse):
+            return _inc_fallback("region-convert-failed")
+        rc = getattr(region_gp, "_stmt_key_counts", None)
+        rt = getattr(region_gp, "_stmt_lines", None)
+        if rc is None or rt is None:
+            return _inc_fallback("region-tables-missing")
+        k0, k1, total_old = counts[i0], counts[i1], counts[-1]
+        old_keys = list(prev_gp.keys())
+        region_total = rc[-1]
+        region_keys = [k for k in list(region_gp.keys())[:region_total]]
+        # Assemble the merge plan first; any collision → fall back (dict
+        # re-assignment would silently keep the FIRST position and scramble
+        # statement order downstream).
+        before_keys = old_keys[:k0]
+        after_keys = old_keys[k1:total_old]
+        tail_keys = old_keys[total_old:]
+        plan = before_keys + region_keys + after_keys + tail_keys
+        if len(set(map(id, plan))) != len(plan):
+            return _inc_fallback("key-collision-id")
+        seen_names = set()
+        for k in plan:
+            if isinstance(k, str):
+                if k in seen_names:
+                    return _inc_fallback("key-collision-name")
+                seen_names.add(k)
+        # ── build (no fallback past this point mutates shared data yet) ──
+        merged = GeneralParse(source=new_src)
+        for attr in ("file_path", "line_offset"):
+            if hasattr(prev_gp, attr):
+                setattr(merged, attr, getattr(prev_gp, attr))
+        merged.span = Span(1, 0, nb, 0)
+        merged._inc_depth = depth + 1
+        for k in before_keys:
+            merged[k] = prev_gp[k]
+        for k in region_keys:
+            merged[k] = region_gp[k]
+        for k in after_keys:
+            merged[k] = prev_gp[k]
+        for k in tail_keys:
+            merged[k] = new_mod if k == "__cst__" else prev_gp[k]
+        if "__cst__" not in merged:
+            merged["__cst__"] = new_mod
+        # child-span map recombined from both sources (before/after entries
+        # share Span objects with the previous subtrees - the shift walk's
+        # visited set keeps each only once)
+        prev_cs = getattr(prev_gp, "_child_spans", None) or {}
+        region_cs = getattr(region_gp, "_child_spans", None) or {}
+        merged_cs = {}
+        for k in before_keys + after_keys:
+            if k in prev_cs:
+                merged_cs[k] = prev_cs[k]
+        for k in region_keys:
+            if k in region_cs:
+                merged_cs[k] = region_cs[k]
+        if merged_cs:
+            merged._child_spans = merged_cs
+        # statement tables for the NEXT merge
+        len_r = len(rt)
+        merged._stmt_lines = (
+            table[:i0]
+            + [((s0 + old_lo, e0 + old_lo) if s0 is not None else (None, None))
+               for (s0, e0) in rt]
+            + [((s0 + delta, e0 + delta) if s0 is not None else (None, None))
+               for (s0, e0) in table[i1:]])
+        merged._stmt_key_counts = (
+            counts[:i0]
+            + [k0 + c for c in rc[:-1]]
+            + [k0 + region_total + (c - k1) for c in counts[i1:]])
+        # ── span shifts (in place; shared state - visited-set guarded) ──
+        _shift_gp_spans([region_gp[k] for k in region_keys if k in region_gp],
+                        [region_cs[k] for k in region_keys if k in region_cs],
+                        old_lo)
+        _shift_gp_spans([prev_gp[k] for k in after_keys if k in prev_gp],
+                        [prev_cs[k] for k in after_keys if k in prev_cs],
+                        delta)
+        return merged
+    except Exception as _e:
+        return _inc_fallback(f"exception:{type(_e).__name__}")
 
 
 @register
@@ -6896,7 +7490,41 @@ def _cst_to_python(node):
     return _UNREADABLE
 
 
+_inc_memo = threading.local()
+
+
 def _cst_to_python_or_raw(node):
+    """Memo shim over _cst_to_python_or_raw_impl — active only during the
+    incremental span reconvert (_funcdef_span_incremental). Statements kept
+    across the body splice are the SAME node objects, so their converted
+    values are reused by identity instead of re-derived (the dominant cost of
+    re-extracting a big function). On a hit the value's spans re-anchor to
+    the node's CURRENT position from the fresh position map, so line shifts
+    below an edit come out right without a separate pass."""
+    pair = getattr(_inc_memo, "pair", None)
+    if pair is None:
+        return _cst_to_python_or_raw_impl(node)
+    old_m, new_m = pair
+    hit = old_m.get(id(node))
+    if hit is not None and hit[0] is node:
+        val = hit[1]
+        new_m[id(node)] = hit
+        if isinstance(val, dict):
+            fresh = _span_of(node)
+            stale = getattr(val, "span", None)
+            if fresh is not None and isinstance(stale, Span):
+                d = fresh.start_line - stale.start_line
+                if d:
+                    _shift_gp_spans([val], [], d)
+            elif fresh is not None:
+                val.span = fresh
+        return val
+    val = _cst_to_python_or_raw_impl(node)
+    new_m[id(node)] = (node, val)
+    return val
+
+
+def _cst_to_python_or_raw_impl(node):
     """Like _cst_to_python, but returns the raw source code string
     instead of _UNREADABLE.
 

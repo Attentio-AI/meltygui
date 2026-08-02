@@ -58,6 +58,8 @@ import sys
 import time
 import types
 
+from src.lsd.gl_gui.notifications import lag_traced
+
 # Names every module/frame sees without a visible binding.
 _BUILTIN_NAMES = frozenset(dir(builtins)) | {
     "__file__", "__name__", "__doc__", "__package__", "__spec__",
@@ -875,6 +877,7 @@ _file_binds_cache = {}   # str(path) -> (mtime_ns, pending_gen, binds, mono_ts)
 _FILE_BINDS_MIN_INTERVAL_S = 1.0
 
 
+@lag_traced("module-binds parse", 30)
 def _module_text_binds(path):
     """Module-scope names the file's CURRENT text binds — pending-save
     inclusive, so an import removed (or added) in an unsaved edit changes the
@@ -899,6 +902,17 @@ def _module_text_binds(path):
             (hit[0] == st.st_mtime_ns and hit[1] == gen)
             or now - hit[3] < _FILE_BINDS_MIN_INTERVAL_S)
 
+    def _reusable(hit, new_text):
+        # Diff-based shortcut (an incremental import-scan fix): a stale-by-gen
+        # hit whose cached TEXT differs from the new pending text only
+        # inside def/class bodies can't change its MODULE-scope binds -
+        # skip the O(file) ast parse (~60ms on a 340KB file, observed on the
+        # render thread) and keep the set. Text rides in the cache entry
+        # (index 4; older 4-tuples predate this and never reuse).
+        return (hit is not None and len(hit) > 4 and hit[2] is not None
+                and hit[4] is not None and new_text is not None
+                and _binds_unchanged(hit[4], new_text))
+
     gen = 0
     text = None
     key = str(path)
@@ -912,6 +926,9 @@ def _module_text_binds(path):
         if _fresh(hit):
             return hit[2]
         text = PendingSave.current_file_text(rp)
+        if _reusable(hit, text):
+            _file_binds_cache[key] = (st.st_mtime_ns, gen, hit[2], now, text)
+            return hit[2]
     except Exception:
         hit = _file_binds_cache.get(key)
         if _fresh(hit):
@@ -921,6 +938,9 @@ def _module_text_binds(path):
                 text = f.read()
         except OSError:
             text = None
+        if _reusable(hit, text):
+            _file_binds_cache[key] = (st.st_mtime_ns, gen, hit[2], now, text)
+            return hit[2]
     binds = None
     if text is not None:
         try:
@@ -944,8 +964,44 @@ def _module_text_binds(path):
                 binds = frozenset(binds)
         except (SyntaxError, ValueError, RecursionError, TypeError):
             binds = None
-    _file_binds_cache[key] = (st.st_mtime_ns, gen, binds, now)
+    _file_binds_cache[key] = (st.st_mtime_ns, gen, binds, now, text)
     return binds
+
+
+def _binds_unchanged(old_text, new_text):
+    """True when the old→new edit provably can't change MODULE-scope binds:
+    every changed line (both sides of the diff) is blank/comment or indented,
+    contains no import/global statement, and the enclosing column-0 block is
+    a def/class/decorator — whose interior binds function or class scope, not
+    module scope. An edit inside a module-level `if:`/`try:` block (indented
+    yet module-scope) fails the header check and re-parses. Conservative by
+    construction: any doubt → False → the full parse runs."""
+    if old_text is new_text or old_text == new_text:
+        return True
+    a = old_text.split("\n")
+    b = new_text.split("\n")
+    na, nb = len(a), len(b)
+    pre = 0
+    m = min(na, nb)
+    while pre < m and a[pre] == b[pre]:
+        pre += 1
+    suf = 0
+    while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
+        suf += 1
+    lo, hi = pre, nb - suf
+    for ln in b[lo:hi] + a[lo:na - suf]:
+        s = ln.lstrip()
+        if not s or s.startswith("#"):
+            continue
+        if ln[0] not in " \t":
+            return False                    # a top-level line changed
+        if s.startswith(("global ", "import ", "from ")):
+            return False
+    start = min(lo, nb - 1)
+    while start > 0 and (not b[start] or b[start][0] in " \t"):
+        start -= 1
+    head = b[start].lstrip() if 0 <= start < nb else ""
+    return head.startswith(("def ", "async def ", "class ", "@"))
 
 
 def _buffer_bound_names(text):
@@ -1071,7 +1127,18 @@ _inc_scan_state = {}
 _INC_MAX_REGION_CHARS = 4096
 
 
-def collect_import_suggestions(text, path=None, full=False):
+def has_scan_state(path):
+    """True when a background pass already warmed `path`'s incremental scan
+    state — the editor's per-keystroke fast path (text_editor.py) probes this
+    before calling collect_import_suggestions on the RENDER thread: a warm
+    incremental step is O(changed region) (~0.4ms), but a path's FIRST scan is
+    O(buffer tokenize + module-binds parse) and belongs on a worker."""
+    return path is not None and str(path) in _inc_scan_state
+
+
+@lag_traced("import scan", 30)
+def collect_import_suggestions(text, path=None, full=False,
+                               incremental_only=False):
     """{1-based line: [import statements]} for every symbol the buffer USES
     but nothing binds — the editor's Alt+Enter quick-fix data, a SEPARATE
     channel from the error lint. Tokenize-based, so it works mid-edit (a
@@ -1083,7 +1150,12 @@ def collect_import_suggestions(text, path=None, full=False):
     are shifted, not recomputed — so a keystroke costs O(changed region),
     never O(buffer). `full=True` (the relint path — the file's import block
     may have changed) and structural cases (first scan, big paste, edits
-    inside triple-quoted strings, tokenizer trouble) run the whole pass."""
+    inside triple-quoted strings, tokenizer trouble) run the whole pass.
+
+    `incremental_only=True` (the editor's render-thread fast path on large
+    buffers) returns None instead of running that O(buffer) full pass — the
+    caller falls back to the debounced background channel, whose next run
+    re-warms the state here."""
     key = str(path) if path else None
     st = _inc_scan_state.get(key) if key else None
     if not full and st is not None:
@@ -1095,6 +1167,8 @@ def collect_import_suggestions(text, path=None, full=False):
             if key:
                 _inc_scan_state[key] = inc
             return inc["result"]
+    if incremental_only:
+        return None
     bound = _buffer_bound_names(text)
     result = _scan_slice(text, 0, bound, path)
     if key:
@@ -1163,6 +1237,114 @@ def _incremental_scan(st, old, text, path):
 
 # ── entry point ──────────────────────────────────────────────────────────────
 
+# Incremental lint state, one entry per (path, mode): the last linted text and
+# its findings. Two buffers sharing a path (a file class + a mid-file view)
+# degrade to full re-lints on each swap - never wrong, just slower.
+_inc_lint_state = {}
+
+# An edited block larger than this skips its region re-lint (findings inside it
+# go stale until the next full pass) - the point of the incremental path is
+# bounding worker GIL-hold, so a monster block must not sneak an O(n)-
+# scale pass back in.
+_INC_LINT_REGION_CHARS = 64 * 1024
+
+
+def _changed_block_bounds(a, b):
+    """The edited region of line-lists `a` → `b`, expanded to enclosing
+    top-level block(s) (nearest column-0 lines — the same expansion the
+    editor's region compile uses). Returns (start, end_new, end_old, delta),
+    all 0-based with exclusive ends, or None when the texts are line-identical."""
+    na, nb = len(a), len(b)
+    pre = 0
+    m = min(na, nb)
+    while pre < m and a[pre] == b[pre]:
+        pre += 1
+    if pre == na and pre == nb:
+        return None
+    suf = 0
+    while suf < (na - pre) and suf < (nb - pre) and a[na - 1 - suf] == b[nb - 1 - suf]:
+        suf += 1
+    lo, hi = pre, nb - suf
+    start = min(lo, nb - 1)
+    while start > 0 and (not b[start] or b[start][0] in " \t"):
+        start -= 1
+    end = hi
+    while end < nb and (not b[end] or b[end][0] in " \t"):
+        end += 1
+    return start, end, end + (na - nb), nb - na
+
+
+@lag_traced("incremental lint", 30)
+def check_source_incremental(text, path=None, only_missing_imports=False):
+    """check_source, O(edited block) per call: diff against the last linted
+    text, keep findings outside the edited top-level block (shifted by the
+    line delta), and re-lint only the block itself.
+
+    Region lint is sound here for the same reason SPAN lint is: check_source
+    with `path` resolves names through the live module namespace and the
+    pending-file binds (_module_text_binds), so a lone block from mid-file
+    sees its module's imports and sibling definitions instead of flagging
+    them. A block that doesn't parse (mid-edit) reports [] for the region —
+    errs silent, the next clean edit re-lints it.
+
+    Trade-offs vs the full pass: a binding added/removed OUTSIDE the edited
+    block doesn't re-verify findings elsewhere, and an over-sized block
+    (>_INC_LINT_REGION_CHARS) keeps its stale findings. The first call per
+    (path, mode) pays one full pass to seed the state."""
+    key = (str(path) if path else None, bool(only_missing_imports))
+    st = _inc_lint_state.get(key)
+    if st is None:
+        findings = check_source(text, path=path,
+                                only_missing_imports=only_missing_imports)
+        # The buffer-wide bound-name set suppresses region findings about
+        # names DEFINED IN OTHER BLOCKS of this buffer: a lone block can't
+        # see them itself, and the live-module fallback only covers files
+        # actually loaded in this process. _buffer_bound_names deliberately
+        # over-approximates (a wrongly-suppressed finding beats a false
+        # alarm). Grow it, using the import scanner's bound set.
+        _inc_lint_state[key] = {"text": text, "findings": findings,
+                                "binds": _buffer_bound_names(text)}
+        return findings
+    old = st["text"]
+    if old is text or old == text:
+        return st["findings"]
+    bounds = _changed_block_bounds(old.split("\n"), text.split("\n"))
+    if bounds is None:
+        st["text"] = text
+        return st["findings"]
+    start, end, end_old, delta = bounds
+    # Old-text region rows are start+1 .. end_old (1 based): findings above
+    # keep their line, findings below shift by the edit line delta, findings
+    # inside are re-derived from the fresh region lint.
+    kept = [(ln, msg) if ln <= start else (ln + delta, msg)
+            for ln, msg in st["findings"]
+            if ln <= start or ln > end_old]
+    region = "\n".join(text.split("\n")[start:end])
+    if len(region) <= _INC_LINT_REGION_CHARS:
+        binds = st.get("binds")
+        if binds is None:                     # state predates the binds field
+            binds = st["binds"] = _buffer_bound_names(old)
+        binds |= _buffer_bound_names(region)
+        try:
+            for ln, msg in check_source(region, path=path,
+                                        only_missing_imports=only_missing_imports):
+                # Name-shape findings about a name some OTHER block in this
+                # buffer binds are cross-block artifacts - drop them. Other
+                # finding shapes (signature/attr) pass through untouched.
+                if msg.startswith("name '"):
+                    _nm = msg[6:msg.find("'", 6)]
+                    if _nm in binds:
+                        continue
+                kept.append((ln + start, msg))
+        except Exception:
+            pass
+        kept.sort(key=lambda f: f[0])
+    _inc_lint_state[key] = {"text": text, "findings": kept,
+                            "binds": st.get("binds")}
+    return kept
+
+
+@lag_traced("check_source (lint)", 50)
 def check_source(text, path=None, max_reports=40, only_missing_imports=False):
     """[(line, message)] for problems that would survive compile() but blow up
     at run time. Empty list when clean — or when the buffer isn't checkable

@@ -10,6 +10,8 @@ parameters on forward converters. Save handlers (recompile_fn, etc.)
 are used as save_data parameters on reverse converters.
 """
 import builtins
+from src.lsd.gl_gui.notifications import lag_traced
+
 import dis
 import inspect
 import json
@@ -548,6 +550,7 @@ def _validate_local_names(code) -> None:
             _validate_local_names(const)
 
 
+@lag_traced("recompile fn (hotswap)", 50)
 def _recompile(func: types.FunctionType, source: str,
                filename: str) -> None:
     dedented = textwrap.dedent(source)
@@ -688,6 +691,7 @@ def _exec_file_imports(filename: str, namespace: dict) -> None:
                 pass
 
 
+@lag_traced("recompile class (hotswap)", 50)
 def _recompile_class(cls: type, source: str, filename: str) -> None:
     import sys
     dedented = textwrap.dedent(source)
@@ -741,6 +745,7 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     return None
 
 
+@lag_traced("recompile module (hotswap)", 50)
 def _recompile_module(module: types.ModuleType, source: str,
                       filename: str) -> None:
     old_attrs = dict(module.__dict__)

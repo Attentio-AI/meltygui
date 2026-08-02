@@ -28,6 +28,7 @@ import weakref
 import imgui
 from imgui.core import _DrawList
 
+from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
@@ -239,7 +240,17 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             name=f"{label}##lv::{_store_name(store_obj)}::"
                  f"{'/'.join(key_path)}",
             mode=Modes.LIVE_WINDOW, closed=not open_now,
-            with_header=draw_header, disable_scroll=True, return_extras=True)
+            with_header=draw_header, disable_scroll=True, return_extras=True,
+            # Anchor like a context menu: pinned to the marker, so the window
+            # tracks it live and takes the pinned base's clamp - it rides the
+            # code only as far as the editor window's edges instead of
+            # chasing the marker off screen. (Swoosh style, alone: these
+            # get the ribbon.) Both anchors are TOP_LEFT so the pinned base is
+            # the marker's top-left - exactly what the window_pos offsets below
+            # are measured from. hide_offscreen=False keeps it drawn once the
+            # marker itself scrolls away: the window is what keeps it on screen.
+            pin_to_clip=Pin.PARENT, anchor=Anchor.TOP_LEFT,
+            parent_anchor=Anchor.TOP_LEFT, hide_offscreen=False)
         # First creation: place the window to the RIGHT of the editor's
         # window rather than on top of the code. window_pos persists on the
         # spawned window's draw_state (parent-relative, so it tracks the

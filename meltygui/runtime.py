@@ -2391,7 +2391,14 @@ class Melty:
         from "cached". abs_left/abs_top (and so abs_clip_rect) are computed
         live off the persistent draw_state — ancestor scroll included —
         regardless of how (or whether) the parent was drawn this frame, so
-        an empty visible rect means exactly "the spawner is out of sight"."""
+        an empty visible rect means exactly "the spawner is out of sight".
+
+        `hide_offscreen=False` skips the window's OWN spawner test (the parent
+        -window chain below still applies): pinned windows whose anchor is a
+        tiny inline token — live-view value windows — would hide the moment
+        that token scrolled past the viewport edge. They rely on the pinned
+        -branch clamp in DrawState._pinned_base_y instead: the window rides the
+        token up, stops with its bottom at its window's top, stays reachable."""
         # The floating DnD window rides the cursor and must survive its
         # source view auto-scrolling out from under the drag.
         try:
@@ -2402,7 +2409,8 @@ class Melty:
             pass
 
         parent = ds._parent
-        if parent is not None and parent is not ds:
+        opted_out = getattr(ds, '_kwargs', {}).get("hide_offscreen", True) is False
+        if parent is not None and parent is not ds and not opted_out:
             anchor = getattr(parent, '_offset_ds', None)
             if anchor is None:
                 anchor = parent
@@ -2444,6 +2452,11 @@ class Melty:
         # cache and re-register on reopen.
         from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
         RenderHost.sweep()
+
+        # Deliberate GC scheduling - deferred gen2 + freeze + idle collects
+        # (see gc_manager module docstring). Toggles.GC-gated inside.
+        from src.lsd.gl_gui import gc_manager
+        gc_manager.tick()
 
         cls.apply_refresh_nested_windows()
         # Reset overlay routing to the top (global, unmasked) channel so
