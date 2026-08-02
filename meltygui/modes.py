@@ -92,6 +92,7 @@ class _Modes:
     MODE_WINDOW = _LazyMode("MODE_WINDOW")
     RUNNING = _LazyMode("RUNNING")
     SORT = _LazyMode("SORT")
+    TEXT = _LazyMode("TEXT")
     WINDOW = _LazyMode("WINDOW")
     WINDOW_AUTO_FIT = _LazyMode("WINDOW_AUTO_FIT")
     WINDOW_CLEAN = _LazyMode("WINDOW_CLEAN")

@@ -19,6 +19,7 @@ import re as _re
 import textwrap
 import time
 import types
+from enum import EnumMeta
 from importlib import reload
 
 from pathlib import Path
@@ -77,6 +78,14 @@ def _snapshot_class(cls: type) -> type:
             members[name] = type(val)(clone)
         else:
             members[name] = val
+    # Enum members are shared BY IDENTITY across the app and are patched IN
+    # PLACE by _reconcile_enum_members (see there) - so the plain alias stored
+    # here is NOT a snapshot: it's the same object, and it will already carry
+    # the new value by the time a rollback runs. Snapshot their state instead;
+    # _hotswap_class recognises this key as the rollback direction.
+    if isinstance(cls, EnumMeta):
+        members["_enum_member_state_"] = {
+            name: dict(vars(m)) for name, m in cls.__members__.items()}
     return type(f"_snapshot_{cls.__name__}", (), members)
 
 
@@ -837,10 +846,18 @@ def _recompile_module(module: types.ModuleType, source: str,
                     invalidate_address_cache(o)
                 _member_restores.append(_restore_cls)
 
+                # Rebind the module attr to the LIVE class FIRST. The exec left
+                # the throwaway bound there, and the patch below can run code
+                # that accesses the that state - a Modes._LazyMode resolving
+                # `Mode[...]` during the enum reconcile latched a member of the
+                # throwaway and cached it forever (the mode edit then applied
+                # everywhere EXCEPT views holding a lazy handle). old_obj is
+                # what the binding ends up as regardless, so moving it up is
+                # free and closes the window for every hotswappable class.
+                module.__dict__[name] = old_obj
                 _hotswap_class(old_obj, new_obj)
                 _redirect_class_registrations(old_obj, new_obj)
                 invalidate_address_cache(old_obj)
-                module.__dict__[name] = old_obj
                 new_code_ids |= _class_code_objects(new_obj)
     except Exception as e:
         # Roll back to old attributes on error
@@ -865,8 +882,21 @@ def _recompile_module(module: types.ModuleType, source: str,
         Melty.cache.invalidate_up_by_func(fn, max_depth=10)
 
 
+# An enum's member bookkeeping. These are ordinary (non-dunder) class attrs, so
+# the class attribute loop happily setattrs the THROWAWAY class's version over
+# them - this silently repoints `_member_map_` at the new member objects while
+# the class dict keeps the old ones (EnumMeta refuses to reassign a member).
+# `Mode.TEXT` then resolves to the stale member forever. _reconcile_enum_members
+# owns these; the loop must leave them alone.
+_ENUM_INTERNALS = frozenset({
+    "_member_map_", "_member_names_", "_value2member_map_",
+    "_unhashable_values_", "_member_type_", "_value_repr_",
+})
+
+
 def _hotswap_class(old_cls: type, new_cls: type) -> None:
     """Patch an existing class in place with new methods and attributes."""
+    _is_enum = isinstance(old_cls, EnumMeta)
     # NOTE: do NOT invalidate the address cache here.  The caller
     # (recompile_cls_fn) handles cache updates via update_address_cache.
     # Invalidating here creates a race window where a concurrent
@@ -893,6 +923,8 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
         # e.g. _LazyMode) puts it in vars(); setattr(old_cls, '__class__', prop)
         # then raises "must be set to a class". Never patch it in place.
         if name in ("__dict__", "__weakref__", "_instances", "__class__"):
+            continue
+        if _is_enum and name in _ENUM_INTERNALS:
             continue
 
         old_val = vars(old_cls).get(name)
@@ -939,6 +971,155 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
                 setattr(old_cls, name, new_val)
             except (AttributeError, TypeError):
                 pass
+
+    # AFTER the attribute loop: an edited enum __init__ (Mode's, which derives
+    # `unwrapped` from the value) is patched above, and the member state copied
+    # below was produced by the NEW body running under it.
+    if isinstance(old_cls, EnumMeta):
+        _reconcile_enum_members(old_cls, new_cls)
+
+
+def _is_empty_value(value) -> bool:
+    """An empty container — the shape a member has before module-level code
+    populates it (see the class-route guard in _reconcile_enum_members)."""
+    return isinstance(value, (dict, list, tuple, set, frozenset, str)) and not value
+
+
+def _reconcile_enum_members(old_cls: type, new_cls: type) -> None:
+    """Refresh a live enum's MEMBERS after its class body was recompiled.
+
+    Enum members are shared by identity, not by copy: `Mode.CODE_UI` is ONE
+    object that every view, draw_state kwarg (`current_mode`) and Modes handle
+    holds a reference to. `_hotswap_class`'s normal attribute loop can't touch
+    them — EnumMeta.__setattr__ refuses to reassign a member ("cannot reassign
+    member"), so the setattr silently lands in its except and the recompiled
+    values never reach the app. That's why editing mode.py used to need a
+    restart even though the swap reported success.
+
+    Rather than swap in the throwaway class's members (which would strand every
+    reference already held), the EXISTING member objects are mutated in place:
+    each keeps its identity and simply starts reporting the new `_value_` (plus
+    whatever the enum's `__init__` derived from it — `Mode.unwrapped`). Every
+    holder therefore sees the edit with no per-view update at all.
+
+    Members ADDED by the edit are constructed onto the live class (the enum
+    registries have to be extended by hand — EnumMeta only builds them at class
+    creation). Members REMOVED are left in place: something in the app may still
+    hold one, and a dangling reference is worse than a stale one.
+
+    `new_cls` may also be a `_snapshot_class` clone carrying `_enum_member_state_`
+    — the rollback direction, restoring the pre-swap state the same way.
+    """
+    snapshot = getattr(new_cls, "_enum_member_state_", None)
+    if isinstance(snapshot, dict):
+        new_state = snapshot
+    elif isinstance(new_cls, EnumMeta):
+        new_state = {name: dict(vars(m)) for name, m in new_cls.__members__.items()}
+    else:
+        return
+
+    changed = []
+    added = []
+    for name, state in new_state.items():
+        old_m = old_cls.__members__.get(name)
+        if old_m is None:
+            added.append((name, state))
+            continue
+        # `state` is the full copy of the fresh member's __dict__ (_name_,
+        # _value_, and whatever the enum's __init__ derived - Mode.unwrapped),
+        # so replacing wholesale also drops attrs the new body stopped setting.
+        # EXCEPT when the copied member is empty and the live one isn't: a
+        # CLASS-route recompile (`_recompile_class`) re-runs only the class
+        # BODY, so anything module-level code filled in afterwards is missing.
+        # Mode.CODE is literally `CODE = {}` in the body, populated below the
+        # in by _populate_code_mode() - into `unwrapped`, not the dict - and
+        # a wholesale copy blanks it. Empty-over-nonempty is never a change
+        # worth applying; genuinely emptying a member needs a restart.
+        merged = dict(state)
+        for key, live_val in vars(old_m).items():
+            if _is_empty_value(merged.get(key)) and not _is_empty_value(live_val):
+                merged[key] = live_val
+        if vars(old_m) == merged:
+            continue
+        old_m.__dict__.clear()
+        old_m.__dict__.update(merged)
+        # ...except __objclass__, which the copied state points at the
+        # throwaway class. The member belongs to the LIVE class.
+        old_m.__objclass__ = old_cls
+        changed.append(old_m)
+
+    for name, state in added:
+        try:
+            member = object.__new__(old_cls)
+            member.__dict__.update(state)
+            member._name_ = name
+            member.__objclass__ = old_cls
+            # type.__setattr__ bypasses EnumMeta's "cannot reassign member"
+            # guard, which also blocks the initial ASSIGNMENT of a new one.
+            type.__setattr__(old_cls, name, member)
+            old_cls._member_map_[name] = member
+            if name not in old_cls._member_names_:
+                old_cls._member_names_.append(name)
+            changed.append(member)
+        except Exception as e:
+            print(f"[hotswap] could not add enum member {old_cls.__name__}.{name}: {e}")
+
+    if not changed:
+        return
+    # Value lookup (Mode(value)) indexes members by value at class creation.
+    # Mode's values are dicts - unhashable - so the map only ever holds the
+    # hashable ones and py3.12 keeps the rest in _unhashable_values_ for
+    # _missing_ to scan; rebuild both from the current state.
+    try:
+        old_cls._value2member_map_ = {}
+        unhashable = [] if hasattr(old_cls, "_unhashable_values_") else None
+        for m in old_cls.__members__.values():
+            try:
+                old_cls._value2member_map_[m._value_] = m
+            except TypeError:
+                if unhashable is not None:
+                    unhashable.append(m._value_)
+        if unhashable is not None:
+            old_cls._unhashable_values_ = unhashable
+    except Exception as e:
+        print(f"[hotswap] enum value map rebuild failed for {old_cls.__name__}: {e}")
+
+    _invalidate_views_using_members(changed)
+
+
+def _invalidate_views_using_members(members) -> None:
+    """Repaint the views a just-changed enum member drives.
+
+    The member objects kept their identity, so nothing in the app knows their
+    config moved — cached tiles keep blitting pixels drawn from the OLD mode.
+    The wrapper stamps the active mode onto each view's kwargs
+    (`current_mode`, or `mode` for the recursive variant), so the cache's own
+    draw_state table is the complete list of affected views: one scan, no
+    per-view bookkeeping anywhere else.
+    """
+    cache = getattr(Melty, "cache", None)
+    table = getattr(cache, "key_to_draw_state", None)
+    if not table:
+        return
+    # Enum members hash/compare by identity, and every Modes._LazyMode handle
+    # forwards both to the member it resolves to, so a kwarg holding either
+    # spelling matches.
+    targets = set(members)
+    for ds in list(table.values()):
+        kwargs = getattr(ds, "_kwargs", None)
+        if not kwargs:
+            continue
+        for key in ("current_mode", "mode"):
+            mode = kwargs.get(key)
+            if mode is None:
+                continue
+            try:
+                hit = mode in targets
+            except Exception:
+                hit = False
+            if hit:
+                ds.invalidate_up(max_depth=6)
+                break
 
 
 def _redirect_class_registrations(old_cls: type, new_cls: type) -> None:

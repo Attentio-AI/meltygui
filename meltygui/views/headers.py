@@ -370,15 +370,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # the tint widget: one loop for every source, set_anywhere on write.)
     _overrides = input_value.get("__overrides__") if isinstance(input_value, dict) else None
 
-    # ── Anywhere tint swatch (outlined) ── the set_anywhere loop beside the
-    # legacy chain above: reads the framework-resolved tint
-    # (draw_state._kwargs, in-flight cache included) and writes back to
-    # whichever source DRIVES it — code, comment, decoration, instance attr.
-    # Outlined so the two widgets read apart while both exist; the legacy
-    # chain goes away once this proves out.
-    from src.lsd.gl_gui.view.core_views.anywhere import (
-        anywhere_value, set_anywhere, get_source_for)
-    _aw_tint = anywhere_value("tint", draw_state)
+    # ── Anywhere tint swatch (outlined) ── one attribute, both directions:
+    # `draw_state.locate_tint` READS the framework-resolved tint
+    # (draw_state._kwargs, in-flight cache included) and ASSIGNING it writes
+    # back to whichever source DRIVES it — code, comment, decoration,
+    # instance attr. (The property pair lives in anywhere.py; this is its
+    # first caller.) Outlined so the swatch reads apart from the labels.
+    from src.lsd.gl_gui.view.core_views.anywhere import get_source_for
+    _aw_tint = draw_state.locate_tint
 
     def _aw_source_info(_ds=draw_state):
         # Popover caption: the LAST-KNOWN driving source. Reads the cache
@@ -409,7 +408,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             _aw_tint, show_name=False, show_header=False,
             name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
-            set_anywhere("tint", _aw_val, draw_state)
+            draw_state.locate_tint = _aw_val
         same_line()
 
     # ── Add button ─────────────────────────────────────────────
@@ -682,15 +681,14 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # the tint widget: one loop for every source, set_anywhere on write.)
     _overrides = input_value.get("__overrides__") if isinstance(input_value, dict) else None
 
-    # ── Anywhere tint swatch (outlined) ── the set_anywhere loop beside the
-    # legacy chain above: reads the framework-resolved tint
-    # (draw_state._kwargs, in-flight cache included) and writes back to
-    # whichever source DRIVES it — code, comment, decoration, instance attr.
-    # Outlined so the two widgets read apart while both exist; the legacy
-    # chain goes away once this proves out.
-    from src.lsd.gl_gui.view.core_views.anywhere import (
-        anywhere_value, set_anywhere, get_source_for)
-    _aw_tint = anywhere_value("tint", draw_state)
+    # ── Anywhere tint swatch (outlined) ── one attribute, both directions:
+    # `draw_state.locate_tint` READS the framework-resolved tint
+    # (draw_state._kwargs, in-flight cache included) and ASSIGNING it writes
+    # back to whichever source DRIVES it — code, comment, decoration,
+    # instance attr. (The property pair lives in anywhere.py; this is its
+    # first caller.) Outlined so the swatch reads apart from the labels.
+    from src.lsd.gl_gui.view.core_views.anywhere import get_source_for
+    _aw_tint = draw_state.locate_tint
 
     def _aw_source_info(_ds=draw_state):
         # Popover caption: the LAST-KNOWN driving source. Reads the cache
@@ -714,7 +712,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             _aw_tint, show_name=False, show_header=False,
             name=f"aw_tint", info=_aw_source_info)
         if _aw_ch:
-            set_anywhere("tint", _aw_val, draw_state)
+            draw_state.locate_tint = _aw_val
         same_line()
 
     # ── Add button ─────────────────────────────────────────────

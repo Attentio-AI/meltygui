@@ -400,6 +400,42 @@ class Mode(Enum):
         ),
     }
 
+    # ── TEXT - reference mode for all mode-attached child kwargs ─────────
+    #
+    # A dict of strings: the dict entry draws the collection, the str entry
+    # sends each leaf by draw_text. The leaves' TEXT STYLE lives in this
+    # entry's child_kwargs - draw_collection merges child_kwargs into every
+    # recursive call, so line_height/wrap/syntax_highlight land in draw_text
+    # without every caller passing them.
+    #
+    # That is what the inputs tab's "child_kwargs (mode)" source row edits:
+    # open the tab on one of the string leaves and the row is backed by THIS
+    # enum, with the jump button pointing at the TEXT member below. A change
+    # round-trips through the Mode enum's code host straight back into
+    # mode.py - distinct from the plain "child_kwargs" row, which shows
+    # whichever NON-mode entry source (caller / @defaults) sets one.
+    #
+    # Live usage: tests/playground/mode_test_playground.py (draw_mode_test).
+    TEXT = {
+        dict: ModeOverrides(
+            kwargs={"show_bg": True, "use_cache": True, "show_header": True,
+                    "child_kwargs": {"line_height": 1.35,
+                                     "wrap": True,
+                                     "syntax_highlight": False,
+                                     'tint': (0.83, 0.359, 0.046)}},
+            recursive=True,
+        ),
+        str: ModeOverrides(
+            func=draw_text,
+            # Disjoint from child_kwargs above ON PURPOSE: mode kwargs win over
+            # call kwargs (`kwargs | override_kwargs`), so anything added here
+            # would shadow the child_kwargs entry and the source row would edit a
+            # value that never reaches the view.
+            kwargs={"use_cache": True, "show_header": True},
+            recursive=True,
+        ),
+    }
+
     # ── File tree / cache-backed code editor ────────────────────────────
     #
     # THE main editor mode: code_file_io + draw_text_from_code_cache, with

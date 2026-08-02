@@ -393,7 +393,7 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.417, 0.44, 0.47))
+@window(tint=(0.13, 0.14, 0.16))
 class Toggles:
 
     @defaults(tint=(0.59, 0.541, 0.474))
@@ -414,7 +414,7 @@ class Toggles:
         # fast_check_max_chars skip it and keep the debounced-only behavior.
         # No effect with check_syntax_errors off. Read live.
         fast_syntax_check = True
-        
+
         # Size cap for the fast path above: buffers larger than this skip the
         # inline per-keystroke compile() + import scan and stay on the
         # debounced background pass. compile() is O(buffer) on the render
@@ -743,7 +743,7 @@ class Toggles:
         # combine where they overlap. Applies in both the text editor (draw_text)
         # and collections (draw_collection rows). See view/core_views/search_glow.py.
 
-        @defaults(tint=(0.965, 0.6, 0.149))
+        @defaults(tint=(0.406, 0.30, 0.16))
         class ActiveElement:
             gradient_color = (0.86, 0.67, 0.23)   # RGB of the halo
             outline_color = (0.88, 0.56, 0.15)   # RGB of the optional cutout outline

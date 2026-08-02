@@ -459,3 +459,51 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None):
                 "start_frame": 0,
                 "buf": _cs.text_cache if _cs is not None else None}
     return target
+
+
+# ── draw_state.locate_<param> ────────────────────────────────────────────────
+# The ds_header tint set's two-line pattern (read anywhere_value, write
+# set_anywhere) as a plain attribute access on draw_state:
+#
+#     tint = draw_state.locate_tint          # framework-resolved value
+#     draw_state.locate_tint = (1, 0, 1, 1)  # writes to the DRIVING source
+#
+# ASYMMETRIC on purpose: the GETTER is just the resolved value (_kwargs, with
+# the in-flight set cache and the ds defaults anywhere_value already applies)
+# - no source collection, no parse, cheap enough to read per frame. Only the
+# SETTER runs the anywhere machinery: pick the driving source, write into its
+# parse dict, and drive the deferred save/hotswap.
+#
+# Installed as real properties (one per SET_ANYWHERE_PARAMS entry) rather than
+# a DrawState __getattr__/__setattr__ hook: __setattr__ would sit on EVERY
+# draw_state attribute write, per view per frame. Properties cost nothing for
+# the names that aren't ours.
+LOCATE_PREFIX = "locate_"
+
+
+def _locate_property(attr_name):
+    def _get(self):
+        return anywhere_value(attr_name, self)
+
+    def _set(self, value):
+        set_anywhere(attr_name, value, self)
+
+    return property(_get, _set,
+                    doc=f"'{attr_name}' as melty resolved it; assigning writes "
+                        f"it back to whichever input source drives it.")
+
+
+def install_locate_properties(cls=None):
+    """Stamp `locate_<param>` onto DrawState for every SET_ANYWHERE_PARAMS
+    entry. Runs at import (and again on every hotswap of this module, which
+    re-installs against the live class), so growing SET_ANYWHERE_PARAMS is the
+    only step needed to expose a new param."""
+    if cls is None:
+        from src.lsd.gl_gui.model.core_model.draw_state import DrawState
+        cls = DrawState
+    for attr_name in SET_ANYWHERE_PARAMS:
+        setattr(cls, LOCATE_PREFIX + attr_name, _locate_property(attr_name))
+    return cls
+
+
+install_locate_properties()
