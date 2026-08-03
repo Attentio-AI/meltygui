@@ -3193,8 +3193,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         if _dbg_t is not None else "tile=?")
                     m_changed, m_out = RenderFuncs.draw_collection(
                         gp, excluded=["__cst__"],
-                        child_kwargs={"show_bg": False, "shadow": False, "folder_type":(dict), "use_cache": False, 
-                                      "z_offset": 0, "view_func":RenderFuncs.draw_collection_as_tabs},
+                        child_kwargs={"show_bg": False, "shadow": False, "folder_type":(dict), "use_cache": True, "z_offset": 0, "view_func":RenderFuncs.draw_collection_as_tabs},
                         show_system=False,
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,

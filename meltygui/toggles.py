@@ -327,41 +327,42 @@ class Swoosh:
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
 
-    # Ribbon mode: replace the thin connector line with a full band bridging the
+    # Ribbon mode: replace the thin tapered line with a full band bridging the
     # two views' facing edges, s-curving between them when the views are offset
     # (see Melty._draw_ribbon). Each end is sized from ITS OWN edge length, so
     # a small child on a big parent gets a funnel. Per-window override:
-    # swoosh_mode=SwooshMode.RIBBON / OUTLINE. Views with no facing gap
+    # swoosh_mode=SwooshMode.RIBBON / .LINE. Views with no facing gap
     # (overlapping) fall back to the thin line, which knows how to route
     # around the overlap.
     ribbon = True              # global default: ribbon instead of the thin line
-    ribbon_axis_bias = 0.9      # which axis the band comes from: 0.5 picks the axis
+    ribbon_axis_bias = 0.9      # which edges the band comes off: 0.5 picks the axis
                                 # with the wider facing gap (current behavior); 1.0
-                                # biases fully to the left/right (x) edges,
-                                # 0.0 fully to the top/bottom (y) edges. An
+                                # biases fully to the left/right (horizontal) edges,
+                                # 0.0 fully to the top/bottom (vertical) edges. An
                                 # axis with no facing gap can't be bridged, so an
                                 # extreme bias falls back to whichever axis has a gap.
     ribbon_coverage = 2.13      # each end's band width as a fraction of its own edge
                                 # (clamped at the full edge, so >=1 spans the edge)
     ribbon_max_width = 0     # px cap on either end's band width (0 = uncapped)
     ribbon_curve = 0.33         # s-curve tangent reach as a fraction of the gap the
-                                # ribbon spans (x for left-right, y for down)
-    ribbon_curve_across = 0.00  # how much of a side's CROSS-axis travel adds to that
-                                # reach - the offset matters less than the gap (0 = none at all)
-    ribbon_bow = -0.02            # single-sided bow: how far the band bulges through
+                                # ribbon bridges (x for left-right, y for vertical)
+    ribbon_curve_across = 0.00  # how much of a side's CROSS-axis travel adds to its
+                                # reach — the offset matters less than the gap (0 = not at all)
+    ribbon_bow = -0.02            # single-direction bow: how far the band bulges WITH
                                 # the swerve, scaled by width/length so wide short
-                                # ribbons arc as one C and long thin ones keep the
+                                # ribbons arc as one C while long thin ones keep the
                                 # S (negative = bow "in" against the swerve, 0 = off)
     ribbon_bow_shape = 2.0      # bow profile exponent: <1 broad arc, >1 mid bulge
-    ribbon_alpha = 0.07         # fill opacity of the band (inside the fade area)
+    # [tint=(0.739, 0.111, 0.111, 1.0), show_tint=True]
+    ribbon_alpha = 0.10         # fill opacity of the band (below the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
                                 # exceeds fade_size x fade_size; alpha then scales
                                 # inversely with area (constant total ink, 0 = off)
     ribbon_edge_alpha = 0.05    # opacity of the band's two boundary strokes
     ribbon_edge_fade_length = 7.4  # px: a boundary stroke starts thinning once its
                                 # own arc length exceeds this; alpha scales inversely
-                                # with length, per stroke (0 = off)
-    ribbon_edge_thickness = 2.7 # boundary stroke thickness in px (0 = no stroke/lines)
+                                # with length, per side (0 = off)
+    ribbon_edge_thickness = 2.7 # boundary stroke thickness in px (0 = no stroke/AA)
 
     # When the child overlaps the parent, slide both endpoints along their own
     # rect edge out of the intersection area to flank the reentrant corner of the
@@ -380,11 +381,20 @@ class Swoosh:
     # Mouse-proximity fade: scale the whole connector's opacity by how close
     # the cursor is to the views it joins, so only the swooshes near the mouse
     # stay bright and a busy screen of connectors declutters. Each END fades on
-    # its OWN distance scale (parent vs child), and the connector is whichever
-    # side is brighter - so the parent end can dim faster than the child end.
-    # Distance is measured from each rect (0 when the mouse is inside it). Applies
-    # to both the line and ribbon mode.
-    mouse_falloff = True               # enable the mouse-based opacity fade
+    # its OWN distance scale (parent vs child), and the connector takes whichever
+    # side is brighter — so the parent end can dim sooner than the child end.
+    # Distance is measured to each rect (0 when the mouse is inside it). Applies
+    # to both the line and ribbon styles.
+    # Drag-focus opacity (alternative to the proximity fade below): hold EVERY
+    # connector at mouse_falloff_floor and light one to full opacity only when
+    # it is in play - its child window is being dragged/resized, the parent
+    # window it hangs off is, or the parent view (not the window itself) is
+    # focused. Dragging a PARENT window lights every connector hanging off it;
+    # dragging a CHILD window lights only that parent's own connector. False
+    # keeps the original behavior: distance fade + hover override.
+    drag_focus = True
+
+    mouse_falloff = False               # enable the distance-based opacity fade
     mouse_falloff_dist_parent = 49.576   # px: parent-end falloff distance (lower =
                                        # the parent side dims sooner as you leave it)
     mouse_falloff_dist_child = 638.1   # px: child-end falloff distance
@@ -396,7 +406,7 @@ class Swoosh:
 @window(tint=(0.25, 0.29, 0.31))
 class Toggles:
 
-    @defaults(tint=(0.222, 0.191, 0.151))
+    # [tint=(0.883, 0.805, 0.766, 1.0), icon=""]
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
@@ -404,7 +414,7 @@ class Toggles:
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
 
-        # [tint=(0.17, 0.168, 0.244), show_tint=True]
+        # [tint=(0.152, 0.143, 0.628), show_tint=True]
         freeze_cst_dict = False
         # Fast-path syntax check: re-run a bare compile() over the buffer
         # INLINE on every edit and swap the red marker immediately, instead of
@@ -471,7 +481,7 @@ class Toggles:
         # GIL-held parse convoying the render thread. 0 = no debounce (every
         # keystroke reparses - pathological on big buffers). First parses are
         # exempt. Read live.
-        parse_debounce_ms = 2000
+        parse_debounce_ms = 833
 
         # Alternative debounce (ms) for SMALL buffers: under
         # small_file_max_chars a full cst→dict parse + symbol pass costs a few
@@ -523,7 +533,7 @@ class Toggles:
         # always would have. Read live (on the chain_in worker).
         skip_reparse_on_blank_edits = True
 
-        @defaults(tint=(0.181, 0.361, 0.722))
+        @defaults(tint=(0.22, 0.429, 0.844))
         class SymbolUsages:
             # Auto-attach symbol usages to every editor parse (background, fast
             # path only); the Index button stays as a force refresh.
@@ -733,26 +743,7 @@ class Toggles:
     class ContextMenu:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
-
         default_tab = 2
-
-
-    @defaults(tint=(0.47, 0.463, 0.417))
-    class ScrollSettings:
-        scroll_speed = 611
-        max_increment_fraction = 0.169
-        acceleration_threshold = 0.036  # seconds
-        bg_offset = 30
-        debug_scroll = False
-
-    @defaults(tint=(0.315, 0.489, 0.322))
-    class LoadSave:
-        # When True, save() ALSO writes the legacy custom.ini (root_new eval blob)
-        # as a backout alongside the native-pickle custom pickle. Set False to go
-        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
-        # custom.ini as the main-file identity / hot-reload cache anchor, so leave
-        # this True until the .ini is fully retired.
-        ini_save = False
 
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:
@@ -796,6 +787,23 @@ class Toggles:
             corner_segments = 5
             outline_alpha = 1.00
             outline_thickness = 1.366
+
+    @defaults(tint=(0.47, 0.463, 0.417))
+    class ScrollSettings:
+        scroll_speed = 611
+        max_increment_fraction = 0.169
+        acceleration_threshold = 0.036  # ms
+        bg_offset = 30
+        debug_scroll = False
+
+    @defaults(tint=(0.315, 0.489, 0.322))
+    class LoadSave:
+        # When True, save() ALSO writes the raw custom.ini (root_new eval blob)
+        # as a backout alongside the new-pickle custom.pkl. Set False to go
+        # pickle-only (skip the .ini dual-write). NOTE: model_server still treats
+        # custom.ini as the main host identity / hot-reload cache anchor, so kee
+        # this off until the .ini is fully deprecated.
+        ini_save = False
 
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
@@ -857,6 +865,7 @@ class Toggles:
 
         max_preferred_header_width = 70
         preferred_header_width = 132
+    cam_zoom = 1.5585
 
     show_filled_tiles = False
     gl_check_error = False

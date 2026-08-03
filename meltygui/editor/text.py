@@ -20,6 +20,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.jump_to import draw_jump_to
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
+from src.lsd.gl_gui.toggles import Swoosh
 
 
 def _hex(h):
@@ -4840,14 +4841,19 @@ def draw_text(input_value: str, height=None,
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
-    
+
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # an experiment fallback (see a     
+        
 
+
+        
+        
+    
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -5082,6 +5088,7 @@ def draw_text(input_value: str, height=None,
 
     def _get_vcols():
         return _window()[3]
+
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
@@ -5975,6 +5982,13 @@ def draw_text(input_value: str, height=None,
             req = getattr(ds, '_ac_request_anchor', -1)
             if req != -1 and req != anchor:
                 ds._ac_request_anchor = req = -1  # caret left the trigger site
+            elif (req != -1 and changed and not prefix and not dot_trigger
+                    and _snip is None and not (ctrl and pressed(glfw.KEY_SPACE))):
+                # Deleted back to a blank prefix - the site is empty again, so
+                # drop the popup instead of showing the unfiltered pool. Dot/
+                # import sites keep their empty-prefix popups; typing (or
+                # Ctrl+Space) re-triggers as usual.
+                ds._ac_request_anchor = req = -1
             suppressed = sup != -1 and sup == anchor
             was_open = getattr(ds, '_ac_open', False)
             want = req != -1 and req == anchor and not suppressed
@@ -5987,7 +6001,7 @@ def draw_text(input_value: str, height=None,
             _ac_tinted = None
             if want:
                 _dtc = getattr(ds, '_def_tints', None)
-                _ntc = _dtc[4] if _dtc is not None and len(_dtc) > 4 else None
+                _ntc = _dtc[3] if _dtc is not None and len(_dtc) == 4 else None
                 _mtc = getattr(ds, '_ac_member_tints', None)
                 if _ntc or _mtc:
                     _ac_tinted = set(_ntc or ()) | set(_mtc or ())
@@ -7104,10 +7118,10 @@ def draw_text(input_value: str, height=None,
     # Row colors from the definition-tint pass: a candidate whose symbol
     # carries a tint renders its row in that color, matching the editor's
     # washes. The name→int map rides the cached _def_tints result already
-    # computed this frame (len guard: an old 4-tuple may linger on a
-    # pre-hotswap draw_state). Cost here is one dict hit per name.
+    # computed this frame (len guard: a differently-shaped tuple may linger on
+    # a pre-hotswap draw_state); resolving here is one dict lookup per row.
     _dt = getattr(ds, '_def_tints', None)
-    _nt = _dt[4] if _ac_show and _dt is not None and len(_dt) > 4 else None
+    _nt = _dt[3] if _ac_show and _dt is not None and len(_dt) == 4 else None
     _mt = getattr(ds, '_ac_member_tints', None) if _ac_show else None
     # Snippet rows carry their own author-set tint (Snippet.tint) - it wins
     # over the symbol maps (a snippet label isn't a symbol).

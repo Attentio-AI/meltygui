@@ -5738,13 +5738,30 @@ def _extract_leading_comments(stmt, result, skip_overrides=False):
 
 def _attach_leading_override(stmt, child_dict):
     """Route a leading '# [...]' comment (single- or multi-line) above a nested
-    class/function into that child's __overrides__ (the first one wins)."""
-    if not isinstance(child_dict, dict) or isinstance(child_dict.get("__overrides__"), dict):
+    class/function into that child's __overrides__ (the first one wins).
+
+    The child's __overrides__ may ALREADY exist — its body conversion creates
+    it for field-slot comments (__<field>__ entries). Bailing on that (the old
+    guard) silently dropped the class's OWN leading comment on any class with
+    commented fields, so merge instead: field slots are namespaced (`__…__`)
+    and never collide with the leading comment's plain keys; setdefault keeps
+    body-side entries authoritative on the impossible overlap."""
+    if not isinstance(child_dict, dict):
         return
+    existing = child_dict.get("__overrides__")
     for _s, _e, run in _comment_line_groups(getattr(stmt, "leading_lines", ())):
         parsed = _parse_override_comment("\n".join(ll.comment.value for ll in run))
         if parsed:
-            child_dict["__overrides__"] = parsed
+            if isinstance(existing, dict):
+                # First leading comment wins: bail if a body run (or an
+                # earlier attach) already placed plain keys.
+                if any(not (isinstance(k, str) and k.startswith("__"))
+                       for k in existing):
+                    return
+                for k, v in parsed.items():
+                    existing.setdefault(k, v)
+            else:
+                child_dict["__overrides__"] = parsed
             return
 
 

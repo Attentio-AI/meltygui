@@ -1200,8 +1200,8 @@ class DrawState(DictConversion):
 
     def _pinned_base_y(self, base_y, anchor_y):
         """Bound a pinned nested window's vertical ANCHOR to its parent window:
-        the float's BOTTOM can't ride above the window's top, and its TOP can't
-        drop below the window's bottom. (Display top/height when there is no
+        the float's TOP can ride at most 200px above the window's top, and its
+        TOP can't drop below the window's bottom. (Display top/height when there is no
         parent window.)
 
         Pinned floats (context menus, live-value windows — pin_to_clip set)
@@ -1225,7 +1225,7 @@ class DrawState(DictConversion):
         else:
             disp = Core.melty.display_size
             win_top, win_h = 0, (disp[1] if disp is not None else 0)
-        floor_y = win_top - (self.height or 0) - anchor_y
+        floor_y = win_top - 200 - anchor_y
         ceil_y = win_top + win_h - anchor_y
         if floor_y <= base_y <= ceil_y:
             return base_y

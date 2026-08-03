@@ -50,6 +50,7 @@ from src.lsd.gl_gui.gl_state import GLState, GLTexture
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.shader_func import shader_func
 from src.lsd.gl_gui.text_texture import bake_text, bake_texts
+from src.lsd.gl_gui.toggles import SwooshMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -58,6 +59,8 @@ from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.headers import draw_header
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_tab_bar
 from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.toggles import Swoosh
 
 HALF_PI = math.pi / 2
 
@@ -1299,7 +1302,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         else:
             height = max(100, int(draw_state.min_height or 293) - _reserve)
 
-
     # ── in-flight locate values: a locate_* write to a SLOW source (e.g. a
     # `# [cam_brightness=...]` comment) is deferred during drags and lands
     # multi-frame after; until then the injected kwarg is stale. Re-read any
@@ -1363,7 +1365,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     if scroll_y_changed is not None:
         cam_zoom = min(135.5, max(0.0, cam_zoom * math.exp(-0.23 * scroll_y_changed.value)))
         draw_state.locate_cam_zoom = cam_zoom
-
 
     # ── Blender-style numpad views (hover-routed key events): 7/1/3 = top/
     # front/right, ctrl = the opposite side, 5 = ortho toggle, / (either
@@ -1510,7 +1511,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # the group measure (views popped in with a huge height, then the -30
     # self-reference shrank them back 29px a frame).
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
-
     if not middle_mouse_drag and not double_right_mouse_drag and scroll_y_changed is None:
         _flow_cursor = imgui.get_cursor_screen_pos()
         # Anchor y: the enclosing window's top for a window voxel, this ROW's
@@ -1522,10 +1522,16 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         _anchor_y = win.abs_top if draw_state.closable else draw_state.abs_top
         imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, _anchor_y))
         changed, _, panel_ds = draw_any(draw_state.locate_params,
-                                        name="controls",
-                                        mode=Modes.WINDOW_PARAMS,
+                                        name=f"controls##{draw_state.name}",
+                                        is_tree=False,
+                                        use_cache=False,
+                                        show_name=False,
+                                        layer=Melty.active_layer-3,
+                                        tint=draw_state._kwargs.get("tint", None),
+                                        swoosh_mode=SwooshMode.LINE,
+                                        mode=Modes.WINDOW_PARAMS, show_tint=False,
                                         parent_window=win, auto_resize=True,
-                                        shadow=True, return_extras=True,
+                                        shadow=False, return_extras=True,
                                         initial={"expanded": True},
                                         **panel_kwargs)
         imgui.set_cursor_screen_pos(_flow_cursor)

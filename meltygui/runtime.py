@@ -1802,6 +1802,34 @@ class Melty:
         return floor + (1.0 - floor) * factor
 
     @staticmethod
+    def _swoosh_drag_focus(draw_state, offset_ds, dragging_tiles, hovered):
+        """Drag-focus opacity decision for one connector (Swoosh.drag_focus).
+
+        Returns True for full opacity, False for the floor — the same two
+        values `hover` already means to _draw_swoosh, so the distance fade is
+        bypassed entirely and the default is the floor. A connector lights up
+        when:
+          * its CHILD window is the one being dragged/resized (that window's
+            connector only), or
+          * any window ENCLOSING the parent view is being dragged — dragging a
+            parent lights every connector hanging off it, and the walk covers
+            nested windows moving with an ancestor, or
+          * `hovered` is truthy — the PARENT view is hovered (the spawner half
+            of the hover pass, hovered_spawner_ids). Hovering the child window
+            itself deliberately does NOT light it; only dragging it does.
+        """
+        if str(draw_state._tile_id) in dragging_tiles:
+            return True
+        walk = offset_ds
+        depth = 0
+        while walk is not None and depth < 64:   # cheap guard against a cycle
+            if str(walk._tile_id) in dragging_tiles:
+                return True
+            walk = walk.parent_window
+            depth += 1
+        return bool(hovered)
+
+    @staticmethod
     def _draw_ribbon(overlay_dl, px0, py0, px1, py1, nx0, ny0, nx1, ny1,
                      rgb, rgb2=None, p_round=0.0, n_round=0.0, mouse_fade=1.0):
         """Thick-ribbon connector: instead of the thin tapered line, bridge
@@ -2033,7 +2061,10 @@ class Melty:
         None means no nested window is hovered anywhere (keep the default
         opacity behavior); True means THIS connector's window is the hovered
         one (full opacity); False means some OTHER window is hovered (drop to
-        Swoosh.mouse_falloff_floor). Tunables live on Swoosh.*."""
+        Swoosh.mouse_falloff_floor). Under Swoosh.drag_focus the caller
+        resolves the same True/False from the live drag gesture instead of
+        hover alone (see _swoosh_drag_focus), so it is never None there and
+        the proximity fade never runs. Tunables live on Swoosh.*."""
         if mode is None:
             mode = SwooshMode.RIBBON if Swoosh.ribbon else SwooshMode.LINE
         elif isinstance(mode, str):
@@ -2596,7 +2627,13 @@ class Melty:
         # inside a nested window reads as the spawner, not the window. When
         # nothing matches, the connector keeps the default distance-based
         # fade.
+        # spawner_targets is the SPAWNER half only (the parent view -> the
+        # windows it spawned), without the child-hovers-itself entry. Drag-
+        # focus mode reads that half: hovering the PARENT view lights its
+        # connectors, but hovering a child window itself does not - only
+        # dragging it does.
         swoosh_targets = defaultdict(set)  # id(hoverable ds) -> {id(window ds)}
+        spawner_targets = defaultdict(set)
         for ds_list in cls.root_draw_states_by_layer.values():
             for ds in ds_list:
                 swoosh_targets[id(ds)].add(id(ds))
@@ -2605,16 +2642,38 @@ class Melty:
                     if off is None:
                         off = ds._parent
                     swoosh_targets[id(off)].add(id(ds))
+                    spawner_targets[id(off)].add(id(ds))
         hovered_swoosh_ids = None
+        hovered_spawner_ids = None
         walk = cls.hovered_ds
         while walk is not None:
             hit = swoosh_targets.get(id(walk))
             if hit:
                 hovered_swoosh_ids = hit
+                # Same innermost node, spawner half only. Empty when that node
+                # is just a hovered window (not a spawner), which is exactly
+                # the case drag-focus must NOT light.
+                hovered_spawner_ids = spawner_targets.get(id(walk))
                 break
             if walk._parent is walk:  # root ds parents itself - end of chain
                 break
             walk = walk._parent
+
+        # Drag-focus mode (Swoosh.drag_focus): which windows are mid-gesture
+        # this frame. A window move subscribes ("left_mouse_drag",
+        # "window_move"); a ctrl+right drag / corner resize subscribes
+        # ("right_mouse_drag", "corner_drag"). on_action composes the view_id
+        # as f"{tile_id}_{view_id}", so the set of windows currently being
+        # dragged is read straight off this frame's event map - no extra state
+        # to keep in sync with the gesture's lifetime.
+        dragging_tiles = set()
+        if Swoosh.drag_focus:
+            for ev_type, suffix in (("left_mouse_drag", "_window_move"),
+                                    ("right_mouse_drag", "_corner_drag")):
+                for view_id in (cls.events_by_type.get(ev_type) or ()):
+                    vid = str(view_id)
+                    if vid.endswith(suffix):
+                        dragging_tiles.add(vid[:-len(suffix)])
 
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
@@ -2784,6 +2843,19 @@ class Melty:
 
                     # overlay_dl.channels_set_current(min(Melty.max_layer - 1, offset_ds.window_index))
 
+                    # Default: the hovered state override (None = nobody
+                    # hovered, keep the proximity fade). Drag-focus mode
+                    # resolves the same True/False override from the live drag
+                    # gesture instead, so an un-lit connector always sits at
+                    # the floor rather than fading with the offset.
+                    swoosh_hover = (None if hovered_swoosh_ids is None
+                                    else id(draw_state) in hovered_swoosh_ids)
+                    if Swoosh.drag_focus:
+                        swoosh_hover = Melty._swoosh_drag_focus(
+                            draw_state, offset_ds, dragging_tiles,
+                            hovered_spawner_ids is not None
+                            and id(draw_state) in hovered_spawner_ids)
+
                     Melty._draw_swoosh(
                         overlay_dl,
                         o_l, o_t,
@@ -2796,8 +2868,7 @@ class Melty:
                         n_round=rounding,
                         p_clip=parent_clip,
                         mode=draw_state._kwargs.get("swoosh_mode"),
-                        hover=(None if hovered_swoosh_ids is None
-                               else id(draw_state) in hovered_swoosh_ids),
+                        hover=swoosh_hover,
                     )
 
                 if Melty.channels_split:
@@ -4545,4 +4616,3 @@ class ManagedWindow:
         self.window_args = window_args
         self.name = name
         self.hidden = False
-

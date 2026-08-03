@@ -45,17 +45,13 @@ class Change:
     #     name = getattr(self.draw_state, "name", "?")
     #     return f"Change({name}: {self.old!r} -> {self.new!r})"
 
-
-
-
-
 @window(view_func=RenderFuncs.draw_undo_manager, live=True)
 class UndoManager:
     # draw_state -> ordered list of Changes recorded for that node. Safe to key
     # on the draw_state object: DrawState uses identity equality and hashes on
     # its unique id, so distinct nodes never collide as keys.
     change_history = {}
-    MAX_HISTORY = 20
+    MAX_HISTORY = 128
 
     # Only record a change when both old and new are one of these immutable
     # primitives. Snapshotting a mutable object by reference is unsound - it

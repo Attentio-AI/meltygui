@@ -905,6 +905,10 @@ class TileCacheMasked:
 
         # self.pending_invalid = []
         self._prev_occluders: Dict[str, frozenset] = {}  # tile_key -> frozenset of (key, x, y, w, h)
+        # Scroll-settle deferral for _detect_occluder_changes: last seen
+        # Melty.scroll_version and the frame it changed on.
+        self._occ_scroll_version: int = -1
+        self._occ_scroll_frame: int = -10**9
 
     @property
     def full_mask_tex(self) -> Optional[int]:
@@ -1376,6 +1380,22 @@ class TileCacheMasked:
             return
 
         if imgui.is_mouse_down(0) or imgui.is_mouse_down(2) or imgui.is_mouse_down(1):
+            return
+
+        # Scroll frames translate their root windows every frame; diffing
+        # occluders then would force-invalidate the moving window and every
+        # window it uncovers per frame, tanking scroll fps. Hold the
+        # pre-scroll baseline (_prev_occluders untouched, same in effect as
+        # the mouse-down early-out above) and run one diff after the scroll
+        # has settled for a few frames. request_render keeps frames pumping
+        # so the delayed diff actually gets a frame to run in.
+        if Melty.scroll_version != getattr(self, "_occ_scroll_version", -1):
+            self._occ_scroll_version = Melty.scroll_version
+            self._occ_scroll_frame = Melty.frame_count
+            request_render()
+            return
+        if Melty.frame_count - getattr(self, "_occ_scroll_frame", -10**9) < 8:
+            request_render()
             return
 
         # Collect only closable root window rects (both as targets and occluders)

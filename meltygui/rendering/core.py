@@ -667,7 +667,12 @@ def render_func(*args, **o_kwargs):
                     for _ok, _ov in _pfov.items():
                         if not (isinstance(_ok, str) and _ok.startswith("__")):
                             kwargs[_ok] = _ov
-        elif isinstance(input_value, dict):
+        # A dict value's OWN store feeds too (own elif): a nested class parse has
+        # collection+key but carries its leading-comment overrides on its own
+        # dict - the slot branch above matches but no __<key>__ entry, so an
+        # elif starved the class parse of its comment args. Same both-merges
+        # shape as the render-path block; own store last so it wins.
+        if isinstance(input_value, dict):
             _povs = input_value.get("__overrides__")
             if isinstance(_povs, dict):
                 for _ok, _ov in _povs.items():
@@ -1530,7 +1535,7 @@ def render_func(*args, **o_kwargs):
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
                                                    rect=corner_rect, priority_delta=1)
 
-                corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=1)
+                corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
                 # Plain right-drag resizes; with ctrl held the right-drag is a
                 # window-move instead (handled in the move block below), so don't
                 # drive resize from it. corner_drag.ctrl is reset per frame, so
@@ -2899,6 +2904,13 @@ def render_func(*args, **o_kwargs):
                 # (the inputter's jedi completion map maps name->name, so a
                 # completion literally named "decorators" put the STRING
                 # there - .items() crashed on it).
+                # Decorator tint is COLLECTED first but applied below kwargs
+                # tint: a tintless decorator (bare @defaults) used to take
+                # this branch as an if/elif and swallow the node's comment
+                # tint entirely, and in Source Code the `# [tint=...]`
+                # comment (fed into kwargs by the __overrides__ merges)
+                # outranks @defaults anyway.
+                _deco_tint = None
                 if isinstance(input_value, dict) and isinstance(
                         input_value.get("decorators"), dict):
                     for decorator_name, decorator_value in input_value["decorators"].items():
@@ -2910,11 +2922,10 @@ def render_func(*args, **o_kwargs):
                                 decorator_value.get("attr") or decorator_value.get("attrib")):
                             continue
                         if isinstance(decorator_value, dict) and \
-                                decorator_value.get("tint") is not None:
-                            previous_tint = style_manager.get_tint()
-                            if isinstance(decorator_value["tint"], (tuple, list)) and len(decorator_value["tint"]) >= 3:
-                                style_manager.set_imgui_tint(*decorator_value["tint"])
-                elif "tint" in kwargs and kwargs.get("tint", None) is not None:
+                                isinstance(decorator_value.get("tint"), (tuple, list)) and \
+                                len(decorator_value["tint"]) >= 3:
+                            _deco_tint = decorator_value["tint"]
+                if "tint" in kwargs and kwargs.get("tint", None) is not None:
                     previous_tint = style_manager.get_tint()
                     new_tint = kwargs.get("tint")
                     if isinstance(new_tint, (tuple, list)):
@@ -2923,6 +2934,10 @@ def render_func(*args, **o_kwargs):
                         # background bleed accumulates down the tint stack.
                         if len(new_tint) >= 3:
                             style_manager.set_imgui_tint(*new_tint[:4])
+
+                elif _deco_tint is not None:
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*_deco_tint)
 
                 elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
                     if name in collection.__tint__:

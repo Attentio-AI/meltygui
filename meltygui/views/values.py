@@ -4254,9 +4254,10 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
     return False, input_value
 
 
-@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=True, header_same_line=True,
+@render_func(is_tree=False, show_bg=True, shadow=False, use_cache=False, header_same_line=True,
              disable_scroll=True,
-             indent_size=0, show_add_delete=False, show_name=False, selectable=False, parent_show_add_delete=False,
+             indent_size=0, show_add_delete=False, 
+             show_name=False, selectable=False, parent_show_add_delete=False,
              with_header=draw_header)
 def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235, tint_saturation=0.372, unique=None,
                  collection=None, as_toggles=False, tints=None, excluded=None, width=None,
@@ -4279,6 +4280,8 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     lines render vertically between the tabs."""
     if collection is None:
         return False, input_value
+    
+    
         
     if excluded is None: 
         excluded = set()
@@ -5008,7 +5011,10 @@ class _LazyOverrideEntry(dict):
     root explicitly, and the LEAF write goes through the wrapped entry, whose
     non-internal key fires the standard notify → dirty → save path."""
 
-    def __init__(self, root, entry_key):
+    def __init__(self, root, entry_key=None):
+        # entry_key=None targets the root node's OWN __overrides__ - a
+        # leading comment above a class/function def - instead of a
+        # '__<key>__' field slot on its parent.
         super().__init__()
         self._root = root
         self._entry_key = entry_key
@@ -5019,7 +5025,7 @@ class _LazyOverrideEntry(dict):
         ovs = root_node.get("__overrides__")
         if not isinstance(ovs, dict):
             ovs = {}
-        if not isinstance(ovs.get(self._entry_key), dict):
+        if self._entry_key is not None and not isinstance(ovs.get(self._entry_key), dict):
             ovs[self._entry_key] = {}
         broot = getattr(root_node, "_bubble_root", None)
         if broot is not None:
@@ -5028,7 +5034,7 @@ class _LazyOverrideEntry(dict):
             # already bubbles.
             ovs = install_bubbling(ovs, broot)
         root_node["__overrides__"] = ovs
-        entry = ovs[self._entry_key]
+        entry = ovs if self._entry_key is None else ovs[self._entry_key]
         entry[k] = v  # non-internal key on the wrapped entry → notify → dirty
         super().__setitem__(k, v)  # same-frame reads (row refresh) see it too
 
@@ -5443,7 +5449,18 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
                 # (_record_child) - jump lands on the field's line, the
                 # comment's one above.
                 _ov_span = (getattr(_praw, "_child_spans", None) or {}).get(_tkey)
-            if isinstance(_ov_dict, dict) and _ov_dict and _ov_name:
+            if _ov_name:
+                if not (isinstance(_ov_dict, dict) and _ov_dict):
+                    # No comment yet - lazy row, same as the live-view path
+                    # below: the matrix's + materializes the entry, the
+                    # wrapper synthesizes the `# [...]` line. For the parse
+                    # itself (a class/function node) the entry is its OWN
+                    # __overrides__ (leading comment on the def); for a
+                    # leaf it's the parent's __<key>__ slot. Module parses
+                    # have no _pname, so they register nothing - no noise.
+                    _ov_dict = (_LazyOverrideEntry(_praw)
+                                if _pds is input_value
+                                else _LazyOverrideEntry(_praw, f"__{_ov_name}__"))
                 _add_source(f"# [{_ov_name}]", _ov_dict, TypeCodec,
                             location=_root_file_loc(_pds, _ov_span),
                             kind="code comment")
@@ -6583,9 +6600,22 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # keyboard/hover selection still reads on tinted rows.
     row_tint = row_tints.get(value) if row_tints else None
     _ROW_TINT_A = 0.35
+    _ROW_TINT_V_CAP = 0.55   # max RGB component - near-white text must stay legible
+    _ROW_TINT_S_BOOST = 1.25  # saturation boost on capped tints - keeps hue vivid
     if row_tint is not None:
+        r, g, b = row_tint[:3]
+        v = max(r, g, b)
+        if v > _ROW_TINT_V_CAP:
+            k = _ROW_TINT_V_CAP / v
+            r, g, b = r * k, g * k, b * k
+            # Boost saturation by pulling the lower channels up from the max
+            # (raw channel arithmetic - hue is the channel ORDER, matters).
+            m = max(r, g, b)
+            r = max(0.0, m - (m - r) * _ROW_TINT_S_BOOST)
+            g = max(0.0, m - (m - g) * _ROW_TINT_S_BOOST)
+            b = max(0.0, m - (m - b) * _ROW_TINT_S_BOOST)
         dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
-                           imgui.get_color_u32_rgba(*row_tint[:3], _ROW_TINT_A),
+                           imgui.get_color_u32_rgba(r, g, b, _ROW_TINT_A),
                            rounding=getattr(draw_state, 'corner_radius', 6))
     if active:
         dl.add_rect_filled(x, y, x + w, y + h,
