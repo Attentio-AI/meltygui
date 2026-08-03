@@ -375,6 +375,27 @@ class PendingSave:
         from src.lsd.gl_gui.view.core_conversion.new_codecs import SaveConflict
         from src.lsd.gl_gui.notifications import notify
 
+        # Merge-on-save: fold tracked external drift into the batch FIRST so a
+        # file changed on both sides flushes with both edits - without this,
+        # drift-invalidated fingerprints make codec.save refuse those spans,
+        # and on real shutdown a refused entry is simply lost. allow_merge is
+        # forced on (clean merges only; Toggles.auto_merge keeps gating the
+        # interactive recompile path). A CONFLICT absorbs nothing for the
+        # file: those spans still save via the .span' guard, rather
+        # than splice from stale offsets.
+        try:
+            from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+            merge_lines = []
+            for path in list(ExternalChanges.originals):
+                line = cls.resolve_external(path, allow_merge=True)
+                if line is not None:
+                    merge_lines.append(line)
+            if merge_lines:
+                cls.merge_results = list(cls.merge_results) + merge_lines
+                cls._wake_windows()
+        except Exception:
+            pass
+
         # Apply same-file saves bottom-up (highest start line first). A splice
         # only shifts the lines BELOW its span, so saving the lowest span last
         # means an applied edit never invalidates a still-lying span above it.
@@ -410,22 +431,26 @@ class PendingSave:
         """Fold every tracked external change into the pending queue and
         return the per-file result lines.
 
-        For each ExternalChanges entry: 3-way merge with base = the external
-        baseline, mine = that baseline with this file's real pending span
-        edits spliced in (both sides share coordinates by construction —
-        pending spans were resolved against the pre-write disk, which IS the
-        baseline; see merge_files.py), theirs = current disk. A clean merge
-        replaces the file's span entries with ONE whole-file pending entry
-        (source = the live module, so recompile_all hotswaps it and
-        apply_all_saves writes it at shutdown) and marks the external entry
-        absorbed — the entry stays VISIBLE in the external window until the
-        user dismisses it; the marker only stops re-absorbing. An overlap is left
-        completely untouched: both trackers keep their entries and the Merge
-        window keeps showing the conflict.
+        For each ExternalChanges entry: decompose the drift into per-span
+        pending entries and merge them with the file's existing pending
+        entries — rebase, per-span 3-way merge, adopt; see resolve_external.
+        The external entry is marked absorbed — it stays VISIBLE in the
+        external window until the user dismisses it; the marker only stops
+        re-absorbing. An unmergeable overlap leaves the file completely
+        untouched: both trackers keep their entries and the Merge window
+        keeps showing the conflict.
 
         Texts are newline-normalized to '\\n' (same convention as
         current_file_text). Runs on recompile_all's worker thread."""
         from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        # Pick up project files/dirs created since startup (idempotent, only
+        # uncached files are read) so their NEXT external edit is tracked -
+        # this runs on the recompile worker, never the render thread.
+        try:
+            from src.lsd.gl_gui.melty import FileWatch
+            FileWatch.watch_project_files()
+        except Exception:
+            pass
         results = []
         for path in list(ExternalChanges.originals):
             line = cls.resolve_external(path)
@@ -436,36 +461,67 @@ class PendingSave:
             cls._wake_windows()
         return results
 
+    @staticmethod
+    def _norm_text(t):
+        return str(t).replace("\r\n", "\n").replace("\r", "\n")
+
     @classmethod
-    def resolve_external(cls, path, prefer=None):
-        """Resolve ONE tracked external change into a whole-file pending
-        entry and return its result line (None when there's nothing to do —
+    def resolve_external(cls, path, prefer=None, allow_merge=None):
+        """Resolve ONE tracked external change into per-span pending entries
+        and return its result line (None when there's nothing to do —
         untracked path, or drift that healed back to the baseline).
 
-        prefer=None runs the 3-way merge; an overlap returns the CONFLICT
-        line and mutates NOTHING. The Merge window's accept buttons force a
-        side instead: prefer='mine' keeps the pending version verbatim (the
-        external drift is overwritten on recompile/shutdown-save);
-        prefer='theirs' takes the disk version and DROPS the file's pending
-        edits. Every resolution ends the same way: the file's span entries
-        are replaced by one whole-file pending entry (source = the live
-        module, so recompile_all hotswaps it and apply_all_saves writes it),
-        and the ExternalChanges entry is marked absorbed — NOT popped: the
-        external window must keep showing what an outside program changed
-        until the user dismisses it. The marker (checked here on the auto
-        path) is what stops the next recompile from re-merging the same
-        drift; a new external write expires it."""
+        allow_merge gates the per-span 3-way merge for OVERLAPPING spans:
+        None reads Toggles.auto_merge (the interactive recompile path);
+        apply_all_saves passes True — merge-on-save when it's clean — and
+        False forces overlaps to CONFLICT. Rebase/adopt of non-overlapping
+        work never depends on it.
+
+        The disk drift (sync frame → current disk, see ExternalChanges.synced)
+        is decomposed into the SAME shape as in-studio edits — span pending
+        entries anchored on live objects — and merged with the queue:
+
+        * pending span entries untouched by the drift are REBASED to the new
+          disk coordinates (their span shifted through the drift's hunks);
+        * entries the drift overlaps are 3-way merged PER SPAN (base = the
+          sync-frame slice, mine = the pending data, theirs = the disk slice);
+        * drift hunks inside a live top-level def/class with no pending entry
+          are ADOPTED as new pending entries (data = the disk span, original =
+          the sync-frame span, so recompile_all hotswaps them; a successful
+          hotswap re-baselines them into no-ops since disk already holds them);
+        * brand-new defs/classes and changed import lines are exec'd into the
+          live module; other module-level changes are reported as
+          restart-needed.
+
+        Live co_firstlineno's are shifted from the sync frame to the disk
+        frame (resync_file_linenos) so the disk-coordinate invariant holds —
+        the whole-module hotswap from non-disk text this used to do is what
+        moved live code into coordinates no file had, corrupting every span
+        resolution afterwards.
+
+        prefer=None runs the auto merge; an overlap that cannot merge returns
+        the CONFLICT line and mutates NOTHING. The Merge window's accept
+        buttons force a side per overlapping entry instead: prefer='mine'
+        keeps the pending data (drift under it is overwritten on
+        recompile/shutdown-save); prefer='theirs' drops the overlapping
+        entries and takes disk. Non-overlapping entries and drift are always
+        rebased/adopted regardless of prefer.
+
+        The ExternalChanges entry is marked absorbed — NOT popped: the
+        external window keeps showing accumulated drift until the user
+        dismisses it. ExternalChanges.synced records the disk this absorb was
+        computed against, so the next drift diffs from HERE, not from the
+        display baseline."""
         from pathlib import Path as _P
         from src.lsd.gl_gui.melty import Melty
         from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
         from src.lsd.gl_gui.mcp_hotswap import _resolve_module
-        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
-            ModuleCodec, TextFileCodec, _span_fingerprint)
-        from src.lsd.gl_gui.view.core_conversion.address import Address
 
-        def _norm(t):
-            return str(t).replace("\r\n", "\n").replace("\r", "\n")
+        if allow_merge is None:
+            from src.lsd.gl_gui.toggles import Toggles
+            allow_merge = Toggles.auto_merge
 
+        _norm = cls._norm_text
         baseline = ExternalChanges.originals.get(path)
         if baseline is None:
             return None
@@ -476,17 +532,29 @@ class PendingSave:
         if prefer is None and ExternalChanges.is_absorbed(path, disk):
             return None         # this exact drift is already in the queue
         base_n, disk_n = _norm(baseline), _norm(disk)
-        if base_n == disk_n:
-            # Drifted back to baseline - nothing to absorb, drop the entry
-            # (same self-heal the external window does at render time).
-            ExternalChanges.originals.pop(path, None)
+        sync_n = _norm(ExternalChanges.synced.get(path, baseline))
+        if sync_n == disk_n:
+            # Nothing new since the last absorb. Fully healed (disk also back
+            # at the display baseline) → drop tracking; else just arm the
+            # absorbed marker.
+            if base_n == disk_n:
+                ExternalChanges.untrack(path)
+            else:
+                ExternalChanges.mark_absorbed(path, disk)
             return None
+        # NOTE: disk == display baseline is NOT "nothing to do" - after an
+        # absorb, a disk revert back to the baseline is REAL sync→disk drift
+        # (live code holds the absorbed state) and must absorb like any other
+        # change, or live and disk silently diverge (found the hard way:
+        # reverting a hotswapped smoke edit left the old text live).
         try:
             rp = _P(path).resolve()
         except OSError:
             return f"SKIPPED {name}: unresolvable path"
 
-        absorbed = []
+        # The file's real pending span entries (data differs from load-time
+        # original), and any legacy whole-file entry.
+        entries, whole = [], []
         for addr, (codec, kwargs) in list(cls.pending_saves.items()):
             data = kwargs.get("data")
             if not isinstance(data, str):
@@ -498,9 +566,38 @@ class PendingSave:
                     continue
             except Exception:
                 continue
-            absorbed.append((addr, data))
+            (whole if addr.start is None else entries).append(
+                (addr, codec, kwargs, data))
 
-        whole = [d for a, d in absorbed if a.start is None]
+        module = _resolve_module(path)
+        if module is None or whole:
+            # Plain files (no live module → no span hotswap, whole-file is
+            # fine) and legacy whole-file entries keep the old whole-file
+            # merge. recompile_all refuses whole-module hotswaps from
+            # non-disk text, so the legacy merge can no longer mangle live
+            # coordinates for modules.
+            return cls._resolve_external_wholefile(
+                rp, name, path, module, base_n, disk_n, disk,
+                entries + whole, prefer, allow_merge)
+
+        return cls._resolve_external_spans(
+            rp, name, path, module, sync_n, disk_n, disk, entries, prefer,
+            allow_merge)
+
+    @classmethod
+    def _resolve_external_wholefile(cls, rp, name, path, module, base_n,
+                                    disk_n, disk, absorbed, prefer,
+                                    allow_merge):
+        """The pre-span whole-file merge, kept for plain (non-module) files
+        and legacy whole-file entries. base/mine/theirs are whole texts; the
+        result is ONE whole-file pending entry."""
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
+            ModuleCodec, TextFileCodec, _span_fingerprint)
+        from src.lsd.gl_gui.view.core_conversion.address import Address
+
+        _norm = cls._norm_text
+        whole = [d for a, c, k, d in absorbed if a.start is None]
         if whole:
             mine = _norm(whole[-1])
         elif absorbed:
@@ -508,9 +605,9 @@ class PendingSave:
             # never overlap a not-yet-applied span above it - same order as
             # current_file_text / apply_all_saves.
             lines = base_n.split("\n")
-            for addr, data in sorted(((a, d) for a, d in absorbed
-                                      if a.start is not None),
-                                     key=lambda x: -x[0].start):
+            for addr, codec, kwargs, data in sorted(
+                    (e for e in absorbed if e[0].start is not None),
+                    key=lambda e: -e[0].start):
                 d = _norm(data)
                 if d.endswith("\n"):
                     d = d[:-1]
@@ -524,13 +621,13 @@ class PendingSave:
         elif prefer == "theirs":
             merged = disk_n
         else:
-            # Auto 3-way merge gated behind Toggles.auto_merge (suspected in
-            # editor.py); off → overlapping pending edits report as a
-            # conflict for the manual Merge window instead of merging silently.
-            from src.lsd.gl_gui.toggles import Toggles
+            # 3-way merge gated by allow_merge (resolved from Toggles.auto_merge
+            # by resolve_external unless the caller forced it); None →
+            # overlapping pending entries report as a conflict for the manual
+            # Merge window instead of merging silently.
             if mine == base_n:
                 merged = disk_n
-            elif Toggles.auto_merge:
+            elif allow_merge:
                 merged = three_way_merge(base_n, mine, disk_n)
             else:
                 merged = None
@@ -538,26 +635,21 @@ class PendingSave:
                 return (f"CONFLICT {name}: {len(absorbed)} pending edit(s) "
                         f"overlap the external change — see Merge window")
 
-        module = _resolve_module(path)
         address = Address(rp, source=module if module is not None else str(rp))
         merge_codec = ModuleCodec if module is not None else TextFileCodec
         if module is None:
             address._allow_write = True     # plain-file gate, see codec.save
-        for addr, _data in absorbed:
+        for addr, codec, kwargs, data in absorbed:
             cls.pending_saves.pop(addr, None)
             cls.originals.pop(addr, None)
         cls.originals[address] = base_n
-        # Fingerprint the DISK this merge was computed against. Every other
-        # pending entry gets _span_fp stamped in codec.load, which lets
-        # codec.save's changed-on-disk refusal (SaveConflict) - a fresh
-        # Address here left it None, so the merged whole-file entry was the
-        # ONE entry that was UNTROANDED: external drift landing after the
-        # merge (and before the next absorb) was silently overwritten by
-        # apply_all_saves (which also runs on the app-state save, not just
-        # shutdown). With the stamp, that flush defers the entry instead and
-        # the next merge absorbs the new drift.
+        # Fingerprint the DISK this merge was computed against, arming
+        # codec.save's changed-on-disk refusal (SaveConflict); like every
+        # codec.load-stamped entry; drifts after this merge defers
+        # the flush instead of being silently overwritten.
         address._span_fp = _span_fingerprint(disk_n.split("\n"))
         cls.queue_save(address, merge_codec, data=merged)
+        ExternalChanges.synced[path] = disk
         ExternalChanges.mark_absorbed(path, disk)
         if prefer == "mine":
             return (f"KEPT OURS {name}: pending version queued — the external "
@@ -568,6 +660,263 @@ class PendingSave:
         if absorbed:
             return f"MERGED {name}: external change + {len(absorbed)} pending edit(s)"
         return f"ADOPTED {name}: external change is now a pending edit"
+
+    @classmethod
+    def _resolve_external_spans(cls, rp, name, path, module, sync_n, disk_n,
+                                disk, entries, prefer, allow_merge):
+        """Span-level absorption for a live Python module (see
+        resolve_external). Two-phase: PLAN everything against the sync→disk
+        diff first — any unresolvable overlap returns the CONFLICT line with
+        NOTHING mutated — then commit: shift live linenos, rebase/merge/adopt
+        entries, exec new imports/defs, advance the sync frame."""
+        import ast
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        from src.lsd.gl_gui.view.core_conversion.address import (
+            Address, _evict_linecache)
+        from src.lsd.gl_gui.view.core_conversion.new_codecs import (
+            TypeCodec, FunctionCodec, _span_fingerprint, resync_file_linenos)
+
+        sync_lines = sync_n.split("\n")
+        disk_lines = disk_n.split("\n")
+        ops = [(i1, i2, j1, j2) for tag, i1, i2, j1, j2 in
+               difflib.SequenceMatcher(None, sync_lines, disk_lines,
+                                       autojunk=False).get_opcodes()
+               if tag != "equal"]
+        if not ops:
+            ExternalChanges.synced[path] = disk
+            ExternalChanges.mark_absorbed(path, disk)
+            return None
+
+        def _exp(i1, i2):
+            # Insertion-expanded old-side range: a pure insert claims the line
+            # it lands before (same convention as three_way_merge /
+            # merge_files._changed_old_ranges), so an insert INSIDE a span
+            # overlaps it while an insert AT its end belongs below.
+            return i1, max(i2, i1 + 1)
+
+        _norm = cls._norm_text
+        rebases, merges, drops = [], [], []
+        merged_ct = kept_ct = took_ct = 0
+        # Sync-frame spans whose entry SURVIVES an overlap (merged / kept):
+        # their hunks are settled by the entry. A dropped entry ('theirs')
+        # leaves its hunks unclaimed so the disk version adopts + hotswaps;
+        # a non-overlapped span contains no hunks, so claiming is moot.
+        claimed = []
+        for addr, codec, kwargs, data in entries:
+            s = addr.start
+            orig = cls.originals.get(addr)
+            if addr.end is not None:
+                e = addr.end
+            elif isinstance(orig, str):
+                e = s + len(_norm(orig).split("\n"))
+            else:
+                e = s + 1
+            d_above = d_inside = 0
+            overlap = straddle = False
+            for (i1, i2, j1, j2) in ops:
+                e1, e2 = _exp(i1, i2)
+                if e2 <= s:
+                    d_above += (j2 - j1) - (i2 - i1)
+                elif e1 < e and e2 > s:
+                    overlap = True
+                    if i1 < s or i2 > e:
+                        straddle = True
+                    else:
+                        d_inside += (j2 - j1) - (i2 - i1)
+            ns = s + d_above
+            if not overlap:
+                rebases.append((addr, codec, kwargs, _norm(data),
+                                ns, e + d_above, orig))
+                continue
+            if straddle and prefer != "theirs":
+                # The external change crosses this span's boundary - no clean
+                # theirs-slice exists, and splicing "mine" over part of it
+                # would tear the hunk. Human call either way.
+                return (f"CONFLICT {name}: an external change crosses a "
+                        f"pending span boundary — see Merge window")
+            ne = e + d_above + d_inside
+            theirs_txt = "\n".join(disk_lines[ns:ne])
+            if prefer == "mine":
+                kept_ct += 1
+                claimed.append((s, e))
+                merges.append((addr, codec, kwargs, _norm(data),
+                               ns, ne, theirs_txt))
+            elif prefer == "theirs":
+                took_ct += 1
+                drops.append(addr)
+            else:
+                # base = the sync-frame slice: the common ancestor both the
+                # pending edit and the disk drift derived from. Gated by
+                # allow_merge (Toggles.auto_merge on the recompile path,
+                # forced True by apply_all_saves for merge-on-save).
+                if not allow_merge:
+                    return (f"CONFLICT {name}: external change overlaps a "
+                            f"pending edit — see Merge window")
+                base_txt = "\n".join(sync_lines[s:e])
+                m = three_way_merge(base_txt, _norm(data), theirs_txt)
+                if m is None:
+                    return (f"CONFLICT {name}: external change overlaps a "
+                            f"pending edit — see Merge window")
+                merged_ct += 1
+                claimed.append((s, e))
+                merges.append((addr, codec, kwargs, m, ns, ne, theirs_txt))
+
+        # Drift hunks no pending entry claims → adopt / exec / restart-note.
+        leftover = [op for op in ops
+                    if not any(_exp(op[0], op[1])[0] < e
+                               and _exp(op[0], op[1])[1] > s
+                               for s, e in claimed)]
+        adopts, new_defs, exec_fails = [], [], []
+        restart_needed = 0
+        if leftover:
+            try:
+                sync_tree = ast.parse(sync_n)
+                disk_tree = ast.parse(disk_n)
+            except SyntaxError as ex:
+                return (f"SKIPPED {name}: does not parse "
+                        f"({ex.msg}, line {ex.lineno}) — fix and recompile again")
+
+            def _spans(tree):
+                out = {}
+                for node in tree.body:
+                    if isinstance(node, (ast.ClassDef, ast.FunctionDef,
+                                         ast.AsyncFunctionDef)):
+                        first = node.lineno
+                        if node.decorator_list:
+                            first = min(first, node.decorator_list[0].lineno)
+                        out[node.name] = (first - 1, node.end_lineno)
+                return out
+
+            sspans, dspans = _spans(sync_tree), _spans(disk_tree)
+            adopt_names, newdef_names = set(), set()
+            for (i1, i2, j1, j2) in leftover:
+                e1, e2 = _exp(i1, i2)
+                owner = next((nm for nm, (s0, e0) in sspans.items()
+                              if s0 <= e1 and e2 <= e0), None)
+                if owner is not None:
+                    obj = module.__dict__.get(owner)
+                    if (isinstance(obj, (type, types.FunctionType))
+                            and owner in dspans):
+                        adopt_names.add(owner)
+                    else:
+                        restart_needed += 1
+                    continue
+                # Not inside any sync-frame object - brand-new disk-frame
+                # functions/classes exec live (intersection, not containment: the
+                # hunk usually drags the blank lines around a new def along).
+                # Leftover import lines are handled by _exec_file_imports
+                # below; anything else non-blank needs a restart.
+                de1, de2 = j1, max(j2, j1 + 1)
+                hits = [nm for nm, (s0, e0) in dspans.items()
+                        if nm not in sspans and s0 < de2 and de1 < e0]
+                newdef_names.update(hits)
+                covered = [dspans[nm] for nm in hits]
+                for idx in range(j1, min(j2, len(disk_lines))):
+                    t = disk_lines[idx].strip()
+                    if (t and not t.startswith(("import ", "from ", "#"))
+                            and not any(s0 <= idx < e0 for s0, e0 in covered)):
+                        restart_needed += 1
+                        break
+            for nm in sorted(adopt_names):
+                s0, e0 = sspans[nm]
+                ds0, de0 = dspans[nm]
+                adopts.append((nm, module.__dict__[nm], ds0, de0,
+                               "\n".join(disk_lines[ds0:de0]),
+                               "\n".join(sync_lines[s0:e0])))
+            new_defs = [(nm,) + dspans[nm] for nm in sorted(newdef_names)]
+
+        # ── Apply ───────────────────────────────────────────────────────────
+        # Live co_firstlineno's move from the sync frame to the disk frame
+        # FIRST: recompile_all's per-span hotswaps uses each function's
+        # live lineno, so it must already have the disk one (disk-coordinate
+        # invariant), and every later span resolution hits disk.
+        resync_file_linenos(rp, sync_lines, disk_lines)
+        _evict_linecache(str(rp))
+
+        for addr in drops:
+            cls.pending_saves.pop(addr, None)
+            cls.originals.pop(addr, None)
+
+        # New imports/defs exec BEFORE the adopted spans queue: an adopted
+        # function that calls a new helper must find it live when it hotswaps.
+        if leftover:
+            try:
+                from src.lsd.gl_gui.view.core_conversion.file_converters import (
+                    _exec_file_imports)
+                _exec_file_imports(str(rp), module.__dict__)
+            except Exception as ex:
+                exec_fails.append(f"imports: {type(ex).__name__}: {ex}")
+        for nm, ds0, de0 in new_defs:
+            # Pad so the new code object lands with the true disk lineno.
+            src = "\n" * ds0 + "\n".join(disk_lines[ds0:de0])
+            try:
+                with Melty.annotation_scope():
+                    exec(compile(src, str(rp), "exec"), module.__dict__)
+            except Exception as ex:
+                exec_fails.append(f"new def {nm}: {type(ex).__name__}: {ex}")
+
+        # Adopted entries queue before the rebases: both may touch the same
+        # object (a sub-span entry like Decorations inside an adopted class),
+        # and recompile_all runs in queue order - the whole-object adoption
+        # must hotswap first so the narrower pending edit re-applies on top.
+        for nm, obj, ds0, de0, dtxt, otxt in adopts:
+            na = Address(rp, ds0, de0, source=obj)
+            na._span_fp = _span_fingerprint(disk_lines[ds0:de0])
+            # Marks the entry for recompile_all: once the hotswap lands, the
+            # entry re-baselines to a no-op (its text is already on disk).
+            na._ext_adopt = True
+            cls.originals[na] = otxt
+            cls.queue_save(na, FunctionCodec if isinstance(obj, types.FunctionType)
+                           else TypeCodec, data=dtxt)
+
+        for addr, codec, kwargs, data, ns, ne, orig in rebases:
+            na = Address(rp, ns, ne, source=addr.source,
+                         watcher_ds=addr._watcher_ds)
+            for attr in ("_allow_write", "_shift_source"):
+                if hasattr(addr, attr):
+                    setattr(na, attr, getattr(addr, attr))
+            na._span_fp = _span_fingerprint(disk_lines[ns:ne])
+            cls.rebase_entry(addr, na, codec, data=data,
+                             original=(orig if isinstance(orig, str)
+                                       else "\n".join(disk_lines[ns:ne])),
+                             **{k: v for k, v in kwargs.items() if k != "data"})
+        for addr, codec, kwargs, data, ns, ne, theirs_txt in merges:
+            na = Address(rp, ns, ne, source=addr.source,
+                         watcher_ds=addr._watcher_ds)
+            for attr in ("_allow_write", "_shift_source"):
+                if hasattr(addr, attr):
+                    setattr(na, attr, getattr(addr, attr))
+            na._span_fp = _span_fingerprint(disk_lines[ns:ne])
+            # original = the disk slice: the entry stays "real" (data differs)
+            # so it recompiles and flushes at shutdown, and the next drift
+            # 3-way merges against the frame it actually diverged from.
+            cls.rebase_entry(addr, na, codec, data=data, original=theirs_txt,
+                             **{k: v for k, v in kwargs.items() if k != "data"})
+
+        ExternalChanges.synced[path] = disk
+        ExternalChanges.mark_absorbed(path, disk)
+
+        parts = []
+        if merged_ct:
+            parts.append(f"merged {merged_ct} overlapping pending edit(s)")
+        if kept_ct:
+            parts.append(f"kept {kept_ct} pending edit(s) over the external change")
+        if took_ct:
+            parts.append(f"dropped {took_ct} pending edit(s) for disk")
+        if adopts:
+            parts.append(f"adopted {len(adopts)} changed def(s)")
+        if new_defs:
+            parts.append(f"exec'd {len(new_defs)} new def(s)")
+        if rebases:
+            parts.append(f"rebased {len(rebases)} pending edit(s)")
+        if restart_needed:
+            parts.append(f"{restart_needed} module-level change(s) apply on restart")
+        parts.extend(f"FAILED {f}" for f in exec_fails)
+        tag = ("KEPT OURS" if prefer == "mine"
+               else "TOOK THEIRS" if prefer == "theirs"
+               else "MERGED" if merged_ct else "ADOPTED")
+        return f"{tag} {name}: " + "; ".join(parts)
 
     @classmethod
     def _wake_windows(cls):
@@ -625,6 +974,22 @@ class PendingSave:
                                        types.ModuleType, CallSite, Decorations)):
                 skipped += 1   # pure text / no live object - nothing to hotswap
                 continue
+            if address.start is None and isinstance(source, types.ModuleType):
+                # Disk-coordinate invariant: a whole-module hotswap moves every
+                # function to the disk file's linenos, so it is only allowe
+                # from text that IS the disk file (mcp_hotswap writes disk on
+                # success for the same reason). A whole-file address holding
+                # anything else (a legacy merged entry) would mangle every
+                # span resolution - refuse it; the entry still flushes at
+                # shutdown, and disk-loaded modules recompile fine.
+                from src.lsd.gl_gui.melty import Melty
+                disk_now = Melty.read_code(address.path)
+                if (disk_now is None
+                        or cls._norm_text(disk_now) != cls._norm_text(data)):
+                    failures.append(f"{label}: refused whole-module hotswap "
+                                    f"from non-disk text — it would desync "
+                                    f"live linenos from disk")
+                    continue
             try:
                 err = recompile_source(source, data, address.path, address=address)
             except Exception as e:
@@ -632,6 +997,11 @@ class PendingSave:
             if err is None:
                 record_compile(address)
                 compiled.append(label)
+                if getattr(address, "_ext_adopt", False):
+                    # An adopted external span is live now and already on
+                    # disk - re-baseline it into a no-op so it drops from the
+                    # diff view and never re-merges as a "pending edit".
+                    cls.originals[address] = data
             else:
                 failures.append(f"{label}: {type(err).__name__}: {err}")
 

@@ -173,7 +173,7 @@ class SplitOverlayRenderer(GlfwRenderer):
                 continue
             if ds.abs_left is None or ds.abs_top is None or ds.width is None or ds.height is None:
                 continue
-            window_channels.append((Melty.overlay_window_channel(ds.window_index), ds))
+            window_channels.append((Melty.overlay_channel_for(ds), ds))
 
         for r in Melty.root_draw_states.values():
             for ds in r:
@@ -186,7 +186,7 @@ class SplitOverlayRenderer(GlfwRenderer):
                     continue
                 if ds.abs_left is None or ds.abs_top is None or ds.width is None or ds.height is None:
                     continue
-                window_channels.append((Melty.overlay_window_channel(ds.window_index), ds))
+                window_channels.append((Melty.overlay_channel_for(ds), ds))
 
         if self.debug_static_mask:
             sx, sy, sw, sh = self.debug_static_rect

@@ -2606,7 +2606,20 @@ def _post_symbol_attach(dict_host, gen, flat):
             prev = getattr(gp, "symbol_usage", None)
             same_names = (isinstance(prev, dict) and isinstance(flat, dict)
                           and prev.keys() == flat.keys())
-            gp._symbol_gen = gen
+            # Stamp the generation only when the compute actually landed on
+            # the live buffer. A hold (typing quiet-gate / inflight dedup)
+            # leaves the stale index uncached - stamping THAT as current-gen
+            # blocked the ensure pass's retry forever, so a symbol typed
+            # mid-hold (a newly imported name) never got indexed or tinted.
+            # On a stale attach, clear the nudge key so the per-frame ensure
+            # pass respawns (stagger-throttled) until a real gen fires.
+            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                usages_fresh_for_address)
+            if usages_fresh_for_address(dict_host.child_kwargs.get("jump_to")):
+                gp._symbol_gen = gen
+            else:
+                gp._symbol_gen = None
+                dict_host._auto_index_key = None
             if flat:
                 gp.symbol_usage = flat
                 _distribute_by_name(gp, flat)

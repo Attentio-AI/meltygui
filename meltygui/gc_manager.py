@@ -68,3 +68,26 @@ def tick():
         with lag_span("gc: idle collect", 0.0):
             gc.collect()
         _state["last_collect"] = now
+
+
+def collect_after_run(label="run"):
+    """One full collect + CUDA cache release, called from a WORKER thread
+    right after a heavy run retires its previous generation (the live lab's
+    instrumented runs — live_instrument.run_instrumented). gen2's
+    auto-trigger is pushed out of reach and the idle collector above waits
+    for a quiet input window, but a run's cyclic garbage pins GPU tensors
+    (deepcopied component trees, the prior ForwardPassResult graph), and
+    VRAM can't wait minutes for idleness while the user is actively
+    iterating — observed as ~a full activation generation leaked per Run.
+    Post-freeze the pass only walks objects allocated since boot-freeze
+    (same price the idle collect pays), scheduled at the one moment it is
+    guaranteed profitable; the lag column keeps the cost visible."""
+    with lag_span(f"gc: post-{label} collect", 0.0):
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+    _state["last_collect"] = time.monotonic()

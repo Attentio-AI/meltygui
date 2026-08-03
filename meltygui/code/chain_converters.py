@@ -1469,6 +1469,40 @@ def caller_chain(call_stack):
             if not _is_dispatch_frame(filename, func_name)]
 
 
+def record_stack_scope_types(frames):
+    """Record the runtime TYPES of every real caller frame's locals into
+    FuncsMetadata, keyed by the frame's live function.
+
+    `frames` is the raw get_live_frames output — each entry carries the frame's
+    f_locals copy as entry[4]. The capture site (core_render, on context-menu
+    open) stores only the lightweight (filename, lineno, func_name) tuples and
+    was throwing the locals away; this taps them first, so the context menu's
+    code editors (the caller-site call-expression spans, the func tab) get
+    type-exact autocomplete for the names in scope at the call — the same
+    FuncsMetadata read path the eval REPL uses.
+
+    Only type refs + dir() string snapshots are retained (VarMeta) — never the
+    live values — so holding this across the session is GC-safe. Dispatch
+    machinery frames are skipped (their funcs aren't user-edited and their
+    locals are the render plumbing). The function is resolved through the
+    cached _enclosing_function walk; a name mismatch (lambda/comprehension
+    frames, a stale module) skips the frame rather than mis-keying it."""
+    from src.lsd.gl_gui.func_metadata import FuncsMetadata
+    for entry in frames or ():
+        if len(entry) < 5 or not entry[4]:
+            continue
+        filename, lineno, func_name = entry[0], entry[1], entry[2]
+        if _is_dispatch_frame(filename, func_name):
+            continue
+        fn = _enclosing_function(filename, lineno)
+        if fn is None or getattr(fn, "__name__", None) != func_name:
+            continue
+        try:
+            FuncsMetadata.record(fn, entry[4])
+        except Exception:
+            continue
+
+
 def _first_call(module):
     """The outermost cst.Call in a parsed statement (don't descend into nested
     calls), or None."""

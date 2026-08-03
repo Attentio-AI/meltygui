@@ -98,6 +98,7 @@ class TabState(DictConversion):
         super().__init__()
         self.selected_tabs = []
         self.tab_tints = {}
+        self.tab_icons = {}
 
 
 @no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)
@@ -958,7 +959,12 @@ class DrawState(DictConversion):
     def abs_layer(self):
 
         if self.parent_window is not None and self.closable:
-            return self.parent_window.abs_layer + self._kwargs.get("layer_offset", 4)
+            # Nested closable windows live in the dedicated nested layer band
+            # when their parent's root is the front window; otherwise they stay
+            # parent-relative in the parent band. See Melty.nested_window_layer.
+            return Core.melty.nested_window_layer(
+                self.parent_window.abs_layer, self._kwargs.get("layer_offset", 4),
+                ds=self)
         elif self.parent_window is not None:
             return self.parent_window.abs_layer
         else:

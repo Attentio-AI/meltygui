@@ -1015,7 +1015,7 @@ def render_func(*args, **o_kwargs):
                 draw_state._call_site_captured = True
                 draw_state._call_site_requested = False
                 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-                    caller_site, call_stack_frames)
+                    caller_site, call_stack_frames, record_stack_scope_types)
                 # Grab the WHOLE stack here (once, from this frame's stack), UNfiltered
                 # - the menu renders all of it and filters per-frame at draw time.
                 # _call_site stays the filtered head for the lens. Resolving now and
@@ -1025,6 +1025,25 @@ def render_func(*args, **o_kwargs):
                 frames = get_live_frames(skip_count=0)
                 draw_state._call_stack = call_stack_frames(frames)
                 draw_state._call_site = caller_site(frames)
+                # The frames still hold each caller's f_locals - record their
+                # runtime types (FuncsMetadata) before dropping them, so the
+                # menu's caller/source editors autocomplete against the live
+                # scope (draw_text's _acquire_context reads them back).
+                record_stack_scope_types(frames)
+                # The target's own frame is NOT on the stack (we're in a
+                # wrapper; its body hasn't run yet), so record its scope
+                # directly from the resolved kwargs - the same names
+                # draw_eval_tab pre-records, but at menu-open time the func editor
+                # now completes `draw_state.` without visiting the eval tab.
+                try:
+                    from src.lsd.gl_gui.func_metadata import FuncsMetadata
+                    _target_scope = dict(kwargs)
+                    _target_scope.update({
+                        "input_value": input_value, "value": input_value,
+                        "draw_state": draw_state, "ds": draw_state})
+                    FuncsMetadata.record(draw_state._view_func, _target_scope)
+                except Exception:
+                    pass
 
             if closable:
                 if _drag_drop.DragDrop.is_dragged_item(draw_state):
@@ -1034,8 +1053,13 @@ def render_func(*args, **o_kwargs):
                     # every other window for the duration of the drag.
                     window_z_pos = len(Melty.layers) - 1
                 elif draw_state is not None and draw_state.parent_window is not None:
-                    # Nested window - layer above parent
-                    window_z_pos = draw_state.parent_window.layer
+                    # Nested window: same z-band mapping as
+                    # draw_state.abs_layer, so the first registration frame
+                    # buckets where steady-state dispatch will.
+                    window_z_pos = Melty.nested_window_layer(
+                        draw_state.parent_window.layer or 0,
+                        kwargs.get("layer_offset", 4),
+                        ds=draw_state)
                 else:
                     # Managed windows are not nested, so we check the registry directly to find their layer
                     # Indicates this is not a nested window
@@ -1043,6 +1067,10 @@ def render_func(*args, **o_kwargs):
                         if window_key in Melty.registered_windows else None
                     if window_z_pos is not None:
                         window_z_pos = max(window_z_pos, Melty.active_layer)
+                    if kwargs.get("always_on_top", False):
+                        # Pinned above the nested-window band (which sits above
+                        # every root window), below only the dragged item.
+                        window_z_pos = Melty.always_on_top_layer
 
                 kwargs['layer'] = window_z_pos
 
@@ -1119,8 +1147,13 @@ def render_func(*args, **o_kwargs):
                 draw_state._is_deferred_layer = True
                 if draw_state.context_menu_open or draw_state._deferred_stack_requested:
                     draw_state._deferred_stack_requested = False
-                    from src.lsd.gl_gui.view.core_conversion.chain_converters import call_stack_frames
-                    draw_state._deferred_call_stack = call_stack_frames(get_live_frames(skip_count=0))
+                    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+                        call_stack_frames, record_stack_scope_types)
+                    deferred_frames = get_live_frames(skip_count=0)
+                    draw_state._deferred_call_stack = call_stack_frames(deferred_frames)
+                    # Same tap as the inline capture: record the queue-time
+                    # frames' scope types for the menu editors' sake.
+                    record_stack_scope_types(deferred_frames)
 
                 if Toggles.layer_stack_trace:
                     get_stack = get_live_frames(skip_count=1)

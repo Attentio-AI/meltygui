@@ -193,7 +193,18 @@ def _resync_module_linenos(address, old_lines, new_lines):
     anywhere, so walk the old→new diff and apply one shift per line-count
     change, bottom-up so earlier shifts don't disturb later regions. Without
     this, views rendering LIVE objects from this file (FunctionCodec /
-    TypeCodec) resolve stale spans after the save and snap to the nearest def.
+    TypeCodec) resolve stale spans after the save and snap to the nearest def."""
+    resync_file_linenos(address.path, old_lines, new_lines)
+
+
+def resync_file_linenos(path, old_lines, new_lines):
+    """Shift live co_firstlineno's in every module loaded from `path` (resolved
+    Path) so they match `new_lines`, given they currently match `old_lines`.
+
+    The address-free body of _resync_module_linenos: also used by
+    PendingSave.resolve_external, which moves live coordinates from the
+    last-synced text to the current (externally written) disk WITHOUT any
+    disk write of its own.
 
     The same file can be materialized under several module names (src.lsd.…
     and lsd.… import roots both exist here), each with its OWN function
@@ -208,14 +219,14 @@ def _resync_module_linenos(address, old_lines, new_lines):
     for m in list(sys.modules.values()):
         f = getattr(m, "__file__", None)
         try:
-            if f and id(m) not in seen and Path(f).resolve() == address.path:
+            if f and id(m) not in seen and Path(f).resolve() == path:
                 seen.add(id(m))
                 modules.append(m)
         except (OSError, ValueError):
             continue
     for module in modules:
         for after_lineno, delta in sorted(opcodes, reverse=True):
-            shift_sibling_linenos(module, address.path,
+            shift_sibling_linenos(module, path,
                                   after_lineno=after_lineno, delta=delta,
                                   include_saved=True)
 

@@ -366,12 +366,13 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         the fading check mark + summary), so the button and this tool always
         behave identically. The window is revealed so the result is visible.
 
-        External changes are first 3-way merged with any overlapping pending
-        edits and queued as whole-file pending entries (MERGED / ADOPTED /
-        CONFLICT lines land in the window's persistent merge display); the
-        external window keeps showing absorbed drift until the user dismisses
-        it. Each entry then hotswaps in place with hotswap-guard rollback.
-        Returns the same summary string the button shows.
+        External changes are first decomposed into per-span pending entries
+        and merged with any overlapping pending edits — rebase / per-span
+        3-way merge / adopt (MERGED / ADOPTED / CONFLICT lines land in the
+        window's persistent merge display); the external window keeps showing
+        absorbed drift until the user dismisses it. Each entry then hotswaps
+        in place with hotswap-guard rollback. Returns the same summary string
+        the button shows.
         """
         from src.lsd.gl_gui.notifications import notify
         notify("recompile requested",

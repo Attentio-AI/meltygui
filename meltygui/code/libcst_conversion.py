@@ -2293,6 +2293,38 @@ def compute_symbol_usages_for_address(address, fast_only=False):
     return _compute_symbol_usages(resolved, start, end, pending_gen, fast_only=fast_only)
 
 
+def usages_fresh_for_address(address) -> bool:
+    """True when the span cache holds a result computed against the CURRENT
+    signature (mtime, pending gen, resolver, index gen) — i.e. the last
+    compute really landed for the live buffer. False when it served a hold
+    (typing quiet-gate / inflight dedup / parse failure), which never caches.
+    Attach paths consult this before stamping _symbol_gen: stamping a held
+    result marked stale symbols as current-generation, so the ensure pass
+    never retried and a freshly-typed symbol (e.g. a newly imported class)
+    stayed unindexed — and untinted — until an unrelated index-gen bump."""
+    if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
+        return True   # nothing will ever recompute - don't keep the nudge locked
+    from src.lsd.gl_gui.toggles import Toggles
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    resolved = _Path(address.path).resolve()
+    start = (getattr(address, "start", 0) or 0) + 1
+    end = getattr(address, "end", None)
+    if end is None:
+        text = PendingSave.current_file_text(resolved)
+        if text is None:
+            return True
+        end = text.count("\n") + 1
+    accurate = Toggles.jedi_correctness
+    try:
+        mtime = resolved.stat().st_mtime
+    except OSError:
+        mtime = None
+    gen = _index_generation if not accurate else None
+    cached = _symbol_usage_cache.get((resolved, start, end))
+    return cached is not None and cached[0] == (
+        mtime, PendingSave.pending_gen_for(address.path), accurate, gen)
+
+
 def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False) -> dict:
     """Cache + A/B branch core: {symbol: SymbolUsage} for a [start, end] span.
     Toggles.jedi_correctness picks the resolver — jedi (accurate, slow:
@@ -3431,6 +3463,19 @@ class LineMap:
             for k, v in node.items():
                 cpath = path + (k,)
                 if isinstance(v, dict):
+                    # A dict VALUE (`x = {...}` parses to a plain dict child)
+                    # carries no .span of its own - index it via the parent's
+                    # _child_spans like any other leaf, or line→node lookups
+                    # skip straight over the enclosing container and the
+                    # assignment to its statement key (live Editor's line:N
+                    # highlighting). Scope dicts (FunctionParse etc.) keep their
+                    # own span entry from the top of _build.
+                    if not isinstance(getattr(v, "span", None), Span):
+                        cspan = child_spans.get(k)
+                        if isinstance(cspan, Span):
+                            self._entries.append(
+                                (cspan, depth + 1,
+                                 NodeRef(v, k, node, cspan, cpath)))
                     self._build(v, k, node, cpath, depth + 1)
                 else:
                     cspan = child_spans.get(k)
@@ -3955,7 +4000,11 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
                 # Generation stamp even when flat is empty: marks "indexed
                 # against the current generation" so the editor-side auto-index
                 # nudge doesn't re-trigger on a span with no visible symbols.
-                readable._symbol_gen = _index_generation
+                # Only when the index really landed - a typing-hold /
+                # inflight-dedup fallback returns the stale prior uncached,
+                # and stamping that froze the nudge on pre-edit symbols.
+                if usages_fresh_for_address(address):
+                    readable._symbol_gen = _index_generation
                 if flat:
                     readable.symbol_usage = flat  # whole-module flat (debug access)
                     _distribute_by_name(readable, flat)
@@ -5933,6 +5982,11 @@ def _format_override_value(value):
         # override comment would stop working. Store the plain number; the
         # reading edge re-specializes (ParamProxy) where the type matters.
         return repr(int(value))
+    if isinstance(value, str) and type(value) is not str:
+        # str SUBCLASSES (Lut): same deal - repr renders the wrapper
+        # ("Lut('viridis')"), which literal_eval can't read back. Store the
+        # plain string; the reading edge re-specializes (ParamProxy).
+        return repr(str(value))
     if isinstance(value, tuple):
         inner = ", ".join(_format_override_value(v) for v in value)
         return f"({inner},)" if len(value) == 1 else f"({inner})"

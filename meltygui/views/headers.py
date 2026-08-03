@@ -297,7 +297,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     type_label_tint   = (3.672, 1.944, 2.861, 1.0)
     unique_label_tint = (-1.535, 0.0, 0.9, 1.0)
 
-    # Depth-driven color computation
+    # Depth-driven color computati
+    # on
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
     name_style['saturation'] = name_style['saturation'] + sat_shift
 
@@ -489,8 +490,13 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         if icon is not None:
             imgui.align_text_to_frame_padding()
+            # The icon glyph renders 2px below the name text baseline.
+            _ix, _iy = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((_ix, _iy - 2))
             imgui.text_colored(icon, *Tint.icon_tint())
             imgui.same_line()
+            _nx, _ny = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((_nx, _ny + 2))
 
         push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
 
@@ -719,8 +725,13 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
         if icon is not None:
             imgui.align_text_to_frame_padding()
+            # The icon glyph renders 2px below the name text baseline.
+            _ix, _iy = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((_ix, _iy - 2))
             imgui.text_colored(icon, *Tint.icon_tint())
             imgui.same_line()
+            _nx, _ny = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((_nx, _ny + 2))
 
         push_style_var(imgui.STYLE_FRAME_ROUNDING, name_rounding)
 

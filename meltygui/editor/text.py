@@ -224,6 +224,11 @@ def _completion_pool(code_tree, text, line, func=None):
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import completions_at
     pool, seen = [], set()
 
+    meta = {}
+    if func is not None:
+        from src.lsd.gl_gui.func_metadata import FuncsMetadata, _type_name
+        meta = FuncsMetadata.get(func)
+
     def add(name, kind):
         if name and name not in seen and len(name) > 1 and name not in _PY_KEYWORDS:
             seen.add(name)
@@ -235,6 +240,13 @@ def _completion_pool(code_tree, text, line, func=None):
                 add(name, kind)
         except Exception:
             pass  # never let a parse hiccup kill typing
+    # Runtime-observed scope names (FuncsMetadata) as candidates in their own
+    # right, not just kind upgrades: a call-expression span (the context menu's
+    # inline editor) never MENTIONS its enclosing function's locals, so neither
+    # the tree nor the buffer scan can offer them - the recorded scope is the
+    # only source that knows `draw_state`/`kwargs` are typeable here.
+    for _name, _vm in meta.items():
+        add(_name, _type_name(_vm.type) or "local")
     # The buffer scan only backfills JUST-TYPED names the tree hasn't caught up
     # to (or could, when there's no parse) - but a name is only a valid
     # suggestion where it's in scope. Blank def/class blocks that don't enclose
@@ -254,12 +266,9 @@ def _completion_pool(code_tree, text, line, func=None):
         if len(kw) > 1 and kw not in seen:
             seen.add(kw)
             pool.append((kw, "kw"))
-    if func is not None:
-        from src.lsd.gl_gui.func_metadata import FuncsMetadata, _type_name
-        meta = FuncsMetadata.get(func)
-        if meta:
-            pool = [(n, (_type_name(meta[n].type) or k) if n in meta else k)
-                    for n, k in pool]
+    if meta:
+        pool = [(n, (_type_name(meta[n].type) or k) if n in meta else k)
+                for n, k in pool]
     return pool
 
 
@@ -570,7 +579,7 @@ _KIND_TAGS = {"param": "param", "local": "local", "var": "var", "func": "fn",
               "class": "class", "member": "attr", "module": "mod",
               "import": "import", "symbol": "sym", "instance": "var",
               "kw": "kw", "path": "path", "name": "",
-              "method": "fn", "builtin": ""}
+              "method": "fn", "builtin": "", "auto_import": "+ import"}
 
 
 def _kind_tag(kind):
@@ -585,8 +594,12 @@ def _filter_completions(pool, prefix, users=None, tints=None):
     (the buffer's usage-graph site totals) descending, then alphabetically —
     except untinted count-0 rows, which keep the pool's own scope ranking
     (locals before builtins) via the stable sort. Empty prefix (right after a
-    `.`) keeps one group. The exact word already fully typed is dropped so we
-    never suggest what's on screen."""
+    `.`) keeps one group. The exact word already fully typed ranks first when
+    it's a REAL symbol (a classified kind) — visible as confirmation rather
+    than vanishing. An unclassified "name" exact row is just the half-typed
+    token echoed back by the buffer scan, not a valid pick — dropped, so the
+    top row stays a completion that actually does something."""
+    exact = [(n, k) for (n, k) in pool if n == prefix and k != "name"]
     rows = [(n, k) for (n, k) in pool if n != prefix]
     if not prefix:
         # Empty prefix only happens right after a '.', where a pile of dunders is
@@ -604,7 +617,7 @@ def _filter_completions(pool, prefix, users=None, tints=None):
             return (tinted, -c, n.lower() if (c or not tinted) else "")
         for g in groups:
             g.sort(key=_key)
-    ranked = [r for g in groups for r in g]
+    ranked = exact + [r for g in groups for r in g]
     return ranked[:_AC_MAX_ROWS]
 
 
@@ -705,9 +718,15 @@ _DEF_NAME_RE = re.compile(r'^def\s+(\w+)', re.MULTILINE)
 def _ac_live_context(ds, text, address):
     """(module_globals, live_func) for the span being edited: the live module
     the file is loaded as (hotswap-aware — richest of the dual src./non-src
-    identities, via code_checks._module_for) and, when the buffer is a top-level
-    function span, the live function object itself (its FuncsMetadata carries
-    runtime-observed scope types). Cached on the draw_state per (path,
+    identities, via code_checks._module_for) and the live function object whose
+    scope the buffer edits (its FuncsMetadata carries runtime-observed scope
+    types). The function resolves from the buffer's own top-level ``def`` when
+    it has one, else from the ADDRESS — the enclosing function a CallerCodec
+    span already carries as ``.source``, or the cached _enclosing_function walk
+    for any other def-less span (a method body, a class-var line). That address
+    fallback is what lets the context menu's caller editors complete
+    ``draw_state.`` etc. against the types recorded from the captured stack's
+    f_locals (record_stack_scope_types). Cached on the draw_state per (path,
     span-start); a file that isn't imported caches (None, None) and the dot
     path falls through to jedi."""
     if address is None or getattr(address, "path", None) is None:
@@ -724,6 +743,17 @@ def _ac_live_context(ds, text, address):
             m = _DEF_NAME_RE.search(text)
             if m:
                 func = ns.get(m.group(1))
+            if func is None:
+                import types as _types
+                src = getattr(address, "source", None)
+                if isinstance(src, _types.FunctionType):
+                    func = src
+                elif getattr(address, "start", None) is not None:
+                    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+                        _enclosing_function)
+                    # address.start is a 0-indexed line; the walk expects
+                    # 1-based co_firstlineno's.
+                    func = _enclosing_function(str(address.path), address.start + 1)
     except Exception:
         pass
     ds._ac_live_ctx = (ns, func)
@@ -791,7 +821,20 @@ def _ensure_member_completions(ds, text, anchor, address=None):
     key = (line0, text[line_start:anchor])   # the receiver expression on this line
 
     if getattr(ds, '_ac_jedi_done_key', None) == key:
-        return ds._ac_jedi_members, False
+        if ds._ac_jedi_members:
+            # Restore the member tint map: other completion paths (bare names,
+            # imports, import) null _ac_member_tints every frame they run, so a
+            # cached revisit of this dot site must re-stamp it or the popup rows
+            # lose their colors intermittently.
+            ds._ac_member_tints = getattr(ds, '_ac_jedi_member_tints', None)
+            return ds._ac_jedi_members, False
+        # Cached EMPTY result: it may predate the receiver existing in the
+        # live module (a just-added import resolved to nothing at the time).
+        # Drop the latch and fall through - the live-ns walk below is cheap
+        # and answers the moment the receiver appears; jedi is NOT resubmitted
+        # for an unchanged key (_ac_jedi_req_key still matches), so an
+        # unresolvable receiver doesn't loop.
+        ds._ac_jedi_done_key = None
 
     if text[max(anchor - 1, 0):anchor] == ".":
         from src.lsd.gl_gui.func_metadata import member_completions, _receiver_before
@@ -817,6 +860,7 @@ def _ensure_member_completions(ds, text, anchor, address=None):
                     # once per receiver; the scan itself is stat-cached.
                     ds._ac_member_tints = _file_name_tints(
                         _live_receiver_file(ns, rcv))
+                    ds._ac_jedi_member_tints = ds._ac_member_tints
                     return rows, False
 
     if getattr(ds, '_ac_jedi_req_key', None) != key:
@@ -839,7 +883,16 @@ def _ensure_member_completions(ds, text, anchor, address=None):
     ds._ac_jedi_members = [(name, _JEDI_KIND.get(jtype, jtype)) for name, jtype in raw]
     ds._ac_jedi_done_key = key
     ds._ac_jedi_future = None
-    ds._ac_member_tints = None   # jedi path - no live receiver file to scan
+    # Jedi answered, so the live-ns walk couldn't see the receiver
+    # (typically a function-local import). Recover the tint file through the
+    # buffer's top() statements; None when that dead-ends too.
+    if text[max(anchor - 1, 0):anchor] == ".":
+        from src.lsd.gl_gui.func_metadata import _receiver_before
+        ds._ac_member_tints = _file_name_tints(
+            _receiver_file_via_imports(text, _receiver_before(text, anchor)))
+    else:
+        ds._ac_member_tints = None   # import-line completion - no file
+    ds._ac_jedi_member_tints = ds._ac_member_tints
 
     ds.invalidate_up()
     return ds._ac_jedi_members, False
@@ -2766,6 +2819,38 @@ def _live_receiver_obj(ns, rcv):
         except Exception:
             return None
     return obj
+
+
+def _receiver_file_via_imports(text, rcv):
+    """Defining file of `rcv`'s head resolved through the buffer's own import
+    statements (module-level OR function-local). The live-namespace walk only
+    sees module globals, so a receiver imported inside a function body
+    (`from ...toggles import Toggles` mid-function) dead-ends there and the
+    members come from jedi — this recovers the tint file for that path. None
+    when no import of the head is found or the module isn't loaded."""
+    head = (rcv or "").split(".")[0]
+    if not head:
+        return None
+    import sys as _sys
+    modname = None
+    for m in re.finditer(r"^[ \t]*from[ \t]+([\w.]+)[ \t]+import[ \t]+([^\n]*)",
+                         text, re.M):
+        if re.search(r"\b%s\b" % re.escape(head), m.group(2).split("#")[0]):
+            modname = m.group(1)
+            break
+    if modname is None:
+        for m in re.finditer(r"^[ \t]*import[ \t]+([\w.]+)(?:[ \t]+as[ \t]+(\w+))?",
+                             text, re.M):
+            if (m.group(2) or m.group(1).split(".")[0]) == head:
+                modname = m.group(1)
+                break
+    if modname is None:
+        return None
+    mod = _sys.modules.get(modname)
+    if mod is None:   # hotswap dual identity: try the other src. spelling
+        alt = modname[4:] if modname.startswith("src.") else "src." + modname
+        mod = _sys.modules.get(alt)
+    return getattr(mod, "__file__", None) if mod is not None else None
 
 
 def _live_receiver_file(ns, rcv):
@@ -4796,6 +4881,94 @@ def _apply_import_fix(stmt, jump_to, text):
     return False, text
 
 
+# How many import-shortcut rows the popup appends after the scope candidates -
+# past a handful they're noise (the prefix narrows them fast anyway).
+_AC_MAX_IMPORT_ROWS = 8
+
+
+# Candidate kinds that mean "the buffer/scope really accounts for this name" -
+# they exclude an import shortcut for it. A plain "name" row (the unclassified
+# buffer-identifier scan) does NOT: for an importable symbol it's the useless
+# default, so it upgrades to the import row instead of sitting above it.
+_AC_REAL_KINDS_EXCLUDED = ("name",)
+
+
+def _ac_import_rows(ds, cands, prefix, jump_to=None):
+    """Merge import shortcuts (code_checks.project_importables — the main
+    package's classes/modules) into the candidate list, returning the new
+    list. A plain unclassified "name" row matching an importable UPGRADES in
+    place to the import row (same rank, one row — never a dead default above
+    a live one); importables with no row at all append after the scope
+    candidates. Names with a real kind anywhere in the scope pool (local,
+    param, already imported, …) suppress their shortcut. Accepting an import
+    row completes the name AND inserts its import (_ac_apply_auto_import).
+    Stamps name→stmt on the draw_state for the accept paths — cleared here
+    and by the other candidate branches so a stale map never fires on a
+    same-named ordinary pick."""
+    ds._ac_import_stmts = None
+    if not prefix or len(prefix) < 2:
+        return cands
+    try:
+        from src.lsd.gl_gui.view.core_conversion.code_checks import (
+            project_importables, _module_text_binds)
+        rows, stmts = project_importables()
+    except Exception:
+        return cands
+    real = {n for n, k in cands if k not in _AC_REAL_KINDS_EXCLUDED}
+    real |= {n for n, k in (getattr(ds, '_ac_pool', None) or ())
+             if k not in _AC_REAL_KINDS_EXCLUDED}
+    # Names the FILE already binds at module scope (pending-save imports)
+    # never get a shortcut - crucial for span buffers, whose import block
+    # lives at the file top, outside the buffer the scope pool can see.
+    path = getattr(jump_to, 'path', None)
+    if path is not None:
+        try:
+            real |= _module_text_binds(path) or set()
+        except Exception:
+            pass
+    picked = {}
+    merged = []
+    for n, k in cands:
+        if k in _AC_REAL_KINDS_EXCLUDED and n not in real and n in stmts:
+            merged.append((n, "auto_import"))
+            picked[n] = stmts[n]
+        else:
+            merged.append((n, k))
+    have = {n for n, _ in merged}
+    p = prefix.lower()
+    extra = 0
+    for n, k in rows:
+        if (n not in have and n not in real and n.lower().startswith(p)):
+            merged.append((n, k))
+            picked[n] = stmts[n]
+            extra += 1
+            if extra >= _AC_MAX_IMPORT_ROWS:
+                break
+    if picked:
+        ds._ac_import_stmts = picked
+    return merged
+
+
+def _ac_apply_auto_import(ds, pick, jump_to, text):
+    """When the accepted `pick` was an import-shortcut row, insert its import
+    statement through the quick-fix machinery (_apply_import_fix: buffer
+    insert for whole-file buffers, live exec + pending file-top entry for
+    span buffers) and shift the caret past any text inserted above it.
+    Returns the (possibly grown) buffer text; a no-op for ordinary picks."""
+    stmt = (getattr(ds, '_ac_import_stmts', None) or {}).get(pick)
+    if not stmt:
+        return text
+    fx_changed, fx_text = _apply_import_fix(stmt, jump_to, text)
+    if not fx_changed:
+        return text
+    p, m = 0, min(len(text), len(fx_text))
+    while p < m and text[p] == fx_text[p]:
+        p += 1
+    if p <= ds.text_cursor_pos:
+        ds.text_cursor_pos += len(fx_text) - len(text)
+    return fx_text
+
+
 def _describe_code_tree(code_tree):
     """One-line readout of what round-tripped into draw_text as code_tree, for
     the debug indicator."""
@@ -4834,6 +5007,8 @@ def draw_text(input_value: str, height=None,
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
     # per_trace timeline (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
     # be read against the background reparse/index lines around it.
+    # [tint=(0.483, 0.397, 0.054, 1.0), show_tint=True]
+    
     _pf_t0 = time.perf_counter()
     _pf_cpu0 = time.thread_time()   # wall≫cpu in the summary = GIL starvation
     _pf_marks = []
@@ -4841,19 +5016,15 @@ def draw_text(input_value: str, height=None,
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
     def _pf(label):
         _pf_marks.append((label, time.perf_counter()))
-
+        
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
+        
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # an experiment fallback (see a     
         
-
-
-        
-        
-    
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -4917,6 +5088,8 @@ def draw_text(input_value: str, height=None,
     # replaces nothing - parsing/lint markers keep the normal debounced flow
     # (compile() says nothing about lint findings).
     _fast_fresh_err = False
+    
+    
     if (Toggles.TextEditor.check_syntax_errors
             and Toggles.TextEditor.fast_syntax_check):
         _fs = getattr(ds, '_fast_err_state', None)
@@ -4949,6 +5122,7 @@ def draw_text(input_value: str, height=None,
     # filters the fast rows below, so a just-applied fix isn't re-offered per
     # keystroke while the file's bind cache catches up.
     _active_fixes = import_fixes
+
 
     if Toggles.TextEditor.fast_syntax_check:
         _fi = getattr(ds, '_fast_imports_state', None)
@@ -5020,7 +5194,6 @@ def draw_text(input_value: str, height=None,
     char_w = imgui.calc_text_size("0").x
     changed = False
     original_input = input_value
-    
 
     # No line limit: the editor shows the WHOLE span. Off-screen lines are
     # already viewport-culled in every draw loop below (rect_min_y/rect_max_y)
@@ -5088,7 +5261,6 @@ def draw_text(input_value: str, height=None,
 
     def _get_vcols():
         return _window()[3]
-
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
@@ -5242,8 +5414,7 @@ def draw_text(input_value: str, height=None,
                     return True
                 return False
         return False
-
-
+        
     # A press inside a PLAIN owns_mouse token widget (number drag - rects
     # recorded by last body run's token loop) belongs to the widget, not the
     # text: skip caret/focus/selection for the whole gesture, matching what the
@@ -5444,6 +5615,7 @@ def draw_text(input_value: str, height=None,
                 # Remaining $N stops: END-relative so fill-in typing at an
                 # earlier stop never shifts them (see the Tab-stop handler).
                 ds._ac_tabstops = [len(text) - (anchor + s) for s in _extra] or None
+                text = _ac_apply_auto_import(ds, chosen, jump_to, text)
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 ds.text_cursor_blink_time = time.time()
@@ -5602,7 +5774,9 @@ def draw_text(input_value: str, height=None,
             _fired.discard(glfw.KEY_TAB)
 
         # --- Tab / Shift+Tab ---
-        if pressed(glfw.KEY_TAB) and not ctrl:
+        # Never in a search box: indent is irrelevant there, and the global
+        # search window uses Tab/Shift+Tab to switch result highlighted.
+        if pressed(glfw.KEY_TAB) and not ctrl and not is_search_box:
             ds.text_cursor_blink_time = time.time()
             # Bracket-aware align (same ([{ cue as Enter): when adjusting a single
             # line's own indent (no selection, caret in the leading whitespace)
@@ -5699,8 +5873,6 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
                 
-                
-            
         # --- Backspace ---
         if pressed(glfw.KEY_BACKSPACE):
             ds.text_cursor_blink_time = time.time()
@@ -6020,6 +6192,7 @@ def draw_text(input_value: str, height=None,
                     _snip = None
             if _snip is None:
                 ds._ac_snips = None    # accept must not treat identifiers as snippets
+            ds._ac_import_stmts = None  # only the bare-identifier branch sets it
             if _snip is not None:
                 # Snippet popup - only at its site: triggers like '#['
                 # have no identifier completions, and the accept path replaces
@@ -6091,6 +6264,9 @@ def draw_text(input_value: str, height=None,
                     ds._ac_pool_key = _pool_key
                 cands = _filter_completions(ds._ac_pool, prefix,
                                             users=_ac_users, tints=_ac_tinted)
+                # Import shortcuts: global classes/modules the buffer doesn't
+                # know yet - accepting one also inserts the import statement.
+                cands = _ac_import_rows(ds, cands, prefix, jump_to)
                 ds._ac_member_tints = None   # scope names - member map would mislabel
             else:
                 cands = []
@@ -6403,6 +6579,8 @@ def draw_text(input_value: str, height=None,
                     ex = origin_x + _colx(_l_e)
                     draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey, _l_col, 3.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
+        
+
         for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
             _s_line, _ = _index_to_line_col(text, _s_start)
             sy = origin_y + _s_line * line_px
@@ -7099,6 +7277,39 @@ def draw_text(input_value: str, height=None,
     # text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
 
     _pf("gutter")
+    # --- Live-scope indicator (autocomplete status badge) ---------------------
+    # Small badge at the editor's top-right showing whether completion has LIVE
+    # runtime types for this span - the debugging surface for the FuncsMetadata
+    # pipeline (context-menu stack capture -> _ac_live_context -> popup):
+    #   green  "live N"  - a live function resolved AND has N recorded scope
+    #                      names (typing `var_name.` answers from them)
+    #   amber  "live fn" - a live function resolved but nothing recorded yet
+    #                      (open the widget's context menu to capture, or the
+    #                      recording was keyed elsewhere - capture-side gap)
+    #   gray   "static"  - no live function resolves for this span (module not
+    #                      imported / span not attributable - jedi only)
+    if jump_to is not None and not single_line and not is_search_box:
+        _li_fn = _ac_live_context(ds, text, jump_to)[1]
+        _li_n = 0
+        if _li_fn is not None:
+            from src.lsd.gl_gui.func_metadata import FuncsMetadata
+            _li_n = len(FuncsMetadata.get(_li_fn))
+        if _li_fn is None:
+            _li_dot, _li_txt = (0.5, 0.5, 0.5, 0.6), "static"
+        elif not _li_n:
+            _li_dot, _li_txt = (0.9, 0.65, 0.15, 0.9), "live fn"
+        else:
+            _li_dot, _li_txt = (0.25, 0.85, 0.35, 0.95), f"live {_li_n}"
+        _li_x1 = rect_max_x - 8.0
+        _li_y0 = rect_min_y + 4.0
+        _li_w = len(_li_txt) * 7.5 + 20.0
+        draw_list.add_rect_filled(_li_x1 - _li_w, _li_y0, _li_x1, _li_y0 + 17.0,
+                                  imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 0.6), 8.5)
+        draw_list.add_circle_filled(_li_x1 - _li_w + 9.0, _li_y0 + 8.5, 3.5,
+                                    imgui.get_color_u32_rgba(*_li_dot))
+        draw_list.add_text(_li_x1 - _li_w + 16.0, _li_y0 + 1.5,
+                           imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85), _li_txt)
+
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its
     # rows use the normal UI font) so it floats above the code. We reuse the
@@ -7237,6 +7448,7 @@ def draw_text(input_value: str, height=None,
         text = text[:anchor] + _ins + text[ds.text_cursor_pos:]
         ds.text_cursor_pos = anchor + _coff
         ds._ac_tabstops = [len(text) - (anchor + s) for s in _extra] or None
+        text = _ac_apply_auto_import(ds, ac_pick, jump_to, text)
         ds.text_selection_start = ds.text_cursor_pos
         ds.text_selection_end = ds.text_cursor_pos
         ds._ac_open = False

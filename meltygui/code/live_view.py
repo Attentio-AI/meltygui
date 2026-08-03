@@ -51,7 +51,9 @@ import inspect
 import sys
 import threading
 import time
+import types
 import weakref
+from contextlib import contextmanager
 from pathlib import Path
 
 _MISSING = object()
@@ -163,10 +165,17 @@ def site_for_line(filename, lineno):
     try:
         path = Path(filename).resolve()
         mtime = path.stat().st_mtime
-        tree, text = _ast_for(path, mtime)
-        span = _top_level_span(tree, lineno)
-        lm = _linemap_for(path, mtime, span, text)
-        ref = _live_view_ref(lm, lineno)
+        tree, text, sig = _ast_for(path, mtime)
+        # Same stamp to line bridge as _resolve_site, anchored at the
+        # enclosing def's disk start when one resolves (module-level stamps
+        # anchor at the stamp - no own-span growth to mis-count there).
+        _fn = _enclosing_function(str(path), lineno)
+        _fc = getattr(_fn, "__code__", None)
+        line_p = lineno + _stamp_delta(
+            path, _fc.co_firstlineno if _fc is not None else lineno)
+        span = _top_level_span(tree, line_p)
+        lm = _linemap_for(path, sig, span, text)
+        ref = _live_view_ref(lm, line_p)
         if ref is None:
             return None, None
         # Function-frame detection, editor flavor: capture reads CO_OPTIMIZED
@@ -175,7 +184,7 @@ def site_for_line(filename, lineno):
         store_obj = None
         store_is_module = True
         if _owning_def_name(ref.path) is not None:
-            store_obj = _enclosing_function(str(path), lineno)
+            store_obj = _fn          # resolved above for the line bridge
             store_is_module = store_obj is None
         if store_obj is None:
             store_obj = _module_for_file(path)
@@ -259,6 +268,21 @@ def _notify_watchers(store_obj, key_path, first):
                 notified = True
             except Exception:
                 pass
+            # The open value WINDOW is a nested root - the marker's
+            # invalidate stops at its own tile + ancestors and never
+            # reaches the window tile, - a rerun's publish leaves the
+            # window blitting the stale value. Invalidate FORCE-down its
+            # subtree via the marker's window handle (the draw_function
+            # completion pattern - safe from the publishing thread).
+            win = getattr(ds, "_lv_window_ds", None)
+            if win is not None and not getattr(win, "closed", False):
+                try:
+                    from src.lsd.gl_gui.melty import Melty
+                    Melty.cache.invalidate_up(win._tile_id, force=True,
+                                              max_depth=8)
+                    notified = True
+                except Exception:
+                    pass
     if first:
         # A brand-new key: wake the store-level watchers (usually editors)
         # so the overlay re-runs and materializes this key's marker.
@@ -326,20 +350,166 @@ def _publish(site, value, name, bare):
     # The value is stored RAW - a single object assignment, atomic under the
     # GIL, so the rendering thread always reads either the old or new value.
     store[site.key_path] = value
+    # Run-scope liveness: while a run_capture is active for this store,
+    # every published key is recorded so the run's exit can prune the rest
+    # (set.add - atomic under the GIL).
+    touched = vars(site.store_obj).get("__live_touched__")
+    if touched is not None:
+        touched.add(site.key_path)
+    _record_scope_type(site, value, name, bare)
     _notify_watchers(site.store_obj, site.key_path, first=first)
+
+
+def _record_scope_type(site, value, name, bare):
+    """Feed the published value's runtime type into FuncsMetadata, keyed by the
+    owning function — so an editor on that function's source autocompletes
+    `x.` against the LIVE type of x, for every local a live_view / snapshot
+    run has seen. This is the mid-body complement to the context menu's stack
+    capture (which only sees callers' frames and the target's entry kwargs).
+
+    The recorded NAME must be a real local: the bare form's resolved
+    assignment target, or an explicit call's arg source when it is a plain
+    identifier (`live_view(attn_weights, ...)`); expression args (`x[0].w`)
+    and display-only `name=` labels are skipped. One exception: a snapshot
+    stamp (instrumented_twin's injected `__lv_view__(x, name='x')`) has NO
+    call in the SOURCE at its line, so the site carries no arg_label — there
+    the injected `name` IS the assignment target by construction, and only
+    then is it trusted as the local's name. Module/class-body stores are
+    skipped too — module-level names already complete via the live namespace
+    walk. Cheap on hot publish paths: record_value no-ops on an unchanged
+    type. Best-effort; a hiccup must never break a publish."""
+    store_obj = site.store_obj
+    if not isinstance(store_obj, types.FunctionType):
+        return
+    local_name = site.var_name if bare else site.arg_label
+    if not (isinstance(local_name, str) and local_name.isidentifier()):
+        if not (site.arg_label is None and not bare and isinstance(name, str)):
+            return
+        local_name = name
+        if not local_name.isidentifier():
+            return
+    try:
+        from src.lsd.gl_gui.func_metadata import FuncsMetadata
+        FuncsMetadata.record_value(store_obj, local_name, value)
+    except Exception:
+        pass
+
+
+@contextmanager
+def run_capture(store_obj):
+    """Scope one instrumented run over `store_obj` (pass the UNWRAPPED
+    function — the object capture attaches to). Keys published inside the
+    with-block are recorded, and a SUCCESSFUL exit prunes every other key:
+    an instrumented run republishes every assignment it still contains, so
+    anything not touched is a REMOVED line — without this, stale keys linger
+    forever as ghost markers, orphaned value windows, and line:N entries
+    that jumble future resolution. An exception skips the prune: a partial
+    run proves nothing about which sites still exist."""
+    try:
+        vars(store_obj)["__live_touched__"] = set()
+    except (AttributeError, TypeError):
+        yield
+        return
+    try:
+        yield
+    except BaseException:
+        vars(store_obj).pop("__live_touched__", None)
+        raise
+    touched = vars(store_obj).pop("__live_touched__", set())
+    _prune_untouched(store_obj, touched)
+
+
+def _prune_untouched(store_obj, touched):
+    """Drop every store key not in `touched`: value, label, per-key watcher
+    sets, and any open value window (win.closed = True — the next
+    root_draw_states dispatch discards it; if the key ever republishes, the
+    marker re-registers its window with closed= driven fresh). Store-level
+    watchers (the snapshot editors) are invalidated so the overlay re-runs
+    without the removed markers. Runs on the run's worker thread — dict
+    pops/copies are GIL-atomic and ds.invalidate() is the established
+    cross-thread completion pattern."""
+    store = getattr(store_obj, "__live_values__", None)
+    if not store:
+        return
+    removed = [k for k in tuple(store) if k not in touched]
+    if not removed:
+        return
+    labels = getattr(store_obj, "__live_labels__", None)
+    for key in removed:
+        store.pop(key, None)
+        if labels:
+            labels.pop(key, None)
+        for attr in ("__live_watchers__", "__live_first_watchers__"):
+            watchers = getattr(store_obj, attr, None)
+            if not watchers:
+                continue
+            try:
+                targets = tuple(watchers.pop(key, None) or ())
+            except RuntimeError:
+                targets = ()
+            for ds in targets:
+                win = getattr(ds, "_lv_window_ds", None)
+                if win is not None:
+                    try:
+                        win.closed = True
+                    except Exception:
+                        pass
+                try:
+                    ds._lv_open = False
+                    ds.invalidate()
+                except Exception:
+                    pass
+    try:
+        store_targets = tuple(
+            getattr(store_obj, "__live_store_watchers__", None) or ())
+    except RuntimeError:
+        store_targets = ()
+    for ds in store_targets:
+        try:
+            ds.invalidate()
+        except Exception:
+            pass
+    try:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+    except Exception:
+        pass  # headless (test)
+
+
+def _stamp_delta(path, anchor_line):
+    """Stamp→pending line bridge. Line stamps (twin snapshot calls, editor
+    overlay lookups) are DISK-anchored — enclosing span's disk start +
+    pending-relative offset, the co_firstlineno invariant — while _ast_for's
+    tree is the PENDING text. The difference is the net shift of queued
+    edits fully above the enclosing def, so callers anchor at the DEF start
+    (co_firstlineno / the resolved function), never at the stamp itself: a
+    grown function's stamps can sit past its own span's disk end, which
+    would wrongly count the span's own edit into the delta."""
+    from src.lsd.gl_gui.view.core_conversion.live_instrument import (
+        _delta_above, _pending_gen)
+    if not _pending_gen(str(path)):
+        return 0
+    return _delta_above(str(path), anchor_line)
 
 
 def _resolve_site(code, lineno):
     """The slow once-per-(code, line) path: locate the enclosing top-level
     statement via ast, run the dict conversion on just that span, and derive
-    this call's key, the preceding assignment's name, and the store object."""
+    this call's key, the preceding assignment's name, and the store object.
+    Tree/LineMap lookups use pending coords (line_p); the store resolution
+    and the published line:N keys keep the raw DISK-anchored stamp — live
+    co_firstlineno values and the editor overlay both speak that
+    convention."""
     from src.lsd.gl_gui.view.core_conversion.chain_converters import (
         _enclosing_function, _module_for_file)
 
     path = Path(code.co_filename).resolve()
     mtime = path.stat().st_mtime
-    tree, text = _ast_for(path, mtime)
-    var_name = _previous_assign_name(tree, lineno)
+    tree, text, sig = _ast_for(path, mtime)
+    line_p = lineno + _stamp_delta(
+        path, code.co_firstlineno
+        if code.co_flags & inspect.CO_OPTIMIZED else lineno)
+    var_name = _previous_assign_name(tree, line_p)
 
     # A class body or method frame is not CO_OPTIMIZED; _enclosing_function
     # would wrongly pick the nearest def ABOVE such a line (it has the end
@@ -352,11 +522,11 @@ def _resolve_site(code, lineno):
     if store_obj is None:
         store_obj = _module_for_file(path)
 
-    span = _top_level_span(tree, lineno)
-    lm = _linemap_for(path, mtime, span, text)
+    span = _top_level_span(tree, line_p)
+    lm = _linemap_for(path, sig, span, text)
     arg_label = None
 
-    ref = _live_view_ref(lm, lineno)
+    ref = _live_view_ref(lm, line_p)
     if ref is not None:
         key_path = _store_relative(ref.path, store_obj, store_is_module)
         arg_label = _arg_source(ref.value)
@@ -366,16 +536,20 @@ def _resolve_site(code, lineno):
         # statement key, keep it) or it sits in a body the dict conversion
         # doesn't extract (while/try/catch, nested def). The latter resolves
         # to a CONTAINER, which would conflict across sites - qualify by line.
-        fallback = lm.node_at_line(lineno, absolute=True)
+        fallback = lm.node_at_line(line_p, absolute=True)
         if fallback is not None:
             full_path, call_node = _truncate_into_call(lm.root, fallback.path)
             key_path = _store_relative(full_path, store_obj, store_is_module)
             arg_label = _arg_source(call_node)
-            if call_node is None and isinstance(fallback.value, dict):
-                # The line landed on a CONTAINER (a while/with body the dict
-                # conversion doesn't surface) - this key would collide across
-                # every site in the block, so qualify by line. A LEAF hit is
-                # the call's own key: statement-level, keep it is.
+            if (call_node is None and isinstance(fallback.value, dict)
+                    and fallback.span.start_line != line_p - lm.line_offset):
+                # The line landed in an enclosing CONTAINER (a while/with
+                # body the dict conversion doesn't surface) - that key would
+                # collide across every site in the block, so qualify by
+                # line. A hit whose statement STARTS at this line is the
+                # statement's bare entry - including a dict-VALUED assignment
+                # (`x = {...}`: value is a dict instance, but it's a call) -
+                # and keeps its clean statement key.
                 key_path = key_path + (f"line:{lineno}",)
         else:
             key_path = (f"line:{lineno}",)
@@ -383,18 +557,36 @@ def _resolve_site(code, lineno):
         key_path = (f"line:{lineno}",)
     if arg_label is None:
         # No CallParse to read the arg from (un-surfaced body) - use the ast.
-        arg_label = _arg_source_ast(tree, lineno)
+        arg_label = _arg_source_ast(tree, line_p)
     return _Site(key_path, var_name, arg_label, store_obj, lineno)
 
 
 def _ast_for(path, mtime):
-    cached = _asts.get(str(path))
-    if cached is not None and cached[0] == mtime:
-        return cached[1], cached[2]
-    text = path.read_text()
+    """(tree, text, sig) of the file's IN-MEMORY source — disk with every
+    queued (unsaved) span edit spliced in (PendingSave.current_file_text:
+    the same text the twin and Ctrl+Enter's hotswap compile). live_view must
+    never parse raw disk text: deferred saves leave disk stale mid-session,
+    and resolving keys against the pre-edit layout is exactly the
+    adjacent-line key jumbling / bare line:N fallback bug. Cache signature =
+    (mtime, pending gen) — both cheap; the O(file) splice runs on miss
+    only."""
+    from src.lsd.gl_gui.view.core_conversion.live_instrument import (
+        _pending_gen)
+    key = str(path)
+    gen = _pending_gen(key)
+    sig = (mtime, gen)
+    cached = _asts.get(key)
+    if cached is not None and cached[0] == sig:
+        return cached[1], cached[2], sig
+    text = None
+    if gen:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        text = PendingSave.current_file_text(path)
+    if text is None:
+        text = path.read_text()
     tree = ast.parse(text)
-    _asts[str(path)] = (mtime, tree, text)
-    return tree, text
+    _asts[key] = (sig, tree, text)
+    return tree, text, sig
 
 
 def _top_level_span(tree, lineno):
@@ -410,12 +602,13 @@ def _top_level_span(tree, lineno):
     return None
 
 
-def _linemap_for(path, mtime, span, text):
+def _linemap_for(path, sig, span, text):
     """The LineMap of one top-level statement's span (whole file when span is
-    None), rebuilt when mtime changes. Span-bounded so a save re-parses one
-    function, not the file — the whole-file position pass holds the GIL for
-    ~1s on big modules (see chain_converters' measurement) and this runs on
-    the calling thread."""
+    None), rebuilt when `sig` — _ast_for's (mtime, pending gen) — changes,
+    so queued edits that never touch disk still invalidate. Span-bounded so
+    a save re-parses one function, not the file — the whole-file position
+    pass holds the GIL for ~1s on big modules (see chain_converters'
+    measurement) and this runs on the calling thread."""
     import libcst as cst
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
         LineMap, cst_module_to_dict)
@@ -423,7 +616,7 @@ def _linemap_for(path, mtime, span, text):
     start = span[0] if span else 1
     key = (str(path), start)
     cached = _linemaps.get(key)
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == sig:
         return cached[1]
     if span is None:
         snippet = text
@@ -432,7 +625,7 @@ def _linemap_for(path, mtime, span, text):
         snippet = "".join(lines[span[0] - 1:span[1]])
     parse = cst_module_to_dict(cst.parse_module(snippet))
     lm = LineMap(parse, line_offset=start - 1)
-    _linemaps[key] = (mtime, lm)
+    _linemaps[key] = (sig, lm)
     return lm
 
 

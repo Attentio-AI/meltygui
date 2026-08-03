@@ -327,32 +327,34 @@ class Swoosh:
     taper = 10.0              # slope of the end->middle thickness falloff
     aa_width = 1.5           # antialiased edge-stroke width in px (0 = none)
 
-    # Ribbon mode: replace the thin tapered line with a full band bridging the
+    # Ribbon mode: replace the thin connector line with a full band bridging the
     # two views' facing edges, s-curving between them when the views are offset
     # (see Melty._draw_ribbon). Each end is sized from ITS OWN edge length, so
     # a small child on a big parent gets a funnel. Per-window override:
-    # swoosh_mode=SwooshMode.RIBBON / .LINE. Views with no facing gap
+    # swoosh_mode=SwooshMode.RIBBON / OUTLINE. Views with no facing gap
     # (overlapping) fall back to the thin line, which knows how to route
     # around the overlap.
     ribbon = True              # global default: ribbon instead of the thin line
-    ribbon_axis_bias = 0.9      # which edges the band comes off: 0.5 picks the axis
+    ribbon_axis_bias = 0.9      # which axis the band comes from: 0.5 picks the axis
                                 # with the wider facing gap (current behavior); 1.0
-                                # biases fully to the left/right (horizontal) edges,
-                                # 0.0 fully to the top/bottom (vertical) edges. An
+                                # biases fully to the left/right (x) edges,
+                                # 0.0 fully to the top/bottom (y) edges. An
                                 # axis with no facing gap can't be bridged, so an
                                 # extreme bias falls back to whichever axis has a gap.
     ribbon_coverage = 2.13      # each end's band width as a fraction of its own edge
                                 # (clamped at the full edge, so >=1 spans the edge)
     ribbon_max_width = 0     # px cap on either end's band width (0 = uncapped)
     ribbon_curve = 0.33         # s-curve tangent reach as a fraction of the gap the
-                                # ribbon bridges (x for left-right, y for vertical)
-    ribbon_curve_across = 0.00  # how much of a side's CROSS-axis travel adds to its
-                                # reach — the offset matters less than the gap (0 = not at all)
-    ribbon_bow = -0.02            # single-direction bow: how far the band bulges WITH
+                                # ribbon spans (x for left-right, y for down)
+    ribbon_curve_across = 0.00  # how much of a side's CROSS-axis travel adds to that
+                                # reach - the offset matters less than the gap (0 = none at all)
+    ribbon_bow = -0.02            # single-sided bow: how far the band bulges through
                                 # the swerve, scaled by width/length so wide short
-                                # ribbons arc as one C while long thin ones keep the
+                                # ribbons arc as one C and long thin ones keep the
                                 # S (negative = bow "in" against the swerve, 0 = off)
     ribbon_bow_shape = 2.0      # bow profile exponent: <1 broad arc, >1 mid bulge
+
+
     # [tint=(0.739, 0.111, 0.111, 1.0), show_tint=True]
     ribbon_alpha = 0.10         # fill opacity of the band (below the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
@@ -400,14 +402,16 @@ class Swoosh:
     mouse_falloff_dist_child = 638.1   # px: child-end falloff distance
     mouse_falloff_floor = 0.07         # opacity multiplier when far away (0 = invisible)
     mouse_falloff_exp = 2.2            # falloff curve exponent (>1 = stay bright near
+    selectable = False
                                        # the rect, then drop off; 1 = linear)
 
 
 @window(tint=(0.25, 0.29, 0.31))
 class Toggles:
 
-    # [tint=(0.883, 0.805, 0.766, 1.0), icon=""]
+    @defaults(tint=(0.15, 0.135, 0.117, 1.0))
     class TextEditor:
+    
         enable_spell_check = False
         text_focus_stack_trace = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
@@ -443,7 +447,6 @@ class Toggles:
         # failure to be reported, so a region cut mid-string or mid-bracket
         # can never false-flag. Read live.
         fast_check_changed_region = True
-
 
         # Whole-buffer static lint cap: check_source (undefined names /
         # call-signature checks) and the relint's full import rescan are
@@ -490,7 +493,7 @@ class Toggles:
         # thread. Applies to the same two passes as parse_debounce_ms above.
         # 0 = no debounce at all on small buffers. Set equal to
         # parse_debounce_ms to disable the split. Read live.
-        small_file_debounce_ms = 300
+        small_file_debounce_ms = 119
 
         # Size gate for small_file_debounce_ms: buffers up to this many chars
         # take the fast debounce, larger ones use parse_debounce_ms. 0
@@ -503,7 +506,7 @@ class Toggles:
         # into the held parse + module cst (cst_dict_incremental_update) -
         # O(edited statements) instead of the 150-550ms whole-buffer parse.
         # Falls back to the full conversion on any doubt. Read live.
-        incremental_cst_parse = False
+        incremental_cst_parse = True
 
         # Fidelity gate for the merge above: regenerate the spliced module's
         # code and require it to EQUAL the new buffer (one O(file) codegen,
@@ -582,6 +585,18 @@ class Toggles:
             ("t"): [
                 Snippet("black", "tint=(0.0, 0.0, 0.0, 1.0)", "", tint=(0.05, 0.05, 0.05)),
                 Snippet("white", "tint=(1.0, 1.0, 1.0, 1.0)", "", tint=(1.0, 1.0, 1.0)),
+                Snippet("red", "tint=(0.72, 0.11, 0.11)", "", tint=(0.72, 0.11, 0.11)),
+                Snippet("green", "tint=(0.13, 0.55, 0.13)", "", tint=(0.13, 0.55, 0.13)),
+                Snippet("blue", "tint=(0.071, 0.354, 0.511)", "", tint=(0.071, 0.354, 0.511)),
+                Snippet("orange", "tint=(0.85, 0.45, 0.05)", "", tint=(0.85, 0.45, 0.05)),
+                Snippet("yellow", "tint=(0.85, 0.75, 0.05)", "", tint=(0.85, 0.75, 0.05)),
+                Snippet("purple", "tint=(0.45, 0.15, 0.60)", "", tint=(0.45, 0.15, 0.60)),
+                Snippet("teal", "tint=(0.05, 0.55, 0.55)", "", tint=(0.05, 0.55, 0.55)),
+                Snippet("pink", "tint=(0.90, 0.40, 0.60)", "", tint=(0.90, 0.40, 0.60)),
+                Snippet("gray", "tint=(0.5, 0.5, 0.5)", "", tint=(0.5, 0.5, 0.5)),
+                Snippet("cyan", "tint=(0.05, 0.70, 0.85)", "", tint=(0.05, 0.70, 0.85)),
+                Snippet("magenta", "tint=(0.80, 0.10, 0.80)", "", tint=(0.80, 0.10, 0.80)),
+                Snippet("brown", "tint=(0.45, 0.28, 0.12)", "", tint=(0.45, 0.28, 0.12)),
             ],
 
             ("white", "("): [
@@ -593,6 +608,39 @@ class Toggles:
             ("blue", "("): [
                 Snippet("", "(0.071, 0.354, 0.511)", "", tint=(0.071, 0.354, 0.511)),
 
+            ],
+            ("red", "("): [
+                Snippet("", "(0.72, 0.11, 0.11)", "", tint=(0.72, 0.11, 0.11)),
+            ],
+            ("green", "("): [
+                Snippet("", "(0.13, 0.55, 0.13)", "", tint=(0.13, 0.55, 0.13)),
+            ],
+            ("orange", "("): [
+                Snippet("", "(0.85, 0.45, 0.05)", "", tint=(0.85, 0.45, 0.05)),
+            ],
+            ("yellow", "("): [
+                Snippet("", "(0.85, 0.75, 0.05)", "", tint=(0.85, 0.75, 0.05)),
+            ],
+            ("purple", "("): [
+                Snippet("", "(0.45, 0.15, 0.60)", "", tint=(0.45, 0.15, 0.60)),
+            ],
+            ("teal", "("): [
+                Snippet("", "(0.05, 0.55, 0.55)", "", tint=(0.05, 0.55, 0.55)),
+            ],
+            ("pink", "("): [
+                Snippet("", "(0.90, 0.40, 0.60)", "", tint=(0.90, 0.40, 0.60)),
+            ],
+            ("gray", "("): [
+                Snippet("", "(0.5, 0.5, 0.5)", "", tint=(0.5, 0.5, 0.5)),
+            ],
+            ("cyan", "("): [
+                Snippet("", "(0.05, 0.70, 0.85)", "", tint=(0.05, 0.70, 0.85)),
+            ],
+            ("magenta", "("): [
+                Snippet("", "(0.80, 0.10, 0.80)", "", tint=(0.80, 0.10, 0.80)),
+            ],
+            ("brown", "("): [
+                Snippet("", "(0.45, 0.28, 0.12)", "", tint=(0.45, 0.28, 0.12)),
             ],
 
 
@@ -714,6 +762,7 @@ class Toggles:
         # code. Both read live; 1.0/1.0 = the raw tint.
         # [tint=(1.0, 0.661, 0.0, 1.0)]
         comment_tint_saturation = 0.49
+        
         # [tint=(0.3813193440437317, 0.7055555582046509, 0.14895063638687134), show_tint=True]
         comment_tint_value = 0.160
         # Legibility floor for tinted COMMENT TEXT - independent of the
@@ -733,18 +782,21 @@ class Toggles:
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
 
-    @defaults(tint=(0.08, 0.747, 0.85))
+    # [icon=""]
+    @defaults(tint=(0.103, 0.341, 0.617))
     class WindowSettings:
         # Sticky resize: re-anchor the window top at the drag-start point each
         # frame so only the min-on-display clamp displaces it.
         sticky_drag = True
 
+    # [icon=""]
     @defaults(tint=(0.427, 0.541, 0.616))
     class ContextMenu:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
         default_tab = 2
 
+    # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:
         # Auto-scroll to the current match while the search term is being
@@ -796,6 +848,7 @@ class Toggles:
         bg_offset = 30
         debug_scroll = False
 
+    # [icon=""]
     @defaults(tint=(0.315, 0.489, 0.322))
     class LoadSave:
         # When True, save() ALSO writes the raw custom.ini (root_new eval blob)

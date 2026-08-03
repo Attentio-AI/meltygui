@@ -65,7 +65,14 @@ def _store_name(obj):
     return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?")
 
 
-def _right_of_window_pos(parent_win, marker_x, gap=10.0):
+# First-spawn height estimate for the display-bottom clamp below: the real
+# height only exists after the window's first render (the reopen path passes
+# it), and live-view windows commonly land in this range.
+_SPAWN_EST_HEIGHT = 380.0
+
+
+def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
+                         gap=10.0):
     """Parent-relative window_pos that opens a spawned live-value window just
     to the RIGHT of the editor's enclosing window, vertically level with the
     marker — instead of on top of the code the marker sits in.
@@ -76,10 +83,26 @@ def _right_of_window_pos(parent_win, marker_x, gap=10.0):
     subtract it from the window's absolute right edge to land there. Keeping
     window_pos parent-relative means the value window then tracks the editor
     window as it moves. Returns None when there's no enclosing window to
-    anchor to (caller falls back to the default on-cursor placement)."""
+    anchor to (caller falls back to the default on-cursor placement).
+
+    `marker_y` enables the display-bottom clamp: a marker near the screen
+    bottom would otherwise spawn its window mostly below the display (the
+    pinned-anchor bound in _pinned_base_y clamps to the EDITOR window's box,
+    which can itself reach the display bottom, and window_pos is
+    deliberately outside that bound). The y offset lifts the window just
+    enough that `win_h` (the live height on reopen, an estimate on first
+    spawn) fits above the display bottom, floored so the top never leaves
+    the screen."""
     if parent_win is None:
         return None
-    return (parent_win.abs_left + parent_win.width + gap - marker_x, 0)
+    y_off = 0.0
+    if marker_y is not None:
+        disp = Core.melty.display_size
+        if disp:
+            est = win_h or _SPAWN_EST_HEIGHT
+            y_off = min(0.0, disp[1] - gap - est - marker_y)
+            y_off = max(y_off, -marker_y)      # keep the title bar on screen
+    return (parent_win.abs_left + parent_win.width + gap - marker_x, y_off)
 
 
 def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
@@ -127,7 +150,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                           store_obj=None, key_path=None, captured=False,
                           code_tree_node=None, auto_open=True,
                           corner_radius=4.0,
-                          left_mouse_down=False, left_mouse_held=False,
+                          left_mouse_double_clicked=False,
                           unique=0, **kwargs):
     """The live-view token widget — draw_bool_token's pattern plus one extra
     call, draw_any(value, mode=WINDOW). input_value IS the captured value
@@ -148,10 +171,18 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     through the closed= kwarg. (Maybe the framework can own this someday.)
 
     `auto_open=False` (the snapshot/param markers) keeps the window closed
-    until the box is clicked — only explicit live_view() tokens pop their
-    value unprompted. left_mouse_* are declared (never read) so a press on
-    the box latches here instead of moving the editor caret — see
-    draw_icon_selector."""
+    until the box is double-clicked — only explicit live_view() tokens pop
+    their value unprompted.
+
+    Interaction follows the number-widget convention: a single press/click
+    passes straight through to the editor (caret placement, selection —
+    plain text editing; nothing is declared to latch it away), and the
+    widget's own gesture is separate — DOUBLE-click toggles the value
+    window. left_mouse_double_clicked is declared (never read) as the
+    subscription half: hover-routed — the marker's higher z outranks the
+    editor's word-select for the doubled press — and its delivery
+    invalidates the tile so the body renders on the frame the raw
+    is_mouse_double_clicked read below is true."""
     ds = draw_state
     # First only only: a gray box whose code then runs gets invalidated
     # on the key's FIRST value, flips green (and auto-opens below, when this
@@ -218,13 +249,21 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                     rounding=corner_radius)
     imgui.dummy(w, h)
 
-    if hovered and imgui.is_mouse_clicked(0):
+    # Double-click toggles the value window. Read RAW imgui here (the same
+    # split the single-click version used): the declared event param is the
+    # subscription/wake half - its delivery invalidates the tile so the body
+    # renders on the very frame is_mouse_double_clicked is true - while the raw
+    # read is the single trigger, so the two halves can never toggle twice
+    # for one gesture.
+    if hovered and imgui.is_mouse_double_clicked(0):
         open_now = not open_now
         ds._lv_open = open_now
         if open_now and win_ds is not None:
             # Reopening: snap the window back to the right of the editor
-            # window (it may have been dragged onto the code).
-            pos = _right_of_window_pos(ds.parent_window, x)
+            # window (it may have been dragged onto the code). The window's
+            # real height is known here, so the bottom clamp is exact.
+            pos = _right_of_window_pos(ds.parent_window, x, marker_y=y,
+                                       win_h=win_ds.height)
             if pos is not None:
                 win_ds.window_pos = pos
         ds.invalidate()
@@ -258,11 +297,13 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             # comment hasn't set the param yet.
             preferred_source="code comment")
         # First creation: place the window to the RIGHT of the editor's
-        # window rather than on top of the code. window_pos persists on the
-        # spawned window's draw_state (parent-relative, so it tracks the
-        # editor window) - set once; user drags are preserved after.
+        # window, always on top of the code, lifted clear of the editor
+        # bottom (estimated height - the real one doesn't exist yet).
+        # window_pos persists on the spawned window's draw_state
+        # (parent-relative, so it tracks the editor window) - set once; user
+        # drags it preserved after.
         if win_ds is None:
-            pos = _right_of_window_pos(ds.parent_window, x)
+            pos = _right_of_window_pos(ds.parent_window, x, marker_y=y)
             if pos is not None:
                 win_kwargs["window_pos"] = pos
         _c, _v, win_ds = draw_any(input_value, **(win_kwargs | comment_args))
@@ -454,7 +495,7 @@ def run_forward_pass(use_gen_pass=True):
                           use_gen_pass=use_gen_pass)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.10666667, 0.18204, 0.27))
+@window(initial={"width": 350, "height": 540}, tint=(0.114, 0.1324, 0.16))
 @render_func(tint=(0.40, 0.53, 0.78), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
@@ -465,7 +506,34 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
                        source_mode=Mode.NEW_CODE)
 
 
-@render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
+def request_run(lab_ds):
+    """Ctrl+Enter = the Run button, nothing more: find the lab's
+    draw_function runner draw_state and stamp a one-shot run request;
+    draw_function pops it on its next render and calls the same _run() a
+    button click does (same single-flight _run_busy guard, same twin path —
+    the twin already compiles from the pending in-memory source, so running
+    IS the latest code). Ctrl+Enter's DUAL dispatch calls this from both
+    halves (the Ctrl+F rule: the behavior must live in BOTH places): the
+    lab body's blocking on_action while the subtree renders, and draw_main's
+    root ctrl_enter fallback when the lab is blit-cached (per-frame
+    subscriptions lapse under a cached ancestor, so the root re-routes via
+    BVH). At most one half fires per press — the body's blocking sub stops
+    the chain before the root's."""
+    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    for d in lab_ds.descendants(max_depth=8):
+        if str(getattr(d, 'name', '')).endswith(" runner"):
+            d.misc["_run_requested"] = True
+            d.invalidate()          # cached runner must re-render to consume
+            request_render()
+            return
+
+
+# use_cache=False: the body must run every frame so its Ctrl+Enter on_action
+# re-registers - subscriptions are per-frame, and a blit-cached body would
+# drop the action, letting draw_main's global handler win. The two column
+# children keep their own tile caches, so the shell itself is all this
+# dispatch about.
+@render_func(use_cache=False, show_bg=False, shadow=False, selectable=False,
              with_header=None, show_name=False)
 def draw_function_live(input_value, draw_state=None, unique=None,
                        source_mode=None, column_edges=None, run_in_thread=True,
@@ -488,7 +556,12 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     `source_mode` picks the source column's route: FILE_TREE (the default)
     is the text-only editor; NEW_CODE is the full code_file_io display —
     the draw_collection structured pane and the live-overlay text pane at
-    the same time (live_view_forward uses it)."""
+    the same time (live_view_forward uses it).
+
+    Ctrl+Enter over the lab presses the Run button (request_run) —
+    overriding the global Ctrl+Enter's Pending-Saves-window flow while the
+    mouse is here. The run itself already executes the latest source: the
+    twin compiles from the pending in-memory text."""
     fn = input_value
     try:
         fn = inspect.unwrap(fn)
@@ -498,6 +571,17 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     if not callable(fn) or getattr(fn, "__code__", None) is None:
         imgui.text("draw_function_live: needs a plain function")
         return False, input_value
+
+    # Ctrl+Enter over the lab: press the Run button. registered BLOCKING
+    # with a priority well above draw_main's non_blocking root handler
+    # (512 - but any on-screen depth is < 512, so this always sorts first),
+    # which stops the event chain at this view: the global re-save-all
+    # window flow never fires while the mouse is here. This hook only
+    # covers frames where the body renders; the blit-cached half is
+    # draw_main's root BVH fallback → request_run (dual dispatch).
+    if draw_state.on_action("ctrl_enter_down", priority_delta=1024):
+        request_run(draw_state)
+
     from src.lsd.gl_gui.view.core_views.new_core_view import (
         draw_function, draw_any)
     from src.lsd.gl_gui.view.core_views.columns import (

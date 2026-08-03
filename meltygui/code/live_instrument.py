@@ -35,13 +35,15 @@ from pathlib import Path
 
 from src.lsd.gl_gui.view.core_conversion.live_view import live_view
 
-# id(original __code__) -> (file mtime, twin function | original on
-# fallback). Identity-keyed for the same reasons as live_view._sites: code
-# objects compare equal across files; weakref.finalize evicts when hotswap
-# drops the old code. The mtime in the value is the SEAMLESS-EDIT half: the
-# twin builds from the file's CURRENT text (getsourcelines), so an auto-saved
-# edit must rebuild the twin even though fn.__code__ hasn't been hotswapped -
-# otherwise Run keeps replaying the pre-edit code and "nothing updates".
+# id(original __code__) -> ((source mtime, pending gen), twin function |
+# original on fallback). Identity-keyed for the same reason as
+# live_view._sites: code objects compare equal across files; weakref.finalize
+# evicts when hotswap drops the lastref. The signature is the SEAMLESS-EDIT
+# half: the twin builds from the file's IN-MEMORY text (disk + PendingSave
+# splices - deferred saves never reach disk before shutdown), so both a plain
+# disk save (mtime) and a queued editor edit (pending gen) rebuild the twin
+# even though fn.__code__ hasn't been hotswapped - otherwise Run keeps
+# replaying the pre-edit code and "nothing updates".
 _twins = {}
 
 _SNAP_NAME = "__lv_view__"
@@ -51,16 +53,45 @@ def run_instrumented(fn, *args, **kwargs):
     """Call `fn` with assignment snapshots publishing to its live_view store.
     Equivalent to fn(*args, **kwargs) — same return value, same exceptions —
     with the original function running un-instrumented when the source can't
-    be transformed (closure/generator/async/unparseable)."""
-    return instrumented_twin(fn)(*args, **kwargs)
+    be transformed (closure/generator/async/unparseable).
+
+    A successful instrumented run also PRUNES the store (run_capture): the
+    twin republishes every assignment the function still contains, so keys
+    it didn't touch belong to removed lines and are dropped — values,
+    markers, and their orphaned value windows. The uninstrumented fallback
+    republishes nothing and must not prune."""
+    try:
+        target = inspect.unwrap(fn)
+    except Exception:
+        target = fn
+    twin = instrumented_twin(fn)
+    try:
+        if twin is target:
+            return fn(*args, **kwargs)
+        from src.lsd.gl_gui.view.core_conversion.live_view import run_capture
+        with run_capture(target):
+            return twin(*args, **kwargs)
+    finally:
+        # Retire the PREVIOUS run's generation: the studio's gc_manager keeps
+        # gen2 out of auto-reach, so the cycle-trapped graphs each run
+        # replaces (deepcopied components, the old ForwardPassResult) pin
+        # their CUDA tensors until an explicit collect. This runs on the
+        # run's main thread, win or lose - the problem exists either way.
+        try:
+            from src.lsd.gl_gui.gc_manager import collect_after_run
+            collect_after_run(getattr(target, "__name__", "run"))
+        except Exception:
+            pass
 
 
 def instrumented_twin(fn):
     """The instrumented twin of `fn` for its CURRENT SOURCE — cached, rebuilt
-    after a hotswap (new __code__) OR a plain file save (new mtime: the twin
-    compiles from the file's current text, so an auto-saved edit takes effect
-    on the next Run without requiring Ctrl+Enter first). Returns `fn` itself
-    when instrumentation isn't possible, so callers never need a fallback."""
+    after a hotswap (new __code__), a plain disk save (new mtime), OR a
+    deferred in-editor edit (new PendingSave gen: the twin compiles from the
+    file's in-memory text, the same text Ctrl+Enter's hotswap compiles, so
+    Run executes the latest code even though deferred saves never reach
+    disk). Returns `fn` itself when instrumentation isn't possible, so
+    callers never need a fallback."""
     try:
         fn = inspect.unwrap(fn)
     except Exception:
@@ -72,23 +103,121 @@ def instrumented_twin(fn):
         mtime = Path(code.co_filename).stat().st_mtime
     except OSError:
         mtime = None
+    sig = (mtime, _pending_gen(code.co_filename))
     cached = _twins.get(id(code))
-    if cached is not None and cached[0] == mtime:
+    if cached is not None and cached[0] == sig:
         return cached[1]
+    pending = _pending_state(code.co_filename)[1]   # O(file) - miss only
     try:
         linecache.checkcache(code.co_filename)  # getsourcelines must see the save
-        twin = _build_twin(fn)
+        twin = _build_twin(fn, pending)
     except Exception as e:
         print(f"live_instrument: falling back to uninstrumented "
               f"{getattr(fn, '__qualname__', fn)}: {e!r}", file=sys.stderr)
         twin = fn
     if cached is None:
         weakref.finalize(code, _twins.pop, id(code), None)
-    _twins[id(code)] = (mtime, twin)
+    _twins[id(code)] = (sig, twin)
     return twin
 
 
-def _build_twin(fn):
+def _pending_gen(path):
+    """Combined pending-edit generation for `path` — the CHEAP half of the
+    cache signature (dict lookups only; never builds text). Sums the raw and
+    resolved Path keys: queue_save keys the counter on the address's own
+    path value (new_converters does the same dual lookup); only monotonicity
+    matters."""
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        p = Path(path)
+        gen = PendingSave.pending_gen_for(p)
+        try:
+            rp = p.resolve()
+            if rp != p:
+                gen += PendingSave.pending_gen_for(rp)
+        except OSError:
+            pass
+        return gen
+    except Exception:
+        return 0
+
+
+def _pending_state(path):
+    """(pending edit generation, in-memory file text | None) for a
+    co_filename. The text build is O(file) (current_file_text splices) — a
+    MISS-only cost: callers compare a (mtime, _pending_gen) signature first
+    and only then call this. gen 0 → nothing queued → (0, None) and the twin
+    builds straight from disk via getsourcelines."""
+    gen = _pending_gen(path)
+    if not gen:
+        return 0, None
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        return gen, PendingSave.current_file_text(Path(path))
+    except Exception:
+        return gen, None
+
+
+def _delta_above(path, lineno):
+    """Net line-count change of queued span edits fully ABOVE 1-indexed disk
+    line `lineno` — bridges the live code's DISK coordinates (the
+    co_firstlineno invariant) to positions in the pending text; the same sum
+    text_editor's _pending_line_delta computes, without its buffer-cache
+    plumbing."""
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    try:
+        rp = Path(path).resolve()
+    except OSError:
+        return 0
+    delta = 0
+    for addr, (codec, kwargs) in list(PendingSave.pending_saves.items()):
+        data = kwargs.get("data")
+        start, end = getattr(addr, "start", None), getattr(addr, "end", None)
+        if (not isinstance(data, str) or start is None or end is None
+                or end > lineno - 1):
+            continue
+        try:
+            if Path(addr.path).resolve() != rp:
+                continue
+        except OSError:
+            continue
+        d = data[:-1] if data.endswith("\n") else data
+        delta += (d.count("\n") + 1) - (end - start)
+    return delta
+
+
+def _fn_source(fn, pending):
+    """(source text incl. decorators, 1-indexed anchor line in DISK coords)
+    of the function's CURRENT code. With nothing queued (`pending` is None)
+    this is exactly inspect.getsourcelines. Otherwise the def is located in
+    the pending text — by name, nearest its expected (delta-shifted) line —
+    and the anchor maps BACK to disk coordinates so the injected snapshot
+    linenos keep matching the hotswapped code's disk-coord stamps and the
+    editor overlay's line math (disk span start + pending-relative offset)."""
+    if pending is None:
+        src_lines, start = inspect.getsourcelines(fn)
+        return "".join(src_lines), start
+    code = fn.__code__
+    delta = _delta_above(code.co_filename, code.co_firstlineno)
+    want = code.co_firstlineno + delta
+    best = None
+    for node in ast.walk(ast.parse(pending)):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == code.co_name):
+            score = abs(node.lineno - want)
+            if best is None or score < best[0]:
+                best = (score, node)
+    if best is None:        # def renamed/deleted in the pending text
+        src_lines, start = inspect.getsourcelines(fn)
+        return "".join(src_lines), start
+    node = best[1]
+    start = min([node.lineno] + [d.lineno for d in node.decorator_list])
+    lines = pending.split("\n")
+    return ("\n".join(lines[start - 1:node.end_lineno]) + "\n",
+            start - delta)
+
+
+def _build_twin(fn, pending=None):
     code = fn.__code__
     if code.co_freevars:
         return fn  # a standalone def can't rebind another frame's cells
@@ -96,8 +225,8 @@ def _build_twin(fn):
                         | inspect.CO_ASYNC_GENERATOR):
         return fn
 
-    src_lines, start = inspect.getsourcelines(fn)
-    tree = ast.parse(textwrap.dedent("".join(src_lines)))
+    src, start = _fn_source(fn, pending)
+    tree = ast.parse(textwrap.dedent(src))
     ast.increment_lineno(tree, start - 1)
     fdef = tree.body[0]
     if not isinstance(fdef, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -1,4 +1,5 @@
 import math
+import os
 import threading as _threading
 import time
 import types
@@ -150,6 +151,52 @@ class FileWatch:
     # index subscribes here (libcst_conversion._on_watch_event). Listeners
     # must be fast/non-blocking (debounce internally); exceptions swallowed.
     global_listeners = []
+    # Resolved absolute paths of every project .py file registered by
+    # watch_project_files - files watched for EXTERNAL-change tracking even
+    # though no view has loaded them. Membership drives the baseline re-read
+    # in _on_event (view-less files have no reader to repopulate code_cache
+    # after an event pops it, so we re-read here or the SECOND external edit
+    # would have no diff baseline).
+    project_tracked = set()
+
+    @classmethod
+    def watch_project_files(cls, root=None):
+        """Register every project .py file the way a code view's
+        register_draw_state does — schedule its directory on the observer and
+        baseline its text in Melty.code_cache — minus the per-draw_state
+        dispatch state (no view exists). This is what lets ExternalChanges /
+        recompile_external_changes see edits to files the studio never opened:
+        _on_event's diff baseline is the popped code_cache entry, so an
+        unwatched or uncached file's external edit was invisible before.
+
+        Idempotent and cheap on re-run (dirs dedupe via _watched_dirs; only
+        uncached files are read), so recompile calls it again to pick up
+        files/dirs created since startup. One-time O(project) read on first
+        call — run it off the render thread."""
+        from src.lsd.gl_gui.view.core_conversion.address import _PROJECT_ROOT
+        root = Path(root or _PROJECT_ROOT).resolve()
+        skip = {"__pycache__", "venv", ".venv", "node_modules",
+                "build", "dist", "resources"}
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames
+                           if d not in skip and not d.startswith(".")]
+            pys = [f for f in filenames if f.endswith(".py")]
+            if not pys:
+                continue
+            if dirpath not in cls._watched_dirs:
+                try:
+                    cls.observer.schedule(cls.handler, dirpath, recursive=False)
+                    cls._watched_dirs.add(dirpath)
+                except OSError:
+                    continue
+            for f in pys:
+                resolved = os.path.join(dirpath, f)
+                cls.project_tracked.add(resolved)
+                if resolved not in Melty.code_cache:
+                    try:
+                        Melty.read_code(resolved)
+                    except Exception:
+                        pass
 
     @classmethod
     def start(cls):
@@ -216,6 +263,30 @@ class FileWatch:
             try:
                 from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
                 ExternalChanges.on_file_event(event.src_path, old_text)
+            except Exception:
+                pass
+        elif (event.src_path not in cls.project_tracked
+                and event.src_path.endswith(".py")):
+            # A project .py the walk never saw - a file created after startup
+            # (or in a fresh dir another event reached). Track it with an
+            # EMPTY baseline so the external window shows it as all-added and
+            # recompile can absorb it.
+            try:
+                from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
+                if is_editable_source(event.src_path):
+                    cls.project_tracked.add(event.src_path)
+                    from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+                    ExternalChanges.on_file_event(event.src_path, "")
+            except Exception:
+                pass
+        # Re-arm the baseline for the NEXT edit: views re-read their file on
+        # dispatch, but a tracked view-less file has no reader - without this
+        # its second external edit would find code_cache empty and go
+        # untracked. One str object per read keeps id(...) change signals
+        # (external window sig, merge memo) honest.
+        if event.src_path in cls.project_tracked:
+            try:
+                Melty.read_code(event.src_path)
             except Exception:
                 pass
         for listener in list(cls.global_listeners):
@@ -509,6 +580,21 @@ class Melty:
     nested_layer_boost = 1
     top_layer_boost = 5
     max_layer = 64
+    # Dedicated layer band for nested closable windows. Root windows live in
+    # [0, nested_layer_base); nested windows (positive layer_offset) are lifted
+    # into [nested_layer_base, nested_layer_max) by nested_window_layer(), so
+    # they can never collide with — or get clamp-tied against — root window
+    # layers. max_layer stays the ROOT-band size and keeps its existing
+    # meaning for overlay channel counts and shadow-depth normalization;
+    # nested_layer_max is the total layer budget (layers buckets, blit rank
+    # clamp).
+    nested_layer_base = 64
+    nested_layer_max = 192
+    # Reserved layer for always_on_top root windows (e.g. GlobalSearch): above
+    # the whole nested band, below the dragged-item layer bucket
+    # (len(layers) - 1). A root window passing always_on_top=True is pinned
+    # here by core_render's layer override and by pending_move_to_front.
+    always_on_top_layer = nested_layer_max - 4
     drag_layer = 31
     layers = []
     active_layer = 0
@@ -743,6 +829,13 @@ class Melty:
     # Per-frame dense rank map: raw window z index (window_index) -> overlay
     # channel. Rebuilt in end_frame; read by overlay_window_channel().
     _overlay_channel_map: dict = {}
+    # id(window ds) -> overlay channel, assigned in MINT order (top, roots
+    # before nested, sibling d_idx). Unlike _overlay_channel_map (keyed by raw
+    # window index), two windows can't share a channel here, so the mask
+    # pass's strict "higher channel masks lower" comparison stays exact even
+    # when an off-chain nested window's index crosses a neighboring root's.
+    # Rebuilt each frame next to the raw map; read via overlay_channel_for().
+    _overlay_channel_by_ds: dict = {}
     _overlay_probe_logged = False
     _debug_overlay_test = True  # controlled sub-top overlay to verify masking
 
@@ -912,6 +1005,73 @@ class Melty:
         the unmasked global channel; the renderer masks channel C with every
         window whose layer_channel is greater than C."""
         return max(0, min(int(layer), cls.max_depth - 1))
+
+    @classmethod
+    def _chain_root(cls, ds):
+        """Walk parent_window up to the top-level window that owns this nested
+        chain. Bounded, and guarded against a self-referencing node the same
+        way apply_move_to_front's subtree walk is."""
+        node, n = ds, 0
+        while n < 64:
+            nxt = node.parent_window
+            if nxt is None or nxt is node:
+                return node
+            node = nxt
+            n += 1
+        return node
+
+    @classmethod
+    def nested_window_layer(cls, parent_layer, layer_offset, ds=None) -> int:
+        """Layer for a nested closable window, given its parent window's layer.
+
+        Only chains rooted at the FRONT top-level window get the dedicated
+        nested band [nested_layer_base, nested_layer_max): band start + parent
+        layer + offset, with a nested-of-nested chain (whose parent is already
+        in the band) climbing within it. The front root is the boosted one —
+        its layer is len(registered_windows) + top_layer_boost, while inactive
+        roots keep their registry-index layer — so `root.layer >=
+        len(registered_windows)` is the test.
+
+        Chains rooted at an INACTIVE window stay parent-relative in the root
+        band with the climb compressed to +1 per level (offset 0 stays 0), and
+        are capped below the band, so they ride just above their parent but
+        can never cross the focused front window.
+
+        Negative offsets (window drawn BEHIND its parent, e.g. the voxel
+        controls panel) always stay parent-relative — lifting them into the
+        band would put them in front of every root window, inverting their
+        meaning. The 0-clamp mirrors abs_layer's: the dispatch loop never
+        visits negative buckets."""
+        if layer_offset < 0:
+            return max(0, parent_layer + layer_offset)
+        if ds is not None:
+            root_layer = cls._chain_root(ds).layer
+            if root_layer is not None and root_layer < len(cls.registered_windows):
+                return min(cls.nested_layer_base - 1,
+                           parent_layer + min(layer_offset, 1))
+        if parent_layer >= cls.nested_layer_base:
+            return min(cls.nested_layer_max - 1, parent_layer + layer_offset)
+        return min(cls.nested_layer_max - 1,
+                   cls.nested_layer_base + parent_layer + layer_offset)
+
+    @classmethod
+    def overlay_channel_for(cls, ds) -> int:
+        """Overlay channel for a draw_state, from the paint-order per-window
+        map. A non-window view resolves to its nearest enclosing window's
+        channel (bounded parent_window walk, self-loop guarded). Falls back to
+        the raw-index rank map for windows registered after this frame's map
+        was built — the pre-existing approximation for that case."""
+        node, n = ds, 0
+        while node is not None and n < 64:
+            ch = cls._overlay_channel_by_ds.get(id(node))
+            if ch is not None:
+                return ch
+            nxt = node.parent_window
+            if nxt is node:
+                break
+            node = nxt
+            n += 1
+        return cls.overlay_window_channel(ds.window_index)
 
     @classmethod
     def overlay_window_channel(cls, raw_index) -> int:
@@ -1448,7 +1608,7 @@ class Melty:
         cls.blocker_hovered = False
 
         cls.layers.clear()
-        for _ in range(cls.max_layer * 2):
+        for _ in range(cls.nested_layer_max):
             cls.layers.append([])
         # Handle global hotkeys
         # for hotkey, target in global_hotkeys.items():
@@ -2615,6 +2775,25 @@ class Melty:
         cls._overlay_channel_map = {
             raw: rank for rank, raw in enumerate(sorted(raw_window_indices))}
 
+        # Per-window channels in exact paint order: the dispatch loop draws
+        # bucket idx's ROOTS (cls.layers) before its nested windows
+        # (root_draw_states_by_layer, in d_idx order), so sorting on
+        # (bucket, root/nested, seq) reproduces the visual Z order even where
+        # raw window_index values tie (e.g. an inactive-chain nested window at
+        # parent+1 sharing an index with the next registry root).
+        paint_ordered = []
+        for seq, w in enumerate(cls.registered_windows.values()):
+            w_ds = getattr(w, 'draw_state', None)
+            if w_ds is not None and not w_ds.closed and w_ds.layer is not None:
+                paint_ordered.append(((w_ds.layer, 0, seq), w_ds))
+        for l_idx, l_ds_list in cls.root_draw_states_by_layer.items():
+            for d_idx, n_ds in enumerate(l_ds_list):
+                paint_ordered.append(((l_idx, 1, d_idx), n_ds))
+        paint_ordered.sort(key=lambda t: t[0])
+        cls._overlay_channel_by_ds = {
+            id(p_ds): min(rank, cls.max_layer - 2)
+            for rank, (_k, p_ds) in enumerate(paint_ordered)}
+
         # Which swoosh(es) the mouse is over: walk up from the BVH-hovered
         # draw_state (begin_frame's bvh_query hit, so occlusion and hidden
         # subtrees are already incorporated) to the first ancestor that is
@@ -2736,7 +2915,7 @@ class Melty:
                         # any higher-layer window (matches the renderer's mask).
                         layer_index = draw_state.window_index
 
-                        overlay_dl.channels_set_current(Melty.overlay_window_channel(offset_ds.window_index))
+                        overlay_dl.channels_set_current(Melty.overlay_channel_for(offset_ds))
 
                         # Color the highlight using the *parent* window's tint:
                         # the nested view doesn't always carry a tint of its own.
@@ -2825,7 +3004,7 @@ class Melty:
                     child_outline_col = imgui.get_color_u32_rgba(
                         *child_rgb, Tint.highlight_outline_alpha)
 
-                    overlay_dl.channels_set_current(Melty.overlay_window_channel(draw_state.window_index))
+                    overlay_dl.channels_set_current(Melty.overlay_channel_for(draw_state))
 
                     # Live endpoint positions for both ends - see the note on the
                     # parent highlight box above. Either end can be a child of
@@ -2960,7 +3139,7 @@ class Melty:
             # channel (same as the nested-view highlight and swoosh) so a
             # higher-layer window stencil-masks it, rather than the rect
             # floating on top of everything on the global top channel.
-            overlay.channels_set_current(cls.overlay_window_channel(selected_ds.window_index))
+            overlay.channels_set_current(cls.overlay_channel_for(selected_ds))
 
             # Color from the view's storable tint, brightened the same way as
             # the highlight boxes (current_tint may be None -> falls back to
@@ -3450,6 +3629,11 @@ class Melty:
                     siblings.append(nested)
 
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
+            if cls.pending_move_to_front[1]._kwargs.get("always_on_top", False):
+                # An always_on_top window never leaves its dedicated layer -
+                # the standard front boost would drop it back into the root
+                # layer, underneath the nested-window band.
+                window_z_pos = cls.always_on_top_layer
             # layer == top_layer can't prove "already front": a window CLOSED
             # while front keeps its boosted layer (closed windows never
             # re-render, so nothing re-stamps it) while other windows get
@@ -3871,6 +4055,12 @@ class Melty:
             setattr(cls, key, value)
 
         FileWatch.start()
+
+        # Register EVERY project .py for external-change tracking (dirs on the
+        # observer + code-file baselines), not just files views load - one
+        # O(files) call, off-thread so startup doesn't pay for it.
+        _threading.Thread(target=FileWatch.watch_project_files,
+                          name="project-file-watch-warm", daemon=True).start()
 
         # Spin up the interactive jedi (autocomplete) server now, off-thread -
         # cold it takes seconds, and lazily that lands on the first popup.

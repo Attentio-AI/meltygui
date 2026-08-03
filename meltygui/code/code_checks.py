@@ -866,6 +866,46 @@ def _suggest_import(name):
     return stmts
 
 
+_project_importables_cache = None   # (src_module_count, rows, stmts)
+
+
+def project_importables():
+    """(rows, stmts) for the completion popup's import shortcuts: `rows` is a
+    sorted [(name, "auto_import")] list of the main package's top-level classes
+    and modules, `stmts` maps each name to the import statement that binds it
+    (`DrawState` → `from src.…draw_state import DrawState`, `draw_state` →
+    `from src.…core_model import draw_state`). Only the canonical `src.`
+    module identities are scanned (the bare `lsd.` aliases of the same files
+    would spell imports the project doesn't use). Classes win a name collision
+    with a module. Cached; rebuilt when the number of loaded src. modules
+    changes (imports only ever add modules mid-session)."""
+    global _project_importables_cache
+    src_mods = {n: m for n, m in list(sys.modules.items())
+                if n.startswith("src.") and m is not None}
+    stamp = len(src_mods)
+    if (_project_importables_cache is not None
+            and _project_importables_cache[0] == stamp):
+        return _project_importables_cache[1], _project_importables_cache[2]
+    stmts = {}
+    for mod_name in sorted(src_mods):
+        mod = src_mods[mod_name]
+        try:
+            ns = vars(mod)
+        except TypeError:
+            continue
+        for attr, obj in list(ns.items()):
+            if (not attr.startswith("_") and isinstance(obj, type)
+                    and getattr(obj, "__module__", None) == mod_name):
+                stmts.setdefault(attr, f"from {mod_name} import {attr}")
+    for mod_name in sorted(src_mods):
+        parent, _, base = mod_name.rpartition(".")
+        if parent and not base.startswith("_"):
+            stmts.setdefault(base, f"from {parent} import {base}")
+    rows = [(n, "auto_import") for n in sorted(stmts)]
+    _project_importables_cache = (stamp, rows, stmts)
+    return rows, stmts
+
+
 _file_binds_cache = {}   # str(path) -> (mtime_ns, pending_gen, binds, mono_ts)
 
 # Freshness floor for the binds cache: within this window a cached answer is

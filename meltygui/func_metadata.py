@@ -65,10 +65,27 @@ class VarMeta:
         return f"VarMeta(type={_type_name(self.type)!r}, {len(self.members)} members)"
 
 
-class FuncsMetadata:
-    """Process-wide cache of observed scope metadata, keyed by function object."""
+def _meta_key(func):
+    """Stable cache key for ``func``: ``(co_filename, co_qualname)`` of the
+    unwrapped body when it has code, else the object itself. This folds the
+    render_func WRAPPER and its inner body into one slot (writers hold either
+    identity — the eval REPL records under the wrapper, the stack-capture
+    recorder resolves frames to the inner), and the slot SURVIVES HOTSWAP: the
+    replacement function keeps its file/qualname while the old object dies, so
+    types recorded before a swap still answer afterwards."""
+    inner = _unwrap(func)
+    code = getattr(inner, "__code__", None)
+    if code is not None:
+        return (code.co_filename, code.co_qualname)
+    return func
 
-    metadata = {}  # func -> {name: VarMeta}
+
+class FuncsMetadata:
+    """Process-wide cache of observed scope metadata, keyed per function via
+    ``_meta_key`` (file + qualname when available — wrapper/inner-agnostic and
+    hotswap-stable)."""
+
+    metadata = {}  # _meta_key(func) -> {name: VarMeta}
 
     @classmethod
     def record(cls, func, scope):
@@ -78,9 +95,10 @@ class FuncsMetadata:
         Individual names are skipped silently when introspection raises."""
         if func is None or not scope:
             return None
-        slot = cls.metadata.get(func)
+        key = _meta_key(func)
+        slot = cls.metadata.get(key)
         if slot is None:
-            slot = cls.metadata[func] = {}
+            slot = cls.metadata[key] = {}
         for name, value in scope.items():
             if not isinstance(name, str):
                 continue
@@ -91,9 +109,36 @@ class FuncsMetadata:
         return slot
 
     @classmethod
+    def record_value(cls, func, name, value):
+        """Record ONE observed name — the per-publish entry point for live_view
+        captures. Unlike ``record``, this is called from hot paths (an
+        instrumented run republishes every assignment; a training-loop publisher
+        fires per iteration), so it skips the ``dir()`` member snapshot whenever
+        the name's TYPE is unchanged since the last record — steady-state cost
+        is two dict hits and a type compare."""
+        if func is None or not isinstance(name, str) or not name:
+            return
+        key = _meta_key(func)
+        slot = cls.metadata.get(key)
+        if slot is None:
+            slot = cls.metadata[key] = {}
+        prev = slot.get(name)
+        if prev is not None and prev.type is type(value):
+            return
+        try:
+            slot[name] = VarMeta(type=type(value), members=_safe_members(value))
+        except Exception:
+            pass
+
+    @classmethod
     def get(cls, func):
-        """``{name: VarMeta}`` observed for ``func``, or ``{}`` if never recorded."""
-        return cls.metadata.get(func, {})
+        """``{name: VarMeta}`` observed for ``func``, or ``{}`` if never
+        recorded. The ``_meta_key`` normalization means a reader holding the
+        wrapper, the inner body, or a post-hotswap replacement all find the
+        same slot."""
+        if func is None:
+            return {}
+        return cls.metadata.get(_meta_key(func), {})
 
     @classmethod
     def clear(cls, func=None):
@@ -101,7 +146,7 @@ class FuncsMetadata:
         if func is None:
             cls.metadata.clear()
         else:
-            cls.metadata.pop(func, None)
+            cls.metadata.pop(_meta_key(func), None)
 
 
 # ── Completion providers (read side) ─────────────────────────────────────────
@@ -172,7 +217,8 @@ def _type_member_kind(t, name):
         return "attr"
     if isinstance(attr, (staticmethod, classmethod)):
         return "method"
-    if inspect.isfunction(attr) or inspect.ismethod(attr) or inspect.isbuiltin(attr):
+    if (inspect.isfunction(attr) or inspect.ismethod(attr)
+            or inspect.isbuiltin(attr) or inspect.ismethoddescriptor(attr)):
         return "method"
     return "attr"
 

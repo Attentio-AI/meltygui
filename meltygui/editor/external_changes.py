@@ -35,6 +35,14 @@ class ExternalChanges:
     # watcher pops code_cache on every write, so a NEW external edit yields a
     # new disk object and the marker naturally expires).
     absorbed = {}
+    # path → disk text the last absorb was computed against (the SYNC frame).
+    # `originals` is display-only accumulation (setdefault-once, kept until the
+    # user dismisses); merging must diff from the last text the pending queue
+    # and live co_firstlineno's were rebased to - after an absorb that is the
+    # absorbed disk, not the original baseline. Diffing new drift from the old
+    # baseline would re-apply already-absorbed hunks (false lineno shifts,
+    # phantom conflicts). Falls back to `originals` before the first absorb.
+    synced = {}
 
     @classmethod
     def on_file_event(cls, src_path, old_text):
@@ -78,6 +86,16 @@ class ExternalChanges:
     def dismiss_all(cls):
         cls.originals.clear()
         cls.absorbed.clear()
+        cls.synced.clear()
+
+    @classmethod
+    def untrack(cls, path):
+        """Drop every record for `path` — dismissals and drift-back heals.
+        The next external event re-baselines from whatever the cache holds
+        then, so a stale sync frame must never outlive its originals entry."""
+        cls.originals.pop(path, None)
+        cls.absorbed.pop(path, None)
+        cls.synced.pop(path, None)
 
     @classmethod
     def mark_absorbed(cls, path, disk_text):
@@ -126,6 +144,7 @@ for _n in ("src.lsd.gl_gui.view.core_views.external_changes",
         ExternalChanges.originals = _twin.originals
         ExternalChanges._window_ds = _twin._window_ds
         ExternalChanges.absorbed = getattr(_twin, "absorbed", ExternalChanges.absorbed)
+        ExternalChanges.synced = getattr(_twin, "synced", ExternalChanges.synced)
         break
 
 
@@ -164,16 +183,23 @@ def draw_external_changes(draw_state=None):
             with open("/tmp/ext_changes_debug.log", "a") as _f:
                 _f.write(f"pop self_write {path} recorded={FileWatch._self_write_hashes.get(path)} "
                          f"disk={FileWatch._get_hash(path)}\n")
-            ExternalChanges.originals.pop(path, None)
+            ExternalChanges.untrack(path)
             continue
         current = Melty.read_code(path)
         if current is not None and \
                 current.splitlines(keepends=True) == str(original).splitlines(keepends=True):
             # Drifted back to the baseline (e.g. an outside edit was undone).
-            with open("/tmp/ext_changes_debug.log", "a") as _f:
-                _f.write(f"pop drift_back {path}\n")
-            ExternalChanges.originals.pop(path, None)
-            continue
+            # Only heal when no absorb moved the SYNC frame past the baseline:
+            # after an absorb, live code is the absorbed state, so a disk
+            # change is a sync→disk drift the next recompile must absorb -
+            # untracking here would leave live and disk silently diverged.
+            _synced = ExternalChanges.synced.get(path)
+            if _synced is None or str(_synced).splitlines(keepends=True) \
+                    == current.splitlines(keepends=True):
+                with open("/tmp/ext_changes_debug.log", "a") as _f:
+                    _f.write(f"pop drift_back {path}\n")
+                ExternalChanges.untrack(path)
+                continue
         entries.append((path, original, current))
 
     # Stale-blit guard. The event frame renders with the cache BYPASSED (the
@@ -195,8 +221,7 @@ def draw_external_changes(draw_state=None):
         if current is None:
             if RenderFuncs.button(f" Dismiss##{path}", name=f"dismiss {path}",
                                   tint=(0.12, 0.002037035, 0.002037035, 0.4))[0]:
-                ExternalChanges.originals.pop(path, None)
-                ExternalChanges.absorbed.pop(path, None)
+                ExternalChanges.untrack(path)
             RenderFuncs.draw_text(f"{path}: deleted or unreadable", name=f"{file_name}##{path}")
             continue
         new_lines = current.splitlines(keepends=True)
@@ -217,8 +242,7 @@ def draw_external_changes(draw_state=None):
             # Dismiss = accept the on-disk state as the new baseline: the
             # entry drops, and the next external edit re-baselines from
             # whatever the cache holds then.
-            ExternalChanges.originals.pop(path, None)
-            ExternalChanges.absorbed.pop(path, None)
+            ExternalChanges.untrack(path)
         if ExternalChanges.is_absorbed(path, current):
             RenderFuncs.draw_text("absorbed into pending queue (recompiled) — "
                                   "Dismiss to clear",

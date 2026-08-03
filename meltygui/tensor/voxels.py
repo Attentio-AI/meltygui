@@ -57,7 +57,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_tab_bar
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_tab_bar, draw_dropdown
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.toggles import Swoosh
@@ -516,6 +516,38 @@ class TensorDims(tuple):
 
     def __repr__(self):
         return f"TensorDims({tuple(int(v) for v in self)})"
+
+
+class Lut(str):
+    """A LUT NAME that is still a str everywhere it matters (dict keys,
+    comparisons, GLSL host lookups) but carries its own TYPE, so melty routes
+    it to its own renderer — a dropdown of the available LUTs rather than a
+    text field. Same contract as TensorDim: the renderer must return
+    Lut(...) or the first edit stores a plain str and the row falls back to
+    the generic str renderer."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return f"Lut({str(self)!r})"
+
+
+@render_func(is_default_for="Lut", show_bg=False, is_tree=False,
+             header_same_line=True, with_header=draw_header)
+def draw_lut(input_value=None, draw_state=None, unique=0, **kwargs):
+    """THE lut picker — a dropdown of the LUT names the lut host knows about
+    (live host dict when it's up, baked LUTS otherwise), shared by every
+    lut-typed param. Returns Lut(...) so the value keeps routing here."""
+    host_val = getattr(globals().get("lut_host"), "input_value", None)
+    luts = host_val if isinstance(host_val, dict) and host_val else LUTS
+    names = [str(k) for k in luts]
+    current = str(input_value) if input_value else "jet"
+    changed, picked = draw_dropdown(
+        current, collection={n: n for n in names},
+        name=f"lut##{unique}", show_header=False, width=140)
+    if changed and picked:
+        return True, Lut(picked)
+    return False, input_value
 
 
 def _row_collection(draw_state, kwargs):
@@ -1171,13 +1203,14 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # excluded from auto-state). Gestures/panel write
                 # draw_state.<name>; diverged values persist. ──
                 tilt=0.283, spin=0.724, cam_zoom=3.4,
+                # [tint=(0.084, 0.472, 0.148, 1.0)]
                 pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                 cam_brightness=1.332, cam_contrast=1.0,
                 # density = the old densityScale (haze gain over the opacity
                 # gate); threshold = the old opacityThreshold (higher → lower
                 # gate → more opaque)
                 density=3.7, threshold=0.301, centered=False,
-                nearest=True, lut="jet", step_size=0.0005, max_steps=4096,
+                nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
                 # ── axis mapping: dims by index OR NAME. The first three dims
                 # by default; None still means "derive" (last three → z/y/x)
                 # for anything that clears one. ──
@@ -1526,7 +1559,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                         is_tree=False,
                                         use_cache=False,
                                         show_name=False,
-                                        layer=Melty.active_layer-3,
+                                        layer_offset=7,
                                         tint=draw_state._kwargs.get("tint", None),
                                         swoosh_mode=SwooshMode.LINE,
                                         mode=Modes.WINDOW_PARAMS, show_tint=False,

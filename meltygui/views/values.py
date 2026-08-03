@@ -3,7 +3,7 @@ import sys
 import threading
 import traceback
 import types
-from collections import deque, defaultdict
+from collections import deque, defaultdict, namedtuple
 from collections.abc import MutableMapping
 from enum import Enum
 from inspect import Parameter
@@ -188,113 +188,221 @@ def _fuzzy_key_match(q, k):
     return _fuzzy_substring_distance(q, k) <= max(1, len(q) // 4)
 
 
-def global_search_results(root, q, exclude=None, max_depth=30, limit=60):
-    """Walk the live draw_state tree under `root` (draw_main's, via the same
-    DrawState.descendants used elsewhere) and return the nodes whose display
-    name matches `q`, best-first — the global-search result list.
+# --- Global search indexes ---------------------------------------------------
+# Global search queries a fixed set of index providers instead of walking the
+# live draw_state tree. Each provider returns SearchHit objects - a display
+# label, a row tint, and an activate() that performs the jump - so a data
+# source is searchable whether or not it's on screen (or exists as draw_states
+# at all). To add a data source, register a provider with @search_index.
+SearchHit = namedtuple("SearchHit", "label tint activate kind", defaults=("",))
 
-    Exact substring hits rank ahead of fuzzy (typo) ones, and within a tier
-    shorter names first, so the limit trims the long fuzzy tail rather than good
-    matches. Skips shadow/blank nodes, dedupes by label, and skips the `exclude`
-    subtree (the search window itself, so it doesn't match its own query)."""
-    exclude_ids = set()
-    if exclude is not None:
-        exclude_ids = {id(exclude)} | {id(d) for d in exclude.descendants(max_depth=max_depth)}
-    tol = max(1, len(q) // 4)
-    scored = []
-    seen = set()
-    for ds in root.descendants(max_depth=max_depth):
-        if getattr(ds, 'just_shadow', False) or id(ds) in exclude_ids:
-            continue
-        name = getattr(ds, 'name', None)
-        if not name:
+# Result categories in selector order. A hit's `kind` keys into this; hits
+# with an unknown kind list after these under their own name.
+SEARCH_CATEGORY_ORDER = ("Windows", "Classes", "Functions")
+
+_WINDOW_CAT_TINT = (0.55, 0.9, 0.65)
+
+
+def _cst_parse_tint(*parse_types):
+    """The @defaults tint the cst-dict view renders these parse types with
+    (first type declaring one wins — default_kwargs_by_type is an exact-type
+    lookup, so fallbacks are listed explicitly). Class/function search rows
+    reuse it so a symbol hit is coloured exactly like its parse in the dict
+    pane, and stays in sync if those @defaults change. RGB only — the parse
+    tints' alpha is bg-wash opacity, meaningless on a search row."""
+    for t in parse_types:
+        tint = Melty.default_kwargs_by_type.get(t, {}).get("tint")
+        if tint:
+            return tuple(tint[:3])
+    return (0.009, 0.2495, 0.39)  # FunctionParse's declared rgb, without a default
+
+
+def _category_tint(kind):
+    if kind == "Classes":
+        return _cst_parse_tint(ClassParse, EnumParse, GeneralParse)
+    if kind == "Functions":
+        return _cst_parse_tint(FunctionParse)
+    if kind == "Windows":
+        return _WINDOW_CAT_TINT
+    return (1, 1, 1)
+
+GLOBAL_SEARCH_INDEXES = []
+
+
+def search_index(fn):
+    GLOBAL_SEARCH_INDEXES.append(fn)
+    return fn
+
+
+def _launch_window(name):
+    """Launch a registered window by name: open (un-hide), summon it next to
+    the search window — so it comes to you instead of appearing at its old,
+    maybe off-screen, spot — raise it, and sole-select it so it shows Melty's
+    selection outline."""
+    target = Core.melty.find_window(name)
+    if target is None:
+        return
+    target.closed = False
+    gs = Core.melty.find_window("GlobalSearch")
+    if gs is not None and gs.abs_left is not None:
+        Core.melty.summon_window(target, gs.abs_left, gs.abs_top)
+    else:
+        Core.melty.move_window_to_front(target)
+    Core.melty.focused_ds = target
+    Core.melty.selected = {target}
+    Core.melty.last_selected = target
+    request_render()
+
+
+@search_index
+def window_index():
+    """Every window registered with the window manager — open or closed, dock
+    displayed or not — minus the manager's excluded list and the search window
+    itself. Activating a hit launches the window."""
+    from src.lsd.gl_gui.toggles import WindowManager
+    hits = []
+    for mw in list(Core.melty.registered_windows.values()):
+        wds = mw.draw_state
+        name = getattr(mw, 'name', None) or (wds.name if wds is not None else None)
+        if not name or str(name) in WindowManager.excluded_windows:
             continue
         label = str(name).split("##")[0].strip()
-        if not label or not any(c.isalnum() for c in label):
+        if not label or label == "GlobalSearch" or not any(c.isalnum() for c in label):
             continue
-        low = label.lower()
-        if low in seen:
-            continue
-        if q in low:
-            dist = 0
-        elif len(q) >= 4:
-            dist = _fuzzy_substring_distance(q, low)
-            if dist > tol:
+        # Tint: the window draw_state's RESOLVED tint (what it actually renders
+        # with), falling back to the @window registration - its kwargs, then
+        # the registered class's own tint attr.
+        tint = (wds._kwargs or {}).get("tint") if wds is not None else None
+        if not tint:
+            reg = (Melty.annotated_window_classes.get(label)
+                   or Melty.annotated_window_classes.get(str(name)))
+            if reg is not None:
+                w_cls, w_kwargs = reg
+                tint = w_kwargs.get("tint") or getattr(w_cls, "tint", None)
+        hits.append(SearchHit(label, tint, lambda n=str(name): _launch_window(n),
+                              kind="Windows"))
+    return hits
+
+
+def _symbol_def_line(obj):
+    """The definition line of a live function/class, DISK coordinates (None if
+    unresolvable). Functions read co_firstlineno off the unwrapped object —
+    cheap; classes fall back to inspect.getsourcelines, which parses the whole
+    module, so only call this off the render thread (activation runs it on the
+    IDE-opener daemon thread)."""
+    try:
+        obj = inspect.unwrap(obj)
+    except Exception:
+        pass  # no proxy fabricating @wrapped__ - use the object as-is
+    code = getattr(obj, "__code__", None)
+    if code is not None:
+        return code.co_firstlineno
+    try:
+        return inspect.getsourcelines(obj)[1]
+    except Exception:
+        return None
+
+
+def _jump_to_symbol_def(obj, path):
+    """Open a symbol's definition in IntelliJ — the same jump Ctrl+B in the
+    text editor performs on a single target (_open_usage_ref). Async on a
+    daemon thread so line resolution + a slow IDE never stall the loop."""
+    def _go():
+        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+        open_in_intellij(str(path), line_number=_symbol_def_line(obj))
+    threading.Thread(target=_go, daemon=True, name="search-symbol-jump").start()
+
+
+# (mod_map, hits) - the symbol sweep costs a few ms for every loaded module,
+# so hits are memoized per _src_mod_map identity (it self-rebuilds on a 5s TTL,
+# so hot-swapped/new symbols show up within one second, not per keystroke).
+_symbol_hits_memo = (None, None)
+
+
+@search_index
+def symbol_index():
+    """Every function and class defined in a loaded src module — module-level
+    defs plus one level of class members (methods, nested classes) — labelled
+    `qualname — module`. Activating a hit jumps to the definition in IntelliJ,
+    like the editor's Ctrl+B. Covers loaded modules only: the file universe is
+    the symbol index's _src_mod_map, so a file nothing imports is invisible."""
+    global _symbol_hits_memo
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
+    mod_map = _src_mod_map()
+    memo_map, memo_hits = _symbol_hits_memo
+    if memo_map is mod_map:
+        return memo_hits
+
+    hits = []
+
+    class_tint = _category_tint("Classes")
+    fn_tint = _category_tint("Functions")
+
+    def add(obj, path, stem):
+        qn = getattr(obj, "__qualname__", None) or obj.__name__
+        if "<" in qn:  # lambdas / <locals> - no stable, jumpable name
+            return
+        is_class = isinstance(obj, type)
+        # Plain ASCII separator: an em dash renders as the missing-glyph "?"
+        # in the UI font.
+        hits.append(SearchHit(f"{qn} - {stem}",
+                              class_tint if is_class else fn_tint,
+                              lambda o=obj, p=path: _jump_to_symbol_def(o, p),
+                              kind="Classes" if is_class else "Functions"))
+
+    for path, mod in _src_mod_map().items():
+        mod_name = mod.__name__
+        stem = path.stem
+        for obj in list(vars(mod).values()):
+            if (not isinstance(obj, (types.FunctionType, type))
+                    or getattr(obj, "__module__", None) != mod_name):
+                continue  # imported name, not a definition in this file
+            add(obj, path, stem)
+            if isinstance(obj, type):
+                for member in list(vars(obj).values()):
+                    if isinstance(member, (staticmethod, classmethod)):
+                        member = member.__func__
+                    if (isinstance(member, (types.FunctionType, type))
+                            and getattr(member, "__module__", None) == mod_name):
+                        add(member, path, stem)
+    _symbol_hits_memo = (mod_map, hits)
+    return hits
+
+
+def global_search_results(q, limit=60):
+    """Query every registered search index and return the hits matching `q`,
+    best-first — the global-search result list.
+
+    Exact substring hits rank ahead of fuzzy (typo) ones, and within a tier
+    shorter labels first, so the limit trims the long fuzzy tail rather than
+    good matches. Dedupes by label across providers."""
+    tol = max(1, len(q) // 4)
+    q_chars = set(q)
+    scored = []
+    seen = set()
+    for provider in GLOBAL_SEARCH_INDEXES:
+        for hit in provider():
+            low = hit.label.lower()
+            if low in seen:
                 continue
-        else:
-            continue
-        seen.add(low)
-        scored.append((dist, len(label), label, ds))
-
-    # Registered windows, indexed directly: the Fast Dock draws its rows as solid
-    # draw_main pixels (no per-row draw_states), so a CLOSED window's name may
-    # appear nowhere in the tree walk above (the old Dock's row draw_states used
-    # to cover it). A window-name result already gets the launch treatment in
-    # go_to_search_result (find_window + open + raise), so the window's own
-    # draw_state is the right thing to return.
-    from src.lsd.gl_gui.toggles import WindowManager as _WM
-    for _mw in list(Core.melty.registered_windows.values()):
-        _wds = _mw.draw_state
-        if _wds is None or id(_wds) in exclude_ids or not getattr(_wds, 'name', None):
-            continue
-        if str(_wds.name) in _WM.excluded_windows:
-            continue
-        label = str(_wds.name).split("##")[0].strip()
-        if not label or not any(c.isalnum() for c in label):
-            continue
-        low = label.lower()
-        if low in seen:
-            continue
-        if q in low:
-            dist = 0
-        elif len(q) >= 4:
-            dist = _fuzzy_substring_distance(q, low)
-            if dist > tol:
+            if q in low:
+                dist = 0
+            elif len(q) >= 4:
+                # Cheap lower bound before the O(len(q)-len(label)) edit-
+                # distance DP: every unique query char absent from the label
+                # costs at least one edit, and this prunes almost all of the
+                # symbol index's thousands of labels at C-loop speed.
+                if len(q_chars - set(low)) > tol:
+                    continue
+                dist = _fuzzy_substring_distance(q, low)
+                if dist > tol:
+                    continue
+            else:
                 continue
-        else:
-            continue
-        seen.add(low)
-        scored.append((dist, len(label), label, _wds))
-
-    scored.sort(key=lambda t: (t[0], t[1]))
-    return [(label, ds) for _, _, label, ds in scored[:limit]]
-
-
-def go_to_search_result(ds, win=None):
-    """Jump to a global-search result.
-
-    If the result names a top-level window — i.e. it's a Dock/window-manager
-    entry — launch that window directly (open + raise) instead of just scrolling
-    the Dock to its row. Otherwise open the result's owning window and scroll the
-    result into view (via the editor's _scroll_into_view, which walks up to the
-    real scroll container) and focus it."""
-    name = getattr(ds, 'name', None)
-    target = Core.melty.find_window(name) if name else None
-    if target is not None and target is not win:
-        target.closed = False
-        # Summon it (move + raise) to where the search is, so it comes to you
-        # instead of opening at its old, maybe off-screen, spot.
-        gs = Core.melty.find_window("GlobalSearch")
-        if gs is not None and gs.abs_left is not None:
-            Core.melty.summon_window(target, gs.abs_left, gs.abs_top)
-        else:
-            Core.melty.move_window_to_front(target)
-        Core.melty.focused_ds = target
-        # Sole-select it so it shows Melty's selection outline.
-        Core.melty.selected = {target}
-        Core.melty.last_selected = target
-        request_render()
-        return
-
-    if win is not None:
-        win.closed = False
-        Core.melty.move_window_to_front(win)
-    Core.melty.focused_ds = ds
-    Core.melty.selected = {ds}
-    Core.melty.last_selected = ds
-    if ds.abs_top is not None and ds.height is not None:
-        _scroll_into_view(ds, ds.abs_top, ds.abs_top + ds.height, center=True)
-    request_render()
+            seen.add(low)
+            scored.append((dist, len(hit.label), hit))
+    scored.sort(key=lambda t: (t[0], t[1], t[2].label))
+    return [hit for _, _, hit in scored[:limit]]
 
 
 def _dismiss_global_search():
@@ -310,36 +418,6 @@ def _dismiss_global_search():
     GlobalSearch.selected = 0
     Core.melty.clear_focus()
     request_render()
-
-
-def _draw_state_tint(ds):
-    """The colour a draw_state renders with — its live render tint if it has
-    one, else its declared tint. Used to colour search-result rows so they read
-    at a glance."""
-    if ds is None:
-        return None
-    return getattr(ds, 'current_tint', None) or getattr(ds, 'tint', None)
-
-
-def _owning_window(ds, root):
-    """The top-level window a result belongs to: walk up _parent until the next
-    step would be `root` (draw_main), so we stop on root's direct child."""
-    node = ds
-    parent = getattr(node, '_parent', None)
-    while parent is not None and parent is not root and parent is not node:
-        node = parent
-        parent = getattr(node, '_parent', None)
-    return node
-
-
-def group_results_by_window(results, root):
-    """Group ranked results by their owning window, preserving order — so the
-    window of the best match comes first and rows stay rank-ordered within it.
-    The grouping pass in the dock-sort spirit, but for read-only display."""
-    groups = {}
-    for label, ds in results:
-        groups.setdefault(_owning_window(ds, root), []).append((label, ds))
-    return groups
 
 
 @render_func(use_cache=False, show_bg=False, indent_size=2, disable_scroll=True,
@@ -405,6 +483,12 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     if getattr(tab_state, "tab_tints", None) is None:
         tab_state.tab_tints = {}
     tints = [tab_state.tab_tints.get(t) for t in tabs]
+    # View icons ride the same one-frame-lag path as tints: each child's
+    # resolved `icon` kwarg (the rendered icon, e.g. from # [icon=...] comments)
+    # is held on tab_state and prefixed onto its tab label.
+    if getattr(tab_state, "tab_icons", None) is None:
+        tab_state.tab_icons = {}
+    icons = [tab_state.tab_icons.get(t) for t in tabs]
     
     indent_size = 6
     imgui.dummy(0, 5)
@@ -429,7 +513,7 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     tab_changed, new_tabs, bar_ds = draw_tab_bar(input_value=tab_state.selected_tabs,
                                                  tab_height=30, show_bg=False, bg_offset=1,
                                                  name=f"tab_bar{unique}", wrap=True,
-                                                 collection=tabs, tints=tints, as_toggles=False,
+                                                 collection=tabs, tints=tints, icons=icons, as_toggles=False,
                                                  dnd_collection_ds=draw_state, dnd_keys=dnd_keys,
                                                  return_extras=True)
     if tab_changed:
@@ -522,6 +606,11 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
         child_tint = child_ds._kwargs.get("tint", None) if child_ds is not None else None
         if child_tint is not None and tab_state.tab_tints.get(tab) != child_tint:
             tab_state.tab_tints[tab] = child_tint
+            draw_state.invalidate()
+
+        child_icon = child_ds._kwargs.get("icon", None) if child_ds is not None else None
+        if child_icon is not None and tab_state.tab_icons.get(tab) != child_icon:
+            tab_state.tab_icons[tab] = child_icon
             draw_state.invalidate()
 
     # Deselected tabs' content: not collapsed, not closed, but no longer
@@ -1146,10 +1235,10 @@ def draw_type(input_value: type, **kwargs):
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
              with_header=None, bg_offset=-1, auto_resize=True, temp=True)
-def draw_global_search(input_value, draw_state=None, **kwargs):
-    """Renders the GlobalSearch window: the search box plus the matching nodes
-    from the draw_state tree draw_main registered on us. Results are recomputed
-    only when the query changes (the walk is the expensive part)."""
+def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
+    """Renders the GlobalSearch window: the search box plus the matching hits
+    from the registered search indexes (GLOBAL_SEARCH_INDEXES). Results are
+    recomputed only when the query changes."""
     # Expose our own window draw_state + honour a focus request from draw_main's
     # Ctrl+Shift+F shortcut (one-shot: grab the box's text focus this frame).
     input_value.window_ds = draw_state
@@ -1158,7 +1247,7 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     # return_extras gives the box's draw_state so we can tell when it holds text
     # focus (and thus when our arrow/enter result-navigation should be live).
     box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False,
-                    font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False,
+                    font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False, is_search_box=True,
                     return_extras=True, tint=(1, 1, 1))
     changed, new_query = box[0], box[1]
     box_ds = box[2] if len(box) > 2 else None
@@ -1168,90 +1257,165 @@ def draw_global_search(input_value, draw_state=None, **kwargs):
     q = (input_value.query or "").strip().lower()
     if q != input_value._last_query:
         input_value._last_query = q
-        input_value.results = (global_search_results(input_value.root, q, exclude=draw_state)
-                               if input_value.root is not None and len(q) >= 2 else [])
+        input_value.results = global_search_results(q) if len(q) >= 2 else []
         input_value.selected = 0  # reset highlight to the top match on a new query
 
-    # Flatten the grouped results to their on-screen order — what the highlight
-    # moves through and what each index below refers to.
-    groups = group_results_by_window(input_value.results, input_value.root)
-    flat = [(label, ds, win) for win, items in groups.items() for (label, ds) in items]
-    n = len(flat)
-    input_value.selected = (input_value.selected % n) if n else 0
+    # Group ranked hits by category; only the ACTIVE category's results render
+    # (one at a time), picked by the selector row under the box.
+    by_kind = {}
+    for hit in input_value.results:
+        by_kind.setdefault(hit.kind, []).append(hit)
+    cats = (list(SEARCH_CATEGORY_ORDER)
+            + [k for k in by_kind if k not in SEARCH_CATEGORY_ORDER])
+    filled = [k for k in cats if by_kind.get(k)]
+    active = input_value.active_kind
+    if active not in filled and filled:
+        active = filled[0]
+        input_value.active_kind = active
+    items = by_kind.get(active) or []
+    n_vis = min(len(items), max_visible)
+    input_value.selected = (input_value.selected % n_vis) if n_vis else 0
 
-    # While the box holds text focus (single-line, so Up/Down/Enter don't touch
-    # it): Up/Down move the highlight one result, Ctrl+Up/Down jump between window
-    # sections (group starts), and Enter launches the highlighted result.
-    if n and box_ds is not None and Core.melty.text_focused_ds is box_ds:
-        # Flat indices where each window group begins (for section jumps).
-        starts = [i for i in range(n) if i == 0 or flat[i][2] is not flat[i - 1][2]]
+    # While the box holds text focus: Tab / Shift+Tab pick the category (the
+    # editor's tab-indent is search-box-gated so the keys are free; arrows
+    # would move the caret), Up/Down move the highlight, Enter activates it.
+    # GLFW_REPEAT is sparse/absent on Wayland, so held keys are supplemented
+    # with imgui's synthesized auto-repeat (the text editor's _REPEATABLE_KEYS
+    # trick), skipping keys GLFW already reported this frame.
+    if box_ds is not None and Core.melty.text_focused_ds is box_ds:
+        io = imgui.get_io()
+        keys = list(Core.melty.frame_key_events)
+        seen_keys = {k for k, _m in keys}
+        rep_mods = glfw.MOD_SHIFT if io.key_shift else 0
+        any_held = False
+        for rk in (glfw.KEY_UP, glfw.KEY_DOWN, glfw.KEY_TAB):
+            if imgui.is_key_down(rk):
+                any_held = True
+            if rk not in seen_keys and imgui.is_key_pressed(rk, repeat=True):
+                keys.append((rk, rep_mods))
+        if any_held:
+            request_render()  # keep frames coming so the repeat cadence samples
 
-        def _group_idx():  # index into `starts` of the group holding `selected`
-            gi = 0
-            for j, s in enumerate(starts):
-                if s <= input_value.selected:
-                    gi = j
-            return gi
-
-        downs = [m for k, m in Core.melty.frame_key_events if k == glfw.KEY_DOWN]
-        ups = [m for k, m in Core.melty.frame_key_events if k == glfw.KEY_UP]
-        enters = [k for k, _ in Core.melty.frame_key_events if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
-        if downs:
-            if any(m & glfw.MOD_CONTROL for m in downs):
-                input_value.selected = starts[(_group_idx() + 1) % len(starts)]
-            else:
-                input_value.selected = (input_value.selected + 1) % n
+        step = sum(-1 if (m & glfw.MOD_SHIFT) else 1
+                   for k, m in keys if k == glfw.KEY_TAB)
+        if step and filled:
+            ci = filled.index(active) if active in filled else 0
+            active = filled[(ci + step) % len(filled)]
+            input_value.active_kind = active
+            items = by_kind.get(active) or []
+            n_vis = min(len(items), max_visible)
+            input_value.selected = 0
             request_render()
-        elif ups:
-            if any(m & glfw.MOD_CONTROL for m in ups):
-                input_value.selected = starts[(_group_idx() - 1) % len(starts)]
-            else:
-                input_value.selected = (input_value.selected - 1) % n
+        vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
+            - sum(1 for k, _m in keys if k == glfw.KEY_UP)
+        if vstep and n_vis:
+            input_value.selected = (input_value.selected + vstep) % n_vis
             request_render()
-        if enters:
-            _, _ds, _win = flat[input_value.selected]
-            go_to_search_result(_ds, _win)
+        if n_vis and any(k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER) for k, _m in keys):
+            items[input_value.selected].activate()
             _dismiss_global_search()
 
+    # ---- raw draw-list rendering (direct-draw style) ----
+    # Category chips + result rows are plain rects/text with manual
+    # hit-testing in one render_func body: no per-row widget draw_states.
+    # While hovered the window re-renders every frame (the _bounding_hovered
+    # branch), so hover highlights and clicks resolve here with no row state.
+    from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
+    ROW_H, ROW_GAP = 24.0, 2.0
+    CHIP_H, CHIP_GAP, CHIP_PAD = 22.0, 6.0, 8.0
+    CHIP_ROW_GAP = 6.0
+    MORE_H = 18.0
+    chip_bg_active, chip_text_active = 0.16, 1.357
+    chip_bg_idle, chip_text_idle = 0.035, 0.305
+    row_bg_value, row_bg_hot = 0.045, 0.10
+    row_text_value, row_text_hot = 0.9, 1.5
+    hover_bg_boost = 0.05
+    text_saturation = 0.8
+
     w = (draw_state.content_width - 10) if draw_state and draw_state.content_width else 200
-    # Group by owning window; header + rows are coloured by the window's real
-    # tint (from its ManagedWindow), and the highlighted row stands out. A row
-    # that names a window (a Dock entry) is tinted by that window, not its
-    # container, so it matches the window it launches.
-    idx = 0
-    for win, items in groups.items():
-        win_label = str(getattr(win, 'name', '') or '').split("##")[0] or "?"
+    sm = Melty.style_manager
+    dl = imgui.get_window_draw_list()
+    x0, y0 = imgui.get_cursor_screen_pos()
+    mx, my = imgui.get_mouse_pos()
+    hover_ok = draw_state._bounding_hovered
+    ev = left_mouse_down
+    click = (ev.x, ev.y) if (ev and hasattr(ev, "x")) else None
+    line_h = imgui.get_text_line_height()
 
-        # text(win_label, height=26, indent_size=10, text_color=Core.melty.window_tint(getattr(win, 'name', None)),
-        #      wrap=True, name=f"gsg_{idx}", width=w, font=Font.DEJAVU_SANS_22)
-        for label, ds in items:
-            sel = (idx == input_value.selected)
-            entry = Core.melty.find_window(getattr(ds, 'name', None))
-            tint = Melty.window_tint(getattr(ds, 'name', None) if entry is not None
-                                     else getattr(win, 'name', None))
-            if tint is None:
-                tint = ds.tint
+    def _mix(tint, value, factor=0.8, sat=1.0):
+        c = tint if (isinstance(tint, tuple) and len(tint) >= 3) else (0.5, 0.5, 0.5)
+        col = sm.make_color_rgb(c[0], c[1], c[2], value=value, factor=factor,
+                                saturation_scale=sat)
+        return imgui.get_color_u32_rgba(col[0], col[1], col[2], 1.0)
 
-            if button(label, text_align="left", name=f"gsr_{idx}", width=w, height=24, show_bg=False, use_cache=False,
-                      color=tint, tint_value=-0.6, factor=0.8, shadow=False, z_offset=0, saturation=1.0,
-                      search_match=sel, search_current=sel, rounding=0)[0]:
-                go_to_search_result(ds, win)
-                _dismiss_global_search()
-            imgui.dummy(0,00)
-            idx += 1
+    # One dummy reports the full content height so everything draws over it.
+    n_over = len(items) - n_vis
+    imgui.dummy(w, CHIP_H + CHIP_ROW_GAP + n_vis * (ROW_H + ROW_GAP)
+                + (MORE_H if n_over > 0 else 0))
+
+    # ---- category chips: count per category, active bright and glowing,
+    # empties dim. Clicking a non-empty chip picks it, same as Tab. ----
+    cx = x0
+    for k in cats:
+        cnt = len(by_kind.get(k, ()))
+        is_active = k == active
+        lbl = f"{k} {cnt}"
+        chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
+        hov = hover_ok and cx <= mx <= cx + chip_w and y0 <= my <= y0 + CHIP_H
+        tint = _category_tint(k)
+        bg_v = (chip_bg_active if is_active else chip_bg_idle) + (hover_bg_boost if hov else 0.0)
+        tx_v = chip_text_active if (is_active or hov) else chip_text_idle
+        dl.add_rect_filled(cx, y0, cx + chip_w, y0 + CHIP_H, _mix(tint, bg_v), rounding=4.0)
+        dl.add_text(cx + CHIP_PAD, y0 + (CHIP_H - line_h) / 2.0,
+                    _mix(tint, tx_v, sat=text_saturation), lbl)
+        if is_active:
+            draw_search_highlight(dl, cx, y0, cx + chip_w, y0 + CHIP_H,
+                                  current=True, rounding=4.0)
+        if (click is not None and cnt and cx <= click[0] <= cx + chip_w
+                and y0 <= click[1] <= y0 + CHIP_H):
+            input_value.active_kind = k
+            input_value.selected = 0
+            request_render()
+        cx += chip_w + CHIP_GAP
+
+    # ---- result rows: the active category only, capped at max_visible for
+    # render cost. Rows are coloured by the hit's tint (a window row uses the
+    # window's own tint; symbols the tint their cst-dict entry renders in)
+    # and the highlighted row stands out via the search glow. ----
+    ry = y0 + CHIP_H + CHIP_ROW_GAP
+    for idx, hit in enumerate(items[:n_vis]):
+        sel = (idx == input_value.selected)
+        hov = hover_ok and x0 <= mx <= x0 + w and ry <= my <= ry + ROW_H
+        hot = sel or hov
+        dl.add_rect_filled(x0, ry, x0 + w, ry + ROW_H,
+                           _mix(hit.tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
+        dl.add_text(x0 + 8, ry + (ROW_H - line_h) / 2.0,
+                    _mix(hit.tint, row_text_hot if hot else row_text_value,
+                         sat=text_saturation), hit.label)
+        if sel:
+            draw_search_highlight(dl, x0, ry, x0 + w, ry + ROW_H,
+                                  current=True, rounding=4.0)
+        if (click is not None and x0 <= click[0] <= x0 + w
+                and ry <= click[1] <= ry + ROW_H):
+            hit.activate()
+            _dismiss_global_search()
+        ry += ROW_H + ROW_GAP
+    if n_over > 0:
+        dl.add_text(x0 + 8, ry + 2.0,
+                    imgui.get_color_u32_rgba(0.55, 0.55, 0.55, 1.0), f"+ {n_over} more")
     return False, input_value
 
 
-@window(view_func=draw_global_search, mode=Modes.WINDOW_AUTO_FIT)
+@window(view_func=draw_global_search, mode=Modes.WINDOW_AUTO_FIT, always_on_top=True)
 @defaults(tint=(0.15076258778572083, 0.2957677, 0.4697674512863159))
 class GlobalSearch:
     query = ""
-    root = None  # draw_main's draw_state, registered each frame
     window_ds = None  # this window's own draw_state (for the show shortcut)
     _focus_requested = False
     _last_query = None
-    results = []  # cached [(label, draw_state)] for the current query
+    results = []  # cached [SearchHit] for the current query
     selected = 0  # index (in on-screen order) of the arrow-key highlight
+    active_kind = "Windows"  # the category whose rows show (Left/Right cycles)
 
 
 @render_func()
@@ -1439,9 +1603,6 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
 
-    # Register the root draw_state so GlobalSearch can walk the whole UI tree.
-    GlobalSearch.root = draw_state
-
     # Slow-source writes parked during a mouse drag (anywhere's fast/slow
     # split) run their real set_anywhere the frame the button releases.
     flush_deferred_writes()
@@ -1466,19 +1627,45 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # closed / cache-blitted or a blocker is in front): open + raise the
     # Pending Saves window and run the same recompile its button does.
     if draw_state.on_action("non_blocking_ctrl_enter_down", priority_delta=512):
-        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-        # One worker drives the button's exact UI lifecycle (reveal, busy
-        # spinner, fading, notification + toast) - recompile_all_ui is the
-        # delegate entry the MCP button uses too. recompile_all itself absorbs
-        # external changes now, so the separate ExternalChanges.recompile_all
-        # call is gone (through the delegate it would recompile TWICE). The
-        # worker toasts the summary for the never-rendered-window case.
-        def _hotkey_recompile():
-            from src.lsd.gl_gui.notifications import notify
-            notify(PendingSave.recompile_all_ui())
-        threading.Thread(target=_hotkey_recompile, daemon=True,
-                         name="ctrl_enter_recompile").start()
-        request_render()
+        # draw_function_live override / blit-cached half: while a lab's body
+        # renders, its own BLOCKING ctrl_enter_down (priority_delta=1024)
+        # stops the chain before this handler - but per-frame subscriptions
+        # lapse in a cached ancestor, so the otherwise idle lab never
+        # re-registers and the key lands here. Same BVH re-route as the
+        # Ctrl+F fallback below, and the same dual-dispatch rule (the
+        # behavior exists in BOTH places; at most one half fires per press):
+        # hovering a lab presses its Run button, no Pending Saves reveal.
+        mx, my = imgui.get_mouse_pos()
+        _lab_ds = None
+        _hits = Core.melty.bvh_query(mx, my)
+        _front_win = _hits[0].root_window if _hits else None
+        for ds in _hits:
+            if _front_win is not None and ds.root_window is not _front_win:
+                continue
+            _fn = getattr(ds, '_view_func', None)
+            if (_fn is not None and getattr(inspect.unwrap(_fn), '__name__',
+                                            '') == 'draw_function_live'):
+                _lab_ds = ds
+                break
+        if _lab_ds is not None:
+            from src.lsd.gl_gui.view.core_views.live_view_views import (
+                request_run)
+            request_run(_lab_ds)
+            request_render()
+        else:
+            from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+            # One worker drives the button's exact UI lifecycle (reveal, busy
+            # spinner, fading check mark + close) - recompile_all_ui is the
+            # shared entry the MCP tool uses too. recompile_all itself finds
+            # external changes now, so the separate ExternalChanges.recompile_ui
+            # call is gone (through the delegate it would recompile TWICE). The
+            # worker toasts the summary for the never-opened-window case.
+            def _hotkey_recompile():
+                from src.lsd.gl_gui.notifications import notify
+                notify(PendingSave.recompile_all_ui())
+            threading.Thread(target=_hotkey_recompile, daemon=True,
+                             name="ctrl_enter_recompile").start()
+            request_render()
 
 
     # Ctrl+F root fallback: the per-view Ctrl+F (core_render's searchable
@@ -2972,7 +3159,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
         text_color = (*Tint.checkbox_text(), 0.2)
         icon = f""
-
+    
     label = f"{icon} {input_value}"
     icon_w = imgui.calc_text_size(icon)[0]
     label_w = imgui.calc_text_size(label)[0]
@@ -3901,6 +4088,8 @@ def draw_float(input_value: float,
                min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
+
+    
     
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
@@ -4142,6 +4331,11 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             print_colored_traceback(*sys.exc_info())
 
     busy = run_in_thread and draw_state.misc.get("_run_busy")
+    # One-offed run request (draw_function_live's Ctrl+Enter - the
+    # hotkey IS the Run button): always popped, so it can't replay on later
+    # frames; dropped while busy, matching a click during a threaded run.
+    if draw_state.misc.pop("_run_requested", None) and not busy:
+        _run()
     if auto_run is not None and not busy and (
             params_edited or draw_state.misc.get("_auto_run_ver") != auto_run):
         draw_state.misc["_auto_run_ver"] = auto_run
@@ -4260,7 +4454,7 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
              show_name=False, selectable=False, parent_show_add_delete=False,
              with_header=draw_header)
 def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235, tint_saturation=0.372, unique=None,
-                 collection=None, as_toggles=False, tints=None, excluded=None, width=None,
+                 collection=None, as_toggles=False, tints=None, icons=None, excluded=None, width=None,
                  dnd_collection_ds=None, dnd_keys=None,
                  draw_state=None):
     """Tab bar with multi-select via shift-click. input_value is the list of selected items, collection is all available tabs.
@@ -4336,6 +4530,10 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
         label = f"{raw}"
         if names is not None and i < len(names):
             label = f"{names[i]}"
+        # Icons parallels `collection` like tints; prefix before the## so the
+        # imgui id (and click identity) stays keyed on the bare tab name.
+        if icons is not None and i < len(icons) and icons[i]:
+            label = f"{icons[i]} {label}"
         active = tab in selected
 
         tab_color = (0.5, 0.5, 0.5)
