@@ -1,4 +1,5 @@
 import inspect
+import re
 import sys
 import threading
 import traceback
@@ -194,13 +195,18 @@ def _fuzzy_key_match(q, k):
 # label, a row tint, and an activate() that performs the jump - so a data
 # source is searchable whether or not it's on screen (or exists as draw_states
 # at all). To add a data source, register a provider with @search_index.
-SearchHit = namedtuple("SearchHit", "label tint activate kind", defaults=("",))
+# `match` (optional) is the substring queries run against when the label has
+# extra context - e.g. a file hit's label is the full relative path but its
+# match key is the bare filename. None → match the label itself.
+SearchHit = namedtuple("SearchHit", "label tint activate kind match",
+                       defaults=("", None))
 
 # Result categories in selector order. A hit's `kind` keys into this; hits
 # with an unknown kind list after these under their own name.
-SEARCH_CATEGORY_ORDER = ("Windows", "Classes", "Functions")
+SEARCH_CATEGORY_ORDER = ("Windows", "Files", "Classes", "Functions")
 
 _WINDOW_CAT_TINT = (0.55, 0.9, 0.65)
+_FILE_CAT_TINT = (0.72, 0.62, 0.35)
 
 
 def _cst_parse_tint(*parse_types):
@@ -224,7 +230,45 @@ def _category_tint(kind):
         return _cst_parse_tint(FunctionParse)
     if kind == "Windows":
         return _WINDOW_CAT_TINT
+    if kind == "Files":
+        return _FILE_CAT_TINT
     return (1, 1, 1)
+
+
+# (id(class) → rgb tint or None) - cleared whenever the symbol hits
+# rebuild, so a tint edit shows up within one _src_mod_map TTL.
+_symbol_tint_memo = {}
+
+
+def _class_source_tint(obj, path):
+    """The tint a class's SOURCE declares — a `@window(tint=...)`-style
+    decorator kwarg, a `# [tint=...]` override comment above the def, or a
+    class-body `tint = (...)` — via the editor's _scan_def_tint_lines, the
+    same resolution definition tints use (and the same stores the cst-dict
+    parse merges into __overrides__). Covers root AND nested classes: the def
+    line is found by scanning for `class <name>` at any indent. Lazy +
+    memoized — call it only for rows actually displayed."""
+    key = id(obj)
+    if key in _symbol_tint_memo:
+        return _symbol_tint_memo[key]
+    tint = None
+    try:
+        from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
+        src = Melty.read_code(path)
+        if src:
+            lines = src.splitlines()
+            last = obj.__qualname__.rsplit(".", 1)[-1]
+            pat = re.compile(rf"^\s*class\s+{re.escape(last)}\b")
+            for i, ln in enumerate(lines):
+                if pat.match(ln):
+                    res = _scan_def_tint_lines(lines, i + 1, last)
+                    if res is not None:
+                        tint = tuple(res[0][:3])
+                    break
+    except Exception:
+        tint = None
+    _symbol_tint_memo[key] = tint
+    return tint
 
 GLOBAL_SEARCH_INDEXES = []
 
@@ -306,7 +350,8 @@ def _symbol_def_line(obj):
 def _jump_to_symbol_def(obj, path):
     """Open a symbol's definition in IntelliJ — the same jump Ctrl+B in the
     text editor performs on a single target (_open_usage_ref). Async on a
-    daemon thread so line resolution + a slow IDE never stall the loop."""
+    daemon thread so line resolution + a slow IDE never stall the loop.
+    obj=None opens the file itself (no line) — the Files category's jump."""
     def _go():
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
         open_in_intellij(str(path), line_number=_symbol_def_line(obj))
@@ -337,6 +382,7 @@ def symbol_index():
 
     class_tint = _category_tint("Classes")
     fn_tint = _category_tint("Functions")
+    _symbol_tint_memo.clear()
 
     def add(obj, path, stem):
         qn = getattr(obj, "__qualname__", None) or obj.__name__
@@ -344,9 +390,13 @@ def symbol_index():
             return
         is_class = isinstance(obj, type)
         # Plain ASCII separator: an em dash renders as the missing-glyph "?"
-        # in the UI font.
-        hits.append(SearchHit(f"{qn} - {stem}",
-                              class_tint if is_class else fn_tint,
+        # in the UI font. A class's tint is its OWN source tint (decorator /
+        # override comment / class var) - resolved lazily at render time (the
+        # hit's tint is a CALLABLE), since it needs a file read and scan and
+        # only displayed rows should pay it.
+        tint = ((lambda o=obj, p=path: _class_source_tint(o, p) or class_tint)
+                if is_class else fn_tint)
+        hits.append(SearchHit(f"{qn} - {stem}", tint,
                               lambda o=obj, p=path: _jump_to_symbol_def(o, p),
                               kind="Classes" if is_class else "Functions"))
 
@@ -369,13 +419,35 @@ def symbol_index():
     return hits
 
 
+@search_index
+def file_index():
+    """Every loaded src file, labelled by its src-relative path. Activating a
+    hit opens the file in IntelliJ. Same loaded-module universe as the symbol
+    index (_src_mod_map)."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
+    tint = _category_tint("Files")
+    hits = []
+    for path in _src_mod_map():
+        label = path.as_posix().split("/src/", 1)[-1]
+        hits.append(SearchHit(label, tint,
+                              lambda p=path: _jump_to_symbol_def(None, p),
+                              kind="Files", match=path.name))
+    return hits
+
+
 def global_search_results(q, limit=60):
     """Query every registered search index and return the hits matching `q`,
     best-first — the global-search result list.
 
+    Matching runs against the hit's `match` key when it has one (a file's
+    BASENAME, so partial file names hit and the directory prefix doesn't
+    dilute fuzzy tolerance or ranking), while a plain substring of the full
+    label still counts (so directory queries like "gl_gui" list files too).
     Exact substring hits rank ahead of fuzzy (typo) ones, and within a tier
-    shorter labels first, so the limit trims the long fuzzy tail rather than
-    good matches. Dedupes by label across providers."""
+    shorter match keys first, so the limit trims the long fuzzy tail rather
+    than good matches. Dedupes by label across providers; the limit applies
+    PER CATEGORY — the display is per category, so a category with many
+    short-labelled hits must not starve the others out of the list."""
     tol = max(1, len(q) // 4)
     q_chars = set(q)
     scored = []
@@ -385,24 +457,31 @@ def global_search_results(q, limit=60):
             low = hit.label.lower()
             if low in seen:
                 continue
-            if q in low:
+            key = hit.match.lower() if hit.match else low
+            if q in key or q in low:
                 dist = 0
             elif len(q) >= 4:
-                # Cheap lower bound before the O(len(q)-len(label)) edit-
-                # distance DP: every unique query char absent from the label
+                # Cheap lower bound before the O(len(q)-len(key)) edit-
+                # distance DP: every distinct query char absent from the key
                 # costs at least one edit, and this prunes almost all of the
                 # symbol index's thousands of labels at C-loop speed.
-                if len(q_chars - set(low)) > tol:
+                if len(q_chars - set(key)) > tol:
                     continue
-                dist = _fuzzy_substring_distance(q, low)
+                dist = _fuzzy_substring_distance(q, key)
                 if dist > tol:
                     continue
             else:
                 continue
             seen.add(low)
-            scored.append((dist, len(hit.label), hit))
+            scored.append((dist, len(key), hit))
     scored.sort(key=lambda t: (t[0], t[1], t[2].label))
-    return [hit for _, _, hit in scored[:limit]]
+    out, per_kind = [], {}
+    for _dist, _len, hit in scored:
+        c = per_kind.get(hit.kind, 0)
+        if c < limit:
+            per_kind[hit.kind] = c + 1
+            out.append(hit)
+    return out
 
 
 def _dismiss_global_search():
@@ -1267,10 +1346,11 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
         by_kind.setdefault(hit.kind, []).append(hit)
     cats = (list(SEARCH_CATEGORY_ORDER)
             + [k for k in by_kind if k not in SEARCH_CATEGORY_ORDER])
-    filled = [k for k in cats if by_kind.get(k)]
+    # The active category is STICKY - it never auto-switches when empty, so
+    # the selector feels consistent; an empty category just shows no rows.
     active = input_value.active_kind
-    if active not in filled and filled:
-        active = filled[0]
+    if active not in cats:
+        active = cats[0]
         input_value.active_kind = active
     items = by_kind.get(active) or []
     n_vis = min(len(items), max_visible)
@@ -1286,9 +1366,11 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
         io = imgui.get_io()
         keys = list(Core.melty.frame_key_events)
         seen_keys = {k for k, _m in keys}
-        rep_mods = glfw.MOD_SHIFT if io.key_shift else 0
+        rep_mods = ((glfw.MOD_SHIFT if io.key_shift else 0)
+                    | (glfw.MOD_CONTROL if io.key_ctrl else 0))
         any_held = False
-        for rk in (glfw.KEY_UP, glfw.KEY_DOWN, glfw.KEY_TAB):
+        for rk in (glfw.KEY_UP, glfw.KEY_DOWN, glfw.KEY_TAB,
+                   glfw.KEY_LEFT, glfw.KEY_RIGHT):
             if imgui.is_key_down(rk):
                 any_held = True
             if rk not in seen_keys and imgui.is_key_pressed(rk, repeat=True):
@@ -1296,11 +1378,16 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
         if any_held:
             request_render()  # keep frames coming so the repeat cadence samples
 
+        # Tab / Shift+Tab and Ctrl+Right / Ctrl+Left both cycle the selectors.
         step = sum(-1 if (m & glfw.MOD_SHIFT) else 1
                    for k, m in keys if k == glfw.KEY_TAB)
-        if step and filled:
-            ci = filled.index(active) if active in filled else 0
-            active = filled[(ci + step) % len(filled)]
+        step += sum(1 for k, m in keys
+                    if k == glfw.KEY_RIGHT and (m & glfw.MOD_CONTROL))
+        step -= sum(1 for k, m in keys
+                    if k == glfw.KEY_LEFT and (m & glfw.MOD_CONTROL))
+        if step:
+            ci = cats.index(active) if active in cats else 0
+            active = cats[(ci + step) % len(cats)]
             input_value.active_kind = active
             items = by_kind.get(active) or []
             n_vis = min(len(items), max_visible)
@@ -1354,7 +1441,7 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
                 + (MORE_H if n_over > 0 else 0))
 
     # ---- category chips: count per category, active bright and glowing,
-    # empties dim. Clicking a non-empty chip picks it, same as Tab. ----
+    # empties dim. Clicking a chip picks it (empty ones too), same as Tab. ----
     cx = x0
     for k in cats:
         cnt = len(by_kind.get(k, ()))
@@ -1371,7 +1458,7 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
         if is_active:
             draw_search_highlight(dl, cx, y0, cx + chip_w, y0 + CHIP_H,
                                   current=True, rounding=4.0)
-        if (click is not None and cnt and cx <= click[0] <= cx + chip_w
+        if (click is not None and cx <= click[0] <= cx + chip_w
                 and y0 <= click[1] <= y0 + CHIP_H):
             input_value.active_kind = k
             input_value.selected = 0
@@ -1387,10 +1474,13 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
         sel = (idx == input_value.selected)
         hov = hover_ok and x0 <= mx <= x0 + w and ry <= my <= ry + ROW_H
         hot = sel or hov
+        # A class hit's tint is a lazy resolver (source scan) - call it here,
+        # so only displayed rows pay for it (memoized inside).
+        tint = hit.tint() if callable(hit.tint) else hit.tint
         dl.add_rect_filled(x0, ry, x0 + w, ry + ROW_H,
-                           _mix(hit.tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
+                           _mix(tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
         dl.add_text(x0 + 8, ry + (ROW_H - line_h) / 2.0,
-                    _mix(hit.tint, row_text_hot if hot else row_text_value,
+                    _mix(tint, row_text_hot if hot else row_text_value,
                          sat=text_saturation), hit.label)
         if sel:
             draw_search_highlight(dl, x0, ry, x0 + w, ry + ROW_H,
@@ -1612,13 +1702,26 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # front (instead of needing an extreme priority that would consume events
     # from everything else) and doesn't swallow the key from other views.
     if draw_state.on_action("non_blocking_ctrl_shift_f_down", priority_delta=512):
-        gs = Core.melty.open_window("GlobalSearch")
-        if gs is not None:
-            # Summon the box to just above the cursor so it pops up where you're
-            # looking and is ready to type into.
-            mx, my = imgui.get_mouse_pos()
-            Core.melty.summon_window(gs, mx, my - 65)
-        GlobalSearch._focus_requested = True
+        gs = Core.melty.find_window("GlobalSearch")
+        if gs is not None and not gs.closed:
+            # Already open: repeated Ctrl+Shift+F cycles the result category
+            # (same as Tab inside the box) instead of re-summoning the window.
+            cats = list(SEARCH_CATEGORY_ORDER)
+            ci = cats.index(GlobalSearch.active_kind) if GlobalSearch.active_kind in cats else -1
+            GlobalSearch.active_kind = cats[(ci + 1) % len(cats)]
+            GlobalSearch.selected = 0
+            # State changed OUTSIDE the search view's body: repaint its tile
+            # (a cached blit would keep showing the old category).
+            if GlobalSearch.window_ds is not None:
+                GlobalSearch.window_ds.invalidate()
+        else:
+            gs = Core.melty.open_window("GlobalSearch")
+            if gs is not None:
+                # Summon the box to just above the cursor so it shows up where
+                # you're looking and is ready to type into.
+                mx, my = imgui.get_mouse_pos()
+                Core.melty.summon_window(gs, mx, my - 65)
+            GlobalSearch._focus_requested = True
         request_render()
 
     # Ctrl+Enter: recompile ALL pending edits - the per-editor Ctrl+Enter in

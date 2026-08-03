@@ -245,6 +245,44 @@ def _attr_type(t, name):
     return None
 
 
+def _defining_class(t, name):
+    """The class in ``t``'s MRO whose __dict__ defines ``name``, or None —
+    None for a member seen on a VALUE but on no class, i.e. an instance
+    attribute (set in ``__init__``)."""
+    for c in getattr(t, "__mro__", ()) or ():
+        if name in getattr(c, "__dict__", {}):
+            return c
+    return None
+
+
+def _ranked_member_rows(t, names, kind_fn, instance_names=()):
+    """``[(name, kind)]`` ordered and tagged by WHERE each member lives:
+    instance attributes first (tag ``self`` — set in ``__init__``, on no
+    class), then members defined on ``t`` itself (their method/attr/... kind),
+    then inherited members grouped by MRO distance (tag ``↑Base`` names the
+    defining superclass; ``object``'s dunders land last). Within each group
+    public names precede ``_private`` precede ``__dunder``, keeping dir()'s
+    alphabetical order otherwise. The popup's usage re-rank only reorders rows
+    with buffer usage counts, so this ordering survives for the rest. A ``t``
+    with no MRO (module member lists, odd proxies) returns flat rows."""
+    mro = list(getattr(t, "__mro__", ()) or ())
+    if not mro:
+        return [(n, kind_fn(n)) for n in names]
+    keyed = []
+    for n in names:
+        cls = _defining_class(t, n)
+        if cls is None or n in instance_names:
+            group, tag = 0, "self"
+        elif cls is mro[0]:
+            group, tag = 1, kind_fn(n)
+        else:
+            group, tag = 2 + mro.index(cls), "↑" + (getattr(cls, "__name__", None) or "?")
+        sub = 2 if n.startswith("__") else 1 if n.startswith("_") else 0
+        keyed.append(((group, sub), (n, tag)))
+    keyed.sort(key=lambda r: r[0])
+    return [r[1] for r in keyed]
+
+
 def member_completions(func, receiver, globals_ns=None):
     """``[(name, kind)]`` for ``receiver.``<caret>. The receiver resolves either
     to a LIVE object (module global / builtin -> walked with getattr, exact and
@@ -253,7 +291,11 @@ def member_completions(func, receiver, globals_ns=None):
     (the caller falls through to jedi / keeps the popup closed). ``globals_ns``
     substitutes the globals the receiver head resolves in -- the code editor
     passes the edited file's live module dict, so any module-level name in the
-    file being edited completes instantly against the running process."""
+    file being edited completes instantly against the running process.
+
+    Rows are ordered/tagged by origin via ``_ranked_member_rows``: instance
+    attrs (``self``), then the class's own members, then inherited ones
+    (``↑Base``). Module receivers keep flat dir() order — no MRO to rank by."""
     if not receiver:
         return []
     segs = receiver.split(".")
@@ -267,20 +309,35 @@ def member_completions(func, receiver, globals_ns=None):
                 obj = getattr(obj, seg)
             except Exception:
                 return []
-        return [(n, _live_member_kind(obj, n)) for n in _safe_dir(obj)]
+        names = _safe_dir(obj)
+        kind_fn = lambda n: _live_member_kind(obj, n)
+        if inspect.ismodule(obj):
+            return [(n, kind_fn(n)) for n in names]
+        if isinstance(obj, type):
+            return _ranked_member_rows(obj, names, kind_fn)
+        try:
+            inst = frozenset(vars(obj))
+        except TypeError:
+            inst = ()      # __slots__ / CObject - slots classify by class
+        return _ranked_member_rows(type(obj), names, kind_fn, inst)
 
     vm = FuncsMetadata.get(func).get(head)
     if vm is None:
         return []
     if not rest:
+        # First hop off a recorded scope var: use its dir(value) snapshot.
+        # Instance attrs fall out naturally - they're in the snapshot but on no
+        # MRO class, so _defining_class(name) groups them first.
         names = vm.members or _safe_dir(vm.type)
-        return [(n, _type_member_kind(vm.type, n)) for n in names]
+        return _ranked_member_rows(vm.type, names,
+                                   lambda n: _type_member_kind(vm.type, n))
     cur = vm.type
     for seg in rest:
         cur = _attr_type(cur, seg)
         if cur is None:
             return []
-    return [(n, _type_member_kind(cur, n)) for n in _safe_dir(cur)]
+    return _ranked_member_rows(cur, _safe_dir(cur),
+                               lambda n: _type_member_kind(cur, n))
 
 
 def scope_names(func):

@@ -540,7 +540,14 @@ def _resolve_site(code, lineno):
         if fallback is not None:
             full_path, call_node = _truncate_into_call(lm.root, fallback.path)
             key_path = _store_relative(full_path, store_obj, store_is_module)
-            arg_label = _arg_source(call_node)
+            # arg_label means "the explicit live_view(expr) argument" - only a
+            # live_view call may supply it. The truncation cuts at ANY CallParse
+            # the path hits, so a snapshot stamp on `x = obj.method("lit")`
+            # lands here on the RHS call - reading ITS first arg produced a
+            # bogus label ('"lit"'), which also blocked _record_scope_type's
+            # trust-the-injected-name rule (arg_label must be None for stamps).
+            arg_label = (_arg_source(call_node)
+                         if _is_live_view_callparse(call_node) else None)
             if (call_node is None and isinstance(fallback.value, dict)
                     and fallback.span.start_line != line_p - lm.line_offset):
                 # The line landed in an enclosing CONTAINER (a while/with
@@ -690,6 +697,23 @@ def _store_relative(path, store_obj, store_is_module):
         if path[i] == "locals":
             return tuple(path[i + 1:])
     return tuple(path)
+
+
+def _is_live_view_callparse(call_parse):
+    """True when a CallParse is a `live_view(...)` call. Guards arg_label
+    resolution: the statement-path truncation cuts at whatever CallParse it
+    enters first, which for a snapshot-stamped assignment is the RHS's own
+    call — whose arguments have nothing to do with live_view's."""
+    if not isinstance(call_parse, dict):
+        return False
+    try:
+        func = call_parse.get("__cst__").func
+    except Exception:
+        return False
+    name = getattr(func, "value", None)          # cst.Name
+    if not isinstance(name, str):
+        name = getattr(getattr(func, "attr", None), "value", None)  # cst.Attribute
+    return name == "live_view"
 
 
 def _arg_source(call_parse):

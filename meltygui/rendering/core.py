@@ -1589,6 +1589,8 @@ def render_func(*args, **o_kwargs):
                                                     rect=corner_rect, priority_delta=2)
                 corner_press = draw_state.on_action("non_blocking_right_mouse_down", view_id="corner_drag",
                                                     priority_delta=1)
+
+
                 if handle_press or corner_press:
                     # A press marks a NEW gesture boundary - drop every piece of
                     # drag-lifecycle state here. At low framerates the previous

@@ -5002,6 +5002,7 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
+    
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
@@ -5088,8 +5089,6 @@ def draw_text(input_value: str, height=None,
     # replaces nothing - parsing/lint markers keep the normal debounced flow
     # (compile() says nothing about lint findings).
     _fast_fresh_err = False
-    
-    
     if (Toggles.TextEditor.check_syntax_errors
             and Toggles.TextEditor.fast_syntax_check):
         _fs = getattr(ds, '_fast_err_state', None)
