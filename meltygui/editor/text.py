@@ -4984,12 +4984,13 @@ def _describe_code_tree(code_tree):
 
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, tint=(0.406, 0.361, 0.318),
              disable_scroll=False, with_header=draw_header, shadow=False, max_bg_depth=0, max_bg_value=0.10,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
 def draw_text(input_value: str, height=None,
+              
               left_mouse_down=False,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 
@@ -5002,7 +5003,7 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
-    
+
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the

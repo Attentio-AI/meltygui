@@ -358,9 +358,11 @@ def _jump_to_symbol_def(obj, path):
     threading.Thread(target=_go, daemon=True, name="search-symbol-jump").start()
 
 
-# (mod_map, hits) - the symbol sweep costs a few ms for every loaded module,
-# so hits are memoized per _src_mod_map identity (it self-rebuilds on a 5s TTL,
-# so hot-swapped/new symbols show up within one second, not per keystroke).
+# (module-set signature, hits) - the symbol sweep costs a few ms over every
+# loaded module, so hits are memoized on _src_mod_map's CONTENT (its key
+# tuple). The map object itself is rebuilt on a 5s TTL with identical content,
+# so an identity memo would re-sweep (and wipe its class-tint memo) every 5s
+# mid-typing; the content key only rebuilds when a module actually (un)loads.
 _symbol_hits_memo = (None, None)
 
 
@@ -374,8 +376,9 @@ def symbol_index():
     global _symbol_hits_memo
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
     mod_map = _src_mod_map()
-    memo_map, memo_hits = _symbol_hits_memo
-    if memo_map is mod_map:
+    mod_sig = tuple(mod_map)
+    memo_sig, memo_hits = _symbol_hits_memo
+    if memo_sig == mod_sig:
         return memo_hits
 
     hits = []
@@ -400,7 +403,7 @@ def symbol_index():
                               lambda o=obj, p=path: _jump_to_symbol_def(o, p),
                               kind="Classes" if is_class else "Functions"))
 
-    for path, mod in _src_mod_map().items():
+    for path, mod in mod_map.items():
         mod_name = mod.__name__
         stem = path.stem
         for obj in list(vars(mod).values()):
@@ -415,8 +418,14 @@ def symbol_index():
                     if (isinstance(member, (types.FunctionType, type))
                             and getattr(member, "__module__", None) == mod_name):
                         add(member, path, stem)
-    _symbol_hits_memo = (mod_map, hits)
+    _symbol_hits_memo = (mod_sig, hits)
     return hits
+
+
+# Same content-signature memo as the symbol sweep: keeps the hits list's
+# IDENTITY stable across _src_mod_map's 5s TTL rebuilds, which is what lets
+# the scorer's per-provider corpus memo hold.
+_file_hits_memo = (None, None)
 
 
 @search_index
@@ -424,18 +433,110 @@ def file_index():
     """Every loaded src file, labelled by its src-relative path. Activating a
     hit opens the file in IntelliJ. Same loaded-module universe as the symbol
     index (_src_mod_map)."""
+    global _file_hits_memo
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
+    mod_map = _src_mod_map()
+    mod_sig = tuple(mod_map)
+    memo_sig, memo_hits = _file_hits_memo
+    if memo_sig == mod_sig:
+        return memo_hits
     tint = _category_tint("Files")
     hits = []
-    for path in _src_mod_map():
+    for path in mod_map:
         label = path.as_posix().split("/src/", 1)[-1]
         hits.append(SearchHit(label, tint,
                               lambda p=path: _jump_to_symbol_def(None, p),
                               kind="Files", match=path.name))
+    _file_hits_memo = (mod_sig, hits)
     return hits
 
 
-def global_search_results(q, limit=60):
+# Derived match corpus per provider: (low_label, low_key, key_charset, hit)
+# tuples, computed once per HIT-LIST IDENTITY instead of per keystroke. The
+# scorer loops thousands of hit labels with every query change, and the
+# repeated .lower()/set() allocations were the high-latency hot spot. A
+# provider that returns a fresh list each call (windows - it's small and its
+# tints/registrations change live) still rebuilds its corpus each time.
+_scorer_corpus_memo = {}
+
+
+def _provider_corpus(provider):
+    hits = provider()
+    name = getattr(provider, "__name__", str(provider))
+    ent = _scorer_corpus_memo.get(name)
+    if ent is not None and ent[0] is hits:
+        return ent[1]
+    corpus = []
+    for h in hits:
+        low = h.label.lower()
+        key = h.match.lower() if h.match else low
+        corpus.append((low, key,
+                       frozenset(key[i:i + 2] for i in range(len(key) - 1)), h))
+    _scorer_corpus_memo[name] = (hits, corpus)
+    return corpus
+
+
+def _ensure_search_store():
+    """The live root's GlobalSearchStore, creating and attaching it when the
+    root predates the field (a root built before the attr existed can NEVER
+    gain it on its own — __init__ doesn't re-run). Called every frame from
+    draw_main so the store exists no matter which load path produced the root
+    and whether the search window has rendered yet. Returns the store (None
+    only when there is no root at all)."""
+    root = getattr(Melty.vis, "root", None)
+    if root is None:
+        return None
+    store = getattr(root, "global_search_store", None)
+    if store is None:
+        from src.lsd.gl_gui.model.app_model import GlobalSearchStore
+        store = root.global_search_store = GlobalSearchStore()
+        print("GlobalSearchStore: backfilled onto live root (root predated the field)")
+    return store
+
+
+def _activate_hit(hit, store):
+    """Activate a search hit AND record the pick in the persistent
+    GlobalSearchStore (AppModel.global_search_store, via the injected vis) —
+    the popularity signal that ranks often-used results first and fills the
+    empty-query view."""
+    if store is None:
+        print("GlobalSearchStore: pick NOT recorded — store is None "
+              "(Core.melty.vis or root.global_search_store missing)")
+    else:
+        try:
+            store.record(hit.kind, hit.label)
+            print(f"GlobalSearchStore: recorded pick {hit.kind}:{hit.label} -> "
+                  f"{store.counts.get(f'{hit.kind}:{hit.label}')}")
+        except Exception:
+            traceback.print_exc()  # visible in logs; never blocks the activation
+    hit.activate()
+
+
+def _popular_hits(store, limit=60):
+    """The most-selected hits over time, best-first with the same per-category
+    cap as the scorer — what global search shows while the query box is still
+    empty. Only hits that still exist in an index appear (stale store entries
+    just never match)."""
+    if store is None or not store.counts:
+        return []
+    counts = store.counts
+    ranked = []
+    for provider in GLOBAL_SEARCH_INDEXES:
+        for _low, _key, _bi, hit in _provider_corpus(provider):
+            c = counts.get(f"{hit.kind}:{hit.label}", 0)
+            if c > 0:
+                ranked.append((c, hit))
+    ranked.sort(key=lambda t: (-t[0], t[1].label))
+    out, per_kind = [], {}
+    for _c, hit in ranked:
+        n = per_kind.get(hit.kind, 0)
+        if n < limit:
+            per_kind[hit.kind] = n + 1
+            out.append(hit)
+    return out
+
+
+def global_search_results(q, store=None, limit=60):
     """Query every registered search index and return the hits matching `q`,
     best-first — the global-search result list.
 
@@ -443,29 +544,33 @@ def global_search_results(q, limit=60):
     BASENAME, so partial file names hit and the directory prefix doesn't
     dilute fuzzy tolerance or ranking), while a plain substring of the full
     label still counts (so directory queries like "gl_gui" list files too).
-    Exact substring hits rank ahead of fuzzy (typo) ones, and within a tier
-    shorter match keys first, so the limit trims the long fuzzy tail rather
-    than good matches. Dedupes by label across providers; the limit applies
+    Ranking tiers: exact substring ahead of fuzzy (typo) hits, PREFIX matches
+    ahead of mid-string ones, most-picked (GlobalSearchStore) first within a
+    tier, then shorter match keys — so the top hit is the most-used result
+    whose name starts with exactly what's been typed, and the limit trims the
+    long fuzzy tail. Dedupes by label across providers; the limit applies
     PER CATEGORY — the display is per category, so a category with many
     short-labelled hits must not starve the others out of the list."""
     tol = max(1, len(q) // 4)
-    q_chars = set(q)
+    q_bigrams = frozenset(q[i:i + 2] for i in range(len(q) - 1))
+    bigram_budget = 2 * tol
+    use_fuzzy = len(q) >= 4
     scored = []
     seen = set()
     for provider in GLOBAL_SEARCH_INDEXES:
-        for hit in provider():
-            low = hit.label.lower()
+        for low, key, key_bigrams, hit in _provider_corpus(provider):
             if low in seen:
                 continue
-            key = hit.match.lower() if hit.match else low
             if q in key or q in low:
                 dist = 0
-            elif len(q) >= 4:
-                # Cheap lower bound before the O(len(q)-len(key)) edit-
-                # distance DP: every distinct query char absent from the key
-                # costs at least one edit, and this prunes almost all of the
-                # symbol index's thousands of labels at C-loop speed.
-                if len(q_chars - set(key)) > tol:
+            elif use_fuzzy:
+                # Bigram lower bound before the O(len(q)-len(key)) edit-
+                # distance DP: one edit disturbs at most 2 of the query's
+                # bigrams, so more than 2-tol missing bigrams cannot be
+                # within tolerance. Prunes *all of the symbol index's
+                # thousands of matches at C-set speed (the plain char-set
+                # bound was too weak - long labels have most letters).
+                if len(q_bigrams - key_bigrams) > bigram_budget:
                     continue
                 dist = _fuzzy_substring_distance(q, key)
                 if dist > tol:
@@ -473,10 +578,20 @@ def global_search_results(q, limit=60):
             else:
                 continue
             seen.add(low)
-            scored.append((dist, len(key), hit))
-    scored.sort(key=lambda t: (t[0], t[1], t[2].label))
+            # PREFIX matches - the key is a perfect match up to the current
+            # character index - form a tier above other exact-substring hits,
+            # so with popularity applied within tiers, the top hit is the
+            # most-used result whose name starts with what's been typed.
+            prefix = 0 if (key.startswith(q) or low.startswith(q)) else 1
+            scored.append((dist, prefix, len(key), hit))
+    # Popularity tier: within a (distance, prefix) tier, results picked often
+    # over time (GlobalSearchStore counts) rank ahead of never-picked ones.
+    counts = store.counts if store is not None else {}
+    scored.sort(key=lambda t: (t[0], t[1],
+                               -counts.get(f"{t[3].kind}:{t[3].label}", 0),
+                               t[2], t[3].label))
     out, per_kind = [], {}
-    for _dist, _len, hit in scored:
+    for _dist, _prefix, _len, hit in scored:
         c = per_kind.get(hit.kind, 0)
         if c < limit:
             per_kind[hit.kind] = c + 1
@@ -776,6 +891,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     dropdown to pick from; a single entry binds the + directly with no
     chevron. A bare list of types is accepted and keyed by __name__.
     """
+
     if excluded is None:
         excluded = set()
         
@@ -1314,10 +1430,16 @@ def draw_type(input_value: type, **kwargs):
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
              with_header=None, bg_offset=-1, auto_resize=True, temp=True)
-def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
+def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching hits
     from the registered search indexes (GLOBAL_SEARCH_INDEXES). Results are
     recomputed only when the query changes."""
+    # The persistent usage store uses AppModel so they serialize with app
+    # state. Resolve the studio root from Core.melty.vis (set at
+    # Melty.init), same as every other view that needs the root; the vis
+    # param stays as an explicit override. _ensure_search_store (called every
+    # frame from draw_main) guarantees the attr exists on the live root.
+    store = _ensure_search_store()
     # Expose our own window draw_state + honour a focus request from draw_main's
     # Ctrl+Shift+F shortcut (one-shot: grab the box's text focus this frame).
     input_value.window_ds = draw_state
@@ -1336,7 +1458,9 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
     q = (input_value.query or "").strip().lower()
     if q != input_value._last_query:
         input_value._last_query = q
-        input_value.results = global_search_results(q) if len(q) >= 2 else []
+        # Empty box: show the most-selected hits over time instead of nothing.
+        input_value.results = (global_search_results(q, store) if len(q) >= 2
+                               else _popular_hits(store))
         input_value.selected = 0  # reset highlight to the top match on a new query
 
     # Group ranked hits by category; only the ACTIVE category's results render
@@ -1399,7 +1523,7 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
             input_value.selected = (input_value.selected + vstep) % n_vis
             request_render()
         if n_vis and any(k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER) for k, _m in keys):
-            items[input_value.selected].activate()
+            _activate_hit(items[input_value.selected], store)
             _dismiss_global_search()
 
     # ---- raw draw-list rendering (direct-draw style) ----
@@ -1470,6 +1594,7 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
     # window's own tint; symbols the tint their cst-dict entry renders in)
     # and the highlighted row stands out via the search glow. ----
     ry = y0 + CHIP_H + CHIP_ROW_GAP
+    _counts = store.counts if store is not None else {}
     for idx, hit in enumerate(items[:n_vis]):
         sel = (idx == input_value.selected)
         hov = hover_ok and x0 <= mx <= x0 + w and ry <= my <= ry + ROW_H
@@ -1482,12 +1607,19 @@ def draw_global_search(input_value, draw_state=None, max_visible=15, left_mouse_
         dl.add_text(x0 + 8, ry + (ROW_H - line_h) / 2.0,
                     _mix(tint, row_text_hot if hot else row_text_value,
                          sat=text_saturation), hit.label)
+        # Lifetime pick count, right-aligned and dim - only show above zero.
+        cnt_ = _counts.get(f"{hit.kind}:{hit.label}", 0)
+        if cnt_ > 0:
+            cs = str(cnt_)
+            dl.add_text(x0 + w - imgui.calc_text_size(cs)[0] - 8,
+                        ry + (ROW_H - line_h) / 2.0,
+                        imgui.get_color_u32_rgba(0.62, 0.62, 0.62, 1.0), cs)
         if sel:
             draw_search_highlight(dl, x0, ry, x0 + w, ry + ROW_H,
                                   current=True, rounding=4.0)
         if (click is not None and x0 <= click[0] <= x0 + w
                 and ry <= click[1] <= ry + ROW_H):
-            hit.activate()
+            _activate_hit(hit, store)
             _dismiss_global_search()
         ry += ROW_H + ROW_GAP
     if n_over > 0:
@@ -1692,6 +1824,10 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global cst_dict
     global test_code
     from src.lsd.gl_gui.view.mode import Mode
+
+    # Guarantee the persistent search store exists on the live root (a root
+    # built before the field existed would never gain it on its own).
+    _ensure_search_store()
 
     # Slow-source writes parked during a mouse drag (anywhere's fast/slow
     # split) run their real set_anywhere the frame the button releases.
@@ -3260,7 +3396,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
         icon = f""
     else:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
-        text_color = (*Tint.checkbox_text(), 0.2)
+        text_color = (*Tint.checkbox_text(), 0.45)
         icon = f""
     
     label = f"{icon} {input_value}"
@@ -4181,19 +4317,18 @@ def draw_float_ctx(input_value):
                        col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
-@render_func(is_default_for=float, use_cache=True, shadow=False,
-             is_tree=False, show_bg=False, auto_resize=True,
+
+@render_func(is_default_for=float, use_cache=True, shadow=False, wrap=False,
+             is_tree=False, show_bg=False, auto_resize=False, align_header=True,
              with_header=draw_header, temp=True)
 def draw_float(input_value: float,
                draw_state,
-               wrap=False,
                min_width=80,
+               wrap=False,
                min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
 
-    
-    
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
     else:
@@ -5964,7 +6099,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                       enter_key_down=None, tab_state: TabState = None, **kwargs):
    
     context_menu_offset = input_value.context_menu_offset
-
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
     # if up_key_pressed:
@@ -6042,6 +6176,31 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         request_view_capture(view_ds, Core.melty.frame_count, reopen_menu_ds=draw_state,
                              on_captured=_start_claude)
         draw_state.closed = True
+        request_render()
+
+    imgui.same_line()
+
+    # Recapture the caller trace: the stack - and everything riding it
+    # (caller f_locals types + stack-snapshot live values, the target's
+    # in-scope publish, the one-shot body-locals capture) - is grabbed
+    # ONCE per session and kept until restart. This button-arms the one-shot
+    # gates so the target's next inline render captures fresh, and
+    # invalidates up so the ancestors actually re-render: a cache-replayed
+    # target renders without its parents on the stack, which would capture
+    # a chain that bottoms out in dispatch machinery.
+    bug_icon = ""  # fa-bug - red as a debug affordance
+    if button(f"{bug_icon}", height=30, tint=(0.42, 0.24, 0.06, 1.0),
+              name=f"recapture_trace##{unique}")[0]:
+        _rc_target = input_value
+        for _ in range(context_menu_offset):
+            if _rc_target._parent is None or _rc_target._parent is _rc_target:
+                break
+            _rc_target = _rc_target._parent
+        _rc_target._call_site_captured = False
+        _rc_target._call_site_requested = True
+        if _rc_target._is_deferred_layer:
+            _rc_target._deferred_stack_requested = True
+        Core.melty.cache.invalidate_up(_rc_target._tile_id, max_depth=5)
         request_render()
 
     imgui.same_line()
@@ -6170,7 +6329,10 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.same_line()
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=40,
                                          tint_value=0.7,
-                                         width=max(50, draw_state.content_width - 282),
+                                         # 282 = nav arrows + counter + shot +
+                                         # claude; +46 for the + (trace
+                                         # recapture) button.
+                                         width=max(50, draw_state.content_width - 328),
                                          show_bg=True, name=f"tab_bar#{view_func_name}{unique}",
                                          z_offset=-0.5, bg_offset=-7, draw=True,
                                          collection=indices, tints=tab_tints, as_toggles=False)
@@ -6240,9 +6402,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.dummy(0, 30)
 
     return False, input_value
-
-
-from src.lsd.gl_gui.view.core_views.core_render import render_func
 
 
 @render_func(show_bg=True, use_cache=True, shadow=False, with_header=draw_header)

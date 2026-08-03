@@ -123,6 +123,13 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                                         line_offset + span.start_line)
     if store_obj is None:
         return
+    # Viewport cull: the parse walk visits every node in the buffer, not just
+    # the visible ones - an off-screen marker is a full render_func call for
+    # nothing (its latched value window persists via root_draw_states either
+    # way, exactly as when its def scope fades out).
+    clip = getattr(draw_state, "abs_clip_rect", None)
+    if clip is not None and (y + line_px < clip[1] or y > clip[3]):
+        return
     token_cells = max(1, span.end_col - span.start_col)
     if getattr(span, "end_line", span.start_line) != span.start_line:
         # Multi-line call: box just the first line, from the token start to
@@ -134,7 +141,8 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     pad = 2.0
     imgui.set_cursor_screen_pos((x - pad, y - pad))
     snap = live_values_for(store_obj)
-    draw_live_view_marker(snap.get(key_path),
+    draw_live_view_marker("/".join(map(str, key_path)),
+                          value=snap.get(key_path),
                           captured=key_path in snap,
                           store_obj=store_obj, key_path=key_path,
                           width=token_cells * char_w + 2 * pad,
@@ -149,15 +157,26 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
 def draw_live_view_marker(input_value=None, draw_state=None,
                           store_obj=None, key_path=None, captured=False,
                           code_tree_node=None, auto_open=True,
-                          corner_radius=4.0,
+                          corner_radius=4.0, value=None,
                           left_mouse_double_clicked=False,
                           unique=0, **kwargs):
     """The live-view token widget — draw_bool_token's pattern plus one extra
-    call, draw_any(value, mode=WINDOW). input_value IS the captured value
-    (None + captured=False while the site hasn't run); the window call just
-    forwards it and the framework routes it by type. draw_text positioned
-    this view inline over the symbol and the draw_state carries its size —
-    no rect plumbing.
+    call, draw_any(value, mode=WINDOW). `value` is the captured value (None +
+    captured=False while the site hasn't run); the window call just forwards
+    it and the framework routes it by type. input_value is a cheap STABLE
+    TOKEN (the key string), deliberately NOT the value: the wrapper's
+    recursion guard tracks non-primitive input_values by id, and a captured
+    object that also sits in the render ancestry (draw_state/ds aliases, the
+    menu's own target) tripped it — painting "Recursive reference detected"
+    over the code — while big values also paid wrapper bookkeeping per
+    marker. draw_text positioned this view inline over the symbol and the
+    draw_state carries its size — no rect plumbing.
+
+    (A bare-function version — draw_number_token_plain's pattern — was tried
+    and REVERTED: the swoosh connector anchors the value window back to the
+    marker's draw_state, so the marker must stay a render_func. Off-viewport
+    markers are culled by the overlays, which bounds the wrapper cost to
+    visible markers.)
 
     `code_tree_node` is the owning scope's dict from draw_text's parse; the
     site's `# [...]` comment is already formatted as a dict there
@@ -191,11 +210,21 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # the marker and passes the new value in.
     watch(store_obj, key_path, ds, first_only=True)
 
-    # The comment data, already a dict from the code tree.
+    # The comment data, already a dict in the code tree. Statement keys ARE
+    # the symbol name; a `line:N#name` tail (frame snapshots, twin-site
+    # params) carries the name behind the hash - the `# [...]` comment is
+    # stamped in __overrides__ under the STATEMENT key, so resolve by it
+    # either way (this is what keeps comment overrides like tint/cam_zoom
+    # flowing into the value windows after the line-key migration).
     comment_args = {}
-    if isinstance(code_tree_node, dict) and key_path:
+    lookup_key = None
+    if key_path:
+        tail = str(key_path[-1])
+        lookup_key = (tail.split("#", 1)[1]
+                      if tail.startswith("line:") and "#" in tail else tail)
+    if isinstance(code_tree_node, dict) and lookup_key:
         _ca = code_tree_node.get("__overrides__", {}).get(
-            f"__{key_path[-1]}__")
+            f"__{lookup_key}__")
         if isinstance(_ca, dict):
             comment_args = {k: v for k, v in _ca.items()
                             if not (isinstance(k, str) and k.startswith("__"))}
@@ -203,9 +232,10 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # Input-tab lookup: the context menu resolves this site's inputs off the
     # draw_state graph (draw_input_tab's live_root branch), so attach the same
     # scope dict the comment-args splat reads - restamp the render like
-    # everything else per-site.
+    # everything else per-site. Same name-normalized key as the comment
+    # lookup, so line-keyed sites find their statement entry too.
     ds.live_root = code_tree_node
-    ds.live_key = key_path[-1] if key_path else None
+    ds.live_key = lookup_key
 
     auto_open = comment_args.get("auto_open", auto_open)
 
@@ -272,7 +302,6 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # Full (per-publish) watch once a window exists so the value streams
         # in - the first_only call above only flips the box green.
         watch(store_obj, key_path, ds)
-        label = label_for(store_obj, key_path) or key_path[-1]
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
         # Named by the cst dict's own stable identity - never draw_state ids.
         win_kwargs = dict(
@@ -306,7 +335,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             pos = _right_of_window_pos(ds.parent_window, x, marker_y=y)
             if pos is not None:
                 win_kwargs["window_pos"] = pos
-        _c, _v, win_ds = draw_any(input_value, **(win_kwargs | comment_args))
+        _c, _v, win_ds = draw_any(value, **(win_kwargs | comment_args))
         ds._lv_window_ds = win_ds
         # The menu usually opens on the WINDOW - stamp the site context there
         # too (the _parent chain isn't guaranteed to pass through this marker
@@ -362,6 +391,13 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     origin_y = y - (_sl - 1) * line_px
     origin_x = x - getattr(span, "start_col", 0) * char_w
     source_lines = (getattr(root, "source", "") or "").split("\n")
+    # Viewport cull bounds: the store can have a marker per binding in the
+    # def (frame snapshots publish the whole scope), and the walk visits the
+    # scope regardless of scroll - every off-screen marker skipped here is a
+    # full render_func call saved per frame. Latched value windows persist
+    # via root_draw_states without a marker, same as when the whole editor
+    # scrolls away.
+    _clip = getattr(draw_state, "abs_clip_rect", None)
     for key_path, value in live_values_for(fn).items():
         if not key_path or not isinstance(key_path[-1], str):
             continue
@@ -374,15 +410,29 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _ml = _lmap(rel_line) if _lmap else rel_line
         if _ml is None:
             continue        # anchor inside the mid-edit region - skip a frame
+        _my = origin_y + (_ml - 1) * line_px
+        if _clip is not None and (_my + line_px < _clip[1] or _my > _clip[3]):
+            continue        # off-viewport - don't render a marker for it
         if end_col is None:
-            # No span (line:N key) - box the line's text, first non-space
-            # to end ("line highlight").
+            # No span (line:N keys) - box the LABELED symbol on the line if
+            # the key's label names one (frame-snapshot params and twin
+            # while-body keys both carry the local's label), falling back to
+            # the whole line's text. Full-line boxes stack to an unreadable
+            # green-washed strip when several line-keyed values land on
+            # adjacent lines (a captured signature), and their click latches
+            # swallow the lines.
             if 1 <= rel_line <= len(source_lines):
                 text = source_lines[rel_line - 1]
                 if not text.strip():
                     continue
-                start_col = len(text) - len(text.lstrip())
-                end_col = len(text.rstrip())
+                label = (getattr(fn, "__live_labels__", None) or {}).get(key_path)
+                m = (re.search(rf"\b{re.escape(label)}\b", text)
+                     if isinstance(label, str) and label.isidentifier() else None)
+                if m is not None:
+                    start_col, end_col = m.start(), m.end()
+                else:
+                    start_col = len(text) - len(text.lstrip())
+                    end_col = len(text.rstrip())
             else:
                 continue
         else:
@@ -401,22 +451,26 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 end_col = start_col + max(1, len(name))
         pad = 2.0
         imgui.set_cursor_screen_pos(
-            (origin_x + start_col * char_w - pad,
-             origin_y + (_ml - 1) * line_px - pad))
+            (origin_x + start_col * char_w - pad, _my - pad))
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
         # point of the lab) so a run pops them unprompted; scalars/configs
         # stay quiet click-to-open boxes so 19 locals don't bury the def.
+        # Frame-snapshot keys (context-menu capture - tracked in
+        # __frame_snapshot_keys__) never auto-open: opening the menu on a
+        # widget must not spawn a window per local tensor.
         # code_tree_node carries the scope dict: the marker reads the site's
         # comment source from it and splats it 1:1 onto the popup window's
         # draw_state (not onto the marker's own wrapper - show_bg=True with a
         # dark tint would draw an opaque bg over the very symbol it boxes).
         draw_live_view_marker(
-            value, captured=True, store_obj=fn, key_path=key_path,
+            "/".join(map(str, key_path)), value=value,
+            captured=True, store_obj=fn, key_path=key_path,
             width=max(1, end_col - start_col) * char_w + 2 * pad,
             height=line_px + 2 * pad,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
             name=f"lvs::{fn.__qualname__}::{'/'.join(key_path)}",
-            auto_open=is_volume(value))
+            auto_open=(is_volume(value) and key_path not in
+                       (getattr(fn, "__frame_snapshot_keys__", None) or ())))
 
 
 def _scope_function(filename, def_line):
@@ -437,8 +491,10 @@ def _key_anchor(scope_node, key_path, line_offset):
     information (the caller boxes the whole line's text)."""
     tail = key_path[-1]
     if tail.startswith("line:"):
+        # A '#name' suffix is the per-param qualifier frame snapshots append
+        # so several params on one def signature line keep distinct keys.
         try:
-            return int(tail[5:]) - line_offset, None, None
+            return int(tail[5:].split("#", 1)[0]) - line_offset, None, None
         except ValueError:
             return None
     node = scope_node.get("locals")

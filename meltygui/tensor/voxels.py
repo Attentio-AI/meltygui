@@ -1237,7 +1237,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     signature (auto draw_state params: gestures and the controls panel
     write draw_state.<name>, only diverged values persist/serialize)."""
     src = input_value
-
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
     if getattr(src, "target", None) == int(gl.GL_TEXTURE_1D):
         imgui.text(f"{src!r} — a LUT, not a volume")

@@ -125,6 +125,86 @@ def live_view(value=_MISSING, name=None):
         del frame
 
 
+def twin_snap(value, name=None):
+    """The instrumented twin's injected snapshot hook (`__lv_view__`) — the
+    FAST publish path. Synthesizes the same ``line:N#name`` keys the
+    frame-snapshot publisher uses (the overlay anchors line keys by line and
+    boxes by label), so a twin run does NO site resolution: the classic path
+    pays a libcst linemap per enclosing span (~240ms for a big function,
+    the whole CLASS for a method) on every fresh twin code object — i.e.
+    after every edit. Store resolution is the cached _enclosing_function
+    walk. Sharing the frame-snapshot key scheme also means a twin run and a
+    context-menu snapshot UPDATE THE SAME MARKERS instead of doubling them.
+    Manual live_view() calls in the body keep the structural-key path (their
+    markers anchor to the call token). Falls back to the classic resolved
+    path when the store can't be resolved."""
+    frame = sys._getframe(1)
+    try:
+        code, lineno = frame.f_code, frame.f_lineno
+    finally:
+        del frame
+    try:
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+            _enclosing_function)
+        fn = _enclosing_function(code.co_filename, lineno)
+        if (isinstance(fn, types.FunctionType)
+                and isinstance(name, str) and name.isidentifier()):
+            site = _Site((f"line:{lineno}#{name}",), None, None, fn, lineno)
+            _publish(site, value, name, bare=False)
+            return value
+    except Exception:
+        pass
+    site = _site_for(code, lineno)
+    if site is not None and site.store_obj is not None:
+        _publish(site, value, name, bare=False)
+    return value
+
+
+def call_with_body_capture(func, kwargs):
+    """Call ``func(**kwargs)`` and capture its body frame's locals at return,
+    handing them to the async frame-snapshot publisher.
+
+    This is the context menu's one-shot answer to "what are the TARGET's
+    mid-body locals": the wrapper's stack capture runs before the body
+    executes, so entry kwargs were all it could publish and the func tab
+    showed markers only on the signature. A per-thread profile hook watches
+    for the target code's outermost 'return' (depth-tracked, so a
+    self-recursive view captures the WIDGET's frame, not an inner one);
+    profiling covers only this one call's subtree, armed on menu-open only —
+    never steady-state. An exception unwind still fires the profile return
+    event, so a crashed body publishes its state at the raise."""
+    inner = inspect.unwrap(func)
+    target_code = getattr(inner, "__code__", None)
+    if target_code is None:
+        return func(**kwargs)
+    captured = {}
+    depth = 0
+
+    prev = sys.getprofile()
+
+    def prof(frame, event, arg):
+        nonlocal depth
+        if frame.f_code is not target_code:
+            return
+        if event == "call":
+            depth += 1
+        elif event == "return":
+            depth -= 1
+            if depth <= 0 and not captured:
+                try:
+                    captured.update(frame.f_locals)
+                except Exception:
+                    pass
+
+    sys.setprofile(prof)
+    try:
+        return func(**kwargs)
+    finally:
+        sys.setprofile(prev)
+        if captured:
+            publish_stack_locals((), extra_snapshots=[(inner, captured, None)])
+
+
 def live_values_for(obj):
     """A SNAPSHOT {key_path: value} of a function/module's store, or {}. The
     store holds the captured values RAW — no record wrapper — so a reader
@@ -420,19 +500,25 @@ def run_capture(store_obj):
 
 
 def _prune_untouched(store_obj, touched):
-    """Drop every store key not in `touched`: value, label, per-key watcher
-    sets, and any open value window (win.closed = True — the next
-    root_draw_states dispatch discards it; if the key ever republishes, the
-    marker re-registers its window with closed= driven fresh). Store-level
-    watchers (the snapshot editors) are invalidated so the overlay re-runs
-    without the removed markers. Runs on the run's worker thread — dict
-    pops/copies are GIL-atomic and ds.invalidate() is the established
-    cross-thread completion pattern."""
+    """Drop every store key not in `touched` — run_capture's whole-store sweep.
+    The per-key removal mechanics live in _prune_keys (shared with the frame-
+    snapshot publisher, which prunes only ITS OWN stale keys)."""
     store = getattr(store_obj, "__live_values__", None)
     if not store:
         return
-    removed = [k for k in tuple(store) if k not in touched]
-    if not removed:
+    _prune_keys(store_obj, [k for k in tuple(store) if k not in touched])
+
+
+def _prune_keys(store_obj, removed):
+    """Remove the given store keys: value, label, per-key watcher sets, and
+    any open value window (win.closed = True — the next root_draw_states
+    dispatch discards it; if the key ever republishes, the marker re-registers
+    its window with closed= driven fresh). Store-level watchers (the snapshot
+    editors) are invalidated so the overlay re-runs without the removed
+    markers. Safe from any thread — dict pops/copies are GIL-atomic and
+    ds.invalidate() is the established cross-thread completion pattern."""
+    store = getattr(store_obj, "__live_values__", None)
+    if not store or not removed:
         return
     labels = getattr(store_obj, "__live_labels__", None)
     for key in removed:
@@ -474,6 +560,200 @@ def _prune_untouched(store_obj, touched):
         request_render()
     except Exception:
         pass  # headless (test)
+
+
+# ── frame snapshots (context-menu capture -> live-value stores) ──────────────
+# The context menu's stack entry holds every called frame's fscope for one
+# snapshot. Publishing them through the SAME site/key pipeline the instrumented
+# twin uses makes them first-class live values: markers, live value windows,
+# watchers, voxel, and FuncsMetadata typing all come along for free, in
+# ANY editor that shows the function - no new rendering machinery.
+
+def publish_frame_snapshot(fn, scope, upto_lineno=None):
+    """Publish a ``{name: value}`` scope snapshot into ``fn``'s live-value
+    store, anchored at EVERY occurrence of each name in the def's own scope:
+    parameters at their signature lines, and every Name reference — Load and
+    Store alike (assignments in all forms, loop/with targets, walrus, and
+    plain reads) — so any mention of a local in the source is a live view,
+    not just its binding. One key per (name, line); all of a name's markers
+    show the same captured value. ``upto_lineno`` is accepted for API
+    stability but no longer gates anchors: the snapshot IS the frame's state
+    at capture, and every reference line is an equally valid place to
+    inspect it.
+
+    Deliberately NO site resolution: keys are synthesized ``line:N#name``
+    tails, which the overlay anchors by line and boxes by label. The
+    structural key `_resolve_site` derives costs a libcst parse of the whole
+    enclosing span (~240ms for draw_collection, the whole CLASS for a
+    method) and produces a prefix the overlay ignores for line-keyed
+    entries. Total cost here: one cached whole-file ast + one walk of the
+    def + N dict writes.
+
+    Keys this publisher created in a PREVIOUS snapshot that this one didn't
+    re-touch are pruned (``__frame_snapshot_keys__`` on ``fn``) so edits
+    between menu-opens can't leave ghost markers; keys owned by other
+    writers (manual live_view calls, twin runs) are never touched.
+
+    Accepts a render_func WRAPPER too — unwrapped here, since anchors and
+    the store must live on the real body function (the wrapper's __code__
+    points at core_render)."""
+    try:
+        fn = inspect.unwrap(fn)
+    except Exception:
+        pass
+    code = getattr(fn, "__code__", None)
+    if code is None or not isinstance(fn, types.FunctionType) or not scope:
+        return
+    path = Path(code.co_filename).resolve()
+    try:
+        tree, _text, _sig = _ast_for(path, path.stat().st_mtime)
+    except (OSError, SyntaxError, ValueError):
+        return
+    delta = _stamp_delta(path, code.co_firstlineno)   # pending = disk + delta
+    fdef = _def_node_for(tree, fn, code.co_firstlineno + delta)
+    if fdef is None:
+        return
+    anchors = _occurrence_lines(fdef)
+    new_keys = set()
+    for n, lns in anchors.items():
+        if n not in scope:
+            continue
+        for ln in lns:
+            disk = ln - delta
+            site = _Site((f"line:{disk}#{n}",), None, None, fn, disk)
+            _publish(site, scope[n], n, bare=False)
+            new_keys.add(site.key_path)
+    try:
+        prev = vars(fn).get("__frame_snapshot_keys__") or set()
+        _prune_keys(fn, [k for k in prev - new_keys])
+        vars(fn)["__frame_snapshot_keys__"] = new_keys
+    except (AttributeError, TypeError):
+        pass
+
+
+def _def_node_for(tree, fn, target_lineno):
+    """``fn``'s FunctionDef in the (pending-text) ast: name match, def line
+    nearest ``target_lineno`` — the co_firstlineno proximity trick
+    live_instrument uses, tolerant of the decorator-line offset. Scans
+    module and class bodies only (a full ast.walk is O(file nodes) per
+    call, and _enclosing_function can't resolve deeper functions anyway)."""
+    best, best_d = None, None
+    want = getattr(fn, "__name__", None)
+
+    def consider(node):
+        nonlocal best, best_d
+        d = abs(node.lineno - target_lineno)
+        if best_d is None or d < best_d:
+            best, best_d = node, d
+
+    for stmt in tree.body:
+        if (isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and stmt.name == want):
+            consider(stmt)
+        elif isinstance(stmt, ast.ClassDef):
+            for sub in stmt.body:
+                if (isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and sub.name == want):
+                    consider(sub)
+    return best
+
+
+# Scopes a binding walk must NOT descend into: their Store names bind in a
+# DIFFERENT frame (nested defs/classes, lambdas, comprehensions).
+_FOREIGN_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                   ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
+                   ast.GeneratorExp)
+
+
+def _occurrence_lines(fdef):
+    """``{name: set of pending linenos}`` of every occurrence of a name in
+    ``fdef``'s own scope: parameters at their signature lines, then EVERY
+    Name node — Store and Load alike — so references anchor live views, not
+    just bindings. (The publisher filters to names actually captured in the
+    frame's scope, which is also what keeps module globals like `imgui` out:
+    they're Load names here but never frame locals.) Nested
+    defs/classes/lambdas/comprehensions are not descended — their names
+    live in other frames."""
+    anchors = {}
+    a = fdef.args
+    params = list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs)
+    for extra in (a.vararg, a.kwarg):
+        if extra is not None:
+            params.append(extra)
+    for arg in params:
+        anchors.setdefault(arg.arg, set()).add(arg.lineno)
+
+    def walk(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, _FOREIGN_SCOPES):
+                continue
+            if isinstance(child, ast.Name):
+                anchors.setdefault(child.id, set()).add(child.lineno)
+            walk(child)
+
+    walk(ast.Module(body=fdef.body, type_ignores=[]))
+    return anchors
+
+
+# Serializes snapshot workers: rapid menu-opens must not interleave two
+# publishes' shared bookkeeping on the same function.
+_snapshot_lock = threading.Lock()
+
+
+def publish_stack_locals(frames, extra_snapshots=None):
+    """The context-menu capture hook: publish every real caller frame's
+    locals into that function's live-value store (see publish_frame_snapshot).
+    ``frames`` is the raw get_live_frames output — entry[4] is the frame's
+    f_locals copy. ``extra_snapshots`` is a list of extra (fn, scope,
+    upto_lineno) publishes to run in the same batch (the capture site adds
+    the TARGET view function's entry scope).
+
+    Runs on a short-lived daemon worker: a first publish's site resolution
+    parses the enclosing span through libcst (one linemap per function,
+    cached per file-gen; a METHOD's span is its whole class) — far too heavy
+    for the render thread at menu-open. The store/watcher machinery is
+    worker-safe by design (the instrumented twin publishes from workers);
+    markers appear a beat after the menu via the normal watcher wake."""
+    threading.Thread(target=_publish_stack_locals_sync,
+                     args=(frames, extra_snapshots),
+                     name="lv-frame-snapshot", daemon=True).start()
+
+
+def _publish_stack_locals_sync(frames, extra_snapshots=None):
+    """Worker body of publish_stack_locals. Dispatch machinery and
+    non-project source are skipped, and a frame whose resolved function's
+    name doesn't match (lambdas, comprehensions) is dropped rather than
+    mis-published. Each item ALSO records its full scope's runtime types
+    into FuncsMetadata here (aliases like ds/value included — the anchored
+    publishes only cover source-bound names), so the capture site pays for
+    nothing but the stack grab itself. Best-effort per item — a resolution
+    hiccup must never break the batch."""
+    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+        _is_dispatch_frame, _enclosing_function)
+    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
+    from src.lsd.gl_gui.func_metadata import FuncsMetadata
+    with _snapshot_lock:
+        for entry in frames or ():
+            if len(entry) < 5 or not entry[4]:
+                continue
+            filename, lineno, func_name = entry[0], entry[1], entry[2]
+            try:
+                if (_is_dispatch_frame(filename, func_name)
+                        or not is_editable_source(filename)):
+                    continue
+                fn = _enclosing_function(filename, lineno)
+                if fn is None or getattr(fn, "__name__", None) != func_name:
+                    continue
+                FuncsMetadata.record(fn, entry[4])
+                publish_frame_snapshot(fn, entry[4], upto_lineno=lineno)
+            except Exception:
+                continue
+        for fn, scope, upto in extra_snapshots or ():
+            try:
+                FuncsMetadata.record(fn, scope)
+                publish_frame_snapshot(fn, scope, upto_lineno=upto)
+            except Exception:
+                continue
 
 
 def _stamp_delta(path, anchor_line):

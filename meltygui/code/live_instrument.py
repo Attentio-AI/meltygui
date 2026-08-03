@@ -33,7 +33,7 @@ import textwrap
 import weakref
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.live_view import live_view
+from src.lsd.gl_gui.view.core_conversion.live_view import live_view, twin_snap
 
 # id(original __code__) -> ((source mtime, pending gen), twin function |
 # original on fallback). Identity-keyed for the same reason as
@@ -239,14 +239,16 @@ def _build_twin(fn, pending=None):
     ast.fix_missing_locations(tree)
     code_obj = compile(tree, code.co_filename, "exec")
 
-    # A copy of the function's globals: the twin's def lands here instead of
-    # the real module (no name clashes). The snap hook is live_view ITSELF -
-    # bound directly (no dependence on the builtin install) and barely with
-    # no wrapper frame in between: live_view reads sys._getframe(1), so the
-    # injected call must be the twin's own frame for the site to resolve to
-    # the original assignment's file + line.
+    # A COPY of the function's globals: the twin's def lands here instead of
+    # the real module (no name pollution). The snap name is twin_snap - the
+    # fast line-keyed publish path (no per-span libcst site resolution; see
+    # live_view.twin_snap) - bound directly and crucially with NO wrapper
+    # call in between: it reads sys._getframe(1), so the injected call must
+    # be the twin's own frame for the stamp to carry the original
+    # assignment's file + line. Manual live_view() calls in the body still
+    # resolve through the real/builtin live_view binding.
     namespace = dict(fn.__globals__)
-    namespace[_SNAP_NAME] = live_view
+    namespace[_SNAP_NAME] = twin_snap
     exec(code_obj, namespace)
     twin = namespace[fdef.name]
     twin.__qualname__ = fn.__qualname__ + ".<instrumented>"

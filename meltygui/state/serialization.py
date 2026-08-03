@@ -296,7 +296,19 @@ def _equals_default(v, dv):
     if isinstance(v, (dict, list, set)):
         return len(v) == 0 and isinstance(dv, (dict, list, set)) and len(dv) == 0
     if isinstance(v, DictConversion):
-        return v is dv
+        # Identity with the default is necessary but NOT sufficient: when a
+        # field was absent from the old pickle, _reconstruct fills it with the
+        # default instance's OWN object (plain Python, shared identity) - and
+        # runtime mutations then land inside that shared default. Omitting on
+        # identity alone silently discarded such state on every save (this ate
+        # GlobalSearchStore.counts). Omit only when the object is also
+        # pristine, i.e. carries no diverged state of its own.
+        if v is not dv:
+            return False
+        try:
+            return not _save_state(v)
+        except Exception:
+            return False
     return False
 
 

@@ -298,7 +298,7 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
 _AUTO_PARAM_EXCLUDE = {
     # injected by set_default / the wrapper itself
     'input_value', 'draw_state', 'name', 'unique', 'suffix', 'window_stack',
-    'func', 'render_func', 'style_manager', 'view_func', 'outer_func',
+    'func', 'render_func', 'style_manager', 'vis', 'view_func', 'outer_func',
     # signature plumbing
     'kwargs', 'args', 'o_kwargs', 'next_kwargs', 'changed',
     # per-call context / converter args, never view state
@@ -1015,7 +1015,7 @@ def render_func(*args, **o_kwargs):
                 draw_state._call_site_captured = True
                 draw_state._call_site_requested = False
                 from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-                    caller_site, call_stack_frames, record_stack_scope_types)
+                    caller_site, call_stack_frames)
                 # Grab the WHOLE stack here (once, from this frame's stack), UNfiltered
                 # - the menu renders all of it and filters per-frame at draw time.
                 # _call_site stays the filtered head for the lens. Resolving now and
@@ -1025,23 +1025,29 @@ def render_func(*args, **o_kwargs):
                 frames = get_live_frames(skip_count=0)
                 draw_state._call_stack = call_stack_frames(frames)
                 draw_state._call_site = caller_site(frames)
-                # The frames still hold each caller's f_locals - record their
-                # runtime types (FuncsMetadata) before dropping them, so the
-                # menu's caller/source editors autocomplete against the live
-                # scope (draw_text's _acquire_context reads them back).
-                record_stack_scope_types(frames)
-                # The target's own frame is NOT on the stack (we're in a
-                # wrapper; its body hasn't run yet), so record its scope
-                # directly from the resolved kwargs - the same names
-                # draw_eval_tab pre-records, but at menu-open time the func editor
-                # now completes `draw_state.` without visiting the eval tab.
+                # The live frames hold each caller's f_locals; the TARGET's
+                # own frame is not among them (we're in its wrapper - its
+                # body hasn't run), so its scope is rebuilt from the resolved
+                # kwargs. ONE global batch (live_view worker) turns all of it
+                # into completion metadata (FuncsMetadata) and live-value
+                # markers/windows in any editor showing these functions -
+                # menu-open pays for nothing but the stack grab above.
                 try:
-                    from src.lsd.gl_gui.func_metadata import FuncsMetadata
+                    from src.lsd.gl_gui.view.core_conversion.live_view import (
+                        publish_stack_locals)
                     _target_scope = dict(kwargs)
                     _target_scope.update({
                         "input_value": input_value, "value": input_value,
                         "draw_state": draw_state, "ds": draw_state})
-                    FuncsMetadata.record(draw_state._view_func, _target_scope)
+                    publish_stack_locals(frames, extra_snapshots=[
+                        (draw_state._view_func, _target_scope, None)])
+                    # Entry kwargs only cover the SIGNATURE; the target's
+                    # mid-body locals need its frame, which only exists while
+                    # func runs. Arm a one-shot: this same invocation's
+                    # func(**clean_args) call goes through
+                    # call_site_body_capture, which grabs just before this
+                    # above and publishes the final locals at return.
+                    draw_state._lv_capture_body = True
                 except Exception:
                     pass
 
@@ -1148,12 +1154,18 @@ def render_func(*args, **o_kwargs):
                 if draw_state.context_menu_open or draw_state._deferred_stack_requested:
                     draw_state._deferred_stack_requested = False
                     from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-                        call_stack_frames, record_stack_scope_types)
+                        call_stack_frames)
                     deferred_frames = get_live_frames(skip_count=0)
                     draw_state._deferred_call_stack = call_stack_frames(deferred_frames)
-                    # Same tap as the inline capture: record the queue-time
-                    # frames' scope types for the menu editors' sake.
-                    record_stack_scope_types(deferred_frames)
+                    # Same tap as the inline capture: the async live_view
+                    # batch records the queue-time callers' local types AND
+                    # publishes their values as frame metadata.
+                    try:
+                        from src.lsd.gl_gui.view.core_conversion.live_view import (
+                            publish_stack_locals)
+                        publish_stack_locals(deferred_frames)
+                    except Exception:
+                        pass
 
                 if Toggles.layer_stack_trace:
                     get_stack = get_live_frames(skip_count=1)
@@ -1326,6 +1338,10 @@ def render_func(*args, **o_kwargs):
                 kwargs.setdefault(key, default_value)
 
             kwargs["style_manager"] = Melty.style_manager
+            # Same injection contract as style_manager: any render_func that
+            # declares `vis` in its signature receives the studio automatically
+            # (explicitly passed vis, e.g. draw_main's, wins via setdefault).
+            kwargs.setdefault("vis", Melty.vis)
 
 
             kwargs = Melty.default_kwargs_by_type[kwargs.get("real_type", type(input_value))] | kwargs
@@ -4437,7 +4453,16 @@ def render_func(*args, **o_kwargs):
                     #         imgui.text_colored(f"No lens for type {type(driven_value).__name__}", 1, 0.5, 0.5)
                     # else:
 
-                    return_value = func(**clean_args)
+                    if getattr(draw_state, "_lv_capture_body", False):
+                        # One-shot from the menu live capture: run the body
+                        # under the live_view profile hook so its locals
+                        # publish as frame-snapshot markers at return.
+                        draw_state._lv_capture_body = False
+                        from src.lsd.gl_gui.view.core_conversion.live_view import (
+                            call_with_body_capture)
+                        return_value = call_with_body_capture(func, clean_args)
+                    else:
+                        return_value = func(**clean_args)
 
 
                     # Stack cleanup handled by the finally block below
