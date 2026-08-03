@@ -4317,18 +4317,17 @@ def draw_float_ctx(input_value):
                        col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
-
-@render_func(is_default_for=float, use_cache=True, shadow=False, wrap=False,
-             is_tree=False, show_bg=False, auto_resize=False, align_header=True,
+@render_func(is_default_for=float, use_cache=True, shadow=False,
+             is_tree=False, show_bg=False,
              with_header=draw_header, temp=True)
 def draw_float(input_value: float,
                draw_state,
-               min_width=80,
                wrap=False,
+               min_width=80,
                min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
-
+    
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
     else:

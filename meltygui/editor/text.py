@@ -4990,7 +4990,6 @@ def _describe_code_tree(code_tree):
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
 def draw_text(input_value: str, height=None,
-              
               left_mouse_down=False,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 

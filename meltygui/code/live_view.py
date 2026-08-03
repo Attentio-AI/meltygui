@@ -616,12 +616,23 @@ def publish_frame_snapshot(fn, scope, upto_lineno=None):
     anchors = _occurrence_lines(fdef)
     new_keys = set()
     for n, lns in anchors.items():
-        if n not in scope:
+        if "." in n:
+            # Attribute chain (`draw_state.some_val`, each segment of
+            # `a.b.c` anchors separately): resolve the value through the
+            # captured base object - instance __dict__ / plain class attrs
+            # only, never through properties or descriptors (a DrawState
+            # geometry getter must be run on the main worker).
+            ok, val = _resolve_dotted(scope, n)
+            if not ok:
+                continue
+        elif n in scope:
+            val = scope[n]
+        else:
             continue
         for ln in lns:
             disk = ln - delta
             site = _Site((f"line:{disk}#{n}",), None, None, fn, disk)
-            _publish(site, scope[n], n, bare=False)
+            _publish(site, val, n, bare=False)
             new_keys.add(site.key_path)
     try:
         prev = vars(fn).get("__frame_snapshot_keys__") or set()
@@ -671,7 +682,11 @@ def _occurrence_lines(fdef):
     Name node — Store and Load alike — so references anchor live views, not
     just bindings. (The publisher filters to names actually captured in the
     frame's scope, which is also what keeps module globals like `imgui` out:
-    they're Load names here but never frame locals.) Nested
+    they're Load names here but never frame locals.) Pure ATTRIBUTE chains
+    off a Name (`draw_state.some_val`, and each inner segment of `a.b.c`)
+    anchor too, under their dotted spelling — single-line chains only (the
+    overlay boxes the final segment by regex on its line) and never through
+    calls/subscripts (`foo().x` has no frame-resolvable base). Nested
     defs/classes/lambdas/comprehensions are not descended — their names
     live in other frames."""
     anchors = {}
@@ -689,10 +704,63 @@ def _occurrence_lines(fdef):
                 continue
             if isinstance(child, ast.Name):
                 anchors.setdefault(child.id, set()).add(child.lineno)
+            elif (isinstance(child, ast.Attribute)
+                  and getattr(child, "end_lineno", child.lineno) == child.lineno):
+                dotted = _dotted_name(child)
+                if dotted is not None:
+                    anchors.setdefault(dotted, set()).add(child.lineno)
             walk(child)
 
     walk(ast.Module(body=fdef.body, type_ignores=[]))
     return anchors
+
+
+def _dotted_name(node):
+    """`a.b.c` for a pure Name-rooted attribute chain, else None (a call,
+    subscript or literal anywhere in the chain has no frame-local base)."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _safe_attr_value(base, attr):
+    """(ok, value) of ``base.attr`` WITHOUT running any code: instance
+    __dict__ first, then a plain class attribute via getattr_static —
+    properties, descriptors, and class-level functions (methods) are
+    refused rather than fired or published as noise."""
+    d = getattr(base, "__dict__", None)
+    if isinstance(d, dict) and attr in d:
+        return True, d[attr]
+    try:
+        static = inspect.getattr_static(base, attr)
+    except Exception:
+        return False, None
+    if isinstance(static, (staticmethod, classmethod, property)):
+        return False, None
+    if (inspect.isfunction(static) or inspect.ismethoddescriptor(static)
+            or inspect.isdatadescriptor(static) or inspect.isbuiltin(static)):
+        return False, None
+    return True, static
+
+
+def _resolve_dotted(scope, dotted):
+    """(ok, value) of a dotted occurrence resolved from the captured frame
+    scope — the base must be a captured local, every hop must pass
+    _safe_attr_value."""
+    parts = dotted.split(".")
+    if parts[0] not in scope:
+        return False, None
+    obj = scope[parts[0]]
+    for seg in parts[1:]:
+        ok, obj = _safe_attr_value(obj, seg)
+        if not ok:
+            return False, None
+    return True, obj
 
 
 # Serializes snapshot workers: rapid menu-opens must not interleave two

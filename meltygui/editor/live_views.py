@@ -259,6 +259,22 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         ds._lv_hovered = hovered
         ds.invalidate()
 
+    # LIVE PREVIEW (Toggles.TextEditor.live_hover_preview): mousing over a
+    # captured marker shows its value window temporarily - same window, same
+    # placement - and mouse-leave closes it again; double-click below still
+    # latches it open permanently. While previewing, keep the editor live:
+    # the hover edge can only be SEEN by a running body (a cached tile never
+    # re-tests visibility), so without the keep-alive the temp window would
+    # linger until an unrelated repaint. Bounded completely to the hover.
+    from src.lsd.gl_gui.toggles import Toggles
+    preview_show = (captured and hovered and not open_now
+                    and bool(getattr(Toggles.TextEditor,
+                                     "live_hover_preview", False)))
+    if preview_show:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        ds.invalidate()
+        request_render()
+
     tint = comment_args.get("tint")
     if captured:
         if tint is not None:
@@ -298,7 +314,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                 win_ds.window_pos = pos
         ds.invalidate()
 
-    if captured and (open_now or win_ds is not None):
+    if captured and (open_now or preview_show or win_ds is not None):
         # Full (per-publish) watch once a window exists so the value streams
         # in - the first_only call above only flips the box green.
         watch(store_obj, key_path, ds)
@@ -307,7 +323,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         win_kwargs = dict(
             name=f"{'/'.join(key_path)}##lv::{_store_name(store_obj)}::"
                  f"{'/'.join(key_path)}",
-            mode=Modes.LIVE_WINDOW, closed=not open_now,
+            mode=Modes.LIVE_WINDOW, closed=not (open_now or preview_show),
             with_header=draw_header, disable_scroll=True, return_extras=True,
             # Anchor like a context menu: pinned to the marker, so the window
             # tracks it live and takes the pinned base's clamp - it rides the
@@ -414,22 +430,22 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         if _clip is not None and (_my + line_px < _clip[1] or _my > _clip[3]):
             continue        # off-viewport - don't render a marker for it
         if end_col is None:
-            # No span (line:N keys) - box the LABELED symbol on the line if
-            # the key's label names one (frame-snapshot params and twin
-            # while-body keys both carry the local's label), falling back to
-            # the whole line's text. Full-line boxes stack to an unreadable
-            # green-washed strip when several line-keyed values land on
-            # adjacent lines (a captured signature), and their click latches
-            # swallow the lines.
+            # No span (line:N keys) — box the LABELED SYMBOL on the line when
+            # the store's label names one (frame-snapshot params and twin
+            # with-body keys both carry the local's name; attribute keys
+            # box just the FINAL segment - see _label_box_span), falling
+            # back to the whole line's text. Full-line boxes stack into an
+            # unreadable double-wide strip when several line-keyed values
+            # land on adjacent lines (a captured signature), and their click
+            # latches swallow the lines.
             if 1 <= rel_line <= len(source_lines):
                 text = source_lines[rel_line - 1]
                 if not text.strip():
                     continue
                 label = (getattr(fn, "__live_labels__", None) or {}).get(key_path)
-                m = (re.search(rf"\b{re.escape(label)}\b", text)
-                     if isinstance(label, str) and label.isidentifier() else None)
-                if m is not None:
-                    start_col, end_col = m.start(), m.end()
+                span_cols = _label_box_span(label, text)
+                if span_cols is not None:
+                    start_col, end_col = span_cols
                 else:
                     start_col = len(text) - len(text.lstrip())
                     end_col = len(text.rstrip())
@@ -482,6 +498,29 @@ def _scope_function(filename, def_line):
         return _enclosing_function(filename, def_line + 1)
     except Exception:
         return None
+
+
+def _label_box_span(label, text):
+    """(start_col, end_col) of the symbol a line-keyed marker should box on
+    `text`, or None (caller falls back to the whole line). A plain
+    identifier boxes its first word-boundary occurrence. A DOTTED label
+    (attribute keys: `draw_state.some_val`) boxes only its FINAL segment,
+    matched right after its dotted prefix — so the base name's own marker
+    (boxing `draw_state`) and the attribute's (boxing `some_val`) never
+    overlap, and each toggles its own value window."""
+    if not isinstance(label, str) or not label:
+        return None
+    if label.isidentifier():
+        m = re.search(rf"\b{re.escape(label)}\b", text)
+        return m.span() if m is not None else None
+    if "." in label:
+        prefix, last = label.rsplit(".", 1)
+        if not last.isidentifier():
+            return None
+        m = re.search(rf"\b{re.escape(prefix)}\s*\.\s*({re.escape(last)})\b",
+                      text)
+        return m.span(1) if m is not None else None
+    return None
 
 
 def _key_anchor(scope_node, key_path, line_offset):
