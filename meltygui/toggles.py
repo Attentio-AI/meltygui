@@ -393,10 +393,10 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.13, 0.14, 0.16))
+@window(tint=(0.25, 0.29, 0.31))
 class Toggles:
 
-    @defaults(tint=(0.59, 0.541, 0.474))
+    @defaults(tint=(0.222, 0.191, 0.151))
     class TextEditor:
         enable_spell_check = False
         text_focus_stack_trace = False
@@ -434,6 +434,7 @@ class Toggles:
         # can never false-flag. Read live.
         fast_check_changed_region = True
 
+
         # Whole-buffer static lint cap: check_source (undefined names /
         # call-signature checks) and the relint's full import rescan are
         # O(buffer) GIL-held passes (~90ms + ~40ms on a 340KB file) that the
@@ -461,12 +462,38 @@ class Toggles:
         # the next pass; error markers and lint are unaffected.
         enable_import_scan = True
 
+        # Typing debounce (ms) used by the two O(buffer) passes that key off
+        # keystrokes: the chain_in cst→dict reparse (deferred until input goes
+        # idle, re-queued on every key) and the symbol-usage recompute
+        # quiet-gate (serves the last-good graph while input is hotter than
+        # this). In the inter-key gap of fast typing a burst coalesces into
+        # ONE reparse; lower = fresher structure/usages but more mid-burst
+        # GIL-held parse convoying the render thread. 0 = no debounce (every
+        # keystroke reparses - pathological on big buffers). First parses are
+        # exempt. Read live.
+        parse_debounce_ms = 2000
+
+        # Alternative debounce (ms) for SMALL buffers: under
+        # small_file_max_chars a full cst→dict parse + symbol pass costs a few
+        # ms, not the 150-550ms that made the big-file debounce necessary - so
+        # they can run almost per keystroke without convoying the render
+        # thread. Applies to the same two passes as parse_debounce_ms above.
+        # 0 = no debounce at all on small buffers. Set equal to
+        # parse_debounce_ms to disable the split. Read live.
+        small_file_debounce_ms = 300
+
+        # Size gate for small_file_debounce_ms: buffers up to this many chars
+        # take the fast debounce, larger ones use parse_debounce_ms. 0
+        # disables the small-file path entirely (everything uses
+        # parse_debounce_ms). Read live.
+        small_file_max_chars = 16 * 1024
+
         # Incremental cst→dict conversion: when a previous good parse exists,
         # re-convert only the changed top-level statements and splice them
         # into the held parse + module cst (cst_dict_incremental_update) -
         # O(edited statements) instead of the 150-550ms whole-buffer parse.
         # Falls back to the full conversion on any doubt. Read live.
-        incremental_cst_parse = True
+        incremental_cst_parse = False
 
         # Fidelity gate for the merge above: regenerate the spliced module's
         # code and require it to EQUAL the new buffer (one O(file) codegen,
@@ -495,7 +522,6 @@ class Toggles:
         # afterwards is non-safe against it and pays the one full parse it
         # always would have. Read live (on the chain_in worker).
         skip_reparse_on_blank_edits = True
-
 
         @defaults(tint=(0.181, 0.361, 0.722))
         class SymbolUsages:
@@ -603,6 +629,7 @@ class Toggles:
                 Snippet("", "request_render()", ""),
             ],
         }
+
 
         @staticmethod
         def usage_tint(users):
@@ -791,18 +818,17 @@ class Toggles:
         min_height = 506.5
         min_width = 94.154
 
-
     @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:
         keep_for_frames = 84
         enable = False
         draw_rect = True
         invalidate_stack_trace = False
+
+        # [tint=(0.128, 0.25, 0.148), show_tint=True]
+        invalidate_request_render = False
         attrib_change_stack_trace = False
         draw_bvh = False
-
-
-
 
     # Global App Toggles
     @defaults(tint=(0.63, 0.44, 0.2))

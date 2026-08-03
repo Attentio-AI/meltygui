@@ -786,6 +786,86 @@ class DrawState(DictConversion):
             pass
 
 
+    # ─── locate_* : the set-anywhere accessors ────────────────────────────
+    # `locate_<param>` access any param of the view, read and write:
+    #
+    #     tilt = draw_state.locate_tilt          # framework-resolved value
+    #     draw_state.locate_x_dim = 0            # -> the DRIVING source
+    #
+    # ASYMMETRY on purpose: reading is ONLY the resolved value (_kwargs, with
+    # the in-flight set cache and the ds fallback anywhere_value applies) -
+    # cheap enough per frame. Only the WRITE walks the source registry, picks
+    # the driving source, and drives its deferred save/hotswap.
+    #
+    # Declared HERE, in the class, so they work on every draw_state from the
+    # first frame - independent of whether anything's imported the view
+    # module yet. The implementation stays in view/core_views/anywhere.py and
+    # is imported lazily per access (this module is model-layer; a top-level
+    # import of the view module would cycle) - a sys.modules hit after the
+    # first call.
+    #
+    # NAME ROUTING on read, the two directions are wired differently:
+    #   READ  __getattr__ only runs on a MISS (no instance dict entry, no
+    #         class property), so every normal attribute read pays nothing.
+    #   WRITE there is no miss-only hook for setattr, and a DrawState
+    #         __setattr__ would add a Python frame for EVERY attribute write
+    #         (~100 per render_func call, per the wrapper's own bookkeeping).
+    #         So write routing rides the __setattr__ that already exists: the
+    #         @live wrapper calls `_locate_set` when a name starts with
+    #         LOCATE_PREFIX (invalidating_decoration ensures the prefix is a single
+    #         char compare for every other name).
+    #
+    # A locate write does NOT invalidate this draw_state - it's exactly the
+    # `set_anywhere(...)` call it replaces, and the value only gets there
+    # through the source save + hotswap, which invalidates on its own.
+    LOCATE_PREFIX = "locate_"
+
+    def __getattr__(self, name):
+        # Reached only when normal lookup failed. `locate_params` and any
+        # future explicit property resolve BEFORE this and never arrive here.
+        if name.startswith("locate_"):
+            from src.lsd.gl_gui.view.core_views.anywhere import anywhere_value
+            return anywhere_value(name[7:], self)
+        raise AttributeError(name)
+
+    def _locate_set(self, name, value):
+        """The write half, called by @live's __setattr__ for `locate_*` names.
+        Writes skip the SET_ANYWHERE_PARAMS whitelist (allow_any) — the point
+        of the generic accessor is that any param of the view is settable —
+        and fall back to storing the value ON THIS DRAW_STATE (ds_fallback)
+        when no source in code sets the param, rather than rewriting the
+        view function's signature default."""
+        if isinstance(getattr(type(self), name, None), property):
+            raise AttributeError(f"{name} is read-only")
+        from src.lsd.gl_gui.view.core_views.anywhere import set_anywhere
+        set_anywhere(name[7:], value, self, allow_any=True, ds_fallback=True)
+
+    @property
+    def locate_params(self):
+        """Dict-shaped live view over this view's input parameters: reads
+        resolve from _kwargs, item-writes go through set_anywhere.
+
+            ds.locate_params["x_dim"] = 0
+            for param, value in ds.locate_params: ...
+
+        The whole-signature companion to `locate_<param>` above — same reads
+        and writes, enumerable, and a real dict subclass so it renders and
+        routes like any other dict. Read-only as an attribute; mutate it by
+        item, which is where the anywhere write happens.
+
+        ONE proxy per draw_state, re-snapshotted on each access: views key
+        caches and dirty checks off the identity of the value they were
+        handed, so a fresh object per frame would look like a new value every
+        frame. Stored via object.__setattr__ — like _anc_scroll_key above, it
+        never appears on the default instance, so it isn't serialized."""
+        from src.lsd.gl_gui.view.core_views.anywhere import ParamProxy
+        proxy = self.__dict__.get('_locate_proxy')
+        if proxy is None:
+            proxy = ParamProxy(self)
+            object.__setattr__(self, '_locate_proxy', proxy)
+            return proxy
+        return proxy.refresh()
+
     def pos_changed(self):
         """Reconcile this view's BVH box with its current geometry/visibility.
 

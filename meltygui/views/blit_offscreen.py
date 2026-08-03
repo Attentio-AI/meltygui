@@ -2057,6 +2057,35 @@ class TileCacheMasked:
         clipped = self._clip_rect(x, y, w, h, clip)
         self._key_to_ctx[ctx.key] = ctx
 
+        # Reveal detection (lives HERE, not in draw_tile - draw_tile is dead
+        # space; this is the path that actually emits marks for cache-served
+        # views): the baked mask has rank-0 texels outside the clip it was
+        # built it, so when the clip RECEDES (e.g. the enclosing window is
+        # resized taller and this clipped view is revealed further down) the
+        # cached mask serves no depth for the revealed strip and shadows /
+        # highlights stay clipped at the old height. A width change doesn't
+        # need this - it changes the view's own width, which is a size_change
+        # and rebuilds the tile. Edge-triggered on inset recede, deferred
+        # until interaction settles; a shrinking clip needs no rebake (the
+        # PASS 5 scissor crops).
+        if ctx.drew_cached:
+            t_reveal = self._tiles.get(ctx.key)
+            if t_reveal is not None and t_reveal.mask_tex is not None:
+                if clip is not None:
+                    live_insets = (max(0.0, clip[0] - x), max(0.0, clip[1] - y),
+                                   max(0.0, (x + w) - clip[2]), max(0.0, (y + h) - clip[3]))
+                else:
+                    live_insets = (0.0, 0.0, 0.0, 0.0)
+                baked_insets = getattr(t_reveal, "mask_clip_insets", (0.0, 0.0, 0.0, 0.0))
+                revealed = any(li < bi - 0.5 for li, bi in zip(live_insets, baked_insets))
+                settled = (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
+                           and not imgui.is_mouse_down(2) and not Melty.on_drag)
+                if revealed and settled:
+                    t_reveal.mask_clip_insets = live_insets
+                    self.invalidate(ctx.key, note=Note(name="Clip reveal",
+                                                       reason=f"insets {baked_insets} -> {live_insets}",
+                                                       tint=(1, 0.5, 1)))
+
         corner_radius = getattr(ctx.draw_state, "corner_radius", 6) or 5.0
         if ctx.size:
             if clipped:

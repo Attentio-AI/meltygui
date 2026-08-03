@@ -1006,17 +1006,33 @@ def _binds_unchanged(old_text, new_text):
 
 def _buffer_bound_names(text):
     """Every name the buffer text plausibly BINDS — local vars, params,
-    def/class names, loop/with targets — in FOUR regex passes total (findall,
-    C-speed), never per-name. Approximate on purpose, erring toward "bound"
-    (a bound name is merely never suggested — silence beats noise). Used
-    where the buffer's parse can't be trusted (mid-edit syntax errors)."""
+    def/class names, loop/with targets, import statements — in SIX regex
+    passes total (findall, C-speed), never per-name. Approximate on purpose,
+    erring toward "bound" (a bound name is merely never suggested — silence
+    beats noise). Used where the buffer's parse can't be trusted (mid-edit
+    syntax errors)."""
     import re
     bound = set()
     bound.update(re.findall(r"(?m)^\s*(?:def|class)\s+(\w+)", text))
-    bound.update(re.findall(r"(?m)^\s*(\w+)\s*(?:=[^=]|,|=$)", text))
+    bound.update(re.findall(r"(?m)^\s*(\w+)\s*(?:=[^=]|,|\)|=$)", text))
     bound.update(re.findall(r"\b(?:as|for)\s+(\w+)", text))
     for params in re.findall(r"(?m)^\s*(?:def\s+\w+|lambda)\s*\(([^)]*)", text):
         bound.update(re.findall(r"\w+", params))
+    # Import bindings at ANY indent - a function-local `from m import name`
+    # covers `name` for the whole buffer's scope, so it must never be
+    # re-suggested (aliases are already caught by the as/for` above;
+    # parenthesized continuation lines by the `name,` assignment pass).
+    for names in re.findall(r"(?m)^\s*from\s+[.\w]+\s+import\s+\(?([^#\n)]*)",
+                            text):
+        for part in names.split(","):
+            toks = part.split()
+            if toks and toks[0] != "*":
+                bound.add(toks[0])
+    for names in re.findall(r"(?m)^\s*import\s+([^#\n]+)", text):
+        for part in names.split(","):
+            toks = part.split()
+            if toks:
+                bound.add(toks[0].split(".")[0])
     return bound
 
 
@@ -1086,12 +1102,15 @@ def _scan_slice(slice_text, line_offset, bound, path):
             continue
         stripped = (lines[rel_line - 1].strip()
                     if 1 <= rel_line <= len(lines) else "")
-        if stripped.startswith(("import ", "from ", "@")):
-            continue                # import block / decorator lines
+        if stripped.startswith(("import ", "from ")):
+            continue                # import block line
         prev = toks[i - 1][1] if i > 0 else None
         nxt = toks[i + 1][1] if i + 1 < len(toks) else None
+        # Attribute / binding position. Decorator lines scan like any other
+        # code - the name after `@` AND its arguments are real usages an
+        # import could fix (the old line-level `@` skip hid both).
         if prev in (".", "def", "class", "as", "import", "from"):
-            continue                # attr / binding position
+            continue
         if nxt == "=":              # plain assignment target (== is one token)
             continue
         if s not in verdict:

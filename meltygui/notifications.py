@@ -40,7 +40,7 @@ class NotificationCenter:
     live_values = {}
 
 
-def notify(text, tint=(1,1,1,1), tag=None, urgent=True):
+def notify(text, tint=(1,1,1,1), tag=None, urgent=False):
     formatted_time = _timestamp()
     created_at = time.time()
     tint = tint if len(tint) == 4 else (*tint, 1)  # Ensure color has alpha

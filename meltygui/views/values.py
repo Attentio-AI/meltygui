@@ -45,6 +45,7 @@ from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODEC
 from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names
 from src.lsd.gl_gui.view.core_views.anywhere import SourcePriority, _source_priority, _sources_for, \
     _driving_source, get_value_for_source, get_source_for, from_anywhere, anywhere_value, set_anywhere, \
+    flush_deferred_writes, \
     SET_ANYWHERE_PARAMS
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
@@ -1441,6 +1442,10 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Register the root draw_state so GlobalSearch can walk the whole UI tree.
     GlobalSearch.root = draw_state
 
+    # Slow-source writes parked during a mouse drag (anywhere's fast/slow
+    # split) run their real set_anywhere the frame the button releases.
+    flush_deferred_writes()
+
     # Ctrl+Shift+F: reveal the GlobalSearch window and focus its box. A
     # non_blocking root handler — so it survives a window blocker stacked in
     # front (instead of needing an extreme priority that would consume events
@@ -1654,18 +1659,34 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # - it was burning that every frame feeding a CLOSED window. The window ds
     # is looked up once and cached; a just-reopened window shows the reduce pass
     # from its last frame (one frame of blank).
+    #
+    # KEEP THE DATA'S TYPE STABLE while gated off. draw_any routes by type, and
+    # the cache/draw_state key hashes on the func's name. passing it None
+    # would route to draw_none, i.e. a SECOND window was named "full_mask_tex"
+    # with its own `closed` flag. Closing either one then just handed the name to
+    # the other, and on app start (where a closed window is invisible, see below)
+    # the texture window popped open every launch. Passing the un-normalized
+    # texture id keeps the route on draw_texture: one window, one closed flag.
     global _full_mask_win_ds
     try:
         _full_mask_win_ds
     except NameError:
         _full_mask_win_ds = None
     if _full_mask_win_ds is None or getattr(_full_mask_win_ds, 'name', None) != 'full_mask_tex':
-        _full_mask_win_ds = next((d for d in Core.melty.cache.key_to_draw_state.values()
-                                  if getattr(d, 'name', None) == 'full_mask_tex'), None)
+        # find_window, not cache.key_to_draw_state: a closed window returns from
+        # its renderer before it ever registers a tile, so the cache table won't
+        # see it and the gate would never latch (it would normalize every frame
+        # of a session that starts with the window closed). The ManagedWindow
+        # registration survives closing.
+        _full_mask_win_ds = (Core.melty.find_window("full_mask_tex")
+                             or next((d for d in Core.melty.cache.key_to_draw_state.values()
+                                      if getattr(d, 'name', None) == 'full_mask_tex'), None))
     if _full_mask_win_ds is None or not getattr(_full_mask_win_ds, 'closed', False):
         normalized_sub_mask, _, _ = Core.melty.filter.normalize(Core.melty.cache._full_mask_tex)
     else:
-        normalized_sub_mask = None
+        normalized_sub_mask = numpy.uint32(Core.melty.cache._full_mask_tex or 0)
+
+
     draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
              max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
 
@@ -2548,7 +2569,49 @@ def test_func():
                  "key_2": 2.421
                  }
 
-def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
+def _clamp_bg_value(color, max_bg_value):
+    """Cap a background color's VALUE (max channel, as in HSV) at `max_bg_value`,
+    keeping hue exact and BOOSTING saturation by the same factor the value was
+    cut by (s / k, clamped to 1.0). A plain uniform channel scale holds HSV
+    saturation constant but still reads as washed out once it's dark, so the
+    boost buys the colorfulness back — the color only ever gets darker and
+    *more* saturated, never grayer.
+
+    This is the LAST thing applied to a bg color — it bounds the color actually
+    painted, not the depth ramp that fed it, so whatever the depth/tint/bleed
+    chain produced, `max_bg_value=0` is black and `0.2` is at most 20% value.
+    Deliberately not text_editor's _brightness_clamp: that one is a perceptual
+    (luma) guard and no-ops at max_b == 0, which would break the black case.
+
+    Done in raw channel arithmetic rather than a colorsys round trip: hue is
+    just the position of the mid channel in the [min, max] span, so rebuilding
+    against the new chroma preserves it without ever naming an angle."""
+    if max_bg_value is None or color is None or len(color) < 3:
+        return color
+    rest = tuple(color[3:])
+    red, green, blue = color[0], color[1], color[2]
+    value = max(red, green, blue)
+    if value <= max_bg_value:
+        return color
+    if max_bg_value <= 0 or value <= 0:
+        return (0.0, 0.0, 0.0) + rest
+
+    low = min(red, green, blue)
+    if low >= value:  # achromatic - no hue to preserve, just darken
+        return (max_bg_value, max_bg_value, max_bg_value) + rest
+
+    # k is the cut applied to the value; undo it with saturation.
+    k = max_bg_value / value
+    saturation = min(1.0, ((value - low) / value) / k)
+    chroma = max_bg_value * saturation
+    new_low = max_bg_value - chroma
+    span = value - low
+    return (new_low + (red - low) / span * chroma,
+            new_low + (green - low) / span * chroma,
+            new_low + (blue - low) / span * chroma) + rest
+
+
+def compute_bg_color(bg_offset=0, tint=None, nested_bg=False, max_bg_depth=None, max_bg_value=None):
     depth_wrap = 34
     depth_scale = 1.629
     intensity_factor = 0.021
@@ -2574,6 +2637,10 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
     bg_depth = Core.melty.bg_depth if Core.melty.bg_depth is not None else 0
     bg_offset = bg_offset if bg_offset is not None else 0
     wrapped_depth = min(max_depth, (bg_depth % depth_wrap) + bg_offset)
+    # Caller-supplied ceiling on the effective depth: past this step the color
+    # keeps the palette value for max_bg_depth instead of getting lighter.
+    if max_bg_depth is not None:
+        wrapped_depth = min(wrapped_depth, max_bg_depth)
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
     max_depth_intensity = 0.652
@@ -2597,13 +2664,14 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False):
     bg_color = Melty.style_manager.make_color_style_value(input=bg_style, value=max(0.0, depth_intensity))
     bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
 
-    return bg_color
+    return _clamp_bg_value(bg_color, max_bg_value)
 
 @window
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
             style_manager=None, tint=None, outline_tint=None, selected=False,
-            hovered=False, pressed=False, nested_bg=False, saturation=1.0, **kwargs):
+            hovered=False, pressed=False, nested_bg=False, saturation=1.0, max_bg_depth=None,
+            max_bg_value=None, **kwargs):
     # -- Constants ---------------------------------
     min_value = -0.272
     depth_wrap = 300
@@ -2657,6 +2725,11 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         wrapped_depth = min(max_depth, (Core.melty.bg_depth) + bg_offset)
     else:
         wrapped_depth = min(max_depth, (Core.melty.bg_depth % depth_wrap) + bg_offset)
+
+    # Caller-supplied ceiling on the effective depth: after this step the view
+    # keeps the color entry for max_bg_depth instead of getting lighter.
+    if max_bg_depth is not None:
+        wrapped_depth = min(wrapped_depth, max_bg_depth)
 
     scaled_depth = wrapped_depth * depth_scale
     depth_intensity = (scaled_depth + intensity_offset) * intensity_factor
@@ -2726,9 +2799,13 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
                                                         value=max(min_value, depth_intensity))
         bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
 
+    # Applies to whatever ends up as the fill - depth-ramp color OR a passed
+    # bg_color/tint, so the cap holds regardless of the input's hue/brightness.
+    bg_color = _clamp_bg_value(bg_color, max_bg_value)
     packed_fill = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
     if tint is not None:
-        packed_fill = imgui.get_color_u32_rgba(*tint[:3], opacity)
+        tinted = _clamp_bg_value(tint, max_bg_value)
+        packed_fill = imgui.get_color_u32_rgba(*tinted[:3], opacity)
 
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)

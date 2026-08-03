@@ -48,7 +48,6 @@ import OpenGL.GL as gl
 
 from src.lsd.gl_gui.gl_state import GLState, GLTexture
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.shader_func import shader_func
 from src.lsd.gl_gui.text_texture import bake_text, bake_texts
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
@@ -56,7 +55,9 @@ from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+from src.lsd.gl_gui.view.core_views.headers import draw_header
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_tab_bar
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 
 HALF_PI = math.pi / 2
 
@@ -485,6 +486,102 @@ def _clean_dim_name(x, i):
     return first[:48] if first else f"dim{i}"
 
 
+class TensorDim(int):
+    """A tensor dim index that is still an int everywhere it matters
+    (indexing, comparisons, arithmetic, `int()`, pickling) but carries its own
+    TYPE, so melty routes it to its own renderer instead of the plain int one
+    — a dim picker rather than a number field.
+
+    Values only stay TensorDim if whatever writes them keeps the type: a
+    renderer registered `@render_func(is_default_for=TensorDim)` should return
+    TensorDim(...), otherwise the first edit stores a plain int and the row
+    falls back to the int renderer."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return f"TensorDim({int(self)})"
+
+
+class TensorDims(tuple):
+    """A SET of tensor dim indices (`mean_dims`) — tuple everywhere it
+    matters, but typed so it routes to the same dim picker as TensorDim
+    (multi-select tabs). A tuple needs SOME type to route by; this is the
+    minimal one, and the renderer is shared."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return f"TensorDims({tuple(int(v) for v in self)})"
+
+
+def _row_collection(draw_state, kwargs):
+    """The collection this row renders in (the params panel's locate_params
+    proxy) — sibling params like dim_names / x_dim live there."""
+    col = kwargs.get("collection")
+    if not isinstance(col, dict):
+        col = getattr(draw_state, "_collection", None)
+    return col if isinstance(col, dict) else None
+
+
+def _collection_dim_labels(col):
+    """Dim-name labels from the collection's `dim_names` entry; [] when no
+    names are in reach."""
+    raw_names = col.get("dim_names", ()) if col is not None else ()
+    return [_clean_dim_name(x, i) for i, x in enumerate(raw_names or ())]
+
+
+@render_func(is_default_for=("TensorDim", "TensorDims"), show_bg=False, is_tree=False,
+             header_same_line=True, with_header=draw_header)
+def draw_tensor_dim(input_value=None, draw_state=None, unique=0, **kwargs):
+    """THE dim picker — one TAB per dim NAME instead of a bare number field,
+    shared by every dim-typed param. A TensorDim renders single-select with
+    a leading "off" tab that maps to -1 (unset: sort disabled, nf/axis dims
+    derived), so sort_dim and nf_chop/nf_along reuse it as-is. A TensorDims
+    renders the same tabs multi-select (mean_dims). The names come
+    from the sibling `dim_names` entry of the collection this row renders
+    in (the params panel's locate_params proxy); with no names in reach it
+    falls back to a plain int edit. Returns the SAME type it was given so
+    the value keeps routing here (a plain int/tuple would drop back to the
+    generic renderer next frame)."""
+    multi = isinstance(input_value, tuple)
+    col = _row_collection(draw_state, kwargs)
+    labels = _collection_dim_labels(col)
+    if not labels:
+        if multi:
+            imgui.text(f"dims: {tuple(int(v) for v in input_value)}")
+            return False, input_value
+        changed, v = RenderFuncs.draw_int(
+            0 if input_value is None else int(input_value),
+            name=f"dim##{unique}")
+        if changed and v is not None:
+            return True, TensorDim(int(v))
+        return False, input_value
+    n = len(labels)
+    if multi:
+        cur = [int(v) for v in input_value if isinstance(v, int)]
+        changed, selected = draw_tab_bar(
+            [d for d in cur if 0 <= d < n],
+            collection=list(range(n)), names=labels,
+            name=f"dims##{unique}", wrap=True, z_offset=-1, rounding=5,
+            as_toggles=True, bg_offset=-3)
+        if changed:
+            return True, TensorDims(sorted(int(s) for s in selected))
+        return False, input_value
+    # Single-select: a leading "off" tab maps to -1 (unset - sort disabled,
+    # nf/axis dims derived), so unsetting doesn't rely on double-click.
+    cur = int(input_value) if input_value is not None else -1
+    if not (0 <= cur < n):
+        cur = -1
+    changed, selected = draw_tab_bar(
+        [cur], collection=[-1] + list(range(n)), names=["off"] + labels,
+        name=f"dims##{unique}", wrap=True, z_offset=-1, rounding=5,
+        as_toggles=False, bg_offset=-3)
+    if changed:
+        return True, TensorDim(int(selected[0]) if selected else -1)
+    return False, input_value
+
+
 def _resolve_dim(dim_names, v, n):
     """A dim given by INDEX or by NAME (resolved through dim_names); None
     stays None, out-of-range collapses to None."""
@@ -495,33 +592,55 @@ def _resolve_dim(dim_names, v, n):
         if v not in names:
             return None
         v = names.index(v)
-    v = int(v)
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        # params are user-editable from the panel and from source, so a dim
+        # can arrive as anything at all. Unusable = unset.
+        return None
     return v if 0 <= v < n else None
 
 
 def _resolve_axes(shape, dim_names, x_dim, y_dim, z_dim):
     """(z, y, x) display dims for a shape: dims by index or NAME, None
     derives the default (last three dims → z/y/x, like the old viewer).
-    A None fill never lands on an explicitly taken dim."""
+
+    ALWAYS returns three DISTINCT in-range dims (for n >= 3) — the params are
+    editable from the panel and from source, so two axes can name the same dim
+    or a garbage one. A dim already claimed by an earlier axis is treated as
+    unset and re-derived, which keeps the slicing downstream well-formed
+    (duplicate picks collapse the sliced volume to 2 dims and the permute
+    blows up). z wins over y wins over x, so the LAST axis you retarget onto a
+    taken dim is the one that moves."""
     n = len(shape)
-    zd = _resolve_dim(dim_names, z_dim, n)
-    yd = _resolve_dim(dim_names, y_dim, n)
-    xd = _resolve_dim(dim_names, x_dim, n)
-    taken = {d for d in (zd, yd, xd) if d is not None}
+    resolved = []
+    taken = set()
+    for cur in (z_dim, y_dim, x_dim):
+        d = _resolve_dim(dim_names, cur, n)
+        if d is None or d in taken:
+            resolved.append(None)       # unset, or a duplicate: re-derive
+        else:
+            taken.add(d)
+            resolved.append(d)
 
-    def fill(cur, default):
-        if cur is not None:
-            return cur
-        d = default
-        while d in taken and d > 0:
-            d -= 1
-        taken.add(d)
-        return d
+    def fill(default):
+        # The default dim, else the nearest free one scanning down then up.
+        # (The old walk stopped at 0 and could hand back a taken 0.)
+        if default not in taken:
+            return default
+        for d in range(default - 1, -1, -1):
+            if d not in taken:
+                return d
+        for d in range(default + 1, n):
+            if d not in taken:
+                return d
+        return default                  # n < 3: nothing free left
 
-    zd = fill(zd, max(0, n - 3))
-    yd = fill(yd, max(0, n - 2))
-    xd = fill(xd, n - 1)
-    return zd, yd, xd
+    for i, default in enumerate((max(0, n - 3), max(0, n - 2), max(0, n - 1))):
+        if resolved[i] is None:
+            resolved[i] = fill(default)
+            taken.add(resolved[i])
+    return tuple(resolved)
 
 
 def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
@@ -530,7 +649,9 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
     """tensor → (depth, height, width) display volume, PURE: every choice
     arrives as an argument (the draw_voxels params), nothing is stored.
     Unmapped dims pin to their `slices` index (missing entries → 0) or
-    average when listed in mean_dims (keepdim, then pinned at 0); sort
+    average when listed in mean_dims (keepdim, then pinned at 0); a
+    DISPLAYED dim in mean_dims keeps its extent with the mean broadcast
+    along it (the value repeats across the plot); sort
     orders fibers along a dim; normalize min-max stretches the DISPLAYED
     volume (signed data scales by max-magnitude so zero stays anchored).
     Stays on t's device. Returns (vol3, (z_dim, y_dim, x_dim), shape)."""
@@ -546,14 +667,26 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
     if 0 <= int(sort_dim) < n:
         t = torch.sort(t, dim=int(sort_dim), descending=True).values
     picked = (zd, yd, xd)
-    mean_set = {int(d) for d in (mean_dims or ())
-                if 0 <= int(d) < n and int(d) not in picked}
+    mean_set = {int(d) for d in (mean_dims or ()) if 0 <= int(d) < n}
     for d in mean_set:
-        t = t.mean(dim=d, keepdim=True)
+        m = t.mean(dim=d, keepdim=True)
+        # A DISPLAYED dim keeps its extent with the mean BROADCAST along it
+        # (the same value repeats across the plot - visual convenience);
+        # an unmapped dim stays collapsed and pins at 0 below.
+        t = m.expand(t.shape) if d in picked else m
+    def _pin(d):
+        # A pinned index from `slices` can be anything the panel/source lets;
+        # clamp into range instead of letting torch raise (or silently wrap on
+        # a negative).
+        try:
+            v = int(slices[d]) if d < len(slices) else 0
+        except (TypeError, ValueError):
+            v = 0
+        return max(0, min(v, shape[d] - 1))
+
     index = tuple(
         slice(None) if d in picked
-        else (0 if d in mean_set
-              else min(int(slices[d]) if d < len(slices) else 0, shape[d] - 1))
+        else (0 if d in mean_set else _pin(d))
         for d in range(n))
     sub = t[index]  # picked 3 dims keep original order
     remaining = sorted(picked)
@@ -1025,221 +1158,36 @@ def _render_label_billboards(gl_state, specs, cam, height):
         gl.glDisable(gl.GL_BLEND)
 
 
-def _draw_axis_controls(vox_ds, shape, mapping, dim_names):
-    """The remap UI over the renderer's draw_state params: a radio row per
-    display axis (conflict swaps — the displaced axis takes the old dim),
-    index scrubbers for unmapped dims, mean toggles, sort + normalize,
-    neural flow. Every edit writes vox_ds.<param>; auto-state persists the
-    diverged values, no object of its own."""
-    changed = False
-    n = len(shape)
-    zd, yd, xd = mapping
-    current = {"x_dim": xd, "y_dim": yd, "z_dim": zd}
-    names = [dim_names[d] if d < len(dim_names) else f"dim{d}" for d in range(n)]
-    for label, attr in (("x", "x_dim"), ("y", "y_dim"), ("z", "z_dim")):
-        imgui.text(f"{label}:")
-        for d in range(n):
-            imgui.same_line()
-            if imgui.radio_button(f"{names[d]}##axis_{label}_{d}",
-                                  current[attr] == d):
-                prev = current[attr]
-                for other, od in current.items():
-                    if other != attr and od == d:
-                        current[other] = prev
-                        setattr(vox_ds, other, prev)
-                current[attr] = d
-                setattr(vox_ds, attr, d)
-                changed = True
-    shown = set(current.values())
-    slices = list(getattr(vox_ds, "slices", ()) or ())
-    slices += [0] * (n - len(slices))
-    mean_dims = {int(m) for m in (getattr(vox_ds, "mean_dims", ()) or ())}
-    for d in range(n):
-        if d in shown or shape[d] <= 1:
-            continue
-        # mean toggle: average over this dim instead of scrubbing one slice
-        mean_changed, is_mean = imgui.checkbox(f"mean##mean_{d}", d in mean_dims)
-        if mean_changed:
-            (mean_dims.add if is_mean else mean_dims.discard)(d)
-            vox_ds.mean_dims = tuple(sorted(mean_dims))
-            changed = True
-        imgui.same_line()
-        if is_mean:
-            imgui.text(f"{names[d]} (averaged)")
-            continue
-        imgui.push_item_width(160)
-        scrub_changed, value = RenderFuncs.draw_int(
-            min(slices[d], shape[d] - 1), name=f"{names[d]}##scrub_{d}",
-            min_value=0, max_value=shape[d] - 1)
-        imgui.set_item_allow_overlap()
-        imgui.pop_item_width()
-        if scrub_changed:
-            slices[d] = int(value)
-            vox_ds.slices = tuple(slices)
-            changed = True
-
-    # ── normalize + sort: data transforms, dim-pinned like the others ─────
-    sort_dim = int(getattr(vox_ds, "sort_dim", -1))
-    norm_changed, norm = imgui.checkbox(
-        "normalize##norm", bool(getattr(vox_ds, "normalize", False)))
-    if norm_changed:
-        vox_ds.normalize = norm
-        changed = True
-    imgui.same_line()
-    imgui.text("sort:")
-    imgui.same_line()
-    if imgui.radio_button("off##sort_off", sort_dim == -1):
-        vox_ds.sort_dim = -1
-        changed = True
-    for d in range(n):
-        imgui.same_line()
-        if imgui.radio_button(f"{names[d]}##sort_{d}", sort_dim == d):
-            vox_ds.sort_dim = d
-            changed = True
-
-    # ── neural flow: chop one tensor dim into chunks laid along another
-    # (dim-pinned: remapping x/y/z never changes which dim gets chopped;
-    # only currently-displayed dims are offered, since the flow operates on
-    # the sliced display volume) ─────────────────────────────────────────
-    nf_on = bool(getattr(vox_ds, "nf_on", False))
-    nf_changed, nf_now = imgui.checkbox("neural flow##nf", nf_on)
-    if nf_changed:
-        vox_ds.nf_on = nf_now
-        changed = True
-    if nf_now:
-        chop_d = _resolve_dim(dim_names, getattr(vox_ds, "nf_chop", None), n)
-        along_d = _resolve_dim(dim_names, getattr(vox_ds, "nf_along", None), n)
-        cur = {"nf_chop": xd if chop_d is None else chop_d,
-               "nf_along": zd if along_d is None else along_d}
-        for label, attr in (("chop", "nf_chop"), ("along", "nf_along")):
-            imgui.same_line()
-            imgui.text(f"{label}:")
-            for d in sorted(shown):
-                imgui.same_line()
-                if imgui.radio_button(f"{names[d]}##{attr}_{d}", cur[attr] == d):
-                    setattr(vox_ds, attr, d)
-                    changed = True
-        imgui.same_line()
-        imgui.push_item_width(110)
-        chunk_changed, chunk = RenderFuncs.draw_int(
-            int(getattr(vox_ds, "nf_chunk", 128)), name="chunk##nf", step=0)
-        imgui.set_item_allow_overlap()
-        imgui.pop_item_width()
-        if chunk_changed and chunk > 0:
-            vox_ds.nf_chunk = int(chunk)
-            changed = True
-
-    return changed
-
-
-# Panel slider rows: (param, min, max) - UI constants, not state.
-_PANEL_FLOATS = (("tilt", -3.1416, 3.1416), ("spin", -6.3, 6.3),
-                 ("cam_zoom", 0.0, 137.6), ("pan_x", -4.0, 4.0),
-                 ("pan_y", -4.0, 4.0), ("pan_z", -4.0, 4.0),
-                 ("cam_brightness", 0.0, 4.0), ("cam_contrast", 0.1, 4.0),
-                 ("density", 0.0, 10.0), ("threshold", 0.0, 1.0))
-_PANEL_BOOLS = ("ortho", "centered", "nearest")
-
-
-@render_func(show_bg=False, use_cache=True, auto_resize=False, min_height=600)
-def draw_voxel_controls(input_value=None, vox_ds=None, mapping=None,
-                        draw_state=None, hovered=None, **kwargs):
-    """Every control that drives a voxel view, in one satellite panel —
-    sliders/radios over the OWNING VIEW's draw_state params (auto-state:
-    edits write vox_ds.<param>, diverged values persist, untouched ones
-    keep flowing from the draw_voxels signature). input_value is the
-    uploaded buffer (it carries the tensor metadata); `mapping` is the
-    (z, y, x) dims the renderer resolved this frame.
-
-    CACHED, live only under the cursor: the `hovered` event param keeps the
-    cache bypassed while the cursor is over the panel, and draw_voxels
-    invalidates it ONCE when a gesture ends, so it never refreshes per drag
-    frame."""
-    tex = input_value
-    if vox_ds is None:
-        imgui.text("no owning view")
-        return False, input_value
-    changed = False
-    for nm, lo, hi in _PANEL_FLOATS:
-        c, v = RenderFuncs.draw_float(float(getattr(vox_ds, nm, 0.0)), name=nm,
-                                      min_value=lo, max_value=hi)
-        if c:
-            setattr(vox_ds, nm, float(v))
-            changed = True
-    for i, nm in enumerate(_PANEL_BOOLS):
-        if i:
-            imgui.same_line()
-        c, v = imgui.checkbox(f"{nm}##panel", bool(getattr(vox_ds, nm, False)))
-        if c:
-            setattr(vox_ds, nm, v)
-            changed = True
-
-    # ── LUT picker: one radio per list the LUT host knows about ─────────
-    src = lut_host.input_value if isinstance(getattr(lut_host, "input_value", None), dict) else LUTS
-    imgui.text("lut:")
-    for i, lut_name in enumerate(src):
-        if i % 4:
-            imgui.same_line()
-        if imgui.radio_button(f"{lut_name}##lut", getattr(vox_ds, "lut", "jet") == lut_name):
-            vox_ds.lut = lut_name
-            changed = True
-
-    # ── data mapping (only when tensor metadata rides the buffer) ───────
-    shape = getattr(tex, "source_shape", None)
-    if shape and mapping:
-        dim_names = tuple(getattr(vox_ds, "dim_names", ()) or ())
-        if _draw_axis_controls(vox_ds, shape, mapping, dim_names):
-            changed = True
-        names_changed, new_names = draw_any(list(dim_names), name="dim names",
-                                            initial={"expanded": True},
-                                            shadow=False)
-        if names_changed and isinstance(new_names, list):
-            # Any length list: extra names wait for bigger tensors. Names
-            # must stay short LABELS - a DnD/paste can land an arbitrary
-            # object whose str() is a -MB code repr.
-            vox_ds.dim_names = tuple(_clean_dim_name(x, i)
-                                     for i, x in enumerate(new_names))
-            changed = True
-
-    # ── metadata: pipeline + lifecycle visibility (lives here, not drawn
-    # over the volume) ───────────────────────────────────────────────────
-    injected = sum(1 for line in voxel_pass.last_generated.get("fragment", "").splitlines()
-                   if line.startswith("uniform "))
-    stats = GLState.stats()
-    imgui.text_colored(
-        f"{tex!r}\n"
-        f"{injected} uniforms · gl: {stats['states']} states / "
-        f"{stats['resources']} res / {stats['queued_deletes']} queued",
-        0.21, 0.33, 0.62, 1.0)
-    return changed, input_value
-
-
-@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, auto_resize=False, min_width=269,
-             bg_offset=-4, min_height=293, disable_scroll=True, use_cache=True)
+@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, 
+             auto_resize=False, min_width=269, with_header=draw_header,
+             bg_offset=0, min_height=293, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 draw_state=None,
                 # ── camera + shading: cam_* names dodge the legacy DrawState
                 # zoom/brightness/contrast fields (name-colliding params are
                 # excluded from auto-state). Gestures/panel write
                 # draw_state.<name>; diverged values persist. ──
-                tilt=0.5, spin=0.724, cam_zoom=3.4,
+                tilt=0.283, spin=0.724, cam_zoom=3.4,
                 pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
-                cam_brightness=1.0, cam_contrast=1.0,
+                cam_brightness=1.332, cam_contrast=1.0,
                 # density = the old densityScale (haze gain over the opacity
                 # gate); threshold = the old opacityThreshold (higher → lower
                 # gate → more opaque)
                 density=3.7, threshold=0.301, centered=False,
                 nearest=True, lut="jet", step_size=0.0005, max_steps=4096,
-                # ── data mapping: dims by INDEX or NAME, None derives a
-                # default (last three → z/y/x) ──
+                # ── axis mapping: dims by index OR NAME. The first three dims
+                # by default; None still means "derive" (last three → z/y/x)
+                # for anything that clears one. ──
                 dim_names=("layer", "batch", "token", "feature"),
-                x_dim=None, y_dim=None, z_dim=None, slices=(),
-                mean_dims=(), sort_dim=-1, normalize=False,
-                nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
+                x_dim=TensorDim(0), y_dim=TensorDim(2), z_dim=TensorDim(2),
+                slices=(),
+                mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
+                normalize=False, nf_on=False, nf_chop=TensorDim(-1),
+                nf_along=TensorDim(-1), nf_chunk=128,
                 # ── volume furniture (screen px) ──
                 name_size=17.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
-                num_spacing=1.0, num_angle=0.0,
+                num_spacing=1.0, num_angle=0.0, z_offset=1,
                 middle_mouse_drag=None, double_right_mouse_drag=None,
                 scroll_y_changed=None, left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
@@ -1329,16 +1277,50 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # the ancestor and stayed put while the voxel window was dragged.
     win = draw_state if draw_state.closable else (draw_state.parent_window or draw_state)
     width = max(64, int(draw_state.content_width or win.content_width or 0))
+    # Vertical reserve: the actual header height (0 when hidden) + a little
+    # slack for the controls/status margin (the old hardcoded 30 was the
+    # 23px header + some slack).
+    _reserve = int(draw_state.header_height or 0) + 7
     if draw_state.closable:
-        height = max(100, draw_state.height - 30)
+        height = max(100, draw_state.height - _reserve)
     else:
-        # when in a parent's flow, draw_state.height is a MEASUREMENT of
-        # what this view drew last frame - sizing the image from it is a
-        # feedback loop that sustains any spike forever (image = height-30 →
-        # measures back ≈ height → committed again). Use the design height
-        # (min_height, overridable per calling site); a bad design height
-        # generally self-heals on the first live render.
-        height = max(100, int(draw_state.min_height or 293) - 30)
+        # Nested in a parent's flow, draw_state.height is only trustworthy
+        # when something authoritative wrote it - a resize callback ("initial
+        # size..."), a passed height kwarg, fill_height. The auto_resize
+        # measurement path ("... item_rect[1]") is what this view drew last
+        # frame - sizing the image from it is a feedback loop that sustains
+        # any spike forever (image = height-30 → measures back ≈ height →
+        # committed again); fall back to the design height (min_height,
+        # overridable per call site) for that case, and a bad committed
+        # height self-heals on the next live render.
+        _h_src = str(draw_state._source.get("height", ""))
+        if draw_state.height and "item_rect" not in _h_src:
+            height = max(100, int(draw_state.height) - _reserve)
+        else:
+            height = max(100, int(draw_state.min_height or 293) - _reserve)
+
+
+    # ── in-flight locate values: a locate_* write to a SLOW source (e.g. a
+    # `# [cam_brightness=...]` comment) is deferred during drags and lands
+    # multi-frame after; until then the injected kwarg is stale. Re-read any
+    # camera param with a value set through locate_* (which also clears the
+    # entry once the trip lands) so drags accumulate off the latest state.
+    # _sa_precise rides the same way: a low-precision source has a 4dp
+    # rounding, so locate_* serves the full-precision overlay over it. ──
+    _pending = getattr(draw_state, "_sa_pending", None) or {}
+    _precise = getattr(draw_state, "_sa_precise", None) or {}
+    _in_flight = _pending.keys() | _precise.keys()
+    if _in_flight:
+        def _fly(n, cur):
+            if n not in _in_flight:
+                return cur
+            v = getattr(draw_state, "locate_" + n)
+            return cur if v is None else v
+        tilt, spin, cam_zoom = _fly("tilt", tilt), _fly("spin", spin), _fly("cam_zoom", cam_zoom)
+        pan_x, pan_y, pan_z = _fly("pan_x", pan_x), _fly("pan_y", pan_y), _fly("pan_z", pan_z)
+        cam_brightness = _fly("cam_brightness", cam_brightness)
+        cam_contrast = _fly("cam_contrast", cam_contrast)
+        ortho = _fly("ortho", ortho)
 
     # ── gestures → draw_state params (auto-state: the caller diverges the
     # param so it persists; events are hover-routed wrapper kwargs) ──────
@@ -1354,17 +1336,21 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             pan_x += (ss * dx - cs * st * dy) * wpp
             pan_y += (-cs * dx - ss * st * dy) * wpp
             pan_z += ct * dy * wpp
-            draw_state.pan_x, draw_state.pan_y, draw_state.pan_z = pan_x, pan_y, pan_z
+            draw_state.locate_pan_x = pan_x
+            draw_state.locate_pan_y = pan_y
+            draw_state.locate_pan_z = pan_z
         elif middle_mouse_drag.ctrl:
             # the old viewer's ctrl-drag: vertical = dolly zoom, horizontal
             # still orbits.
             cam_zoom = min(137.6, max(0.0, cam_zoom * math.exp(0.005 * middle_mouse_drag.dy)))
             spin -= middle_mouse_drag.dx * 0.008
-            draw_state.cam_zoom, draw_state.spin = cam_zoom, spin
+            draw_state.locate_cam_zoom = cam_zoom
+            draw_state.locate_spin = spin
         else:
             spin -= middle_mouse_drag.dx * 0.008
             tilt = min(math.pi, max(-math.pi, tilt + middle_mouse_drag.dy * 0.008))
-            draw_state.spin, draw_state.tilt = spin, tilt
+            draw_state.locate_spin = spin
+            draw_state.locate_tilt = tilt
     if double_right_mouse_drag is not None:
         # the old viewer's shading drag: now on a DOUBLE right-drag (the 2nd
         # press of a double right-click, held and dragged): horizontal =
@@ -1372,10 +1358,11 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # click stays reserved for the context menu.
         cam_brightness = min(4.0, max(0.0, cam_brightness + double_right_mouse_drag.dx * 0.01))
         cam_contrast = min(4.0, max(0.1, cam_contrast - double_right_mouse_drag.dy * 0.008))
-        draw_state.cam_brightness, draw_state.cam_contrast = cam_brightness, cam_contrast
+        draw_state.locate_cam_brightness = cam_brightness
+        draw_state.locate_cam_contrast = cam_contrast
     if scroll_y_changed is not None:
         cam_zoom = min(135.5, max(0.0, cam_zoom * math.exp(-0.23 * scroll_y_changed.value)))
-        draw_state.cam_zoom = cam_zoom
+        draw_state.locate_cam_zoom = cam_zoom
 
 
     # ── Blender-style numpad views (hover-routed key events): 7/1/3 = top/
@@ -1387,20 +1374,25 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     if Melty.text_focused_ds is None:
         if kp_7_pressed is not None:
             spin, tilt = -HALF_PI, (-HALF_PI if kp_7_pressed.ctrl else HALF_PI)
-            draw_state.spin, draw_state.tilt = spin, tilt
+            draw_state.locate_spin = spin
+            draw_state.locate_tilt = tilt
         if kp_1_pressed is not None:
             spin, tilt = (HALF_PI if kp_1_pressed.ctrl else -HALF_PI), 0.0
-            draw_state.spin, draw_state.tilt = spin, tilt
+            draw_state.locate_spin = spin
+            draw_state.locate_tilt = tilt
         if kp_3_pressed is not None:
             spin, tilt = (math.pi if kp_3_pressed.ctrl else 0.0), 0.0
-            draw_state.spin, draw_state.tilt = spin, tilt
+            draw_state.locate_spin = spin
+            draw_state.locate_tilt = tilt
         if kp_5_pressed is not None:
             ortho = not ortho
-            draw_state.ortho = ortho
+            draw_state.locate_ortho = ortho
         if (slash_pressed is not None or kp_divide_pressed is not None
                 or kp_decimal_pressed is not None):
             pan_x = pan_y = pan_z = 0.0
-            draw_state.pan_x = draw_state.pan_y = draw_state.pan_z = 0.0
+            draw_state.locate_pan_x = 0.0
+            draw_state.locate_pan_y = 0.0
+            draw_state.locate_pan_z = 0.0
 
     # Filtering is sampler state on the texture, view-owned, applied per frame.
     filt = gl.GL_NEAREST if nearest else gl.GL_LINEAR
@@ -1488,8 +1480,12 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         _draw_axis_lines(imgui.get_window_draw_list(), img_pos, axis_edges)
 
     # ── ALL controls live in a satellite panel opening to the RIGHT of
-    # the window (params + LUTs + axis remap + scrubbers + flow + names +
-    # metadata). POPOVER window_pos is relative to the CURSOR at the call,
+    # the window: the renderer's full params, rendered automatically -
+    # draw_state.locate_params is a live dict over this signature, each row
+    # reads its framework-resolved value and an edit goes through
+    # set_anywhere (draw_state by default; a higher-pri source like an
+    # annotation comment claims the write when it drives the param).
+    # POPOVER window_pos is relative to the CURSOR at the call,
     # so anchor at the window's right edge - the panel rides along if the
     # window is dragged. Double-click the volume to show/hide; `closed` is
     # only PASSED on init/toggle so the window's own X button works - the
@@ -1525,12 +1521,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # (the scrollbar jitter as rows crossed the viewport).
         _anchor_y = win.abs_top if draw_state.closable else draw_state.abs_top
         imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, _anchor_y))
-        changed, _, panel_ds = draw_voxel_controls(tex, vox_ds=draw_state,
-                                                   mapping=mapping, name="controls",
-                                                       mode=Modes.WINDOW_PARAMS,
-                                                   parent_window=win, auto_resize=True,
-                                                   shadow=True, return_extras=True,
-                                                   **panel_kwargs)
+        changed, _, panel_ds = draw_any(draw_state.locate_params,
+                                        name="controls",
+                                        mode=Modes.WINDOW_PARAMS,
+                                        parent_window=win, auto_resize=True,
+                                        shadow=True, return_extras=True,
+                                        initial={"expanded": True},
+                                        **panel_kwargs)
         imgui.set_cursor_screen_pos(_flow_cursor)
         if panel_ds is not None:
             draw_state.misc["params_panel"] = not panel_ds.closed
@@ -1542,7 +1539,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                         imgui.is_mouse_down(0) and scroll_y_changed is None) and changed:
                     panel_ds.invalidate_up()
 
-        # ── status: error surfacing only (metadata lives in the panel) ──────
+        # ── status bar error surfacing only ────────────────────────────────────
         if voxel_pass.last_error:
             # imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
             imgui.text_colored(voxel_pass.last_error.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
@@ -1660,7 +1657,7 @@ def draw_voxel_4d(input_value=None, **kwargs):
 
 @window(input_value=voxel_host_5d, tint=(0.02, 0.38, 0.11))
 @render_func(show_bg=True, use_cache=True)
-def draw_voxel_5d(input_value=None, **kwargs):
+def draw_voxel_5d(input_value=None, draw_state=None, **kwargs):
     _draw_host_volume(input_value)
 
 

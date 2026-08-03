@@ -1307,7 +1307,21 @@ _INLINE_FIRST_PARSE_MAX_CHARS = 128 * 1024
 # frame of 2026-07-31). 300ms sits above the inter-key gap of fast typing, so
 # each burst coalesces to ONE reparse when the input goes quiet; first parses
 # are exempt (run_in_background zeroes debounce until a first result returns).
+# Tunable live via Toggles.TextEditor.parse_debounce_ms (this is the fallback
+# default) - the same knob gates the symbol-usage recompute.
 _CHAIN_IN_DEBOUNCE_MS = 300
+
+
+def _chain_in_debounce_ms(input_value=None):
+    """Live-read the typing debounce for this buffer; falls back to the module
+    default. Buffers at or under Toggles.TextEditor.small_file_max_chars take
+    the shorter small_file_debounce_ms — a few-ms parse doesn't need the long
+    coalescing window the big-buffer default exists for."""
+    te = Toggles.TextEditor
+    cap = getattr(te, "small_file_max_chars", 0)
+    if cap and isinstance(input_value, str) and len(input_value) <= cap:
+        return getattr(te, "small_file_debounce_ms", _CHAIN_IN_DEBOUNCE_MS)
+    return getattr(te, "parse_debounce_ms", _CHAIN_IN_DEBOUNCE_MS)
 
 
 class ModesState:
@@ -1516,7 +1530,7 @@ def convert_in_and_out(input_value, draw_state, view_func=None, chain_in=None, c
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
             name=f"chain_in{unique}", start=external_change, inline_first=inline,
-            debounce_ms=_CHAIN_IN_DEBOUNCE_MS)
+            debounce_ms=_chain_in_debounce_ms(input_value))
         if finished and isinstance(payload, dict) and payload.get("safe_skip"):
             # Newline-only edit: the worker skipped the chain because the buffer is
             # the last good source plus/minus blank lines, so it's clean. Keep
@@ -1681,7 +1695,7 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
             _run_chain_in,
             child_kwargs=chain_in_kwargs,
             name=f"chain_in{unique}", start=external_change, inline_first=inline,
-            debounce_ms=_CHAIN_IN_DEBOUNCE_MS)
+            debounce_ms=_chain_in_debounce_ms(input_value))
         if external_change:
             _ptrace(f"chain_in START edge (unique={unique})", src_gen=src_gen,
                     echo=(input_value is modes_state.echo_str))
@@ -3179,7 +3193,8 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         if _dbg_t is not None else "tile=?")
                     m_changed, m_out = RenderFuncs.draw_collection(
                         gp, excluded=["__cst__"],
-                        child_kwargs={"show_bg": False, "shadow": False, "folder_type":(dict), "use_cache": True, "z_offset": 0, "view_func":RenderFuncs.draw_collection_as_tabs},
+                        child_kwargs={"show_bg": False, "shadow": False, "folder_type":(dict), "use_cache": False, 
+                                      "z_offset": 0, "view_func":RenderFuncs.draw_collection_as_tabs},
                         show_system=False,
                         disable_scroll=False, show_header=False, show_add_delete=False,
                         width=col_width, **size_kwargs, show_parent_add_delete=False,

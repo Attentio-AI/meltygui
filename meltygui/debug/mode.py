@@ -203,7 +203,7 @@ class Mode(Enum):
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,
                     "with_header_end": draw_header_end, "draggable": True, 'shadow': True,
                     "show_tint": True, "show_header": True, "with_footer": draw_footer,
-                    "disable_scroll": False, "bg_offset": -1, "is_tree":False,
+                    "disable_scroll": False, "bg_offset": -1, "is_tree":False, 'show_add_delete':False,
                     "with_header": draw_header,
                     "initial": {"window_pos": (100, 500), "width": 400, "height": 320}},
             recursive=False
@@ -422,7 +422,7 @@ class Mode(Enum):
                     "child_kwargs": {"line_height": 1.35,
                                      "wrap": True,
                                      "syntax_highlight": False,
-                                     'tint': (0.83, 0.359, 0.046)}},
+                                     'tint': (0.87, 0.604, 0.05)}},
             recursive=True,
         ),
         str: ModeOverrides(

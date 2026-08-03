@@ -25,6 +25,20 @@ def live(cls):
 
     @functools.wraps(original_setattr)
     def new_setattr(self, name: str, value: Any) -> None:
+        # Prefix-routed writes: a view view opts in by declaring LOCATE_PREFIX
+        # and a `_locate_set(name, value)` handler (DrawState does it for the
+        # set_*where accessors). The prefix is read off type(self), not the
+        # decorated class; @live sits on the DictConversion base, so a
+        # decoration attribute lookup would never see the subclass's override.
+        # Names that don't start with 'l' pay one slice string check and nothing
+        # else; that cheapness is why the logic lives here instead of in a
+        # __setattr__ of its own, which would add a Python frame to every
+        # attribute write in the app.
+        if name[:1] == 'l':
+            locate_prefix = getattr(type(self), 'LOCATE_PREFIX', None)
+            if locate_prefix and name.startswith(locate_prefix):
+                self._locate_set(name, value)
+                return
         melty = Core.melty
         if melty.silence_invalidate or melty.frame_count < 2:
             # Silenced - the render wrapper's own bookkeeping writes land here

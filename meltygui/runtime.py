@@ -1243,22 +1243,36 @@ class Melty:
             # Esc releases text focus globally - no more needed. Re-render the
             # (now-)focused text view so its cursor disappears this frame, then
             # clear focus, which also unblocks global hotkeys via is_key_pressed.
-        if glfw.get_key(cls.glfw_window, glfw.KEY_ESCAPE) == glfw.PRESS:
-            # Esc closes the active find bar - no hover required. clear_focus no
-            # longer closes search (so clicking away leaves bars open), so close
-            # the focused search owner's bar explicitly here. Other open find bars
-            # stay until their own Esc/X. Once focused_ds is cleared below the
-            # bar's re-grab can't reclaim focus, so the bar dismisses cleanly.
-            if cls.focused_ds is not None and getattr(cls.focused_ds, 'search_active', False):
-                cls.focused_ds.search_active = False
-                cls.focused_ds._search_was_active = False
-                cls.focused_ds.invalidate_up()
+        # Press EDGE from the callback queue, not glfw.get_key level state: a
+        # tap stays PRESSED across multiple frames, so the level check would
+        # re-fire on frame 2 - right after a popup consumed the event - and
+        # clear focus anyway.
+        if any(k == glfw.KEY_ESCAPE for k, _ in cls.frame_key_events):
+            # An open editor popup (code suggestions / usage-jump / import
+            # quick-fix) owns this Esc: it should only close the popup, not
+            # release text focus. The Esc handlers live inside the focused
+            # editor's render, so re-run its subtree and let them consume it.
+            if focused is not None and (getattr(focused, '_ac_open', False)
+                                        or getattr(focused, '_uj_open', False)
+                                        or getattr(focused, '_qf_open', False)):
+                cls.cache.invalidate_up(focused._tile_id, force=True)
+                request_render()
+            else:
+                # Esc closes the active find bar - no hover required. clear_focus no
+                # longer closes search (so clicking away leaves bars open), so close
+                # the focused_ds owner's bar explicitly here. Other open find bars
+                # stay until their own Esc tap. Once focused_ds is cleared, the
+                # bar's re-grab can't reclaim focus, so the bar dismisses itself.
+                if cls.focused_ds is not None and getattr(cls.focused_ds, 'search_active', False):
+                    cls.focused_ds.search_active = False
+                    cls.focused_ds._search_was_active = False
+                    cls.focused_ds.invalidate_up()
 
-            cls.clear_focus()
+                cls.clear_focus()
 
-            if Toggles.TextEditor.text_focus_stack_trace:
-                print_stack_trace()
-            request_render()
+                if Toggles.TextEditor.text_focus_stack_trace:
+                    print_stack_trace()
+                request_render()
         else:
             for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
                 if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
@@ -2272,6 +2286,24 @@ class Melty:
         for _k in list(kwargs):
             if (_ap and _k in _ap) or isinstance(kwargs[_k], _InputEvent):
                 kwargs.pop(_k, None)
+        # Live-view comment re-splat: last spawn kwargs froze the MARKER's
+        # last splat of the site's `# [...]` override comment, and the marker
+        # specifically doesn't re-render on a comment save (self-write
+        # absorb) - so a set_anywhere comment edit made between marker
+        # renders would never reach a replayed window (and a stale
+        # auto_params entry for the same param would drive instead). The
+        # marker stamps live_root (the live parse tree; updated IN PLACE by
+        # comment writes) + live_key on the window ds - re-read the entry
+        # here so every replay carries current comment values as explicit
+        # kwargs, exactly like a fresh wrapper call.
+        _lr = draw_state.__dict__.get('live_root')
+        _lk = draw_state.__dict__.get('live_key')
+        if isinstance(_lr, dict) and _lk:
+            _ca = _lr.get("__overrides__", {}).get(f"__{_lk}__")
+            if isinstance(_ca, dict):
+                for _ck, _cv in _ca.items():
+                    if not (isinstance(_ck, str) and _ck.startswith("__")):
+                        kwargs[_ck] = _cv
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((int(draw_state.abs_left), int(draw_state.abs_top)))
 

@@ -838,6 +838,7 @@ def render_func(*args, **o_kwargs):
         exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
                              "name", "z_offset", "use_cache", "active_layer", "auto_resize",
                              "unique", "suffix", "collection", "expanded_rect", "z_pos", "bg_offset",
+                             "max_bg_depth", "max_bg_value",
                              "meta", "depth", "next_kwargs", "param_types"]
         for exclude_key in exclude_ds_kwargs:
             ds_kwargs.pop(exclude_key, None)
@@ -1529,7 +1530,7 @@ def render_func(*args, **o_kwargs):
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
                                                    rect=corner_rect, priority_delta=1)
 
-                corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
+                corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=1)
                 # Plain right-drag resizes; with ctrl held the right-drag is a
                 # window-move instead (handled in the move block below), so don't
                 # drive resize from it. corner_drag.ctrl is reset per frame, so
@@ -1617,6 +1618,8 @@ def render_func(*args, **o_kwargs):
                         # the previous total_dx so the per-frame delta is exact.
                         queued = False
                         if handle_drag is corner_drag:
+                            if not closable:
+                                draw_state.invalidate()
                             try:
                                 if draw_state._resize_target_edge is None:
                                     sx = (handle_drag.x - handle_drag.total_dx) - draw_state.abs_left
@@ -2936,7 +2939,13 @@ def render_func(*args, **o_kwargs):
 
                 nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                 from src.lsd.gl_gui.view.core_views.new_core_view import compute_bg_color
-                draw_state.bg_color = compute_bg_color(bg_offset=kwargs.get("bg_offset", None), nested_bg=True)
+                # max_bg_depth pins the ceiling on the effective depth
+                # (Melty.bg_depth + bg_offset) the palette is read at, so a
+                # deeply nested view stops getting darker past that step;
+                # max_bg_value caps the color that ramp resolves at.
+                draw_state.bg_color = compute_bg_color(bg_offset=kwargs.get("bg_offset", None), nested_bg=True,
+                                                       max_bg_depth=kwargs.get("max_bg_depth", None),
+                                                       max_bg_value=kwargs.get("max_bg_value", None))
 
                 if converted_input:
                     # reformat icon wrench
@@ -2969,6 +2978,8 @@ def render_func(*args, **o_kwargs):
                         bg_return = draw_bg(bypass=True, left=draw_state.abs_left, top=draw_state.abs_top,
                                             width=draw_state.width, height=draw_state.height,
                                             rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
+                                            max_bg_depth=kwargs.get("max_bg_depth", None),
+                                            max_bg_value=kwargs.get("max_bg_value", None),
                                             depth=Melty.shadow_depth, selected=False,
                                             opacity=1.0 if show_bg else 0.0,
                                             saturation=kwargs.get("saturation", 1.0),

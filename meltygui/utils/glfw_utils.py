@@ -986,6 +986,11 @@ def request_render(for_frames:int | None=None):
         if Core.melty.frame_count > 100 and (Core.melty.frame_count % 500 == 0):
             print_stack_trace(size=3, section="REQUEST RENDER")
 
+    if Toggles.InvalidateTracker.invalidate_request_render:
+        if Core.melty.frame_count > 100 and (Core.melty.frame_count % 50 == 0):
+            print_stack_trace(size=3, section="REQUEST RENDER")
+
+
     _needs_render.set()
     try:
         glfw.post_empty_event()

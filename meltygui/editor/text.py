@@ -1289,6 +1289,150 @@ def draw_number_token(input_value, draw_state=None, text_tint=None,
     return False, s
 
 
+def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None):
+    """Background box for a PLAIN inline token widget (no @render_func): the
+    same draw_bg call the wrapper's show_bg path makes (bypass=True skips its
+    wrapper), with the call-site tint pushed on the style manager the way
+    core_render does — draw_bg colors from the current style tint, so pushing
+    it is what tints the box. The previous tint is restored (these run
+    mid-draw_text; a leaked tint would recolor the rest of the editor frame).
+    No shadow / z_offset: plain widgets draw INTO the editor's tile instead of
+    compositing above it in a view of their own."""
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+    sm = Melty.global_attrs['style_manager']
+    prev = sm.get_tint()
+    if tint is not None and len(tint) >= 3:
+        sm.set_imgui_tint(*tint[:4])
+    draw_bg(bypass=True, left=x, top=y, width=w, height=h,
+            rounding=5.0, bg_offset=bg_offset, depth=Melty.shadow_depth,
+            opacity=1.0, style_manager=sm, nested_bg=bg_offset >= 0,
+            max_bg_value=max_bg_value)
+    if prev is not None:
+        sm.set_imgui_tint(*prev)
+
+
+def draw_bool_token_plain(input_value, width=20, height=20, name=None,
+                          tint=None, text_tint=None, **kwargs):
+    """draw_bool_token without the @render_func wrapper — raw imgui drawn
+    directly into the editor's tile (the wrapper costs ~90µs/call, which adds
+    up with many inline widgets; see draw_bool_token for the interaction
+    rationale). Same call shape and (changed, value) return; the call site
+    sets the cursor to the cell and passes width/height. No view, no
+    draw_state, no event subscription — clicks fall through to the editor
+    exactly as before (pass-through IS the bool widget's design; the caret-in
+    fallback in draw_text still handles the double-click when the caret hides
+    the widget)."""
+    word = input_value if input_value in ("True", "False") else "True"
+    x, y = imgui.get_cursor_screen_pos()
+    w = max(1.0, width)
+    h = max(1.0, height)
+    _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=0)
+    if text_tint is not None:
+        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2], 1.0)
+    else:
+        color = COLORS['bool']
+    imgui.get_window_draw_list().add_text(x, y, color, word)
+    io = imgui.get_io()
+    if (x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
+            and imgui.is_mouse_double_clicked(0)):
+        return True, ("False" if word == "True" else "True")
+    return False, input_value
+
+# Marks a renderer as wrapper-less for draw_text: the call site passes these
+# the editor's draw_state (editor_ds) so they can keep the EDITOR tile live
+# during a gesture - a plain widget has no tile of its own to invalidate.
+draw_bool_token_plain._plain_tv = True
+
+
+def draw_number_token_plain(input_value, width=20, height=20, name=None,
+                            tint=None, text_tint=None, editor_ds=None,
+                            max_bg_value=0.25, **kwargs):
+    """draw_number_token without the @render_func wrapper — see that docstring
+    for the interaction design (drag-only, caret via the editor's _tv_click
+    path). What the wrapper used to provide is done inline:
+    - Cursor/size come from the call site; drawing goes into the editor tile.
+    - push_id(name): no per-view imgui ID scope anymore, and every widget
+      shares the "##num_tv" label — without this all drags alias one item.
+    - The left_mouse_* subscription that latched drags away from the editor
+      is replaced by editor-side suppression: draw_text records this widget's
+      rect (ds._plain_tv_rects) and its press/drag handlers skip caret and
+      selection for gestures that start inside one. Registering with the
+      InputHandler from here doesn't work — registrations are per-RENDERED-
+      frame, and with event-driven rendering the editor body is usually
+      cached on the frame whose registrations the press resolves against.
+      The imgui drag itself needs no melty events; it runs off raw input.
+    - While the drag is active the EDITOR tile is force-invalidated each
+      frame: the imgui item only exists on frames the editor body runs, so a
+      cached editor would freeze the drag after its first value change."""
+    from src.lsd.gl_gui.utils.custom_views import (push_style_var, pop_style_var,
+                                                   push_style_color, pop_style_color)
+    s = input_value if isinstance(input_value, str) else str(input_value)
+    kind, val, fmt_back, disp = _parse_number_token(s)
+    x, y = imgui.get_cursor_screen_pos()
+    if kind is None:
+        imgui.get_window_draw_list().add_text(x, y, COLORS['number'], s)
+        return False, s
+    w = max(1.0, width)
+    h = max(1.0, height)
+    # Legibility guard (same idea as button's max_bg_brightness): the depth
+    # ramp + bleed can push the chip's fill bright in deeply nested views,
+    # washing out the light digits - cap the painted value.
+    _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=-1, max_bg_value=max_bg_value)
+
+    push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
+    if text_tint is not None:
+        push_style_color(imgui.COLOR_TEXT, text_tint[0], text_tint[1], text_tint[2])
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND,
+                         text_tint[0] * 0.22, text_tint[1] * 0.22, text_tint[2] * 0.22)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED,
+                         text_tint[0] * 0.32, text_tint[1] * 0.32, text_tint[2] * 0.32)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE,
+                         text_tint[0] * 0.42, text_tint[1] * 0.42, text_tint[2] * 0.42)
+        _n_colors = 4
+    else:
+        push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)          # number chip
+        _n_colors = 1
+
+    imgui.push_id(name or "num_tv")
+    imgui.set_next_item_width(w)
+    changed, new, active = False, val, False
+    try:
+        if kind == 'int':
+            speed = max(0.2, abs(val) * 0.01)
+            changed, new = imgui.drag_int("##num_tv", val, change_speed=speed,
+                                          min_value=0, max_value=0,
+                                          flags=imgui.SLIDER_FLAGS_NO_INPUT)
+        else:
+            # Speed rules identical to draw_number_token: one displayed digit
+            # per step, scaling with magnitude; e-notation magnitude-only.
+            if '.' in s and 'e' not in s.lower():
+                prec = min(6, max(1, len(s.split('.', 1)[1])))
+                step = 10.0 ** -prec
+            else:
+                step = max(1e-6, abs(val) * 0.01)
+            speed = max(step, abs(val) * 0.005)
+            changed, new = imgui.drag_float("##num_tv", val, change_speed=speed,
+                                            min_value=0, max_value=0, format=disp,
+                                            flags=imgui.SLIDER_FLAGS_NO_INPUT)
+        active = imgui.is_item_active()
+    except Exception:
+        changed = False
+    finally:
+        imgui.pop_id()
+        pop_style_color(_n_colors)
+        pop_style_var()
+
+    if active:
+        if editor_ds is not None:
+            Melty.cache.invalidate_up(editor_ds._tile_id, max_depth=10, force=True)
+        request_render()
+    if changed and new != val:
+        return True, fmt_back(new)
+    return False, s
+
+draw_number_token_plain._plain_tv = True
+
+
 def _fmt_color_channel(v):
     """Format a 0..1 channel back into source as a FLOAT literal (the merged
     token needs at least one float channel, and a dragged value is fractional
@@ -1398,9 +1542,12 @@ DEFAULT_TOKEN_VIEWS = {
     # render kwargs.
     "icon": {"renderer": draw_icon_selector, "char_width": 3,
              "tint": (0.77, 0.66, 0.20, 1.00)},
-    "bool": {"renderer": draw_bool_token, "char_width": 1, "whole_token": True,
+    # bool/number use custom PLAIN (wrapper-less) renderers: with many inline
+    # widgets on screen the ~90µs @render_func wrapper per widget per frame
+    # dominated; these draw straight into the editor tile with raw imgui.
+    "bool": {"renderer": draw_bool_token_plain, "char_width": 1, "whole_token": True,
              "tint": (0.911, 0.305, 0.0)},
-    "number": {"renderer": draw_number_token, "char_width": 1, "whole_token": True,
+    "number": {"renderer": draw_number_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
     "color3": {"renderer": draw_color3_token, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
@@ -1714,7 +1861,7 @@ def _shift_def_tints(res, splice):
     entries shift like _shift_usage_spans; line entries shift by the splice's
     line delta; the block containing the edit keeps its head and stretches its
     end (typing inside a tinted class must not drop its wash)."""
-    blocks, spans, line_tints, comment_tints, name_tints = res
+    blocks, spans, line_tints, name_tints = res
     p, old_end, d, dl, el, oel = splice
 
     nb = []
@@ -1743,8 +1890,7 @@ def _shift_def_tints(res, splice):
         elif ln > oel and si >= old_end:
             nl.append((ln + dl, rgb, sc, si + d, ei + d))
         # else: the edited line's band - drop until recompute
-    return (tuple(nb), _idx_spans(spans), tuple(nl),
-            _idx_spans(comment_tints), name_tints)
+    return (tuple(nb), _idx_spans(spans), tuple(nl), name_tints)
 
 
 def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
@@ -2302,7 +2448,7 @@ def _scan_def_tint(path, line, name=None):
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 25
+_DEF_TINTS_VER = 26
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -3098,44 +3244,6 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                         continue
             kept.append(sp)
         spans = kept
-    # Comment-text tints: every override comment carrying tint=(...) gets its
-    # TEXT drawn in that color (not background) - the comment names a color,
-    # so it wears it. [(start_index, end_index, tint)] covering the comment
-    # run (or the trailing-comment tail of an assignment line).
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
-    comment_tints = []
-    bi = 0
-    while bi < len(lines):
-        s = lines[bi].strip()
-        if s.startswith("#"):
-            j = bi
-            while j + 1 < len(lines) and lines[j + 1].strip().startswith("#"):
-                j += 1
-            run = lines[bi:j + 1]
-            if any("tint=" in l for l in run):
-                # Prose lines may sit above the override in the same run -
-                # find the first comment SUFFIX; only its lines wear tint.
-                for k in range(len(run)):
-                    parsed = _parse_override_comment(
-                        "\n".join(l.strip() for l in run[k:]))
-                    if parsed and _is_color(parsed.get("tint")):
-                        sb = bi + k
-                        comment_tints.append(
-                            (line_start_idx[sb] + (len(lines[sb]) - len(lines[sb].lstrip())),
-                             line_start_idx[j] + len(lines[j].rstrip()),
-                             tuple(parsed["tint"])[:3]))
-                        break
-            bi = j + 1
-            continue
-        if "tint=" in lines[bi] and "#" in lines[bi]:
-            p = lines[bi].find("#")
-            parsed = _parse_override_comment(lines[bi][p:])
-            if parsed and _is_color(parsed.get("tint")):
-                comment_tints.append((line_start_idx[bi] + p,
-                                      line_start_idx[bi] + len(lines[bi].rstrip()),
-                                      tuple(parsed["tint"])[:3]))
-        bi += 1
-
     # Per-LINE tints: one very subtle full-width band per line that carries
     # any symbol wash. A definition ON the line with its own EXPLICIT tint
     # (at_own_def + full scale - every full-scale tint is explicit now that
@@ -3197,8 +3305,68 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                 scan_ms=round(_live_prof[1] * 1000.0, 1),
                 xf_ms=round(_live_prof[2] * 1000.0, 1),
                 worst=_live_prof[3], breakdown=" ".join(_bd))
-    return (tuple(blocks), tuple(spans), tuple(line_tints),
-            tuple(comment_tints), name_tints)
+    return (tuple(blocks), tuple(spans), tuple(line_tints), name_tints)
+
+
+def _collect_comment_tints(text):
+    """Comment-text tints: every override comment carrying tint=(...) gets its
+    TEXT drawn in that color (no background) — the comment names a color, so
+    it wears it. [(start_index, end_index, rgb)] covering the comment run (or
+    the trailing-comment tail of an assignment line). Pure TEXT scan — no
+    code_tree — so a freshly typed tint comment colors immediately instead of
+    waiting for the cst-dict round trip like the definition washes do."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _parse_override_comment
+    if "tint=" not in text:
+        return ()
+    lines = text.split("\n")
+    line_start_idx = [0]
+    for l in lines:
+        line_start_idx.append(line_start_idx[-1] + len(l) + 1)
+    comment_tints = []
+    bi = 0
+    while bi < len(lines):
+        s = lines[bi].strip()
+        if s.startswith("#"):
+            j = bi
+            while j + 1 < len(lines) and lines[j + 1].strip().startswith("#"):
+                j += 1
+            run = lines[bi:j + 1]
+            if any("tint=" in l for l in run):
+                # Prose lines may sit above the override in a comment run -
+                # find the longest parsing SUFFIX; only its lines get color.
+                for k in range(len(run)):
+                    parsed = _parse_override_comment(
+                        "\n".join(l.strip() for l in run[k:]))
+                    if parsed and _is_color(parsed.get("tint")):
+                        sb = bi + k
+                        comment_tints.append(
+                            (line_start_idx[sb] + (len(lines[sb]) - len(lines[sb].lstrip())),
+                             line_start_idx[j] + len(lines[j].rstrip()),
+                             tuple(parsed["tint"])[:3]))
+                        break
+            bi = j + 1
+            continue
+        if "tint=" in lines[bi] and "#" in lines[bi]:
+            p = lines[bi].find("#")
+            parsed = _parse_override_comment(lines[bi][p:])
+            if parsed and _is_color(parsed.get("tint")):
+                comment_tints.append((line_start_idx[bi] + p,
+                                      line_start_idx[bi] + len(lines[bi].rstrip()),
+                                      tuple(parsed["tint"])[:3]))
+        bi += 1
+    return tuple(comment_tints)
+
+
+def _comment_tints(ds, text):
+    """Cached-per-text wrapper around _collect_comment_tints. Unlike
+    _def_tints there is no tree in the key and no debounce: the scan is a
+    cheap line sweep (early-out when 'tint=' is absent), and its whole point
+    is repainting the comment the frame it's edited. Keyed on text IDENTITY
+    (every edit makes a new str; held by the ds so the id can't be reused)."""
+    if getattr(ds, "_comment_tints_text", None) is not text:
+        ds._comment_tints = _collect_comment_tints(text)
+        ds._comment_tints_text = text
+    return ds._comment_tints
 
 
 def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
@@ -3223,7 +3391,13 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     Stale spans can sit a hair off the glyphs for that window; they're
     translucent washes, and the background parse churn already did this."""
     if not isinstance(code_tree, dict):
-        return ((), (), (), (), {})
+        return ((), (), (), {})
+    # Hotswap shape check: a held result from before the comment-tints split
+    # was a 5-tuple; drop it rather than serve it through the debounce path.
+    if (getattr(ds, "_def_tints", None) is not None
+            and len(ds._def_tints) != 4):
+        ds._def_tints = None
+        ds._def_tints_key = None
     su_top = code_tree.get("__symbol_usages__")
     # NO text in the key - same reasoning as _usage_spans: text-only churn is
     # handled exactly by the shift remap; a recompute on a stale tree
@@ -3250,7 +3424,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
             try:
                 _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
             except Exception:
-                _fresh = ((), (), (), (), {})
+                _fresh = ((), (), (), {})
             if _sp_bt is not None:
                 _fresh = _shift_def_tints(_fresh, _sp_bt)
             ds._def_tints = _fresh
@@ -4637,12 +4811,12 @@ def _describe_code_tree(code_tree):
 
 
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, 
-             disable_scroll=False, with_header=draw_header, shadow=False, 
-             show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.2,
-             selectable=False, searchable=True, bg_offset=-1.8, show_add_delete=False)
+             disable_scroll=False, with_header=draw_header, shadow=False, max_bg_depth=0, max_bg_value=0.10,
+             show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
+             selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
 def draw_text(input_value: str, height=None,
-              left_mouse_down=False, 
+              left_mouse_down=False,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False,
@@ -4673,7 +4847,7 @@ def draw_text(input_value: str, height=None,
         token_views = {}
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # an experiment fallback (see a     
-    
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -4687,6 +4861,7 @@ def draw_text(input_value: str, height=None,
     _usage_tree = code_tree if (code_tree is not None
                                 and not (isinstance(code_tree, dict)
                                          and "__error__" in code_tree)) else code_dict
+                            
     _usage_off = getattr(_usage_tree, 'line_offset', 0) or 0
     if not _usage_off and jump_to is not None:
         _usage_off = getattr(jump_to, 'start', 0) or 0
@@ -4695,7 +4870,7 @@ def draw_text(input_value: str, height=None,
     # unsaved disk edit above this span that changed the line count shifts
     # every site - fold that shift into the offset (0 when nothing is pending).
     _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
-
+    
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
@@ -4724,6 +4899,7 @@ def draw_text(input_value: str, height=None,
         _err_markers = list(_ct_errors) if _ct_errors else []
         _err_markers += _exception_errors(error)
     else:
+    
         _ct_errors, _err_markers = None, []
     # Fast-path syntax markers (Toggles.TextEditor.fast_syntax_check): the
     # staleness section at the end of the body re-runs a bare compile() per
@@ -4773,6 +4949,7 @@ def draw_text(input_value: str, height=None,
         if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
             _active_fixes = _fi[1]
     _qf_fixes = {}
+    _qf_names = {}   # line → {names the fixes would bind} - drives the underlines
     if _active_fixes:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
         for _ln, _stmts in _active_fixes.items():
@@ -4784,6 +4961,7 @@ def draw_text(input_value: str, height=None,
                     if not (ds._qf_applied and _import_bound_name(_s) in ds._qf_applied)]
             if _row:
                 _qf_fixes[_ln] = _row
+                _qf_names[_ln] = {n for n in (_import_bound_name(_s) for _s in _row) if n}
     # Suppression (clearing _err_markers and _err_msg while keyboard editing) is
     # applied AFTER the keyboard recompute below, so it can read this frame's
     # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
@@ -4836,6 +5014,8 @@ def draw_text(input_value: str, height=None,
     char_w = imgui.calc_text_size("0").x
     changed = False
     original_input = input_value
+    
+
     # No line limit: the editor shows the WHOLE span. Off-screen lines are
     # already viewport-culled in every draw loop below (rect_min_y/rect_max_y)
     # and tokenization is cached by text value, so a long function costs an
@@ -4847,7 +5027,6 @@ def draw_text(input_value: str, height=None,
     text = input_value
     io = imgui.get_io()
     line_px = imgui.get_text_line_height() * line_height
-
     # Viewport tokenization: tokenize ONLY the clipped line range each frame
     # (see the `_line_open` / `_window_tokens` machinery above), so the per-frame
     # syntax cost is O(visible) instead of O(buffer). `_window()` returns
@@ -5058,6 +5237,20 @@ def draw_text(input_value: str, height=None,
         return False
 
 
+    # A press inside a PLAIN owns_mouse token widget (number drag - rects
+    # recorded by last body run's token loop) belongs to the widget, not the
+    # text: skip caret/focus/selection for the whole gesture, matching what the
+    # old render_func widget's click latch did. The flag is re-evaluated on
+    # EVERY press (no stale latch), and cleared on release below. Caret
+    # placement for a clean click still happens via the _try_click raw-mouse
+    # path in the token loop.
+    if left_mouse_down:
+        ds._plain_tv_gesture = any(
+            _r[0] <= left_mouse_down.x < _r[2] and _r[1] <= left_mouse_down.y < _r[3]
+            for _r in getattr(ds, '_plain_tv_rects', ()))
+        if ds._plain_tv_gesture:
+            left_mouse_down = None
+
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
@@ -5122,6 +5315,11 @@ def draw_text(input_value: str, height=None,
     # held (left_mouse_held) once a drag is underway - so holding the cursor
     # past the top/bottom edge keeps auto-scrolling and selecting more text,
     # not just while the mouse is moving.
+    # Gestures that started inside a plain token widget never extend a text
+    # selection - the drag drives the widget's value adjustment (see the press
+    # handler above). Cleared on release in the token-view loop below.
+    if left_mouse_drag and getattr(ds, '_plain_tv_gesture', False):
+        left_mouse_drag = None
     if left_mouse_drag:
         mx = left_mouse_drag.x if left_mouse_drag else io.mouse_pos.x
         my = left_mouse_drag.y if left_mouse_drag else io.mouse_pos.y
@@ -5227,6 +5425,8 @@ def draw_text(input_value: str, height=None,
                     while _replace_to < len(text) and (text[_replace_to].isalnum()
                                                        or text[_replace_to] == '_'):
                         _replace_to += 1
+                    
+                        
                 _ins, _coff, _extra = _ac_pick_insert(ds, chosen,
                                                       following=text[_replace_to:_replace_to + 64],
                                                       preceding=text[max(0, anchor - 64):anchor],
@@ -5253,7 +5453,7 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 _fired.discard(glfw.KEY_TAB)
-                
+          
         # --- Usage-jump picker: navigation & accept --- same key model as the
         # suggestion popup above: while open, Esc/arrows/Enter drive the picker
         # and are consumed before the caret handlers see them.
@@ -5491,8 +5691,9 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
-
-
+                
+                
+            
         # --- Backspace ---
         if pressed(glfw.KEY_BACKSPACE):
             ds.text_cursor_blink_time = time.time()
@@ -5790,6 +5991,19 @@ def draw_text(input_value: str, height=None,
                 _mtc = getattr(ds, '_ac_member_tints', None)
                 if _ntc or _mtc:
                     _ac_tinted = set(_ntc or ()) | set(_mtc or ())
+            if _snip is not None and _snip[1]:
+                # Word-like triggers ('t', 'in') are prefixes of real
+                # identifiers. Once the typed filter matches NO snippet row
+                # (label or insert text), the user is typing an identifier
+                # ('token_views'), not asking for a snippet - disarm the site
+                # so this same keystroke re-triggers scope completion instead
+                # of the exclusive-but-empty snippet popup.
+                _p = _snip[1].lower()
+                if not any(_p in s.label.lower()
+                           or _p in s.insert.replace("$0", "").lower()
+                           for s in _snip[2]):
+                    ds._ac_snip_site = None
+                    _snip = None
             if _snip is None:
                 ds._ac_snips = None    # accept must not treat identifiers as snippets
             if _snip is not None:
@@ -5999,8 +6213,10 @@ def draw_text(input_value: str, height=None,
         current_local = ds._search_active_local
         if current_local is not None and current_local >= local_count:
             current_local = None
-        # Scroll to it on a full-search frame (term change or nav).
-        should_scroll = current_local is not None and session.scroll_to
+        # Scroll to it on a full-search frame (term change / nav). An empty
+        # search box never moves the view: no term means nothing to reveal.
+        should_scroll = (bool(str(search_term))
+                         and current_local is not None and session.scroll_to)
     else:
         current_local = None
         should_scroll = False
@@ -6115,9 +6331,13 @@ def draw_text(input_value: str, height=None,
     if Toggles.TextEditor.definition_tints and not is_search_box:
         _t_dt = time.perf_counter()
         _k_dt = getattr(ds, "_def_tints_key", None)
-        _dt_blocks, _dt_spans, _dt_lines, _dt_comments, _ = _def_tints(
+        _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
             ds, text, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
+        # Comment-text tints come from a direct scan of the buffer text - no
+        # code_tree, no debounce, so a tint comment colors as it's typed
+        # instead of waiting on the cst-dict round trip.
+        _dt_comments = _comment_tints(ds, text)
         _pf_info['dt_call_ms'] = round((time.perf_counter() - _t_dt) * 1000.0, 1)
         _pf_info['dt_miss'] = _k_dt is not getattr(ds, "_def_tints_key", None)
         _pf_info['dt_n'] = (len(_dt_blocks), len(_dt_lines), len(_dt_spans))
@@ -6311,39 +6531,73 @@ def draw_text(input_value: str, height=None,
             if ey1 < rect_min_y or ey0 > rect_max_y:
                 continue
             draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, imgui.get_color_u32_rgba(*err_bg))
-    # Import quick-fix popover: caret parked on a line using a symbol an
-    # import could bind → a small floating hint at the end of that line.
-    # Deliberately independent of the error markers (the suggestions travel
-    # on their own channel, and a parser error may sit on a DIFFERENT line
-    # than the half-typed `json.`). Alt+Enter applies the fix (or opens the
-    # chooser widget when several imports could bind the name - see the
-    # keyboard block and the _qf draw_dd_menu below).
-    if True:
-        if _qf_fixes and Melty.text_focused_ds is draw_state \
-                and not getattr(ds, '_qf_open', False):
-            _po_ln = text.count('\n', 0, ds.text_cursor_pos) + 1
-            _po_opts = _qf_fixes.get(_po_ln)
-            if _po_opts:
-                _po_ls = 0
-                for _ in range(_po_ln - 1):
-                    _po_ls = text.find('\n', _po_ls) + 1
-                _po_le = text.find('\n', _po_ls)
-                _po_line_text = text[_po_ls:] if _po_le == -1 else text[_po_ls:_po_le]
-                _po_label = (f"Alt+Enter  {_po_opts[0]}" if len(_po_opts) == 1
-                             else f"Alt+Enter  {len(_po_opts)} imports…")
-                _po_w, _po_h = imgui.calc_text_size(_po_label)
-                _po_x = origin_x + imgui.calc_text_size(_po_line_text).x + 28
-                _po_y = origin_y + (_po_ln - 1) * line_px
-                if rect_min_y <= _po_y <= rect_max_y:
-                    draw_list.add_rect_filled(
-                        _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
-                        imgui.get_color_u32_rgba(0.13, 0.16, 0.24, 0.96), 5.0)
-                    draw_list.add_rect(
-                        _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
-                        imgui.get_color_u32_rgba(0.45, 0.60, 0.90, 0.55), 5.0)
-                    draw_list.add_text(_po_x, _po_y,
-                                       imgui.get_color_u32_rgba(0.72, 0.82, 1.0, 1.0),
-                                       _po_label)
+    # Import quick-fix affordance: every symbol an import would bind wears a
+    # translucent yellow underline, and the floating Alt+Enter hint appears at
+    # the end of the line only when the mouse is over one of those underlined
+    # symbols. Deliberately independent of the error markers (the suggestions
+    # travel on their own lines, and the parser error may sit on a DIFFERENT
+    # line than the half-typed `json.`). Alt+Enter still stays caret-driven -
+    # a caret anywhere on the line applies the fix / opens the chooser (see
+    # the keyboard block / the _qf draw_dd_menu below); hovering only reveals
+    # the hint. No hover invalidation needed here: the wrapper auto-repaints
+    # a bounding boxable tile every frame and once on the leave edge.
+    if _qf_fixes:
+        _po_hover_ln = None
+        _ul_col = imgui.get_color_u32_rgba(0.92, 0.80, 0.18, 0.95)
+        for _ul_ln in _qf_fixes:
+            _ul_y = origin_y + (_ul_ln - 1) * line_px
+            if _ul_y + line_px < rect_min_y or _ul_y > rect_max_y:
+                continue
+            _ul_names = _qf_names.get(_ul_ln)
+            if not _ul_names:
+                continue
+            _ul_ls = 0
+            for _ in range(_ul_ln - 1):
+                _nl = text.find('\n', _ul_ls)
+                if _nl == -1:
+                    break
+                _ul_ls = _nl + 1
+            _ul_le = text.find('\n', _ul_ls)
+            _ul_line_text = text[_ul_ls:] if _ul_le == -1 else text[_ul_ls:_ul_le]
+            for _um in re.finditer(r'[A-Za-z_][A-Za-z0-9_]*', _ul_line_text):
+                if _um.group(0) not in _ul_names:
+                    continue
+                # Attribute accesses (`foo.json`) never miss an import - only
+                # base identifiers do (mirrors the suggestion scan's rule).
+                if _ul_line_text[:_um.start()].rstrip().endswith('.'):
+                    continue
+                _ux0, _uy = _char_pos_to_xy(text, _ul_ls + _um.start(),
+                                            origin_x, origin_y, line_px, vcols=vcols)
+                _ux1, _ = _char_pos_to_xy(text, _ul_ls + _um.end(),
+                                          origin_x, origin_y, line_px, vcols=vcols)
+                draw_list.add_line(_ux0, _uy + line_px - 2, _ux1, _uy + line_px - 2,
+                                   _ul_col, 2.0)
+                if (_ux0 <= io.mouse_pos.x < _ux1
+                        and _uy <= io.mouse_pos.y < _uy + line_px):
+                    _po_hover_ln = _ul_ln
+        if _po_hover_ln is not None and not getattr(ds, '_qf_open', False):
+            _po_ln = _po_hover_ln
+            _po_opts = _qf_fixes[_po_ln]
+            _po_ls = 0
+            for _ in range(_po_ln - 1):
+                _po_ls = text.find('\n', _po_ls) + 1
+            _po_le = text.find('\n', _po_ls)
+            _po_line_text = text[_po_ls:] if _po_le == -1 else text[_po_ls:_po_le]
+            _po_label = (f"Alt+Enter  {_po_opts[0]}" if len(_po_opts) == 1
+                         else f"Alt+Enter  {len(_po_opts)} imports…")
+            _po_w, _po_h = imgui.calc_text_size(_po_label)
+            _po_x = origin_x + imgui.calc_text_size(_po_line_text).x + 28
+            _po_y = origin_y + (_po_ln - 1) * line_px
+            if rect_min_y <= _po_y <= rect_max_y:
+                draw_list.add_rect_filled(
+                    _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
+                    imgui.get_color_u32_rgba(0.13, 0.16, 0.24, 0.96), 5.0)
+                draw_list.add_rect(
+                    _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
+                    imgui.get_color_u32_rgba(0.45, 0.60, 0.90, 0.55), 5.0)
+                draw_list.add_text(_po_x, _po_y,
+                                   imgui.get_color_u32_rgba(0.72, 0.82, 1.0, 1.0),
+                                   _po_label)
 
     # Diff washes: in is_diff mode each line's leading marker (the +/- left over
     # from the unified diff, with the ---/+++/@@ headers already stripped by the
@@ -6403,6 +6657,13 @@ def draw_text(input_value: str, height=None,
                        # state), unlike source/line position which shifts on edits.
     _tv_edit = None    # (src_index, src_len, new_value) from an inline view that changed
     _tv_click = None   # (src_index, src_len, right_half) - press landed on a whole-token widget
+    # Screen rects of PLAIN owns inline widgets (no render_func, so no event
+    # subscription latching drags away from the editor). The press/drag
+    # handlers ABOVE read last body-run's list - reset here if the body ran -
+    # and skip caret/selection for gestures starting inside one, so a value
+    # drag doesn't grow a text selection. Scroll/edit invalidations re-run the
+    # body, so the rects track the screen pixels the user actually sees.
+    ds._plain_tv_rects = []
     for token, color_key in tokens:
         color = COLORS[color_key]
         # Inside a tint-carrying override comment, the comment text and the
@@ -6508,6 +6769,13 @@ def draw_text(input_value: str, height=None,
                             _extra['tint'] = _wc   # tint wrapper's bg box too
                 if _view.get("tint") is not None:
                     _extra.setdefault('tint', _view["tint"])
+                # Plain (wrapper-less) renderers need the editor's draw_state:
+                # they have no tile of their own, so gesture liveness requires
+                # invalidating the EDITOR tile (see draw_number_token_plain).
+                if getattr(_view["renderer"], "_plain_tv", False):
+                    _extra['editor_ds'] = ds
+                    if _view.get("owns_mouse") and not _lead:
+                        ds._plain_tv_rects.append((x - _pad, y, x - _pad + _w, y + line_px))
                 try:
                     _res = _view["renderer"](token, width=_w, height=line_px,
                                              name=_name, **_extra)
@@ -6557,6 +6825,7 @@ def draw_text(input_value: str, height=None,
             src_i += len(token)
             continue
         start = 0
+
         while True:
             nl = token.find('\n', start)
             seg = token[start:nl] if nl != -1 else token[start:]
@@ -6666,6 +6935,11 @@ def draw_text(input_value: str, height=None,
     # drag is still suppressed).
     if getattr(ds, '_tv_gesture_edited', False) and imgui.is_mouse_released(0):
         ds._tv_gesture_edited = False
+    # End of a plain-widget gesture: selection suppression lifts. (Also
+    # re-evaluated on every fresh press, so a missed release event can't
+    # leave it latched across frames.)
+    if getattr(ds, '_plain_tv_gesture', False) and imgui.is_mouse_released(0):
+        ds._plain_tv_gesture = False
 
     # Token views keyed by code_tree node TYPE (e.g. Conditional) — overlay pass,
     # positioned by each node's span. Runs after the inline text so widgets paint

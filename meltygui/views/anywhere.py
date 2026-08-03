@@ -147,6 +147,252 @@ def _sources_for(draw_state, class_to_show=None):
 _UNSET = object()
 
 
+# Source layers that OUTRANK the draw_state/auto-state layer in the wrapper's
+# kwargs gauntlet: their-set values (mode overrides, caller kwargs,
+# child_kwargs, the comment splat, @window decoration kwargs). A write to a
+# param driven by one of these must edit the source or an edit would be
+# shadowed at runtime. Everything below (signature defaults, @render_func
+# kwargs, @defaults, class vars, instance attrs, codec render_kwargs) merges
+# BENEATH auto-state - a plain draw_state write both takes effect immediately
+# and persists (auto_params), so it is the default write target.
+_ABOVE_DRAW_STATE = {
+    SourcePriority.LIVE_COMMENT.value, SourcePriority.MODE.value,
+    SourcePriority.WINDOW_DECORATION.value, SourcePriority.CALLER.value,
+    SourcePriority.MODE_CHILD_KWARGS.value, SourcePriority.CHILD_KWARGS.value,
+}
+
+
+# ── source speed: fast vs slow writers ──────────────────────────────────────
+# A source's SPEED is how a write becomes LIVE. Fast sources apply in place -
+# a draw_state field, a live instance attr, the codec's in-memory
+# render_kwargs - one setattr/item-set and the next frame reads it. Slow
+# sources are code-backed: the write lands in a parse dict and only becomes
+# live through the debounced chain_out → save + recompile/hotswap trip. That
+# trip is fine per click, but a DRAG writes every frame, and one trip per
+# frame craters the frame rate (120 to ~30fps measured on the voxel camera
+# driving a `# [cam_brightness=...]` comment). So while a left/right/middle
+# mouse button is held - or a scroll is in flight (no release event, so
+# "recent tick within the same interval") - slow writes DEFER: the value
+# lands in the in-flight display cache (_sa_pending - anywhere_value/
+# locate_* reads already prefer it) plus a per-ds deferred dict, and the
+# real set_anywhere runs ONCE, when input goes quiet, via
+# flush_deferred_writes (called per frame by draw_main).
+_FAST_PRIORITIES = {
+    SourcePriority.DRAW_STATE.value, SourcePriority.INSTANCE_ATTR.value,
+    SourcePriority.CODEC.value,
+}
+
+
+def source_is_slow(kind):
+    """True when a write to a source of this kind round-trips through
+    save/recompile rather than applying in place."""
+    return _source_priority(kind)[0] not in _FAST_PRIORITIES
+
+
+# ── source precision: low-precision writers ─────────────────────────────────
+# Some sources store floats as literal TEXT in code, where full float64
+# precision is noise (`# [cam_x=0.30000000000000004]`). Kinds marked here get
+# their float writes rounded to LOW_PRECISION_DECIMALS before landing in the
+# source; the FULL-precision value parks on the draw_state's _sa_precise
+# overlay, which anywhere_value serves for as long as the live value is still
+# a rounding of it - the view sees the precise float (a voxel camera is
+# accumulating sub-4dp drag deltas) while the code keeps a readable one. A
+# write that ONLY moves digits beyond the cap skips the save/recompile trip
+# entirely. The overlay is in-memory: an app reload sees the rounded source
+# value (accepted trade-off). Mark a new source by adding its kind here.
+LOW_PRECISION_DECIMALS = 4
+_LOW_PRECISION_KINDS = {"code comment", "class var"}
+
+
+def source_is_low_precision(kind):
+    """True when float writes to a source of this kind are rounded to
+    LOW_PRECISION_DECIMALS decimal places (see the block comment above)."""
+    return kind in _LOW_PRECISION_KINDS
+
+
+def _round_low_precision(value):
+    """`value` rounded to LOW_PRECISION_DECIMALS — elementwise for float
+    sequences; anything without a float passes through untouched."""
+    if isinstance(value, float):
+        return round(value, LOW_PRECISION_DECIMALS)
+    if (isinstance(value, (tuple, list))
+            and any(isinstance(v, float) for v in value)):
+        seq = tuple if isinstance(value, tuple) else list
+        return seq(_round_low_precision(v) for v in value)
+    return value
+
+
+def _is_rounding_of(live, full):
+    """True when `live` is `full` rounded at LOW_PRECISION_DECIMALS or
+    coarser — i.e. the source still holds OUR write (possibly re-capped by
+    the source's float formatter), not an external edit."""
+    try:
+        if live is full or bool(live == full):
+            return True
+    except Exception:
+        return False
+    if (isinstance(full, float) and isinstance(live, (int, float))
+            and not isinstance(live, bool)):
+        return any(live == round(full, dp)
+                   for dp in range(LOW_PRECISION_DECIMALS + 1))
+    if (isinstance(full, (tuple, list)) and isinstance(live, (tuple, list))
+            and len(full) == len(live)):
+        return all(_is_rounding_of(lv, fv) for lv, fv in zip(live, full))
+    return False
+
+
+def _stamp_precise(attr_name, value, draw_state):
+    """Park the full-precision value a low-precision source write rounded
+    away; anywhere_value serves it over the rounded live value."""
+    precise = getattr(draw_state, "_sa_precise", None)
+    if precise is None:
+        precise = {}
+        draw_state._sa_precise = precise
+    precise[attr_name] = value
+
+
+def _precise_or_live(attr_name, draw_state, live):
+    """The full-precision overlay for `attr_name` while the live value is
+    still a rounding of it; once the source moves elsewhere (an external
+    edit, another driver) the overlay drops and live reads resume."""
+    precise = getattr(draw_state, "_sa_precise", None)
+    if precise is None or attr_name not in precise:
+        return live
+    full = precise[attr_name]
+    if _is_rounding_of(live, full):
+        return full
+    del precise[attr_name]
+    return live
+
+
+_DRAG_BUTTONS = ("left_mouse", "right_mouse", "middle_mouse")
+
+
+def _drag_active():
+    """A mouse button is currently held — the window during which slow-source
+    writes defer. Level state from the input handler (not per-frame events),
+    so it can't miss between drag events."""
+    h = getattr(Core.melty, "event_handler", None)
+    return h is not None and any(h.is_down(b) for b in _DRAG_BUTTONS)
+
+
+# Scroll has no release: a gesture is "over" once no tick has arrived for the
+# quiet window. Wheel notches land ~100ms+ apart, so the window must span the
+# inter-tick gap or every notch would flush its own save/recompile trip.
+_SCROLL_QUIET_FRAMES = 24
+# Frame of the last seen scroll event - module registry, survives hotswap.
+_last_scroll_frame = globals().get("_last_scroll_frame", [-1_000_000])
+
+
+def _note_scroll():
+    """Stamp the frame when a scroll event is in flight. events_by_type is
+    drained at frame start (begin_frame), so the flush call at the top of
+    draw_main sees this frame's ticks before any view's handler writes."""
+    if "scroll_y_changed" in (Core.melty.events_by_type or {}):
+        _last_scroll_frame[0] = Core.melty.frame_count
+
+
+def _scroll_recent():
+    return Core.melty.frame_count - _last_scroll_frame[0] < _SCROLL_QUIET_FRAMES
+
+
+def _input_busy():
+    """True while a gesture that should hold off slow writes is in flight —
+    a held drag button, or a scroll within its quiet window."""
+    return _drag_active() or _scroll_recent()
+
+
+# Draw_states holding deferred writes, flushed on release. Module registry -
+# survives hotswap (re-exec reuses the existing global).
+_DEFERRED_DS = globals().get("_DEFERRED_DS", set())
+
+
+def _stamp_pending(attr_name, value, draw_state):
+    """In-flight display cache (see anywhere_value): remember what was set and
+    what the live value was when the set was issued. Re-sets during a drag
+    refresh the UI value but KEEP the original live_at_set — live hasn't moved
+    yet, and that's the baseline whose change means "the trip landed"."""
+    live = (draw_state._kwargs or {}).get(attr_name, _UNSET)
+    pending = getattr(draw_state, "_sa_pending", None)
+    if pending is None:
+        pending = {}
+        draw_state._sa_pending = pending
+    prior = pending.get(attr_name)
+    # _UNSET normalizes to None: anywhere_value reads live with a None
+    # default, and the baselines must compare equal until the trip lands.
+    live_at_set = prior[1] if prior is not None else (
+        None if live is _UNSET else live)
+    pending[attr_name] = (value, live_at_set)
+    getattr(draw_state, "_sa_verify", {}).pop(attr_name, None)
+
+
+def _defer_write(attr_name, value, draw_state, class_to_show):
+    """Park a slow-source write for the duration of the drag: the display
+    cache serves reads immediately; flush_deferred_writes runs the real
+    set_anywhere on release."""
+    deferred = getattr(draw_state, "_sa_deferred", None)
+    if deferred is None:
+        deferred = {}
+        draw_state._sa_deferred = deferred
+    deferred[attr_name] = (value, class_to_show)
+    _DEFERRED_DS.add(draw_state)
+    _stamp_pending(attr_name, value, draw_state)
+
+
+def flush_deferred_writes():
+    """Per-frame (draw_main): once no drag button is held, run each parked
+    write through the normal set_anywhere — one slow trip per gesture, not
+    one per event. A no-op set-check when nothing is parked."""
+    _note_scroll()
+    if not _DEFERRED_DS:
+        return
+    if _input_busy():
+        # Rendering is event-driven: after the last scroll tick no further
+        # input arrives, so keep frames flowing until the quiet window expires
+        # and the deferred writes actually flush.
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+        return
+    for ds in list(_DEFERRED_DS):
+        _DEFERRED_DS.discard(ds)
+        deferred = getattr(ds, "_sa_deferred", None) or {}
+        items = list(deferred.items())
+        deferred.clear()
+        for attr_name, (value, class_to_show) in items:
+            set_anywhere(attr_name, value, ds, class_to_show=class_to_show,
+                         allow_any=True, ds_fallback=True)
+
+
+def _pref_matches(pref, kind):
+    """True when a source row's kind caption satisfies a preferred_source
+    flag — given either as a kind caption string ("code comment") or a
+    SourcePriority member (matched through the same priority table)."""
+    if isinstance(pref, SourcePriority):
+        return _source_priority(kind)[0] == pref.value
+    return kind == pref
+
+
+def _preferred_source_for(draw_state):
+    """The `preferred_source` flag riding this view's resolved kwargs, or an
+    enclosing window's — a spawning view (live view) stamps it on the value
+    windows it opens, and edits from anywhere in that subtree (params panel
+    rows, context menus) should land at the nominated source. Walks _parent
+    (self-loop root) then hops parent_window, same as other ancestor walks."""
+    node, hops = draw_state, 0
+    while node is not None and hops < 32:
+        pref = (getattr(node, "_kwargs", None) or {}).get("preferred_source")
+        if pref is not None:
+            return pref
+        parent = getattr(node, "_parent", None)
+        nxt = parent if parent is not None and parent is not node else None
+        if nxt is None:
+            pw = getattr(node, "parent_window", None)
+            nxt = pw if pw is not None and pw is not node else None
+        node = nxt
+        hops += 1
+    return None
+
+
 def get_value_for_source(attr_name, input_source, draw_state, class_to_show=None):
     """(input_source, value) for `attr_name` as set by a specific
     SourcePriority source on this view, or (input_source, None) when that
@@ -169,11 +415,11 @@ def _unset_value(v):
             and isinstance(v[3], (int, float)) and not v[3])
 
 
-def _driving_source(srcs, attr_name):
-    """The source name actually driving `attr_name`: the highest-priority
-    (SourcePriority order) WRITABLE source that currently sets it, else the
-    signature source as the stamp-fallback, else None. Shared by
-    get_source_for / from_anywhere / set_anywhere so they can never disagree."""
+def _setting_source(srcs, attr_name):
+    """The highest-priority (SourcePriority order) WRITABLE source that
+    actually SETS `attr_name`, or None when no source does. Split out from
+    _driving_source so a caller can tell "some source holds this value" from
+    "nothing does, the pick is only the stamp-fallback"."""
     sources, kinds = srcs["sources"], srcs["kinds"]
     writable = set(srcs["writable"])
     # `is not None`: a parse'd `param=None` (signature defaults, cleared
@@ -183,9 +429,21 @@ def _driving_source(srcs, attr_name):
     candidates = [sname for sname in sources
                   if sname in writable
                   and not _unset_value(sources[sname].get(attr_name))]
-    if candidates:
-        return min(candidates, key=lambda s: _source_priority(kinds.get(s)))
-    return next((s for s in sources
+    if not candidates:
+        return None
+    return min(candidates, key=lambda s: _source_priority(kinds.get(s)))
+
+
+def _driving_source(srcs, attr_name):
+    """The source name actually driving `attr_name`: the highest-priority
+    WRITABLE source that currently sets it, else the signature source as the
+    stamp-fallback, else None. Shared by get_source_for / from_anywhere /
+    set_anywhere so they can never disagree."""
+    target = _setting_source(srcs, attr_name)
+    if target is not None:
+        return target
+    kinds, writable = srcs["kinds"], set(srcs["writable"])
+    return next((s for s in srcs["sources"]
                  if kinds.get(s) == "signature" and s in writable), None)
 
 
@@ -209,7 +467,10 @@ def from_anywhere(attr_name, draw_state, class_to_show=None, default=None):
 # Parameters the set-anywhere round trip supports. The trip is multi-frame
 # (write → debounced chain_out → save → hotswap → new o_kwargs), so supported
 # params also get the in-flight display cache below; grow this list as params
-# are verified end-to-end.
+# are verified end-to-end. This gates DIRECT set_anywhere usage: both generic
+# accessors - `draw_state.locate_<param>` and the ParamProxy - pass
+# allow_any=True, but the point of an arbitrary-name accessor is that any
+# param on the view is settable.
 SET_ANYWHERE_PARAMS = ("tint",)
 
 
@@ -240,7 +501,7 @@ def anywhere_value(attr_name, draw_state, default=None):
     pending = getattr(draw_state, "_sa_pending", None)
     entry = pending.get(attr_name) if pending else None
     if entry is None:
-        return live
+        return _precise_or_live(attr_name, draw_state, live)
     ui_value, live_at_set = entry
     try:
         moved = not (live is live_at_set or bool(live == live_at_set))
@@ -256,7 +517,7 @@ def anywhere_value(attr_name, draw_state, default=None):
             verify = {}
             draw_state._sa_verify = verify
         verify[attr_name] = (ui_value, Core.melty.frame_count)
-        return live
+        return _precise_or_live(attr_name, draw_state, live)
     return ui_value
 
 
@@ -361,7 +622,8 @@ def _anywhere_recompile_tick(draw_state):
         draw_state._sa_recompile = None
 
 
-def set_anywhere(attr_name, value, draw_state, class_to_show=None):
+def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=False,
+                 ds_fallback=False):
     """Set `attr_name` at whichever input source is actually driving it —
     code, comment, decoration, mode entry — using the same registry the input
     tab edits. The write is a plain item-set on the source's bubbling parse
@@ -375,27 +637,71 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None):
     Sanity cross-check, not bulletproof: if the driving source's pre-write
     value disagrees with the live draw_state._kwargs value, our hardcoded
     priority table probably mis-ranked this view's sources — notify, don't
-    throw, and write anyway (the user asked for the set)."""
+    throw, and write anyway (the user asked for the set).
+
+    `allow_any` skips the SET_ANYWHERE_PARAMS gate — the generic accessors
+    pass it (the whole point of `locate_<param>` is that any signature param
+    is writable), while direct calls keep the whitelist.
+
+    `ds_fallback` changes what happens when NO source sets the param: instead
+    of stamping the signature default (the + affordance's behavior), the value
+    is kept on the draw_state. Also generic-accessor behavior — see the branch
+    below."""
     from src.lsd.gl_gui.notifications import notify
-    if attr_name not in SET_ANYWHERE_PARAMS:
+    if not allow_any and attr_name not in SET_ANYWHERE_PARAMS:
         notify(f"set_anywhere: '{attr_name}' not in SET_ANYWHERE_PARAMS",
                tag="set_anywhere")
         return None
+    # Mid-drag repeat write to an already-deferred attr: skip the registry
+    # walk entirely - the drag's FIRST write resolved the target (slow) and
+    # parked it; later frames just stamp the parked value. This is what
+    # makes drag frames ~ instantaneous.
+    _deferred = getattr(draw_state, "_sa_deferred", None)
+    if _deferred and attr_name in _deferred and _input_busy():
+        _deferred[attr_name] = (value, class_to_show)
+        _stamp_pending(attr_name, value, draw_state)
+        _last = getattr(draw_state, "_sa_last_source", None)
+        return _last.get(attr_name) if _last else None
     srcs = _sources_for(draw_state, class_to_show)
     sources = srcs["sources"]
-    target = _driving_source(srcs, attr_name)
+    # A spawning view can NOMINATE where edits land: live view stamps
+    # preferred_source="code comment" on the value windows it spawns, so a
+    # panel/menu edit targets the site's `# [<key>=...]` comment even when the
+    # comment doesn't set the param yet - the write CREATES the entry there
+    # (the registered row is a _LazyOverrideEntry when no comment exists,
+    # and its first write materializes one). Falls through to the normal
+    # pick when no writable source of that kind is registered (tree unparsed).
+    target = None
+    pref = _preferred_source_for(draw_state)
+    if pref is not None:
+        _writable = set(srcs["writable"])
+        target = next((s for s in sources
+                       if s in _writable
+                       and _pref_matches(pref, srcs["kinds"].get(s))), None)
+    if target is None and ds_fallback:
+        # The DRAW_STATE is the DEFAULT write target: a plain ds.<param>
+        # write (the attribute is CREATED if it doesn't exist yet, same as
+        # the auto-state mirror and hand-rolled panels), which the wrapper
+        # feeds back into kwargs and persists as a diverged auto_param.
+        # Only a source that genuinely outranks the auto-state layer at
+        # runtime (_ABOVE_DRAW_STATE: comment, mode, caller, child_kwargs,
+        # @window) claims the edit into code state. A lower-layer source
+        # (signature default, @defaults, class var, codec) must NOT stamp it:
+        # the ds write beats those at runtime anyway, and e.g. rewriting
+        # `def draw_x(param=...)` would recompile the module per slider drag.
+        _setting = _setting_source(srcs, attr_name)
+        _kind = srcs["kinds"].get(_setting) if _setting is not None else None
+        if (_setting is None
+                or _source_priority(_kind)[0] not in _ABOVE_DRAW_STATE):
+            setattr(draw_state, attr_name, value)
+            return "draw state"
+    if target is None:
+        target = _driving_source(srcs, attr_name)
     if target is None:
         notify(f"set_anywhere: no writable source for '{attr_name}'",
                tag="set_anywhere")
         return None
 
-    live = (draw_state._kwargs or {}).get(attr_name, _UNSET)
-    # (No write-time value cross-check here: mid-trip the live value
-    # LEGITIMATELY differs from the source, so comparing now cries wolf on
-    # every invalid set. Verification is deferred - see anywhere_value: 2
-    # frames after the round trip lands, live matches what we set.)
-
-    sources[target][attr_name] = value
     # Last-written source, by attr - lazily maintained (stamped here on every
     # set, and by the popover's lazy resolve on first open): cheap provenance
     # for display without a per-frame collection.
@@ -404,28 +710,50 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None):
         _last = {}
         draw_state._sa_last_source = _last
     _last[attr_name] = target
-    # In-flight display cache (see anywhere_value): stamp what we set and
-    # what the live value was when we set it. Re-sets during a drag refresh
-    # the UI value but KEEP the original live_at_set - live hasn't moved yet,
-    # and that's the baseline whose change means "the trip landed".
-    pending = getattr(draw_state, "_sa_pending", None)
-    if pending is None:
-        pending = {}
-        draw_state._sa_pending = pending
-    prior = pending.get(attr_name)
-    # _UNSET normalizes to None: anywhere_value reads live with a None
-    # default, and the baselines must compare equal until the trip lands.
-    live_at_set = prior[1] if prior is not None else (
-        None if live is _UNSET else live)
-    pending[attr_name] = (value, live_at_set)
-    getattr(draw_state, "_sa_verify", {}).pop(attr_name, None)
+
+    # SLOW target + gesture in flight (drag or scroll): park the write
+    # instead of running the save/recompile cycle per event (see the
+    # full-speed block above).
+    if _input_busy() and source_is_slow(srcs["kinds"].get(target)):
+        _defer_write(attr_name, value, draw_state, class_to_show)
+        return target
+
+    # (No write-time sanity cross-check here: mid-trip the live value
+    # LEGITIMATELY disagrees with the source, so comparing now cries wolf on
+    # every working set. Verification is deferred - see anywhere_value: 2
+    # frames after the round trip lands, live vs what we set.)
+    _t_kind = srcs["kinds"].get(target)
+    write_value = value
+    if source_is_low_precision(_t_kind):
+        write_value = _round_low_precision(value)
+        try:
+            _rounded_away = not bool(write_value == value)
+        except Exception:
+            _rounded_away = True
+        if _rounded_away:
+            _stamp_precise(attr_name, value, draw_state)
+            # A write that only moves digits BELOW the limit is a no-op at the
+            # source: the overlay already serves the precise value, so skip
+            # the save/recompile trip (and clear any parked pending entry -
+            # no trip means the live baseline will never move to clear it).
+            try:
+                if bool(sources[target].get(attr_name) == write_value):
+                    _pending = getattr(draw_state, "_sa_pending", None)
+                    if _pending:
+                        _pending.pop(attr_name, None)
+                    return target
+            except Exception:
+                pass
+    sources[target][attr_name] = write_value
+    # In-flight display cache - see _stamp_pending. The FULL-precision value:
+    # the UI keeps serving it through the trip, then the overlay takes over.
+    _stamp_pending(attr_name, value, draw_state)
     # Deferred writer-side hotswap: code-backed sources only become LIVE via
     # recompile, and the source text only exists after the host's debounced
     # chain_out. Snapshot the current buffer identity; the per-frame tick
     # (anywhere_value → _anywhere_recompile_tick) starts the recompile when
     # the buffer moves and polls the runner until the hotswap lands.
     cm_state = getattr(draw_state, "_sa_cm_state", None)
-    _t_kind = srcs["kinds"].get(target)
     if _t_kind in ("child kwargs", "attr default"):
         # These rows are parse rows of an ANCESTOR's code (stacked
         # @defaults) - which ancestor is not guessable from the ds graph (a
@@ -461,49 +789,186 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None):
     return target
 
 
-# ── draw_state.locate_<param> ────────────────────────────────────────────────
-# The ds_header tint set's two-line pattern (read anywhere_value, write
-# set_anywhere) as a plain attribute access on draw_state:
-#
-#     tint = draw_state.locate_tint          # framework-resolved value
-#     draw_state.locate_tint = (1, 0, 1, 1)  # writes to the DRIVING source
-#
-# ASYMMETRIC on purpose: the GETTER is just the resolved value (_kwargs, with
-# the in-flight set cache and the ds defaults anywhere_value already applies)
-# - no source collection, no parse, cheap enough to read per frame. Only the
-# SETTER runs the anywhere machinery: pick the driving source, write into its
-# parse dict, and drive the deferred save/hotswap.
-#
-# Installed as real properties (one per SET_ANYWHERE_PARAMS entry) rather than
-# a DrawState __getattr__/__setattr__ hook: __setattr__ would sit on EVERY
-# draw_state attribute write, per view per frame. Properties cost nothing for
-# the names that aren't ours.
-LOCATE_PREFIX = "locate_"
+def view_param_names(draw_state):
+    """The render view's own input parameters, in signature order — what
+    `locate_params` iterates.
+
+    Signature params minus the ones that aren't inputs at all: the wrapper's
+    injected/plumbing names and event params (core_render's own
+    _AUTO_PARAM_EXCLUDE / _is_event_param_name — the same predicates
+    auto-state uses, so the two lists can't drift), plus injected-state params
+    (`gl_state: GLState = None` — a class annotation with a None default, owned
+    by set_default's misc path). DrawState-reserved names (width, tint, ...)
+    are deliberately KEPT: auto-state skips them because they have legacy
+    manual handling, but they're still real inputs of the view.
+
+    Also deliberately NOT extended with render_func_kwarg_names(): those
+    framework kwargs are shared by every view and would bury its actual
+    params."""
+    import inspect
+    func = getattr(draw_state, "_view_func", None)
+    if func is None:
+        return []
+    try:
+        params = inspect.signature(inspect.unwrap(func)).parameters
+    except (TypeError, ValueError):
+        return []
+    from src.lsd.gl_gui.view.core_views.core_render import (
+        _AUTO_PARAM_EXCLUDE, _is_event_param_name)
+    out = []
+    for name, p in params.items():
+        if name in _AUTO_PARAM_EXCLUDE or _is_event_param_name(name):
+            continue
+        if p.kind in (inspect.Parameter.VAR_POSITIONAL,
+                      inspect.Parameter.VAR_KEYWORD):
+            continue
+        ann = p.annotation
+        if (ann is not inspect.Parameter.empty and inspect.isclass(ann)
+                and p.default is None):
+            continue        # injected state (GLState / CodeState / ...)
+        out.append(name)
+    return out
 
 
-def _locate_property(attr_name):
-    def _get(self):
-        return anywhere_value(attr_name, self)
-
-    def _set(self, value):
-        set_anywhere(attr_name, value, self)
-
-    return property(_get, _set,
-                    doc=f"'{attr_name}' as melty resolved it; assigning writes "
-                        f"it back to whichever input source drives it.")
+# Builtin bases a signature default may SPECIALIZE (TensorDim(int)). The
+# stored/parsed value round-trips as the plain base (comments literal_eval to
+# int, auto_params to the base), so the read edge re-wraps it in the
+# default's type; that type is what routes the value to its custom renderer.
+_SPECIALIZE_BASES = (int, float, str, tuple)
+_default_types_cache = {}
 
 
-def install_locate_properties(cls=None):
-    """Stamp `locate_<param>` onto DrawState for every SET_ANYWHERE_PARAMS
-    entry. Runs at import (and again on every hotswap of this module, which
-    re-installs against the live class), so growing SET_ANYWHERE_PARAMS is the
-    only step needed to expose a new param."""
-    if cls is None:
-        from src.lsd.gl_gui.model.core_model.draw_state import DrawState
-        cls = DrawState
-    for attr_name in SET_ANYWHERE_PARAMS:
-        setattr(cls, LOCATE_PREFIX + attr_name, _locate_property(attr_name))
-    return cls
+def _signature_default_types(draw_state):
+    """{param: type} for signature defaults whose type is a strict SUBCLASS
+    of a builtin base — the params whose values should be re-specialized on
+    read. Cached per (wrapper, unwrapped) function identity pair so a hotswap
+    that changes the signature refreshes it."""
+    import inspect
+    func = getattr(draw_state, "_view_func", None)
+    if func is None:
+        return {}
+    try:
+        inner = inspect.unwrap(func)
+    except Exception:
+        return {}
+    key = (id(func), id(inner))
+    cached = _default_types_cache.get(key)
+    if cached is not None:
+        return cached
+    out = {}
+    try:
+        for n, p in inspect.signature(inner).parameters.items():
+            d = p.default
+            if d is inspect.Parameter.empty or d is None or isinstance(d, bool):
+                continue
+            t = type(d)
+            for b in _SPECIALIZE_BASES:
+                if isinstance(d, b) and t is not b:
+                    out[n] = t
+                    break
+    except (TypeError, ValueError):
+        pass
+    _default_types_cache[key] = out
+    return out
 
 
-install_locate_properties()
+class ParamProxy(dict):
+    """Live dict view over one render view's input parameters:
+
+        ds.locate_params["x_dim"]           # resolved value (from _kwargs)
+        ds.locate_params["x_dim"] = 0       # set_anywhere on the driving source
+        for param, value in ds.locate_params: ...
+        draw_collection(ds.locate_params)   # renders like any dict
+
+    A REAL dict subclass, so every isinstance(x, dict) path in the framework
+    (draw_collection's key routing, converters, serialization probes, `{**p}`,
+    C-level fast paths that bypass overridden methods entirely) treats it as
+    the dict it looks like. The inherited storage holds a SNAPSHOT of the
+    resolved values, refreshed by `refresh()` whenever the draw_state hands
+    the proxy out; the overridden accessors read live on top of it.
+
+    Reads and writes keep the `locate_<param>` asymmetry: reading is the
+    framework-resolved value, only writing walks the source registry. Writes
+    skip the SET_ANYWHERE_PARAMS whitelist and fall back to the draw_state
+    when no source in code sets the param (allow_any / ds_fallback).
+
+    Iterating yields (param, value) PAIRS — the loop this exists for. That's
+    the one deviation from dict, and it's confined to Python-level `for x in
+    proxy`: `keys()`, `dict(proxy)`, `{**proxy}` and every C-level consumer go
+    through the storage and see plain keys."""
+
+    # No instance __dict__: draw_collection prefers getattr(input_value, key)
+    # over collection[key] for anything that has one, which would hand a param
+    # named like a dict method (`items`, `values`, ...) a bound method instead
+    # of its value. With __slots__ the proxy is storage-only and every read
+    # resolves through __getitem__.
+    __slots__ = ("_ds",)
+
+    def __init__(self, draw_state):
+        super().__init__()
+        self._ds = draw_state
+        self.refresh()
+
+    def _specialize(self, name, value):
+        """Re-wrap a plain parsed value in the signature default's subtype
+        (int 1 → TensorDim(1)) so type routing picks the custom renderer.
+        Values the subtype can't take (a dim given by NAME) pass through."""
+        dt = _signature_default_types(self._ds).get(name)
+        if dt is None or value is None or type(value) is dt:
+            return value
+        try:
+            return dt(value)
+        except (TypeError, ValueError):
+            return value
+
+    def refresh(self):
+        """Re-snapshot the inherited storage from the live values. Cheap (a
+        _kwargs read per param) and the reason a handed-out proxy is never
+        stale, including for consumers that read the storage directly."""
+        ds = self._ds
+        live = {k: self._specialize(k, anywhere_value(k, ds))
+                for k in view_param_names(ds)}
+        dict.clear(self)
+        dict.update(self, live)     # bypasses __setitem__; a snapshot, not a set
+        return self
+
+    def __getitem__(self, name):
+        if not dict.__contains__(self, name):
+            raise KeyError(name)
+        return self._specialize(name, anywhere_value(name, self._ds))
+
+    def __setitem__(self, name, value):
+        set_anywhere(name, value, self._ds, allow_any=True, ds_fallback=True)
+        # Take the snapshot in step so in-frame reads (a collection row
+        # re-reading what it just wrote) don't show the pre-write value.
+        dict.__setitem__(self, name, value)
+
+    def get(self, name, default=None):
+        if not dict.__contains__(self, name):
+            return default
+        return self._specialize(name, anywhere_value(name, self._ds,
+                                                     default=default))
+
+    def items(self):
+        return [(k, self._specialize(k, anywhere_value(k, self._ds)))
+                for k in dict.keys(self)]
+
+    def values(self):
+        return [v for _k, v in self.items()]
+
+    def __iter__(self):
+        return iter(self.items())
+
+    def __repr__(self):
+        return f"ParamProxy({dict(self.items())!r})"
+
+
+# ── draw_state.locate_* ─────────────────────────────────────────────────────
+# The accessors themselves live on the DrawState CLASS, in
+# model/core_model/draw_state.py, so they work on every draw_state whether or
+# not this module has been imported yet; they call back into anywhere_value /
+# set_anywhere / ParamProxy here via a lazy descriptor. `locate_<param>` is
+# generic over the param: reads route through DrawState.__getattr__ (miss-only,
+# so ordinary reads pay nothing) and writes through DrawState._locate_set,
+# which @live's existing __setattr__ dispatches on the LOCATE_PARAMS. See the
+# comment block there for why the two paths are wired differently.

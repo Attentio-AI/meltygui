@@ -2418,7 +2418,14 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     _held_prior = (src[1] if src is not None
                    else cached[1] if cached is not None else None)
     _li = getattr(Melty, "_last_input_time", 0.0)
-    if _li and _time.monotonic() - _li < 0.5:
+    # Small files recompute in a few ms, so they take the short debounce and
+    # stay near-live while typing; big ones keep the long coalescing window.
+    _te = Toggles.TextEditor
+    _cap = getattr(_te, "small_file_max_chars", 0)
+    _small = bool(_cap) and isinstance(text, str) and len(text) <= _cap
+    _quiet_s = (getattr(_te, "small_file_debounce_ms", 500) if _small
+                else getattr(_te, "parse_debounce_ms", 500)) / 1000.0
+    if _li and _quiet_s > 0 and _time.monotonic() - _li < _quiet_s:
         _ptrace_rl(("usage-typing-hold", key),
                    "usage recompute deferred (typing) — holding last-good",
                    file=resolved.name, span=f"{start}-{end}")
@@ -2608,7 +2615,6 @@ def _store_usages(key, sig, usages, text, chash=None, evict=None) -> None:
 def invalidate_usage_cache(path: _Path | str | None = None) -> None:
     """Drop cached cross-file references for a path, or all if None."""
     print("Invalidating usage cache for", path if path else "ALL PATHS")
-    print_stack_trace()
     if path is None:
         _xref_cache.clear()
         _symbol_usage_cache.clear()
@@ -5904,6 +5910,12 @@ def _format_override_value(value):
         return repr(value)  # bool is-a int/float; keep True/False
     if isinstance(value, float):
         return _clean_float(value)
+    if isinstance(value, int) and type(value) is not int:
+        # int SUBCLASSES (TensorDim, IntEnum): repr would render the wrapper
+        # ("TensorDim(1)"), which literal_eval can't read back - the whole
+        # override comment would stop working. Store the plain number; the
+        # reading edge re-specializes (ParamProxy) where the type matters.
+        return repr(int(value))
     if isinstance(value, tuple):
         inner = ", ".join(_format_override_value(v) for v in value)
         return f"({inner},)" if len(value) == 1 else f"({inner})"

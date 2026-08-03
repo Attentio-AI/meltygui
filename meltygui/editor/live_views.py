@@ -237,7 +237,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
         # Named by the cst dict's own stable identity - never draw_state ids.
         win_kwargs = dict(
-            name=f"{label}##lv::{_store_name(store_obj)}::"
+            name=f"{'/'.join(key_path)}##lv::{_store_name(store_obj)}::"
                  f"{'/'.join(key_path)}",
             mode=Modes.LIVE_WINDOW, closed=not open_now,
             with_header=draw_header, disable_scroll=True, return_extras=True,
@@ -250,7 +250,13 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             # are measured from. hide_offscreen=False keeps it drawn once the
             # marker itself scrolls away: the window is what keeps it on screen.
             pin_to_clip=Pin.PARENT, anchor=Anchor.TOP_LEFT,
-            parent_anchor=Anchor.TOP_LEFT, hide_offscreen=False)
+            parent_anchor=Anchor.TOP_LEFT, hide_offscreen=False,
+            # Edits made anywhere in this window's subtree (params panel,
+            # popup menus) should land on this site's `# [...]` comment -
+            # set_anywhere reads the flag off the window's kwargs (walking
+            # up from nested windows) and creates the binding there if the
+            # comment hasn't set the param yet.
+            preferred_source="code comment")
         # First creation: place the window to the RIGHT of the editor's
         # window rather than on top of the code. window_pos persists on the
         # spawned window's draw_state (parent-relative, so it tracks the
@@ -448,8 +454,8 @@ def run_forward_pass(use_gen_pass=True):
                           use_gen_pass=use_gen_pass)
 
 
-@window(initial={"width": 350, "height": 540})
-@render_func(tint=(0.86, 0.75, 0.20), auto_resize=False)
+@window(initial={"width": 350, "height": 540}, tint=(0.1041667, 0.120371, 0.14))
+@render_func(tint=(0.40, 0.53, 0.78), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
     from src.lsd.gl_gui.view.mode import Mode

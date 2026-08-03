@@ -292,7 +292,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     name_rounding       = 2.696
     max_name_chars      = 40
     min_name_text_width = 62
-    
 
     # Type / unique label colors
     type_label_tint   = (3.672, 1.944, 2.861, 1.0)
@@ -476,6 +475,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 imgui.set_cursor_screen_pos((_dd_pos[0] + _chev_w + 3, _dd_pos[1]))
             else:
                 same_line()
+                
 
     # ── Name label / edit ──────────────────────────────────────
     has_visible_name = show_name and name not in ("", None, "None")
@@ -502,29 +502,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             # so glyphs stay readable). Strong fill + outline for the active
             # (global-current) match; a faint fill for the rest. The flags are
             # set by draw_collection when this header's key matches the query.
-            # Clip the raw draw-list calls (highlight + add_text) to the owning
-            # view's bg rect — they bypass layout clipping, so a long name
-            # otherwise paints past the background. The bg is drawn by the
-            # wrapper at (abs_left, abs_top, width, height) of the view that
-            # spawned this header (our _parent), so clip to that same rect.
-            # Live _abs_left/_abs_top, not cached abs pos.
-            _owner = draw_state._parent
-            if _owner is draw_state or _owner is None or not (_owner.width and _owner.width > 5):
-                _owner = draw_state.parent_window
-            _name_clip = None
-            if _owner is not None and _owner.width > 0:
-                _o_left, _o_top = _owner._abs_left(), _owner._abs_top()
-                # The bg fill is inset by border_inset (~3, see draw_bg) and
-                # header content starts outline_margin (3) in from the left, so
-                # stop the text the same margin short of the right edge instead
-                # of letting it touch the outline/rounded corner.
-                _o_right = _o_left + _owner.width - 3
-                # Unmeasured first-frame height would collapse the clip and
-                # blank the name; fall back to at least one text line.
-                _o_bottom = _o_top + max(_owner.height or 0,
-                                         imgui.get_text_line_height())
-                _name_clip = (_o_left, _o_top, _o_right, _o_bottom)
-                Melty.push_clip(_name_clip)
             if kwargs.get("search_match", False):
                 hx0, hy0 = cursor_pos[0], cursor_pos[1]
                 hx1 = cursor_pos[0] + text_width
@@ -533,8 +510,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                                       current=kwargs.get("search_current", False))
             packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
-            if _name_clip is not None:
-                Melty.pop_clip()
             imgui.dummy(text_width, imgui.get_frame_height())
             pop_style_var(1)
         else:
