@@ -1552,8 +1552,24 @@ def render_func(*args, **o_kwargs):
                     if draw_state.width is None or draw_state.width < 5:
                         draw_state.width = 200
 
-                    if draw_state.height is None or draw_state.height < 5:
-                        draw_state.height = 100
+                if draw_state.height is None or draw_state.height < 5:
+                    # Placeholder for the first render only: replaced by the
+                    # measured content height once the body has drawn (see the
+                    # _height_from_content commit after the render below).
+                    # Kept at the 20px floor, not larger: children of a
+                    # fixed-size window pad/fill against the window border, so
+                    # any placeholder taller than the floor reads back as the
+                    # "measured" height of content shorter than it. Content
+                    # taller than 20px overflows the placeholder and measures
+                    # its true height (item_rect is the unclipped group rect).
+                    draw_state.height = 20
+                    draw_state._source["height"] = "first-frame placeholder"
+                    # Re-arm the content measure only on the window's FIRST
+                    # frame: on subsequent frames an invalid height means a user
+                    # drag-resize below 5px (modes without min height), which
+                    # should clamp to the floor - not snap back to content.
+                    if passed_height is None and draw_state.frame_count == 0:
+                        draw_state._height_from_content = True
 
                 if 'window_pos' in kwargs:
                     draw_state.window_pos = kwargs.get('window_pos', draw_state.window_pos)
@@ -3932,6 +3948,23 @@ def render_func(*args, **o_kwargs):
                         display_height = imgui.get_io().display_size[1]
                         draw_state.height = snap_int(min(item_rect[1], min(display_height, max_height)))
                         draw_state._source["height"] = "closable, item_rect[1]"
+
+            elif (closable and passed_height is None
+                  and getattr(draw_state, "_height_from_content", False)):
+                # Fixed-size closable window that opened with the first-frame
+                # placeholder height: adopt the measured content height once,
+                # then leave the height to the user's resize handle. Skip
+                # pending-placeholder frames - the measure reflects the
+                # placeholder, not the content (same guard as fill_height).
+                if (item_rect[1] > 1
+                        and Melty.pending_placeholder_frame != Melty.frame_count):
+                    display_height = imgui.get_io().display_size[1]
+                    max_height = kwargs.get("max_height", 1e9)
+                    draw_state.height = snap_int(
+                        max(min(item_rect[1], display_height, max_height), 20))
+                    draw_state._source["height"] = "initial content height"
+                    draw_state._height_from_content = False
+
 
             if (draw_state.width != original_width_b or
                     draw_state.height != original_height_b):

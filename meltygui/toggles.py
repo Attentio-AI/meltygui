@@ -928,7 +928,7 @@ class Toggles:
 
     @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:
-        keep_for_frames = 84
+        keep_for_frames = 100
         enable = False
         draw_rect = True
         invalidate_stack_trace = False

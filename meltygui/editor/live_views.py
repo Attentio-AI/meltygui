@@ -505,7 +505,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         return
     origin_y = y - (_sl - 1) * line_px
     origin_x = x - getattr(span, "start_col", 0) * char_w
-    source_lines = (getattr(root, "source", "") or "").split("\n")
+    _src = getattr(root, "source", "") or ""
+    source_lines = _src.split("\n")
     # Viewport cull bounds: the store can have a marker per binding in the
     # def (frame snapshots publish the whole scope), and the walk visits the
     # scope regardless of scroll - every off-screen marker skipped here is a
@@ -513,9 +514,27 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # via root_draw_states without a marker, same as when the whole editor
     # scrolls away.
     _clip = getattr(draw_state, "abs_clip_rect", None)
+    # Snap memo: the label/content relocation scans are O(def lines) per
+    # STALE stamp - with frame snapshots holding a key per occurrence that's
+    # hundreds of the scans per repaint if run hot. Snap results only
+    # change when the text changes, so memoize per (stamp, label) against
+    # the source OBJECT - identity is the content-free change signal (a
+    # reparse builds a new string; edits-in-flight are the _lmap's job).
+    # Per-EDITOR (this draw_state) because the same scope can be overlaid from
+    # several editors at once (same def in two tiles), each with its own
+    # source object - a shared memo would ping-pong between their sources
+    # and rescan every stamp every frame. Raw-written like the other editor
+    # memo caches (_anc_scroll_cache): @live's __setattr__ would run a
+    # value != original_value compare on full value-carrying tuples.
+    _memo_ent = draw_state.__dict__.get("_lv_snap_memo")
+    if _memo_ent is None or _memo_ent[0] is not _src:
+        _memo_ent = (_src, {})
+        object.__setattr__(draw_state, "_lv_snap_memo", _memo_ent)
+    _snap_memo = _memo_ent[1]
     # Exit-line washes: where the last instrumented run CAME OUT.
     # __live_return_line__ (stamped by live_view.twin_ret / the body-capture
-    # profile hook) washes green; __live_error_line__ ((line, msg), stamped
+    # profile hook) washes green; __live_error_line__ ((line, msg, text),
+    # stamped
     # by live_instrument._stamp_error_line when the run raised) washes red
     # with the message right-aligned on the line - the per-run twin of the
     # editor's routed error markers. Both are absolute file coords, mapped
@@ -523,15 +542,28 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # run start, so a rerun never shows the previous run's exit. A couple of
     # attribute accesses + at most two rects per frame.
     _exit_marks = []
-    _ret_line = getattr(fn, "__live_return_line__", None)
-    if _ret_line:
-        _exit_marks.append((_ret_line, None, (0.157, 0.824, 0.31, 0.16)))
+    _ret_mark = getattr(fn, "__live_return_line__", None)
+    if _ret_mark:
+        _rline, _rtext = (_ret_mark if isinstance(_ret_mark, tuple)
+                          else (_ret_mark, None))
+        _exit_marks.append((_rline, None, _rtext,
+                            (0.157, 0.824, 0.31, 0.16)))
     _err_mark = getattr(fn, "__live_error_line__", None)
     if _err_mark:
         _exit_marks.append((_err_mark[0], _err_mark[1],
+                            _err_mark[2] if len(_err_mark) > 2 else None,
                             (0.824, 0.157, 0.157, 0.22)))
-    for _ml_line, _ml_msg, _ml_col in _exit_marks:
-        _rl = _ml_line - line_offset
+    for _ml_line, _ml_msg, _ml_text, _ml_col in _exit_marks:
+        # Same follow-the-code snap as the markers: the stamp is run-time
+        # coordinates, so if edits moved the statement, re-find it by its
+        # stamped CONTENT inside the def before mapping to buffer space.
+        _mk = ("exit", _ml_line, _ml_text)
+        _rl = _snap_memo.get(_mk)
+        if _rl is None:
+            _rl = _snap_line_to_text(_ml_text, _ml_line - line_offset,
+                                     source_lines,
+                                     span.start_line, span.end_line)
+            _snap_memo[_mk] = _rl
         _rlm = _lmap(_rl) if _lmap else _rl
         if _rlm is None or _rlm < 1:
             continue
@@ -558,6 +590,23 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         if anchor is None:
             continue
         rel_line, start_col, end_col = anchor
+        if end_col is None:
+            # line:N keys carry a RUN-TIME line stamp - edits since the run
+            # shift the code out from under line. The labeled SYMBOL is the
+            # real anchor - if the stamped line no longer shows the label,
+            # snap to the nearest line in this def that does.
+            tail = key_path[-1]
+            _mk = ("label", tail)
+            _snapped = _snap_memo.get(_mk)
+            if _snapped is None:
+                label = ((getattr(fn, "__live_labels__", None) or {})
+                         .get(key_path)
+                         or (tail.split("#", 1)[1] if "#" in tail else None))
+                _snapped = _snap_line_to_label(
+                    label, rel_line, source_lines,
+                    span.start_line, span.end_line)
+                _snap_memo[_mk] = _snapped
+            rel_line = _snapped
         _ml = _lmap(rel_line) if _lmap else rel_line
         if _ml is None:
             continue        # anchor inside the mid-edit region - skip a frame
@@ -663,6 +712,51 @@ def _label_box_span(label, text):
                       text)
         return m.span(1) if m is not None else None
     return None
+
+
+def _snap_line_to_text(text, rel_line, source_lines, lo, hi):
+    """Buffer line an exit-line wash should sit on: the stamped line if its
+    current content still equals the stamped run-time `text` (stripped), else
+    the NEAREST line in the def's [lo, hi] span with that content — so the
+    return/error washes follow their statement through edits the same way
+    line-keyed markers follow their symbols. No stamped text (old-shape
+    stamp) or no match keeps the stamp unchanged."""
+    want = text.strip() if isinstance(text, str) else ""
+    if not want:
+        return rel_line
+    if (1 <= rel_line <= len(source_lines)
+            and source_lines[rel_line - 1].strip() == want):
+        return rel_line
+    best = None
+    for ln in range(max(1, lo), min(len(source_lines), hi) + 1):
+        if best is not None and abs(ln - rel_line) >= abs(best - rel_line):
+            continue
+        if source_lines[ln - 1].strip() == want:
+            best = ln
+    return best if best is not None else rel_line
+
+
+def _snap_line_to_label(label, rel_line, source_lines, lo, hi):
+    """Buffer line a line-keyed marker should anchor on: the stamped line if
+    it still contains `label` (the common case — one regex on one line), else
+    the NEAREST line in the def's [lo, hi] span that does. Pure string ops on
+    the already-split source — the symbol reference is recovered from the
+    line stamp without any reparse, so line-keyed captures follow their
+    symbols through edits instead of staying pinned where the last run left
+    them. No match anywhere (symbol renamed/removed — the value is stale and
+    the next run prunes it) keeps the stamp unchanged."""
+    if not label:
+        return rel_line
+    if (1 <= rel_line <= len(source_lines)
+            and _label_box_span(label, source_lines[rel_line - 1]) is not None):
+        return rel_line
+    best = None
+    for ln in range(max(1, lo), min(len(source_lines), hi) + 1):
+        if best is not None and abs(ln - rel_line) >= abs(best - rel_line):
+            continue
+        if _label_box_span(label, source_lines[ln - 1]) is not None:
+            best = ln
+    return best if best is not None else rel_line
 
 
 def _key_anchor(scope_node, key_path, line_offset):

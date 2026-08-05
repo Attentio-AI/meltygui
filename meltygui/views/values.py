@@ -3750,7 +3750,7 @@ def render_profiler_time(input_value=None, brief=False, style_manager=None):
              shadow=False, is_tree=False, with_header=draw_header, temp=True)
 def draw_none(input_value: NoneType):
     imgui.align_text_to_frame_padding()
-    imgui.text_colored("None", *(1, 1, 1), 0.2)
+    imgui.text_colored("None", *(0.164, 0.389, 0.197), 0.4)
     return False, input_value
 
 

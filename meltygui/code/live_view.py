@@ -164,8 +164,8 @@ def twin_ret(value=None):
     """The instrumented twin's return hook (`__lv_ret__`): every `return X`
     in the twin compiles as `return __lv_ret__(X)` (bare `return` passes
     None), so the calling frame's f_lineno IS the return statement's
-    original file line. Stamps `__live_return_line__` (absolute 1-indexed
-    file line) on the resolved store function and wakes the store-level
+    original file line. Stamps `__live_return_line__` ((absolute 1-indexed
+    file line, run-time line text)) on the resolved store function and wakes the store-level
     watchers, so the editor's snapshot overlay can wash that line green —
     the success twin of the red error-line wash — the moment the run comes
     out. run_instrumented clears the stamp at run start, so a raise (or an
@@ -181,10 +181,30 @@ def twin_ret(value=None):
             _enclosing_function)
         fn = _enclosing_function(code.co_filename, lineno)
         if isinstance(fn, types.FunctionType):
-            stamp_run_marker(fn, "__live_return_line__", lineno)
+            stamp_run_marker(fn, "__live_return_line__",
+                             (lineno, _line_text_at(fn, lineno)))
     except Exception:
         pass
     return value
+
+
+def _line_text_at(fn, lineno):
+    """The run-time text of absolute file line `lineno` in fn's file — read
+    from the same cached in-memory build the twin compiles against (disk +
+    pending splices, via _ast_for), so it costs a dict hit per run. Stamped
+    alongside the exit-line numbers so the overlay can re-find the line by
+    CONTENT after later edits shift it — the wash follows its statement the
+    way line-keyed markers follow their symbols. Never raises; None when
+    unresolvable."""
+    try:
+        path = Path(inspect.unwrap(fn).__code__.co_filename).resolve()
+        _tree, text, _sig = _ast_for(path, path.stat().st_mtime)
+        lines = text.split("\n")
+        if 1 <= lineno <= len(lines):
+            return lines[lineno - 1]
+    except Exception:
+        pass
+    return None
 
 
 def stamp_run_marker(fn, attr, value):
@@ -269,7 +289,9 @@ def call_with_body_capture(func, kwargs):
         sys.setprofile(prev)
         if captured:
             if exit_line[0] is not None:
-                stamp_run_marker(inner, "__live_return_line__", exit_line[0])
+                stamp_run_marker(inner, "__live_return_line__",
+                                 (exit_line[0],
+                                  _line_text_at(inner, exit_line[0])))
             publish_stack_locals((), extra_snapshots=[(inner, captured, None)])
 
 

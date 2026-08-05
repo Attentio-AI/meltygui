@@ -99,7 +99,8 @@ def run_instrumented(fn, *args, **kwargs):
 
 
 def _stamp_error_line(target, twin, exc):
-    """Stamp `__live_error_line__` = (absolute file line, message) on the
+    """Stamp `__live_error_line__` = (absolute file line, message, run-time
+    line text) on the
     store function for an exception raised during an instrumented run: the
     DEEPEST traceback frame that is the twin's own code — the twin compiles
     against the real co_filename with original linenos, so tb_lineno is the
@@ -108,7 +109,7 @@ def _stamp_error_line(target, twin, exc):
     stamps nothing."""
     try:
         from src.lsd.gl_gui.view.core_conversion.live_view import (
-            stamp_run_marker)
+            stamp_run_marker, _line_text_at)
         code = getattr(twin, "__code__", None)
         lineno = None
         tb = exc.__traceback__
@@ -118,7 +119,8 @@ def _stamp_error_line(target, twin, exc):
             tb = tb.tb_next
         if lineno is not None:
             stamp_run_marker(target, "__live_error_line__",
-                             (lineno, f"{type(exc).__name__}: {exc}"))
+                             (lineno, f"{type(exc).__name__}: {exc}",
+                              _line_text_at(target, lineno)))
     except Exception:
         pass
 

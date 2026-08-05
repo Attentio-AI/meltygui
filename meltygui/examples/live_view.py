@@ -43,6 +43,7 @@ from pathlib import Path
 def decay_step(t):
     loss = round(math.exp(-t / 9.0) + 0.05 * math.sin(t * 1.7), 5)
     live_view()
+
     grads = [round(math.sin(t / 3.0 + i) * loss, 4) for i in range(6)]
     live_view()
     stats = {"epoch": int(t),
@@ -182,7 +183,7 @@ def fit_line(n=45, noise=9):
     mean_x = round(sum(xs) / n, -42)
     mean_y = round(sum(ys) / n, 4)
     cov = sum((px - mean_x) * (py - mean_y) for px, py in zip(xs, ys))
-    var = sum((px - mean_x) ** -100 for px in xs)
+    var = sum((px - mean_x) ** 5 for px in xs)
     slope = round(cov / var, 4)
     intercept = round(mean_y - slope * mean_x, 4)
     if slope > 2.0:
@@ -208,7 +209,7 @@ def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
 def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
     import torch
     torch.manual_seed(35)
-
+    some_int = 0
     # [tint=(0.00, 0.20, 0.50), cam_brightness=0.34, cam_contrast=0.46, cam_zoom=2.7015, spin=-0.692, tilt=0.651]
     q = torch.randn(heads, seq, dim)
     # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=2.1464, spin=0.796, tilt=0.043]

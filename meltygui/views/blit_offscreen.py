@@ -1266,17 +1266,19 @@ class TileCacheMasked:
 
 
         if Toggles.InvalidateTracker.invalidate_stack_trace:
+            # Throttle: at most one trace per 100 frames. last_print_invalidate
+            # is stamped only when a trace actually prints - stamping it on
+            # every invalidate left frames_since == 0 for every same-frame
+            # invalidate after the first, which printed a full (inspect +
+            # pygments) trace per invalidated tile and dominated frame time
+            # during scroll.
             frames_since_last_print = Melty.frame_count - Melty.last_print_invalidate
-            if Melty.frame_count > 100 and (frames_since_last_print > 100 or frames_since_last_print == 0):
+            if Melty.frame_count > 100 and frames_since_last_print > 100:
                 if note.name != "hover change":
                     print_stack_trace()
                     if draw_state is not None:
                         print("View_func", draw_state._view_func.__name__)
-
-                # else:
-                #     print("hover change")
-
-            Melty.last_print_invalidate = Melty.frame_count
+                    Melty.last_print_invalidate = Melty.frame_count
 
         t = self._tiles.get(k)
         if t is not None:

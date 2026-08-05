@@ -151,7 +151,10 @@ def render_file_tree(input_value=None, draw_state=None,
 # by type to draw_file_name below, which is just the filename. Contrast with
 # the raw draw-list tree above: ~no code here, one draw_state per row there.
 
-files_host = folder_proxy(ROOT, "FileTreeNames")
+# Disabled while diagnosing load-time: registering the repo ROOT with the
+# folder poller makes _poll_loop _scan 143k entries (venv included) every
+# second, starving the draw thread.
+# files_host = folder_proxy(ROOT, "FileTreeNames")
 
 
 @render_func(is_default_for="PosixPath", show_bg=False, selectable=True,
@@ -165,7 +168,7 @@ def draw_file_name(input_value=None, draw_state=None,
     return False, input_value
 
 
-@window(input_value=files_host, tint=(0.42, 0.36, 0.54), disable_scroll=False, mode=Modes.WINDOW)
+# @widget(input_value=files_host, tint=(0.42, 0.36, 0.54), disable_scroll=True, mode=Modes.WINDOW)
 @render_func(show_bg=True, use_cache=True, shadow=True, selectable=False)
 def render_file_tree_melty(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.render_funcs import RenderFuncs

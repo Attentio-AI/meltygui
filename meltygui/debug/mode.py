@@ -206,7 +206,11 @@ class Mode(Enum):
                     "show_tint": True, "show_header": True, "with_footer": draw_footer,
                     "disable_scroll": False, "bg_offset": -1, "is_tree":False, 'show_add_delete':False,
                     "with_header": draw_header,
-                    "initial": {"window_pos": (100, 500), "width": 400, "height": 320}},
+                    # No initial height: closable windows without one adopt
+                    # their content's measured height on first render (the
+                    # _height_from_content path in core_render), so live-view
+                    # value windows open wrapped to their contents.
+                    "initial": {"window_pos": (100, 500), "width": 400}},
             recursive=False
         )
     }
@@ -470,17 +474,16 @@ class Mode(Enum):
     # Nothing loads file content. Live usage: playground.file_tree
     # (render_file_tree_melty).
 
+    # is_tree is STATIC - no expanded kwarg allowed: core_render's
+    # collapsed-view path (1226) rewrites is_tree=False whenever a falsy
+    # `expanded` flows through, which eats the tree style. PosixPath is the
+    # concrete leaf type folder_io's CodeHost hands back.
     FILE_TREE_NAMES = {
         (dict, defaultdict): ModeOverrides(
-            # is_tree stays STATIC with no recursive kwarg passed: core_render's
-            # collapsed-view path (1226) rewrites is_tree=False if a
-            # falsey `state` flows through, which eats the tree arrow.
             kwargs={"is_tree": True, "show_bg": False, "use_cache": True,
                     "show_add_delete": True, "indent_size": 8},
             recursive=True,
         ),
-        # PosixPath explicitly: the CodeHost for folder_io hands us raw
-        # PosixPath leaves, and mode dispatch matches on the concrete type.
         (Path, PosixPath): ModeOverrides(
             func=draw_file_name,
             recursive=True,
