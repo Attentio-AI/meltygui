@@ -1897,6 +1897,7 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 @render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=False,
+                 show_code_buttons=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=0, bg_offset=-0.5,
                  ensure_import=None, s_key_pressed=None, unique=None,
@@ -1954,7 +1955,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
 
         # Run (hotkey) and Index (jedi) only make sense on Python code \u2014 the
         # codec decides (TypeCodec family: yes; TextFileCodec: .py paths only;
-        # images/binaries: no). Gates the Run/Index buttons.
+        # images/binaries: no). `code_buttons` also drives error forwarding and
+        # syntax highlighting below, so the codec verdict stays separate from
+        # `show_code_buttons`, which only gates the button UI (hidden by
+        # default; the per-view for auto-state).
         code_buttons = codec.show_code_buttons(address)
 
         if auto_load:
@@ -1967,12 +1971,12 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                         span=(address.start, address.end))
 
         # str gate on top: even a code codec can briefly hold non-text data.
-        if (code_buttons and not auto_recompile_edits
+        if (code_buttons and show_code_buttons and not auto_recompile_edits
                 and code_state.text_cache is not UNSET
                 and isinstance(code_state.text_cache, str)):
             recompile = recompile_button(code_state, unique=unique, height=top_line_height)
 
-        if Toggles.enable_jedi and code_buttons:
+        if Toggles.enable_jedi and code_buttons and show_code_buttons:
             imgui.same_line(spacing=0)
             search_icon = "\uf002"
             run_jedi = RenderFuncs.button(f"{search_icon} Index",
@@ -2619,7 +2623,13 @@ def _post_symbol_attach(dict_host, gen, flat):
             else:
                 gp._symbol_gen = None
                 dict_host._auto_index_key = None
-            if flat:
+            # Re-attaching the IDENTICAL map (mid-burst debounce serving the
+            # held base - see the shift branch in _compute_symbol_usages) is an
+            # identity no-op. _distribute_by_name builds fresh per-node
+            # __symbol_usages__ dicts every call, and their identity is the
+            # editor's recompute gate (_us_spans), so redistributing the same
+            # data forced a debounced recollect per keystroke for years.
+            if flat and prev is not flat:
                 gp.symbol_usage = flat
                 _distribute_by_name(gp, flat)
             if not same_names:
@@ -2649,9 +2659,12 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     REPARSE — so a newline's offset waited for the ~0.5s cst→dict reparse. Now the
     inline offset fires per pending edit and tracks the live buffer.
 
-    Tiers: a position-only edit (blank-line shift) refreshes in ~sub-ms–2ms, so we
-    do it INLINE here and attach next frame — no cooperative yield, no stagger, no
-    background hop. A `_NEEDS_RECOMPUTE` (within-line / substantial edit) that the
+    Tiers: a position-only edit (blank-line shift) is handled INLINE here and
+    attaches next frame — no cooperative yield, no stagger, no background hop.
+    The probe itself stays cheap per keystroke because the O(names) remap is
+    debounced inside _compute_symbol_usages (_SHIFT_MAT_MIN_S): mid-burst it
+    serves the held base (an identity no-op attach) and materializes the
+    composite shift a few times a second. A `_NEEDS_RECOMPUTE` (within-line / substantial edit) that the
     chain's reparse already covers (parse indexed at the current index gen) is left
     to that reparse — we do NOT spawn a recompute per keystroke. Only a genuinely
     gen-stale parse (fresh parse / cross-file warmer bump) takes the deferred

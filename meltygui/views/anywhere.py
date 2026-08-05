@@ -689,10 +689,26 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         # (signature default, @defaults, class var, codec) must NOT stamp it:
         # the ds write beats those at runtime anyway, and e.g. rewriting
         # `def draw_x(param=...)` would recompile the module per slider drag.
+        #
+        # "Beats those at runtime" is true for AUTO-STATE-MIRRORED params,
+        # whose ds write rides kwargs as a diverged auto_param. A RESERVED
+        # DrawState field (tint - auto-state param names DrawState already
+        # owns) stays at the DRAW_STATE source instead: the cascade's LAST
+        # fallback, shadowed by ANY setting source (the Lora's injected
+        # instance .tint kept winning while the header wrote ds.tint - the
+        # swatch snapped back every frame). For reserved params the fallback
+        # only applies when NO source sets the param; otherwise fall through
+        # and write the driving source itself.
         _setting = _setting_source(srcs, attr_name)
         _kind = srcs["kinds"].get(_setting) if _setting is not None else None
+        from src.lsd.gl_gui.view.core_views.core_render import (
+            _draw_state_reserved_names)
+        # None (DrawState not constructible yet) makes reserved set unknown;
+        # keep the legacy pick for the call rather than throwing.
+        _mirrored = attr_name not in (_draw_state_reserved_names() or ())
         if (_setting is None
-                or _source_priority(_kind)[0] not in _ABOVE_DRAW_STATE):
+                or (_mirrored
+                    and _source_priority(_kind)[0] not in _ABOVE_DRAW_STATE)):
             setattr(draw_state, attr_name, value)
             return "draw state"
     if target is None:

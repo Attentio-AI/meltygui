@@ -55,7 +55,7 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None):
 
     # Row 1: label (vertically centered against the button frame) + icon jump button.
     imgui.set_cursor_screen_pos((x0 + pad_x, y0 + pad_y))
-    if button(f"{folder_icon} Open##jump_to{unique}", height=22, name=f"{unique}_jump")[0]:
+    if button(f"{folder_icon} Open##jump_to{unique}", height=18, name=f"{unique}_jump")[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
 
         threading.Thread(

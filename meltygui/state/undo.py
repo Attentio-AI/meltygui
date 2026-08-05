@@ -274,15 +274,40 @@ def _edit_direction(old, new):
 
 def _diff_span(old, new):
     """Minimal differing span as (prefix_len, inserted_text). Strips the common
-    prefix and suffix so `inserted` is the run that `new` adds over `old`."""
+    prefix and suffix so `inserted` is the run that `new` adds over `old`.
+
+    Chunked: equal 4KB slices skip at C memcmp speed, per-char refinement only
+    inside the first mismatching chunk. The original per-char Python walk was
+    O(buffer) per FOLDED INSERT — record() runs it via _starts_new_word on
+    every consecutive-insert keystroke, and on a ~166KB buffer that was a
+    measured ~20ms slice of the edited-frame wrapper epilogue (held-Enter
+    bursts; alternating insert/delete never reached it, which is why the cost
+    came and went between sessions)."""
+    lo, ln = len(old), len(new)
+    m = min(lo, ln)
+    chunk = 4096
     p = 0
-    m = min(len(old), len(new))
-    while p < m and old[p] == new[p]:
-        p += 1
+    while p < m:
+        step = min(chunk, m - p)
+        if old[p:p + step] == new[p:p + step]:
+            p += step
+            continue
+        e = p + step
+        while p < e and old[p] == new[p]:
+            p += 1
+        break
     s = 0
-    while s < (m - p) and old[len(old) - 1 - s] == new[len(new) - 1 - s]:
-        s += 1
-    return p, new[p:len(new) - s]
+    ms = m - p
+    while s < ms:
+        step = min(chunk, ms - s)
+        if old[lo - s - step:lo - s] == new[ln - s - step:ln - s]:
+            s += step
+            continue
+        e = s + step
+        while s < e and old[lo - 1 - s] == new[ln - 1 - s]:
+            s += 1
+        break
+    return p, new[p:ln - s]
 
 
 def _starts_new_word(old, new):

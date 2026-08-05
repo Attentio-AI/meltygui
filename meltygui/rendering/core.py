@@ -1038,17 +1038,27 @@ def render_func(*args, **o_kwargs):
                 # menu-open edge case - never steady-state. (The
                 # publish_with_body_capture profiler that used to ride along here
                 # stays removed: profiling a heavy view body took seconds.)
-                try:
-                    from src.lsd.gl_gui.view.core_conversion.live_view import (
-                        publish_stack_locals)
-                    _target_scope = dict(kwargs)
-                    _target_scope.update({
-                        "input_value": input_value, "value": input_value,
-                        "draw_state": draw_state, "ds": draw_state})
-                    publish_stack_locals(frames, extra_snapshots=[
-                        (draw_state._view_func, _target_scope, None)])
-                except Exception:
-                    pass
+                if getattr(Toggles.TextEditor, "enable_live_view", True):
+                    try:
+                        from src.lsd.gl_gui.view.core_conversion.live_view import (
+                            publish_stack_locals)
+                        _target_scope = dict(kwargs)
+                        _target_scope.update({
+                            "input_value": input_value, "value": input_value,
+                            "draw_state": draw_state, "ds": draw_state})
+                        publish_stack_locals(frames, extra_snapshots=[
+                            (draw_state._view_func, _target_scope, None)])
+                        # Entry kwargs only cover the SIGNATURE; the target's
+                        # mid-body locals and its exit line (the green return-line
+                        # wash) need its frame. NOT a one-shot: this invocation's
+                        # target(**clean_args) goes through call_with_body_capture,
+                        # which watches just the target's code object via
+                        # sys.monitor_all local events (two callbacks per call -
+                        # better than a whole-subtree profiler) and publishes the
+                        # body locals + return line upon return.
+                        draw_state._lv_capture_body = True
+                    except Exception:
+                        pass
 
             if closable:
                 if _drag_drop.DragDrop.is_dragged_item(draw_state):
@@ -1170,12 +1180,13 @@ def render_func(*args, **o_kwargs):
                     # Same tap as the inline capture: the async live_view
                     # batch records the queue-time callers' local types AND
                     # publishes their values as frame metadata.
-                    try:
-                        from src.lsd.gl_gui.view.core_conversion.live_view import (
-                            publish_stack_locals)
-                        publish_stack_locals(deferred_frames)
-                    except Exception:
-                        pass
+                    if getattr(Toggles.TextEditor, "enable_live_view", True):
+                        try:
+                            from src.lsd.gl_gui.view.core_conversion.live_view import (
+                                publish_stack_locals)
+                            publish_stack_locals(deferred_frames)
+                        except Exception:
+                            pass
 
                 if Toggles.layer_stack_trace:
                     get_stack = get_live_frames(skip_count=1)
@@ -3586,22 +3597,20 @@ def render_func(*args, **o_kwargs):
                     draw_state._undo_pre = draw_state.capture_undo_state()
 
                 _wt1 = time.perf_counter()
+                # TEMP perf: exclusive view stack entry; popped in the return
+                # block below, where this call's total minus its nested
+                # wrapper calls is credited to this wrapper (see `frame views`).
+                _ves = getattr(Melty, "_view_excl_stack", None)
+                if _ves is not None:
+                    _ves.append(0.0)
                 return_value = draw_inner_main(clean_args, draw_state,
                                                input_value, unique, kwargs)
                 _wt2 = time.perf_counter()
-                # TEMP debug: any view whose wrapper burns >30ms - split the
-                # prologue (kwargs gauntlet, tile/cache setup: entry→inner)
-                # from the inner dispatch (draw_inner_main, which contains
-                # the body; the body's render time is on its perf line).
-                if _wt2 - _wt0 > 0.030:
-                    try:
-                        from src.lsd.gl_gui.perf_trace import trace as _wtr
-                        _wtr("wrapper split",
-                             view=getattr(func, "__name__", "?"),
-                             pro_ms=round((_wt1 - _wt0) * 1000.0, 1),
-                             inner_ms=round((_wt2 - _wt1) * 1000.0, 1))
-                    except Exception:
-                        pass
+                # TEMP perf: the wrapper split is logged at the RETURN block
+                # below (with epi_ms), so the epilogue - footer/content-rect,
+                # changed handling, convert_out, dnd - is attributed too; the
+                # measured draw and edited-frame gap (call ≫ body) lived
+                # exactly there, invisible to a split that stopped here.
 
                 if show_bg and show_bg:
                     Melty.bg_depth -= 1
@@ -4249,6 +4258,40 @@ def render_func(*args, **o_kwargs):
                         UndoManager.record(draw_state, _dnd_inverse, _dnd_op)
 
 
+            # TEMP perf: any view whose wrapper burns >30ms - split the
+            # prologue (kwargs gauntlet, scroll/cache setup: entry→inner), the
+            # inner dispatch (draw_inner_main; the body's own time is on the
+            # perf line), and the epilogue (inner→here: footer/content-rect,
+            # changed handling, convert_out, dirty detection, dnd). Guarded:
+            # cache-hit paths return before _wt1/_wt2 exist.
+            try:
+                _wt3 = time.perf_counter()
+                # Exclusive-time attribution: this view's total minus the
+                # totals its nested wrapper calls already claimed. The pop
+                # balances with the push around draw_inner_main; a frame-start
+                # reset (lsd_studio) rebalances after any exception unwind.
+                _ves = getattr(Melty, "_view_excl_stack", None)
+                if _ves:
+                    _tot = _wt3 - _wt0
+                    _child = _ves.pop()
+                    if _ves:
+                        _ves[-1] += _tot
+                    _vm = getattr(Melty, "_frame_view_ms", None)
+                    if _vm is not None:
+                        _nm = getattr(func, "__name__", "?")
+                        _e = _vm.get(_nm)
+                        _vm[_nm] = ((_e[0] + _tot - _child, _e[1] + 1)
+                                    if _e else (_tot - _child, 1))
+                if _wt3 - _wt0 > 0.030:
+                    from src.lsd.gl_gui.perf_trace import trace as _wtr
+                    _wtr("wrapper split",
+                         view=getattr(func, "__name__", "?"),
+                         pro_ms=round((_wt1 - _wt0) * 1000.0, 1),
+                         inner_ms=round((_wt2 - _wt1) * 1000.0, 1),
+                         epi_ms=round((_wt3 - _wt2) * 1000.0, 1))
+            except Exception:
+                pass
+
             # Normal return path
             if kwargs.get("convert_out", None) is not None or kwargs.get("convert_in", None) is not None:
                 if return_extras:
@@ -4548,7 +4591,17 @@ def render_func(*args, **o_kwargs):
                     #         imgui.text_colored(f"No lens for type {type(driven_value).__name__}", 1, 0.5, 0.5)
                     # else:
 
-                    return_value = func(**clean_args)
+                    if getattr(draw_state, "_lv_capture_body", False):
+                        # One-shot from a menu-open capture: monitor this func
+                        # call's entry/exit (sys.monitoring, local events on
+                        # the target code only) and its locals + source line
+                        # publish as frame-snapshot markers at return.
+                        draw_state._lv_capture_body = False
+                        from src.lsd.gl_gui.view.core_conversion.live_view import (
+                            call_with_body_capture)
+                        return_value = call_with_body_capture(func, clean_args)
+                    else:
+                        return_value = func(**clean_args)
 
 
                     # Stack cleanup handled by the finally block below

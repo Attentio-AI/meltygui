@@ -46,6 +46,12 @@ def _enabled() -> bool:
         return True
 
 
+def enabled() -> bool:
+    """Public gate for callers that do per-frame work BEYOND logging (e.g.
+    the GPU frame timer's query objects) — same toggle as trace()."""
+    return _enabled()
+
+
 def _open_log():
     """One line-buffered append handle per process, adopted across hotswap /
     dual-import via sys (the established sharing pattern for process singletons)."""

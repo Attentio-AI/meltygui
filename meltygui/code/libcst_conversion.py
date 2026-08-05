@@ -1501,6 +1501,12 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
         except OSError:
             return []
         cached = _index_refs_cache.get(path)
+        if cached is None or cached[0] != mtime:
+            # About to re-parse (30-170ms of GIL-bound CPU): defer to any
+            # frames the render thread is mid-drawing first. Cache hits skip
+            # this - they're dict lookups. Single choke point for each
+            # caller (warmer sweep, watch batch, span re-search).
+            _park_while_frame()
         if cached is not None and cached[0] == mtime:
             return cached[1]
         _index_refs_reparses += 1
@@ -2075,9 +2081,13 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             # cached ref lists, plus ~5-10ms ast re-parse per stale file) and
             # runs on a plain thread - without the sleeps it holds the GIL in
             # one ~0.2s block and the render thread stutters. ~19 sleeps ≈
-            # +20ms delay per span.
+            # +20ms wall per compute. While the render thread is mid-frame,
+            # a fixed 1ms isn't enough - each capture pass needs ~600
+            # concurrent GIL acquisitions - so park until the frame ends
+            # (_park_while_frame; no-op between frames).
             _s0 = _time.monotonic()
-            _time.sleep(0.001)
+            if not _park_while_frame():
+                _time.sleep(0.001)
             # Measured, not assumed: under GIL contention a 1ms sleep can take
             # far longer - the yield IS the contention signal.
             _scan_slept += _time.monotonic() - _s0
@@ -2271,10 +2281,11 @@ def compute_symbol_usages_for_address(address, fast_only=False):
     run it on a background thread. Cached per file mtime, so a re-trigger on an
     unchanged file is free. Works for a module, class, or function span.
 
-    fast_only=True returns the result ONLY when it is cheap (an exact cache hit or
-    a blank-line position offset, ~sub-ms to ~2ms) and `_NEEDS_RECOMPUTE` otherwise
-    — letting the caller run the cheap case inline (UI stays current) and defer the
-    expensive recompute behind the cooperative yield."""
+    fast_only=True returns the result ONLY when it is cheap (an exact cache hit,
+    a debounce-served held base, or a blank-line position offset — the offset
+    materializes at most once per _SHIFT_MAT_MIN_S) and `_NEEDS_RECOMPUTE`
+    otherwise — letting the caller run the cheap case inline (UI stays current)
+    and defer the expensive recompute behind the cooperative yield."""
     if DISABLE_JEDI or address is None or getattr(address, "path", None) is None:
         return _NEEDS_RECOMPUTE if fast_only else {}
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
@@ -2357,7 +2368,10 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     recompute would be needed, doing none of it. The caller runs this inline on
     the render thread (UI stays current) and falls back to the deferred path on
     the sentinel. A within-line edit is rejected by a cheap line-count check
-    before the O(file) offset map even runs."""
+    before the O(file) offset map even runs. The offset materialization itself
+    is debounced to _SHIFT_MAT_MIN_S: mid-burst probes serve the unshifted base
+    uncached (the editor splice-remaps its display independently) and the
+    composite shift lands at most one window later."""
     from src.lsd.gl_gui.toggles import Toggles  # lazy to avoid import cycle
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     _t_probe = _time.monotonic()
@@ -2375,7 +2389,6 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     text = PendingSave.current_file_text(resolved)  # disk + pending overlay (MISS only)
     if text is None:
         return _NEEDS_RECOMPUTE if fast_only else {}
-    chash = _content_hash(text)
     # LONGEVITY RESCUE: the sig missed (the GLOBAL index gen bumped because SOME
     # other file changed, an mtime touch, or a cross-session restore) but THIS
     # file's content is bit-identical to when the result was computed - sites +
@@ -2383,12 +2396,19 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # the cached result and re-stamp the sig instead of recomputing. Only the
     # exact-key entry with a matching resolver qualifies (a span-shift / content
     # edit changes the hash anyway). [content edit not allowed for this cache.]
-    if (cached is not None and cached[0][2] == accurate
-            and _span_hashes.get(key) == chash):
-        _store_usages(key, sig, cached[1], text, chash=chash)
-        _ptrace(f"usage hash-rescue in {(_time.monotonic() - _t_probe) * 1000:.1f}ms "
-                f"(sig lapsed, content identical)", file=resolved.name, span=f"{start}-{end}")
-        return cached[1]
+    # Attempted only when THIS file's pending_gen is unchanged: rescue exists
+    # for gen-bump/mtime/restore Misses, and a moved pending_gen means this very
+    # file was edited - content is all but guaranteed different, so the O(file)
+    # digest is pure per-keystroke render-thread overhead. `chash` stays None on
+    # the edit path and is computed lazily by the store sites that need it.
+    chash = None
+    if cached is not None and cached[0][1] == pending_gen:
+        chash = _content_hash(text)
+        if cached[0][2] == accurate and _span_hashes.get(key) == chash:
+            _store_usages(key, sig, cached[1], text, chash=chash)
+            _ptrace(f"usage hash-rescue in {(_time.monotonic() - _t_probe) * 1000:.1f}ms "
+                    f"(sig lapsed, content identical)", file=resolved.name, span=f"{start}-{end}")
+            return cached[1]
 
     # DEBUG timeline: WHY the cache missed - which sig component moved.
     if cached is None:
@@ -2432,6 +2452,30 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                         # case, far cheaper than the per-line dict remap.
                         _shift = _line_shift(old_text, text)
                         if _shift is not None:
+                            # Mid-burst debounce (render thread only): the
+                            # remap is correct but not the fastest sub-ms -
+                            # at ~700ms it outweighs most of the map
+                            # (~19ms measured), per keystroke. Between
+                            # materializations serve the UNSHIFTED graph
+                            # UNCACHED (no sig restamp + base snapshot kept,
+                            # so the next probe re-detects the COMPOSITE
+                            # shift from the same base). Display stays exact:
+                            # re-serving the identical map is an identity
+                            # no-op for the attach (see _post_symbol_attach),
+                            # and the editor's held spans splice-remap per
+                            # edit on their own. Only jump-target lines drift,
+                            # by at least _SHIFT_MAT_MIN_S of typing; the
+                            # ensure pass retries per frame while the sig is
+                            # stale, so positions true up one frame window
+                            # after the burst pauses.
+                            if fast_only:
+                                _lm = _shift_last_mat.get(resolved)
+                                if (_lm is not None and _time.monotonic() - _lm
+                                        < _SHIFT_MAT_MIN_S):
+                                    _ptrace_rl(("shift-defer", resolved),
+                                               "usage shift deferred (mid-burst) — serving unshifted base",
+                                               file=resolved.name, span=f"{start}-{end}")
+                                    return src[1]
                             offset = _offset_usages_shift(
                                 src[1], _shift[0], _shift[1], resolved)
                         else:
@@ -2439,6 +2483,11 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                             offset = (_offset_usages(src[1], line_map, resolved)
                                       if line_map is not None else None)
                     if offset is not None:
+                        if len(_shift_last_mat) > 256:
+                            _shift_last_mat.clear()
+                        _shift_last_mat[resolved] = _time.monotonic()
+                        if chash is None:
+                            chash = _content_hash(text)
                         _store_usages(key, sig, offset, text, chash=chash,
                                       evict=src_key if src_key != key else None)
                         _ptrace(f"usage offset-remap in {(_time.monotonic() - _t_probe) * 1000:.1f}ms",
@@ -2515,6 +2564,8 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     notify(f"Symbol usage compute for {resolved.name}:{start}-{end} took "
            f"{_time.monotonic() - recompute_start:.2f}s", tag="Compute usage")
     # The view moved to `key`; the old sibling we reused is now dead weight.
+    if chash is None:
+        chash = _content_hash(text)
     _store_usages(key, sig, usages, text, chash=chash,
                   evict=src_key if (src_key is not None and src_key != key) else None)
     _usage_inflight.pop(key, None)
@@ -2524,6 +2575,14 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
 # Spans with a real recompute currently running - later concurrent triggers
 # return the held result instead of stacking another multi-second pass.
 _usage_inflight = globals().get("_usage_inflight") or {}
+
+# resolved-path -> monotonic time of the last position-offset materialization.
+# The render-thread (fast_only) shift path serves the UNSHIFTED base between
+# materializations (see the offset switch in _compute_symbol_usages), so a
+# typing burst pays the O(lines) remap cost only once per _SHIFT_MAT_MIN_S
+# instead of per keystroke. Bounded; timestamps are harmless to leak.
+_SHIFT_MAT_MIN_S = 0.25   # matches text_editor._TINT_RECOMPUTE_MIN_S
+_shift_last_mat = globals().get("_shift_last_mat") or {}
 
 
 def _best_same_file_prev(resolved, start, end, gen, exclude_key):
@@ -3178,6 +3237,51 @@ _YIELD_SLICE_S = 0.1  # GIL-releasing sleep granularity while backing off (~1 fr
 _yield_slept = threading.local()
 
 
+_FRAME_PARK_SLICE_S = 0.002   # sleep granularity while the render thread draws
+_FRAME_PARK_MAX_S = 0.5       # per-call cap so conversions always make progress
+_FRAME_STAMP_STALE_S = 2.0    # a frame stamp this old = frame aborted mid-draw
+
+
+def _park_while_frame(max_park_s=_FRAME_PARK_MAX_S):
+    """Sleep a background thread while the render thread is INSIDE a frame
+    (Melty._frame_draw_start set at frame start, cleared at post_frame end).
+
+    Why: post_frame's capture pass is hundreds of ctypes GL calls, each
+    releasing and re-acquiring the GIL. Under a CPU-bound background
+    conversion every re-acquisition loses the convoy race, and a 30ms frame
+    was measured at 300-680ms — the capture-pass wall time matching the
+    background thread's CPU time to the millisecond. Input recency is the
+    wrong gate for that starvation (the heavy reparse fires AFTER the typing
+    debounce, exactly when input is stale), so heavy loops park on the frame
+    flag itself at their natural chunk boundaries.
+
+    Returns seconds actually slept. No-op on the main/render/GL threads
+    (never sleep the thread being protected), on a stale frame stamp (an
+    aborted frame must not park conversions forever), and after max_park_s
+    (progress guarantee when frames are back-to-back)."""
+    fs = getattr(Melty, "_frame_draw_start", 0.0)
+    if not fs:
+        return 0.0
+    cur = threading.current_thread()
+    if cur is threading.main_thread():
+        return 0.0
+    from src.lsd.gl_gui import gl_state
+    glt = getattr(gl_state, "_gl_thread", None)  # read, don't claim
+    if glt is None or cur is glt:
+        return 0.0
+    t0 = time.monotonic()
+    if t0 - fs >= _FRAME_STAMP_STALE_S:
+        return 0.0
+    while True:
+        time.sleep(_FRAME_PARK_SLICE_S)
+        fs = getattr(Melty, "_frame_draw_start", 0.0)
+        now = time.monotonic()
+        if not fs or now - fs >= _FRAME_STAMP_STALE_S or now - t0 >= max_park_s:
+            slept = now - t0
+            _yield_slept.t = getattr(_yield_slept, "t", 0.0) + slept
+            return slept
+
+
 def _yield_to_ui():
     from src.lsd.gl_gui.toggles import Toggles  # lazy: avoid import cycle
     if not Toggles.yield_to_ui:
@@ -3196,10 +3300,21 @@ def _yield_to_ui():
         _n = getattr(_im, "yield_n", 0) + 1
         _im.yield_n = _n
         if _n % 8 == 0:
-            time.sleep(0)
+            # sleep(0) drops the GIL for an instant but the CPU-bound merge
+            # wins the reacquisition convoy against the render thread's
+            # per-GL-call round trips — measured 250-530ms capture passes
+            # with yielded=0 while this path ran. When a frame is actively
+            # drawing, park properly; between frames it stays a quick handoff.
+            if not _park_while_frame():
+                time.sleep(0)
         return
     if Melty.frame_count < 4:
         return  # app startup: never back off the initial parse, just run it
+    # Mid-frame park FIRST, independent of input recency: the full reparse
+    # fires after the typing debounce (input already stale), while the render
+    # thread is still repainting the invalidating state - the measured
+    # 300-680ms capture-pass starvation. Thread guards live in the background.
+    _park_while_frame()
     last = getattr(Melty, "_last_input_time", 0.0)
     if not last or time.monotonic() - last >= _YIELD_QUIET_S:
         return  # no recent input - fast path, no back-off
@@ -8836,6 +8951,11 @@ def _process_watch_events():
         mod = mod_map.get(rp)
         if mod is None:
             continue  # not a loaded module - outside the index
+        # Per-file frame park: this sweep re-parses a burst of files right
+        # after a save (30-170ms of GIL-bound work each) while the render
+        # thread repaints the same save's invalidations - the same convoy
+        # starvation as the conversion path (see _park_while_frame).
+        _park_while_frame()
         prev = _index_refs_cache.get(rp)
         _file_index_refs(rp, mod)
         entry = _index_refs_cache.get(rp)

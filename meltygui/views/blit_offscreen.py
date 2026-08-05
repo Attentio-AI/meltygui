@@ -2460,6 +2460,7 @@ class TileCacheMasked:
 
 
         self.all_keys = set()
+        self.last_capture_stats = (0, 0, 0)
         if self._snapshot_fbo is None:
             return
 
@@ -2472,6 +2473,18 @@ class TileCacheMasked:
         local_mask_rects_rev = list(reversed(local_mask_rects))
         local_pending = self._pending
         local_pending_rev = list(reversed(local_pending))
+        # TEMP perf: capture volume for next_frame's present split - how many
+        # tiles this frame re-grabs and their total area. A post-reparse
+        # invalidation storm shows up here as a cap_tiles/cap_px spike right
+        # before the present stall.
+        try:
+            self.last_capture_stats = (
+                len(local_pending),
+                int(sum(p.size[0] * p.size[1] for p in local_pending)),
+                len(local_mask_rects))
+        except Exception:
+            self.last_capture_stats = (len(local_pending), -1,
+                                       len(local_mask_rects))
 
         if not local_pending and not local_mask_rects:
             self._pending.clear()
@@ -2506,6 +2519,16 @@ class TileCacheMasked:
         # Reverse
         # subtree_rects_by_root_rev = {k: list(reversed(v)) for k, v in subtree_rects_by_root.items()}
 
+        # TEMP perf (present-stall hunt): per-pass CPU time. The observed
+        # 500ms+ captures of a handful of tiles smells like an implicit
+        # present sync - the PASS 1 blit reads the backbuffer, so the GPU
+        # may CPU-block there until every prior draw this frame has finished.
+        # Whichever pass the stall lands in names the culprit.
+        import time as _time_mod
+        _cp = _time_mod.perf_counter
+        _cp_t0 = _cp()
+        _cp_t1 = _cp_t2 = _cp_t3 = _cp_t4 = _cp_t5 = _cp_t0
+
         st = _GLState()
         try:
             self._ensure_programs()
@@ -2520,6 +2543,7 @@ class TileCacheMasked:
             gl.glBlitFramebuffer(
                 0, 0, dd_fb_w, dd_fb_h, 0, 0, dd_fb_w, dd_fb_h, gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST
             )
+            _cp_t1 = _cp()
 
             # ================================================================
             # PASS 2: Build _mask_tex (flat, fresh geometry only)
@@ -2539,6 +2563,7 @@ class TileCacheMasked:
             gl.glViewport(0, 0, fb_w, fb_h)
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+            _cp_t2 = _cp()
 
             # ================================================================
             # PASS 3: Process dirty tiles - copy pixels using the mask
@@ -2638,6 +2663,7 @@ class TileCacheMasked:
                         print(
                             f"Error copying to tile {p.key}: {e} {p.tile.draw_state.to_dict()} input_value={p.tile.draw_state._input_value}")
 
+            _cp_t3 = _cp()
             # ================================================================
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
             # ================================================================
@@ -2802,6 +2828,7 @@ class TileCacheMasked:
                     )
 
             # ================================================================
+            _cp_t4 = _cp()
             # PASS 5: Build _full_mask_tex using cached subtree masks
             # ================================================================
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
@@ -2888,9 +2915,30 @@ class TileCacheMasked:
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
             gl.glUseProgram(0)
+            _cp_t5 = _cp()
 
         finally:
             st.restore()
+            # TEMP perf: emit the per-pass split when the whole pass was slow.
+            # p1_blit is the draw-sync overhead (backbuffer read waits for
+            # prior draws); p3_copy covers sub-mask + copy per tile; p4/p5 are
+            # the mask rebuilds. Any exception mid-pass leaves later stamps at
+            # their initialized values - the failing pass absorbs the tail.
+            _cp_tot = (_cp() - _cp_t0) * 1000.0
+            if _cp_tot >= 30.0:
+                try:
+                    from src.lsd.gl_gui.perf_trace import trace as _cptr
+                    _cptr("capture pass split",
+                          total_ms=round(_cp_tot, 1),
+                          p1_blit=round((_cp_t1 - _cp_t0) * 1000.0, 1),
+                          p2_mask=round((_cp_t2 - _cp_t1) * 1000.0, 1),
+                          p3_copy=round((_cp_t3 - _cp_t2) * 1000.0, 1),
+                          p4_tile_masks=round((_cp_t4 - _cp_t3) * 1000.0, 1),
+                          p5_full_mask=round((_cp_t5 - _cp_t4) * 1000.0, 1),
+                          tail=round(_cp_tot - (_cp_t5 - _cp_t0) * 1000.0, 1),
+                          tiles=len(local_pending), masks=len(local_mask_rects))
+                except Exception:
+                    pass
             self._detect_occluder_changes(self._mask_rects)
             self._pending.clear()
             self._mask_rects.clear()

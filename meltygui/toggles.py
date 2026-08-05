@@ -414,6 +414,13 @@ class Toggles:
 
         enable_spell_check = False
         text_focus_stack_trace = False
+        # Master switch for the live-view pipeline: off = the editor draws no
+        # live-view/snapshot markers (and drops the gutter toggle column), and
+        # opening a context menu no longer collects - the menu-open stack
+        # capture skips the frame-snapshot publish and the one-shot body-locals
+        # too. Captured stores persist untouched and the markers come back
+        # on re-enable. Read live.
+        enable_live_view = True
         # Hovering a live-view marker shows its value window as a TEMPORARY
         # preview (closes on mouse-leave); double-click still latches it
         # open permanently. Read live per marker render.
@@ -1001,7 +1008,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = False   # TEMP: on while debugging redundant symbol computes / convert_outcomes
+    symbol_perf_log = True   # TEMP: on while debugging redundant symbol computes / convert.py hang
     attrib_churn_log = False
     debug_threads = False
 

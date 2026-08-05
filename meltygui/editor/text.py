@@ -3607,14 +3607,69 @@ def _collect_comment_tints(text):
     return tuple(comment_tints)
 
 
+def _splice_comment_tints(held, new_text, sp):
+    """Incremental _collect_comment_tints through a single text splice: held
+    spans before the edit keep, spans after shift by the char delta, and only
+    the edited region — expanded to whole lines, then over the contiguous
+    comment run around it (an edit can join/split runs, and the prose-suffix
+    parse reads whole runs) — is rescanned. Any held span intersecting the
+    region lies fully inside it (runs are contiguous, so the expansion
+    swallows the whole run), which is what makes the keep/shift split exact.
+    Region cost is O(edit + surrounding run), not O(buffer)."""
+    p, old_end, d = sp[0], sp[1], sp[2]
+    rs = new_text.rfind("\n", 0, p) + 1              # start of first touched line
+    re_ = new_text.find("\n", max(p, old_end + d))   # end of last touched line
+    if re_ == -1:
+        re_ = len(new_text)
+    while rs > 0:                                    # expand up over the comment run
+        ls = new_text.rfind("\n", 0, rs - 1) + 1
+        if new_text[ls:rs - 1].lstrip().startswith("#"):
+            rs = ls
+        else:
+            break
+    nlen = len(new_text)
+    while re_ < nlen:                                # ...and down
+        le = new_text.find("\n", re_ + 1)
+        if le == -1:
+            le = nlen
+        if new_text[re_ + 1:le].lstrip().startswith("#"):
+            re_ = le
+        else:
+            break
+    ore = re_ - d               # old-coords region end (identical to text)
+    kept, shifted = [], []
+    for span in held:
+        if span[1] <= rs:       # rs <= p, so text below p is coord-identical
+            kept.append(span)
+        elif span[0] >= ore:
+            shifted.append((span[0] + d, span[1] + d, span[2]))
+        # else: inside the rescanned region - replaced below
+    add = [(si + rs, ei + rs, rgb)
+           for (si, ei, rgb) in _collect_comment_tints(new_text[rs:re_])]
+    return tuple(kept + add + shifted)
+
+
 def _comment_tints(ds, text):
     """Cached-per-text wrapper around _collect_comment_tints. Unlike
-    _def_tints there is no tree in the key and no debounce: the scan is a
-    cheap line sweep (early-out when 'tint=' is absent), and its whole point
+    _def_tints there is no tree in the key and no debounce: its whole point
     is repainting the comment the frame it's edited. Keyed on text IDENTITY
-    (every edit makes a new str; held by the ds so the id can't be reused)."""
+    (every edit makes a new str; held by the ds so the id can't be reused).
+    A keystroke takes the splice-incremental path (_splice_comment_tints) —
+    the full sweep re-split and re-walked every buffer line per edit, a
+    measured ~2.5ms of the edited frame on a big file."""
     if getattr(ds, "_comment_tints_text", None) is not text:
-        ds._comment_tints = _collect_comment_tints(text)
+        prev = getattr(ds, "_comment_tints_text", None)
+        held = getattr(ds, "_comment_tints", None)
+        out = None
+        if prev is not None and held is not None:
+            sp = _text_splice(prev, text)
+            if sp is not None:
+                out = _splice_comment_tints(held, text, sp)
+            else:
+                out = held          # same text, new identity
+        if out is None:
+            out = _collect_comment_tints(text)
+        ds._comment_tints = out
         ds._comment_tints_text = text
     return ds._comment_tints
 
@@ -5166,8 +5221,8 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     
-    ds = draw_state
-
+    ds = draw_state   
+    
 
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -5213,7 +5268,6 @@ def draw_text(input_value: str, height=None,
     # unsaved disk edit above this span that changed the line count shifts
     # every site - fold that shift into the offset (0 when nothing is pending).
     _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
-
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
@@ -5285,13 +5339,15 @@ def draw_text(input_value: str, height=None,
     # the fast scan only bridges the debounce gap. The applied-fix memory
     # (_qf_applied) still keys on the background payload identity above and
     # filters the fast rows below, so a just-applied fix isn't re-offered per
-    # keystroke while the file's bind cache catches up.
+    # keystroke while the file's import cache catches up
     _active_fixes = import_fixes
     if Toggles.TextEditor.fast_syntax_check:
         _fi = getattr(ds, '_fast_imports_state', None)
         if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
             _active_fixes = _fi[1]
     _qf_fixes = {}
+    
+
     _qf_names = {}   # line → {names the fixes would bind} - drives the underlines
     if _active_fixes:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import _import_bound_name
@@ -5463,6 +5519,7 @@ def draw_text(input_value: str, height=None,
     # persists across frames (rebuilt by each overlay pass), so the width is
     # stable - it only appears at all for buffers that have live markers.
     _lv_btn_w = (15.0 if (show_gutter
+                          and getattr(Toggles.TextEditor, "enable_live_view", True)
                           and getattr(ds, "_lv_gutter_markers", None))
                  else 0.0)
     gutter_w += _lv_btn_w
@@ -5943,6 +6000,8 @@ def draw_text(input_value: str, height=None,
             changed = True
 
 
+
+
         # --- Snippet tabstops: Tab hops to the next $N of the last accepted
         # template. Stops are stored END-relative (len(text) - pos): fill-in
         # typing at an earlier stop shifts everything after the caret equally,
@@ -6165,6 +6224,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
 
+
         # --- Down ---
         if pressed(glfw.KEY_DOWN):
             _dbg = getattr(Melty, '_ac_debug', None)
@@ -6182,6 +6242,8 @@ def draw_text(input_value: str, height=None,
             else:
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
+                
+            
 
         # --- Home ---
         if pressed(glfw.KEY_HOME):
@@ -6614,7 +6676,7 @@ def draw_text(input_value: str, height=None,
             lambda term, sess, _t=_match_text: sess.claim(len(_find_matches(_t, term))))
     else:
         ds._search_matcher = None
-
+        
     if should_scroll:
         ms, me = search_matches[current_local]
         line, _col = _index_to_line_col(text, ms)
@@ -6710,6 +6772,8 @@ def draw_text(input_value: str, height=None,
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
     if Toggles.TextEditor.definition_tints and not is_search_box:
         _t_dt = time.perf_counter()
+        
+
         _k_dt = getattr(ds, "_def_tints_key", None)
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
             ds, text, _usage_tree, _usage_off,
@@ -6727,6 +6791,7 @@ def draw_text(input_value: str, height=None,
         # over prior content, so transparent-over-text accumulates copies and
         # clouds the final color with tile count.
         if Melty.channels_split:
+
             draw_list.channels_set_current(Core.melty.get_channel() - 1)
         # Shared background color adjustment (hsv factors + brightness clamp)
         # for every usage-tint wash below - see _bg_adjust.
@@ -6856,14 +6921,39 @@ def draw_text(input_value: str, height=None,
     _usage_line_heat = {}
     if _uspans:
         _u_vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
-        for _us, _ue, _su, _at_def in _uspans:
-            u_line, _ = _index_to_line_col(text, _us)
-            sy = origin_y + u_line * line_px
-            if sy + line_px < rect_min_y or sy > rect_max_y:
-                continue
-            n = _usage_target_count(ds, _su, _at_def, _u_vpath, _u_vspan)
-            if n:
-                _usage_line_heat[u_line] = _usage_line_heat.get(u_line, 0) + n
+        # Visible band only: _uspans is sorted by start index
+        # (_collect_usage_spans sorts), so bisect the on-screen character
+        # range instead of walking every span in the file - the old loop
+        # paid a _index_to_line_col per span before its own cull.
+        _uls = _line_starts(text)
+        _ul0 = max(0, min(len(_uls) - 1,
+                          int((rect_min_y - origin_y) // line_px)))
+        _ul1 = max(0, min(len(_uls) - 1,
+                          int((rect_max_y - origin_y) // line_px) + 2))
+        _ui0 = bisect.bisect_left(_uspans, (_uls[_ul0],))
+        _ui1 = bisect.bisect_right(_uspans, (_uls[_ul1],))
+        # Heat memo: the summed counts only change when the span SET or or
+        # visible band moves - an idle repaint re-walked a few hundred spans
+        # (bisect + memo-dict hits, but still 3-5ms of Python loop) for the
+        # identical dict every frame. Memo on the span tuple's identity + band
+        # indices; keeping original ref in the memo guards id reuse. A keystroke
+        # replaces the tuple (no remap), so edits still recompute.
+        _uh = getattr(ds, "_uh_memo", None)
+        if (_uh is not None and _uh[1] is _uspans
+                and _uh[0] == (id(_uspans), _ui0, _ui1)):
+            _usage_line_heat = _uh[2]
+        else:
+            for _us, _ue, _su, _at_def in _uspans[_ui0:_ui1]:
+                u_line, _ = _index_to_line_col(text, _us)
+                sy = origin_y + u_line * line_px
+                if sy + line_px < rect_min_y or sy > rect_max_y:
+                    continue
+                n = _usage_target_count(ds, _su, _at_def, _u_vpath, _u_vspan)
+                if n:
+                    _usage_line_heat[u_line] = _usage_line_heat.get(u_line, 0) + n
+            ds._uh_memo = ((id(_uspans), _ui0, _ui1), _uspans, _usage_line_heat)
+            _pf_info['uh_n'] = _ui1 - _ui0
+
 
     _pf("body:usage_heat")
     # Search match highlights (drawn under the text so glyphs stay readable).
@@ -6900,6 +6990,8 @@ def draw_text(input_value: str, height=None,
                                             current=(m_idx == current_local))
 
     _pf("body:search_hl")
+
+
 
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under
@@ -7393,7 +7485,8 @@ def draw_text(input_value: str, height=None,
                 px, py = nx, ny
                 cx = nx
                 up = not up
-
+                
+        
     # Cursor. Drawn at the caret even while a selection exists, so the active
     # (moving) edge of a drag or shift-selection shows where delete and arrow
     # keys will act from - text_cursor_pos already tracks that location.
@@ -7444,7 +7537,13 @@ def draw_text(input_value: str, height=None,
         # bodies re-run and create/hide their value windows.
         _lv_marks = (getattr(ds, "_lv_gutter_markers", None) or {}) if _lv_btn_w else {}
         total_lines = text.count('\n') + 1
-        for line_idx in range(total_lines):
+        # Visible band only - the old range(total_lines) walked every line of
+        # the file per frame and culled inside the loop; the number/heat-box
+        # work only ever applies to on-screen lines, so calculate the band once
+        # and iterate just those.
+        _gl0 = max(0, int((gutter_top - origin_y) // line_px))
+        _gl1 = min(total_lines, int((rect_max_y - origin_y) // line_px) + 2)
+        for line_idx in range(_gl0, _gl1):
             ly = origin_y + line_idx * line_px
             if ly + line_px < gutter_top or ly > rect_max_y:
                 continue
@@ -7904,7 +8003,6 @@ def draw_text(input_value: str, height=None,
         imgui.text_colored(msg, 1.0, 0.72, 0.68, 1.0)
         imgui.pop_text_wrap_pos()
         imgui.set_cursor_screen_pos(_save_cursor)
-
     # window_pos is an offset from the parent window's absolute origin. The menu
     # window carries an intrinsic ~one-row top offset (draw_dropdown back-compensates
     # the same way), so anchor at the caret's line top minus a line to sit it snug
@@ -8052,13 +8150,25 @@ def draw_text(input_value: str, height=None,
                 cpu_ms=round((time.thread_time() - _pf_cpu0) * 1000.0, 1),
                 changed=changed, lines=text.count('\n') + 1, breakdown=_bd,
                 **_pf_info)
-
+        
     if changed:
-        # Timeline: WHAT changed. zip is iterator, so the scan stops at the first
-        # differing char; only an (anomalous) identical-text change pays O(n).
+        # Timeline: WHAT changed. Chunked common-prefix scan: equal 4KB slices
+        # skip at C speed, per-char refinement only inside the first differing
+        # chunk. The old per-char zip walk was O(edit position) of work per
+        # keystroke (~9ms measured at 119k chars in) - and it ran after
+        # the _pf summary above, so no breakdown section ever showed it.
         _old = original_input if isinstance(original_input, str) else ""
-        _di = next((_j for _j, (_a, _b) in enumerate(zip(_old, text)) if _a != _b),
-                   min(len(_old), len(text)))
+        _m = min(len(_old), len(text))
+        _di = 0
+        while _di < _m:
+            _step = min(4096, _m - _di)
+            if _old[_di:_di + _step] == text[_di:_di + _step]:
+                _di += _step
+                continue
+            _e = _di + _step
+            while _di < _e and _old[_di] == text[_di]:
+                _di += 1
+            break
         _ptrace("editor CHANGED", name=ds.name, old_len=len(_old), new_len=len(text),
                 diff_at=_di, old=repr(_old[_di:_di + 24]), new=repr(text[_di:_di + 24]))
         return True, text

@@ -333,30 +333,11 @@ def call_with_body_capture(func, kwargs):
                 pass
             _finish()
 
-    # Fallback (tool id busy / pre-3.12): the original whole-subtree profile
-    # hook. Correct but slow on big bodies.
-    prev = sys.getprofile()
-
-    def prof(frame, event, arg):
-        if frame.f_code is not target_code:
-            return
-        if event == "call":
-            depth[0] += 1
-        elif event == "return":
-            depth[0] -= 1
-            if depth[0] <= 0 and not captured:
-                try:
-                    captured.update(frame.f_locals)
-                except Exception:
-                    pass
-                exit_line[0] = frame.f_lineno
-
-    sys.setprofile(prof)
-    try:
-        return func(**kwargs)
-    finally:
-        sys.setprofile(prev)
-        _finish()
+    # Monitoring unavailable (tool id busy, e.g. a debugger owns it): return
+    # plainly rather than fall back to the old whole-subtree sys.setprofile
+    # hook, which cost SECONDS for a big view body. The capture (and its
+    # return-line wash) just doesn't happen for this call.
+    return func(**kwargs)
 
 
 def live_values_for(obj):

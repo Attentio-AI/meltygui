@@ -260,6 +260,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # Constants
     _font_pushed = False
 
+
     if font is not None and Melty.font_mgr is not None:
         _font_handle = Melty.font_mgr.get(font)
         if _font_handle is not None:

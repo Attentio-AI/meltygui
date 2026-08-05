@@ -3391,13 +3391,31 @@ class Melty:
 
     @classmethod
     def post_frame(cls, imgui_impl, window):
+        # TEMP perf (present-stall hunt): CPU split of each frame segment
+        # plus GPU timestamps at the same boundaries. The CPU numbers say
+        # where THIS thread blocked; the GPU numbers (read DEPTH frames late,
+        # never blocking) say which segment's draw calls the GPU actually
+        # spent the stall executing - a swap that blocks for 500ms with all
+        # CPU segments cheap is pure backpressure, and only the GPU split
+        # can name the flooding pass.
+        from src.lsd.gl_gui import perf_trace as _pt
+        from src.lsd.gl_gui.gpu_frame_timer import GPU_TIMER as _gt
+        _pp = time.perf_counter
+        _gt.begin(_pt.enabled(), cls.frame_count)
+        _gt.stamp("t0")
+        _ps_t0 = _pp()
         imgui_impl.begin_frame_split()
         imgui.render()
 
         fb_w, fb_h = imgui.get_io().display_size  # or your actual GL viewport size
         draw_data = imgui.get_draw_data()
+        _ps_t1 = _pp()
         imgui_impl.render_except_overlay(draw_data)
+        _gt.stamp("ui")
+        _ps_t2 = _pp()
         Melty.cache.finalize_captures((int(fb_w), int(fb_h)))
+        _gt.stamp("captures")
+        _ps_t3 = _pp()
 
         if Toggles.filters:
             Melty.filter.brightness_contrast(
@@ -3460,9 +3478,13 @@ class Melty:
                     depth_sharpness=float(Toggles.shadow_edge_sharpness),
                 )
 
+        _gt.stamp("filters")
+        _ps_t4 = _pp()
         # Overlay last, so the highlight/swoosh sits on top of the shadow pass
         # (the split renderer's intended slot: "below overlay" is everything above).
         imgui_impl.render_overlay_only(draw_data)
+        _gt.stamp("overlay")
+        _ps_t5 = _pp()
 
         # Fulfill any pending MCP window screenshots now: the full frame is in
         # GL_BACK and the GL context is current on this (render) thread.
@@ -3476,7 +3498,38 @@ class Melty:
         from src.lsd.gl_gui.mcp_eval import process_evals
         process_evals()
 
+        _ps_t6 = _pp()
         glfw.swap_buffers(window)
+        _gt.stamp("post")
+        _ps_t7 = _pp()
+        # Fetch GPU split (a few frames old) - log if it was expensive,
+        # plus a periodic heartbeat line so a silent log reads as "GPU quiet",
+        # never as "timer dead" (which gets its own one-shot line below).
+        _gres = _gt.end()
+        if _gres is not None:
+            _gf, _gsegs = _gres
+            _gtot = sum(_gsegs.values())
+            if _gtot >= 20.0 or _gf % 300 == 0:
+                _pt.trace("gpu frame split", frame=_gf,
+                          total_ms=round(_gtot, 1),
+                          **{k: round(v, 1) for k, v in _gsegs.items()})
+        if _gt._dead and not getattr(cls, "_gpu_timer_dead_logged", False):
+            cls._gpu_timer_dead_logged = True
+            _pt.trace("gpu frame timer DEAD (GL error) — no gpu splits this session")
+        # CPU split of the present, with the capture pass's metrics riding
+        # along (tiles re-grabbed, their pixel area, mask rects touched).
+        if (_ps_t7 - _ps_t0) * 1000.0 >= 30.0:
+            _cap_n, _cap_px, _cap_m = getattr(Melty.cache,
+                                              "last_capture_stats", (0, 0, 0))
+            _pt.trace("present split (cpu)",
+                      render=round((_ps_t1 - _ps_t0) * 1000.0, 1),
+                      ui=round((_ps_t2 - _ps_t1) * 1000.0, 1),
+                      captures=round((_ps_t3 - _ps_t2) * 1000.0, 1),
+                      filters=round((_ps_t4 - _ps_t3) * 1000.0, 1),
+                      overlay=round((_ps_t5 - _ps_t4) * 1000.0, 1),
+                      shots=round((_ps_t6 - _ps_t5) * 1000.0, 1),
+                      swap=round((_ps_t7 - _ps_t6) * 1000.0, 1),
+                      cap_tiles=_cap_n, cap_px=_cap_px, cap_masks=_cap_m)
 
         from src.lsd.gl_gui.view.core_views.core_render import apply_drag_and_drop
         apply_drag_and_drop()

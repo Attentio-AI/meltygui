@@ -1687,7 +1687,7 @@ window(cls=voxel_host.get("value"), name="draw_voxel_playground", view_func=draw
 #     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_4d, tint=(0.20, 0.36, 0.59))
+@window(input_value=voxel_host_4d, tint=(0.02, 0.03, 0.04))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_4d(input_value=None, **kwargs):
     draw_voxels(input_value.get("value"), name="volume_4d", mode=Modes.WINDOW)

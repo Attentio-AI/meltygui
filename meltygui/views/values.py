@@ -1141,9 +1141,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     dropdown to pick from; a single entry binds the + directly with no
     chevron. A bare list of types is accepted and keyed by __name__.
     """
-    
-    
-    
 
     if excluded is None:
         excluded = set()
@@ -6859,8 +6856,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     ``drop_down_state`` is the per-view scratch object the framework re-injects
     every frame; we stash the last picked leaf on it for the trigger label."""
     from src.lsd.gl_gui.view.mode import Mode
-
-
 
     # DEBUG
     # Is THIS dropdown the one whose popover is showing?

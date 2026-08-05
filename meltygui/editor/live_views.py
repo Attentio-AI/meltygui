@@ -166,6 +166,9 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     overlay pass calls it with raw screen coords, no render_func wrapper)."""
     if getattr(node, "func_name", None) != "live_view":
         return
+    from src.lsd.gl_gui.toggles import Toggles
+    if not getattr(Toggles.TextEditor, "enable_live_view", True):
+        return
     # Viewport cull FIRST: the parse walk visits every node in the buffer, not
     # just the visible ones - each off-screen marker is a full render_func call
     # for nothing (its latched value will propagate via root_draw_states
@@ -561,6 +564,9 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     root-guarded version of this overlay silently never ran."""
     cst_node = node.get("__cst__") if isinstance(node, dict) else None
     if type(cst_node).__name__ != "FunctionDef" or span is None:
+        return
+    from src.lsd.gl_gui.toggles import Toggles
+    if not getattr(Toggles.TextEditor, "enable_live_view", True):
         return
     filename = (getattr(root, "file_path", None)
                 or getattr(getattr(root, "address", None), "path", None)
@@ -1049,7 +1055,7 @@ def run_forward_pass(use_gen_pass=True):
                           use_gen_pass=use_gen_pass)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.114, 0.1324, 0.16))
+@window(initial={"width": 350, "height": 540}, tint=(0.144, 0.1688, 0.21))
 @render_func(tint=(0.40, 0.53, 0.78), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
