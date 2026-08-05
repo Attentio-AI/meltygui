@@ -21,8 +21,10 @@ the code under one window per local. Sites the dict conversion can't surface
 to anchor and get no marker yet.
 """
 
+import bisect
 import inspect
 import re
+import time
 import weakref
 
 import imgui
@@ -115,6 +117,47 @@ def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
     return (parent_win.abs_left + parent_win.width + gap - marker_x, y_off)
 
 
+def _marker_idle_skip(editor_ds, name, x, y, w, h, captured, cursor_inside,
+                      store_obj, key_path, buffer_line, auto_open):
+    """True when marker `name` is provably a NO-OP this frame, letting the
+    overlay skip its ~90µs @render_func call entirely. An idle marker (not
+    hovered, no caret inside, no open or pending value window, no hover/
+    cursor edge left to clear) draws nothing — its only per-frame work is the
+    gutter registration and the first-publish watch, both replicated here
+    raw. The marker's draw_state comes from editor_ds._lv_marker_ds (stamped
+    by the body), so the FIRST render of each marker always takes the full
+    path to create it; steady state is a dict hit + a rect test."""
+    reg = getattr(editor_ds, "_lv_marker_ds", None) if editor_ds else None
+    mds = reg.get(name) if reg else None
+    if mds is None:
+        return False
+    io = imgui.get_io()
+    if x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h:
+        return False
+    if (cursor_inside or getattr(mds, "_lv_hovered", False)
+            or getattr(mds, "_lv_cursor_in", False)):
+        return False        # interaction, or cursor edge → body must observe
+    wds = getattr(mds, "_lv_window_ds", None)
+    if getattr(mds, "_lv_open", False) or (wds is not None and not wds.closed):
+        return False        # open window streams values through the body
+    if captured and auto_open and getattr(mds, "_lv_open", None) is None:
+        return False        # first value seen → body must auto-open
+    # Idle - replicate the body's cheap registrations and bail.
+    # Dismissed-latch reset (the body does this while focused with the caret
+    # outside the symbol - skipping every such frame would leave the cursor
+    # preview permanently suppressed after one X-close).
+    if (editor_ds is not None and Core.melty.text_focused_ds is editor_ds
+            and getattr(mds, "_lv_cursor_dismissed", False)):
+        mds._lv_cursor_dismissed = False
+    if editor_ds is not None and buffer_line is not None:
+        if getattr(editor_ds, "_lv_gutter_frame", None) != Core.melty.frame_count:
+            editor_ds._lv_gutter_frame = Core.melty.frame_count
+            editor_ds._lv_gutter_markers = {}
+        editor_ds._lv_gutter_markers.setdefault(buffer_line, []).append(mds)
+    watch(store_obj, key_path, mds, first_only=True)
+    return True
+
+
 def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                            line_px=20.0, node=None, span=None, root=None,
                            line_offset=0, jump_to=None, cursor_line=None,
@@ -122,6 +165,15 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     """token_views overlay callback for CallParse nodes (plain function — the
     overlay pass calls it with raw screen coords, no render_func wrapper)."""
     if getattr(node, "func_name", None) != "live_view":
+        return
+    # Viewport cull FIRST: the parse walk visits every node in the buffer, not
+    # just the visible ones - each off-screen marker is a full render_func call
+    # for nothing (its latched value will propagate via root_draw_states
+    # either way, exactly as when its liveosh scrolls in). Culling before
+    # the store lookup also keeps site_for_line (span parse + linemap, per
+    # node per frame) off every out-of-view live_view node.
+    clip = getattr(draw_state, "abs_clip_rect", None)
+    if clip is not None and (y + line_px < clip[1] or y > clip[3]):
         return
     filename = (getattr(root, "file_path", None)
                 or getattr(getattr(root, "address", None), "path", None)
@@ -133,13 +185,6 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     store_obj, key_path = site_for_line(str(filename),
                                         line_offset + span.start_line)
     if store_obj is None:
-        return
-    # Viewport cull: the parse walk visits every node in the buffer, not just
-    # the visible ones - an off-screen marker is a full render_func call for
-    # nothing (its latched value window persists via root_draw_states either
-    # way, exactly as when its def scope fades out).
-    clip = getattr(draw_state, "abs_clip_rect", None)
-    if clip is not None and (y + line_px < clip[1] or y > clip[3]):
         return
     token_cells = max(1, span.end_col - span.start_col)
     if getattr(span, "end_line", span.start_line) != span.start_line:
@@ -158,8 +203,14 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                      and cursor_col is not None
                      and span.start_col <= cursor_col
                      < span.start_col + token_cells)
-    imgui.set_cursor_screen_pos((x - pad, y - pad))
     snap = live_values_for(store_obj)
+    _mname = f"lvm::{_store_name(store_obj)}::{'/'.join(key_path)}"
+    if _marker_idle_skip(draw_state, _mname, x - pad, y - pad,
+                         token_cells * char_w + 2 * pad, line_px + 2 * pad,
+                         key_path in snap, cursor_inside, store_obj, key_path,
+                         (_sl or span.start_line) - 1, True):
+        return
+    imgui.set_cursor_screen_pos((x - pad, y - pad))
     draw_live_view_marker("/".join(map(str, key_path)),
                           value=snap.get(key_path),
                           captured=key_path in snap,
@@ -169,8 +220,7 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                           cursor_inside=cursor_inside,
                           editor_ds=draw_state,
                           buffer_line=(_sl or span.start_line) - 1,
-                          name=f"lvm::{_store_name(store_obj)}::"
-                               f"{'/'.join(key_path)}")
+                          name=_mname)
 
 
 @render_func(use_cache=False, show_bg=False, shadow=False, with_header=None,
@@ -236,6 +286,13 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             editor_ds._lv_gutter_frame = Core.melty.frame_count
             editor_ds._lv_gutter_markers = {}
         editor_ds._lv_gutter_markers.setdefault(buffer_line, []).append(ds)
+    # Marker-ds registry for the overlays' idle fast path (_marker_idle_skip):
+    # lets them consult this site's state without paying the wrapper.
+    if editor_ds is not None:
+        reg = getattr(editor_ds, "_lv_marker_ds", None)
+        if reg is None:
+            reg = editor_ds._lv_marker_ds = {}
+        reg[ds.name] = ds
     # First only only: a gray box whose code then runs gets invalidated
     # on the key's FIRST value, flips green (and auto-opens below, when this
     # marker auto-opens) — one editor re-render per new key, nothing per
@@ -274,6 +331,16 @@ def draw_live_view_marker(input_value=None, draw_state=None,
 
     # Manual window-ds tracking (see docstring).
     win_ds = getattr(ds, "_lv_window_ds", None)
+    if not captured and win_ds is not None and not win_ds.closed:
+        # The captured value vanished (store dropped) while the window was
+        # open: with captured False the draw_any block below never runs, so
+        # nothing else would stamp closed= and the window would linger
+        # orphaned in root_draw_states. Stamp it directly; _lv_open resets to
+        # None so the next value auto-opens it.
+        win_ds.closed = True
+        ds._lv_open = None
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
     if getattr(ds, "_lv_open", None) is None and captured and auto_open:
         ds._lv_open = True  # first value seen → show it without a click
     elif win_ds is not None and win_ds.closed and getattr(ds, "_lv_open", False):
@@ -376,7 +443,15 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                 win_ds.window_pos = pos
         ds.invalidate()
 
-    if captured and (open_now or preview_show or win_ds is not None):
+    # Draw the value window only while it shows - plus ONE closing call when
+    # it just stopped showing (closed=True must be stamped on the ds so the
+    # deferred dispatch discards it; skipping that call would leave an orphan
+    # window rendering from root_draw_states). A window the user X-closed is
+    # already stamped, so a closed marker costs zero draw_any calls per
+    # render - and the full per-publish watch below stops too, leaving only
+    # the cheap first_only watch above.
+    _show = open_now or preview_show
+    if captured and (_show or (win_ds is not None and not win_ds.closed)):
         # Full (per-publish) watch once a window exists so the value streams
         # in - the first_only call above only flips the box green.
         watch(store_obj, key_path, ds)
@@ -613,11 +688,79 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             imgui.text_colored(_ml_msg, 1.0, 0.72, 0.68, 1.0)
             imgui.pop_text_wrap_pos()
             imgui.set_cursor_screen_pos(_save_cursor)
-    for key_path, value in live_values_for(fn).items():
-        if not key_path or not isinstance(key_path[-1], str):
-            continue
-        if key_path[-1].split("#", 1)[0] == "live_view()":
-            continue  # anchored by its own call-token marker
+    _sot0 = time.perf_counter()
+    _soc = [0, 0, 0, 0]   # keys seen, culled(index+clip), idle-skipped, drawn
+    _snap_vals = live_values_for(fn)
+    _soc[0] = len(_snap_vals)
+
+    # Line-bucketed anchor index: resolving an anchor per key per frame is
+    # O(store) - a frame-snapshotted big def holds THOUSANDS of keys, nearly
+    # all off-viewport, and during an edit burst each also paid an _lmap
+    # call (this was the measured 12-16ms/frame). Anchors only move when the
+    # source or the key set changes, so resolve them ONCE into a sorted
+    # (rel_line, key) list and bisect the visible band per frame. rel_line
+    # is pre-_lmap (parse space); the 64-line slack on the band covers any
+    # plausible in-buffer region shift until the reparse rebuilds _src (which
+    # rebuilds the index - same identity signal as _snap_memo).
+    _ik = (len(_snap_vals), line_offset)
+    _ie = draw_state.__dict__.get("_lv_key_index")
+    if _ie is None or _ie[0] is not _src or _ie[1] != _ik:
+        # Append + ONE sort (C-speed): the first version insort-ed each key
+        # (list.insert, O(n) memmove → O(n²) per rebuild), and a publish
+        # storm - a stack-trace snapshot landing thousands of keys with
+        # renders interleaved - meant a rebuild per render. That froze
+        # the editor the moment a stack was published.
+        _pairs = []
+        for key_path in _snap_vals:
+            if not key_path or not isinstance(key_path[-1], str):
+                continue
+            if key_path[-1].split("#", 1)[0] == "live_view()":
+                continue  # anchored by its own call-token marker
+            _a = _key_anchor(node, key_path, line_offset)
+            if _a is None:
+                continue
+            _rl = _a[0]
+            if _a[2] is None:
+                tail = key_path[-1]
+                _mk = ("label", tail)
+                _snapped = _snap_memo.get(_mk)
+                if _snapped is None:
+                    # Label→line index, built ONCE per source version: after
+                    # an edit shifts lines, EVERY stored label mismatches at
+                    # the next reparse, and the old per-key def-wide regex
+                    # scan cost keys × def-lines (2640 × 2900 ≈ 9.6 SECONDS,
+                    # the post-edit baseline). With the index each key is a
+                    # dict hit + nearest-line bisect.
+                    _lidx = _snap_memo.get(("lidx",))
+                    if _lidx is None:
+                        _lidx = _label_line_index(
+                            source_lines, span.start_line, span.end_line)
+                        _snap_memo[("lidx",)] = _lidx
+                    label = ((getattr(fn, "__live_labels__", None) or {})
+                             .get(key_path)
+                             or (tail.split("#", 1)[1] if "#" in tail else None))
+                    _snapped = _snap_line_to_label(
+                        label, _rl, source_lines,
+                        span.start_line, span.end_line, lidx=_lidx)
+                    _snap_memo[_mk] = _snapped
+                _rl = _snapped
+            _pairs.append((_rl, key_path))
+        _pairs.sort(key=lambda p: p[0])
+        _ie = (_src, _ik, [p[0] for p in _pairs], [p[1] for p in _pairs])
+        object.__setattr__(draw_state, "_lv_key_index", _ie)
+    _ilines, _ikeys = _ie[2], _ie[3]
+    if _clip is not None:
+        _blo = int((_clip[1] - origin_y) / line_px) - 64
+        _bhi = int((_clip[3] - origin_y) / line_px) + 65
+        _i0 = bisect.bisect_left(_ilines, _blo)
+        _i1 = bisect.bisect_right(_ilines, _bhi)
+        _cand = _ikeys[_i0:_i1]
+        _soc[1] = len(_ikeys) - len(_cand)
+    else:
+        _cand = _ikeys
+
+    for key_path in _cand:
+        value = _snap_vals.get(key_path)
         anchor = _key_anchor(node, key_path, line_offset)
         if anchor is None:
             continue
@@ -626,24 +769,19 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             # line:N keys carry a RUN-TIME line stamp - edits since the run
             # shift the code out from under line. The labeled SYMBOL is the
             # real anchor - if the stamped line no longer shows the label,
-            # snap to the nearest line in this def that does.
+            # snap to the nearest line in this def that does (memoized above
+            # during the index build, so this costs a dict hit).
             tail = key_path[-1]
             _mk = ("label", tail)
             _snapped = _snap_memo.get(_mk)
-            if _snapped is None:
-                label = ((getattr(fn, "__live_labels__", None) or {})
-                         .get(key_path)
-                         or (tail.split("#", 1)[1] if "#" in tail else None))
-                _snapped = _snap_line_to_label(
-                    label, rel_line, source_lines,
-                    span.start_line, span.end_line)
-                _snap_memo[_mk] = _snapped
-            rel_line = _snapped
+            if _snapped is not None:
+                rel_line = _snapped
         _ml = _lmap(rel_line) if _lmap else rel_line
         if _ml is None:
             continue        # anchor inside the mid-edit region - skip a frame
         _my = origin_y + (_ml - 1) * line_px
         if _clip is not None and (_my + line_px < _clip[1] or _my > _clip[3]):
+            _soc[1] += 1
             continue        # off-viewport - don't render a marker for it
         if end_col is None:
             # No span (line:N keys) — box the LABELED SYMBOL on the line when
@@ -687,6 +825,17 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _cl, _cc = kwargs.get("cursor_line"), kwargs.get("cursor_col")
         cursor_inside = (_cl == _ml and _cc is not None
                          and start_col <= _cc < end_col)
+        _snm = f"lvs::{fn.__qualname__}::{'/'.join(key_path)}"
+        _sao = (is_volume(value) and key_path not in
+                (getattr(fn, "__frame_snapshot_keys__", None) or ()))
+        if _marker_idle_skip(draw_state, _snm,
+                             origin_x + start_col * char_w - pad, _my - pad,
+                             max(1, end_col - start_col) * char_w + 2 * pad,
+                             line_px + 2 * pad, True, cursor_inside,
+                             fn, key_path, _ml - 1, _sao):
+            _soc[2] += 1
+            continue
+        _soc[3] += 1
         imgui.set_cursor_screen_pos(
             (origin_x + start_col * char_w - pad, _my - pad))
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
@@ -706,10 +855,15 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             height=line_px + 2 * pad,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
             cursor_inside=cursor_inside, editor_ds=draw_state,
-            buffer_line=_ml - 1,
-            name=f"lvs::{fn.__qualname__}::{'/'.join(key_path)}",
-            auto_open=(is_volume(value) and key_path not in
-                       (getattr(fn, "__frame_snapshot_keys__", None) or ())))
+            buffer_line=_ml - 1, name=_snm, auto_open=_sao)
+    # TEMP perf: one line per slow enough pass (keys=store size for this
+    # def, culled=off-viewport, idle=fast-id skips, drawn=full wrapper calls).
+    _soms = (time.perf_counter() - _sot0) * 1000.0
+    if _soms >= 2.0:
+        from src.lsd.gl_gui.perf_trace import trace as _sotrace
+        _sotrace("snapshot_overlay", fn=getattr(fn, "__qualname__", "?"),
+                 ms=round(_soms, 1), keys=_soc[0], culled=_soc[1],
+                 idle=_soc[2], drawn=_soc[3])
 
 
 def _scope_function(filename, def_line):
@@ -768,7 +922,22 @@ def _snap_line_to_text(text, rel_line, source_lines, lo, hi):
     return best if best is not None else rel_line
 
 
-def _snap_line_to_label(label, rel_line, source_lines, lo, hi):
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _label_line_index(source_lines, lo, hi):
+    """{identifier: sorted [1-based lines]} for every identifier appearing in
+    the def's [lo, hi] span — one linear pass, built once per source version
+    (memoized by the caller in the _src-keyed snap memo). Turns the per-key
+    label relocation from an O(def lines) regex scan into a lookup."""
+    idx = {}
+    for ln in range(max(1, lo), min(len(source_lines), hi) + 1):
+        for m in _IDENT_RE.finditer(source_lines[ln - 1]):
+            idx.setdefault(m.group(), []).append(ln)
+    return idx
+
+
+def _snap_line_to_label(label, rel_line, source_lines, lo, hi, lidx=None):
     """Buffer line a line-keyed marker should anchor on: the stamped line if
     it still contains `label` (the common case — one regex on one line), else
     the NEAREST line in the def's [lo, hi] span that does. Pure string ops on
@@ -776,11 +945,33 @@ def _snap_line_to_label(label, rel_line, source_lines, lo, hi):
     line stamp without any reparse, so line-keyed captures follow their
     symbols through edits instead of staying pinned where the last run left
     them. No match anywhere (symbol renamed/removed — the value is stale and
-    the next run prunes it) keeps the stamp unchanged."""
+    the next run prunes it) keeps the stamp unchanged.
+
+    `lidx` (from _label_line_index) replaces the def-wide scan with a
+    candidate lookup on the label's final identifier segment; candidates are
+    tried nearest-first and verified with _label_box_span (dotted labels
+    need their prefix checked)."""
     if not label:
         return rel_line
     if (1 <= rel_line <= len(source_lines)
             and _label_box_span(label, source_lines[rel_line - 1]) is not None):
+        return rel_line
+    if lidx is not None:
+        cand = lidx.get(label.rsplit(".", 1)[-1].split("[", 1)[0])
+        if not cand:
+            return rel_line
+        i = bisect.bisect_left(cand, rel_line)
+        lo_i, hi_i = i - 1, i
+        while lo_i >= 0 or hi_i < len(cand):
+            _below = cand[lo_i] if lo_i >= 0 else None
+            _above = cand[hi_i] if hi_i < len(cand) else None
+            if _above is None or (_below is not None
+                                  and rel_line - _below <= _above - rel_line):
+                ln, lo_i = _below, lo_i - 1
+            else:
+                ln, hi_i = _above, hi_i + 1
+            if _label_box_span(label, source_lines[ln - 1]) is not None:
+                return ln
         return rel_line
     best = None
     for ln in range(max(1, lo), min(len(source_lines), hi) + 1):

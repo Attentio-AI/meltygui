@@ -80,6 +80,14 @@ _asts = {}
 # top-level statement (def/class) version - function-size, latest mtime wins.
 _linemaps = {}
 
+# (str(path), lineno) -> (sig, (store_obj, key_path)). site_for_line memo -
+# the editor overlay resolves every visible live_view token per repaint, and
+# the chain under it (enclosing-def walk, file parse, linemap) is
+# once-per-edit slow. Keyed on _ast_for's (mtime, pending_edit) sig; negative
+# results cached too (a token with no surfaced site would otherwise re-walk
+# per repaint).
+_site_for_line_cache = {}
+
 
 class _Site:
     """Everything line-dependent about one live_view call site, resolved once.
@@ -258,28 +266,89 @@ def call_with_body_capture(func, kwargs):
         return func(**kwargs)
     captured = {}
     exit_line = [None]
-    depth = 0
+    depth = [0]
 
+    def _finish():
+        if captured:
+            if exit_line[0] is not None:
+                stamp_run_marker(inner, "__live_return_line__",
+                                 (exit_line[0],
+                                  _line_text_at(inner, exit_line[0])))
+            publish_stack_locals((), extra_snapshots=[(inner, captured, None)])
+
+    # sys.monitoring with LOCAL events on just the target code object: the
+    # old sys.setprofile hook fired a Python callback for EVERY call/return
+    # in the whole call subtree, running a big view took under  took
+    # SECONDS per capture (the 12s editor frames when the context menu's
+    # capture re-ran draw_text). Local events instrument only target_code,
+    # so the subtree runs at full speed and only pay one callback per
+    # entry/exit of the target itself.
+    def _grab(offset_frames):
+        try:
+            f = sys._getframe(offset_frames)
+            if f.f_code is target_code:
+                captured.update(f.f_locals)
+                # The frame's line AT the callback is the return statement
+                # itself (or the raise, on unwind) - the same
+                # __live_return_line__ the instrumented twin stamps.
+                exit_line[0] = f.f_lineno
+        except Exception:
+            pass
+
+    mon = getattr(sys, "monitoring", None)
+    if mon is not None:
+        try:
+            mon.use_tool_id(mon.PROFILER_ID, "lsd-live-capture")
+        except Exception:
+            mon = None   # tool slot busy - fall back to setprofile
+    if mon is not None:
+        def _on_start(code, off):
+            depth[0] += 1
+
+        def _on_return(code, off, retval):
+            depth[0] -= 1
+            if depth[0] <= 0 and not captured:
+                _grab(2)   # callback ← returning target frame
+
+        # PY_UNWIND cannot be local to a code object (only PY_START/PY_RETURN
+        # are local-able events — 0x1005 is rejected), so an exception unwind
+        # publishes nothing here. That loses the old profile hook's
+        # capture-at-raise, which is acceptable: the instrumented-twin path
+        # stamps raise lines through its own machinery, and a crashed body
+        # capture just stays un-published.
+        try:
+            ev = mon.events
+            mon.register_callback(mon.PROFILER_ID, ev.PY_START, _on_start)
+            mon.register_callback(mon.PROFILER_ID, ev.PY_RETURN, _on_return)
+            mon.set_local_events(mon.PROFILER_ID, target_code,
+                                 ev.PY_START | ev.PY_RETURN)
+            return func(**kwargs)
+        finally:
+            try:
+                mon.set_local_events(mon.PROFILER_ID, target_code, 0)
+                for _e in (mon.events.PY_START, mon.events.PY_RETURN):
+                    mon.register_callback(mon.PROFILER_ID, _e, None)
+                mon.free_tool_id(mon.PROFILER_ID)
+            except Exception:
+                pass
+            _finish()
+
+    # Fallback (tool id busy / pre-3.12): the original whole-subtree profile
+    # hook. Correct but slow on big bodies.
     prev = sys.getprofile()
 
     def prof(frame, event, arg):
-        nonlocal depth
         if frame.f_code is not target_code:
             return
         if event == "call":
-            depth += 1
+            depth[0] += 1
         elif event == "return":
-            depth -= 1
-            if depth <= 0 and not captured:
+            depth[0] -= 1
+            if depth[0] <= 0 and not captured:
                 try:
                     captured.update(frame.f_locals)
                 except Exception:
                     pass
-                # The frame's lineno AT the return event is the return
-                # statement's (or the raise, on an exception unwind) -
-                # the same __live_return_line__ the instrumented twin
-                # stamps, so the func tab's editor gets the green exit-line
-                # wash from a plain body capture too.
                 exit_line[0] = frame.f_lineno
 
     sys.setprofile(prof)
@@ -287,12 +356,7 @@ def call_with_body_capture(func, kwargs):
         return func(**kwargs)
     finally:
         sys.setprofile(prev)
-        if captured:
-            if exit_line[0] is not None:
-                stamp_run_marker(inner, "__live_return_line__",
-                                 (exit_line[0],
-                                  _line_text_at(inner, exit_line[0])))
-            publish_stack_locals((), extra_snapshots=[(inner, captured, None)])
+        _finish()
 
 
 def live_values_for(obj):
@@ -329,13 +393,23 @@ def site_for_line(filename, lineno):
     same span parse, same relativization, so the widget anchoring a value and
     the publisher writing it converge on one key by construction. (None, None)
     when no live_view call is surfaced at that line — e.g. while/with bodies,
-    whose line-keyed fallback sites have no token node to anchor anyway."""
+    whose line-keyed fallback sites have no token node to anchor anyway.
+
+    Memoized per (path, line) against _ast_for's (mtime, pending-gen)
+    signature: the editor overlay calls this for every visible live_view
+    token on every repaint, and the resolver chain behind it (realpath,
+    enclosing-def walk, span parse, linemap) is once-per-edit work, not
+    per-frame work."""
     from src.lsd.gl_gui.view.core_conversion.chain_converters import (
         _enclosing_function, _module_for_file)
     try:
         path = Path(filename).resolve()
         mtime = path.stat().st_mtime
         tree, text, sig = _ast_for(path, mtime)
+        _sck = (str(path), lineno)
+        _sch = _site_for_line_cache.get(_sck)
+        if _sch is not None and _sch[0] == sig:
+            return _sch[1]
         # Same stamp to line bridge as _resolve_site, anchored at the
         # enclosing def's disk start when one resolves (module-level stamps
         # anchor at the stamp - no own-span growth to mis-count there).
@@ -347,6 +421,7 @@ def site_for_line(filename, lineno):
         lm = _linemap_for(path, sig, span, text)
         ref = _live_view_ref(lm, line_p)
         if ref is None:
+            _site_for_line_cache[_sck] = (sig, (None, None))
             return None, None
         # Function-frame detection, editor flavor: capture reads CO_OPTIMIZED
         # off the frame; here the parse path crossing a `<name>, "def"`
@@ -359,9 +434,12 @@ def site_for_line(filename, lineno):
         if store_obj is None:
             store_obj = _module_for_file(path)
         if store_obj is None:
+            _site_for_line_cache[_sck] = (sig, (None, None))
             return None, None
         key_path = _store_relative(ref.path, store_obj, store_is_module)
-        return store_obj, (key_path or (f"line:{lineno}",))
+        _res = (store_obj, (key_path or (f"line:{lineno}",)))
+        _site_for_line_cache[_sck] = (sig, _res)
+        return _res
     except Exception as e:
         print(f"live_view: site_for_line failed for {filename}:{lineno}: "
               f"{e!r}", file=sys.stderr)
@@ -650,6 +728,58 @@ def _prune_keys(store_obj, removed):
         request_render()
     except Exception:
         pass  # headless (test)
+
+
+def clear_file_stores(filename):
+    """Drop EVERY captured live_view value riding this file's stores: the
+    module object plus each function/method whose code lives in the file
+    (unwrapped — capture attaches to the inner function). Goes through
+    _prune_keys, so open value windows close, marker dots flip back to gray
+    and store-level watchers repaint; per-run markers (return/error line
+    washes) are dropped too. The editor's live-badge × calls this. Returns
+    the number of values dropped."""
+    from src.lsd.gl_gui.view.core_conversion.chain_converters import _module_for_file
+    try:
+        path = Path(filename).resolve()
+    except Exception:
+        return 0
+    mod = _module_for_file(path)
+    if mod is None:
+        return 0
+    fname = str(path)
+    objs, seen = [mod], {id(mod)}
+
+    def _collect(ns):
+        for v in list(ns.values()):
+            try:
+                v = inspect.unwrap(v)
+            except Exception:
+                pass
+            if id(v) in seen:
+                continue
+            code = getattr(v, "__code__", None)
+            if code is not None and getattr(code, "co_filename", None) == fname:
+                seen.add(id(v))
+                objs.append(v)
+            elif (isinstance(v, type)
+                  and getattr(v, "__module__", None) == getattr(mod, "__name__", None)):
+                seen.add(id(v))
+                _collect(dict(vars(v)))
+
+    _collect(dict(vars(mod)))
+    dropped = 0
+    for obj in objs:
+        store = getattr(obj, "__live_values__", None)
+        if store:
+            keys = tuple(store)
+            dropped += len(keys)
+            _prune_keys(obj, keys)
+        d = getattr(obj, "__dict__", None)
+        if d is not None:
+            for attr in ("__live_return_line__", "__live_error_line__",
+                         "__live_touched__"):
+                d.pop(attr, None)
+    return dropped
 
 
 # ── frame snapshots (context-menu capture -> live-value stores) ──────────────
@@ -1029,7 +1159,14 @@ def _ast_for(path, mtime):
         text = PendingSave.current_file_text(path)
     if text is None:
         text = path.read_text()
+    _t0 = time.perf_counter()
     tree = ast.parse(text)
+    try:  # TEMP perf: how often the full-file reparse actually fires
+        from src.lsd.gl_gui.perf_trace import trace as _pt
+        _pt("live_view ast reparse", path=path.name, gen=gen,
+            ms=round((time.perf_counter() - _t0) * 1000.0, 1))
+    except Exception:
+        pass
     _asts[key] = (sig, tree, text)
     return tree, text, sig
 

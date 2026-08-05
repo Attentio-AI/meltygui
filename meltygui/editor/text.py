@@ -1576,6 +1576,130 @@ def draw_color3_token(input_value, draw_state=None,
     return False, s
 
 
+def draw_color3_token_plain(input_value, width=20, height=20, name=None,
+                            editor_ds=None, **kwargs):
+    """draw_color3_token without the @render_func wrapper — raw swatch drawn
+    into the editor tile (see draw_number_token_plain for why: the ~90µs
+    wrapper per widget per frame dominates with many inline widgets). Same
+    ACCESSORY contract and (changed, value) return; interaction design in
+    draw_color3_token's docstring. What the wrapper used to provide, inline:
+    - The swatch had its own draw_state whose identity WAS the popover open
+      state. Now the PICKER window's draw_state (latched via return_extras,
+      like the AC popup) fills that role in Melty.popover_focused_ds — it's a
+      real windowed view, so the nav-key wake (invalidate_up on the popover
+      owner) climbs through parent_window=editor_ds and re-runs this code for
+      Esc handling.
+    - Toggle state can't be read back from popover_focused_ds alone: the
+      swatch has no ds, so it is never in clear_focus's protect closure, and
+      the very click meant to CLOSE the popover clears the slot before this
+      body runs (reading the slot would then re-open it). editor_ds holds a
+      per-widget latch (_c3_open_name) of what we last rendered; a latch-open
+      widget whose picker lost the slot was dismissed externally (outside
+      click, another popover) and closes.
+    - Caret suppression for swatch presses comes from ds._plain_tv_rects —
+      the call site registers the lead-area rect (owns_mouse), replacing the
+      wrapper's left_mouse_* event latch.
+    - While the picker is being dragged the EDITOR tile is force-invalidated
+      each frame: the edit round-trips through the source splice, so a cached
+      editor would freeze the value after its first change."""
+    from src.lsd.gl_gui.view.mode import Mode
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
+    s = input_value if isinstance(input_value, str) else str(input_value)
+    parts = [p.strip() for p in s.strip('()').split(',')]
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        return False, s
+    if len(vals) not in (3, 4):
+        return False, s
+    has_alpha = len(vals) == 4
+    r, g, b = vals[0], vals[1], vals[2]
+    a = vals[3] if has_alpha else 1.0
+
+    # Square-ish swatch inset into the lead area, vertically centered on the line.
+    x, y = imgui.get_cursor_screen_pos()
+    _sw = max(6.0, min(width - 3, height - 4))
+    imgui.set_cursor_screen_pos((x, y + (height - _sw) * 0.5))
+    # ALPHA_PREVIEW_HALF splits the swatch - half composited at the real alpha
+    # over a checkerboard, half opaque - so RGBA transparency shows in the chip.
+    flags = imgui.COLOR_EDIT_NO_TOOLTIP | (imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF
+                                           if has_alpha else 0)
+    imgui.push_id(name or "c3_tv")
+    try:
+        clicked = imgui.color_button("##color3_tv", r, g, b, a, flags=flags,
+                                     width=_sw, height=_sw)
+    except Exception:
+        clicked = False
+    finally:
+        imgui.pop_id()
+    if editor_ds is None:
+        return False, s
+
+    pickers = getattr(editor_ds, '_c3_pickers', None)
+    if pickers is None:
+        pickers = editor_ds._c3_pickers = {}
+    pick_ds = pickers.get(name)
+    open_prev = getattr(editor_ds, '_c3_open_name', None) == name
+    still_open = pick_ds is not None and Melty.popover_focused_ds is pick_ds
+    if clicked:
+        want_open = not open_prev
+    elif open_prev and not still_open:
+        want_open = False   # dismissed externally (outside click, other popover)
+    else:
+        want_open = open_prev
+    if want_open and any(k == glfw.KEY_ESCAPE for k, _ in Melty.frame_key_events):
+        want_open = False
+
+    # Latched picker window - called every frame with closed= toggled so it
+    # persists when the (cached) editor body is skipped. Fixed size: closable
+    # windows don't auto-resize and the picker body is raw imgui the framework
+    # can't measure - SV square + N channel rows + hex.
+    picker_h = 180 + 14 + len(vals) * 26 + 26
+    # window_pos is relative to the imgui cursor at call time - park the
+    # cursor back on the swatch's top-left so (0, 10) anchors just under it,
+    # exactly like the wrapped popover.
+    imgui.set_cursor_screen_pos((x, y))
+    color_changed, new_color, pick_ds = draw_color_picker(
+        tuple(vals), name=f"{name}_picker", closed=not want_open,
+        window_pos=(0, 10),
+        parent_window=editor_ds, width=216, height=picker_h,
+        mode=Mode.POPOVER, return_extras=True)
+    pickers[name] = pick_ds
+
+    if want_open and color_changed and new_color is None:
+        # The picker's delete affordance - meaningless for a color literal;
+        # just close the popover and leave the color alone.
+        want_open = False
+        color_changed = False
+
+    if want_open:
+        if not open_prev:
+            Melty._popover_open_frame = Melty.frame_count  # grace the opening frame
+            request_render()
+        editor_ds._c3_open_name = name
+        Melty.popover_focused_ds = pick_ds
+        # Keep re-rendering while a picker slider/square is being dragged so
+        # the spliced value flows back into the picker each frame despite the
+        # editor's cache.
+        if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
+            Melty.cache.invalidate_up(editor_ds._tile_id, max_depth=10, force=True)
+            request_render()
+        if color_changed and new_color is not None:
+            out = [old_text if new_v == old_v else _fmt_color_channel(new_v)
+                   for old_text, old_v, new_v in zip(parts, vals, new_color)]
+            return True, "(" + ", ".join(out) + ")"
+    else:
+        if getattr(editor_ds, '_c3_open_name', None) == name:
+            editor_ds._c3_open_name = None
+        if pick_ds is not None and Melty.popover_focused_ds is pick_ds:
+            Melty.popover_focused_ds = None
+        if open_prev or clicked:
+            request_render()
+    return False, s
+
+draw_color3_token_plain._plain_tv = True
+
+
 # The default callback-widget set: when draw_text is called with no token_views,
 # Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns,
 # True/False become double-click-to-toggle words, numeric literals become drag
@@ -1603,7 +1727,7 @@ DEFAULT_TOKEN_VIEWS = {
              "tint": (0.911, 0.305, 0.0)},
     "number": {"renderer": draw_number_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
-    "color3": {"renderer": draw_color3_token, "char_width": 1, "whole_token": True,
+    "color3": {"renderer": draw_color3_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
 }
 
@@ -1708,11 +1832,34 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
             ds._lv_lmap = line_map
     seen = set()
 
+    # Viewport prune bounds in buffer-line space (+±1 line slack): a node's
+    # span bounds its whole subtree's source region, so a spanned node
+    # entirely outside the visible band can drop its subtree without
+    # descending - on a large file this is most of the tree, and the full
+    # walk (every node, every frame) was the dominant overlay cost. Nodes
+    # whose span endpoints don't map (mid-edit region) are processed normally.
+    _clip = getattr(ds, 'abs_clip_rect', None)
+    _vis_lo = _vis_hi = None
+    if _clip is not None and line_px > 0:
+        _vis_lo = (_clip[1] - origin_y) / line_px
+        _vis_hi = (_clip[3] - origin_y) / line_px + 2
+
+    _tvw = [0, 0, 0]   # nodes visited, pruned, renderer calls (perf trace)
+
     def walk(node, depth=0):
         if not isinstance(node, dict) or depth > 64 or id(node) in seen:
             return
         seen.add(id(node))
+        _tvw[0] += 1
         span = getattr(node, 'span', None)
+        if span is not None and _vis_lo is not None:
+            _p0, _p1 = span.start_line, getattr(span, 'end_line', span.start_line)
+            _b0 = line_map(_p0) if line_map else _p0
+            _b1 = line_map(_p1) if line_map else _p1
+            if (_b0 is not None and _b1 is not None
+                    and (_b1 < _vis_lo or _b0 > _vis_hi)):
+                _tvw[1] += 1
+                return
         if span is not None:
             for ktype, spec in type_specs:
                 if isinstance(node, ktype):
@@ -1722,6 +1869,7 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
                     y = origin_y + (_sl - 1) * line_px
                     h = (span.end_line - span.start_line + 1) * line_px
                     x = origin_x + getattr(span, 'start_col', 0) * char_w
+                    _tvw[2] += 1
                     try:
                         spec["renderer"](x=x, y=y, w=max(0.0, ds.content_width - (x - origin_x)),
                                          h=h, draw_state=ds, char_w=char_w, line_px=line_px,
@@ -1740,7 +1888,14 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     # caller's size-decaring area must measure from wherever the body left
     # the cursor - just below the last marker drawn.
     _save_cur = imgui.get_cursor_screen_pos()
+    _tvt0 = time.perf_counter()
     walk(code_tree)
+    _tvms = (time.perf_counter() - _tvt0) * 1000.0
+    # TEMP perf: one dump per slow overlay pass - who costs most the walk itself
+    # or the renderer calls (see the snapshot overlay's own line and its keys).
+    if _tvms >= 4.0:
+        _ptrace("tv_overlay walk", ms=round(_tvms, 1), nodes=_tvw[0],
+                pruned=_tvw[1], calls=_tvw[2])
     imgui.set_cursor_screen_pos(_save_cur)
 
 
@@ -5010,21 +5165,23 @@ def draw_text(input_value: str, height=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
+    
     ds = draw_state
+
 
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
-    # per_trace timeline (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
+    # pe_trace timeline (/tmp/lsd_symbol_perf.log) so draw_text's own cost can
     # be read against the background reparse/index lines around it.
-    # [tint=(0.483, 0.397, 0.054, 1.0), show_tint=True]
-    
+    # [tint=(0.483, 0.397, 0.054, 1.0), show_tint=True\]
     _pf_t0 = time.perf_counter()
     _pf_cpu0 = time.thread_time()   # wall≫cpu in the summary = GIL starvation
     _pf_marks = []
     _pf_tok = [0.0, 0]   # accumulated _window() cache-miss time, miss count
     _pf_info = {}        # extra facts for the summary line (span counts, cache hits)
-    def _pf(label):
+    def _pf(
+            label):
         _pf_marks.append((label, time.perf_counter()))
         
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
@@ -5041,8 +5198,7 @@ def draw_text(input_value: str, height=None,
     # __symbol_usages__). Links are file-absolute, so the buffer's file offset
     # comes from the parse's line_offset when set, else from the jump_to span.
     # The FILE route passes the syntax-ERROR MARKER dict ({'__error__', ...})
-    # in code_tree while the real (possibly blank-line-repaired) parse rides
-    # in code_dict - the marker must not shadow the parse, or every tree-
+    # as code_tree while the real (possibly blank-line-repaired) parse rides    # in code_dict - the marker must not shadow the parse, or every tree-
     # derived wash (class blocks, symbol tints) vanishes for the whole
     # duration of the mid-edit syntax error.
     _usage_tree = code_tree if (code_tree is not None
@@ -5057,7 +5213,7 @@ def draw_text(input_value: str, height=None,
     # unsaved disk edit above this span that changed the line count shifts
     # every site - fold that shift into the offset (0 when nothing is pending).
     _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
-    
+
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
@@ -5098,6 +5254,7 @@ def draw_text(input_value: str, height=None,
     # replaces nothing - parsing/lint markers keep the normal debounced flow
     # (compile() says nothing about lint findings).
     _fast_fresh_err = False
+
     if (Toggles.TextEditor.check_syntax_errors
             and Toggles.TextEditor.fast_syntax_check):
         _fs = getattr(ds, '_fast_err_state', None)
@@ -5130,8 +5287,6 @@ def draw_text(input_value: str, height=None,
     # filters the fast rows below, so a just-applied fix isn't re-offered per
     # keystroke while the file's bind cache catches up.
     _active_fixes = import_fixes
-
-
     if Toggles.TextEditor.fast_syntax_check:
         _fi = getattr(ds, '_fast_imports_state', None)
         if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
@@ -5159,7 +5314,6 @@ def draw_text(input_value: str, height=None,
     # message (if any) is no longer shown inline here - it floats in a small
     # right-aligned box above the error line (see after the body is drawn).
     bar_height = 0.0
-
     _err_msg = None
     if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
@@ -5239,7 +5393,7 @@ def draw_text(input_value: str, height=None,
         key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
-    
+
         _pf_miss_t = time.perf_counter()
         if syntax_highlight:
             if getattr(ds, '_lo_text', None) != text:
@@ -5314,7 +5468,6 @@ def draw_text(input_value: str, height=None,
     gutter_w += _lv_btn_w
 
     text_visible_width = draw_state.content_width - gutter_w
-
     # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
     # come from the imgui cursor the wrapper positioned at abs_top *before* this
     # func ran; the drag handlers just below then mutate scroll_offset (here and
@@ -5460,7 +5613,7 @@ def draw_text(input_value: str, height=None,
         if _lv_pressed_line in (getattr(ds, "_lv_gutter_markers", None) or {}):
             ds._lv_btn_pressed_line = _lv_pressed_line
             left_mouse_down = None
-
+            
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
@@ -5520,7 +5673,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_end = click_pos
             ds.text_drag_anchor_lo = ds.text_selection_start
             ds.text_drag_anchor_hi = ds.text_selection_end
-
+            
     # Extend the selection on cursor motion, and also every frame the button is
     # held (left_mouse_held) once a drag is underway - so holding the cursor
     # past the top/bottom edge keeps auto-scrolling and selecting more text,
@@ -5608,6 +5761,10 @@ def draw_text(input_value: str, height=None,
                 ds._ac_suppress_anchor = getattr(ds, '_ac_anchor', -1)
                 ds._ac_request_anchor = -1
                 _fired.discard(glfw.KEY_ESCAPE)
+                
+                
+                
+    
             elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _ac_cands:
                 step = 1 if pressed(glfw.KEY_DOWN) else -1
                 _ac_idx = (_ac_idx + step) % len(_ac_cands)
@@ -5635,8 +5792,7 @@ def draw_text(input_value: str, height=None,
                     while _replace_to < len(text) and (text[_replace_to].isalnum()
                                                        or text[_replace_to] == '_'):
                         _replace_to += 1
-                    
-                        
+        
                 _ins, _coff, _extra = _ac_pick_insert(ds, chosen,
                                                       following=text[_replace_to:_replace_to + 64],
                                                       preceding=text[max(0, anchor - 64):anchor],
@@ -5717,6 +5873,7 @@ def draw_text(input_value: str, height=None,
                 _dd_scroll_cursor_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_qf_menu_tile', None)),
                     _qf_idx)
+                
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
@@ -6079,6 +6236,7 @@ def draw_text(input_value: str, height=None,
             ds.text_cursor_blink_time = time.time()
             clipboard = imgui.get_clipboard_text()
             if clipboard:
+    
                 if _has_selection(ds):
                     text, ds.text_cursor_pos = _delete_selection(text, ds)
                 # Smart reindent on paste. A copied indented line block is dropped
@@ -6998,7 +7156,11 @@ def draw_text(input_value: str, height=None,
                 # invalidating the EDITOR tile (see draw_number_token_plain).
                 if getattr(_view["renderer"], "_plain_tv", False):
                     _extra['editor_ds'] = ds
-                    if _view.get("owns_mouse") and not _lead:
+                    # ACCESSORY plain widgets register too: _w is just the
+                    # lead area there, so the token text keeps normal clicks
+                    # while a press on the swatch doesn't move the caret
+                    # (the wrapped version's left_mouse_down latch did this).
+                    if _view.get("owns_mouse"):
                         ds._plain_tv_rects.append((x - _pad, y, x - _pad + _w, y + line_px))
                 try:
                     _res = _view["renderer"](token, width=_w, height=line_px,
@@ -7098,7 +7260,6 @@ def draw_text(input_value: str, height=None,
         
             start = nl + 1
         src_i += len(token)
-    
 
     _pf("body:glyphs")
     # An inline view (e.g. the icon dropdown) changed its value - splice the new
@@ -7399,12 +7560,42 @@ def draw_text(input_value: str, height=None,
         _li_x1 = rect_max_x - 8.0
         _li_y0 = rect_min_y + 4.0
         _li_w = len(_li_txt) * 7.5 + 20.0
+        # Clear affordance: a little × after the count that drops the file's
+        # live_view stores (captured values, value windows, run markers - via
+        # clear_file_stores) plus this span's recorded live scope
+        # (FuncsMetadata). Shown when either has something to clear: recorded
+        # scope names, or any live markers in the gutter registry.
+        _li_clear = ((_li_fn is not None and _li_n > 0)
+                     or bool(getattr(ds, '_lv_gutter_markers', None)))
+        if _li_clear:
+            _li_w += 14.0
         draw_list.add_rect_filled(_li_x1 - _li_w, _li_y0, _li_x1, _li_y0 + 17.0,
                                   imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 0.6), 8.5)
         draw_list.add_circle_filled(_li_x1 - _li_w + 9.0, _li_y0 + 8.5, 3.5,
                                     imgui.get_color_u32_rgba(*_li_dot))
         draw_list.add_text(_li_x1 - _li_w + 16.0, _li_y0 + 1.5,
                            imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85), _li_txt)
+        if _li_clear:
+            _xc_x, _xc_y = _li_x1 - 11.0, _li_y0 + 8.5
+            _x_hov = (abs(io.mouse_pos.x - _xc_x) <= 7.0
+                      and _li_y0 <= io.mouse_pos.y <= _li_y0 + 17.0)
+            _xa = 0.95 if _x_hov else 0.5
+            _xc = imgui.get_color_u32_rgba(0.9, 0.9, 0.9, _xa)
+            draw_list.add_line(_xc_x - 3.0, _xc_y - 3.0, _xc_x + 3.0, _xc_y + 3.0, _xc, 1.5)
+            draw_list.add_line(_xc_x - 3.0, _xc_y + 3.0, _xc_x + 3.0, _xc_y - 3.0, _xc, 1.5)
+            # Same treatment as the plain token widgets: a click on the ×
+            # must not move the editor caret / select a widget.
+            ds._plain_tv_rects.append((_xc_x - 7.0, _li_y0, _xc_x + 7.0, _li_y0 + 17.0))
+            if _x_hov and imgui.is_mouse_clicked(0):
+                if _li_fn is not None:
+                    FuncsMetadata.clear(_li_fn)
+                _p = getattr(jump_to, 'path', None)
+                if _p is not None:
+                    from src.lsd.gl_gui.view.core_conversion.live_view import (
+                        clear_file_stores)
+                    clear_file_stores(str(_p))
+                ds.invalidate()
+                request_render()
 
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its
@@ -7449,8 +7640,6 @@ def draw_text(input_value: str, height=None,
                 _ac_tints[n] = t
         _ac_tints = _ac_tints or None
     _ac_anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
-
-
 
     _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px, vcols=vcols)
     if _ac_show:

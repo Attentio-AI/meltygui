@@ -2981,10 +2981,12 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             dict_host.child_kwargs.pop("run_jedi", None)
 
         if len(_str_host.values()) > 0:
+            _t_dt0 = time.monotonic()
             changed, value, ds = RenderFuncs.draw_text(list(_str_host.values())[0], code_dict=code_dict,
                                                        code_tree=cache_error, error=error,
                                                        import_fixes=import_fixes,
                                                        return_extras=True, **{**kwargs, "is_tree": False})
+            _t_dt1 = time.monotonic()
             # Every frame's editor draws: mark as a LIVE user so the idle sweep
             # keeps the host registered (and repaint it when a background parse
             # lands). Not gated on `changed` - an open-but-unedited editor still
@@ -3005,7 +3007,17 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                     _ptrace("editor changed with IDENTICAL text — host write suppressed",
                             host=_host_label(dict_host))
                 else:
+                    _t_w0 = time.monotonic()
                     _str_host[_key0] = value
+                    _t_w1 = time.monotonic()
+                    # TEMP perf: split the editor frame's tail - the draw_text
+                    # CALL (body + render_func wrapper epilogue; body time is
+                    # the top "draw_text took" line) vs the host WRITE
+                    # (install_bubbling + notify_on_changed + invalidations).
+                    if (_t_w1 - _t_dt0) * 1000.0 >= 30.0:
+                        _ptrace("editor tail split",
+                                call_ms=round((_t_dt1 - _t_dt0) * 1000.0, 1),
+                                write_ms=round((_t_w1 - _t_w0) * 1000.0, 1))
     # # Re-render this editor when a background parse lands: its cached
     # # subtree is outside the host's own draw loop, so without registering it
     # # the fresh cst_dict sits invisible until an unrelated invalidation.

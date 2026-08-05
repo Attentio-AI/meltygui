@@ -506,6 +506,7 @@ def render_func(*args, **o_kwargs):
 
     @wraps(func)
     def wrapper(input_value=None, **kwargs):
+        _wt0 = time.perf_counter()   # TEMP DEBUG: wrapper prologue/inner split
 
         # ── imgui availability ──────────────────────────────────────
         # When called from a background thread (_converter_mode=True),
@@ -554,12 +555,7 @@ def render_func(*args, **o_kwargs):
         #         modes = [default_mode]
 
         if modes is not None:
-            # unwrapped, not .value: mode entries keyed by a TUPLE of types
-            # ((Path, PosixPath), (dict, defaultdict)) are invisible to an
-            # exact .value.get, so recursive were never stacked and always died
-            # one level down. Still an exact-type lookup - no mro/Any
-            # fallback - so Any-keyed entries stack exactly as before.
-            mode_config = modes[0].unwrapped.get(type(input_value), None)
+            mode_config = modes[0].value.get(type(input_value), None)
             if mode_config is not None and mode_config.recursive:
                 Melty.mode_stack.append(modes[0])
                 mode_stacked = True
@@ -680,12 +676,7 @@ def render_func(*args, **o_kwargs):
                     for _ok, _ov in _pfov.items():
                         if not (isinstance(_ok, str) and _ok.startswith("__")):
                             kwargs[_ok] = _ov
-        # A dict value's OWN store feeds too (own elif): a nested class parse has
-        # collection+key but carries its leading-comment overrides on its own
-        # dict - the slot branch above matches but no __<key>__ entry, so an
-        # elif starved the class parse of its comment args. Same both-merges
-        # shape as the render-path block; own store last so it wins.
-        if isinstance(input_value, dict):
+        elif isinstance(input_value, dict):
             _povs = input_value.get("__overrides__")
             if isinstance(_povs, dict):
                 for _ok, _ov in _povs.items():
@@ -1038,13 +1029,15 @@ def render_func(*args, **o_kwargs):
                 frames = get_live_frames(skip_count=0)
                 draw_state._call_stack = call_stack_frames(frames)
                 draw_state._call_site = caller_site(frames)
-                # The live frames hold each caller's f_locals; the TARGET's
-                # own frame is not among them (we're in its wrapper - its
-                # body hasn't run), so its scope is rebuilt from the resolved
-                # kwargs. ONE global batch (live_view worker) turns all of it
-                # into completion metadata (FuncsMetadata) and live-value
-                # markers/windows in any editor showing these functions -
-                # menu-open pays for nothing but the stack grab above.
+                # Scope-snapshot publish: the frames still hold each frame's
+                # f_locals; the TARGET's own locals is not among them (we're in
+                # its wrapper - its body hasn't run), so its scope is rebuilt
+                # from the resolved kwargs. ONE async pass (live_view worker)
+                # turns it into completion types (FuncsMetadata) and
+                # live-value markers/windows. Runs inside this one-shot
+                # menu-open edge case - never steady-state. (The
+                # publish_with_body_capture profiler that used to ride along here
+                # stays removed: profiling a heavy view body took seconds.)
                 try:
                     from src.lsd.gl_gui.view.core_conversion.live_view import (
                         publish_stack_locals)
@@ -1054,13 +1047,6 @@ def render_func(*args, **o_kwargs):
                         "draw_state": draw_state, "ds": draw_state})
                     publish_stack_locals(frames, extra_snapshots=[
                         (draw_state._view_func, _target_scope, None)])
-                    # Entry kwargs only cover the SIGNATURE; the target's
-                    # mid-body locals need its frame, which only exists while
-                    # func runs. Arm a one-shot: this same invocation's
-                    # func(**clean_args) call goes through
-                    # call_site_body_capture, which grabs just before this
-                    # above and publishes the final locals at return.
-                    draw_state._lv_capture_body = True
                 except Exception:
                     pass
 
@@ -1164,7 +1150,18 @@ def render_func(*args, **o_kwargs):
                 # so get_live_frames stays off the hot path: only when this view's
                 # own menu is open, or a descendant requested it.
                 draw_state._is_deferred_layer = True
-                if draw_state.context_menu_open or draw_state._deferred_stack_requested:
+                # EDGE-gated, not level: context_menu_open stays True for the
+                # menu's whole lifetime, and this branch used to re-walk the
+                # live stack AND republish frame snapshots every single frame
+                # the menu was open. The latch fires the capture once per
+                # ON-OPEN (releasing when the menu closes), plus once per
+                # explicit descendant request.
+                if not draw_state.context_menu_open:
+                    draw_state._deferred_stack_published = False
+                if ((draw_state.context_menu_open
+                     and not getattr(draw_state, '_deferred_stack_published', False))
+                        or draw_state._deferred_stack_requested):
+                    draw_state._deferred_stack_published = True
                     draw_state._deferred_stack_requested = False
                     from src.lsd.gl_gui.view.core_conversion.chain_converters import (
                         call_stack_frames)
@@ -3588,8 +3585,23 @@ def render_func(*args, **o_kwargs):
                 if Melty.text_focused_ds is draw_state:
                     draw_state._undo_pre = draw_state.capture_undo_state()
 
+                _wt1 = time.perf_counter()
                 return_value = draw_inner_main(clean_args, draw_state,
                                                input_value, unique, kwargs)
+                _wt2 = time.perf_counter()
+                # TEMP debug: any view whose wrapper burns >30ms - split the
+                # prologue (kwargs gauntlet, tile/cache setup: entry→inner)
+                # from the inner dispatch (draw_inner_main, which contains
+                # the body; the body's render time is on its perf line).
+                if _wt2 - _wt0 > 0.030:
+                    try:
+                        from src.lsd.gl_gui.perf_trace import trace as _wtr
+                        _wtr("wrapper split",
+                             view=getattr(func, "__name__", "?"),
+                             pro_ms=round((_wt1 - _wt0) * 1000.0, 1),
+                             inner_ms=round((_wt2 - _wt1) * 1000.0, 1))
+                    except Exception:
+                        pass
 
                 if show_bg and show_bg:
                     Melty.bg_depth -= 1
@@ -4536,16 +4548,7 @@ def render_func(*args, **o_kwargs):
                     #         imgui.text_colored(f"No lens for type {type(driven_value).__name__}", 1, 0.5, 0.5)
                     # else:
 
-                    if getattr(draw_state, "_lv_capture_body", False):
-                        # One-shot from the menu live capture: run the body
-                        # under the live_view profile hook so its locals
-                        # publish as frame-snapshot markers at return.
-                        draw_state._lv_capture_body = False
-                        from src.lsd.gl_gui.view.core_conversion.live_view import (
-                            call_with_body_capture)
-                        return_value = call_with_body_capture(func, clean_args)
-                    else:
-                        return_value = func(**clean_args)
+                    return_value = func(**clean_args)
 
 
                     # Stack cleanup handled by the finally block below

@@ -2424,8 +2424,20 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                 # fast_only) always tries the offset for line-or-zero-blank edits.
                 if not (fast_only and (old_text is None
                                        or old_text.count("\n") == text.count("\n"))):
-                    line_map = _line_offset_map(old_text, text) if old_text is not None else None
-                    offset = _offset_usages(src[1], line_map, resolved) if line_map is not None else None
+                    offset = None
+                    if old_text is not None:
+                        # Contiguous blank insert/delete (single Enter /
+                        # line delete): (pivot, delta) shift with full
+                        # reuse of unchanged symbols - the common keystroke
+                        # case, far cheaper than the per-line dict remap.
+                        _shift = _line_shift(old_text, text)
+                        if _shift is not None:
+                            offset = _offset_usages_shift(
+                                src[1], _shift[0], _shift[1], resolved)
+                        else:
+                            line_map = _line_offset_map(old_text, text)
+                            offset = (_offset_usages(src[1], line_map, resolved)
+                                      if line_map is not None else None)
                     if offset is not None:
                         _store_usages(key, sig, offset, text, chash=chash,
                                       evict=src_key if src_key != key else None)
@@ -2582,6 +2594,67 @@ def _line_offset_map(old_text: str, new_text: str) -> dict | None:
         mapping[oi + 1] = ni + 1  # 1-based line numbers
         oi += 1
         ni += 1
+
+
+def _line_shift(old_text: str, new_text: str):
+    """(pivot_line, delta) when the two texts differ only by ONE contiguous
+    run of inserted/deleted BLANK lines — the single-keystroke Enter/delete
+    case: lines before `pivot` (1-based) are identical, lines at/after shift
+    by `delta`. None otherwise (caller falls back to the lockstep map /
+    recompute). This is the fast shape for _offset_usages_shift: no per-line
+    dict, and untouched symbols get reused without allocation."""
+    old_lines = old_text.split("\n")
+    new_lines = new_text.split("\n")
+    nO, nN = len(old_lines), len(new_lines)
+    if nO == nN:
+        return None
+    m = min(nO, nN)
+    p = 0
+    while p < m and old_lines[p] == new_lines[p]:
+        p += 1
+    s = 0
+    while s < m - p and old_lines[nO - 1 - s] == new_lines[nN - 1 - s]:
+        s += 1
+    if (any(l.strip() for l in old_lines[p:nO - s])
+            or any(l.strip() for l in new_lines[p:nN - s])):
+        return None      # middle isn't purely blank - substantial change
+    return p + 1, nN - nO
+
+
+def _offset_usages_shift(usages: dict, pivot: int, delta: int,
+                         resolved: _Path) -> dict:
+    """_offset_usages for the (pivot, delta) shift shape: every in-file
+    position < pivot is untouched, >= pivot moves by delta. A SymbolUsage
+    with nothing past the pivot is REUSED as-is — for an edit low in the
+    file that's most of the map, which is what turns the per-keystroke
+    remap from tens of ms of allocation into a scan. Sites can't land
+    inside the changed region (it's blank on both sides — symbols live on
+    non-blank lines), so no absent-line fallback is needed."""
+    out = {}
+    for nm, su in usages.items():
+        needs = any(l >= pivot for l, _ in su.sites)
+        if not needs:
+            needs = any(r.path == resolved and r.line >= pivot
+                        for r in su.callers)
+        d = su.definition
+        if (not needs and d is not None and d.path == resolved
+                and d.line >= pivot):
+            needs = True
+        if not needs:
+            out[nm] = su
+            continue
+        new_sites = [(l + delta if l >= pivot else l, c) for l, c in su.sites]
+        new_callers = [UsageRef(path=r.path, line=r.line + delta,
+                                column=r.column, scope=r.scope,
+                                module_name=r.module_name)
+                       if r.path == resolved and r.line >= pivot else r
+                       for r in su.callers]
+        if d is not None and d.path == resolved and d.line >= pivot:
+            d = UsageRef(path=d.path, line=d.line + delta, column=d.column,
+                         scope=d.scope, module_name=d.module_name)
+        out[nm] = SymbolUsage(name=su.name, definition=d,
+                              callers=new_callers, sites=new_sites)
+    return out
 
 
 def _offset_usages(usages: dict, line_map: dict, resolved: _Path) -> dict | None:

@@ -27,9 +27,11 @@ import time
 from pathlib import Path
 
 import imgui
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -129,12 +131,16 @@ def _collect(store, disk, folder, seen, creates, deletes):
     create). Store/disk/seen bookkeeping happens here — only the disk side
     effects are deferred to the plan."""
     for name, value in list(store.items()):
+        if name == "__overrides__":                                 # view metadata, not a file
+            continue
         if name not in disk and (folder / name) not in seen:        # user added
             creates.append((folder / name, value))
             disk[name] = {} if isinstance(value, dict) else folder / name
             if not isinstance(value, dict):
                 store[name] = disk[name]
     for name in sorted(set(disk) | set(store)):
+        if name == "__overrides__":
+            continue
         path = folder / name
         if name not in store:
             if path in seen:                                        # user deleted
@@ -151,6 +157,110 @@ def _collect(store, disk, folder, seen, creates, deletes):
         if isinstance(store[name], dict):
             sub = disk[name] if isinstance(disk[name], dict) else {}
             _collect(store[name], sub, path, seen, creates, deletes)
+
+
+# ── persisted per-file metadata (tint / expanded / order ...) ─────────────────────
+# The tree holds display params the framework ignores: each file dict holds
+# __overrides__['__<name>__'] = {param: value}, which core_render feeds into the
+# child row's view (same mechanism as '# [tint=...]' comment overrides). The
+# durable copy lives in AppModel.file_meta_collection.file_meta, keyed by
+# absolute path string, so it persists with the next save. folder_io syncs both
+# ways every run: APPLY meta → tree __overrides__ + key order before render,
+# COLLECT tree → meta after render (UI edits land in __overrides__ via
+# _LazyOverrideEntry / bubbling, drag reorders land as tree key order).
+
+def _file_meta():
+    """AppModel's path→params store, or None before the model exists.
+    Backfills the collection onto roots loaded from a pre-file-meta save."""
+    vis = getattr(Melty, "vis", None)
+    root = getattr(vis, "root", None) if vis is not None else None
+    if root is None:
+        return None
+    col = getattr(root, "file_meta_collection", None)
+    if col is None:
+        from src.lsd.gl_gui.model.app_model import FileMetaCollection
+        col = root.file_meta_collection = FileMetaCollection()
+    if not isinstance(getattr(col, "file_meta", None), dict):
+        col.file_meta = {}
+    return col.file_meta
+
+
+def _apply_meta(tree, folder, meta):
+    """Meta → tree, recursively: stamp __overrides__ entries and sort keys by
+    stored `order`. All writes are inbound state, not user edits — dunder-key
+    stores are raw (no dirty mark) and reorders use raw dict ops — so applying
+    never dirties the host or triggers a save. Returns True if anything
+    changed (caller invalidates the subtree so cached rows repaint)."""
+    changed = False
+    names = [n for n in tree if n != "__overrides__"]
+    desired, orders = {}, {}
+    for n in names:
+        entry = meta.get(str(folder / n))
+        if not isinstance(entry, dict):
+            continue
+        params = {k: v for k, v in entry.items()
+                  if k != "order" and not (isinstance(k, str) and k.startswith("__"))}
+        if params:
+            desired[f"__{n}__"] = params
+        if isinstance(entry.get("order"), (int, float)):
+            orders[n] = entry["order"]
+    current = tree.get("__overrides__")
+    if desired:
+        if current != desired:
+            # Wrap entries in the host's bubbling for the raw dunder store,
+            # or later UI edits to an existing entry would show but not save
+            # (see _LazyOverrideEntry's docstring).
+            broot = getattr(tree, "_bubble_root", None)
+            if broot is not None:
+                desired = install_bubbling(desired, broot)
+            tree["__overrides__"] = desired
+            changed = True
+    elif isinstance(current, dict) and current:
+        dict.pop(tree, "__overrides__", None)
+        changed = True
+    if orders:
+        want = sorted(names, key=lambda n: (orders.get(n, float("inf")), n))
+        if names != want:
+            for n in want:
+                dict.__setitem__(tree, n, dict.pop(tree, n))
+            changed = True
+    for n in names:
+        child = tree.get(n)
+        if isinstance(child, dict):
+            changed |= _apply_meta(child, folder / n, meta)
+    return changed
+
+
+def _collect_meta(tree, folder, meta):
+    """Tree → meta, recursively: read each child's __overrides__ params back
+    into the persisted store, and capture drag reordering as `order` stamps.
+    Order is stamped only once a folder's key order diverges from the natural
+    sorted order (or was stamped before) — an untouched folder saves nothing."""
+    names = [n for n in tree if n != "__overrides__"]
+    ovs = tree.get("__overrides__")
+    ovs = ovs if isinstance(ovs, dict) else {}
+    stamp_order = (names != sorted(names)
+                   or any(isinstance(meta.get(str(folder / n)), dict)
+                          and "order" in meta[str(folder / n)] for n in names))
+    for i, n in enumerate(names):
+        path = str(folder / n)
+        entry_src = ovs.get(f"__{n}__")
+        entry = {k: v for k, v in entry_src.items()
+                 if not (isinstance(k, str) and k.startswith("__"))} \
+            if isinstance(entry_src, dict) else {}
+        old = meta.get(path)
+        if stamp_order:
+            entry["order"] = i
+        elif isinstance(old, dict) and "order" in old:
+            entry["order"] = old["order"]
+        if entry:
+            if old != entry:
+                meta[path] = entry
+        elif old is not None:
+            meta.pop(path, None)
+        child = tree.get(n)
+        if isinstance(child, dict):
+            _collect_meta(child, folder / n, meta)
 
 
 # ── the stateful wrapper: discover -> view_func(dict) -> apply ──────────────────
@@ -173,8 +283,24 @@ def folder_io(input_value, draw_state, view_func=None, root=None, external_chang
         seen = draw_state._seen_paths = set()
     _reconcile(store, disk, root, seen)
 
+    # ── META IN: persisted per-file params → the tree's __overrides__ + key
+    # order. On a change (first load, or the store edited elsewhere) the cached
+    # rows below still hold the old capture - invalidate this subtree so they
+    # repaint with the fresh kwargs.
+    meta = _file_meta()
+    if meta is not None and _apply_meta(store, root, meta):
+        tid = getattr(draw_state, "_tile_id", None)
+        if tid is not None and Melty.cache is not None:
+            Melty.cache.invalidate_up(tid, force=True, max_depth=8)
+        request_render()
+
     # ── VIEW: hand the tree to the host's view func (which materializes + renders)
     edited, value = view_func(input_value=store, external_change=False, **kwargs)
+
+    # ── META OUT: UI edits landed in __overrides__ (bubbling re-ran this body);
+    # drag reorders changed key order. Mirror both into the persisted store.
+    if meta is not None:
+        _collect_meta(store, root, meta)
 
     imgui.text(str(root))
     return edited, value
