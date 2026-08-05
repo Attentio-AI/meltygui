@@ -5156,8 +5156,8 @@ def draw_text(input_value: str, height=None,
 
     # Jump-to-source button drawn inline at the top (before the monospace font
     # push, so it uses the normal UI font), above the text body. The first error
-    # message (if any) is no longer shown inline here - it floats in a bar pinned
-    # to the bottom of the view (see the error footer after the body is drawn).
+    # message (if any) is no longer shown inline here - it floats in a small
+    # right-aligned box above the error line (see after the body is drawn).
     bar_height = 0.0
 
     _err_msg = None
@@ -6745,8 +6745,8 @@ def draw_text(input_value: str, height=None,
 
     # Parse/compile-error line highlight from the routed code_tree or a routed
     # exception: a translucent red band spanning the offending line, drawn under
-    # the glyphs so the code stays readable. The message itself rides in the file
-    # header (see draw_jump_to_bar), not painted over the code.
+    # the glyphs so the code stays readable. The message itself floats in a
+    # small box above the error line (drawn after the body), not over it.
     if _err_markers:
         err_bg = (0.824, 0.157, 0.157, 0.431)  # translucent red
         for err_line, _msg in _err_markers:
@@ -7677,40 +7677,43 @@ def draw_text(input_value: str, height=None,
 
     _pf("uj_picker")
     # --- Floating error box pinned to the bottom of the view ---
-    # The first error message used to ride inline in the jump-to header at the
-    # top of the view; instead float it in a box along the bottom edge of the
-    # visible viewport so it stays put while the code scrolls and never pushes
-    # the header down. Drawn after the body (and after the monospace font pop, so
-    # it uses the normal UI font) so it paints over the code. Save the cursor,
-    # paint at the bottom, then restore it so the rest of the layout is untouched.
+    # The first error message floats inside a box sitting flush ABOVE the
+    # offending line, aligned flush to the editor's right edge, so it never
+    # covers the line it describes. Long messages wrap inside a capped-width
+    # box. Drawn after the body (and after the monospace font pop, so it uses
+    # the default UI font); save the cursor, paint, restore, layout untouched.
     if jump_to is not None and _err_msg:
         _save_cursor = imgui.get_cursor_screen_pos()
-        clip_l, _clip_t, clip_r, clip_b = draw_state.abs_clip_rect
-        pad_x, pad_y, margin = 8, 5, 6
-        box_h = imgui.get_text_line_height() + pad_y * 2
-        bx0 = clip_l + margin
+        clip_l, clip_t, clip_r, clip_b = draw_state.abs_clip_rect
+        pad_x, pad_y, margin = 6, 4, 6
+        # The box shows the FIRST marker (every marker still gets its red line
+        # wash); with more than one, say so rather than risk hiding the rest.
+        msg = str(_err_msg).split('\n', 1)[0]
+        if len(_err_markers) > 1:
+            msg = f"{msg}   (+{len(_err_markers) - 1} more)"
+        max_w = min(420.0, max(80.0, (clip_r - clip_l) - 2 * (margin + pad_x)))
+        _ts = imgui.calc_text_size(msg, False, max_w)
+        box_w = _ts.x + 2 * pad_x
+        box_h = _ts.y + 2 * pad_y
         bx1 = clip_r - margin
-        by1 = clip_b - margin
+        bx0 = bx1 - box_w
+        # Anchor flush against the error line's top (no gap); if the line sits
+        # too close to the viewport top for the box to fit, flip it below.
+        _err_line_top = origin_y + (_err_markers[0][0] - 1) * line_px
+        by1 = min(_err_line_top, clip_b - margin)
         by0 = by1 - box_h
-        # Same red-tinted fill and outline as the (former) header error row.
+        if by0 < clip_t + margin:
+            by0 = min(_err_line_top + line_px, clip_b - margin - box_h)
+            by1 = by0 + box_h
         fill_col = (0.275, 0.118, 0.157, 0.922)
         line_col = (0.588, 0.235, 0.275, 1.0)
         err_draw_list = imgui.get_window_draw_list()
         err_draw_list.add_rect_filled(bx0, by0, bx1, by1, imgui.get_color_u32_rgba(*fill_col), 4.0)
         err_draw_list.add_rect(bx0, by0, bx1, by1, imgui.get_color_u32_rgba(*line_col), 4.0)
-        # Truncate to the box width so a long message doesn't overflow. The box
-        # shows the FIRST marker (every marker still gets its red line wash);
-        # with more than one, say so rather than silently hiding the rest.
-        msg = str(_err_msg).split('\n', 1)[0]
-        if len(_err_markers) > 1:
-            msg = f"{msg}   (+{len(_err_markers) - 1} more)"
-        avail = max(0, (bx1 - bx0) - 2 * pad_x)
-        if imgui.calc_text_size(msg).x > avail:
-            ch_w = max(1.0, imgui.calc_text_size("x").x)
-            keep = max(3, int(avail / ch_w) - 1)
-            msg = msg[:keep] + "…"
         imgui.set_cursor_screen_pos((bx0 + pad_x, by0 + pad_y))
-        imgui.text_colored(msg, 1.0, 0.5, 0.46, 1.0)
+        imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + max_w)
+        imgui.text_colored(msg, 1.0, 0.72, 0.68, 1.0)
+        imgui.pop_text_wrap_pos()
         imgui.set_cursor_screen_pos(_save_cursor)
 
     # window_pos is an offset from the parent window's absolute origin. The menu

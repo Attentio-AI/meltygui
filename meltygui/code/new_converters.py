@@ -1902,7 +1902,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                  ensure_import=None, s_key_pressed=None, unique=None,
                  background_load=False, **kwargs):
     edited = False
-
     try:
         imgui.dummy(0, 0)
         if child_kwargs is None:

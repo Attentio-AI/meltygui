@@ -65,6 +65,16 @@ def _store_name(obj):
     return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?")
 
 
+def _display_key(key):
+    """Human title for one key-path element: a `line:N#name` key (frame
+    snapshots / twin_snap stamps) reads as its token name, not the line
+    number. Display only — stable IDs keep the raw key."""
+    key = str(key)
+    if key.startswith("line:") and "#" in key:
+        return key.split("#", 1)[1]
+    return key
+
+
 # First-spawn height estimate for the display-bottom clamp below: the real
 # height only exists after the window's first render (the reopen path passes
 # it), and live-view windows commonly land in this range.
@@ -373,8 +383,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
         # Named by the cst dict's own stable identity - never draw_state ids.
         win_kwargs = dict(
-            name=f"{'/'.join(key_path)}##lv::{_store_name(store_obj)}::"
-                 f"{'/'.join(key_path)}",
+            name=f"{'/'.join(map(_display_key, key_path))}"
+                 f"##lv::{_store_name(store_obj)}::{'/'.join(key_path)}",
             mode=Modes.LIVE_WINDOW, closed=not (open_now or preview_show),
             with_header=draw_header, disable_scroll=True, return_extras=True,
             # Anchor like a context menu: pinned to the marker, so the window
@@ -536,8 +546,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # profile hook) washes green; __live_error_line__ ((line, msg, text),
     # stamped
     # by live_instrument._stamp_error_line when the run raised) washes red
-    # with the message right-aligned on the line - the per-run twin of the
-    # editor's routed error markers. Both are absolute file coords, mapped
+    # with the message in a wrapped box flush above the line, right-aligned -
+    # the live-run twin of the editor's routed error markers. Both are absolute file coords, mapped
     # through the same parse→buffer bridge as the anchors; both cleared at
     # run start, so a rerun never shows the previous run's exit. A couple of
     # attribute accesses + at most two rects per frame.
@@ -577,10 +587,32 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             origin_x - 4.0, _ry, origin_x + _cw, _ry + line_px,
             imgui.get_color_u32_rgba(*_ml_col))
         if _ml_msg:
-            _tw = imgui.calc_text_size(_ml_msg).x
-            _rdl.add_text(origin_x + _cw - _tw - 8.0, _ry + 2.0,
-                          imgui.get_color_u32_rgba(1.0, 0.55, 0.55, 0.95),
-                          _ml_msg)
+            # Same treatment as the editor's parse-error box (text_editor's
+            # draw_text): a wrapped, capped-width box sitting flush ABOVE the
+            # line, right-aligned, so the box never covers the code.
+            _pad_x, _pad_y, _margin = 6, 4, 6
+            _bx1 = (_clip[2] if _clip is not None
+                    else origin_x + _cw) - _margin
+            _max_w = min(420.0, max(80.0, (_bx1 - origin_x) - 2 * _pad_x))
+            _ts = imgui.calc_text_size(_ml_msg, False, _max_w)
+            _bx0 = _bx1 - (_ts.x + 2 * _pad_x)
+            _by1 = _ry
+            _by0 = _by1 - (_ts.y + 2 * _pad_y)
+            if _clip is not None and _by0 < _clip[1] + _margin:
+                _by0 = _ry + line_px          # no room above - box below
+                _by1 = _by0 + _ts.y + 2 * _pad_y
+            _rdl.add_rect_filled(
+                _bx0, _by0, _bx1, _by1,
+                imgui.get_color_u32_rgba(0.275, 0.118, 0.157, 0.922), 4.0)
+            _rdl.add_rect(
+                _bx0, _by0, _bx1, _by1,
+                imgui.get_color_u32_rgba(0.588, 0.235, 0.275, 1.0), 4.0)
+            _save_cursor = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((_bx0 + _pad_x, _by0 + _pad_y))
+            imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + _max_w)
+            imgui.text_colored(_ml_msg, 1.0, 0.72, 0.68, 1.0)
+            imgui.pop_text_wrap_pos()
+            imgui.set_cursor_screen_pos(_save_cursor)
     for key_path, value in live_values_for(fn).items():
         if not key_path or not isinstance(key_path[-1], str):
             continue
