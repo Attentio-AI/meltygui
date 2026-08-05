@@ -151,12 +151,18 @@ void main() {
         // (1 - threshold) are FULLY opaque — a hard isosurface — and below
         // it opacity falls off as (m/gate)^4, scaled by density and the
         // marched segment length (seg = step_size except the partial tail).
+        // The segment is measured in volume_scale-NORMALIZED units (the old
+        // viewer marched its fixed [-1,1] model box), so optical depth is a
+        // function of the FRACTION of the volume traversed, not the world
+        // path length — a 4096-voxel axis viewed end-on accumulates the same
+        // opacity as an 8-voxel one, instead of drowning side views in fog.
+        float seg_n = seg * length(rd / volume_scale);
         float gate = 1.0 - clamp(threshold, 0.0, 0.999);
         float a;
         if (m >= gate) {
             a = 1.0;
         } else {
-            a = clamp(pow(m / gate, 4.0) * density * seg * view_cos * 50.0, 0.0, 1.0);
+            a = clamp(pow(m / gate, 4.0) * density * seg_n * view_cos * 50.0, 0.0, 1.0);
         }
         if (a > 0.0) {
             acc.rgb += (1.0 - acc.a) * a * texture(lut, v).rgb;
@@ -1122,7 +1128,7 @@ def _billboard_specs(edges, axis_display, volume_scale,
             ticks = _tick_values(i0, i1, px_len / (i1 - i0), num_size,
                                  num_spacing)  # [] on an integer-free sliver
             min_gap = max(1, len(str(ticks[-1] if ticks else 0))) \
-                * 0.62 * num_size * num_spacing
+                      * 0.62 * num_size * num_spacing
             placed = []
             for n, idx in enumerate(ticks):
                 up = u_lo + (u_hi - u_lo) * ((idx - i0) / (i1 - i0))
@@ -1193,7 +1199,7 @@ def _render_label_billboards(gl_state, specs, cam, height):
         gl.glDisable(gl.GL_BLEND)
 
 
-@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True, 
+@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True,
              auto_resize=False, min_width=269, with_header=draw_header,
              bg_offset=0, min_height=293, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
@@ -1209,13 +1215,13 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # density = the old densityScale (haze gain over the opacity
                 # gate); threshold = the old opacityThreshold (higher → lower
                 # gate → more opaque)
-                density=3.7, threshold=0.301, centered=False,
+                density=3.6, threshold=0.163, centered=False,
                 nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
                 # ── axis mapping: dims by index OR NAME. The first three dims
                 # by default; None still means "derive" (last three → z/y/x)
                 # for anything that clears one. ──
                 dim_names=("layer", "batch", "token", "feature"),
-                x_dim=TensorDim(0), y_dim=TensorDim(1), z_dim=TensorDim(2),
+                x_dim=TensorDim(0), y_dim=TensorDim(2), z_dim=TensorDim(2),
                 slices=(),
                 mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
                 normalize=False, nf_on=False, nf_chop=TensorDim(-1),
@@ -1243,12 +1249,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         return False, None
 
     dim_names = tuple(_clean_dim_name(x, i) for i, x in enumerate(dim_names or ()))
-    _dlog = (dim_names, tuple(getattr(src, "shape", ())))
-    if getattr(draw_state, "_vox_dims_log", None) != _dlog:
-        draw_state._vox_dims_log = _dlog
-        import sys as _sys
-        print(f"live_view dims: voxel_view shape={_dlog[1]} "
-              f"dim_names={dim_names}", file=_sys.stderr)
     slices = tuple(int(v) for v in (slices or ()))
     mean_dims = tuple(int(v) for v in (mean_dims or ()))
 
@@ -1365,6 +1365,15 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # ── gestures → draw_state params (auto-state: the caller diverges the
     # param so it persists; events are hover-routed wrapper kwargs) ──────
     if middle_mouse_drag is not None:
+        # Ortable chirality, latched per GESTURE: upside down (cos(tilt)<0,
+        # world-up pointing down the screen) a rightward move must spin the
+        # other way to keep tracking the cursor. Latching at drag start keeps
+        # the direction stable when a drag tilts across the pole mid-gesture;
+        # the latch clears on release so the next drag re-reads orientation.
+        spin_sign = getattr(draw_state, "_orbit_spin_sign", None)
+        if spin_sign is None:
+            spin_sign = -1.0 if math.cos(tilt) < 0.0 else 1.0
+            draw_state._orbit_spin_sign = spin_sign
         if middle_mouse_drag.shift:
             # Blender-style shift-d = pan: move the orbit target so the
             # content tracks the cursor 1:1 at the target plane (world units
@@ -1383,14 +1392,19 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             # the old viewer's ctrl-drag: vertical = dolly zoom, horizontal
             # still orbits.
             cam_zoom = min(137.6, max(0.0, cam_zoom * math.exp(0.005 * middle_mouse_drag.dy)))
-            spin -= middle_mouse_drag.dx * 0.008
+            spin -= middle_mouse_drag.dx * 0.008 * spin_sign
             draw_state.locate_cam_zoom = cam_zoom
             draw_state.locate_spin = spin
         else:
-            spin -= middle_mouse_drag.dx * 0.008
-            tilt = min(math.pi, max(-math.pi, tilt + middle_mouse_drag.dy * 0.008))
+            spin -= middle_mouse_drag.dx * 0.008 * spin_sign
+            # Tilt is UNRESTRICTED - orbit straight over the poles and keep
+            # going. remainder() re-wraps into [-pi, pi] (same orientation,
+            # cos/sin-continuous) so the stored angle never runs away.
+            tilt = math.remainder(tilt + middle_mouse_drag.dy * 0.008, math.tau)
             draw_state.locate_spin = spin
             draw_state.locate_tilt = tilt
+    else:
+        draw_state._orbit_spin_sign = None
     if double_right_mouse_drag is not None:
         # the old viewer's shading drag: now on a DOUBLE right-drag (the 2nd
         # press of a double right-click, held and dragged): horizontal =
@@ -1518,22 +1532,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     if axis_edges:
         _draw_axis_lines(imgui.get_window_draw_list(), img_pos, axis_edges)
 
-    # ── source tensor shape and dim names, bottom-left over the image ─────
-    shape_info = "(" + ", ".join(
-        f"{dim_names[i] if i < len(dim_names) else f'dim{i}'}={int(s)}"
-        for i, s in enumerate(source_shape)) + ")"
-    tint = draw_state._kwargs.get("tint", None) or (0.5, 0.5, 0.5)
-    sm = Melty.style_manager
-    info_rgb = sm.make_custom(*tint[:3], value=0.75) if sm else tint[:3]
-    _flow_cursor = imgui.get_cursor_screen_pos()
-    imgui.set_cursor_screen_pos((img_pos[0] + 8,
-                                 img_pos[1] + height
-                                 - imgui.get_text_line_height() - 6))
-    imgui.push_style_color(imgui.COLOR_TEXT, *info_rgb, min(1.0, name_opacity))
-    imgui.text(shape_info)
-    imgui.pop_style_color()
-    imgui.set_cursor_screen_pos(_flow_cursor)
-
     # ── ALL controls live in a satellite panel opening to the RIGHT of
     # the window: the renderer's full params, rendered automatically -
     # draw_state.locate_params is a live dict over this signature, each row
@@ -1596,7 +1594,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             # catches up ONCE at the gesture edge.
             if not panel_ds.closed:
                 if (not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1) and not
-                        imgui.is_mouse_down(0) and scroll_y_changed is None) and changed:
+                imgui.is_mouse_down(0) and scroll_y_changed is None) and changed:
                     panel_ds.invalidate_up()
 
         # ── status bar error surfacing only ────────────────────────────────────
@@ -1709,7 +1707,7 @@ window(cls=voxel_host.get("value"), name="draw_voxel_playground", view_func=draw
 #     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_4d, tint=(0.02, 0.03, 0.04))
+@window(input_value=voxel_host_4d, tint=(0.20, 0.36, 0.59))
 @render_func(show_bg=True, use_cache=True)
 def draw_voxel_4d(input_value=None, **kwargs):
     draw_voxels(input_value.get("value"), name="volume_4d", mode=Modes.WINDOW)

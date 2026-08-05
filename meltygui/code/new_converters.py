@@ -2623,13 +2623,7 @@ def _post_symbol_attach(dict_host, gen, flat):
             else:
                 gp._symbol_gen = None
                 dict_host._auto_index_key = None
-            # Re-attaching the IDENTICAL map (mid-burst debounce serving the
-            # held base - see the shift branch in _compute_symbol_usages) is an
-            # identity no-op. _distribute_by_name builds fresh per-node
-            # __symbol_usages__ dicts every call, and their identity is the
-            # editor's recompute gate (_us_spans), so redistributing the same
-            # data forced a debounced recollect per keystroke for years.
-            if flat and prev is not flat:
+            if flat:
                 gp.symbol_usage = flat
                 _distribute_by_name(gp, flat)
             if not same_names:

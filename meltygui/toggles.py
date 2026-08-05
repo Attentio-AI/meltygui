@@ -745,6 +745,15 @@ class Toggles:
         def_block_alpha = 0.148
         def_symbol_alpha = 0.616
         def_line_alpha = 0.089
+        # Outline drawn around each def-tint wash rect (blocks, line bands,
+        # symbol washes) - makes the highlight edges read crisply against
+        # the background. The outline color is the wash color BRIGHTENED by
+        # def_outline_brightness (multiplied after the bg brightness clamp,
+        # so it pops where the fill stays muted). 0 alpha disables.
+        def_outline_alpha = 1.0
+        def_outline_brightness = 0.8
+        def_outline_thickness = 1.5
+
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
         # faded blend of their colors (single-symbol assignment averages the distinct
@@ -758,7 +767,24 @@ class Toggles:
         # When enabled the line tint rect above fills the whole line -
         # gutter edge to the view's right edge - instead of hugging the
         # line's text extent (indent → last non-ws column).
-        def_line_full_width = True
+        def_line_full_width = False
+
+        # Soft-edged line band: instead of a solid rect the line tint draws
+        # as a feathered stack of expanding translucent rects, fading the
+        # color out over def_line_blur_radius pixels past the band's edge
+        # (a cheap drawcall gaussian - no blur pass). The radius also
+        # bleeds vertically into neighboring lines, which is the point.
+        def_line_blur = True
+        
+        def_line_blur_radius = 20
+        # Alpha multiplier for the blurred band only - feathering spreads
+        # the color thin, so the blur usually wants MORE alpha than the
+        # hard rect's def_line_alpha. 1.0 = same as the hard band.
+        def_line_blur_alpha = 4.235
+        # Falloff hardness for the blur's inverse-square profile - how
+        # concentrated the "lightsource" is. Higher = tighter core with a
+        # longer radial tail; 0 falls back to the default linear feather.
+        def_line_blur_falloff = 3.0
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -794,10 +820,10 @@ class Toggles:
         # brightness (0.299r+0.587g+0.114b) so text stays visible even when the
         # tint is very bright (scaled down to max) or very dark (lifted to
         # min, hue kept). Neutral = 1 / 1 / 0 / 1.
-        bg_tint_saturation = 1.0
-        bg_tint_value = 0.432
+        bg_tint_saturation = 1.15
+        bg_tint_value = 0.48
         bg_min_brightness = 0.18
-        bg_max_brightness = 0.41
+        bg_max_brightness = 0.45
 
     @defaults(tint=(0.545, 0.451, 0.248))
     class UIScale:
@@ -847,7 +873,7 @@ class Toggles:
     class ContextMenu:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
-        default_tab = 2
+        default_tab = 4
 
     # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
@@ -1027,9 +1053,9 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.530
+    brightness = 0.727
     # [tint=(0.025, 0.032, 0.044)]
-    contrast = 2.061
+    contrast = 2.518
 
     debug_z_depth = False
     filters = True

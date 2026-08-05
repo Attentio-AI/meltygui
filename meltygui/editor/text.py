@@ -2181,8 +2181,16 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
     _old_key = getattr(ds, '_usage_spans_key', None)
     if _old_key != key:
         now = time.monotonic()
+        # One layer in typing: an incremental merge ships a fresh tree
+        # whose per-node __symbol_usages__ hasn't been attached yet
+        # (the carried flat map on gp.symbol_usage is the marker - see
+        # _carry_symbols). Collecting NOW would find no sus and replace the
+        # held spans with nothing - hold the last-good spans (splice-remapped
+        # below) until the frame-boundary attach lands and busts the key.
+        _su_pending = (su_top is None
+                       and getattr(code_tree, "symbol_usage", None))
         if (getattr(ds, "_usage_spans", None) is not None
-                and (_typing_hot()
+                and (_typing_hot() or _su_pending
                      or now - getattr(ds, "_usage_spans_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
             request_render()   # typing/debounced: serve held (remapped below), retry later
         else:
@@ -2659,6 +2667,49 @@ def _pending_total_gen():
         return 0
 
 
+# Twin snapshot map for the TINT-relevant generations (same lazy
+# aggregation as _PENDING_GEN_MAP above).
+_TINT_GEN_MAP = (None, {})
+
+
+def _tint_gens():
+    """PendingSave's tint-relevant per-file counters — bumped only when a
+    queued edit changed a tint-carrying line or the span's line count (see
+    PendingSave._tint_relevant_change). The _def_tints memo keys on THESE
+    instead of the raw pending gens so a #[...] param drag in another file
+    no longer busts every editor's tint memo per frame — that mid-drag
+    recompute (against a lagging tree) is what randomly dropped propagated
+    washes. Falls back to the raw gens when a pre-hotswap PendingSave has
+    no _tint_gen yet (conservative: old behavior)."""
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    except Exception:
+        return None
+    gens = getattr(PendingSave, "_tint_gen", None)
+    return gens if gens is not None else PendingSave._pending_gen
+
+
+def _tint_gen_of(path):
+    """Tint-relevant edit generation for `path` — 0 when none queued."""
+    global _TINT_GEN_MAP
+    gens = _tint_gens()
+    if not gens:
+        return 0
+    total = sum(gens.values())
+    if _TINT_GEN_MAP[0] != total:
+        m = {}
+        for k, v in list(gens.items()):
+            rp = _real(str(k))
+            m[rp] = m.get(rp, 0) + v
+        _TINT_GEN_MAP = (total, m)
+    return _TINT_GEN_MAP[1].get(_real(str(path)), 0)
+
+
+def _tint_total_gen():
+    gens = _tint_gens()
+    return sum(gens.values()) if gens else 0
+
+
 # path-str -> (stat_key, lines). One pending-overlay text build per file per
 # state change, shared by every def scan of the file. Without this, each
 # (pos, name) cache missindependently rebuilt current_file_text - and typing bumps
@@ -2711,7 +2762,7 @@ def _scan_def_tint(path, line, name=None):
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 26
+_DEF_TINTS_VER = 27
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -3725,14 +3776,18 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     map's identity rides in the key so the background usage pass's in-place
     arrival busts the cache.
 
-    The pending-gen key component excludes THIS file's own gen: typing here
-    bumps the file's gen once per keystroke (on the bg save thread, so the
-    bump lands a frame AFTER the text-change miss), and keying on the raw
-    total made every keystroke pay the O(buffer) collect twice. Own edits
-    are already covered by `text` / tree identity; the gen term only needs
-    to catch tint-comment edits queued in OTHER files (read through the
-    _XFILE PendingSave caches). A tint edit in another SPAN of this same
-    file refreshes on the next tree/text churn instead of instantly.
+    The gen key component is the TINT-relevant generation (_tint_gens —
+    bumps only when a queued edit changed a tint line or a span's line
+    count), excluding THIS file's own gen: typing here bumps gens once per
+    keystroke (on the bg save thread, so the bump lands a frame AFTER the
+    text-change miss), and keying on the raw total made every keystroke pay
+    the O(buffer) collect twice — while a #[...] param drag in ANOTHER file
+    bumped it per frame and forced mid-drag recomputes that dropped
+    propagated washes. Own edits are already covered by `text` / tree
+    identity; the gen term only needs to catch tint-affecting edits queued
+    in OTHER files (read through the _XFILE PendingSave caches). A tint
+    edit in another SPAN of this same file refreshes on the next tree/text
+    churn instead of instantly.
 
     Recompute is additionally debounced (_TINT_RECOMPUTE_MIN_S): a key
     change inside the window serves the last-good result and re-requests a
@@ -3755,11 +3810,18 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     # every inserted newline. Fresh tree / symbol attach / cross-file pending
     # gen still recompute.
     key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset,
-           str(view_path), _pending_total_gen() - _pending_gen_of(view_path))
+           str(view_path), _tint_total_gen() - _tint_gen_of(view_path))
     if getattr(ds, "_def_tints_key", None) != key:
         now = time.monotonic()
+        # Symbol layer in flight (see _usage_spans): a merged tree whose
+        # carried flat map hasn't been folded into per-node
+        # __symbol_usages__ yet would collect ZERO sus - every propagated
+        # symbol gone until the next good recompute. Hold the last-good
+        # result instead; the attach's fresh su map busts the key.
+        _su_pending = (su_top is None
+                       and getattr(code_tree, "symbol_usage", None))
         if (getattr(ds, "_def_tints", None) is not None
-                and (_typing_hot()
+                and (_typing_hot() or _su_pending
                      or now - getattr(ds, "_def_tints_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
             request_render()   # typing/debounced: serve held (remapped below), retry later
         else:
@@ -6876,6 +6938,17 @@ def draw_text(input_value: str, height=None,
                  Toggles.TextEditor.bg_min_brightness,
                  Toggles.TextEditor.bg_max_brightness)
         _dt_block_a = Toggles.TextEditor.def_block_alpha
+        _dt_outline_a = Toggles.TextEditor.def_outline_alpha
+        _dt_outline_t = Toggles.TextEditor.def_outline_thickness
+        _dt_outline_b = Toggles.TextEditor.def_outline_brightness
+
+        def _ol_rgb(c):
+            # Outline color: the wash color pushed BRIGHTER than the bg
+            # clamp allows - a 1-2px edge needs far more luminance than a
+            # translucent fill to pop against the editor background.
+            return (min(1.0, c[0] * _dt_outline_b),
+                    min(1.0, c[1] * _dt_outline_b),
+                    min(1.0, c[2] * _dt_outline_b))
         for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
             sy = origin_y + _b_line * line_px
             ey = origin_y + (_b_end + 1) * line_px
@@ -6885,15 +6958,53 @@ def draw_text(input_value: str, height=None,
             _b_rgb = _bg_adjust(tuple(_b_tint[:3]), _bg_f)
             _b_col = imgui.get_color_u32_rgba(_b_rgb[0], _b_rgb[1], _b_rgb[2], _dt_block_a)
             draw_list.add_rect_filled(sx, sy, rect_max_x, ey, _b_col, 4.0)
+            if _dt_outline_a > 0:
+                _b_ol = _ol_rgb(_b_rgb)
+                draw_list.add_rect(sx, sy, rect_max_x, ey,
+                                   imgui.get_color_u32_rgba(
+                                       _b_ol[0], _b_ol[1], _b_ol[2],
+                                       _dt_outline_a), 4.0,
+                                   thickness=_dt_outline_t)
         # Line tint (the subtlest layer, over blocks, under the symbol
         # washes): one plain wash fitting the line's TEXT extent (indent →
         # last non-ws char), in the line's color - its explicit comment tint
         # if the definition has one, else a mix of its symbol tints.
-        # (Full-width and feathered/glow variants were tried and reverted:
-        # a simple band hugging the relevant text wins.)
+        # Full-width (def_line_full_width) and feathered (def_line_blur +
+        # def_line_blur_radius) variants are toggleable; blurred bands skip
+        # the outline since a crisp outline would defeat the feather.
         _dt_line_a = Toggles.TextEditor.def_line_alpha
         if _dt_line_a > 0:
             _dt_line_full = Toggles.TextEditor.def_line_full_width
+            _dt_line_blur = Toggles.TextEditor.def_line_blur
+            _dt_line_blur_r = Toggles.TextEditor.def_line_blur_radius
+            _dt_line_blur_a = Toggles.TextEditor.def_line_blur_alpha
+
+            _dt_line_blur_k = Toggles.TextEditor.def_line_blur_falloff
+
+            def _blur_rect(x0, y0, x1, y1, rgb, alpha, rounding):
+                # Feathered band with an INVERSE-SQUARE profile - a hot
+                # core that drops off fast, then a long faint tail, so the
+                # band registers as emitted light rather than uniform fog.
+                # Each expanding layer draws the DIFFERENCE in the profile
+                # at its inner/outer radius, alpha, so cumulative
+                # alpha at distance t from the edge is alpha * P(t), where
+                # P(t) = inverse-square normalized to 1 at the edge and 0
+                # at the blur radius. Cheap draw-list glow; no shader.
+                alpha = min(1.0, alpha * _dt_line_blur_a)
+                steps = max(2, min(12, int(_dt_line_blur_r * 0.75) + 2))
+                k = max(0.0, _dt_line_blur_k)
+                floor = 1.0 / (1.0 + k) ** 2
+                prev = 1.0
+                for _i in range(steps):
+                    t = (_i + 1) / steps
+                    cur = ((1.0 / (1.0 + k * t) ** 2) - floor) / (1.0 - floor) \
+                        if k > 0 else 1.0 - t
+                    _c = imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2],
+                                                  alpha * (prev - cur))
+                    prev = cur
+                    e = _dt_line_blur_r * t
+                    draw_list.add_rect_filled(x0 - e, y0 - e, x1 + e, y1 + e,
+                                              _c, rounding + e)
             for _l_line, _l_rgb, _l_sc, _l_s, _l_e in _dt_lines:
                 sy = origin_y + _l_line * line_px
                 ey = sy + line_px
@@ -6903,12 +7014,30 @@ def draw_text(input_value: str, height=None,
                 _l_col = imgui.get_color_u32_rgba(_la[0], _la[1], _la[2],
                                                   _dt_line_a * _l_sc)
                 if _dt_line_full:
-                    draw_list.add_rect_filled(rect_min_x, sy, rect_max_x, ey,
-                                              _l_col, 0.0)
+                    if _dt_line_blur and _dt_line_blur_r > 0:
+                        _blur_rect(rect_min_x, sy, rect_max_x, ey,
+                                   _la, _dt_line_a * _l_sc, 0.0)
+                    else:
+                        draw_list.add_rect_filled(rect_min_x, sy, rect_max_x,
+                                                  ey, _l_col, 0.0)
                 else:
                     sx = origin_x + _colx(_l_s)
                     ex = origin_x + _colx(_l_e)
-                    draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey, _l_col, 3.0)
+                    if _dt_line_blur and _dt_line_blur_r > 0:
+                        _blur_rect(sx - 3, sy, ex + 3, ey,
+                                   _la, _dt_line_a * _l_sc, 3.0)
+                    elif _dt_outline_a > 0:
+                        draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey,
+                                                  _l_col, 3.0)
+                        _l_ol = _ol_rgb(_la)
+                        draw_list.add_rect(sx - 3, sy, ex + 3, ey,
+                                           imgui.get_color_u32_rgba(
+                                               _l_ol[0], _l_ol[1], _l_ol[2],
+                                               _dt_outline_a * _l_sc), 3.0,
+                                           thickness=_dt_outline_t)
+                    else:
+                        draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey,
+                                                  _l_col, 3.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
         
 
@@ -6926,6 +7055,13 @@ def draw_text(input_value: str, height=None,
             _s_col = imgui.get_color_u32_rgba(_sa[0], _sa[1], _sa[2],
                                               _dt_sym_a * _s_scale)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
+            if _dt_outline_a > 0:
+                _s_ol = _ol_rgb(_sa)
+                draw_list.add_rect(sx - 1, sy + 1, ex + 1, ey - 1,
+                                   imgui.get_color_u32_rgba(
+                                       _s_ol[0], _s_ol[1], _s_ol[2],
+                                       _dt_outline_a * _s_scale), 3.0,
+                                   thickness=_dt_outline_t)
         # Back to the body's text channel for everything after the washes.
         if Melty.channels_split:
             draw_list.channels_set_current(Core.melty.get_channel() + 1)

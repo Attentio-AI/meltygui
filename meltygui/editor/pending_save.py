@@ -99,6 +99,14 @@ class PendingSave:
     # content-free cache-invalidation signal (see CLAUDE.md - never hash files):
     # readers of current_file_text key on this instead of hashing the text.
     _pending_gen = defaultdict(int)
+    # Tint-relevant twin of _pending_gen: bumps only when a queued edit could
+    # change definition-tint washes in editors viewing OTHER files - its line
+    # count moved (shifting every def line below the span) or a tint-carrying
+    # line changed. A #[...] param drag rewriting `#[speed=3.1]` per frame
+    # bumps _pending_gen every time but leaves this unchanged, so the
+    # _def_tints memos across the app stop recomputing (and mid-edit dropping
+    # propagated washes) after each drag frame.
+    _tint_gen = defaultdict(int)
 
     @classmethod
     def mark_load(cls, address, data, **kwargs):
@@ -184,12 +192,40 @@ class PendingSave:
         no-resolve convention)."""
         return cls._pending_gen.get(path, 0)
 
+    @staticmethod
+    def _tint_relevant_change(prev_data, data):
+        """Could replacing `prev_data` with `data` change def-tint washes in
+        another file's editor? True when the line count moved or any line
+        mentioning 'tint' differs; unknown shapes (non-str, first sight with
+        no baseline) bump conservatively. The split runs only when the span
+        mentions tint at all — a plain param edit stays on two C-level
+        checks, and the data is already in memory (this is not a file hash)."""
+        if prev_data is data:
+            return False
+        if not isinstance(prev_data, str) or not isinstance(data, str):
+            return True
+        if prev_data.count("\n") != data.count("\n"):
+            return True
+        p_has, n_has = "tint" in prev_data, "tint" in data
+        if p_has != n_has:
+            return True
+        if not p_has:
+            return False
+        return ([l for l in prev_data.split("\n") if "tint" in l]
+                != [l for l in data.split("\n") if "tint" in l])
+
     @classmethod
     @lag_traced("queue_save", 30)
     def queue_save(cls, address, codec, **kwargs):
         prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
         cls._pending_gen[address.path] += 1
+        # Compare against what this span last queued (or its load-time
+        # original on first queue) for the delta this edit actually introduces.
+        prev_data = (prev[1].get("data") if prev is not None
+                     else cls.originals.get(address))
+        if cls._tint_relevant_change(prev_data, kwargs.get("data")):
+            cls._tint_gen[address.path] += 1
         # Debug timeline: who bumped this file's pending generation (a bump is
         # what invalidates the symbol-usage cache sig → forces a recompute).
         try:
