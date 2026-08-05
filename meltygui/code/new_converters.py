@@ -1897,7 +1897,7 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 @render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=False,
-                 show_code_buttons=False,
+                 show_code_buttons=False, show_name=False, is_tree=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=0, bg_offset=-0.5,
                  ensure_import=None, s_key_pressed=None, unique=None,

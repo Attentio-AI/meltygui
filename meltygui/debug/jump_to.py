@@ -8,7 +8,8 @@ from src.lsd.gl_gui.view.core_conversion.address import Address
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 
 
-def draw_jump_to(input_value: Address, unique, width=30, error_msg=None):
+def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
+                 draw_state=None):
     file_name = input_value.path.name if input_value.path is not None else "Unknown file"
     line_number = input_value.start + 1 if input_value.start is not None else None
     # Unicode escape (not a literal string) for the Font Awesome folder icon - a
@@ -32,7 +33,6 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None):
     # When there's an error, the bar grows a second row to hold the message, and
     # both the fill and the outline tint red so the header reads as "this file has
     # a problem".
-    from src.lsd.gl_gui.view.core_views.new_core_view import button
     draw_list = imgui.get_window_draw_list()
     x0, y0 = imgui.get_cursor_screen_pos()
     pad_x, pad_y = 8, 3
@@ -53,9 +53,25 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None):
     draw_list.add_rect_filled(x0, y0, x1, y1, fill_col, rounding, top_corners)
     draw_list.add_rect(x0, y0, x1, y1, line_col, rounding, top_corners)
 
-    # Row 1: label (vertically centered against the button frame) + icon jump button.
+    # Row 1: label (vertically centered against the button frame) + icon jump
+    # button. flat_button (draw-list + on_action through the EDITOR's
+    # draw_state - this bar is drawn inside draw_text's body), not a
+    # @render_func button: the old widget re-rendered its full wrapper every
+    # editor frame. The measured rect is stashed in the editor's state so its
+    # selection pass can null the PRESS inside it (the old button's own
+    # draw_state used to claim that press; without the null, clicking Open
+    # would also place the caret in the document under the floating bar).
+    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    from src.lsd.gl_gui.melty import Melty
     imgui.set_cursor_screen_pos((x0 + pad_x, y0 + pad_y))
-    if button(f"{folder_icon} Open##jump_to{unique}", height=18, name=f"{unique}_jump")[0]:
+    _open_label = f"{folder_icon} Open"
+    _bw = imgui.calc_text_size(_open_label).x + Melty.px(15)
+    _bh = Melty.px(18.0)
+    _bx, _by = imgui.get_cursor_screen_pos()
+    if draw_state is not None:
+        draw_state._jump_btn_rect = (_bx, _by, _bx + _bw, _by + _bh)
+    if flat_button(f"{_open_label}##jump_to{unique}", draw_state,
+                   view_id=f"jump_open{unique}", width=_bw, height=_bh):
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
 
         threading.Thread(

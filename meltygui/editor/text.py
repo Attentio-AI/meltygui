@@ -5236,8 +5236,7 @@ def draw_text(input_value: str, height=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
-    
-    ds = draw_state   
+    ds = draw_state
 
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -5253,6 +5252,13 @@ def draw_text(input_value: str, height=None,
     def _pf(
             label):
         _pf_marks.append((label, time.perf_counter()))
+        
+        
+        
+        
+        
+        
+        
         
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -5301,7 +5307,6 @@ def draw_text(input_value: str, height=None,
     # Imported in-function to avoid a module-load import cycle (toggles pulls in
     # decoration/window machinery). For the spell-check button + squiggles below.
     from src.lsd.gl_gui.toggles import Toggles
-
     # Error markers to highlight in red: the routed code_tree's parse errors plus
     # any exception routed in via the mode route (e.g. draw_modes hands us the
     # chain_in failure so the offending source line lights up here). Computed up
@@ -5405,7 +5410,8 @@ def draw_text(input_value: str, height=None,
         if draw_state.height:
             float_dy = max(0.0, min(float_dy, draw_state.height - _bar_h))
         imgui.set_cursor_screen_pos((_bx, _by + float_dy))
-        draw_jump_to(jump_to, width=draw_state.content_width, unique=unique)
+        draw_jump_to(jump_to, width=draw_state.content_width, unique=unique,
+                     draw_state=draw_state)
         bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
         draw_state._float_bar_height = bar_height
         # Resume body layout at the real (unscrolled) content position so the code
@@ -5493,6 +5499,7 @@ def draw_text(input_value: str, height=None,
 
     def _get_vcols():
         return _window()[3]
+    
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
@@ -5665,6 +5672,16 @@ def draw_text(input_value: str, height=None,
     # EVERY press (no stale latch), and cleared on release below. Caret
     # placement for a clean click still happens via the _try_click raw-mouse
     # path in the token loop.
+    # A press on the jump bar's flat close button (rect stashed by
+    # set_jump_to) belongs to the button: its click resolves via on_action;
+    # the press must not place the caret in the text under the floating bar
+    # (the old @render_func button's own draw_state used to claim it).
+    if left_mouse_down:
+        _jb = getattr(ds, "_jump_btn_rect", None)
+        if (_jb is not None
+                and _jb[0] <= left_mouse_down.x < _jb[2]
+                and _jb[1] <= left_mouse_down.y < _jb[3]):
+            left_mouse_down = None
     if left_mouse_down:
         ds._plain_tv_gesture = any(
             _r[0] <= left_mouse_down.x < _r[2] and _r[1] <= left_mouse_down.y < _r[3]

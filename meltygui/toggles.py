@@ -981,7 +981,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
 
     show_filled_tiles = False
     gl_check_error = False
@@ -1008,7 +1008,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = True   # TEMP: on while debugging redundant symbol computes / convert.py hang
+    symbol_perf_log = False   # TEMP: on while debugging redundant symbol computes / convert_outlines
     attrib_churn_log = False
     debug_threads = False
 

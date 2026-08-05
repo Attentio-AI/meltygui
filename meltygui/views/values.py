@@ -5610,16 +5610,41 @@ def draw_live_tab(input_value, **kwargs):
     return False, input_value
 
 
-@render_func(use_cache=True, show_bg=False, is_tree=False, disable_scroll=True, show_header=False, show_name=False, selectable=False)
-def draw_func_tab(input_value, **kwargs):
+def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
+                  height=None, **kwargs):
     """Editable source of the inspected view function; hotswaps on save.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
-    folder-files leaf uses — so all editors share one code path."""
-    from src.lsd.gl_gui.view.mode import Mode
+    folder-files leaf uses — so all editors share one code path.
+
+    A plain function, not a @render_func: the wrapper added a full pass +
+    tile layer around a single dispatch (the standing `draw_func_tab` line
+    in the frame profiles) and the editor child does its own caching. The
+    caller's `name` rides into the child as its `key` so two func tabs
+    showing the same function keep distinct draw_states — the wrapper's
+    per-tab name used to provide that separation.
+
+    code_file_io is called DIRECTLY with Mode.FILE_TREE's override kwargs
+    (chain idiom) instead of via draw_any(mode=FILE_TREE): the mode pins
+    disable_scroll=True and mode kwargs win over call kwargs, so the
+    caller's disable_scroll=False could never reach the editor — the old
+    wrapper was the scroll container, and removing it killed scrolling
+    until this bypass."""
     view_func = input_value._view_func
     if view_func is not None:
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            code_file_io, draw_text_from_code_cache)
         view_func_name = view_func.__name__ if hasattr(view_func, '__name__') else str(view_func)
-        change, new_view_func = draw_any(view_func, disable_scroll=True, show_name=False, is_tree=False, mode=Mode.FILE_TREE, name=view_func_name)
+        _kw = {}
+        if width is not None:
+            _kw["width"] = width
+        if height is not None:
+            _kw["height"] = height
+        if name is not None:
+            _kw["key"] = name
+        code_file_io(view_func, auto_load_edits=True,
+                     view_func=draw_text_from_code_cache,
+                     disable_scroll=disable_scroll, show_name=False,
+                     is_tree=False, name=view_func_name, **_kw)
     else:
         draw_str("No view function specified", name="View Function", editable=False)
     return False, input_value
