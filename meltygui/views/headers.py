@@ -250,6 +250,60 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
 
 
 @window
+def flat_button(label, draw_state, view_id, width=None, height=None,
+                color=(0.533, 0.068, 0.5), tint_value=0.16, text_value=1.023,
+                factor=1.0, saturation=1.2, text_saturation=0.8, alpha=1.0,
+                corner_radius=6.0, text_pad=15, hover_boost=0.05,
+                hover_text_boost=1.5, max_bg_brightness=0.25,
+                style_manager=None):
+    """Draw-list button — the fast-dock interaction model instead of a
+    @render_func widget (~0.7ms of wrapper per call, measured): a rounded
+    rect + centered label straight to the draw list, hover from the live
+    mouse position (the owning tile repaints every frame while
+    bounding-hovered, so the highlight tracks), and the click claimed
+    through the OWNING view's draw_state.on_action rect — the same routing
+    the tab bar's dnd clicks already used, so blit-cache event delivery
+    holds. Advances the flow like an inline item of the same size (dummy).
+    Styling mirrors `button`'s make_color_rgb + brightness-clamp pipeline so
+    converted call sites keep their look. alpha=0 draws no bg (label-only
+    buttons, e.g. inactive tabs). Returns True on click."""
+    if style_manager is None:
+        style_manager = Melty.style_manager
+    text = str(label).split("##")[0]
+    ts = imgui.calc_text_size(text)
+    w = width if width is not None else ts.x + Melty.px(text_pad)
+    h = height if height is not None else ts.y + Melty.px(8.0)
+    x, y = imgui.get_cursor_screen_pos()
+    mx, my = imgui.get_mouse_pos()
+    hovered = (draw_state is not None
+               and draw_state._bounding_hovered
+               and not Melty.on_drag
+               and x <= mx < x + w and y <= my < y + h)
+    dl = imgui.get_window_draw_list()
+    if alpha > 0.0 and color is not None:
+        from src.lsd.gl_gui.view.core_views.new_core_view import _brightness_clamp
+        bg = style_manager.make_color_rgb(
+            color[0], color[1], color[2],
+            value=tint_value + (hover_boost if hovered else 0.0),
+            factor=factor, saturation_scale=saturation, alpha=1.0)
+        bg = _brightness_clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
+        dl.add_rect_filled(x, y, x + w, y + h,
+                           imgui.get_color_u32_rgba(bg[0], bg[1], bg[2], alpha),
+                           rounding=Melty.px(corner_radius))
+    tc = style_manager.make_color_rgb(
+        color[0], color[1], color[2],
+        value=text_value + (hover_text_boost if hovered else 0.0),
+        factor=factor, saturation_scale=text_saturation, alpha=1.0)
+    dl.add_text(x + (w - ts.x) * 0.5, y + (h - ts.y) * 0.5,
+                imgui.get_color_u32_rgba(tc[0], tc[1], tc[2], 1.0), text)
+    imgui.dummy(w, h)
+    if draw_state is None:
+        return False
+    return draw_state.on_action("left_mouse_clicked", view_id=view_id,
+                                rect=(x, y, x + w, y + h),
+                                priority_delta=2) is not None
+
+
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",
                 collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False, name_color=None,
@@ -426,7 +480,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
 
         if show_add_delete:
-            if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
+            if flat_button(f"\uf067##add{unique}", draw_state,
+                           view_id=f"hdr_add{unique}"):
                 _instantiate_and_add(new_item_type)
                 on_change = True
                 return_val = input_value
@@ -451,7 +506,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                 sel_name = draw_state.misc.get("add_type_name")
             sel_type = show_add_types.get(sel_name)
             add_label = f"\uf067 {sel_name}" if sel_type is not None else "\uf067"
-            if RenderFuncs.button(f"{add_label}##add_typed{unique}", name=f"\uf067##add_typed{unique}")[0]:
+            if flat_button(f"{add_label}##add_typed{unique}", draw_state,
+                           view_id=f"hdr_add_typed{unique}"):
                 _instantiate_and_add(sel_type if sel_type is not None else new_item_type)
                 on_change = True
                 return_val = input_value
@@ -700,7 +756,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # ── Add button ─────────────────────────────────────────────
     if show_add_delete and (isinstance(input_value, (list, dict, _BubblingDict)) or hasattr(input_value, "__dict__")):
         if show_add_delete:
-            if RenderFuncs.button(f"\uf067##add{unique}", name=f"\uf067##add{unique}")[0]:
+            if flat_button(f"\uf067##add2{unique}", draw_state,
+                           view_id=f"hdr_add2{unique}"):
                 hinted_type = new_item_type
                 if hinted_type is NoneType:
                     hinted_type = annotation_item_type(kwargs.get("annotation")) or NoneType
@@ -871,6 +928,8 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
             #     Melty.cache.invalidate_up(draw_state.parent_window._tile_id, max_depth=10)
     else:
         if parent_show_add_delete and collection is not None and key is not None:
-            if RenderFuncs.button(f"\uf1f8##del{unique}", tint=(0.12,0.002037035,0.002037035,0.4), name=f"\uf1f8##del{unique}")[0]:
+            if flat_button(f"\uf1f8##del{unique}", draw_state,
+                           view_id=f"hdr_del{unique}",
+                           color=(0.12, 0.002037035, 0.002037035), alpha=0.4):
                 Melty.to_delete(key, collection)
             same_line(spacing=0.0)

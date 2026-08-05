@@ -507,6 +507,7 @@ def render_func(*args, **o_kwargs):
     @wraps(func)
     def wrapper(input_value=None, **kwargs):
         _wt0 = time.perf_counter()   # TEMP DEBUG: wrapper prologue/inner split
+        _ves_pushed = False          # this call entered the exclusive-time cache
 
         # ── imgui availability ──────────────────────────────────────
         # When called from a background thread (_converter_mode=True),
@@ -689,6 +690,7 @@ def render_func(*args, **o_kwargs):
         # bg isn't forced, collapse/expand rects aren't juggled, convert_in
         # keeps running. AUTO (default) keeps the legacy skip-the-func path.
         manual_expand = kwargs.get("expanded_mode", None) is ExpandMode.MANUAL
+        _wtA = time.perf_counter()   # TEMP perf: end of kwargs/mode merge
 
         if _has_imgui and not Melty.channels_split:
             draw_list = imgui.get_window_draw_list()
@@ -783,6 +785,7 @@ def render_func(*args, **o_kwargs):
 
         tile_id = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
         draw_state._tile_id = tile_id
+        _wtB = time.perf_counter()   # TEMP perf: unique/draw_state computation
 
         if "closed" in kwargs:
             draw_state.closed = kwargs["closed"]
@@ -1112,6 +1115,16 @@ def render_func(*args, **o_kwargs):
                                 imgui.get_cursor_screen_pos()[1] - draw_state._parent.abs_top)
                             if not draw_state.expanded and not manual_expand:
                                 return_value = (False, None)
+                                # TEMP perf: bill this early-out (collapsed
+                                # inline window) - otherwise it hides in the
+                                # parent's exclusive time.
+                                _vm = getattr(Melty, "_frame_view_ms", None)
+                                if _vm is not None:
+                                    _nm = getattr(func, "__name__", "?") + "~w"
+                                    _t = time.perf_counter() - _wt0
+                                    _e = _vm.get(_nm)
+                                    _vm[_nm] = ((_e[0] + _t, _e[1] + 1)
+                                                if _e else (_t, 1))
                                 if return_extras:
                                     if len(return_value) == 3:
                                         return return_value
@@ -1192,6 +1205,14 @@ def render_func(*args, **o_kwargs):
                     get_stack = get_live_frames(skip_count=1)
                     draw_state._layer_stack_trace = get_stack
 
+                # TEMP perf: bill this early exit (deferred/closed window
+                # path) - otherwise it counted in the parent's exclusive time.
+                _vm = getattr(Melty, "_frame_view_ms", None)
+                if _vm is not None:
+                    _nm = getattr(func, "__name__", "?") + "~w"
+                    _t = time.perf_counter() - _wt0
+                    _e = _vm.get(_nm)
+                    _vm[_nm] = ((_e[0] + _t, _e[1] + 1) if _e else (_t, 1))
                 if return_extras:
                     if len(return_value) == 3:
                         return return_value
@@ -2506,6 +2527,7 @@ def render_func(*args, **o_kwargs):
             _pushed_search = False
             draw_state._melty_cursor = (0, 0)  # column -> (x, y)
 
+            _wtC = time.perf_counter()   # TEMP perf: pre-cache is done
             if Melty.cache.mark_start_offscreen(draw_state=draw_state):
                 draw_state._melty_content_height = 0
 
@@ -3603,6 +3625,7 @@ def render_func(*args, **o_kwargs):
                 _ves = getattr(Melty, "_view_excl_stack", None)
                 if _ves is not None:
                     _ves.append(0.0)
+                    _ves_pushed = True
                 return_value = draw_inner_main(clean_args, draw_state,
                                                input_value, unique, kwargs)
                 _wt2 = time.perf_counter()
@@ -4266,27 +4289,47 @@ def render_func(*args, **o_kwargs):
             # cache-hit paths return before _wt1/_wt2 exist.
             try:
                 _wt3 = time.perf_counter()
-                # Exclusive-time attribution: this view's total minus the
-                # totals its nested wrapper calls already claimed. The pop
-                # balances with the push around draw_inner_main; a frame-start
-                # reset (lsd_studio) rebalances after any exception unwind.
-                _ves = getattr(Melty, "_view_excl_stack", None)
-                if _ves:
-                    _tot = _wt3 - _wt0
-                    _child = _ves.pop()
+                _tot = _wt3 - _wt0
+                _vm = getattr(Melty, "_frame_view_ms", None)
+                if _ves_pushed:
+                    # Exclusive time attribution (FULL renders - this call
+                    # pushed around draw_inner_main): total - what nested
+                    # wrapper calls already consumed. A frame-start reset
+                    # (lsd_studio) rebalances after an exception unwind.
+                    _ves = getattr(Melty, "_view_excl_stack", None)
                     if _ves:
-                        _ves[-1] += _tot
-                    _vm = getattr(Melty, "_frame_view_ms", None)
-                    if _vm is not None:
-                        _nm = getattr(func, "__name__", "?")
-                        _e = _vm.get(_nm)
-                        _vm[_nm] = ((_e[0] + _tot - _child, _e[1] + 1)
-                                    if _e else (_tot - _child, 1))
-                if _wt3 - _wt0 > 0.030:
+                        _child = _ves.pop()
+                        if _ves:
+                            _ves[-1] += _tot
+                        if _vm is not None:
+                            _nm = getattr(func, "__name__", "?")
+                            _e = _vm.get(_nm)
+                            _vm[_nm] = ((_e[0] + _tot - _child, _e[1] + 1)
+                                        if _e else (_tot - _child, 1))
+                            if _nm == "button":
+                                _bl = getattr(Melty, "_frame_button_names", None)
+                                if _bl is not None and len(_bl) < 24:
+                                    _bl.append(str(getattr(draw_state, "name", "?"))[:40])
+                elif _vm is not None:
+                    # Tile REPLAY (mark_start found the cached version; no
+                    # push happened): the call still paid the full prologue +
+                    # the shared epilogue. Billed to its own `name~r` row -
+                    # NOT popped from the stack (the earlier version popped
+                    # the PARENT's entry time, corrupting attribution: an
+                    # inflated draw_func() times). All time still remains
+                    # inside the nearest full-render ancestor's exclusive;
+                    # the ~r rows exist to decompose exactly that.
+                    _nm = getattr(func, "__name__", "?") + "~r"
+                    _e = _vm.get(_nm)
+                    _vm[_nm] = ((_e[0] + _tot, _e[1] + 1) if _e else (_tot, 1))
+                if _ves_pushed and _tot > 0.030:
                     from src.lsd.gl_gui.perf_trace import trace as _wtr
                     _wtr("wrapper split",
                          view=getattr(func, "__name__", "?"),
-                         pro_ms=round((_wt1 - _wt0) * 1000.0, 1),
+                         merge=round((_wtA - _wt0) * 1000.0, 1),
+                         resolve=round((_wtB - _wtA) * 1000.0, 1),
+                         checks=round((_wtC - _wtB) * 1000.0, 1),
+                         setup=round((_wt1 - _wtC) * 1000.0, 1),
                          inner_ms=round((_wt2 - _wt1) * 1000.0, 1),
                          epi_ms=round((_wt3 - _wt2) * 1000.0, 1))
             except Exception:

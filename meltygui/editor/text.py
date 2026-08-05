@@ -198,10 +198,26 @@ def _completion_context(text, cursor):
     """The completion site at `cursor`: the identifier `prefix` being typed, the
     `anchor` index where it starts (== cursor when there's no prefix yet), and
     whether the char just before the prefix is a `.` (attribute access). The
-    anchor is the span an accepted suggestion overwrites."""
-    left = text[:cursor]
-    m = _PREFIX_RE.search(left)
-    prefix = m.group(0) if m else ""
+    anchor is the span an accepted suggestion overwrites.
+
+    Bounded backward scan, NOT `_PREFIX_RE.search(text[:cursor])`: a
+    `...$`-anchored search walks the regex engine over every position from 0,
+    O(buffer) — measured 6.1ms per call on a 120KB buffer, and this runs
+    every focused frame (it WAS the editor's mystery per-frame keyboard
+    cost). Semantics preserved: the trailing word-char run, started at its
+    leftmost letter/underscore (digits can't open an identifier) — with one
+    deliberate divergence: the regex's `$` also matched before a trailing
+    newline, so a caret at the START of a line inherited the previous line's
+    last identifier as its prefix (an accepted pick would have overwritten
+    text on the line above). Here a caret after '\\n' gets the correct empty
+    prefix."""
+    i = cursor
+    lo = max(0, cursor - 512)   # names are short; bound the walk
+    while i > lo and (text[i - 1].isalnum() or text[i - 1] == '_'):
+        i -= 1
+    while i < cursor and not (text[i].isalpha() or text[i] == '_'):
+        i += 1
+    prefix = text[i:cursor]
     anchor = cursor - len(prefix)
     if anchor - 1 >= 0 and len(text) > anchor - 1:
         dot_trigger = anchor > 0 and text[anchor - 1] == "."
@@ -5222,7 +5238,6 @@ def draw_text(input_value: str, height=None,
               completion_source=None, unique=0):
     
     ds = draw_state   
-    
 
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -5296,7 +5311,6 @@ def draw_text(input_value: str, height=None,
         _err_markers = list(_ct_errors) if _ct_errors else []
         _err_markers += _exception_errors(error)
     else:
-    
         _ct_errors, _err_markers = None, []
     # Fast-path syntax markers (Toggles.TextEditor.fast_syntax_check): the
     # staleness section at the end of the body re-runs a bare compile() per
@@ -6176,7 +6190,7 @@ def draw_text(input_value: str, height=None,
                 else:
                     text = text[:ds.text_cursor_pos] + text[ds.text_cursor_pos + 1:]
                 changed = True
-
+                
         # --- Left ---
         if pressed(glfw.KEY_LEFT):
             ds.text_cursor_blink_time = time.time()
@@ -6191,6 +6205,7 @@ def draw_text(input_value: str, height=None,
             else:
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
+
 
         # --- Right ---
         if pressed(glfw.KEY_RIGHT):
@@ -6352,6 +6367,7 @@ def draw_text(input_value: str, height=None,
         if changed and getattr(ds, '_uj_open', False):
             ds._uj_open = False
 
+        _pf("kbd:keys")
         # --- Code-suggestion popup: toggle visibility + rebuild candidates ---
         # Runs after every text-mutating key so the prefix reflects the final
         # buffer. Produces the list THIS frame's render draws and next frame's
@@ -6575,6 +6591,7 @@ def draw_text(input_value: str, height=None,
         # (completion_source): jedi can't see its runtime-typed locals, and we
         # don't want a subprocess completion job fired per keystroke in a
         # one-liner.
+        _pf("kbd:ac")
         if ac_enabled and completion_source is None:
             _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
             _sig_req = getattr(ds, '_ac_sig_request_paren', -1)
@@ -7303,6 +7320,10 @@ def draw_text(input_value: str, height=None,
             src_i += len(token)
             continue
         start = 0
+
+
+
+
 
         while True:
             nl = token.find('\n', start)

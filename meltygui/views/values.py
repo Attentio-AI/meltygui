@@ -56,7 +56,7 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import hotkey, Co
 from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import live
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_header_end, draw_footer, render_search, \
-    annotation_item_type
+    annotation_item_type, flat_button
 from src.lsd.gl_gui.view.core_views.inspect_utils import set_fn_defaults
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_view, _brightness_clamp
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
@@ -5206,21 +5206,23 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
                 # route it through btn_height (the pinned button size).
                 btn_height = dnd_extra.pop("height", btn_height)
 
-        if active:
-            selected_value = 0.23
-            btn_res = button(label, z_offset=2, name=f"tab_{i}_{unique}",
-                             height=btn_height, tint_value=new_value + selected_value - 0.03,
-                             color=tab_color, factor=tab_factor, draw=True, **dnd_extra)
-        else:
-            saturation = 1.0 if tinted else 0.3
-            btn_res = button(label, indent_size=0, height=btn_height, draw=True, z_offset=0.0,
-                             alpha=0.0 if tinted else 0.0, tint_value=new_value if not tinted else 0.1, saturation=saturation,
-                             name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
-                             text_value=1.0 if not tinted else 0.9,
-                             shadow=False, **dnd_extra)
-        clicked = btn_res[0]
-
         if dnd is not None:
+            # dnd: tabs - legacy @render_func buttons: DragDrop needs a
+            # per-tab draw_state to register as the drag child (pickup,
+            # floating window, slot placeholder). Only the context menu's
+            # reorderable tab bar takes this branch.
+            if active:
+                selected_value = 0.23
+                btn_res = button(label, z_offset=2, name=f"tab_{i}_{unique}",
+                                 height=btn_height, tint_value=new_value + selected_value - 0.03,
+                                 color=tab_color, factor=tab_factor, draw=True, **dnd_extra)
+            else:
+                saturation = 1.0 if tinted else 0.3
+                btn_res = button(label, indent_size=0, height=btn_height, draw=True, z_offset=0.0,
+                                 alpha=0.0 if tinted else 0.0, tint_value=new_value if not tinted else 0.1, saturation=saturation,
+                                 name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
+                                 text_value=1.0 if not tinted else 0.9,
+                                 shadow=False, **dnd_extra)
             # A draggable tab must not change the selection on mouse-DOWN (a
             # drag pickup would eat a multi-select). Override the button's
             # down-click and select on CLICKED instead: the input handler only
@@ -5247,6 +5249,30 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
                 # position so the bar doesn't reflow mid-drag.
                 imgui.dummy(tab_width, tab_height)
                 clicked = False
+        else:
+            # Plain tabs: draw-list rendering (flat_button - the fast-dock
+            # model). The per-tab @render_func buttons cost ~0.7ms each in
+            # wrapper machinery alone; on the editor's 8-tab strip that was
+            # the largest single slice of the hovered frame. Visual parity
+            # with the old button params: active tabs get the filled rect,
+            # inactive draw label-only (alpha=0), hover brightens the text
+            # like the button's hovered text_value boost. Framework
+            # shadows/z-offset on the active tab are gone (no draw_state) -
+            # the fast-dock tradeoff.
+            if active:
+                clicked = flat_button(
+                    label, draw_state, view_id=f"tab_{i}",
+                    width=tab_width, height=btn_height,
+                    color=tab_color, factor=tab_factor,
+                    tint_value=new_value + 0.23 - 0.03)
+            else:
+                clicked = flat_button(
+                    label, draw_state, view_id=f"tab_{i}",
+                    width=tab_width, height=btn_height,
+                    color=tab_color, factor=tab_factor, alpha=0.0,
+                    tint_value=new_value if not tinted else 0.1,
+                    saturation=1.0 if tinted else 0.3,
+                    text_value=1.0 if not tinted else 0.9)
 
         if clicked:
             changed = True
