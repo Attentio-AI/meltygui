@@ -2629,6 +2629,15 @@ class Melty:
             cls.backend = GlfwQueueBackend(cls.event_handler, window)
         except Exception as e:
             print(f"GlfwQueueBackend unavailable, keeping ImGuiBackend: {e}")
+        # OS-level 3-finger click/drag (events/touchpad_backend.py) - DISABLED.
+        # The TM3414's contact sensing proved unreliable for 3-finger detection
+        # (reports 1-2 flickering contacts for 3 pressed fingers in most
+        # sessions); re-enable by uncommenting when that's resolved.
+        # try:
+        #     from src.lsd.gl_gui.events.touchpad_backend import start_three_finger_drag
+        #     start_three_finger_drag()
+        # except Exception as e:
+        #     print(f"Touchpad 3-finger drag unavailable: {e}")
 
     @classmethod
     def apply_refresh_nested_windows(cls, nested_window_refresh=None):

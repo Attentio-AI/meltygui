@@ -198,13 +198,14 @@ def _fuzzy_key_match(q, k):
 # `match` (optional) is the substring queries run against when the label has
 # extra context - e.g. a file hit's label is the full relative path but its
 # match key is the bare filename. None → match the label itself.
-# `state` (optional) is a zero-arg callable returning the hit's current bool -
-# rows that have one draw a live on/off switch (the Toggles category).
+# `state` (optional) is a zero-arg callable returning the hit's current VALUE -
+# a row that has one renders its label: a bool as an on/off toggle, an
+# int/float/str as its editing widget (`set_state(value)` writes an edit back).
 # `keep_open` marks a hit whose activation is a toggle rather than a jump: the
-# search window stays up afterwards so a run of settings can be flipped
+# source window stays up afterwards so a row of settings can be changed
 # without reopening it.
-SearchHit = namedtuple("SearchHit", "label tint activate kind match state keep_open",
-                       defaults=("", None, None, False))
+SearchHit = namedtuple("SearchHit", "label tint activate kind match state keep_open set_state",
+                       defaults=("", None, None, False, None))
 
 # Result categories in selector order. A hit's `kind` keys into this; hits
 # with an unknown kind list after these under their own name.
@@ -460,51 +461,57 @@ def file_index():
 
 
 # --- Toggles category -------------------------------------------------------
-# A toggle hit doesn't jump anywhere: activating it FLIPS the setting through
-# the shared Toggles cst-dict host (code_hosts_for(Toggles)) - the exact same
-# write the Toggles window's dict pane makes when you click its checkbox, so
-# the value applies live AND round-trips into toggles.py through the host's
-# normal chain_out/save. Nothing here knows about libcst, saving or hotswap;
-# it's one item-set on the bubbling parse.
+# A Toggles hit doesn't jump anywhere: it justS the setting through the shared
+# Toggles cst-dict host (code_hosts_for(Toggles)) - the exact same write the
+# Toggles window's dict pane does, so the value applies live AND round-trips
+# into toggles.py through the host's normal chain_out/save. Nothing here knows
+# about libcst, saving or hotswap; it's one item-set in the bubbling host.
+#
+# bool rows flip on activation; int/float/str rows carry a real widget
+# (drag_int / drag_float / input_text, via the framework's draw_int /
+# draw_float / draw_str) and activation puts the caret in it.
 
 _MISSING = object()
+# The only types a setting row can render and write back.
+_SETTING_TYPES = (bool, int, float, str)
 
 # path -> (value, deadline_frame) of writes made before the host's last
-# parse landed. Drained per frame from draw_main (drain_pending_toggles).
-_pending_toggle_writes = {}
+# parse landed. Drained per frame from draw_main (drain_pending_settings).
+_pending_setting_writes = {}
 
 
-def _toggle_paths(cls, prefix=""):
-    """Dotted paths of every bool class-var under `cls`, descending into its
-    nested setting groups (`SearchSettings.ActiveElement.<flag>`). Definition
-    order, since vars() on a class preserves it."""
+def _setting_paths(cls, prefix=""):
+    """Dotted paths of every bool/int/float/str class-var under `cls`,
+    descending into its nested setting groups
+    (`SearchSettings.ActiveElement.opacity`). Definition order, since vars()
+    on a class preserves it."""
     out = []
     for k, v in vars(cls).items():
         if not isinstance(k, str) or k.startswith("_"):
             continue
-        if isinstance(v, bool):
+        if isinstance(v, _SETTING_TYPES):
             out.append(prefix + k)
         elif (isinstance(v, type)
               and getattr(v, "__qualname__", "").startswith(cls.__qualname__ + ".")):
-            out.extend(_toggle_paths(v, f"{prefix}{k}."))
+            out.extend(_setting_paths(v, f"{prefix}{k}."))
     return out
 
 
-def _toggle_live(path):
-    """The LIVE value of a toggle by dotted path (None if it no longer exists).
-    Read off the class objects, not the parse, so a row shows its real state
-    whether or not the host has parsed yet — and updates the instant
-    live_apply_edits lands the flip."""
+def _setting_live(path):
+    """The LIVE value of a setting by dotted path (None if it no longer
+    exists). Read off the class objects, not the parse, so a row shows its
+    real value whether or not the host has parsed yet — and updates the
+    instant live_apply_edits lands an edit."""
     obj = Toggles
     for p in path.split("."):
         obj = getattr(obj, p, _MISSING)
         if obj is _MISSING:
             return None
-    return bool(obj)
+    return obj if isinstance(obj, _SETTING_TYPES) else None
 
 
-def _toggle_group_tint(path):
-    """The @defaults tint of the group a toggle lives in (Toggles.TextEditor's
+def _setting_group_tint(path):
+    """The @defaults tint of the group a setting lives in (Toggles.TextEditor's
     for `TextEditor.*`), so a row is coloured like its pane in the Toggles
     window and tracks a tint edit. Flat vars get the category tint."""
     owner = Toggles
@@ -525,14 +532,14 @@ def _toggles_dict_host():
     return host
 
 
-def _write_toggle(path, value):
-    """Set one toggle in the parse. Returns False while the host's background
+def _write_setting(path, value):
+    """Set one setting in the parse. Returns False while the host's background
     parse hasn't landed yet (the caller parks the write and retries).
 
     The item-set is all the persistence there is: the parse dict bubbles the
     host dirty, which chain_outs dict -> cst -> source and queues the save.
     live_apply_edits is the same immediate preview draw_code_tabs_from_cache
-    runs on a dict-pane edit — without it the flip wouldn't reach the live
+    runs on a dict-pane edit — without it the edit wouldn't reach the live
     class until a recompile."""
     from src.lsd.gl_gui.view.core_conversion.chain_converters import live_apply_edits
     gp = _toggles_dict_host()._held()
@@ -549,72 +556,144 @@ def _write_toggle(path, value):
 
 def _repaint_global_search():
     """Repaint the search window's tile after state it draws changed outside
-    its body (a toggle's on/off pill) — a cached blit would keep showing the
+    its body (a row's switch / value) — a cached blit would keep showing the
     old value."""
     if GlobalSearch.window_ds is not None:
         GlobalSearch.window_ds.invalidate()
     request_render()
 
 
-def _activate_toggle(path):
-    """Flip a toggle from a search row. The write is parked and retried when
-    the host is still parsing (picking a row moments after the first
-    keystroke), so an early pick isn't silently dropped."""
-    cur = _toggle_live(path)
-    if cur is None:
-        return
-    if not _write_toggle(path, not cur):
-        _pending_toggle_writes[path] = (not cur, Melty.frame_count + 600)
+def _set_setting(path, value):
+    """Write a setting, parking it for retry while the host is still parsing
+    (picking a row moments after the first keystroke), so an early edit isn't
+    silently dropped."""
+    if not _write_setting(path, value):
+        _pending_setting_writes[path] = (value, Melty.frame_count + 600)
     _repaint_global_search()
 
 
-def drain_pending_toggles():
-    """Retry toggle writes parked while the host was still parsing. Called
-    every frame from draw_main; free when nothing is parked."""
-    if not _pending_toggle_writes:
+def _begin_editing(path):
+    """Hand the keyboard to a row's value widget: remember the row, arm the
+    one-shot focus grab, and release Melty's text focus so the search box
+    stops eating keys. _end_editing hands the box its caret back."""
+    GlobalSearch.editing = path
+    GlobalSearch._edit_focus = True
+    Core.melty.text_focused_ds = None
+
+
+def _end_editing():
+    """Leave value editing and put the caret back in the search box."""
+    if GlobalSearch.editing is None:
         return
-    for path, (value, deadline) in list(_pending_toggle_writes.items()):
-        if _write_toggle(path, value):
-            del _pending_toggle_writes[path]
+    GlobalSearch.editing = None
+    GlobalSearch._edit_focus = False
+    GlobalSearch._focus_requested = True
+    _repaint_global_search()
+
+
+def _activate_setting(path):
+    """Activate a setting row: a bool flips in place, anything else opens its
+    widget for typing (drag_int / drag_float / input_text)."""
+    cur = _setting_live(path)
+    if cur is None:
+        return
+    if isinstance(cur, bool):
+        _set_setting(path, not cur)
+    else:
+        _begin_editing(path)
+        _repaint_global_search()
+
+
+def _value_widget(hit, value, r_edge, ry, row_h, width):
+    """Draw a search row's editable value as a REAL framework widget —
+    draw_int / draw_float (imgui drag widgets) or draw_str (a text field) —
+    right-aligned in the row. Returns (left edge to keep packing leftwards
+    from, the widget's rect).
+
+    Placement is by screen position, since the rows themselves are a raw
+    draw-list block; the caller parks the imgui cursor afterwards. Drag speed
+    scales with the value's magnitude and the bounds are deliberately wide —
+    these settings run from 0.07 to 131072, and the render funcs' own default
+    min/max would silently clamp them."""
+    h = imgui.get_frame_height()
+    wx, wy = r_edge - width, ry + (row_h - h) / 2.0
+    imgui.set_cursor_screen_pos((wx, wy))
+    editing = GlobalSearch.editing == hit.label
+    if editing and GlobalSearch._edit_focus:
+        # One-shot focus grab. On a drag widget imgui moves keyboard focus into
+        # its type-a-value text input, so Enter finishes typing on ints and
+        # floats exactly like it does on a text field.
+        imgui.set_keyboard_focus_here()
+        GlobalSearch._edit_focus = False
+    common = dict(name=f"gs_value##{hit.label}", show_header=False,
+                  show_name=False, selectable=False, wrap=True, min_width=width)
+    if isinstance(value, int):
+        changed, new_value = draw_int(value, speed=max(0.1, abs(value) * 0.005),
+                                      min_value=-10 ** 9, max_value=10 ** 9,
+                                      **common)
+    elif isinstance(value, float):
+        changed, new_value = draw_float(value, speed=max(0.001, abs(value) * 0.005),
+                                        min_value=-1e9, max_value=1e9, **common)
+    else:
+        changed, new_value = draw_str(str(value), **common)
+    if changed and new_value != value:
+        hit.set_state(new_value)
+    # A change from the KEYBOARD ends editing and hands the caret back to the
+    # search box; a drag keeps the row live so it can keep dragging.
+    if changed and editing and not imgui.is_mouse_down(0):
+        _end_editing()
+    return wx - 6, (wx, wy, wx + width, wy + h)
+
+
+def drain_pending_settings():
+    """Retry setting writes parked while the host was still parsing. Called
+    every frame from draw_main; free when nothing is parked."""
+    if not _pending_setting_writes:
+        return
+    for path, (value, deadline) in list(_pending_setting_writes.items()):
+        if _write_setting(path, value):
+            del _pending_setting_writes[path]
             _repaint_global_search()
         elif Melty.frame_count > deadline:
-            # The parse never landed (load error / the toggle disappeared) - drop
-            # it rather than retry forever, and say so instead of no-oping.
-            del _pending_toggle_writes[path]
+            # The parse never landed (load error / the setting vanished) -
+            # forget it rather than retry forever, and say so instead of
+            # no-oping.
+            del _pending_setting_writes[path]
             from src.lsd.gl_gui.notifications import notify
-            notify(f"toggle '{path}' never landed — Toggles parse unavailable",
+            notify(f"setting '{path}' never landed — Toggles parse unavailable",
                    tag="global search")
-    if _pending_toggle_writes:
+    if _pending_setting_writes:
         request_render()  # keep frames coming until the parse lands
 
 
 # (path signature, hits) - the paths are re-walked per query (cheap: a list
 # looping class attrs) but the HITS list identity is kept stable so the
-# scorer's per-provider corpus cache holds. It only rebuilds when a toggle is
-# added/removed/renamed - a value flip changes nothing here, since a row's
-# state and tint are live callables.
+# scorer's per-provider corpus cache holds. It only rebuilds when a path is
+# added/removed/renamed - a value change never lands here, since a row's state
+# and tint are live callables.
 _toggle_hits_memo = (None, None)
 
 
 @search_index
 def toggle_index():
-    """Every bool setting under Toggles — flat class vars plus nested groups,
-    labelled by dotted path (`TextEditor.enable_spell_check`). Activating a hit
-    flips it in place and leaves the search open."""
+    """Every bool/int/float/str setting under Toggles — flat class vars plus
+    nested groups, labelled by dotted path (`TextEditor.enable_spell_check`).
+    Activating a hit edits it in place and leaves the search open."""
     global _toggle_hits_memo
     # Warm the shared host so the parse is ready by the time a row is picked,
     # and register the search window as its consumer - that keeps it alive
     # while the search is open and lets the idle sweep reclaim it after.
     _toggles_dict_host().notify_on_change(GlobalSearch.window_ds)
-    paths = _toggle_paths(Toggles)
+    paths = _setting_paths(Toggles)
     sig = tuple(paths)
     memo_sig, memo_hits = _toggle_hits_memo
     if memo_sig == sig:
         return memo_hits
-    hits = [SearchHit(p, (lambda pp=p: _toggle_group_tint(pp)),
-                      (lambda pp=p: _activate_toggle(pp)), kind="Toggles",
+    hits = [SearchHit(p, (lambda pp=p: _setting_group_tint(pp)),
+                      (lambda pp=p: _activate_setting(pp)), kind="Toggles",
                       match=p.rsplit(".", 1)[-1],
-                      state=(lambda pp=p: _toggle_live(pp)), keep_open=True)
+                      state=(lambda pp=p: _setting_live(pp)), keep_open=True,
+                      set_state=(lambda v, pp=p: _set_setting(pp, v)))
             for p in paths]
     _toggle_hits_memo = (sig, hits)
     return hits
@@ -779,6 +858,8 @@ def _dismiss_global_search():
     GlobalSearch.query = ""
     GlobalSearch._last_query = None
     GlobalSearch.selected = 0
+    GlobalSearch.editing = None
+    GlobalSearch._edit_focus = False
     Core.melty.clear_focus()
     request_render()
 
@@ -1652,14 +1733,21 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
 
     def _items_for(kind):
         """(rows, is_fallback) for a category: its own hits, or — when it
-        matched nothing — EVERY category's hits in global rank order. An empty
-        tab showing the results the query did find beats an empty pane, and
-        it's display-only: the selection never moves, so the chips still say
-        where you are and the next keystroke filters the same way."""
+        matched nothing — EVERY category's hits, grouped under their category
+        (best-ranked category first, rank order within each). An empty tab
+        showing the results the query did find beats an empty pane, and it's
+        display-only: the selection never moves, so the chips still say where
+        you are and the next keystroke filters the same way.
+
+        The returned order IS the on-screen order, which is what lets the
+        highlight index (input_value.selected) address rows directly."""
         own = by_kind.get(kind) or []
         if own or not input_value.results:
             return own, False
-        return list(input_value.results), True
+        grouped = []
+        for k in dict.fromkeys(h.kind for h in input_value.results):
+            grouped.extend(by_kind[k])
+        return grouped, True
 
     items, fallback = _items_for(active)
     n_vis = min(len(items), max_visible)
@@ -1732,10 +1820,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     row_bg_value, row_bg_hot = 0.045, 0.10
     row_text_value, row_text_hot = 0.9, 1.5
     text_saturation = 0.8
-    # On/off switch icons on rows that carry local state (the Toggles category).
+    # Live value, drawn at a row's right edge: a bool gets an on/off switch,
+    # everything else a real drag/text widget of this width.
     SW_W, SW_H = 28.0, 14.0
     sw_bg_on, sw_bg_off = 0.42, 0.09
     sw_knob_on, sw_knob_off = 1.5, 0.42
+    VAL_W = 108.0
     # Selection: a flat outline, NOT the search glow's gradient - white with a
     # slight blue tint so it reads the same over every category's row tint.
     sel_color = imgui.get_color_u32_rgba(0.88, 0.93, 1.0, 1.0)
@@ -1750,9 +1840,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     ev = left_mouse_down
     click = (ev.x, ev.y) if (ev and hasattr(ev, "x")) else None
     line_h = imgui.get_text_line_height()
-    HINT_H = line_h + 6.0  # the "no <category> results" line, fallback only
-    # Small face for the per-row category tags in fallback mode. Pushing a font
-    # retargets the shared draw list state, so dl.add_text picks it up.
+    # Fallback mode stacks: the "No <category> Found" hint, a breather, then
+    # each borrowed category's own label above its rows.
+    HINT_H = line_h + 6.0
+    HINT_GAP = 10.0
+    # Small font for the category labels. Pushing a font retargets the shared
+    # draw list too, so dl.add_text picks it up.
     small_font = (Core.melty.font_mgr.get(Font.JETBRAINS_MONO_13)
                   if Core.melty.font_mgr is not None else None)
     small_line_h = line_h
@@ -1760,6 +1853,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         imgui.push_font(small_font)
         small_line_h = imgui.get_text_line_height()
         imgui.pop_font()
+    GROUP_H = small_line_h + 7.0
 
     def _mix(tint, value, factor=0.8, sat=1.0):
         c = tint if (isinstance(tint, tuple) and len(tint) >= 3) else (0.5, 0.5, 0.5)
@@ -1768,9 +1862,14 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         return imgui.get_color_u32_rgba(col[0], col[1], col[2], 1.0)
 
     # One dummy reports the full content height so everything draws over it.
+    # (Live widgets are real imgui items placed by screen position, so the
+    # cursor is parked back here once the rows are done.)
     n_over = len(items) - n_vis
+    n_groups = len(set(h.kind for h in items[:n_vis])) if fallback else 0
     imgui.dummy(w, CHIP_H + CHIP_ROW_GAP + n_vis * (ROW_H + ROW_GAP)
-                + (HINT_H if fallback else 0) + (MORE_H if n_over > 0 else 0))
+                + (HINT_H + HINT_GAP if fallback else 0) + n_groups * GROUP_H
+                + (MORE_H if n_over > 0 else 0))
+    after_rows = imgui.get_cursor_screen_pos()
 
     # ---- category chips: count per category. The ACTIVE one is a filled
     # chip; the rest are bare coloured text (brighter under the cursor).
@@ -1803,17 +1902,27 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # outlined. ----
     ry = y0 + CHIP_H + CHIP_ROW_GAP
     if fallback:
-        # Why these rows aren't the active chip's: the empty result stated in
-        # the category's own colour (the loud part), then the quiet reason.
-        head = f"No {active} results"
+        # The empty result on its own line, in the category's own colour, then
+        # a breather before the borrowed categories start.
         dl.add_text(x0 + 8, ry + 2.0,
-                    _mix(_category_tint(active), 1.15, sat=text_saturation), head)
-        dl.add_text(x0 + 8 + imgui.calc_text_size(head)[0] + 7, ry + 2.0,
-                    imgui.get_color_u32_rgba(0.5, 0.5, 0.5, 1.0),
-                    "- showing all categories")
-        ry += HINT_H
+                    _mix(_category_tint(active), 1.15, sat=text_saturation),
+                    f"No {active} Found")
+        ry += HINT_H + HINT_GAP
     _counts = store.counts if store is not None else {}
+    group_shown = None
     for idx, hit in enumerate(items[:n_vis]):
+        # Borrowed rows are grouped, so each group names itself once, on its
+        # own line above its rows - small and dark in the category's colour.
+        if fallback and hit.kind != group_shown:
+            group_shown = hit.kind
+            if small_font is not None:
+                imgui.push_font(small_font)
+            dl.add_text(x0 + 8, ry + 2.0,
+                        _mix(_category_tint(hit.kind), 0.55, sat=text_saturation),
+                        hit.kind)
+            if small_font is not None:
+                imgui.pop_font()
+            ry += GROUP_H
         sel = (idx == input_value.selected)
         hov = hover_ok and x0 <= mx <= x0 + w and ry <= my <= ry + ROW_H
         hot = sel or hov
@@ -1825,11 +1934,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         dl.add_text(x0 + 8, ry + (ROW_H - line_h) / 2.0,
                     _mix(tint, row_text_hot if hot else row_text_value,
                          sat=text_saturation), hit.label)
-        # Right edge: a hit with live state (a toggle) shows an on/off switch
-        # there, and the pick count moves in beside it.
+        # Right edge: a hit with live state shows it - a bool as a switch drawn
+        # here, anything else as a real widget (drag/text) done by _value_widget.
         r_edge = x0 + w - 8
+        val_rect = None
         st = hit.state() if hit.state is not None else None
-        if st is not None:
+        if isinstance(st, bool):
             sx1, sx0 = r_edge, r_edge - SW_W
             sy = ry + (ROW_H - SW_H) / 2.0
             dl.add_rect_filled(sx0, sy, sx1, sy + SW_H,
@@ -1840,6 +1950,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                  sy + SW_H / 2.0, kr,
                                  _mix(tint, sw_knob_on if st else sw_knob_off), 12)
             r_edge = sx0 - 6
+        elif st is not None and hit.set_state is not None:
+            r_edge, val_rect = _value_widget(hit, st, r_edge, ry, ROW_H, VAL_W)
         # Lifetime pick count, right-aligned and dim - only show above zero.
         cnt_ = _counts.get(f"{hit.kind}:{hit.label}", 0)
         if cnt_ > 0:
@@ -1848,22 +1960,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             dl.add_text(r_edge - cw, ry + (ROW_H - line_h) / 2.0,
                         imgui.get_color_u32_rgba(0.62, 0.62, 0.62, 1.0), cs)
             r_edge -= cw + 8
-        # Fallback rows come from every category, so each one names its own -
-        # small and dark, in the category's tint: enough to place the row
-        # without competing with its label.
-        if fallback:
-            if small_font is not None:
-                imgui.push_font(small_font)
-            dl.add_text(r_edge - imgui.calc_text_size(hit.kind)[0],
-                        ry + (ROW_H - small_line_h) / 2.0,
-                        _mix(tint, 0.42, sat=text_saturation), hit.kind)
-            if small_font is not None:
-                imgui.pop_font()
         if sel:
             dl.add_rect(x0, ry, x0 + w, ry + ROW_H, sel_color,
                         rounding=4.0, thickness=sel_thickness)
+        # A click INSIDE the value widget belongs to the widget (drag or caret),
+        # never to the row - activating there would re-open the editor mid-drag.
         if (click is not None and x0 <= click[0] <= x0 + w
-                and ry <= click[1] <= ry + ROW_H):
+                and ry <= click[1] <= ry + ROW_H
+                and not (val_rect and val_rect[0] <= click[0] <= val_rect[2]
+                         and val_rect[1] <= click[1] <= val_rect[3])):
+            input_value.selected = idx
             _activate_hit(hit, store)
             if not hit.keep_open:
                 _dismiss_global_search()
@@ -1871,6 +1977,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     if n_over > 0:
         dl.add_text(x0 + 8, ry + 2.0,
                     imgui.get_color_u32_rgba(0.55, 0.55, 0.55, 1.0), f"+ {n_over} more")
+    # Value widgets moved the cursor; put it back where the dummy left it so
+    # the enclosing layout is unaffected.
+    imgui.set_cursor_screen_pos(after_rows)
     return False, input_value
 
 
@@ -1884,6 +1993,8 @@ class GlobalSearch:
     results = []  # cached [SearchHit] for the current query
     selected = 0  # index (in on-screen order) of the arrow-key highlight
     active_kind = "Windows"  # the category whose rows show (Left/Right cycles)
+    editing = None  # label of the row whose value widget owns the keyboard
+    _edit_focus = False  # one-shot: grab the keyboard on the next show
 
 
 @render_func()
@@ -2075,9 +2186,9 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # built before the field existed would never gain it on its own).
     _ensure_search_store()
 
-    # Toggle flips picked from global search before the Toggles code host had
+    # Setting edits made from global search before the Goggles code host had
     # parsed - retried here until they land (no-op, nothing is parked).
-    drain_pending_toggles()
+    drain_pending_settings()
 
     # Slow-source writes parked during a mouse drag (anywhere's fast/slow
     # split) run their real set_anywhere the frame the button releases.
@@ -2260,11 +2371,16 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # a per-view search otherwise.
     _gs = Core.melty.find_window("GlobalSearch")
     if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted", priority_delta=512):
-        _gs.closed = True
-        Core.melty.text_focused_ds = None
-        Core.melty.focused_ds = None
+        if GlobalSearch.editing is not None:
+            # Editing a term: Esc leaves the widget (imgui reverts a temp text
+            # input on its own), and the NEXT Esc closes the search.
+            _end_editing()
+        else:
+            _gs.closed = True
+            Core.melty.text_focused_ds = None
+            Core.melty.focused_ds = None
 
-        request_render()
+            request_render()
 
     # draw_any(Core.melty.registered_windows, name="Dock", with_header=draw_header,
     #          mode=(Mode.WINDOWS_SORTED, Mode.WINDOW))

@@ -209,13 +209,13 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
     import torch
     torch.manual_seed(35)
 
-    # [tint=(0.00, 0.20, 0.50), cam_brightness=0.34, cam_contrast=0.46, cam_zoom=1.7054, spin=-0.692, tilt=0.651]
+    # [tint=(0.00, 0.20, 0.50), cam_brightness=0.34, cam_contrast=0.46, cam_zoom=2.7015, spin=-0.692, tilt=0.651]
     q = torch.randn(heads, seq, dim)
-    # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=17.0101, spin=0.796, tilt=0.043]
+    # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=2.1464, spin=0.796, tilt=0.043]
     k = q.roll(shifts=shift, dims=1) + -0.6 * torch.randn(heads, seq, dim)
-    # [tint=(0.217, 0.119, 0.822), cam_brightness=3.37, cam_contrast=0.88, spin=0.548, tilt=0.219, cam_zoom=5.386]
+    # [tint=(0.217, 0.119, 0.822), cam_brightness=3.37, cam_contrast=0.88, spin=0.548, tilt=0.219, cam_zoom=4.3014]
     scores = q @ k.transpose(-2, -1) / (dim ** 2.8 * temp)
-    # [tint=(0.60, 0, 0), cam_brightness=0.92, cam_contrast=0.392]
+    # [tint=(0.60, 0, 0), cam_brightness=0.92, cam_contrast=0.392, cam_zoom=0.00]
     attn = torch.softmax(scores, dim=-1)
 
     # [tint=(0.264, 0.833, 0.294)]

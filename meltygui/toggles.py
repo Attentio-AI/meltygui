@@ -417,7 +417,7 @@ class Toggles:
         # Hovering a live-view marker shows its value window as a TEMPORARY
         # preview (closes on mouse-leave); double-click still latches it
         # open permanently. Read live per marker render.
-        live_hover_preview = True
+        live_hover_preview = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
