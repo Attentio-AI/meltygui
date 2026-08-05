@@ -411,7 +411,7 @@ class Toggles:
 
     @defaults(tint=(0.15, 0.135, 0.117, 1.0))
     class TextEditor:
-    
+
         enable_spell_check = False
         text_focus_stack_trace = False
         # Hovering a live-view marker shows its value window as a TEMPORARY
@@ -691,8 +691,7 @@ class Toggles:
                 Snippet("", "request_render()", ""),
             ],
         }
-
-
+        
         @staticmethod
         def usage_tint(users):
             """Background-wash color for a symbol-usage span in the editor — a
@@ -766,14 +765,14 @@ class Toggles:
         # code. Both read live; 1.0/1.0 = the raw tint.
         # [tint=(1.0, 0.661, 0.0, 1.0)]
         comment_tint_saturation = 0.49
-        
+
         # [tint=(0.3813193440437317, 0.7055555582046509, 0.14895063638687134), show_tint=True]
         comment_tint_value = 0.160
         # Legibility floor for tinted COMMENT TEXT - independent of the
         # washes' bg_min_brightness (text needs a higher floor than a
         # background does); the brightness clamp still shares bg_max_brightness.
         comment_min_brightness = 0.170
-
+    
         # Background wash color adjustment - applies to ALL def-tint
         # backgrounds (symbol washes, line bands, block washes, number
         # boxes, the glyph-mix target) AND, sans the brightness clamp, to
@@ -785,6 +784,32 @@ class Toggles:
         bg_tint_value = 0.432
         bg_min_brightness = 0.18
         bg_max_brightness = 0.41
+
+    @defaults(tint=(0.545, 0.451, 0.248))
+    class UIScale:
+        # Auto-pick the UI scale each frame from the resolution of the monitor
+        # the OS window sits on: 4k-and-larger panels get 1.5, everything else
+        # 1.0 (detect_auto_scale in fonts.py; rechecked every ~120 frames, so
+        # dragging the window to another monitor retunes soon after). False =
+        # use the manual scale below. Read live.
+        auto_scale = False
+
+        # The scaling dial, used when auto_scale is off. It reaches the screen
+        # exactly two ways (Melty.apply_ui_scale / Melty.begin_frame): every
+        # font is RE-BAKED at scale x its authored physical size, and imgui's
+        # style metrics (padding, spacing, rounding, borders) are multiplied
+        # by it. Coordinates are untouched - window sizes and hand-placed
+        # pixel offsets in the code do NOT scale, so this is a text-and-chrome
+        # scale, not a zoom. That's on purpose: the whole-interface zoom this
+        # replaced (logical display + magnify at present time) forced every
+        # offscreen tile to allocate and repaint at physical resolution and
+        # put a resample between tile and screen - slow, and soft at any scale
+        # but 1. Sanitized through glfw_utils.clamp_ui_scale: outside
+        # 0.5..3.0 (or NaN/garbage) is read as 1.0, so a typo can't bake a
+        # 20x font atlas. Changing it re-rasterizes all 18 fonts - a ~0.3s
+        # operation and a ~64->128MB atlas at 1.25 - so it is a setting to
+        # change deliberately, not to animate. 1.0 = the authored look.
+        scale = 0.8
 
     # [icon=""]
     @defaults(tint=(0.103, 0.341, 0.617))
@@ -923,6 +948,15 @@ class Toggles:
         max_preferred_header_width = 70
         preferred_header_width = 132
     cam_zoom = 1.5585
+
+    # Master switch for the always-on debug chrome painted over the app: the
+    # red/white texture-init tile counter in the top-left (LSDStudio's render
+    # loop) and the notification / "Live" value columns in the top-right
+    # (notifications.draw_notifications, gated in Melty.draw). Off = a clean
+    # screen for demos and screenshots; notify()/display() keep recording, so
+    # flipping it back shows the history. The GPU readout is unaffected.
+    # also live.
+    developer_mode = False
 
     show_filled_tiles = False
     gl_check_error = False

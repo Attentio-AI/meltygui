@@ -24,6 +24,11 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 
+# Row constants, authored for ui_scale 1.0. The dock draws straight to the draw
+# list, so nothing here follows the font the way a laid-out widget does - every
+# one of these goes through Melty.px() into a scaled local at the top of
+# draw_fast_dock, or the rows keep their 31px height while the labels grow out
+# of them.
 ROW_H = 31.0
 ROW_GAP = 4.0
 ROW_STRIDE = ROW_H + ROW_GAP
@@ -110,13 +115,20 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     target_factor, target_saturation = 0.799, 0.764
     hover_bg_boost, hover_text_boost = 0.05, 1.5
     text_saturation = 0.8
-    text_nudge_x, text_nudge_y = 2.0, -1.0                # optical centering of glyphs
-    swatch_rounding = 4.0
     empty_swatch_color = (1.0, 1.0, 1.0, 0.25)
-    name_target_gap = 6.0                                 # gap between name and summon button
-    manager_row_text_x, manager_row_text_y = 8.0, 7.0     # "Window Manager" label offsets
-    picker_width, picker_height = 216, 180 + 14 + 4 * 26 + 26
-    picker_gap_y = 2.0                                    # popover gap from its row
+
+    # ---- geometry, authored at ui_scale 1.0 and scaled once per frame ----
+    px = Melty.px
+    row_h, row_stride = px(ROW_H), px(ROW_STRIDE)
+    swatch_w, swatch_x = px(SWATCH_W), px(SWATCH_X)
+    name_x, target_w, right_pad = px(NAME_X), px(TARGET_W), px(RIGHT_PAD)
+    corner = px(CORNER)
+    text_nudge_x, text_nudge_y = px(2.0), px(-1.0)        # optical centering of text
+    swatch_rounding = px(4.0)
+    name_target_gap = px(6.0)                             # gap between name and summon button
+    manager_row_text_x, manager_row_text_y = px(8.0), px(7.0)  # "Window Manager" label offsets
+    picker_width, picker_height = px(216), px(180 + 14 + 4 * 26 + 26)
+    picker_gap_y = px(2.0)                                # popover offset below its trigger
 
     if style_manager is None:
         style_manager = Melty.style_manager
@@ -146,7 +158,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     # header - boost the content height by that top inset or the last row can
     # never scroll fully into view.
     top_inset = (y0 + draw_state.scroll_offset[1]) - draw_state.abs_top
-    imgui.dummy(cw, max(1.0, len(rows) * ROW_STRIDE + max(0.0, top_inset)))
+    imgui.dummy(cw, max(1.0, len(rows) * row_stride + max(0.0, top_inset)))
 
     mx, my = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
@@ -155,10 +167,10 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     clip = getattr(draw_state, "abs_clip_rect", None)
 
     # ---- name loop-geometry (loop-invariant; only y varies per row) ----
-    sw_x0, sw_x1 = x0 + SWATCH_X, x0 + SWATCH_X + SWATCH_W
-    tg_x1 = x0 + cw - RIGHT_PAD
-    tg_x0 = tg_x1 - TARGET_W
-    nm_x0, nm_x1 = x0 + NAME_X, tg_x0 - name_target_gap
+    sw_x0, sw_x1 = x0 + swatch_x, x0 + swatch_x + swatch_w
+    tg_x1 = x0 + cw - right_pad
+    tg_x0 = tg_x1 - target_w
+    nm_x0, nm_x1 = x0 + name_x, tg_x0 - name_target_gap
 
     # ---- local find-bar search ----
     # The window's find UI (searchable=True) counts matches by walking
@@ -206,8 +218,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     highlight_rects = []
 
     for i, (name, mw, wds) in enumerate(rows):
-        ry0 = y0 + i * ROW_STRIDE
-        ry1 = ry0 + ROW_H
+        ry0 = y0 + i * row_stride
+        ry1 = ry0 + row_h
         if edit_name == name:
             edit_row_top = ry0
             edit_row = (name, mw, wds)
@@ -221,7 +233,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
         if is_match:
             _match_ord += 1
         if is_current:
-            draw_state._search_current_rect = (nm_x0, ry0, nm_x1 - nm_x0, ROW_H)
+            draw_state._search_current_rect = (nm_x0, ry0, nm_x1 - nm_x0, row_h)
             if _session.scroll_to:
                 _scroll_into_view(draw_state, ry0, ry1, center=True)
 
@@ -232,12 +244,12 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
 
         if name == "Window Manager":
             tx = _mix(style_manager, tint, target_text_value, 1.0, text_saturation)
-            dl.add_text(x0 + NAME_X + manager_row_text_x, ry0 + manager_row_text_y,
+            dl.add_text(x0 + name_x + manager_row_text_x, ry0 + manager_row_text_y,
                         imgui.get_color_u32_rgba(*tx[:3], 1.0), name)
             continue
 
         # ---- geometry (x is loop-invariant, hoisted above) ----
-        sw_y0, sw_y1 = ry0 + (ROW_H - SWATCH_W) / 2.0, ry0 + (ROW_H + SWATCH_W) / 2.0
+        sw_y0, sw_y1 = ry0 + (row_h - swatch_w) / 2.0, ry0 + (row_h + swatch_w) / 2.0
 
         in_swatch = sw_x0 <= mx <= sw_x1 and sw_y0 <= my <= sw_y1
         in_target = tg_x0 <= mx <= tg_x1 and ry0 <= my <= ry1
@@ -253,14 +265,14 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
         bg = _mix(style_manager, tint, bg_value + (hover_bg_boost if hov else 0.0), factor, sat)
         tx = _mix(style_manager, tint, text_value + (hover_text_boost if hov else 0.0), factor, text_saturation)
         dl.add_rect_filled(nm_x0, ry0, nm_x1, ry1,
-                           imgui.get_color_u32_rgba(*bg[:3], 1.0), rounding=CORNER)
+                           imgui.get_color_u32_rgba(*bg[:3], 1.0), rounding=corner)
 
         if is_match:
             highlight_rects.append((ry0, ry1, is_current))
 
         ts = imgui.calc_text_size(display)
         dl.add_text(nm_x0 + (nm_x1 - nm_x0 - ts[0]) / 2.0 + text_nudge_x,
-                    ry0 + (ROW_H - ts[1]) / 2.0 + text_nudge_y,
+                    ry0 + (row_h - ts[1]) / 2.0 + text_nudge_y,
                     imgui.get_color_u32_rgba(*tx[:3], 1.0), display)
 
         # ---- tint swatch ----
@@ -281,17 +293,17 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
         tx_t = _mix(style_manager, tint, target_text_value + (hover_text_boost if hov_t else 0.0),
                     target_factor, text_saturation)
         dl.add_rect_filled(tg_x0, ry0, tg_x1, ry1,
-                           imgui.get_color_u32_rgba(*bg_t[:3], 1.0), rounding=CORNER)
+                           imgui.get_color_u32_rgba(*bg_t[:3], 1.0), rounding=corner)
         its = imgui.calc_text_size(TARGET_ICON)
-        dl.add_text(tg_x0 + (TARGET_W - its[0]) / 2.0 + text_nudge_x,
-                    ry0 + (ROW_H - its[1]) / 2.0 + text_nudge_y,
+        dl.add_text(tg_x0 + (target_w - its[0]) / 2.0 + text_nudge_x,
+                    ry0 + (row_h - its[1]) / 2.0 + text_nudge_y,
                     imgui.get_color_u32_rgba(*tx_t[:3], 1.0), TARGET_ICON)
 
         # ---- live indicator ----
         if wds.live:
             ls = imgui.calc_text_size(LIVE_ICON)
-            dl.add_text(x0 + (SWATCH_X - ls[0]) / 2.0,
-                        ry0 + (ROW_H - ls[1]) / 2.0 + text_nudge_y,
+            dl.add_text(x0 + (swatch_x - ls[0]) / 2.0,
+                        ry0 + (row_h - ls[1]) / 2.0 + text_nudge_y,
                         imgui.get_color_u32_rgba(*LIVE_TINT, 1.0), LIVE_ICON)
 
         # ---- clicks ----
@@ -328,7 +340,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     # ---- search highlights (second pass, over every row's background) ----
     for hy0, hy1, hcur in highlight_rects:
         draw_search_highlight(dl, nm_x0, hy0, nm_x1, hy1,
-                              current=hcur, rounding=CORNER)
+                              current=hcur, rounding=corner)
 
     # ---- tint picker popover (only rendered while open - zero idle cost) ----
     if edit_name is not None:
@@ -342,7 +354,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
             cur = _row_tint(mw, wds)
             changed, new_color = draw_color_picker(
                 cur, name="fast_dock_picker", closed=False,
-                window_pos=(SWATCH_X, (edit_row_top or y0) - y0 + ROW_H + picker_gap_y),
+                window_pos=(swatch_x, (edit_row_top or y0) - y0 + row_h + picker_gap_y),
                 parent_window=draw_state, width=picker_width, height=picker_height,
                 mode=Modes.POPOVER)
             if changed and new_color is not None:

@@ -18,6 +18,31 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 _MODULE_ROOTS = ["src/lsd/"]
 
 
+# Sane bounds on the UI scale (Toggles.UIScale). The scale multiplies font
+# atlas sizes, so a stray number from a live edit is an expensive error - a
+# huge factor bakes a giant atlas, a tiny one rasterizes unreadable fonts.
+# A value outside these bounds is treated as an accident, NOT an intent: the
+# guard falls back to 1.0 rather than pinning the UI at an extreme.
+UI_SCALE_MIN = 0.5
+UI_SCALE_MAX = 3.0
+
+
+def clamp_ui_scale(value) -> float:
+    """Sanitize a candidate ui scale: a float within
+    [UI_SCALE_MIN, UI_SCALE_MAX] passes through; anything crazy — out of
+    bounds, None, 0, NaN, non-numeric — is interpreted as 1.0 (a wild value
+    is a live-edit artifact or typo, and rebuilding the font atlas at 20x
+    would only amplify the accident). The single guard every ui-scale
+    consumer goes through."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if v != v or v < UI_SCALE_MIN or v > UI_SCALE_MAX:
+        return 1.0
+    return v
+
+
 def _is_user_code(filepath):
     """Check if a file is inside the user's module."""
     rel = _rel_path(filepath)

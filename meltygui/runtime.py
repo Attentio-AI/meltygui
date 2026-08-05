@@ -28,6 +28,7 @@ from src.lsd.gl_gui.background import Background
 from src.lsd.gl_gui.collection_action import CollectionAction
 from src.lsd.gl_gui.collision import Collisions
 from src.lsd.gl_gui.toggles import Toggles, Counters, Tint, Swoosh, SwooshMode
+from src.lsd.gl_gui.fonts import Font, detect_auto_scale
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import set_window_registrar
 from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
@@ -36,7 +37,7 @@ from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent, EventAction
 from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
-from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
+from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, clamp_ui_scale
 from src.lsd.gl_gui.perf_trace import trace as _ptrace
 
 import OpenGL.GL as gl
@@ -818,6 +819,14 @@ class Melty:
     # cap) can read it. None until the first frame / in headless mode.
     display_size = None
 
+    # UI scale in effect (Toggles.UIScale, resolved by apply_ui_scale between
+    # frames). Scale reaches the screen two ways and ONLY these two: fonts are
+    # re-baked at scale x their original size, and the imgui style metrics in
+    # begin_frame are multiplied by scale. Coordinates stay 1:1 with window
+    # pixels - this is deliberately NOT a whole-interface zoom.
+    ui_scale = 1.0
+    _auto_ui_scale = None       # cached detect_ui_scale probe (auto mode)
+
     items_to_delete = []
     # Foreground/overlay channel routing. The overlay draw list is channel-split
     # into max_depth channels (like the window draw list); a view adds its
@@ -1325,6 +1334,73 @@ class Melty:
             pass
 
     @classmethod
+    def px(cls, value):
+        """Scale a pixel constant that was AUTHORED at ui_scale 1.0.
+
+        Fonts and imgui style metrics follow the UI scale on their own, but a
+        hand-written pixel number in view code does not — a tab pinned to
+        height=30 keeps its 30px box while its label grows out of it. Wrap
+        those constants in this so they track the text.
+
+        Only for authored constants. A number MEASURED at runtime (a drag
+        pickup size, a content_width, anything read back off a draw_state) is
+        already in real pixels and would be scaled twice.
+        """
+        return value * cls.ui_scale
+
+    @classmethod
+    def resolve_ui_scale(cls) -> float:
+        """Read Toggles.UIScale into cls.ui_scale and return it. Pure resolve
+        — no atlas work — so boot can size the first atlas correctly before
+        any frame exists (see FontManager construction in LSDStudio)."""
+        ui = Toggles.UIScale
+        if ui.auto_scale:
+            scale = cls._auto_ui_scale
+            # Re-probe periodically: dragging the OS window to another monitor
+            # should retune shortly after, without a glfw walk every frame.
+            if scale is None or cls.frame_count % 120 == 0:
+                scale = detect_auto_scale(cls.glfw_window)
+                cls._auto_ui_scale = scale
+        else:
+            scale = ui.scale
+        cls.ui_scale = clamp_ui_scale(scale)
+        return cls.ui_scale
+
+    @classmethod
+    def apply_ui_scale(cls, impl=None):
+        """Resolve Toggles.UIScale and, when it moved, re-bake the font atlas
+        at the new size.
+
+        MUST be called BETWEEN frames (before imgui.new_frame()) — rebuilding
+        the atlas mid-frame pulls the glyph texture out from under the draw
+        data being built. This is the only place the scale changes, so views
+        see one stable value for the whole frame.
+
+        Scaling here is deliberately just fonts + style metrics: a real
+        whole-interface zoom (reporting a logical display size to imgui and
+        magnifying at present time) made every offscreen tile allocate and
+        repaint at physical resolution and put a resample between the tile and
+        the screen — slow, and soft/aliased at any scale but 1.
+
+        The rebuild re-rasterizes every font, so it is gated on the value
+        actually changing. Cached handles die with the old atlas: the two
+        long-lived ones are refreshed here, and every cached tile is
+        invalidated since all text on screen just changed size.
+        """
+        cls.resolve_ui_scale()
+
+        if cls.font_mgr is None or cls.font_mgr.scale == cls.ui_scale:
+            return
+        if not cls.font_mgr.rebuild(cls.ui_scale, impl):
+            return
+        # Handles grabbed once at boot now point into the freed atlas.
+        cls.large_font = cls.font_mgr.get(Font.DEJAVU_SANS_50)
+        if cls.vis is not None and hasattr(cls.vis, "fa_font"):
+            cls.vis.fa_font = cls.font_mgr.get(Font.FONTAWESOME_14)
+        if cls.cache is not None:
+            cls.cache.invalidate_all()
+
+    @classmethod
     def begin_frame(cls):
         cls._sync_gl_error_checking()
         cls.unique_stack = []
@@ -1336,11 +1412,22 @@ class Melty:
         if cls.draw_state_registry is None:
             cls.draw_state_registry = cls.vis.root.draw_state_registry
 
+        # Style metrics are authored at scale 1 and multiplied by the UI scale
+        # (the other half of Toggles.UIScale - see apply_ui_scale). These are
+        # re-clamped from the constants every frame, so the multiply is
+        # idempotent and a live scale edit lands on the next frame. Rounding
+        # scales too, so corners keep their proportion to the frame.
+        s = cls.ui_scale
         style = imgui.get_style()
-        style.frame_rounding = 5.0
-        style.item_spacing = (5, 0)
-        style.window_padding = (3, 0)
-        style.frame_padding = (4, 1)
+        style.frame_rounding = 5.0 * s
+        style.item_spacing = (5 * s, 0)
+        style.window_padding = (3 * s, 0)
+        style.frame_padding = (4 * s, 1 * s)
+        style.scrollbar_size = 14.0 * s
+        style.scrollbar_rounding = 9.0 * s
+        style.grab_min_size = 10.0 * s
+        style.indent_spacing = 21.0 * s
+        style.item_inner_spacing = (4 * s, 4 * s)
 
         cls.any_window_hovered = cls.any_window_hovered_pending
         cls.any_window_hovered_pending = False
@@ -3242,7 +3329,8 @@ class Melty:
 
         Collisions.handle_collisions()
 
-        draw_notifications()
+        if Toggles.developer_mode:
+            draw_notifications()
 
         for parent_ds_id, ds_list in cls.root_draw_states.items():
             if len(ds_list) == 0:

@@ -51,6 +51,14 @@ static_melty = MeltyState()
 id_stack = []
 stack_holder = {}
 
+# Off-screen window rescue (first-frame clamp on the closable-window scroll
+# block): how many pixels of a window must stay grabbable inside the display,
+# and how far each successive rescued window is nudged apart so a pile of lost
+# windows fans out instead of covering each other.
+RESCUE_EDGE_MARGIN = 40
+RESCUE_CASCADE_STEP = 30
+_offscreen_rescue = {"count": 0}
+
 channels_split_stack = False
 child_stack_holder = {}
 
@@ -1536,29 +1544,44 @@ def render_func(*args, **o_kwargs):
                     draw_state.window_pos = (0, 0)
 
                 if Melty.frame_count < 2:
-                    os_window_size = imgui.get_io().display_size
-
                     if draw_state.width is None or draw_state.width < 5:
                         draw_state.width = 200
 
                     if draw_state.height is None or draw_state.height < 5:
                         draw_state.height = 100
 
-
-                    left = draw_state.abs_left
-                    top = draw_state.abs_top
-                    right = draw_state.window_pos[0] + draw_state.width
-                    bottom = draw_state.window_pos[1] + draw_state.height
-
-                    # inside_display = (left < os_window_size[0] and right > 0 and top < os_window_size[1] and bottom > 0)
-                    # if not inside_display:
-                    #     draw_state.window_pos = (min(max(0, os_window_size[0] - draw_state.width), draw_state.window_pos[0]),
-                    #                              min(max(0, os_window_size[1] - draw_state.height), draw_state.window_pos[1]))
-
-
-
                 if 'window_pos' in kwargs:
                     draw_state.window_pos = kwargs.get('window_pos', draw_state.window_pos)
+
+                # First-frame off-screen rescue: window positions persist (and
+                # move between machines via git), so on a smaller display a
+                # saved window may load entirely outside the visible area -
+                # invisible and ungrabbable. On the window's first frame, pull
+                # it back just enough that a RESCUE_EDGE_MARGIN sliver stays
+                # inside the display; the saved position is otherwise kept, so
+                # the window hangs off the edge ready to be dragged in. The
+                # top clamps to 0 (not a sliver) because the header IS the
+                # drag handle. Rescued windows cascade - each lands a bit
+                # higher than the last - so several lost windows pile up
+                # visibly along the edge instead of covering each other.
+                # window_pos shifts by the delta in ABS coordinates (same as
+                # summon_window) so anchor points ride along.
+                if draw_state.frame_count == 0 and draw_state.parent_window is None:
+                    disp_w, disp_h = imgui.get_io().display_size
+                    if disp_w > RESCUE_EDGE_MARGIN * 2 and disp_h > RESCUE_EDGE_MARGIN * 2:
+                        w = draw_state.width if draw_state.width else 200
+                        left = draw_state.abs_left or 0
+                        top = draw_state.abs_top or 0
+                        new_left = max(min(left, disp_w - RESCUE_EDGE_MARGIN),
+                                       RESCUE_EDGE_MARGIN - w)
+                        new_top = max(min(top, disp_h - RESCUE_EDGE_MARGIN), 0)
+                        if (new_left, new_top) != (left, top):
+                            idx = _offscreen_rescue["count"]
+                            _offscreen_rescue["count"] += 1
+                            new_top = max(0, new_top - idx * RESCUE_CASCADE_STEP)
+                            wp = draw_state.window_pos
+                            draw_state.window_pos = (wp[0] + new_left - left,
+                                                     wp[1] + new_top - top)
 
                 # Drag-and-drop: the dragged item renders as a closable window;
                 # glue it under the cursor here - at render/dispatch time, on its

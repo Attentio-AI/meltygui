@@ -85,32 +85,122 @@ class Font(RelaxedEnum):
     FONTAWESOME_MONO_50 = _fa_merge(39.0)
 
 
+def detect_auto_scale(window=None) -> float:
+    """dp scale for the monitor the OS window currently sits on: 1.5 on
+    4k-and-larger panels (video mode at/above 3840 wide or 2160 tall, so a
+    portrait 4k still counts), 1.0 otherwise. The window's monitor is found
+    by which video mode contains the window's center; falls back to the
+    primary monitor when the window is None or sits off every monitor
+    (mid-drag between screens). 1.0 on any glfw failure."""
+    try:
+        import glfw
+        target = None
+        if window is not None:
+            wx, wy = glfw.get_window_pos(window)
+            ww, wh = glfw.get_window_size(window)
+            cx, cy = wx + ww / 2, wy + wh / 2
+            for m in glfw.get_monitors():
+                mx, my = glfw.get_monitor_pos(m)
+                mode = glfw.get_video_mode(m)
+                if (mx <= cx < mx + mode.size.width
+                        and my <= cy < my + mode.size.height):
+                    target = m
+                    break
+        if target is None:
+            target = glfw.get_primary_monitor()
+        mode = glfw.get_video_mode(target)
+        return 1.5 if (mode.size.width >= 3840 or mode.size.height >= 2160) else 1.0
+    except Exception:
+        return 1.0
+
+
 class FontManager:
-    def __init__(self, io):
+    """Owns the imgui font atlas: one handle per Font enum entry, all baked
+    at `scale` x their authored pixel size.
+
+    The scale is baked into the RASTERIZED size rather than applied as a
+    draw-time multiplier (io.font_global_scale) so glyphs stay sharp — a
+    scaled atlas is resampled text, which is exactly the soft/aliased look
+    the whole-interface zoom had. The cost is that changing the scale means
+    re-rasterizing every font (see `rebuild`), so it happens only when the
+    UIScale value actually moves.
+    """
+
+    # Floor on a baked glyph size: sub-pixel-ish sizes rasterize to mush and
+    # can make imgui's atlas build fail outright.
+    MIN_SIZE = 4.0
+
+    def __init__(self, io, scale: float = 1.0):
         self.io = io
+        self.scale = float(scale)
         self._handles: dict = {}
+
+    def rebuild(self, scale: float, impl=None) -> bool:
+        """Re-bake every font at `scale` and hand the new atlas to the
+        renderer. No-op (False) when the scale is unchanged.
+
+        MUST run between frames — outside imgui.new_frame()/render() — since
+        it clears the atlas the in-flight draw data would reference. Every
+        previously returned handle is dangling afterwards, so callers that
+        cached one (Melty.large_font, LSDStudio.fa_font) have to re-`get` it.
+        """
+        scale = float(scale)
+        if scale == self.scale and self._handles:
+            return False
+        self.scale = scale
+        self._handles.clear()
+        self.io.fonts.clear()
+        self.prewarm()
+        if impl is not None:
+            impl.refresh_font_texture()
+        return True
+
+    def _oversample(self, spec: FontSpec) -> int:
+        """Oversampling for a spec at the current scale.
+
+        Oversampling buys SUBPIXEL positioning accuracy, so what matters is
+        samples per glyph relative to glyph size — scaling the glyph up
+        already delivers that. Left exactly at the authored value for scale
+        <= 1 (so 1.0 bakes the atlas it always did) and walked down as the
+        scale grows, because atlas AREA goes as oversample squared: holding
+        it at 3 turns a 64 MB atlas into 256 MB at 2x for no visible gain.
+        """
+        if self.scale <= 1.0:
+            return spec.oversample
+        return min(spec.oversample, max(1, round(spec.oversample / self.scale)))
 
     def prewarm(self):
         for font in Font:
             spec = font.value
+            size = max(self.MIN_SIZE, spec.size * self.scale)
             if spec.merge:
-                cfg = imgui.FontConfig(
+                merge_cfg = dict(
                     merge_mode=True,
-                    glyph_extra_spacing_x=spec.extra_spacing,
-                    glyph_extra_spacing_y=spec.extra_spacing,
+                    glyph_extra_spacing_x=spec.extra_spacing * self.scale,
+                    glyph_extra_spacing_y=spec.extra_spacing * self.scale,
                 )
+                # Merged icon fonts cover wide ranges, so they dominate the
+                # atlas - spread them out as the scale grows. Untouched at
+                # scale <= 1 because the authored atlas is unchanged: imgui's
+                # own defaults are (h=3, v=1), and spelling them out is
+                # what keeps v from silently becoming 3 here.
+                if self.scale > 1.0:
+                    merge_cfg["oversample_h"] = self._oversample(spec)
+                    merge_cfg["oversample_v"] = 1
+                cfg = imgui.FontConfig(**merge_cfg)
             else:
+                over = self._oversample(spec)
                 cfg = imgui.FontConfig(
-                    oversample_h=spec.oversample,
-                    oversample_v=spec.oversample,
+                    oversample_h=over,
+                    oversample_v=over,
                     pixel_snap_h=True,
                 )
             try:
                 if spec.glyph_ranges is not None:
                     ranges = imgui.GlyphRanges(list(spec.glyph_ranges))
-                    handle = self.io.fonts.add_font_from_file_ttf(spec.path, spec.size, cfg, ranges)
+                    handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg, ranges)
                 else:
-                    handle = self.io.fonts.add_font_from_file_ttf(spec.path, spec.size, cfg)
+                    handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg)
                 self._handles[font] = handle
             except Exception as e:
                 print(f"FontManager: failed to load {font.name} from {spec.path}: {e}")

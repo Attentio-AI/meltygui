@@ -2124,17 +2124,22 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
     # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
     # is a stateful wrapper that draws into its own window. Snapshot the values - a
-    # host may register/remove during render (re-entrant mutation).
-    for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
-        # Event-driven pump: an idle hidden cache host skips unnecessary draw
-        # calls (draw_needed - edit flags / upstream identity change /
-        # tile invalidation / timer heartbeat). An open input tab registers
-        # ~20 code-cache hosts and each skipped draw is ~0.1ms of wrapper
-        # overhead doing nothing - this is what dropped drags at 70fps.
-        # Visible hosts always draw.
-        if not host.draw_needed():
-            continue
-        host.draw()
+    # host may register/remove during render (re-entrant mutation). Skipped entirely
+    # while any mouse button is held (click or drag) - host draws are deferrable work
+    # that would otherwise eat into drag frames; they catch up on release.
+    any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+                      or imgui.is_mouse_down(2))
+    if not any_mouse_held:
+        for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
+            # Event-driven pump: an entirely hidden cache host skips its draw
+            # polling (draw_needed - edit flags / upstream identity change /
+            # tile invalidation / slow heartbeat). An open code tab has
+            # ~20 code-cache pairs and each polled draw was ~0.1ms of wrapper
+            # overhead for nothing - this is what dropped drags to ~70fps.
+            # Visible hosts always draw.
+            if not host.draw_needed():
+                continue
+            host.draw()
 
     display(len(Core.melty.render_hosts), tag="Render Hosts Count")
 
@@ -3281,7 +3286,10 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
         button_txt = f"{icon} {button_txt}"
 
     min_size = imgui.calc_text_size(button_txt)
-    width = max(width, min_size[0] + text_pad)
+    # text_pad is an authored padding value, so it tracks the UI scale;
+    # width/height are NOT scaled here - callers pass physical pixels through
+    # them (the drag pickup size through height=), which would scale twice.
+    width = max(width, min_size[0] + Melty.px(text_pad))
     height = max(height, min_size[1])
     draw_list: _DrawList = imgui.get_window_draw_list()
     bx0, by0 = imgui.get_cursor_screen_pos()
@@ -4739,8 +4747,16 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     row_start_x = imgui.get_cursor_screen_pos()[0]
 
     # Mirror button()'s sizing: width = calc_text_size(label_text).x + text_pad (15).
+    # Scaled like button() scales its text_pad, so the wrap measurement below
+    # matches the width the buttons actually take.
     # [tint=(0.124, 0.65, 0.087, 1.0), show_tint=True]
-    button_padding = 15
+    button_padding = Melty.px(15)
+    # tab_height arrives as an authored-at-1.0 constant (callers pass 30/40),
+    # so it scales here - once, up front, so the button, the click test and
+    # the drag placeholder below all agree on one height. The drag path
+    # deliberately overrides this with the MEASURED pickup height, which is
+    # already in real pixels.
+    tab_height = Melty.px(tab_height)
     content_width = draw_state.content_width if draw_state is not None else 0
     x_limit = origin_x + content_width if content_width > 0 else None
 
