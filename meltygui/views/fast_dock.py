@@ -62,6 +62,21 @@ def _set_row_tint(mw, wds, tint):
     wds.tint = tint
 
 
+def _row_icon(name, mw, wds):
+    """The icon shown for a row: the window draw_state's kwargs win over the
+    @window registration's — same fallback order as the tint lookup in
+    window_index."""
+    icon = (wds._kwargs or {}).get("icon") if wds is not None else None
+    if not icon:
+        label = str(name).split("##")[0].strip()
+        reg = (Melty.annotated_window_classes.get(label)
+               or Melty.annotated_window_classes.get(str(name)))
+        if reg is not None:
+            w_cls, w_kwargs = reg
+            icon = w_kwargs.get("icon") or getattr(w_cls, "icon", None)
+    return icon
+
+
 def _dock_signature():
     rows = []
     for mw in Melty.registered_windows.values():
@@ -126,6 +141,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
     text_nudge_x, text_nudge_y = px(2.0), px(-1.0)        # optical centering of text
     swatch_rounding = px(4.0)
     name_target_gap = px(6.0)                             # gap between name and summon button
+    name_pad_x = px(8.0)                                  # left inset for icon and text
+    icon_gap = px(6.0)                                    # gap between icon and name
     manager_row_text_x, manager_row_text_y = px(8.0), px(7.0)  # "Window Manager" label offsets
     picker_width, picker_height = px(216), px(180 + 14 + 4 * 26 + 26)
     picker_gap_y = px(2.0)                                # popover offset below its trigger
@@ -270,9 +287,15 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
         if is_match:
             highlight_rects.append((ry0, ry1, is_current))
 
+        text_x = nm_x0 + name_pad_x + text_nudge_x
+        icon = _row_icon(name, mw, wds)
+        if icon:
+            ics = imgui.calc_text_size(icon)
+            dl.add_text(text_x, ry0 + (row_h - ics[1]) / 2.0 + text_nudge_y,
+                        imgui.get_color_u32_rgba(*tx[:3], 1.0), icon)
+            text_x += ics[0] + icon_gap
         ts = imgui.calc_text_size(display)
-        dl.add_text(nm_x0 + (nm_x1 - nm_x0 - ts[0]) / 2.0 + text_nudge_x,
-                    ry0 + (row_h - ts[1]) / 2.0 + text_nudge_y,
+        dl.add_text(text_x, ry0 + (row_h - ts[1]) / 2.0 + text_nudge_y,
                     imgui.get_color_u32_rgba(*tx[:3], 1.0), display)
 
         # ---- tint swatch ----
@@ -286,18 +309,19 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
                         imgui.get_color_u32_rgba(*empty_swatch_color),
                         rounding=swatch_rounding)
 
-        # ---- target (summon) button ----
-        hov_t = hover_ok and in_target
-        bg_t = _mix(style_manager, tint, target_bg_value + (hover_bg_boost if hov_t else 0.0),
-                    target_factor, target_saturation)
-        tx_t = _mix(style_manager, tint, target_text_value + (hover_text_boost if hov_t else 0.0),
-                    target_factor, text_saturation)
-        dl.add_rect_filled(tg_x0, ry0, tg_x1, ry1,
-                           imgui.get_color_u32_rgba(*bg_t[:3], 1.0), rounding=corner)
-        its = imgui.calc_text_size(TARGET_ICON)
-        dl.add_text(tg_x0 + (target_w - its[0]) / 2.0 + text_nudge_x,
-                    ry0 + (row_h - its[1]) / 2.0 + text_nudge_y,
-                    imgui.get_color_u32_rgba(*tx_t[:3], 1.0), TARGET_ICON)
+        # ---- target (summon) button - only for open windows ----
+        if open_:
+            hov_t = hover_ok and in_target
+            bg_t = _mix(style_manager, tint, target_bg_value + (hover_bg_boost if hov_t else 0.0),
+                        target_factor, target_saturation)
+            tx_t = _mix(style_manager, tint, target_text_value + (hover_text_boost if hov_t else 0.0),
+                        target_factor, text_saturation)
+            dl.add_rect_filled(tg_x0, ry0, tg_x1, ry1,
+                               imgui.get_color_u32_rgba(*bg_t[:3], 1.0), rounding=corner)
+            its = imgui.calc_text_size(TARGET_ICON)
+            dl.add_text(tg_x0 + (target_w - its[0]) / 2.0 + text_nudge_x,
+                        ry0 + (row_h - its[1]) / 2.0 + text_nudge_y,
+                        imgui.get_color_u32_rgba(*tx_t[:3], 1.0), TARGET_ICON)
 
         # ---- live indicator ----
         if wds.live:
@@ -317,7 +341,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
                     wds.closed = True
                 Core.melty.cache.invalidate_up_by_obj(mw)
                 request_render()
-            elif tg_x0 <= cx <= tg_x1:
+            elif open_ and tg_x0 <= cx <= tg_x1:
                 _summon(wds, draw_state, ry0)
                 Core.melty.cache.invalidate_up_by_obj(mw)
                 request_render()

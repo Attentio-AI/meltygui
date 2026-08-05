@@ -554,7 +554,12 @@ def render_func(*args, **o_kwargs):
         #         modes = [default_mode]
 
         if modes is not None:
-            mode_config = modes[0].value.get(type(input_value), None)
+            # unwrapped, not .value: mode entries keyed by a TUPLE of types
+            # ((Path, PosixPath), (dict, defaultdict)) are invisible to an
+            # exact .value.get, so recursive were never stacked and always died
+            # one level down. Still an exact-type lookup - no mro/Any
+            # fallback - so Any-keyed entries stack exactly as before.
+            mode_config = modes[0].unwrapped.get(type(input_value), None)
             if mode_config is not None and mode_config.recursive:
                 Melty.mode_stack.append(modes[0])
                 mode_stacked = True

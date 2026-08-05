@@ -897,6 +897,14 @@ class Toggles:
         # this off until the .ini is fully deprecated.
         ini_save = False
 
+    @defaults(tint=(0.72, 0.35, 0.3))
+    class FileSafety:
+        # Kill switch for folder_io's reconcile deletes: while True, a key
+        # removed from a held folder tree never unlinks/rmtrees on disk (the
+        # poller re-discovers the file and the key comes back). Flip off when
+        # the file machinery has earned trust.
+        block_file_delete = True
+
     @defaults(tint=(0.27, 0.7, 0.52))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.render_hosts (stops its background

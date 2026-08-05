@@ -2,7 +2,7 @@ import types
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PosixPath
 from typing import Optional, Any
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
@@ -27,6 +27,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_collection, draw_c
     sort_dict_alphabetically, unsort_dict_alphabetically, draw_with_modes, draw_type, \
     class_to_var_dict, var_dict_to_class, draw_dropdown, draw_blank, draw_drop_down_item, draw_type_name, type_lens
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
+from src.lsd.gl_gui.view.playground.file_tree import draw_file_name
 from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, convert_in_and_out, string_to_cst_module, \
     cst_module_to_string, draw_with_view_funcs, draw_text_from_code_cache, draw_code_tabs_from_cache
 
@@ -457,6 +458,31 @@ class Mode(Enum):
             # global code-host cache (code_cache_for), so usage links and
             # syntax-error highlighting work without an inline chain.
             kwargs={"auto_load_edits": True, "disable_scroll":True, "view_func": draw_text_from_code_cache},
+            recursive=True,
+        ),
+    }
+
+    # ── File tree, names only ───────────────────────────────────────────
+    #
+    # The display-only sibling of FILE_TREE: a {name: Path} dict's folder tree
+    # where folders are plain collapsing draw_collection entries and each Path
+    # leaf renders as just its file name (double-click → open_file_tab).
+    # Nothing loads file content. Live usage: playground.file_tree
+    # (render_file_tree_melty).
+
+    FILE_TREE_NAMES = {
+        (dict, defaultdict): ModeOverrides(
+            # is_tree stays STATIC with no recursive kwarg passed: core_render's
+            # collapsed-view path (1226) rewrites is_tree=False if a
+            # falsey `state` flows through, which eats the tree arrow.
+            kwargs={"is_tree": True, "show_bg": False, "use_cache": True,
+                    "show_add_delete": True, "indent_size": 8},
+            recursive=True,
+        ),
+        # PosixPath explicitly: the CodeHost for folder_io hands us raw
+        # PosixPath leaves, and mode dispatch matches on the concrete type.
+        (Path, PosixPath): ModeOverrides(
+            func=draw_file_name,
             recursive=True,
         ),
     }

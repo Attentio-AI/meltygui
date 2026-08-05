@@ -16,8 +16,11 @@ from pathlib import Path
 
 import imgui
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.headers import draw_header
+from src.lsd.gl_gui.view.playground.folder_files import folder_proxy, watch_folder
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
 ROOT = Path(__file__).parents[4]
@@ -29,6 +32,11 @@ PAD = 6.0
 GLYPH_W = 12.0
 
 
+def open_file(path):
+    """Stub — will route `path` into an editor view. Both trees land here."""
+    print(f"open_file: {path}")
+
+
 class FileTreeState:
     """Injected per-draw_state state (`file_tree_state: FileTreeState = None`)."""
     _owner_ds = None
@@ -38,8 +46,7 @@ class FileTreeState:
         self.selected = None    # last single-clicked Path
 
     def open_file(self, path):
-        """Stub — will route `path` into an editor view."""
-        print(f"open_file: {path}")
+        open_file(path)
 
 
 def _children(folder):
@@ -132,4 +139,45 @@ def render_file_tree(input_value=None, draw_state=None,
         else:
             dl.add_text(x + glyph_w, ry0 + px(2.0), text_col, p.name)
 
+    return False, None
+
+
+# ── Framework file tree ──────────────────────────────────────────────────────
+# The same directory rendered through the framework. folder_files' RenderHost
+# (folder_io) holds the {name: Path | dict} tree - background loading, disk
+# reconcile, and the change poller for free - and draw_collection renders it
+# with Mode.FILE_TREE_NAMES (view/mode.py): folders are dict entries
+# (collapsing headers, add/delete, drag-drop - all framework), files route
+# by type to draw_file_name below, which is just the filename. Contrast with
+# the raw draw-list tree above: ~no code here, one draw_state per row there.
+
+files_host = folder_proxy(ROOT, "FileTreeNames")
+
+
+@render_func(is_default_for="PosixPath", show_bg=False, selectable=True,
+             use_cache=True, is_tree=False, with_header=draw_header)
+def draw_file_name(input_value=None, draw_state=None,
+                   left_mouse_double_clicked=False, **kwargs):
+    # The header draws the name (the dict key) and carries selection/drag -
+    # the body is only the double-click → open handler.
+    if left_mouse_double_clicked:
+        open_file(input_value)
+    return False, input_value
+
+
+@window(input_value=files_host, tint=(0.42, 0.36, 0.54), disable_scroll=False, mode=Modes.WINDOW)
+@render_func(show_bg=True, use_cache=True, shadow=True, selectable=False)
+def render_file_tree_melty(input_value=None, draw_state=None, **kwargs):
+    from src.lsd.gl_gui.render_funcs import RenderFuncs
+    watch_folder(ROOT, draw_state)
+    # Same shape as draw_folder_files: the host contains the tree one level down
+    # under "value"; a plain top-level draw_collection, with the names-only
+    # mode applied to the children.
+    tree = input_value.get("value") if isinstance(input_value, dict) else {}
+    RenderFuncs.draw_collection(tree if tree is not None else {}, name=ROOT.name,
+                                show_add_delete=True, new_item_type=str, temp=True,
+                                width=draw_state.content_width,
+                                disable_scroll=True, show_bg=True,
+                                child_kwargs={"show_bg": True, "bg_offset": -4,
+                                              "mode": Modes.FILE_TREE_NAMES})
     return False, None

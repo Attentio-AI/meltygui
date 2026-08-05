@@ -87,7 +87,13 @@ def _create(path, value, pending):
 
 
 def _delete(path):
-    """A key the user DELETED → remove from disk (rmtree for a folder)."""
+    """A key the user DELETED → remove from disk (rmtree for a folder).
+    Toggles.FileSafety.block_file_delete gates ALL disk deletes (read live);
+    the poller re-discovers the surviving file and restores its key."""
+    from src.lsd.gl_gui.toggles import Toggles
+    if Toggles.FileSafety.block_file_delete:
+        print(f"[folder_files] delete blocked (Toggles.FileSafety.block_file_delete): {path}")
+        return
     try:
         shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
     except OSError:
@@ -190,14 +196,29 @@ _proxies = {ROOT: files_proxy, TEST_FOLDER: test_folder_proxy}   # poller target
 _poller_running = False
 
 
-def _draw_tree(input_value, draw_state, root):
-    """Shared @window body: start the (single, all-roots) poller, stash this
-    root's draw_state for it, and draw the held tree."""
+def folder_proxy(root, name):
+    """A RenderHost over folder_io for `root`, registered with the poller —
+    the reusable entry point for other views (e.g. playground.file_tree)."""
+    proxy = _proxies.get(root)
+    if proxy is None:
+        proxy = _proxies[root] = RenderHost(io_function=folder_io, input_value=None,
+                                            name=name, root=root)
+    return proxy
+
+
+def watch_folder(root, draw_state):
+    """Per-frame from a folder window's body: start the (single, all-roots)
+    poller and stash this root's draw_state so a disk change re-renders it."""
     global _poller_running
     if not _poller_running:
         threading.Thread(target=_poll_loop, daemon=True, name="folder-files-poller").start()
         _poller_running = True
     _window_dss[root] = draw_state
+
+
+def _draw_tree(input_value, draw_state, root):
+    """Shared @window body: watch the root and draw the held tree."""
+    watch_folder(root, draw_state)
 
     # The tree is held one LEVEL UP under value name ("value") - same as
     # claude_terminals: draw_collection on the proxy itself would render the
