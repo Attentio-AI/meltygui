@@ -33,7 +33,8 @@ import textwrap
 import weakref
 from pathlib import Path
 
-from src.lsd.gl_gui.view.core_conversion.live_view import live_view, twin_snap
+from src.lsd.gl_gui.view.core_conversion.live_view import (
+    live_view, twin_snap, twin_ret)
 
 # id(original __code__) -> ((source mtime, pending gen), twin function |
 # original on fallback). Identity-keyed for the same reason as
@@ -47,6 +48,7 @@ from src.lsd.gl_gui.view.core_conversion.live_view import live_view, twin_snap
 _twins = {}
 
 _SNAP_NAME = "__lv_view__"
+_RET_NAME = "__lv_ret__"
 
 
 def run_instrumented(fn, *args, **kwargs):
@@ -69,8 +71,20 @@ def run_instrumented(fn, *args, **kwargs):
         if twin is target:
             return fn(*args, **kwargs)
         from src.lsd.gl_gui.view.core_conversion.live_view import run_capture
+        # Fresh run, fresh exit line: a raise (or an edit that removed the
+        # return the last run took) must not leave a stale green line, and a
+        # now-passing run must not keep the previous failure's red one.
+        try:
+            vars(target).pop("__live_return_line__", None)
+            vars(target).pop("__live_error_line__", None)
+        except TypeError:
+            pass
         with run_capture(target):
-            return twin(*args, **kwargs)
+            try:
+                return twin(*args, **kwargs)
+            except BaseException as e:
+                _stamp_error_line(target, twin, e)
+                raise
     finally:
         # Retire the PREVIOUS run's generation: the studio's gc_manager keeps
         # gen2 out of auto-reach, so the cycle-trapped graphs each run
@@ -82,6 +96,31 @@ def run_instrumented(fn, *args, **kwargs):
             collect_after_run(getattr(target, "__name__", "run"))
         except Exception:
             pass
+
+
+def _stamp_error_line(target, twin, exc):
+    """Stamp `__live_error_line__` = (absolute file line, message) on the
+    store function for an exception raised during an instrumented run: the
+    DEEPEST traceback frame that is the twin's own code — the twin compiles
+    against the real co_filename with original linenos, so tb_lineno is the
+    file line the editor should wash red (the live-run twin of the routed
+    error markers). An error that never entered the twin (bad args, etc.)
+    stamps nothing."""
+    try:
+        from src.lsd.gl_gui.view.core_conversion.live_view import (
+            stamp_run_marker)
+        code = getattr(twin, "__code__", None)
+        lineno = None
+        tb = exc.__traceback__
+        while tb is not None:
+            if tb.tb_frame.f_code is code:
+                lineno = tb.tb_lineno
+            tb = tb.tb_next
+        if lineno is not None:
+            stamp_run_marker(target, "__live_error_line__",
+                             (lineno, f"{type(exc).__name__}: {exc}"))
+    except Exception:
+        pass
 
 
 def instrumented_twin(fn):
@@ -249,6 +288,7 @@ def _build_twin(fn, pending=None):
     # resolve through the real/builtin live_view binding.
     namespace = dict(fn.__globals__)
     namespace[_SNAP_NAME] = twin_snap
+    namespace[_RET_NAME] = twin_ret
     exec(code_obj, namespace)
     twin = namespace[fdef.name]
     twin.__qualname__ = fn.__qualname__ + ".<instrumented>"
@@ -265,6 +305,18 @@ def _inject_snaps(body):
     call copies the assignment's location, which IS the key rendezvous."""
     out = []
     for stmt in body:
+        if isinstance(stmt, ast.Return):
+            # `return X` → `return __lv_ret__(X)` (bare return passes None):
+            # the hook stamps the store module's __live_return_line__ with
+            # this statement's disk line - see live_view.twin_ret.
+            _rcall = ast.Call(
+                func=ast.Name(id=_RET_NAME, ctx=ast.Load()),
+                args=[stmt.value if stmt.value is not None
+                      else ast.Constant(value=None)],
+                keywords=[])
+            ast.copy_location(_rcall, stmt)
+            ast.copy_location(_rcall.func, stmt)
+            stmt.value = _rcall
         out.append(stmt)
         name = _snap_target(stmt)
         if name is not None:

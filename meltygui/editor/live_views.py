@@ -107,7 +107,8 @@ def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
 
 def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                            line_px=20.0, node=None, span=None, root=None,
-                           line_offset=0, jump_to=None, **kwargs):
+                           line_offset=0, jump_to=None, cursor_line=None,
+                           cursor_col=None, **kwargs):
     """token_views overlay callback for CallParse nodes (plain function — the
     overlay pass calls it with raw screen coords, no render_func wrapper)."""
     if getattr(node, "func_name", None) != "live_view":
@@ -139,6 +140,14 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             token_cells = max(1, len(src_lines[span.start_line - 1].rstrip())
                               - span.start_col)
     pad = 2.0
+    # Caret containment in buffer space: span lines are parse-relative, so map
+    # through the parse→buffer bridge before comparing with the caret line.
+    _lm = kwargs.get("line_map")
+    _sl = _lm(span.start_line) if _lm else span.start_line
+    cursor_inside = (_sl is not None and cursor_line == _sl
+                     and cursor_col is not None
+                     and span.start_col <= cursor_col
+                     < span.start_col + token_cells)
     imgui.set_cursor_screen_pos((x - pad, y - pad))
     snap = live_values_for(store_obj)
     draw_live_view_marker("/".join(map(str, key_path)),
@@ -147,6 +156,9 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                           store_obj=store_obj, key_path=key_path,
                           width=token_cells * char_w + 2 * pad,
                           height=line_px + 2 * pad,
+                          cursor_inside=cursor_inside,
+                          editor_ds=draw_state,
+                          buffer_line=(_sl or span.start_line) - 1,
                           name=f"lvm::{_store_name(store_obj)}::"
                                f"{'/'.join(key_path)}")
 
@@ -159,7 +171,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                           code_tree_node=None, auto_open=True,
                           corner_radius=4.0, value=None,
                           left_mouse_double_clicked=False,
-                          unique=0, **kwargs):
+                          cursor_inside=False, editor_ds=None,
+                          buffer_line=None, unique=0, **kwargs):
     """The live-view token widget — draw_bool_token's pattern plus one extra
     call, draw_any(value, mode=WINDOW). `value` is the captured value (None +
     captured=False while the site hasn't run); the window call just forwards
@@ -203,6 +216,16 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     invalidates the tile so the body renders on the frame the raw
     is_mouse_double_clicked read below is true."""
     ds = draw_state
+    # Gutter registry: tell the editor which buffer lines carry a live marker
+    # so its line-number gutter can draw a raw open/close button per line
+    # (see the gutter pass in text_editor / set_marker_open below). Rebuilt
+    # from scratch each frame the overlays render - frame-stamped so stale
+    # entries from a previous parse never linger on the editor ds.
+    if editor_ds is not None and buffer_line is not None:
+        if getattr(editor_ds, "_lv_gutter_frame", None) != Core.melty.frame_count:
+            editor_ds._lv_gutter_frame = Core.melty.frame_count
+            editor_ds._lv_gutter_markers = {}
+        editor_ds._lv_gutter_markers.setdefault(buffer_line, []).append(ds)
     # First only only: a gray box whose code then runs gets invalidated
     # on the key's FIRST value, flips green (and auto-opens below, when this
     # marker auto-opens) — one editor re-render per new key, nothing per
@@ -259,18 +282,47 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         ds._lv_hovered = hovered
         ds.invalidate()
 
-    # LIVE PREVIEW (Toggles.TextEditor.live_hover_preview): mousing over a
-    # captured marker shows its value window temporarily - same window, same
-    # placement - and mouse-leave closes it again; double-click below still
-    # latches it open permanently. While previewing, keep the editor live:
-    # the hover edge can only be SEEN by a running body (a cached tile never
-    # re-tests visibility), so without the keep-alive the temp window would
-    # linger until an unrelated repaint. Bounded completely to the hover.
+    # PREVIEW: temporarily show the captured marker's live value - same
+    # window, same placement - with double-click below still latching it
+    # open permanently. Two trigger modes on Toggles.TextEditor.
+    # live_hover_preview: ON → mousing over the marker previews and
+    # mouse-leave closes; OFF → the editor TEXT CURSOR coming inside the
+    # symbol previews and caret-leave closes. The hover mode needs a
+    # per-frame keep-alive while previewing (the leave edge can only be
+    # SEEN by a running body - a cached tile never re-tests hover); the
+    # cursor mode doesn't: the caret only moves on frames the editor
+    # renders, and the cursor_inside edge below invalidates the tile.
     from src.lsd.gl_gui.toggles import Toggles
-    preview_show = (captured and hovered and not open_now
-                    and bool(getattr(Toggles.TextEditor,
-                                     "live_hover_preview", False)))
-    if preview_show:
+    hover_mode = bool(getattr(Toggles.TextEditor, "live_hover_preview", False))
+    _raw_ci = bool(cursor_inside) and not hover_mode
+    # Dismissed latch: an X-closed cursor preview stays dismissed until the
+    # FOCUSED caret genuinely leaves the symbol once. clear_focus alone was
+    # not enough - the close's focus drop raced re-grants, and any regained
+    # focus with the caret still in the symbol instantly re-showed the
+    # window. The latch is positional, so it holds through editor churn;
+    # while the editor is unfocused the overlay passes null cursor coords
+    # (_raw_ci False), so the reset below keys off actual editor focus.
+    _ed_focused = (editor_ds is not None
+                   and Core.melty.text_focused_ds is editor_ds)
+    if _ed_focused and not _raw_ci:
+        ds._lv_cursor_dismissed = False
+    cursor_inside = _raw_ci and not getattr(ds, "_lv_cursor_dismissed", False)
+    # Close observed one frame late (window rendered from root_draw_states
+    # while this editor tile was cached): mark dismissal as the last
+    # detection after draw_any below.
+    if (cursor_inside and not open_now and win_ds is not None
+            and win_ds.closed
+            and getattr(ds, "_lv_cursor_preview_shown", False)):
+        Core.melty.clear_focus()
+        ds._lv_cursor_dismissed = True
+        ds._lv_cursor_preview_shown = False
+        cursor_inside = False
+    if getattr(ds, "_lv_cursor_in", None) != cursor_inside:
+        ds._lv_cursor_in = cursor_inside
+        ds.invalidate()
+    preview_show = (captured and not open_now
+                    and ((hovered and hover_mode) or cursor_inside))
+    if preview_show and hover_mode:
         from src.lsd.gl_gui.utils.glfw_utils import request_render
         ds.invalidate()
         request_render()
@@ -358,8 +410,55 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # after a root_draw_states re-dispatch).
         win_ds.live_root = code_tree_node
         win_ds.live_key = ds.live_key
+        # Window X-close detection: the header's close button runs DURING the
+        # draw_any call above, so a caret-held preview closed this instant
+        # shows as closed=True right after a window it passed closed=False.
+        # Dismiss immediately - deterministic, no dependence on which order
+        # the window and the editor re-render in adjacent frames.
+        if (preview_show and cursor_inside and not open_now
+                and win_ds.closed):
+            Core.melty.clear_focus()
+            ds._lv_cursor_dismissed = True
+            ds._lv_cursor_in = False
+            cursor_inside = False
+            ds.invalidate()
+
+    # Stamp whether THIS frame's window visibility is caret-held - the X-close
+    # should only fire for a window the cursor preview was in.
+    ds._lv_cursor_preview_shown = bool(preview_show and cursor_inside)
 
     return False, None
+
+
+def set_marker_open(marker_ds, open_):
+    """Gutter-button entry point: latch a marker's value window open/closed
+    from OUTSIDE the marker body (raw draw-list button, no render_func).
+    Mirrors the double-click toggle: flipping open snaps an existing window
+    back to the right of the editor window (it may have been dragged onto
+    the code). The marker ds is invalidated so its body re-runs and
+    creates/hides the window on the next editor render; the CALLER must
+    invalidate the editor tile itself (the marker only renders inside the
+    editor's overlay pass)."""
+    open_ = bool(open_)
+    if bool(getattr(marker_ds, "_lv_open", False)) == open_:
+        return
+    marker_ds._lv_open = open_
+    win_ds = getattr(marker_ds, "_lv_window_ds", None)
+    if open_ and win_ds is not None:
+        # Clear the window's stale closed flag NOW: this latch is set from
+        # OUTSIDE the marker body (the gutter runs after a close left
+        # closed=True), and the body's own "closed via the header X" check
+        # (win_ds.closed and _lv_open) runs before it repaints the window -
+        # without this reset it reads the previous close as a fresh X click
+        # and cancels the reopen on the spot.
+        win_ds.closed = False
+        pos = _right_of_window_pos(marker_ds.parent_window,
+                                   marker_ds.abs_left,
+                                   marker_y=marker_ds.abs_top,
+                                   win_h=win_ds.height)
+        if pos is not None:
+            win_ds.window_pos = pos
+    marker_ds.invalidate()
 
 
 def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
@@ -414,6 +513,42 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # via root_draw_states without a marker, same as when the whole editor
     # scrolls away.
     _clip = getattr(draw_state, "abs_clip_rect", None)
+    # Exit-line washes: where the last instrumented run CAME OUT.
+    # __live_return_line__ (stamped by live_view.twin_ret / the body-capture
+    # profile hook) washes green; __live_error_line__ ((line, msg), stamped
+    # by live_instrument._stamp_error_line when the run raised) washes red
+    # with the message right-aligned on the line - the per-run twin of the
+    # editor's routed error markers. Both are absolute file coords, mapped
+    # through the same parse→buffer bridge as the anchors; both cleared at
+    # run start, so a rerun never shows the previous run's exit. A couple of
+    # attribute accesses + at most two rects per frame.
+    _exit_marks = []
+    _ret_line = getattr(fn, "__live_return_line__", None)
+    if _ret_line:
+        _exit_marks.append((_ret_line, None, (0.157, 0.824, 0.31, 0.16)))
+    _err_mark = getattr(fn, "__live_error_line__", None)
+    if _err_mark:
+        _exit_marks.append((_err_mark[0], _err_mark[1],
+                            (0.824, 0.157, 0.157, 0.22)))
+    for _ml_line, _ml_msg, _ml_col in _exit_marks:
+        _rl = _ml_line - line_offset
+        _rlm = _lmap(_rl) if _lmap else _rl
+        if _rlm is None or _rlm < 1:
+            continue
+        _ry = origin_y + (_rlm - 1) * line_px
+        if _clip is not None and (_ry + line_px < _clip[1]
+                                  or _ry > _clip[3]):
+            continue
+        _rdl = imgui.get_window_draw_list()
+        _cw = getattr(draw_state, "content_width", 800.0)
+        _rdl.add_rect_filled(
+            origin_x - 4.0, _ry, origin_x + _cw, _ry + line_px,
+            imgui.get_color_u32_rgba(*_ml_col))
+        if _ml_msg:
+            _tw = imgui.calc_text_size(_ml_msg).x
+            _rdl.add_text(origin_x + _cw - _tw - 8.0, _ry + 2.0,
+                          imgui.get_color_u32_rgba(1.0, 0.55, 0.55, 0.95),
+                          _ml_msg)
     for key_path, value in live_values_for(fn).items():
         if not key_path or not isinstance(key_path[-1], str):
             continue
@@ -466,6 +601,11 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             else:
                 end_col = start_col + max(1, len(name))
         pad = 2.0
+        # Caret containment: _ml is already buffer-space, as are the cursor
+        # box's - same test the call-token overlay does.
+        _cl, _cc = kwargs.get("cursor_line"), kwargs.get("cursor_col")
+        cursor_inside = (_cl == _ml and _cc is not None
+                         and start_col <= _cc < end_col)
         imgui.set_cursor_screen_pos(
             (origin_x + start_col * char_w - pad, _my - pad))
         # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
@@ -484,6 +624,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             width=max(1, end_col - start_col) * char_w + 2 * pad,
             height=line_px + 2 * pad,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
+            cursor_inside=cursor_inside, editor_ds=draw_state,
+            buffer_line=_ml - 1,
             name=f"lvs::{fn.__qualname__}::{'/'.join(key_path)}",
             auto_open=(is_volume(value) and key_path not in
                        (getattr(fn, "__frame_snapshot_keys__", None) or ())))

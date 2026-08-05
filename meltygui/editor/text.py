@@ -1675,7 +1675,8 @@ def _lv_line_map(parse_source, buffer_text):
 
 
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
-                          line_offset=0, jump_to=None, buffer_text=None):
+                          line_offset=0, jump_to=None, buffer_text=None,
+                          cursor_line=None, cursor_col=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
@@ -1688,16 +1689,23 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     if not type_specs:
         return
     # Parse→buffer line bridge (see _lv_line_map), rebuilt only when either
-    # text object changes - one ~1ms diff per view, then cached.
+    # text object changes - one ~1ms diff per edit, then cached. The cache
+    # holds STRONG REFS to both texts and compares identity: keying on bare
+    # id() was a mangler - a keystroke frees the old buffer string and the
+    # replacement often reuses that exact id (same allocator size class), so
+    # the stale map (typically None = "no bridging needed") kept hitting and
+    # every overlay element sat in unmapped parse coordinates until the edit
+    # was reverted. A held ref pins that id, making `is` sound.
     line_map = None
     if buffer_text is not None:
         _src = getattr(code_tree, "source", None)
-        _ck = (id(_src), id(buffer_text))
-        if getattr(ds, "_lv_lmap_key", None) == _ck:
+        if (getattr(ds, "_lv_lmap_src", None) is _src
+                and getattr(ds, "_lv_lmap_buf", None) is buffer_text):
             line_map = ds._lv_lmap
         else:
             line_map = _lv_line_map(_src, buffer_text)
-            ds._lv_lmap_key, ds._lv_lmap = _ck, line_map
+            ds._lv_lmap_src, ds._lv_lmap_buf = _src, buffer_text
+            ds._lv_lmap = line_map
     seen = set()
 
     def walk(node, depth=0):
@@ -1719,7 +1727,8 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
                                          h=h, draw_state=ds, char_w=char_w, line_px=line_px,
                                          node=node, span=span, root=code_tree,
                                          line_offset=line_offset, jump_to=jump_to,
-                                         line_map=line_map)
+                                         line_map=line_map, cursor_line=cursor_line,
+                                         cursor_col=cursor_col)
                     except Exception:
                         pass
                     break
@@ -5293,6 +5302,17 @@ def draw_text(input_value: str, height=None,
         line_offset = 0
         gutter_w = 0.0
 
+    # Live-marker open/close column: when the live view has registered
+    # markers on this editor (per-line registry stamped by
+    # draw_live_view_marker), widen the gutter by one button cell so each
+    # marker line gets a raw draw-list toggle next to its number. This
+    # persists across frames (rebuilt by each overlay pass), so the width is
+    # stable - it only appears at all for buffers that have live markers.
+    _lv_btn_w = (15.0 if (show_gutter
+                          and getattr(ds, "_lv_gutter_markers", None))
+                 else 0.0)
+    gutter_w += _lv_btn_w
+
     text_visible_width = draw_state.content_width - gutter_w
 
     # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
@@ -5426,6 +5446,19 @@ def draw_text(input_value: str, height=None,
             _r[0] <= left_mouse_down.x < _r[2] and _r[1] <= left_mouse_down.y < _r[3]
             for _r in getattr(ds, '_plain_tv_rects', ()))
         if ds._plain_tv_gesture:
+            left_mouse_down = None
+
+    # Live-marker gutter button press: claim it from the DELIVERED event, not
+    # a raw imgui click read - the press that wakes a blit-cached tile is
+    # already a frame old when the body runs, so is_mouse_clicked in the
+    # gutter pass almost never saw it. The stash is consumed by the gutter
+    # pass below (same body run); nulling the event here also keeps the button
+    # click from placing the caret / granting text focus.
+    if (left_mouse_down and _lv_btn_w
+            and left <= left_mouse_down.x < left + _lv_btn_w):
+        _lv_pressed_line = int((left_mouse_down.y - origin_y) // line_px)
+        if _lv_pressed_line in (getattr(ds, "_lv_gutter_markers", None) or {}):
+            ds._lv_btn_pressed_line = _lv_pressed_line
             left_mouse_down = None
 
     if left_mouse_down:
@@ -7144,10 +7177,18 @@ def draw_text(input_value: str, height=None,
         # route); shift the origin by the indent delta so node overlays land
         # on the glyphs, which use the buffer's file-indented chars.
         _tv_shift = _parse_col_shift(text, getattr(_tv_tree, 'source', '') or '')
+        # Caret position in buffer space (1-indexed line, non-shifted col) for
+        # the live_view overlays - with hover preview off, a marker whose symbol
+        # the caret sits on shows its value window instead.
+        _cur_line = _cur_col = None
+        if Melty.text_focused_ds is ds:
+            _cl0, _cc0 = _index_to_line_col(text, ds.text_cursor_pos)
+            _cur_line, _cur_col = _cl0 + 1, _cc0 - _tv_shift
         _draw_cst_token_views(_tv_tree, token_views, origin_x + _tv_shift * char_w,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to,
-                              buffer_text=text)
+                              buffer_text=text, cursor_line=_cur_line,
+                              cursor_col=_cur_col)
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------
@@ -7235,6 +7276,12 @@ def draw_text(input_value: str, height=None,
         # Line-tint lookup for the heat wash below: a line with a definition
         # tint draws its number with THAT color instead of the usage heat ramp.
         _dt_line_map = {l[0]: l for l in _dt_lines} if _dt_lines else {}
+        # Live-marker open/close buttons (per _lv_btn_w above): raw draw-list
+        # icons; deliberately NOT melty buttons since a render_func per line
+        # would dominate the gutter pass. Click toggles every marker on the
+        # line via set_marker_open and invalidates this tile so their marker
+        # bodies re-run and create/hide their value windows.
+        _lv_marks = (getattr(ds, "_lv_gutter_markers", None) or {}) if _lv_btn_w else {}
         total_lines = text.count('\n') + 1
         for line_idx in range(total_lines):
             ly = origin_y + line_idx * line_px
@@ -7266,6 +7313,56 @@ def draw_text(input_value: str, height=None,
                 draw_list.add_rect_filled(nx - 3.0, ly + 1, left + gutter_w - 3.0,
                                           ly + line_px - 1, _hb, 3.0)
             draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
+            _mlist = _lv_marks.get(line_idx)
+            if _mlist:
+                _open = any(getattr(m, "_lv_open", False) for m in _mlist)
+                # Hit zone: the FULL button cell (whole column width x whole
+                # line height), not just the glyph - the icon itself is tiny.
+                _bhov = (left <= io.mouse_pos.x < left + _lv_btn_w
+                         and ly <= io.mouse_pos.y < ly + line_px)
+                # Icon tint defaults to the LINE's color: the definition tint when
+                # the line has one (same adjust as the heat box), else the
+                # number color this line is drawn with.
+                _blt = _dt_line_map.get(line_idx)
+                if _blt is not None:
+                    _bga = _bg_adjust(tuple(_blt[1][:3]), _bg_f)
+                    _bc = imgui.get_color_u32_rgba(_bga[0], _bga[1], _bga[2], 1.0)
+                else:
+                    _bc = cur_color if line_idx == cur_line else num_color
+                _bcx = left + _lv_btn_w * 0.5
+                _bcy = ly + line_px * 0.5
+                if _bhov:
+                    draw_list.add_rect_filled(
+                        left + 1.0, ly + 1.0, left + _lv_btn_w - 1.0,
+                        ly + line_px - 1.0,
+                        imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.10), 3.0)
+                if _open:
+                    # × close button
+                    _br = 3.5
+                    draw_list.add_line(_bcx - _br, _bcy - _br,
+                                       _bcx + _br, _bcy + _br, _bc, 1.6)
+                    draw_list.add_line(_bcx - _br, _bcy + _br,
+                                       _bcx + _br, _bcy - _br, _bc, 1.6)
+                else:
+                    # inspect icon: magnifier (circle + handle)
+                    _br = 2.8
+                    _bgx, _bgy = _bcx - 1.2, _bcy - 1.2
+                    draw_list.add_circle(_bgx, _bgy, _br, _bc, 12, 1.4)
+                    _bhx = _br * 0.707
+                    draw_list.add_line(_bgx + _bhx, _bgy + _bhx,
+                                       _bgx + _br + 2.6, _bgy + _br + 2.6,
+                                       _bc, 1.4)
+                if getattr(ds, "_lv_btn_pressed_line", None) == line_idx:
+                    ds._lv_btn_pressed_line = None
+                    from src.lsd.gl_gui.view.core_views.live_view_views import (
+                        set_marker_open)
+                    for m in _mlist:
+                        set_marker_open(m, not _open)
+                    ds.invalidate()
+                    request_render()
+        # An unconsumed press stash dies with the pass - a press on a line
+        # whose marker disappeared must not fire on a later frame's layout.
+        ds._lv_btn_pressed_line = None
         draw_list.pop_clip_rect()
 
     if changed:

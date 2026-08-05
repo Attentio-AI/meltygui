@@ -160,6 +160,65 @@ def twin_snap(value, name=None):
     return value
 
 
+def twin_ret(value=None):
+    """The instrumented twin's return hook (`__lv_ret__`): every `return X`
+    in the twin compiles as `return __lv_ret__(X)` (bare `return` passes
+    None), so the calling frame's f_lineno IS the return statement's
+    original file line. Stamps `__live_return_line__` (absolute 1-indexed
+    file line) on the resolved store function and wakes the store-level
+    watchers, so the editor's snapshot overlay can wash that line green —
+    the success twin of the red error-line wash — the moment the run comes
+    out. run_instrumented clears the stamp at run start, so a raise (or an
+    edit that removes the return) never leaves a stale green line. Returns
+    the value unchanged."""
+    frame = sys._getframe(1)
+    try:
+        code, lineno = frame.f_code, frame.f_lineno
+    finally:
+        del frame
+    try:
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+            _enclosing_function)
+        fn = _enclosing_function(code.co_filename, lineno)
+        if isinstance(fn, types.FunctionType):
+            stamp_run_marker(fn, "__live_return_line__", lineno)
+    except Exception:
+        pass
+    return value
+
+
+def stamp_run_marker(fn, attr, value):
+    """Stamp a per-run marker attribute (`__live_return_line__`,
+    `__live_error_line__`) on a store function and wake its store-level
+    watchers (the snapshot editors) with the same throttled render wake the
+    publish path uses, so the editor washes appear without an unrelated
+    repaint. Safe from any thread; swallows everything — markers are
+    decoration, never worth breaking a run over."""
+    try:
+        vars(fn)[attr] = value
+        notified = False
+        try:
+            targets = tuple(
+                getattr(fn, "__live_store_watchers__", None) or ())
+        except RuntimeError:
+            targets = ()
+        for ds in targets:
+            try:
+                ds.invalidate()
+                notified = True
+            except Exception:
+                pass
+        if notified:
+            global _last_wake
+            now = time.time()
+            if now - _last_wake > 0.033:
+                _last_wake = now
+                from src.lsd.gl_gui.utils.glfw_utils import request_render
+                request_render()
+    except Exception:
+        pass
+
+
 def call_with_body_capture(func, kwargs):
     """Call ``func(**kwargs)`` and capture its body frame's locals at return,
     handing them to the async frame-snapshot publisher.
@@ -178,6 +237,7 @@ def call_with_body_capture(func, kwargs):
     if target_code is None:
         return func(**kwargs)
     captured = {}
+    exit_line = [None]
     depth = 0
 
     prev = sys.getprofile()
@@ -195,6 +255,12 @@ def call_with_body_capture(func, kwargs):
                     captured.update(frame.f_locals)
                 except Exception:
                     pass
+                # The frame's lineno AT the return event is the return
+                # statement's (or the raise, on an exception unwind) -
+                # the same __live_return_line__ the instrumented twin
+                # stamps, so the func tab's editor gets the green exit-line
+                # wash from a plain body capture too.
+                exit_line[0] = frame.f_lineno
 
     sys.setprofile(prof)
     try:
@@ -202,6 +268,8 @@ def call_with_body_capture(func, kwargs):
     finally:
         sys.setprofile(prev)
         if captured:
+            if exit_line[0] is not None:
+                stamp_run_marker(inner, "__live_return_line__", exit_line[0])
             publish_stack_locals((), extra_snapshots=[(inner, captured, None)])
 
 
