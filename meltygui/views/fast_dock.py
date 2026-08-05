@@ -88,12 +88,12 @@ def fast_dock_sync():
 
 def _summon(wds, dock_ds, row_top):
     """Reposition `wds` just right of the dock at this row and raise it —
-    the same math as the old dock's name/target buttons."""
+    the same math as the old dock's name/target buttons, now via
+    Melty.summon_window so the placement is bounded to the display (a row low
+    in a long dock would otherwise open the window with its bottom off the
+    bottom of the screen)."""
     this_window_right = dock_ds.abs_left + dock_ds.width
-    from_zero_x = wds.abs_left - wds.window_pos[0]
-    from_zero_y = wds.abs_top - wds.window_pos[1]
-    wds.window_pos = (this_window_right + 10 - from_zero_x, row_top - from_zero_y)
-    Core.melty.move_window_to_front(wds)
+    Core.melty.summon_window(wds, this_window_right + 10, row_top)
 
 
 def _mix(style_manager, tint, value, factor, saturation):

@@ -1583,6 +1583,28 @@ def render_func(*args, **o_kwargs):
                             draw_state.window_pos = (wp[0] + new_left - left,
                                                      wp[1] + new_top - top)
 
+                # Bottom-of-display placement: a window appearing for the first
+                # time must not land with its bottom below the bottom of the
+                # display - lift it by the overflow, never past the display edge
+                # (a window taller than the display keeps its header, and so
+                # its drag handle, reachable). Runs on the window's FIRST TWO
+                # rendered frames, not just frame 0: a brand-new window has no
+                # height until it's drawn once, so frame 1 is the earliest
+                # its bounding box is knowable. frame_count only increments on frames
+                # the window actually renders, so this is "the first frames it
+                # is drawn" - re-opening a closed window doesn't re-trigger it.
+                # Later frames are untouched, so a window you drag low yourself
+                # stays there.
+                if (draw_state.frame_count <= 1 and draw_state.parent_window is None
+                        and draw_state.height):
+                    disp_h = imgui.get_io().display_size[1]
+                    edge_margin = getattr(Toggles.WindowSettings, "edge_margin", 20)
+                    win_top = draw_state.abs_top or 0
+                    below = (win_top + draw_state.height) - (disp_h - edge_margin)
+                    if below > 0:
+                        wp = draw_state.window_pos
+                        draw_state.window_pos = (wp[0], wp[1] - min(below, max(0, win_top)))
+
                 # Drag-and-drop: the dragged item renders as a closable window;
                 # glue it under the cursor here - at render/dispatch time, on its
                 # draw_state - so it tracks the live mouse position on frames when

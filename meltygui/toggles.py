@@ -691,7 +691,7 @@ class Toggles:
                 Snippet("", "request_render()", ""),
             ],
         }
-        
+
         @staticmethod
         def usage_tint(users):
             """Background-wash color for a symbol-usage span in the editor — a
@@ -772,7 +772,7 @@ class Toggles:
         # washes' bg_min_brightness (text needs a higher floor than a
         # background does); the brightness clamp still shares bg_max_brightness.
         comment_min_brightness = 0.170
-    
+
         # Background wash color adjustment - applies to ALL def-tint
         # backgrounds (symbol washes, line bands, block washes, number
         # boxes, the glyph-mix target) AND, sans the brightness clamp, to
@@ -817,6 +817,16 @@ class Toggles:
         # Sticky resize: re-anchor the window top at the drag-start point each
         # frame so only the min-on-display clamp displaces it.
         sticky_drag = True
+
+        # Breathing room, in px, left at every display edge by
+        # Melty.clamp_window_pos - a bound applied whenever a window is
+        # PLACED programmatically (summoned by the dock / a search hit /
+        # Ctrl+Shift+F, or shown for the first time), so it can't open half
+        # off-screen or with its bottom below the bottom of the display.
+        # Dragging is unaffected: a window you drag off the edge just
+        # stays where you put it. A window taller/wider than the display
+        # keeps its top-left in view and overflows the far edge. Read live.
+        edge_margin = 20
 
     # [icon=""]
     @defaults(tint=(0.427, 0.541, 0.616))

@@ -3595,14 +3595,45 @@ class Melty:
         return None
 
     @classmethod
+    def clamp_window_pos(cls, draw_state, x, y, margin=None):
+        """Pull an intended window top-left back inside the display, keeping
+        `margin` px (Toggles.WindowSettings.edge_margin) of room at every edge.
+
+        Applied wherever a window is PLACED programmatically — summoned to the
+        cursor by Ctrl+Shift+F, launched from a search hit, opened from the
+        dock — so it never lands half off-screen and, in particular, never
+        lands with its BOTTOM below the bottom of the display. Dragging is
+        deliberately not clamped: a window you tuck off the edge yourself
+        stays where you put it.
+
+        The top-left wins when the window is larger than the display — its
+        grab edge stays reachable and the overflow goes off the far side. A
+        window that has never rendered has no width/height yet, so only its
+        top-left is bounded; the next placement sees the real size."""
+        disp = cls.display_size
+        if draw_state is None or disp is None:
+            return x, y
+        if margin is None:
+            margin = getattr(Toggles.WindowSettings, "edge_margin", 20)
+        width = draw_state.width or 0
+        height = draw_state.height or 0
+        return (max(margin, min(x, disp[0] - width - margin)),
+                max(margin, min(y, disp[1] - height - margin)))
+
+    @classmethod
     def summon_window(cls, draw_state, x, y):
         """Move a window so its top-left lands at screen (x, y) AND raise it —
         the "summon" the Dock's target button does, so a launched window comes
         to where you are instead of staying put (maybe off-screen). window_pos
         is the unanchored origin, so offset by the window's anchor delta
-        (abs - window_pos), same as the Dock summon."""
+        (abs - window_pos), same as the Dock summon.
+
+        The target is bounded by clamp_window_pos first, so summoning to a
+        cursor near an edge (or to a dock row near the bottom) still lands the
+        whole window on screen."""
         if draw_state is None:
             return
+        x, y = cls.clamp_window_pos(draw_state, x, y)
         wp = draw_state.window_pos or (0, 0)
         from_zero_x = (draw_state.abs_left or 0) - wp[0]
         from_zero_y = (draw_state.abs_top or 0) - wp[1]
