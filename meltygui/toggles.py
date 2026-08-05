@@ -425,6 +425,13 @@ class Toggles:
         # preview (closes on mouse-leave); double-click still latches it
         # open permanently. Read live per marker render.
         live_hover_preview = False
+        # Auto-open the value window for 3-D+ tensors (typically voxel volumes)
+        # the moment an instrumented run captures them. Off = every snapshot
+        # marker starts closed (click-gutter to open) - with loop
+        # accumulation stacking per-layer tensors into volumes, a run would
+        # otherwise pop one window per captured tensor. A site can opt back
+        # in with `# [auto_open=True]`. Read live per marker render.
+        live_auto_open_volumes = False
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
@@ -816,7 +823,7 @@ class Toggles:
         # 20x font atlas. Changing it re-rasterizes all 18 fonts - a ~0.3s
         # operation and a ~64->128MB atlas at 1.25 - so it is a setting to
         # change deliberately, not to animate. 1.0 = the authored look.
-        scale = 0.8
+        scale = 1.00
 
     # [icon=""]
     @defaults(tint=(0.103, 0.341, 0.617))

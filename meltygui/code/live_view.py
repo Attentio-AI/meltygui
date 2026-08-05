@@ -44,6 +44,16 @@ Known limit: a frame still executing OLD code after a hotswap-without-save
 reports linenos that may not match the file on disk, so a site first resolved
 after that point can mis-key until the function re-enters. Sites resolved
 before the swap are cached and stay correct.
+
+Loop sites ACCUMULATE: a site enclosed by for/while loops (statically known —
+from the injected snapshot's loop context or the site resolution's own ast
+walk) folds each publish into a per-key accumulator instead of overwriting.
+Tensors/ndarrays append along a new leading dim per enclosing loop, auto-named
+from the loop variable ('l_idx' for `for l_idx, layer in enumerate(…)`);
+everything else appends to a list. See _accumulate for the growth-buffer,
+rollover, and nested-grid mechanics, and __live_dim_names__ /
+auto_dim_names_for for how the editor marker merges the auto names into the
+value window's dim_names.
 """
 
 import ast
@@ -93,15 +103,20 @@ class _Site:
     """Everything line-dependent about one live_view call site, resolved once.
     `key_path` is relative to `store_obj`'s scope; `var_name` labels (and for
     the bare form, selects) the captured local; `arg_label` is the explicit
-    form's argument source text."""
-    __slots__ = ("key_path", "var_name", "arg_label", "store_obj", "lineno")
+    form's argument source text; `loop_dims` names the enclosing loops
+    (outermost first — see _loop_dims_at), which turns the site's publishes
+    into accumulation instead of overwrite."""
+    __slots__ = ("key_path", "var_name", "arg_label", "store_obj", "lineno",
+                 "loop_dims")
 
-    def __init__(self, key_path, var_name, arg_label, store_obj, lineno):
+    def __init__(self, key_path, var_name, arg_label, store_obj, lineno,
+                 loop_dims=()):
         self.key_path = key_path
         self.var_name = var_name
         self.arg_label = arg_label
         self.store_obj = store_obj
         self.lineno = lineno
+        self.loop_dims = loop_dims
 
 
 def live_view(value=_MISSING, name=None):
@@ -111,8 +126,11 @@ def live_view(value=_MISSING, name=None):
     PRECEDING statement (aug-assigns and block bodies included; resolved from
     the ast, not the display dict). Explicit form — `live_view(expr)` —
     captures expr and passes it through, so `y = live_view(f(x))` works
-    inline. Never raises into the caller; an unresolvable site is recorded
-    once and skipped thereafter."""
+    inline. A site inside a loop ACCUMULATES instead of overwriting — see
+    _accumulate; the loop variables' current values are read from the calling
+    frame so int-indexed loops key entries by iteration. Never raises into
+    the caller; an unresolvable site is recorded once and skipped
+    thereafter."""
     frame = sys._getframe(1)
     try:
         site = _site_for(frame.f_code, frame.f_lineno)
@@ -127,13 +145,16 @@ def live_view(value=_MISSING, name=None):
                 return None
         else:
             resolved = value
-        _publish(site, resolved, name, bare)
+        dims = getattr(site, "loop_dims", ()) or None
+        idx = (tuple(frame.f_locals.get(d) for d in dims)
+               if dims else None)
+        _publish(site, resolved, name, bare, dims=dims, idx=idx)
         return resolved
     finally:
         del frame
 
 
-def twin_snap(value, name=None):
+def twin_snap(value, name=None, dims=None):
     """The instrumented twin's injected snapshot hook (`__lv_view__`) — the
     FAST publish path. Synthesizes the same ``line:N#name`` keys the
     frame-snapshot publisher uses (the overlay anchors line keys by line and
@@ -145,12 +166,21 @@ def twin_snap(value, name=None):
     context-menu snapshot UPDATE THE SAME MARKERS instead of doubling them.
     Manual live_view() calls in the body keep the structural-key path (their
     markers anchor to the call token). Falls back to the classic resolved
-    path when the store can't be resolved."""
+    path when the store can't be resolved.
+
+    `dims` is the instrumentation's STATIC loop context — the names of the
+    loops enclosing the snapped assignment, outermost first (see
+    live_instrument._inject_snaps). When present, the loop variables' current
+    values are read from the twin frame and the publish ACCUMULATES (stacked
+    tensors / lists) instead of overwriting — see _accumulate."""
     frame = sys._getframe(1)
     try:
         code, lineno = frame.f_code, frame.f_lineno
+        idx = (tuple(frame.f_locals.get(d) for d in dims)
+               if dims else None)
     finally:
         del frame
+    dims = tuple(dims) if dims else None
     try:
         from src.lsd.gl_gui.view.core_conversion.chain_converters import (
             _enclosing_function)
@@ -158,13 +188,13 @@ def twin_snap(value, name=None):
         if (isinstance(fn, types.FunctionType)
                 and isinstance(name, str) and name.isidentifier()):
             site = _Site((f"line:{lineno}#{name}",), None, None, fn, lineno)
-            _publish(site, value, name, bare=False)
+            _publish(site, value, name, bare=False, dims=dims, idx=idx)
             return value
     except Exception:
         pass
     site = _site_for(code, lineno)
     if site is not None and site.store_obj is not None:
-        _publish(site, value, name, bare=False)
+        _publish(site, value, name, bare=False, dims=dims, idx=idx)
     return value
 
 
@@ -564,7 +594,7 @@ def _site_for(code, lineno):
     return per_code[lineno]
 
 
-def _publish(site, value, name, bare):
+def _publish(site, value, name, bare, dims=None, idx=None):
     try:
         # setdefault on the object's __dict is atomic under the GIL, so two
         # threads first-publishing to a function can't drop a store.
@@ -576,9 +606,28 @@ def _publish(site, value, name, bare):
     if label:
         vars(site.store_obj).setdefault("__live_labels__", {})[
             site.key_path] = label
+    # A loop site accumulates: the store holds the growing stack/list, the
+    # raw per-iteration value only feeds the type recorder below. Must run
+    # BEFORE the touched.add - "key not yet touched this run" is how the
+    # accumulator detects a fresh run and resets.
+    display = value
+    if dims:
+        try:
+            display = _accumulate(site.store_obj, site.key_path, value,
+                                  tuple(dims), idx)
+        except Exception as e:
+            # Never break the publish; drop the entry so the next one restarts.
+            try:
+                vars(site.store_obj).get("__live_accum__", {}).pop(
+                    site.key_path, None)
+            except Exception:
+                pass
+            print(f"live_view: accumulate failed for {site.key_path}: {e!r}",
+                  file=sys.stderr)
+            display = value
     # The value is stored RAW - a single object assignment, atomic under the
     # GIL, so the rendering thread always reads either the old or new value.
-    store[site.key_path] = value
+    store[site.key_path] = display
     # Run-scope liveness: while a run_capture is active for this store,
     # every published key is recorded so the run's exit can prune the rest
     # (set.add - atomic under the GIL).
@@ -587,6 +636,181 @@ def _publish(site, value, name, bare):
         touched.add(site.key_path)
     _record_scope_type(site, value, name, bare)
     _notify_watchers(site.store_obj, site.key_path, first=first)
+
+
+# Sliding-window cap for a loop-site publishing outside any run_capture
+# scope (a free-running training loop has no run boundary to stop at).
+_ACCUM_CAP = 512
+
+
+def _accumulate(store_obj, key_path, value, dims, idx):
+    """Fold one LOOP-SITE publish into its per-key accumulator and return the
+    DISPLAY value the store should hold: tensors/ndarrays append along a new
+    leading dim (a doubling growth buffer — amortized O(1) per publish, no
+    per-iteration restack), everything else appends to a list.
+
+    `dims` is the static tuple of enclosing-loop names, outermost first
+    (`for l_idx, layer in enumerate(…)` → 'l_idx'; while → 'iter'); `idx` is
+    those loop variables' CURRENT values read from the publishing frame.
+    An all-int idx keys the entry by ITERATION INDEX, so a repeated pass
+    (an outer epoch loop, a re-called function) OVERWRITES in place instead
+    of growing — natural rollover — and a complete rectangular nested grid
+    reshapes into one named dim PER loop. Non-int idx (`for layer in
+    layers`, while bodies) appends flat in publish order; nested loops that
+    can't grid flatten under a composite ' × '-joined name.
+
+    The auto dim names land in __live_dim_names__[key_path] (read by the
+    editor marker, which prepends them to the site's user dim_names before
+    the value-window call). A run_capture scope resets a key's accumulator
+    on its first publish of the run — the store keeps showing the finished
+    stack between runs. Tensors are detached first: a graph-carrying stack
+    would pin autograd memory across the whole loop."""
+    try:
+        accums = vars(store_obj).setdefault("__live_accum__", {})
+    except (AttributeError, TypeError):
+        return value
+    kind = type(value).__name__
+    stackable = (kind == "Tensor"
+                 or (kind == "ndarray" and value.dtype.kind in "fiub"))
+    if kind == "Tensor":
+        try:
+            value = value.detach()
+        except Exception:
+            pass
+    touched = vars(store_obj).get("__live_touched__")
+    ent = accums.get(key_path)
+    if (ent is None or ent["dims"] != dims
+            or (touched is not None and key_path not in touched)):
+        ent = accums[key_path] = {
+            "dims": dims,   # static loop names, outermost first
+            "slots": {},    # idx tuple | ('#', n) counter -> row/seq position
+            "buf": None,    # stack growth buffer (cap, *shape) | None
+            "n": 0,         # buffer rows in use
+            "seq": None,    # list fallback (non-stackable / ragged shapes)
+        }
+    by_index = (idx is not None and len(idx) == len(dims)
+                and all(type(i) is int for i in idx))
+    slot_key = tuple(idx) if by_index else ("#", len(ent["slots"]))
+
+    buf = ent["buf"]
+    if buf is not None and (not stackable
+                            or (kind == "Tensor") != (type(buf).__name__
+                                                      == "Tensor")
+                            or tuple(buf.shape[1:]) != tuple(value.shape)):
+        # Genuinely ragged (not the value's shape): give up the packed
+        # buffer, keep the rows (views into it) and continue as a plain
+        # list. Dtype/device drift is NOT a deopt - copy_ casts and crosses
+        # devices below, so a sharded/offloaded model's per-layer values
+        # still stack into the first layer's buffer.
+        print(f"live_view: {key_path} accumulates as a list — "
+              f"{getattr(value, 'shape', type(value).__name__)} doesn't "
+              f"stack on buffer {tuple(buf.shape[1:])}", file=sys.stderr)
+        ent["seq"] = [buf[i] for i in range(ent["n"])]
+        ent["buf"] = buf = None
+
+    if not stackable or ent["seq"] is not None:
+        seq = ent["seq"]
+        if seq is None:
+            seq = ent["seq"] = []
+        pos = ent["slots"].get(slot_key)
+        if pos is not None and pos < len(seq):
+            seq[pos] = value
+        else:
+            ent["slots"][slot_key] = len(seq)
+            seq.append(value)
+            if len(seq) > _ACCUM_CAP:
+                del seq[0]
+                ent["slots"] = {("#", i): i for i in range(len(seq))}
+        _stamp_auto_dims(store_obj, key_path, dims, nested=False)
+        return seq
+
+    if buf is None:
+        buf = ent["buf"] = _accum_alloc(value, 4)
+    pos = ent["slots"].get(slot_key)
+    if pos is None:
+        if ent["n"] >= _ACCUM_CAP:
+            # Sliding window: pop off the oldest row. Index identity is
+            # gone after a window, so slots degrade to flat counters.
+            src = buf[1:ent["n"]]
+            buf[:ent["n"] - 1] = (src.clone() if kind == "Tensor"
+                                  else src.copy())
+            pos = ent["n"] - 1
+            ent["slots"] = {("#", i): i for i in range(pos + 1)}
+        else:
+            if ent["n"] >= buf.shape[0]:
+                # Grow from the BUFFER's dtype/device (not the value's - a
+                # drifting value must not silently re-home the whole stack).
+                cap = min(_ACCUM_CAP, max(4, buf.shape[0] * 2))
+                if kind == "Tensor":
+                    new = buf.new_empty((cap,) + tuple(buf.shape[1:]))
+                else:
+                    import numpy as np
+                    new = np.empty((cap,) + tuple(buf.shape[1:]),
+                                   dtype=buf.dtype)
+                new[:ent["n"]] = buf[:ent["n"]]
+                buf = ent["buf"] = new
+            pos = ent["n"]
+            ent["n"] += 1
+            ent["slots"][slot_key] = pos
+    if kind == "Tensor":
+        # copy_ casts dtype and crosses devices - mixed-precision layers and
+        # device_map-sharded models stack instead of deopting to a list.
+        buf[pos].copy_(value)
+    else:
+        buf[pos] = value
+
+    flat = buf[:ent["n"]]
+    nested = False
+    if len(dims) > 1 and ent["n"]:
+        ks = list(ent["slots"])
+        if all(k[0] != "#" for k in ks) and ks == sorted(ks):
+            extents = tuple(len({k[d] for k in ks})
+                            for d in range(len(dims)))
+            total = 1
+            for e in extents:
+                total *= e
+            if total == ent["n"]:
+                flat = flat.reshape(extents + tuple(buf.shape[1:]))
+                nested = True
+    _stamp_auto_dims(store_obj, key_path, dims, nested)
+    return flat
+
+
+def _accum_alloc(value, cap):
+    """An uninitialized (cap, *value.shape) buffer matching value's dtype
+    (and device, for torch tensors)."""
+    if type(value).__name__ == "Tensor":
+        return value.new_empty((cap,) + tuple(value.shape))
+    import numpy as np
+    return np.empty((cap,) + tuple(value.shape), dtype=value.dtype)
+
+
+def _stamp_auto_dims(store_obj, key_path, dims, nested):
+    """Record the accumulated dims' auto names for the editor marker: one
+    name per loop when the stack is nested (or single-loop), a composite
+    ' × ' name for a flattened multi-loop stack."""
+    names = tuple(dims) if (nested or len(dims) == 1) else (" × ".join(dims),)
+    try:
+        stamped = vars(store_obj).setdefault("__live_dim_names__", {})
+        if stamped.get(key_path) != names:
+            print(f"live_view dims: stamp {key_path} auto={names} "
+                  f"(loops={tuple(dims)}, nested={nested})", file=sys.stderr)
+        stamped[key_path] = names
+    except (AttributeError, TypeError):
+        pass
+
+
+def auto_dim_names_for(obj, key_path):
+    """The auto loop-dim names a key's accumulated value carries (leading
+    dims, outermost first), or None. Editor-side reader — the marker
+    prepends these to the site's user dim_names before the value-window
+    call."""
+    try:
+        obj = inspect.unwrap(obj)
+    except Exception:
+        pass
+    names = getattr(obj, "__live_dim_names__", None)
+    return names.get(key_path) if names else None
 
 
 def _record_scope_type(site, value, name, bare):
@@ -674,6 +898,10 @@ def _prune_keys(store_obj, removed):
         store.pop(key, None)
         if labels:
             labels.pop(key, None)
+        for _attr in ("__live_accum__", "__live_dim_names__"):
+            _d = getattr(store_obj, _attr, None)
+            if _d:
+                _d.pop(key, None)
         for attr in ("__live_watchers__", "__live_first_watchers__"):
             watchers = getattr(store_obj, attr, None)
             if not watchers:
@@ -758,7 +986,8 @@ def clear_file_stores(filename):
         d = getattr(obj, "__dict__", None)
         if d is not None:
             for attr in ("__live_return_line__", "__live_error_line__",
-                         "__live_touched__"):
+                         "__live_touched__", "__live_accum__",
+                         "__live_dim_names__"):
                 d.pop(attr, None)
     return dropped
 
@@ -1071,6 +1300,11 @@ def _resolve_site(code, lineno):
     if store_obj is None:
         store_obj = _module_for_file(path)
 
+    try:
+        loop_dims = _loop_dims_at(tree, line_p)
+    except Exception:
+        loop_dims = ()   # never let loop context kill site resolution
+
     span = _top_level_span(tree, line_p)
     lm = _linemap_for(path, sig, span, text)
     arg_label = None
@@ -1114,7 +1348,64 @@ def _resolve_site(code, lineno):
     if arg_label is None:
         # No CallParse to read the arg from (un-surfaced body) - use the ast.
         arg_label = _arg_source_ast(tree, line_p)
-    return _Site(key_path, var_name, arg_label, store_obj, lineno)
+    return _Site(key_path, var_name, arg_label, store_obj, lineno, loop_dims)
+
+
+def _loop_dims_at(tree, lineno):
+    """Auto dim names of the loops enclosing `lineno`, outermost first,
+    within the line's innermost frame scope — a def/class boundary resets
+    the chain (its body publishes from a different frame, so outer loops
+    don't repeat ITS sites). Only a loop's BODY iterates: a line in its
+    `else:` runs once and is not counted, and the header line itself
+    (`for x in live_view(seq):`) contributes nothing."""
+    dims, body = [], tree.body
+    while True:
+        stmt = next(
+            (s for s in body
+             if s.lineno <= lineno <= getattr(s, "end_lineno", s.lineno)),
+            None)
+        if stmt is None:
+            return tuple(dims)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            dims = []
+        next_body = None
+        for block, iterates in _stmt_blocks(stmt):
+            if any(s.lineno <= lineno <= getattr(s, "end_lineno", s.lineno)
+                   for s in block):
+                if iterates:
+                    dims.append(_loop_name(stmt))
+                next_body = block
+                break
+        if next_body is None:
+            return tuple(dims)
+        body = next_body
+
+
+def _stmt_blocks(stmt):
+    """(statement block, iterates) pairs for every block of `stmt` — only a
+    For/While `body` iterates."""
+    is_loop = isinstance(stmt, (ast.For, ast.AsyncFor, ast.While))
+    for field in _BODY_FIELDS:
+        sub = getattr(stmt, field, None)
+        if isinstance(sub, list) and sub:
+            yield sub, is_loop and field == "body"
+    for handler in getattr(stmt, "handlers", None) or []:
+        yield handler.body, False
+    for case in getattr(stmt, "cases", None) or []:
+        yield case.body, False
+
+
+def _loop_name(stmt):
+    """The auto dim name for one loop: the first plain Name in a for-target
+    ('i' for `for i, layer in enumerate(…)` — the index var by position),
+    'iter' for a while (no target to name it by)."""
+    target = getattr(stmt, "target", None)
+    if target is not None:
+        for node in ast.walk(target):
+            if isinstance(node, ast.Name):
+                return node.id
+    return "iter"
 
 
 def _ast_for(path, mtime):

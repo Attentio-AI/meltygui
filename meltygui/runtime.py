@@ -2581,6 +2581,21 @@ class Melty:
             if isinstance(_ca, dict):
                 for _ck, _cv in _ca.items():
                     if not (isinstance(_ck, str) and _ck.startswith("__")):
+                        if _ck == "dim_names":
+                            # A loop site's accumulated value carries auto
+                            # loop dims (stamped on the ds by the marker);
+                            # the comment names only the per-iteration dims.
+                            # Redo the marker's merge + <...> padding -
+                            # splatting the raw comment list here would
+                            # clobber them.
+                            _ad = draw_state.__dict__.get('_lv_auto_dims')
+                            _nd = draw_state.__dict__.get('_lv_ndim')
+                            if _ad or _nd:
+                                from src.lsd.gl_gui.view.core_views.live_view_views import (
+                                    _merged_dim_names, _padded_dim_names)
+                                if _ad:
+                                    _cv = _merged_dim_names(_ad, _cv)
+                                _cv = _padded_dim_names(_cv, _nd or 0) or _cv
                         kwargs[_ck] = _cv
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((int(draw_state.abs_left), int(draw_state.abs_top)))

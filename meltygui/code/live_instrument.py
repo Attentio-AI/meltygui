@@ -34,7 +34,7 @@ import weakref
 from pathlib import Path
 
 from src.lsd.gl_gui.view.core_conversion.live_view import (
-    live_view, twin_snap, twin_ret)
+    live_view, twin_snap, twin_ret, _loop_name)
 
 # id(original __code__) -> ((source mtime, pending gen), twin function |
 # original on fallback). Identity-keyed for the same reason as
@@ -300,11 +300,18 @@ def _build_twin(fn, pending=None):
 _BLOCK_FIELDS = ("body", "orelse", "finalbody")
 
 
-def _inject_snaps(body):
+def _inject_snaps(body, loops=()):
     """Insert `__lv_view__(<name>, name='<name>')` after every single-Name
     assignment in `body`, recursing into control-flow blocks but NOT into
     nested defs/classes (their locals live in other frames). Each injected
-    call copies the assignment's location, which IS the key rendezvous."""
+    call copies the assignment's location, which IS the key rendezvous.
+
+    `loops` is the static chain of enclosing-loop dim names (outermost
+    first): recursing into a For/While BODY extends it with the loop's auto
+    name (live_view._loop_name — the loop variable, 'iter' for while), and a
+    snap under a non-empty chain gains `dims=(<names>…)`, which switches its
+    publish from overwrite to accumulation (live_view._accumulate). A loop's
+    `else:` runs once and keeps the outer chain."""
     out = []
     for stmt in body:
         if isinstance(stmt, ast.Return):
@@ -322,11 +329,18 @@ def _inject_snaps(body):
         out.append(stmt)
         name = _snap_target(stmt)
         if name is not None:
+            keywords = [ast.keyword(arg="name",
+                                    value=ast.Constant(value=name))]
+            if loops:
+                keywords.append(ast.keyword(
+                    arg="dims",
+                    value=ast.Tuple(elts=[ast.Constant(value=d)
+                                          for d in loops],
+                                    ctx=ast.Load())))
             call = ast.Expr(value=ast.Call(
                 func=ast.Name(id=_SNAP_NAME, ctx=ast.Load()),
                 args=[ast.Name(id=name, ctx=ast.Load())],
-                keywords=[ast.keyword(arg="name",
-                                      value=ast.Constant(value=name))]))
+                keywords=keywords))
             ast.copy_location(call, stmt)
             for child in ast.walk(call):
                 ast.copy_location(child, stmt)
@@ -335,14 +349,18 @@ def _inject_snaps(body):
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef,
                              ast.ClassDef)):
             continue
-        for field in _BLOCK_FIELDS:
-            sub = getattr(stmt, field, None)
-            if isinstance(sub, list) and sub:
-                setattr(stmt, field, _inject_snaps(sub))
-        for handler in getattr(stmt, "handlers", None) or []:
-            handler.body = _inject_snaps(handler.body)
-        for case in getattr(stmt, "cases", None) or []:
-            case.body = _inject_snaps(case.body)
+        if isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+            stmt.body = _inject_snaps(stmt.body, loops + (_loop_name(stmt),))
+            stmt.orelse = _inject_snaps(stmt.orelse, loops)
+        else:
+            for field in _BLOCK_FIELDS:
+                sub = getattr(stmt, field, None)
+                if isinstance(sub, list) and sub:
+                    setattr(stmt, field, _inject_snaps(sub, loops))
+            for handler in getattr(stmt, "handlers", None) or []:
+                handler.body = _inject_snaps(handler.body, loops)
+            for case in getattr(stmt, "cases", None) or []:
+                case.body = _inject_snaps(case.body, loops)
     return out
 
 

@@ -6868,6 +6868,19 @@ def _patch_body_direct(body_node, edits, comment_text_map=None):
                 new_stmts[i] = new_stmt
                 changed = True
 
+    # This block's overrides override comments: a nested block dict (Loop/
+    # Conditional/try branch) carries its statements' `# [...]` overrides in
+    # its own __overrides__, exactly like the funcdef's locals do at the top
+    # level (where dict_to_cst_funcdef applies overrides via
+    # _apply_field_overrides). Without this, an edit that landed in a
+    # loop-body site's comment text - the debug-view value windows for
+    # it - silently never reached the source.
+    _ov_stmts = _patch_field_overrides(new_stmts, edits.get("__overrides__")
+                                       if isinstance(edits, dict) else None)
+    if _ov_stmts is not None:
+        new_stmts = _ov_stmts
+        changed = True
+
     if not changed:
         return body_node
     return body_node.with_changes(body=new_stmts)

@@ -24,6 +24,7 @@ to anchor and get no marker yet.
 import bisect
 import inspect
 import re
+import sys
 import time
 import weakref
 
@@ -34,7 +35,8 @@ from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
-    live_values_for, label_for, site_for_line, watch, install_builtin)
+    live_values_for, label_for, site_for_line, watch, install_builtin,
+    auto_dim_names_for)
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
@@ -77,14 +79,110 @@ def _display_key(key):
     return key
 
 
-# First-spawn height estimate for the display-bottom clamp below: the real
-# height only exists after the window's first render (the reopen path passes
-# it), and live-view windows commonly land in this range.
+def _stacked_list_value(value, ds):
+    """Display-side stacking: a LIST of ≥2 same-shape tensors/ndarrays
+    renders as ONE stacked tensor (leading dim = list index) — covering a
+    raw captured list (`hiddens = output.hidden_states`), an accumulator
+    that fell back to its list path, and stores built by older code. Dtype/
+    device drift is coerced to the first element's. Anything else (ragged,
+    mixed kinds, non-tensor lists) passes through untouched. Memoized on
+    the marker's draw_state — keyed on the list's identity, length, and
+    first/last element identity, so a rollover overwrite or an append
+    rebuilds while steady-state re-renders are a tuple compare."""
+    if not (isinstance(value, list) and len(value) >= 2):
+        return value
+    kind = type(value[0]).__name__
+    if kind not in ("Tensor", "ndarray"):
+        return value
+    first = value[0]
+    if not all(type(v).__name__ == kind
+               and tuple(v.shape) == tuple(first.shape) for v in value):
+        return value
+    key = (id(value), len(value), id(value[0]), id(value[-1]))
+    cached = getattr(ds, "_lv_stack_cache", None)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        if kind == "Tensor":
+            import torch
+            stacked = torch.stack([v.detach().to(first.device, first.dtype)
+                                   for v in value])
+        else:
+            import numpy as np
+            stacked = np.stack(value).astype(first.dtype, copy=False)
+    except Exception:
+        return value
+    ds._lv_stack_cache = (key, stacked)
+    return stacked
+
+
+def _merged_dim_names(auto_dims, user_dims):
+    """Combined dim names for an accumulated loop-site value: the auto loop
+    names (leading stacked dims) followed by the site's own `# [dim_names=…]`
+    (the per-iteration value's dims) — ('l_idx', 'head', 'query', 'key').
+    Round-trip stable: a user list that ALREADY starts with the auto names
+    (e.g. a merged list written back into the comment by a panel edit) is
+    returned as-is instead of gaining a second copy of the loop dims."""
+    user = ([user_dims] if isinstance(user_dims, str)
+            else [str(d) for d in (user_dims or ())])
+    auto = [str(d) for d in auto_dims]
+    if user[:len(auto)] == auto:
+        return user
+    return auto + user
+
+
+def _padded_dim_names(user_dims, ndim):
+    """dim_names padded to the value's dim count: a list with too few names
+    (or none at all) gains positional `dim<i>` entries for the unnamed
+    trailing axes, so every axis still gets a picker tab and an edge label.
+    `i` is the actual axis index — matching the `dim{i}` fallbacks the voxel
+    view already uses for out-of-range axes. Returns None when the names
+    already cover ndim (no change needed)."""
+    names = ([user_dims] if isinstance(user_dims, str)
+             else [str(d) for d in (user_dims or ())])
+    if not ndim or len(names) >= ndim:
+        return None
+    return names + [f"dim{i}" for i in range(len(names), ndim)]
+
+
+def _override_owner(scope_node, lookup_key):
+    """The dict that OWNS statement `lookup_key` — the node whose
+    __overrides__ carries the site's `# [...]` comment — searched
+    breadth-first through surfaced BLOCK children (for/if/try branches, via
+    libcst_conversion's _is_block_key), so a loop-body site links its
+    comment exactly like a top-level one: the marker reads comment kwargs
+    from it, and live_root points set_anywhere's lazy entry at the same
+    level the save patcher writes back. Never descends into non-block dicts
+    (nested defs, CallParse args — their names live in other scopes).
+    Returns scope_node itself when the key isn't surfaced anywhere (sites
+    in with/while bodies — the conversion has no node to hang a comment
+    on)."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        _is_block_key)
+    queue = [scope_node]
+    for node in queue:
+        if not isinstance(node, dict):
+            continue
+        ovs = node.get("__overrides__")
+        if (lookup_key in node
+                or (isinstance(ovs, dict) and f"__{lookup_key}__" in ovs)):
+            return node
+        for k, v in node.items():
+            if isinstance(v, dict) and _is_block_key(k):
+                queue.append(v)
+    return scope_node
+
+
+# First-spawn size estimates for the display clamps below: the real size
+# only exists after the window's first render (the spawn must pass it).
+# Height: voxel/value windows both land in this size. Width: matches
+# LIVE_WINDOW's initial width in view.py, which IS the first-spawn width.
 _SPAWN_EST_HEIGHT = 380.0
+_SPAWN_EST_WIDTH = 400.0
 
 
 def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
-                         gap=10.0):
+                         win_w=None, gap=10.0):
     """Parent-relative window_pos that opens a spawned live-value window just
     to the RIGHT of the editor's enclosing window, vertically level with the
     marker — instead of on top of the code the marker sits in.
@@ -104,17 +202,27 @@ def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
     deliberately outside that bound). The y offset lifts the window just
     enough that `win_h` (the live height on reopen, an estimate on first
     spawn) fits above the display bottom, floored so the top never leaves
-    the screen."""
+    the screen.
+
+    The x offset gets the same treatment against the display's RIGHT edge:
+    an editor window flush against it would spawn the value window entirely
+    off-screen. `win_w` is the live width on reopen; first spawn uses the
+    LIVE_WINDOW initial width. Floored so the left edge stays on screen —
+    when the display can't fit both, keeping the left edge visible wins."""
     if parent_win is None:
         return None
+    disp = Core.melty.display_size
+    x_off = parent_win.abs_left + parent_win.width + gap - marker_x
+    if disp:
+        est_w = win_w or _SPAWN_EST_WIDTH
+        x_off = min(x_off, disp[0] - gap - est_w - marker_x)
+        x_off = max(x_off, -marker_x)          # keep the left edge on screen
     y_off = 0.0
-    if marker_y is not None:
-        disp = Core.melty.display_size
-        if disp:
-            est = win_h or _SPAWN_EST_HEIGHT
-            y_off = min(0.0, disp[1] - gap - est - marker_y)
-            y_off = max(y_off, -marker_y)      # keep the title bar on screen
-    return (parent_win.abs_left + parent_win.width + gap - marker_x, y_off)
+    if marker_y is not None and disp:
+        est = win_h or _SPAWN_EST_HEIGHT
+        y_off = min(0.0, disp[1] - gap - est - marker_y)
+        y_off = max(y_off, -marker_y)          # keep the title bar on screen
+    return (x_off, y_off)
 
 
 def _marker_idle_skip(editor_ds, name, x, y, w, h, captured, cursor_inside,
@@ -226,6 +334,51 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                           name=_mname)
 
 
+def _ds_in_window(ds, win_ds, max_hops=64):
+    """True when `ds` sits inside `win_ds`'s subtree. Walks BOTH up-links —
+    the render-tree `_parent` chain and `parent_window` — because a deferred
+    satellite (e.g. the voxel controls panel) parents to its window via
+    parent_window while its `_parent` chain, stamped at queue time, isn't
+    guaranteed to pass through the window after a root_draw_states
+    re-dispatch. Identity-set + hop cap bound the walk (chains can
+    self-parent at their root)."""
+    seen, stack = set(), [ds]
+    while stack and len(seen) < max_hops:
+        node = stack.pop()
+        if node is None or id(node) in seen:
+            continue
+        if node is win_ds:
+            return True
+        seen.add(id(node))
+        if node._parent is not node:
+            stack.append(node._parent)
+        stack.append(getattr(node, "parent_window", None))
+    return False
+
+
+def _mouse_in_window_tree(win_ds, mx, my):
+    """True when (mx, my) is inside `win_ds`'s rect or any open window
+    parented into its subtree — the value window's satellites (the voxel
+    controls panel, a context menu) are separate root windows positioned
+    OUTSIDE the window's own rect, so a press on them must count as
+    engaging with the window."""
+    def _hit(w):
+        try:
+            x, y = w.abs_left, w.abs_top
+            return (x <= mx < x + (w.width or 0)
+                    and y <= my < y + (w.height or 0))
+        except Exception:
+            return False
+    if _hit(win_ds):
+        return True
+    for lst in Core.melty.root_draw_states.values():
+        for w in lst:
+            if (w is not win_ds and not w.closed and _hit(w)
+                    and _ds_in_window(w, win_ds)):
+                return True
+    return False
+
+
 @render_func(use_cache=False, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, disable_scroll=True, wrap=True,
              z_offset=4, max_height=32)
@@ -308,26 +461,83 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # params) carries the name behind the hash - the `# [...]` comment is
     # stamped in __overrides__ under the STATEMENT key, so resolve by it
     # either way (this is what keeps comment overrides like tint/cam_zoom
-    # flowing into the value windows after the line-key migration).
+    # flowing into the value windows after the line-key migration). The
+    # owning dict is found by _override_owner - a loop/if/try-body site's
+    # comment lives in ITS block's nested dict, not the top of the scope.
     comment_args = {}
     lookup_key = None
+    live_root = code_tree_node
     if key_path:
         tail = str(key_path[-1])
         lookup_key = (tail.split("#", 1)[1]
                       if tail.startswith("line:") and "#" in tail else tail)
     if isinstance(code_tree_node, dict) and lookup_key:
-        _ca = code_tree_node.get("__overrides__", {}).get(
-            f"__{lookup_key}__")
+        live_root = _override_owner(code_tree_node, lookup_key)
+        _ov = live_root.get("__overrides__")
+        _ca = _ov.get(f"__{lookup_key}__") if isinstance(_ov, dict) else None
         if isinstance(_ca, dict):
             comment_args = {k: v for k, v in _ca.items()
                             if not (isinstance(k, str) and k.startswith("__"))}
 
+    # A list of same-shape tensors renders as ONE stacked tensor (leading
+    # dim = list index) - the accumulator normally stacks at capture time,
+    # but a raw captured list, its ragged-shape fast path, or a store built
+    # by older code all arrive here as lists; healing at display time makes
+    # "stacked" unconditional.
+    value = _stacked_list_value(value, ds)
+
+    # dim_names is a SPECIAL input for loop sites: an accumulation value
+    # carries auto-named leading dims (one per enclosing loop - stamped in
+    # live_view._stack), and the site's own `# [dim_names=...]` names the
+    # per-iteration value's dims. Prepend auto to user before the window
+    # renders, so `for l_idx ...` over a (head, query, key) accumulator reads
+    # ('l_idx', 'head', 'query', 'key') in the voxel tab. Tensor-shaped
+    # values only - a list accumulator has no dims to name.
+    _auto_dims = auto_dim_names_for(store_obj, key_path)
+    _vkind = type(value).__name__
+    _user_dims = comment_args.get("dim_names")
+    _merge_auto = (_auto_dims if _auto_dims
+                   and _vkind in ("Tensor", "ndarray") else None)
+    if _merge_auto:
+        comment_args = dict(comment_args)
+        comment_args["dim_names"] = _merged_dim_names(_merge_auto, _user_dims)
+    # Too few names for the value's dims (or none at all)? pad with
+    # positional dim<i> entries - AFTER the auto merge, so the pad covers
+    # whatever the merged list still leaves out.
+    _ndim = (len(getattr(value, "shape", ()))
+             if _vkind in ("Tensor", "ndarray") else 0)
+    _pad = _padded_dim_names(comment_args.get("dim_names"), _ndim)
+    if _pad:
+        comment_args = dict(comment_args)
+        comment_args["dim_names"] = _pad
+    if _merge_auto:
+        _dlog = ("merge", tuple(_merge_auto), tuple(comment_args["dim_names"]))
+    else:
+        _dlog = ("skip", _auto_dims, _vkind,
+                 tuple(comment_args.get("dim_names") or ()))
+    if getattr(ds, "_lv_dims_log", None) != _dlog:
+        ds._lv_dims_log = _dlog
+        _shape = tuple(getattr(value, "shape", ()))
+        if _dlog[0] == "merge":
+            print(f"live_view dims: marker {key_path} shape={_shape} "
+                  f"auto={_auto_dims} comment={_user_dims} "
+                  f"-> window dim_names={comment_args['dim_names']}",
+                  file=sys.stderr)
+        else:
+            print(f"live_view dims: marker {key_path} shape={_shape} "
+                  f"kind={_vkind} auto={_auto_dims} -> MERGE SKIPPED "
+                  f"(window gets dim_names={comment_args.get('dim_names')})",
+                  file=sys.stderr)
+
     # Input-tab lookup: the context menu resolves this site's inputs off the
     # draw_state graph (draw_input_tab's live_root branch), so attach the same
-    # scope dict the comment-args splat reads - restamp the render like
-    # everything else per-site. Same name-normalized key as the comment
+    # OWNING dict the comment-args splat reads - the nested block dict for a
+    # loop-body site - restamped every render like everything else per-site.
+    # set_anywhere's lazy `# []` entry then materializes at the level the
+    # save patch then writes back (a top-of-scope entry for a loop site
+    # would never reach the site). Same name-normalized key as the comment
     # lookup, so line-keyed sites find their statement entry too.
-    ds.live_root = code_tree_node
+    ds.live_root = live_root
     ds.live_key = lookup_key
 
     auto_open = comment_args.get("auto_open", auto_open)
@@ -348,7 +558,45 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         ds._lv_open = True  # first value seen → show it without a click
     elif win_ds is not None and win_ds.closed and getattr(ds, "_lv_open", False):
         ds._lv_open = False  # user closed the window via its own header X
+        # Arm the cursor-dismissed latch too: with the caret still inside the
+        # symbol, preview_show would otherwise re-show the window on the very
+        # next frame - the X X pins first (it's a press inside the window
+        # rect), then closes, and an unarmed latch made the close a no-op.
+        # The latch resets itself once the focused caret leaves the symbol.
+        ds._lv_cursor_dismissed = True
     open_now = bool(getattr(ds, "_lv_open", False))
+
+    # ── EDIT-PIN: engaging with a preview window's own UI latches it open.
+    # A cursor-held preview closes the moment the editor loses editor focus -
+    # but the click that starts a param edit (a field in the window's
+    # controls, or a context menu) IS such a focus change, so editing the
+    # view's input params yanked the window (and the panel mid-edit) away.
+    # The PRESS is the trigger, not focus: click processing clears the
+    # editor's focus at frame start, this marker then sees and would stamp
+    # the close, and only at end-of-frame dispatch would the clicked field
+    # render and grab focus - by which point a closed window's panel never
+    # renders at all. So on any engaged mouse press, rect-test the mouse
+    # against the window and its controls and act exactly as if the marker
+    # had been double-clicked; the focus check remains as the late-signal
+    # fallback (e.g. focus handed over without a press). The header X still
+    # unpins via the win_ds.closed branch above.
+    if (captured and not open_now and win_ds is not None
+            and not win_ds.closed):
+        _m = Core.melty
+        pin = any(f is not None and _ds_in_window(f, win_ds)
+                  for f in (_m.focused_ds, _m.text_focused_ds,
+                            _m.popover_focused_ds))
+        if not pin and (imgui.is_mouse_down(0) or imgui.is_mouse_clicked(0)
+                        or imgui.is_mouse_released(0)
+                        or imgui.is_mouse_down(1)
+                        or imgui.is_mouse_clicked(1)):
+            _io = imgui.get_io()
+            pin = _mouse_in_window_tree(win_ds, _io.mouse_pos.x,
+                                        _io.mouse_pos.y)
+        if pin:
+            ds._lv_open = True
+            open_now = True
+            ds.invalidate()
 
     x, y = imgui.get_cursor_screen_pos()
     w = max(1.0, ds.width)
@@ -439,9 +687,10 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         if open_now and win_ds is not None:
             # Reopening: snap the window back to the right of the editor
             # window (it may have been dragged onto the code). The window's
-            # real height is known here, so the bottom clamp is exact.
+            # real size is known here, so the display clamps are exact.
             pos = _right_of_window_pos(ds.parent_window, x, marker_y=y,
-                                       win_h=win_ds.height)
+                                       win_h=win_ds.height,
+                                       win_w=win_ds.width)
             if pos is not None:
                 win_ds.window_pos = pos
         ds.invalidate()
@@ -496,8 +745,16 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # The menu usually opens on the WINDOW - stamp the site context there
         # too (the _parent chain isn't guaranteed to pass through this marker
         # after a root_draw_states re-dispatch).
-        win_ds.live_root = code_tree_node
+        win_ds.live_root = live_root
         win_ds.live_key = ds.live_key
+        # Auto loop dims for the REPLAY path: the deferred root_draw_states
+        # dispatch re-splats the site's raw `# [...]` comment over the stored
+        # kwargs (melty.py, "Live-view comment re-splat"), which would clobber
+        # the merged dim_names above with the comment's un-merged list. Stamp
+        # the raw names and the value's dim count so the replay can redo the
+        # same loop + dim<i> padding.
+        win_ds._lv_auto_dims = _merge_auto
+        win_ds._lv_ndim = _ndim
         # Window X-close detection: the header's close button runs DURING the
         # draw_any call above, so a caret-held preview closed this instant
         # shows as closed=True right after a window it passed closed=False.
@@ -543,7 +800,8 @@ def set_marker_open(marker_ds, open_):
         pos = _right_of_window_pos(marker_ds.parent_window,
                                    marker_ds.abs_left,
                                    marker_y=marker_ds.abs_top,
-                                   win_h=win_ds.height)
+                                   win_h=win_ds.height,
+                                   win_w=win_ds.width)
         if pos is not None:
             win_ds.window_pos = pos
     marker_ds.invalidate()
@@ -832,7 +1090,9 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         cursor_inside = (_cl == _ml and _cc is not None
                          and start_col <= _cc < end_col)
         _snm = f"lvs::{fn.__qualname__}::{'/'.join(key_path)}"
-        _sao = (is_volume(value) and key_path not in
+        _sao = (bool(getattr(Toggles.TextEditor, "live_auto_open_volumes",
+                             False))
+                and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
         if _marker_idle_skip(draw_state, _snm,
                              origin_x + start_col * char_w - pad, _my - pad,
@@ -844,12 +1104,14 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _soc[3] += 1
         imgui.set_cursor_screen_pos(
             (origin_x + start_col * char_w - pad, _my - pad))
-        # Auto-open the VOLUMES (3-D data → orbiting voxel window: the
-        # point of the lab) so a run pops them unprompted; scalars/configs
-        # stay quiet click-to-open boxes so 19 locals don't bury the def.
-        # Frame-snapshot keys (context-menu capture - tracked in
-        # __frame_snapshot_keys__) never auto-open: opening the menu on a
-        # widget must not spawn a window per local tensor.
+        # Auto-open the VOLUMES (3-D tensors → orbiting voxel windows) only
+        # when live_auto_open_volumes is enabled - off by default: with loop
+        # accumulation stacking per-layer tensors into volumes, a run would
+        # pop one window per captured tensor. Scalars/configs always stay
+        # as click-to-open boxes so 19 locals don't bury the code.
+        # Frame-snapshot keys (context-menu capture — tracked in
+        # __frame_snapshot_keys__) never auto-open: opening a menu on a
+        # widget must not spawn a window per captured tensor.
         # code_tree_node carries the scope dict: the marker reads the site's
         # comment source from it and splats it 1:1 onto the popup window's
         # draw_state (not onto the marker's own wrapper - show_bg=True with a
@@ -1063,6 +1325,21 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
     # NEW_CODE = the full two-pane code_file_io display: the draw_collection
     # structured (code_dict) pane AND the live-overlay text pane side by side.
     draw_function_live(LSD.full_forward_pass_live, name="run_forward_pass runner",
+                       source_mode=Mode.NEW_CODE)
+
+
+@window(initial={"width": 350, "height": 540}, tint=(0.10, 0.11, 0.12))
+@render_func(tint=(0.36, 0.62, 0.66), auto_resize=False)
+def attention_walkthrough(input_value=None, draw_state=None, **kwargs):
+    """The minimal real forward pass over the selected model (see
+    src/lsd/train/attention_walkthrough.py) as a live lab: Run executes the
+    instrumented twin, and the per-layer loop accumulates every tensor into
+    a leading `l_idx` stack — `scores` is the (l_idx, head, query, key)
+    attention volume this window exists for."""
+    from src.lsd.train.attention_walkthrough import attention_walkthrough_pass
+    from src.lsd.gl_gui.view.mode import Mode
+    draw_function_live(attention_walkthrough_pass,
+                       name="attention_walkthrough runner",
                        source_mode=Mode.NEW_CODE)
 
 

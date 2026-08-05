@@ -1215,7 +1215,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # by default; None still means "derive" (last three → z/y/x)
                 # for anything that clears one. ──
                 dim_names=("layer", "batch", "token", "feature"),
-                x_dim=TensorDim(0), y_dim=TensorDim(2), z_dim=TensorDim(2),
+                x_dim=TensorDim(0), y_dim=TensorDim(1), z_dim=TensorDim(2),
                 slices=(),
                 mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
                 normalize=False, nf_on=False, nf_chop=TensorDim(-1),
@@ -1243,6 +1243,12 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         return False, None
 
     dim_names = tuple(_clean_dim_name(x, i) for i, x in enumerate(dim_names or ()))
+    _dlog = (dim_names, tuple(getattr(src, "shape", ())))
+    if getattr(draw_state, "_vox_dims_log", None) != _dlog:
+        draw_state._vox_dims_log = _dlog
+        import sys as _sys
+        print(f"live_view dims: voxel_view shape={_dlog[1]} "
+              f"dim_names={dim_names}", file=_sys.stderr)
     slices = tuple(int(v) for v in (slices or ()))
     mean_dims = tuple(int(v) for v in (mean_dims or ()))
 
@@ -1511,6 +1517,22 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # ── the outline stays 2-D imgui (crisp 1px outline over the volume) ────
     if axis_edges:
         _draw_axis_lines(imgui.get_window_draw_list(), img_pos, axis_edges)
+
+    # ── source tensor shape and dim names, bottom-left over the image ─────
+    shape_info = "(" + ", ".join(
+        f"{dim_names[i] if i < len(dim_names) else f'dim{i}'}={int(s)}"
+        for i, s in enumerate(source_shape)) + ")"
+    tint = draw_state._kwargs.get("tint", None) or (0.5, 0.5, 0.5)
+    sm = Melty.style_manager
+    info_rgb = sm.make_custom(*tint[:3], value=0.75) if sm else tint[:3]
+    _flow_cursor = imgui.get_cursor_screen_pos()
+    imgui.set_cursor_screen_pos((img_pos[0] + 8,
+                                 img_pos[1] + height
+                                 - imgui.get_text_line_height() - 6))
+    imgui.push_style_color(imgui.COLOR_TEXT, *info_rgb, min(1.0, name_opacity))
+    imgui.text(shape_info)
+    imgui.pop_style_color()
+    imgui.set_cursor_screen_pos(_flow_cursor)
 
     # ── ALL controls live in a satellite panel opening to the RIGHT of
     # the window: the renderer's full params, rendered automatically -

@@ -205,22 +205,38 @@ def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
 # the instances hang around afterwards), the 3-D ones render as orbitable
 # voxel volumes anchored to their lines, and re-running with dragged params
 # updates the tensor windows in place.
+#
+# LOOP ACCUMULATION: assignments inside the `for l_idx ...` loop don't overwrite
+# per iteration - each publish appends along a NEW leading dim auto-named
+# after the loop variable ('l_idx'). Tensors grow into a stacked
+# (l_idx, ...) volume live while the loop runs; plain values (`sharpness`)
+# collect into a list. Each site's `# [dim_names=...]` comment names the
+# per-iteration value's OWN dims; the leading loop name is prepended when the
+# value window renders, so `attn` below reads (l_idx, head, query, key).
 
-def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3):
+def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
     import torch
     torch.manual_seed(35)
     some_int = 0
     # [tint=(0.00, 0.20, 0.50), cam_brightness=0.34, cam_contrast=0.46, cam_zoom=2.7015, spin=-0.692, tilt=0.651]
     q = torch.randn(heads, seq, dim)
-    # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=2.1464, spin=0.796, tilt=0.043]
+    # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=2.7015, spin=0.796, tilt=0.043, z_dim=3]
     k = q.roll(shifts=shift, dims=1) + -0.6 * torch.randn(heads, seq, dim)
-    # [tint=(0.217, 0.119, 0.822), cam_brightness=3.37, cam_contrast=0.88, spin=0.548, tilt=0.219, cam_zoom=1.7142]
-    scores = q @ k.transpose(-2, -1) / (dim ** 2.8 * temp)
-    # [tint=(0.60, 0, 0), cam_brightness=0.92, cam_contrast=0.392, pan_x=0.00, pan_y=0.00, pan_z=0.00, cam_zoom=3.40]
-    attn = torch.softmax(scores, dim=-1)
+    for l_idx in range(layers):
+        # Each layer rolls the keys further, so the attention band walks
+        # across the stacked volume as the leading dim grows.
+        # [tint=(0.31, 0.24, 0.71), dim_names=['head', 'key', 'feature']]
+        k_l = k.roll(shifts=l_idx * shift, dims=1)
+        # [tint=(0.217, 0.119, 0.822), cam_brightness=0.19, cam_contrast=0.712,
+        # spin=0.548, tilt=0.219, cam_zoom=1.7142]
+        scores = q @ k_l.transpose(-2, -1) / (dim ** 0.5 * temp)
+        # [tint=(0.60, 0, 0), cam_brightness=0.92, cam_contrast=0.392, dim_names=['head', 'query', 'key'], cam_zoom=2.7014]
+        attn = torch.softmax(scores, dim=-1)
+        # Non-tensor loop example: accumulates as a plain list, one per layer.
+        sharpness = round(float(attn.amax(dim=-1).mean()), 4)
 
     # [tint=(0.264, 0.833, 0.294)]
-    focus = attn.amax(dim=-1).mean(dim=-1)    
+    focus = attn.amax(dim=-1).mean(dim=-1)
     def some_text():
         pass
 

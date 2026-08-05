@@ -685,12 +685,13 @@ def _ac_lex_state(ds, text):
     return ds._lo_offs, ds._lo_open
 
 
-def _pos_in_string_or_comment(text, idx, offs, line_open):
-    """True when a character typed at index `idx` would land inside a string
-    literal or a comment — where the code popup must stay quiet. Line-local:
-    resumes from the per-line string state (`line_open`, same source as the
-    tokenizer) and scans only [line_start, idx). An f-string counts as string
-    even inside its {braces} — a rare miss, never a false popup."""
+def _line_lex_at(text, idx, offs, line_open):
+    """Line-local lex state at `idx`: (in_str, hash_idx) — the still-open
+    string opener (or None) and the index of the '#' that opened a comment
+    covering `idx` (or None; at most one is non-None). Resumes from the
+    per-line string state (`line_open`, same source as the tokenizer) and
+    scans only [line_start, idx). An f-string counts as string even inside
+    its {braces} — a rare miss for the callers, never a false positive."""
     li = bisect.bisect_right(offs, idx) - 1
     i = offs[li] if 0 <= li < len(offs) else 0
     opener = line_open[li] if 0 <= li < len(line_open) else None
@@ -713,7 +714,7 @@ def _pos_in_string_or_comment(text, idx, offs, line_open):
                 i += 1
             continue
         if c == "#":
-            return True                       # rest of the line is comment
+            return None, i                    # rest of the line is comment
         if c in "\"'":
             if text.startswith(c * 3, i):
                 in_str = c * 3
@@ -723,7 +724,35 @@ def _pos_in_string_or_comment(text, idx, offs, line_open):
                 i += 1
             continue
         i += 1
-    return in_str is not None
+    return in_str, None
+
+
+def _pos_in_string_or_comment(text, idx, offs, line_open):
+    """True when a character typed at index `idx` would land inside a string
+    literal or a comment — where the code popup must stay quiet."""
+    in_str, hash_idx = _line_lex_at(text, idx, offs, line_open)
+    return in_str is not None or hash_idx is not None
+
+
+def _comment_continuation(text, pos, stop, offs, line_open):
+    """(indent, marker) to re-open a comment being split by Enter at `pos`, or
+    None when the split isn't mid-comment. `marker` is the comment's own '#'
+    run plus its trailing space (`# `, `## `, bare `#`), `indent` the '#'s
+    column — so a trailing comment after code re-anchors under its '#' rather
+    than the statement's indent. None when the caret still sits inside the
+    marker itself (the moved-down tail already starts with '#'). `stop` is the
+    current line's end index (exclusive)."""
+    h = _line_lex_at(text, pos, offs, line_open)[1]
+    if h is None:
+        return None
+    ce = h
+    while ce < stop and text[ce] == '#':
+        ce += 1
+    if ce < stop and text[ce] == ' ':
+        ce += 1
+    if pos < ce:
+        return None
+    return h - _get_line_start(text, pos), text[h:ce]
 
 
 # First top-level def in the buffer - a function span's own def sits at column
@@ -5739,7 +5768,7 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_end = _select_unit_right(text, click_pos)
             ds.text_cursor_pos = ds.text_selection_end
             ds.text_drag_anchor_lo = ds.text_selection_start
-            ds.text_drag_anchor_hi = ds.text_selection_end
+            ds.text_drag_anchor_hi = ds.text_selection_end       
         elif ds.text_click_count >= 3:
             ds.text_drag_mode = 'line'
             line_start = _get_line_start(text, click_pos)
@@ -6146,8 +6175,21 @@ def draw_text(input_value: str, height=None,
                 stop = line_end if line_end != -1 else len(text)
                 while tail < stop and text[tail] == ' ':
                     tail += 1
-                text = text[:pos] + '\n' + ' ' * indent + text[tail:]
-                ds.text_cursor_pos = pos + 1 + indent
+                # Splitting a comment mid-prose: the moved-down remainder would
+                # land as bare whitespace and instantly re-lex as code. Continue the
+                # comment instead - the new line re-opens with the '#' run (plus
+                # its trailing space) at the '#'s own column, so a trailing
+                # comment after code re-anchors under its '#' rather than the
+                # statement's indent. Only when real content moves down
+                # (tail < stop), Enter at a comment's end starts a fresh line.
+                cont = ''
+                if syntax_highlight and tail < stop:
+                    _offs, _lopen = _ac_lex_state(ds, text)
+                    cc = _comment_continuation(text, pos, stop, _offs, _lopen)
+                    if cc is not None:
+                        indent, cont = cc
+                text = text[:pos] + '\n' + ' ' * indent + cont + text[tail:]
+                ds.text_cursor_pos = pos + 1 + indent + len(cont)
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True

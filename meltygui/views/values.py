@@ -4879,7 +4879,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
                                                horizontal=False, wrap=wrap,
                                                child_kwargs={"max_width": 397, "shadow":False,
                                                              "show_bg": False, "use_cache": True, "z_offset": 0.0
-                                                             })
+                                                             }, tint=(0.34, 0.40, 0.45))
             if changed:
                 draw_state.params = new_val
                 params_edited = True
@@ -4956,7 +4956,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
     
     
     imgui.new_line()
-    if show_run_button and button(f"{input_value.__name__}##{unique}", icon=kwargs.get("icon", ""), height=29,
+    if show_run_button and button(f"Run {input_value.__name__}()##{unique}", icon=kwargs.get("icon", ""), height=29,
                                   bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32))[0]:
         _run()
 
