@@ -2388,11 +2388,14 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Fast Dock: same functionality as the Dock, but the rows are raw tile-list
     # rendering inside one render_func (see fast_dock.py). The sync call runs
     # every frame after this always-rendering root so external open/close/tint
-    # changes repaint the cached tile.
-    from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock, fast_dock_sync
-    fast_dock_sync()
-    draw_fast_dock(Core.melty.registered_windows, name="Fast Dock", with_header=draw_header,
-                   mode=Mode.WINDOW, bg_offset=-3)
+    # changes update the cached tile. Hidden in presentation mode (windows
+    # stay visible through the global search); the sync's signature check
+    # catches up on whatever changed while hidden.
+    if not Toggles.presentation_mode:
+        from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock, fast_dock_sync
+        fast_dock_sync()
+        draw_fast_dock(Core.melty.registered_windows, name="Fast Dock", with_header=draw_header,
+                       mode=Mode.WINDOW, bg_offset=-3)
 
     for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
 

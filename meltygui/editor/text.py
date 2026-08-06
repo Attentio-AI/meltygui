@@ -7334,13 +7334,25 @@ def draw_text(input_value: str, height=None,
     # the comment names a definition, so it wears it (text-only, no background).
     # The tint factors join the memo key so any toggle tweaks repaint.
     _ct_starts = [c[0] for c in _dt_comments] if _dt_comments else None
-    _ct_factors = (Toggles.TextEditor.comment_tint_saturation, 
-                   Toggles.TextEditor.comment_tint_value, 
+    _ct_factors = (Toggles.TextEditor.comment_tint_saturation,
+                   Toggles.TextEditor.comment_tint_value,
                    Toggles.TextEditor.comment_min_brightness,
                    Toggles.TextEditor.bg_max_brightness)
+    # Presentation mode: every glyph on a line WITHOUT a def-tint line band
+    # lerps toward black (through _mix_packed, sharing the wash-mix memo) -
+    # lines carrying a line tint keep full brightness and read like the
+    # highlighted content. _dt_lines line numbers are buffer-based, the same
+    # space as win_line / the loop's line counter below.
+    _pres_lines = None
+    _pres_k = 0.0
+    if Toggles.presentation_mode and not is_search_box:
+        _pres_k = 1.0 - Toggles.TextEditor.presentation_text_brightness
+        if _pres_k > 0.0:
+            _pres_lines = {l[0] for l in _dt_lines}
 
     x = origin_x
     y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
+    _cur_ln = win_line                  # line number of the glyph being drawn
     src_i = win_off    # ABSOLUTE source index at the start of the current token
     _tv_idx = 0        # Nth inline view drawn this frame - its STABLE name. Render
                        # order stays stable frame-to-frame (so each view keeps its
@@ -7409,6 +7421,10 @@ def draw_text(input_value: str, height=None,
         #    (e.g. a color swatch). vcols reflects the shift for caret/click.
         # Either way a changed return splices the whole token.
         if _inline and _view.get("whole_token") and token and '\n' not in token:
+            # Presentation dim for the whole-token paths below (caret-in text,
+            # with lead text) - safe to overwrite as this branch continues.
+            if _pres_lines is not None and _cur_ln not in _pres_lines:
+                color = _mix_packed(color, (0.0, 0.0, 0.0), _pres_k)
             _lead = _view.get("lead_cells", 0)
             _cells = _lead + len(token)
             # While the editor caret sits on TOP a REPLACE token, the widget
@@ -7454,6 +7470,15 @@ def draw_text(input_value: str, height=None,
                     _wci = bisect.bisect_right(_ct_starts, src_i) - 1
                     if _wci >= 0 and src_i < _dt_comments[_wci][1]:
                         _wc = _comment_tint_color(_dt_comments[_wci][2])
+                        # Presentation dim: the widget draws its own text via
+                        # text_tint (float rgb), not the packed `color` dimmed
+                        # at the branch entry, so scale it here too - boosted
+                        # by presentation_widget_boost to visually match the
+                        # comment glyphs (the widget hsv path reads darker).
+                        if _pres_lines is not None and _cur_ln not in _pres_lines:
+                            _pb = min(1.0, (1.0 - _pres_k)
+                                      * Toggles.TextEditor.presentation_widget_boost)
+                            _wc = (_wc[0] * _pb, _wc[1] * _pb, _wc[2] * _pb)
                         _extra['text_tint'] = _wc
                         if color_key == 'bool':
                             _extra['tint'] = _wc   # tint wrapper's bg box too
@@ -7528,6 +7553,9 @@ def draw_text(input_value: str, height=None,
             nl = token.find('\n', start)
             seg = token[start:nl] if nl != -1 else token[start:]
             if seg and y + line_px >= rect_min_y and y <= rect_max_y:
+                _seg_col = (color if _pres_lines is None
+                            or _cur_ln in _pres_lines
+                            else _mix_packed(color, (0.0, 0.0, 0.0), _pres_k))
                 if _inline:
                     # Inline view: a render_func drawn char-by-source-char, each in
                     # a char_width cell (source stays one char per glyph, matching
@@ -7559,16 +7587,17 @@ def draw_text(input_value: str, height=None,
                     # to sit better in the cell.
                     ix = x
                     for ch in seg:
-                        draw_list.add_text(ix - 1, y, color, ch)
+                        draw_list.add_text(ix - 1, y, _seg_col, ch)
                         ix += char_w
                 else:
-                    draw_list.add_text(x, y, color, seg)
+                    draw_list.add_text(x, y, _seg_col, seg)
             if nl == -1:
                 # Inline views: each char occupies char_width cells; else 1 cell.
                 x += len(seg) * (_view["char_width"] if _inline else 1) * char_w
                 break
             x = origin_x
             y += line_px
+            _cur_ln += 1
         
             start = nl + 1
         src_i += len(token)

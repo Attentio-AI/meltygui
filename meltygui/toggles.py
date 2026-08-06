@@ -780,7 +780,7 @@ class Toggles:
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 1.668
+        def_line_blur_alpha = 3.783
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
@@ -795,6 +795,18 @@ class Toggles:
         # app-wide so text reads as part of its panel. 0 disables.
         # [tint=(0.278, 0.076, 0.126, 1.0)]
         def_text_tint_mix = 0.293
+
+        # Brightness multiplier for glyphs on NON-tinted lines while
+        # Toggles.presentation_mode is on (lines with a def-tint line wash
+        # keep full brightness). 1 = no dimming; 0 = black. Read live.
+        presentation_text_brightness = 0.35
+
+        # Compensation for the inline value widgets (bool/number) inside
+        # tint comments: their text renders through the widget's own hsv
+        # pipeline, so reads darker than the plain comment glyphs at the
+        # same dimmed tint - multiply their dimming by this so both
+        # land at the same visual level. 1 = no boost. Read live.
+        presentation_widget_boost = 1.4
 
         # Glyph-mix TARGET color adjustment (which color text leans toward
         # inside a wash) - same hsv factor pattern as comment_tint_* /
@@ -827,7 +839,7 @@ class Toggles:
         bg_tint_saturation = 1.15
         bg_tint_value = 0.48
         bg_min_brightness = 0.18
-        bg_max_brightness = 0.45
+        bg_max_brightness = 0.349
 
     class Voxels:
         # Output gamma on the finished voxel image, folded into the raymarch
@@ -1018,6 +1030,15 @@ class Toggles:
         preferred_header_width = 132
     cam_zoom = 1.5585
 
+    # Presentation mode: dim the text editor's glyphs everywhere EXCEPT on
+    # lines carrying a def-tint line band, so the tinted lines read as the
+    # selected content for an audience. Requires TextEditor.definition_tints
+    # for the exception lines to exist - with it off, every line dims. Dimmed
+    # brightness comes from TextEditor.presentation_text_brightness. Also
+    # hides the Fast Dock (draw_main skips it; summon windows via the global
+    # search instead). Read live.
+    presentation_mode = True
+
     # Master switch for the always-on debug chrome painted over the app: the
     # red/white texture-init tile counter in the top-left (LSDStudio's render
     # loop) and the notification / "Live" value columns in the top-right
@@ -1064,7 +1085,7 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.727
+    brightness = 0.762
     # [tint=(0.025, 0.032, 0.044)]
     contrast = 2.518
 
