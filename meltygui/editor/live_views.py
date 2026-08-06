@@ -1329,7 +1329,7 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
                        source_mode=Mode.NEW_CODE)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.11, 0.13, 0.15))
+@window(initial={"width": 350, "height": 540}, tint=(0.11, 0.1204, 0.13))
 @render_func(tint=(0.36, 0.62, 0.66), auto_resize=False)
 def attention_walkthrough(input_value=None, draw_state=None, **kwargs):
     """The minimal real forward pass over the selected model (see

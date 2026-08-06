@@ -776,19 +776,19 @@ class Toggles:
         # bleeds vertically into neighboring lines, which is the point.
         def_line_blur = True
 
-        def_line_blur_radius = 79
+        def_line_blur_radius = 460
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 3.239
+        def_line_blur_alpha = 2.716
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 4.994
+        def_line_blur_falloff = 4.162
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
-        def_line_blur_samples = 24
+        def_line_blur_samples = 82
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -799,19 +799,33 @@ class Toggles:
         # Brightness multiplier for glyphs on NON-tinted lines while
         # Toggles.presentation_mode is on (lines with a def-tint line wash
         # keep full brightness). 1 = no dimming; 0 = black. Read live.
-        presentation_text_brightness = 0.35
+        presentation_text_brightness = 0.292
 
         # Compensation for the inline value widgets (bool/number) inside
         # tint comments: their text renders through the widget's own hsv
         # pipeline, so reads darker than the plain comment glyphs at the
         # same dimmed tint - multiply their dimming by this so both
         # land at the same visual level. 1 = no boost. Read live.
-        presentation_widget_boost = 1.4
+        presentation_widget_boost = 1.953
 
         # Background-chip brightness for the faded comment widgets, relative
         # to their (already boosted) dimmed text color - a step brighter so
         # the widget stands out as a spot on a dim line. Read live.
-        presentation_widget_bg_boost = 1.6
+        presentation_widget_bg_boost = 0.115
+
+        # Text alpha for the faded COLORED value widgets (ones whose
+        # comment carries a tint) - saturated colors read brighter than the
+        # grey at equal value, so they get a transparency cut on top of the
+        # brightness boost. Untinted (grey) widgets stay opaque. 1 = opaque.
+        # Read live.
+        presentation_widget_alpha = 0.409
+
+        # The number widget's chip paints brighter than the bool's at the
+        # same tint (depth-clamped blur + drag-frame fill stack) - extra dim
+        # factor on its background in the presentation mode, applied on top
+        # of presentation_widget_bg_boost (also lowers the chip's max_bg_value
+        # legibility cap). 1 = same as bool. Read live.
+        presentation_number_bg_dim = 4.001
 
         # Glyph-mix TARGET color adjustment (which color text leans toward
         # inside a wash) - same hsv factor pattern as comment_tint_* /

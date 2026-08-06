@@ -1268,7 +1268,8 @@ def draw_bool_token(input_value, draw_state=None, text_tint=None, **kwargs):
     # the word wears the comment's color instead of keyword-blue, so
     # widgets inside colored comments stop shouting.
     if text_tint is not None:
-        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2], 1.0)
+        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2],
+                                         text_tint[3] if len(text_tint) > 3 else 1.0)
     else:
         color = COLORS['bool']
     # if hovered:
@@ -1353,7 +1354,12 @@ def draw_number_token(input_value, draw_state=None, text_tint=None,
         _n_colors = 4
     else:
         push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)          # number blue
-        _n_colors = 1
+        # Never leave the drag frame on imgui's global theme color (white):
+        # same dark editor-look fill the tinted branch uses, from number blue.
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.41 * 0.22, 0.59 * 0.22, 0.73 * 0.22)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.41 * 0.32, 0.59 * 0.32, 0.73 * 0.32)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.41 * 0.42, 0.59 * 0.42, 0.73 * 0.42)
+        _n_colors = 4
     def _pop_styles():
         pop_style_color(_n_colors)
         pop_style_var()
@@ -1427,7 +1433,8 @@ def draw_bool_token_plain(input_value, width=20, height=20, name=None,
     h = max(1.0, height)
     _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=0)
     if text_tint is not None:
-        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2], 1.0)
+        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2],
+                                         text_tint[3] if len(text_tint) > 3 else 1.0)
     else:
         color = COLORS['bool']
     imgui.get_window_draw_list().add_text(x, y, color, word)
@@ -1480,17 +1487,26 @@ def draw_number_token_plain(input_value, width=20, height=20, name=None,
 
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
     if text_tint is not None:
-        push_style_color(imgui.COLOR_TEXT, text_tint[0], text_tint[1], text_tint[2])
+        # The 4th text_tint component is the fade-out (see presentation dim
+        # on colored comment widgets) - the drag-frame fill honors it too,
+        # or it would paint over the dimmed chip at full opacity.
+        _ta = text_tint[3] if len(text_tint) > 3 else 1.0
+        push_style_color(imgui.COLOR_TEXT, text_tint[0], text_tint[1], text_tint[2], _ta)
         push_style_color(imgui.COLOR_FRAME_BACKGROUND,
-                         text_tint[0] * 0.22, text_tint[1] * 0.22, text_tint[2] * 0.22)
+                         text_tint[0] * 0.22, text_tint[1] * 0.22, text_tint[2] * 0.22, _ta)
         push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED,
-                         text_tint[0] * 0.32, text_tint[1] * 0.32, text_tint[2] * 0.32)
+                         text_tint[0] * 0.32, text_tint[1] * 0.32, text_tint[2] * 0.32, _ta)
         push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE,
-                         text_tint[0] * 0.42, text_tint[1] * 0.42, text_tint[2] * 0.42)
+                         text_tint[0] * 0.42, text_tint[1] * 0.42, text_tint[2] * 0.42, _ta)
         _n_colors = 4
     else:
         push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)          # number chip
-        _n_colors = 1
+        # Never leave the dragged frame on imgui's default theme color (bright):
+        # same dark editor-look fill the tinted branch uses, from number blue.
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.41 * 0.22, 0.59 * 0.22, 0.73 * 0.22)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.41 * 0.32, 0.59 * 0.32, 0.73 * 0.32)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.41 * 0.42, 0.59 * 0.42, 0.73 * 0.42)
+        _n_colors = 4
 
     imgui.push_id(name or "num_tv")
     imgui.set_next_item_width(w)
@@ -7493,6 +7509,7 @@ def draw_text(input_value: str, height=None,
                     if (_pres_lines is not None and _cur_ln not in _pres_lines
                             and (_wc is not None
                                  or _in_comment_override(text, src_i))):
+                        _w_tinted = _wc is not None
                         if _wc is None:
                             # Untinted widgets fade to the comment GREY -
                             # their native token blue reads as live code,
@@ -7507,9 +7524,23 @@ def draw_text(input_value: str, height=None,
                         # Background chip a step brighter than the text so
                         # the widget still stands like a block on a dim line.
                         _bb = Toggles.TextEditor.presentation_widget_bg_boost
+                        if color_key == 'number':
+                            # The number chip paints brighter than the bool's
+                            # smaller one at the same intensity (depth-ramped bg +
+                            # dragable fill stack) - extra dim for its bg,
+                            # and lower the legibility cap to match.
+                            _bb *= Toggles.TextEditor.presentation_number_bg_dim
+                            _extra['max_bg_value'] = (
+                                0.25 * Toggles.TextEditor.presentation_number_bg_dim)
                         _extra['tint'] = (min(1.0, _wc[0] * _bb),
                                           min(1.0, _wc[1] * _bb),
                                           min(1.0, _wc[2] * _bb))
+                        # COLORED comment widgets get a transparency cut on
+                        # top of the dim - saturated colors read brighter than
+                        # the grey at equal value (4th component = text
+                        # tint, honored by the token renderers).
+                        if _w_tinted:
+                            _wc = _wc + (Toggles.TextEditor.presentation_widget_alpha,)
                     if _wc is not None:
                         _extra['text_tint'] = _wc
                         if color_key == 'bool':
