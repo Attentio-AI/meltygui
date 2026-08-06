@@ -404,6 +404,17 @@ class Mode(Enum):
         ),
     }
 
+    # ── Function parameters (draw_function) ─────────────────
+    #
+    # String parameter values draw with the text editor instead of the
+    # default type renderer.
+    FUNCTION_PARAMS = {
+        str: ModeOverrides(
+            func=draw_text,
+            recursive=True,
+        ),
+    }
+
     # ── TEXT - reference mode for all mode-attached child kwargs ─────────
     #
     # A dict of strings: the dict entry draws the collection, the str entry

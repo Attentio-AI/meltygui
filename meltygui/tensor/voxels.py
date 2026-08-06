@@ -165,12 +165,21 @@ void main() {
             a = clamp(pow(m / gate, 4.0) * density * seg_n * view_cos * 50.0, 0.0, 1.0);
         }
         if (a > 0.0) {
-            acc.rgb += (1.0 - acc.a) * a * texture(lut, v).rgb;
+            // Composite in LINEAR light: the LUT tables are display-referred
+            // sRGB, so decode each sample before accumulating (encode once at
+            // the end). Blending in sRGB space skews mixes toward the more
+            // saturated component — the old harsh/garish translucency.
+            vec3 c = pow(texture(lut, v).rgb, vec3(2.2));
+            acc.rgb += (1.0 - acc.a) * a * c;
             acc.a   += (1.0 - acc.a) * a;
         }
         t += step_size;
     }
-    FragColor = acc;
+    // Output gamma on the finished 2-D image, folded into the sRGB encode:
+    // gamma 1.0 = pure sRGB encode (brightest, colorimetrically "correct"),
+    // 2.2 = raw linear out (darkest). The default sits between — the encode
+    // alone reads too bright/washed against the studio's dark UI.
+    FragColor = vec4(pow(acc.rgb, vec3(gamma / 2.2)), acc.a);
 }
 """
 
@@ -178,7 +187,7 @@ void main() {
 @shader_func(fragment=VOXEL_FRAG)
 def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
-               aspect=1.0, brightness=1.0, contrast=1.0, density=1.0,
+               aspect=1.0, brightness=1.0, contrast=1.0, density=1.0, gamma=1.6,
                threshold=0.1, step_size=0.0015, max_steps=4096, centered=False,
                volume=None, lut=None,
                volume_scale=(1.0, 1.0, 1.0), **kwargs):
@@ -1215,7 +1224,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # density = the old densityScale (haze gain over the opacity
                 # gate); threshold = the old opacityThreshold (higher → lower
                 # gate → more opaque)
-                density=3.6, threshold=0.163, centered=False,
+                density=0.7, threshold=0.297, centered=False,
                 nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
                 # ── axis mapping: dims by index OR NAME. The first three dims
                 # by default; None still means "derive" (last three → z/y/x)
@@ -1306,6 +1315,16 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                         (dim_names[1] if len(dim_names) > 1 else "y", h3),
                         (dim_names[0] if dim_names else "z", d3))
 
+    # ── slice sliders: >3-dim tensors get one slider per UNMAPPED dim (not
+    # displayed, not averaged, extent > 1) along the bottom of the view to
+    # choose which slice is pinned. GLTexture inputs arrive pre-sliced
+    # (mapping is None) - nothing to scrub. ─────────────────────────────
+    slider_dims = []
+    if mapping is not None and len(source_shape) > 3:
+        slider_dims = [d for d in range(len(source_shape))
+                       if d not in mapping and d not in mean_dims
+                       and source_shape[d] > 1]
+
     # Size from the OWNING WINDOW, not this view's own draw() - a nested
     # view's height derives from what it rendered last frame (self-referential),
     # while the window's height is the user-dragged size. Reserve room for the
@@ -1339,6 +1358,11 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             height = max(100, int(draw_state.height) - _reserve)
         else:
             height = max(100, int(draw_state.min_height or 293) - _reserve)
+    if slider_dims:
+        # The sliders live INSIDE the view's box - give them their rows by
+        # shrinking the image, not by growing past the window.
+        height = max(100, height - int(imgui.get_frame_height_with_spacing())
+                     * len(slider_dims))
 
     # ── in-flight locate values: a locate_* write to a SLOW source (e.g. a
     # `# [cam_brightness=...]` comment) is deferred during drags and lands
@@ -1501,7 +1525,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                    threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
                    pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
                    brightness=cam_brightness, contrast=cam_contrast,
-                   centered=centered)
+                   gamma=float(Toggles.Voxels.gamma), centered=centered)
         if axis_edges and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
@@ -1531,6 +1555,25 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # ── the outline stays 2-D imgui (crisp 1px outline over the volume) ────
     if axis_edges:
         _draw_axis_lines(imgui.get_window_draw_list(), img_pos, axis_edges)
+
+    # ── the slice sliders, one slider per unmapped dim under the volume. An
+    # edit writes the full-length slices tuple to draw_state (auto-state:
+    # it diverges the param, persists, and resets slice_volume's version so
+    # the volume re-slices + re-uploads on the next frame). ──────────────
+    for d in slider_dims:
+        label = dim_names[d] if d < len(dim_names) else f"dim{d}"
+        cur = max(0, min(int(slices[d]) if d < len(slices) else 0,
+                         source_shape[d] - 1))
+        imgui.push_item_width(max(60, width - 110))
+        s_changed, s_val = imgui.slider_int(f"{label}##slice{d}", cur,
+                                            0, source_shape[d] - 1)
+        imgui.pop_item_width()
+        if s_changed and int(s_val) != cur:
+            new_slices = list(slices) + [0] * (len(source_shape) - len(slices))
+            new_slices[d] = int(s_val)
+            draw_state.slices = tuple(new_slices)
+            draw_state.invalidate()
+            request_render()
 
     # ── ALL controls live in a satellite panel opening to the RIGHT of
     # the window: the renderer's full params, rendered automatically -

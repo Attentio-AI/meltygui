@@ -3221,8 +3221,9 @@ class Melty:
 
 
         window_size = imgui.get_io().display_size
-        overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
-                         f"FPS: {imgui.get_io().framerate:.1f}")
+        if Toggles.developer_mode:
+            overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
+                             f"FPS: {imgui.get_io().framerate:.1f}")
 
         to_unselect = set()
         for selected_ds in cls.selected:

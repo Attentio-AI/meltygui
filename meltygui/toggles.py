@@ -775,16 +775,20 @@ class Toggles:
         # (a cheap drawcall gaussian - no blur pass). The radius also
         # bleeds vertically into neighboring lines, which is the point.
         def_line_blur = True
-        
-        def_line_blur_radius = 20
+
+        def_line_blur_radius = 79
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 4.235
+        def_line_blur_alpha = 1.668
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 3.0
+        def_line_blur_falloff = 2.163
+        # Layer count for the feather stack. More samples = smoother
+        # gradient (fewer visible bands) at the cost of overdraw - large
+        # radii need more; ~1 sample per 3-4px of radius reads smooth.
+        def_line_blur_samples = 24
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -824,6 +828,13 @@ class Toggles:
         bg_tint_value = 0.48
         bg_min_brightness = 0.18
         bg_max_brightness = 0.45
+
+    class Voxels:
+        # Output gamma on the finished voxel image, folded into the raymarch
+        # shader's final sRGB encode: 1.0 = pure sRGB encode (brightest,
+        # colorimetrically "correct"); 2.2 = raw linear out (darkest). Read
+        # live per frame by draw_voxels.
+        gamma = 2.1
 
     @defaults(tint=(0.545, 0.451, 0.248))
     class UIScale:

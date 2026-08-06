@@ -6980,6 +6980,7 @@ def draw_text(input_value: str, height=None,
             _dt_line_blur_a = Toggles.TextEditor.def_line_blur_alpha
 
             _dt_line_blur_k = Toggles.TextEditor.def_line_blur_falloff
+            _dt_line_blur_n = Toggles.TextEditor.def_line_blur_samples
 
             def _blur_rect(x0, y0, x1, y1, rgb, alpha, rounding):
                 # Feathered band with an INVERSE-SQUARE profile - a hot
@@ -6991,7 +6992,10 @@ def draw_text(input_value: str, height=None,
                 # P(t) = inverse-square normalized to 1 at the edge and 0
                 # at the blur radius. Cheap draw-list glow; no shader.
                 alpha = min(1.0, alpha * _dt_line_blur_a)
-                steps = max(2, min(12, int(_dt_line_blur_r * 0.75) + 2))
+                # Sample count from the setting, still capped by the radius
+                # (more layers than pixels of radius is pure overdraw).
+                steps = max(2, min(int(_dt_line_blur_n),
+                                   int(_dt_line_blur_r) + 2))
                 k = max(0.0, _dt_line_blur_k)
                 floor = 1.0 / (1.0 + k) ** 2
                 prev = 1.0

@@ -4874,7 +4874,9 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
+            from src.lsd.gl_gui.view.mode import Mode
             changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":True}, use_cache=True,
+                                               mode=Mode.FUNCTION_PARAMS,
                                                show_add_delete=False, shadow=True, z_offset=1, parent_show_add_delete=False, 
                                                horizontal=False, wrap=wrap,
                                                child_kwargs={"max_width": 397, "shadow":False,
