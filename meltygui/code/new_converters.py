@@ -2175,10 +2175,10 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save{unique}")[0]:
                 save = True
 
-        if auto_save:
-            imgui.same_line(spacing=16)
-            imgui.align_text_to_frame_padding()
-            imgui.text_colored(str(f" Auto"), *(1.0, 1.0, 1.0, 0.2))
+        # if auto_save:
+        #     imgui.same_line(spacing=16)
+        #     imgui.align_text_to_frame_padding()
+        #     imgui.text_colored(str(f" saving"), (1.0, 1.0, 1.0, 0.2))
 
         # Hidden cache hosts (background_load) never load inline - the disk
         # read + span resolve can cost ~100ms and nobody sees their first frame.

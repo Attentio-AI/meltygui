@@ -762,7 +762,7 @@ class Toggles:
         # LOWER = colors die out faster along assignment chains (0.55 puts
         # hop 1 at 55%, hop 2 at 30%; chains below 20% stop washing at all).
         def_tint_propagation = True
-        def_propagation_fade = 0.705
+        def_propagation_fade = 0.025
 
         # When enabled the line tint rect above fills the whole line -
         # gutter edge to the view's right edge - instead of hugging the
@@ -780,11 +780,11 @@ class Toggles:
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 3.783
+        def_line_blur_alpha = 3.239
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 2.163
+        def_line_blur_falloff = 4.994
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
@@ -807,6 +807,11 @@ class Toggles:
         # same dimmed tint - multiply their dimming by this so both
         # land at the same visual level. 1 = no boost. Read live.
         presentation_widget_boost = 1.4
+
+        # Background-chip brightness for the faded comment widgets, relative
+        # to their (already boosted) dimmed text color - a step brighter so
+        # the widget stands out as a spot on a dim line. Read live.
+        presentation_widget_bg_boost = 1.6
 
         # Glyph-mix TARGET color adjustment (which color text leans toward
         # inside a wash) - same hsv factor pattern as comment_tint_* /

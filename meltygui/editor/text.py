@@ -2895,6 +2895,16 @@ def _mix_packed(packed, rgb, k):
     _GLYPH_MIX_CACHE[key] = out
     return out
 
+
+def _in_comment_override(text, i):
+    """True when buffer index `i` sits inside a `# [...]` override comment —
+    the presentation-mode widget-fade test (widgets in ANY override comment
+    dim, tint-carrying or not). Cheap: one rfind to the line start plus a
+    bounded find to `i`."""
+    ls = text.rfind('\n', 0, i) + 1
+    h = text.find('#', ls, i)
+    return h != -1 and text[h + 1:i].lstrip()[:1] == '['
+
 # realpath-str -> ((mtime_ns, size), {def_line: tint | None}). Invalidated by
 # stat key (cheap, content-free - per CLAUDES.md we hash contents); the stat
 # runs once per unique definition file per collector REBUILD (per edit/parse),
@@ -7466,22 +7476,44 @@ def draw_text(input_value: str, height=None,
                 # widgets adopt the comment's (adjusted) color for clutter
                 # reduction; the same widgets in code keep their own color.
                 _extra = {}
-                if _ct_starts is not None and color_key in ('bool', 'number'):
-                    _wci = bisect.bisect_right(_ct_starts, src_i) - 1
-                    if _wci >= 0 and src_i < _dt_comments[_wci][1]:
-                        _wc = _comment_tint_color(_dt_comments[_wci][2])
-                        # Presentation dim: the widget draws its own text via
-                        # text_tint (float rgb), not the packed `color` dimmed
-                        # at the branch entry, so scale it here too - boosted
-                        # by presentation_widget_boost to visually match the
-                        # comment glyphs (the widget hsv path reads darker).
-                        if _pres_lines is not None and _cur_ln not in _pres_lines:
-                            _pb = min(1.0, (1.0 - _pres_k)
-                                      * Toggles.TextEditor.presentation_widget_boost)
-                            _wc = (_wc[0] * _pb, _wc[1] * _pb, _wc[2] * _pb)
+                if color_key in ('bool', 'number'):
+                    _wc = None
+                    if _ct_starts is not None:
+                        _wci = bisect.bisect_right(_ct_starts, src_i) - 1
+                        if _wci >= 0 and src_i < _dt_comments[_wci][1]:
+                            _wc = _comment_tint_color(_dt_comments[_wci][2])
+                    # Presentation dim: a widget in ANY `# [...]` override
+                    # comment fades with its line - its comment tint when it
+                    # has one, else its own default token color. The widget
+                    # draws its own text via text_tint (float rgb, not the
+                    # packed `color` dimmed at the branch entry), so scale
+                    # here - boosted by presentation_widget_boost to visually
+                    # match the comment background (the widget hsv path reads
+                    # darker).
+                    if (_pres_lines is not None and _cur_ln not in _pres_lines
+                            and (_wc is not None
+                                 or _in_comment_override(text, src_i))):
+                        if _wc is None:
+                            # Untinted widgets fade to the comment GREY -
+                            # their native token blue reads as live code,
+                            # not comment, at presentation dim.
+                            _dc = COLORS['comment']
+                            _wc = ((_dc & 0xFF) / 255.0,
+                                   ((_dc >> 8) & 0xFF) / 255.0,
+                                   ((_dc >> 16) & 0xFF) / 255.0)
+                        _pb = min(1.0, (1.0 - _pres_k)
+                                  * Toggles.TextEditor.presentation_widget_boost)
+                        _wc = (_wc[0] * _pb, _wc[1] * _pb, _wc[2] * _pb)
+                        # Background chip a step brighter than the text so
+                        # the widget still stands like a block on a dim line.
+                        _bb = Toggles.TextEditor.presentation_widget_bg_boost
+                        _extra['tint'] = (min(1.0, _wc[0] * _bb),
+                                          min(1.0, _wc[1] * _bb),
+                                          min(1.0, _wc[2] * _bb))
+                    if _wc is not None:
                         _extra['text_tint'] = _wc
                         if color_key == 'bool':
-                            _extra['tint'] = _wc   # tint wrapper's bg box too
+                            _extra.setdefault('tint', _wc)   # the bool's bg box too
                 if _view.get("tint") is not None:
                     _extra.setdefault('tint', _view["tint"])
                 # Plain (wrapper-less) renderers need the editor's draw_state:

@@ -2174,8 +2174,8 @@ dropdown_demo_data = {
 drop_down_selection = None
 
 
-@render_func(use_cache=False, show_bg=True, selectable=False, shadow=False,
-             show_tint=True, bg_offset=0, with_header=draw_header)
+@render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
+             show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict
@@ -3922,7 +3922,7 @@ def draw_str(input_value: str, draw_state, editable=True, wrap=False, min_width=
     if not show_controls:
         imgui.push_style_var(imgui.STYLE_ALPHA, 0)
 
-    if line_count == 1:
+    if False:
         if not wrap:
             item_width = draw_state.content_width - 1
         else:
@@ -5008,7 +5008,10 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
     if draw_state.result is not None and not (result_fade_frames
                                               and isinstance(draw_state.result, str)):
-        draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, show_add_delete=False)
+        imgui.text_colored(" Result", *(1.0, 1.0, 1.0, 0.5))
+        imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 15)
+        draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, 
+                 show_add_delete=False)
 
     # pop_style_var(3)
 
