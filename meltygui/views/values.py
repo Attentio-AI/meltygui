@@ -3935,6 +3935,7 @@ def draw_str(input_value: str, draw_state, editable=True, wrap=False, min_width=
     else:
         imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
         # disable scrolling
+        imgui.new_line()
         changed, value = draw_text(str(input_value), name=draw_state.name +"##innder", 
                                     editable=True, with_header=draw_header,
                                    show_name=False, is_tree=False, temp=True)

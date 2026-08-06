@@ -884,7 +884,7 @@ class Toggles:
     class ContextMenu:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
-        default_tab = 4
+        default_tab = 3
 
     # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))

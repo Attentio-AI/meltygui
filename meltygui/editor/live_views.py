@@ -517,7 +517,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                  tuple(comment_args.get("dim_names") or ()))
     if getattr(ds, "_lv_dims_log", None) != _dlog:
         ds._lv_dims_log = _dlog
-        _shape = tuple(getattr(value, "shape", ()))
+        _shape = (tuple(getattr(value, "shape", ()))
+                  if _vkind in ("Tensor", "ndarray") else ())
         if _dlog[0] == "merge":
             print(f"live_view dims: marker {key_path} shape={_shape} "
                   f"auto={_auto_dims} comment={_user_dims} "

@@ -1435,7 +1435,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # brightness, vertical = contrast (up to increase). The plain right-
         # click stays reserved for the context menu.
         cam_brightness = min(4.0, max(0.0, cam_brightness + double_right_mouse_drag.dx * 0.01))
-        cam_contrast = min(4.0, max(0.1, cam_contrast - double_right_mouse_drag.dy * 0.008))
+        cam_contrast = min(5.0, max(0.01, cam_contrast - double_right_mouse_drag.dy * 0.008))
         draw_state.locate_cam_brightness = cam_brightness
         draw_state.locate_cam_contrast = cam_contrast
     if scroll_y_changed is not None:

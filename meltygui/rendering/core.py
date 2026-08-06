@@ -23,7 +23,7 @@ from src.lsd.gl_gui.mode_defaults import ModeDefaults
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
-from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict, TOP_ANCHORS, ExpandMode
+from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict, TOP_ANCHORS, LEFT_ANCHORS, ExpandMode
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
@@ -1845,6 +1845,16 @@ def render_func(*args, **o_kwargs):
                                  or draw_state.anchor_pos in TOP_ANCHORS)):
                         draw_state.window_pos = (draw_state.window_pos[0],
                                                  draw_state._initial_window_pos_resize[1])
+                    # Similar sticky re-anchor for x, so the right-on-display
+                    # clamp below is the only thing that displaces the window
+                    # horizontally and the displacement unwinds as the window
+                    # shrinks back. Left/None anchors don't re-derive x each
+                    # frame; right/center anchors revert on their own.
+                    if (Toggles.WindowSettings.sticky_drag
+                            and (draw_state.anchor_pos is None
+                                 or draw_state.anchor_pos in LEFT_ANCHORS)):
+                        draw_state.window_pos = (draw_state._initial_window_pos_resize[0],
+                                                 draw_state.window_pos[1])
 
                     # Keep the window's bottom on the display while resizing.
                     # When the new bottom would extend past the bottom of the
@@ -1870,6 +1880,20 @@ def render_func(*args, **o_kwargs):
                         overflow = abs_top + draw_state.height - display_h
                         draw_state.window_pos = (draw_state.window_pos[0],
                                                  snap_int(draw_state.window_pos[1] - overflow))
+
+                    # Horizontal version of the clamp above: keep the window's
+                    # right edge on the display while resizing. When the new
+                    # right edge would extend past the right of the main
+                    # display, pin it to the display edge and push the window
+                    # left instead, capping the width at the display width.
+                    display_w = imgui.get_io().display_size[0]
+                    abs_left = draw_state._abs_left()
+                    if abs_left + draw_state.width > display_w:
+                        if passed_width is None and draw_state.width > display_w:
+                            draw_state.width = snap_int(display_w)
+                        overflow = abs_left + draw_state.width - display_w
+                        draw_state.window_pos = (snap_int(draw_state.window_pos[0] - overflow),
+                                                 draw_state.window_pos[1])
                 elif not (handle_press or corner_press):
                     # Not on the press branch itself - that would wipe the
                     # press-anchored baselines latched just above before the
