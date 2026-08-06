@@ -5366,7 +5366,6 @@ def draw_text(input_value: str, height=None,
             label):
         _pf_marks.append((label, time.perf_counter()))
 
-
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:

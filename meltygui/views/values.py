@@ -4648,8 +4648,17 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
     # the tuple the picker's ancestor, so clear_focus (which protects the
     # clicked swatch window closure) leaves the popover open when you click
     # the tuple, and dismisses it when you click anywhere else.
+    # Flip up when opening down would run past the display bottom: the
+    # popover renders at the invoking cursor + window_pos (core_render's
+    # nested-window anchor), and the cursor here sits just under the swatch -
+    # so the up offset is the picker's own height plus the swatch row.
+    _pop_y = 10
+    _anchor_y = imgui.get_cursor_screen_pos()[1]
+    _disp_h = imgui.get_io().display_size[1]
+    if _anchor_y + _pop_y + picker_h > _disp_h - 10:
+        _pop_y = -(picker_h + 38)
     color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
-                                            closed=not is_open, window_pos=(0, 10), info=_info,
+                                            closed=not is_open, window_pos=(0, _pop_y), info=_info,
                                             parent_window=draw_state, width=216, height=picker_h, mode=Modes.POPOVER)
     if is_open:
         if color_changed:

@@ -255,7 +255,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 factor=1.0, saturation=1.2, text_saturation=0.8, alpha=1.0,
                 corner_radius=6.0, text_pad=15, hover_boost=0.05,
                 hover_text_boost=1.5, max_bg_brightness=0.25,
-                event="left_mouse_clicked",
+                event="left_mouse_clicked", text_offset_x=None,
                 style_manager=None):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
@@ -295,7 +295,11 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         color[0], color[1], color[2],
         value=text_value + (hover_text_boost if hovered else 0.0),
         factor=factor, saturation_scale=text_saturation, alpha=1.0)
-    dl.add_text(x + (w - ts.x) * 0.5, y + (h - ts.y) * 0.5,
+    # text_offset_x: left-align the label at a fixed inset instead of
+    # centering — for buttons whose left edge hosts another element (the
+    # editor tabs' tint swatch) that centered text would overlap.
+    tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
+    dl.add_text(tx, y + (h - ts.y) * 0.5,
                 imgui.get_color_u32_rgba(tc[0], tc[1], tc[2], 1.0), text)
     imgui.dummy(w, h)
     if draw_state is None:
