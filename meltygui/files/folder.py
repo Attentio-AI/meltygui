@@ -169,11 +169,15 @@ def _collect(store, disk, folder, seen, creates, deletes):
 # COLLECT tree → meta after render (UI edits land in __overrides__ via
 # _LazyOverrideEntry / bubbling, drag reorders land as tree key order).
 
-def _file_meta():
+def _file_meta(root=None):
     """AppModel's path→params store, or None before the model exists.
-    Backfills the collection onto roots loaded from a pre-file-meta save."""
-    vis = getattr(Melty, "vis", None)
-    root = getattr(vis, "root", None) if vis is not None else None
+    Backfills the collection onto roots loaded from a pre-file-meta save.
+    Pass `root` explicitly in on_load callbacks — they fire inside the studio
+    constructor, BEFORE Melty.init assigns Melty.vis, so the default
+    Melty-based resolution returns None there."""
+    if root is None:
+        vis = getattr(Melty, "vis", None)
+        root = getattr(vis, "root", None) if vis is not None else None
     if root is None:
         return None
     col = getattr(root, "file_meta_collection", None)
@@ -255,12 +259,63 @@ def _collect_meta(tree, folder, meta):
             entry["order"] = old["order"]
         if entry:
             if old != entry:
-                meta[path] = entry
+                from src.lsd.gl_gui.model.app_model import FileMeta
+                meta[path] = FileMeta(entry)
         elif old is not None:
             meta.pop(path, None)
         child = tree.get(n)
         if isinstance(child, dict):
             _collect_meta(child, folder / n, meta)
+
+
+# ── startup: materialize the metadata tree for the whole module root ────────────
+# Same lifecycle moment as the open-files restore (Melty.on_load): once the
+# app model exists, every file and folder under the module root gets its
+# entry in file_meta, so the debug view shows the full tree and attributes
+# can attach anywhere without waiting for a first write. setdefault-only -
+# existing values (tint, order) are never touched.
+_META_SKIP_SUFFIXES = {".pyc"}
+
+
+@Melty.on_load
+def _init_file_meta(vis, root):
+    from src.lsd.gl_gui.model.app_model import FileMeta
+    meta = _file_meta(root)
+    if meta is None:
+        return
+    # Upgrade entries deserialized as plain dicts (older saves / from_dict)
+    # to FileMeta, keeping their stored values.
+    for key, entry in list(meta.items()):
+        if isinstance(entry, dict) and not isinstance(entry, FileMeta):
+            meta[key] = FileMeta(entry)
+    module_root = Path(__file__).resolve().parents[4]   # .../src
+    for p in module_root.rglob("*"):
+        rel = p.relative_to(module_root).parts
+        if any(part == "__pycache__" or part.startswith(".") for part in rel):
+            continue
+        if p.suffix in _META_SKIP_SUFFIXES:
+            continue
+        meta.setdefault(str(p), FileMeta())
+
+
+# ── debug window: the persisted per-file metadata tree ──────────────────────────
+@window(disable_scroll=False, use_cache=True)
+@render_func(tint=(0.22, 0.14, 0.05))
+def file_meta_debug(_, draw_state=None):
+    """Raw view of AppModel.file_meta_collection.file_meta — the path-keyed
+    params store the folder tree and the codec layer read/write (tint, order,
+    …). Rendered as a plain editable dict: edits land directly in the store
+    (bubble-free plain dicts, so a manual touch persists on the next root
+    save; deleting an entry clears that file's attributes)."""
+    meta = _file_meta()
+    if meta is None:
+        imgui.text("No app model loaded")
+        return
+    if not meta:
+        imgui.text("No file metadata yet")
+        return
+    RenderFuncs.draw_collection(meta, name="file_meta", is_tree=True,
+                                show_add_delete=True)
 
 
 # ── the stateful wrapper: discover -> view_func(dict) -> apply ──────────────────

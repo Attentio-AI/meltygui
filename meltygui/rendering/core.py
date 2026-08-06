@@ -1403,6 +1403,51 @@ def render_func(*args, **o_kwargs):
             # renders under.
             _codec = _codec_for_type(kwargs.get("real_type", type(input_value)))
             _codec_pushed = False
+            # Explicit file context: a caller rendering codec-loaded content
+            # outside any codec subtree (the open-files editor drawing
+            # host["value"]) passes file_key=<path str> to seed the per-file
+            # layer directly. More robust than value provenance alone: a
+            # buffer with pending edits comes back as a PLAIN str (TypeCodec.
+            # load's pending path never stamps), so the value can't always
+            # carry its codec.
+            _fk = kwargs.get("file_key", None)
+            if _fk is not None and not isinstance(getattr(draw_state, "_file_meta", None), str):
+                draw_state._file_meta = str(_fk)
+            # The ACTIVE codec: this value's own, or inherited from the
+            # enclosing subtree (codec_stack) - a draw_text rendering a file's
+            # path has no codec of its own, but renders UNDER the file's.
+            _active_codec = _codec or (Melty.codec_stack[-1] if Melty.codec_stack else None)
+            if _active_codec is None:
+                # Value-carried provenance: a codec-loaded value (DiskSpanText)
+                # rendered OUTSIDE its loader's subtree - the open-files editor
+                # drawing host["value"] directly - still knows its codec and
+                # file to adopt them (the span's realpath seeds the ds file_meta
+                # memo Codec.file_meta_key reads).
+                _active_codec = getattr(input_value, "_codec", None)
+                if _active_codec is not None:
+                    _span = getattr(input_value, "_disk_span", None)
+                    if _span and not isinstance(getattr(draw_state, "_file_meta", None), str):
+                        draw_state._file_meta = _span[0]
+                elif isinstance(getattr(draw_state, "_file_meta", None), str):
+                    # An edit decays DiskSpanText to plain str, but the ds
+                    # memo survives - keep the per-file layer alive through
+                    # the edited, instead of flickering it off.
+                    from src.lsd.gl_gui.view.core_conversion.new_codecs import Codec as _active_codec
+            # Per-FILE codec attributes: any file this element resolves to
+            # (its own Address, or the parent ds's memo - O(1), no walk)
+            # carries its own persisted params - AppModel.file_meta_collection, the
+            # dict mirroring the file tree; Codec.update_file_meta writes it.
+            # Merged BEFORE the codec's class render_kwargs so a file-attached
+            # value overrides the codec-wide default, and beneath everything
+            # explicit above - so tinting a file "just works" on every view
+            # rendered under it, draw_text included, with no per-view wiring.
+            if _active_codec is not None:
+                _fm = _active_codec.file_meta_entry(draw_state)
+                if _fm:
+                    _fm = {k: v for k, v in _fm.items()
+                           if k != "order" and not (isinstance(k, str) and k.startswith("__"))}
+                    if _fm:
+                        kwargs = _fm | kwargs
             if _codec is not None:
                 _ck = getattr(_codec, "render_kwargs", None)
                 if _ck:
@@ -1419,7 +1464,7 @@ def render_func(*args, **o_kwargs):
                         kwargs = _ck | kwargs
                 Melty.codec_stack.append(_codec)
                 _codec_pushed = True
-            draw_state._codec = _codec or (Melty.codec_stack[-1] if Melty.codec_stack else None)
+            draw_state._codec = _active_codec
 
             set_default("input_value", input_value)
             set_default("draw_state", draw_state)

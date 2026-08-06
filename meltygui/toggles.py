@@ -780,7 +780,7 @@ class Toggles:
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 2.716
+        def_line_blur_alpha = 1.622
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
@@ -788,7 +788,7 @@ class Toggles:
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
-        def_line_blur_samples = 82
+        def_line_blur_samples = 103
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -891,7 +891,7 @@ class Toggles:
         # 20x font atlas. Changing it re-rasterizes all 18 fonts - a ~0.3s
         # operation and a ~64->128MB atlas at 1.25 - so it is a setting to
         # change deliberately, not to animate. 1.0 = the authored look.
-        scale = 1.00
+        scale = 0.80
 
     # [icon=""]
     @defaults(tint=(0.103, 0.341, 0.617))
@@ -1056,7 +1056,7 @@ class Toggles:
     # brightness comes from TextEditor.presentation_text_brightness. Also
     # hides the Fast Dock (draw_main skips it; summon windows via the global
     # search instead). Read live.
-    presentation_mode = True
+    presentation_mode = False
 
     # Master switch for the always-on debug chrome painted over the app: the
     # red/white texture-init tile counter in the top-left (LSDStudio's render

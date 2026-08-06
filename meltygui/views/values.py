@@ -357,13 +357,26 @@ def _symbol_def_line(obj):
 
 
 def _jump_to_symbol_def(obj, path):
-    """Open a symbol's definition in IntelliJ — the same jump Ctrl+B in the
-    text editor performs on a single target (_open_usage_ref). Async on a
-    daemon thread so line resolution + a slow IDE never stall the loop.
-    obj=None opens the file itself (no line) — the Files category's jump."""
+    """Open a symbol's definition in the in-app code editor (AppModel.open_files
+    → draw_code_editor). The file opens immediately on the render thread (host
+    creation is cheap; the load itself is background). obj=None opens the file
+    with no line — the Files category's jump. Line resolution for classes
+    parses the whole module, so it stays on a daemon thread and lands on
+    open_files.jump_to_line once known."""
+    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    host = open_in_editor(path)
+    if obj is None or host is None:
+        return
+
     def _go():
-        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
-        open_in_intellij(str(path), line_number=_symbol_def_line(obj))
+        line = _symbol_def_line(obj)
+        if line is None:
+            return
+        root = getattr(Melty.vis, "root", None)
+        open_files = getattr(root, "open_files", None)
+        if open_files is not None and open_files.selected_path == str(path):
+            open_files.jump_to_line = line
+            request_render()
     threading.Thread(target=_go, daemon=True, name="search-symbol-jump").start()
 
 
@@ -440,8 +453,8 @@ _file_hits_memo = (None, None)
 @search_index
 def file_index():
     """Every loaded src file, labelled by its src-relative path. Activating a
-    hit opens the file in IntelliJ. Same loaded-module universe as the symbol
-    index (_src_mod_map)."""
+    hit opens the file in the in-app code editor. Same loaded-module universe
+    as the symbol index (_src_mod_map)."""
     global _file_hits_memo
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
     mod_map = _src_mod_map()
@@ -4560,7 +4573,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
 
 
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
-             indent_size=2, is_tree=False, align_header=False, header_same_line=True, wrap=True,
+             indent_size=2, is_tree=False, align_header=True, header_same_line=False, wrap=False,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
                info=None):
@@ -4571,8 +4584,12 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
         # Position BEFORE drawing, exactly like the color branch below - a
         # first frame that skips the same_line breaks the header row (every
         # remaining item wraps to a new line) and the early return under the
-        # button never restores it.
-        imgui.same_line(spacing=4)
+        # button never restores it. Single-line rows only: line placement
+        # belongs in the wrapper (it same_lines after the header unless it
+        # chose multi_line), and forcing same_line on a multi_line frame drags
+        # the widget back onto the header's line.
+        if not draw_state.multi_line:
+            imgui.same_line(spacing=4)
         if button("", height=21, shadow=False, z_offset=0, corner_radius=4, tint=(0,0,0, 0.1
         ), tint_value=0.14, use_cache=True, show_bg=True, text_pad=7,  name=f"add_tuple##{unique}",
                   show_button_bg=True)[0]:
@@ -4581,6 +4598,9 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
             return True, input_value
 
     else:
+        # if not draw_state.multi_line:
+        #     imgui.same_line(spacing=4)
+
         is_color = input_value is not None and isinstance(input_value, tuple) and len(input_value) in (3, 4) and all(isinstance(c, (float, int)) for c in input_value)
         if is_color:
             # A swatch trigger that opens our own colour-picker popover (replacing
@@ -4592,14 +4612,13 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
             is_open = Melty.popover_focused_ds is draw_state
             col = list(input_value)
             alpha = col[3] if len(col) == 4 else 1.0
-            imgui.same_line(spacing=4)
             # ALPHA_PREVIEW_HALF makes the swatch split: one half shows the colour
             # composited over a checkerboard at its real alpha, the other fully
             # opaque - so a length-4 tuple's transparency is visible in the chip itself
             # (plain color_button forces opaque regardless of the alpha we pass).
             flags = imgui.COLOR_EDIT_NO_TOOLTIP | imgui.COLOR_EDIT_ALPHA_PREVIEW_HALF
             if imgui.color_button(f"##swatch{unique}{name}", col[0], col[1], col[2], alpha,
-                                  flags=flags, width=0, height=18):
+                                  flags=flags, width=17, height=17):
                 Melty.popover_focused_ds = None if is_open else draw_state
                 if not is_open:
                     Melty._popover_open_frame = Melty.frame_count  # grace the opening click
@@ -5811,22 +5830,39 @@ class _CodecSource(dict):
     """The 'codec' source row: the ACTIVE codec's render_kwargs — the
     wrapper's lowest kwargs merge layer and the provenance color (the green
     on import views etc.). The codec rides every draw_state as ds._codec.
-    Writes mutate the LIVE class attr in place; render_kwargs is read per
-    call (the _codec_by_type_cache note), so an edit applies immediately —
-    and APP-WIDE: every view rendered under this codec wears it."""
+
+    Writes are PER-FILE when the element resolves to one: the codec stamps
+    the attribute into that file's entry in AppModel.file_meta_collection
+    (Codec.update_file_meta), which persists with the root save and feeds the
+    folder tree's row kwargs. Reads overlay that entry back over the
+    codec-wide render_kwargs. Only when no file resolves does a write mutate
+    the LIVE class attr in place — immediate but codec-wide and in-memory."""
 
     def __init__(self, codec, target_ds):
         rk = getattr(codec, "render_kwargs", None)
         super().__init__(rk if isinstance(rk, dict) else {})
         self._codec = codec
         self._target_ds = target_ds
+        # Per-FILE overlay: attributes previously attached to this element's
+        # file (Codec.update_file_meta → AppModel.file_meta_collection) read
+        # back over the codec-wide render_kwargs, so the row round-trips
+        # across saves. `order` is folder-tree bookkeeping, not a param.
+        entry = codec.file_meta_entry(target_ds)
+        if isinstance(entry, dict):
+            self.update({k: v for k, v in entry.items() if k != "order"})
 
     def __setitem__(self, k, v):
-        rk = getattr(self._codec, "render_kwargs", None)
-        if not isinstance(rk, dict):
-            rk = {}
-            self._codec.render_kwargs = rk
-        rk[k] = v
+        # Per-file first: when the element resolves to a file, the attribute
+        # belongs to THAT file - the codec stamps it into the file-metadata
+        # object (persisted with the root; the folder tree re-applies it as
+        # row kwargs). Only when no file resolves does the write fall through to
+        # the codec-wide live render_kwargs.
+        if not self._codec.update_file_meta(self._target_ds, k, v):
+            rk = getattr(self._codec, "render_kwargs", None)
+            if not isinstance(rk, dict):
+                rk = {}
+                self._codec.render_kwargs = rk
+            rk[k] = v
         super().__setitem__(k, v)
         self._target_ds.invalidate_up(max_depth=6)
         request_render()
@@ -6380,9 +6416,15 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     if isinstance(_cls_window_deco, dict) and _cls_window_deco:
         _add_source(f"@window({cls_name})", _cls_window_deco,
                     DecorationsCodec, location=cls_loc, kind="class decoration")
-    _add_source(f"@render_func({fn_name})",
-                cm_state.render_func_dict.deep.decorators.render_func(),
-                DecorationsCodec, location=fn_loc, kind="decoration")
+    # @render_func(...) only for FUNCTION values: its kwargs (tint especially)
+    # are for tinting renders of that function - a legitimate source when the
+    # inspected object IS a function. On any other view the matrix would edit
+    # the shared view func's decorator, re-tinting every render of that view
+    # app-wide from one value's context menu.
+    if isinstance(getattr(input_value, "_raw_input_value", None), types.FunctionType):
+        _add_source(f"@render_func({fn_name})",
+                    cm_state.render_func_dict.deep.decorators.render_func(),
+                    DecorationsCodec, location=fn_loc, kind="decoration")
     # @window only exists as a source on actually-@window-decorated funcs -
     # a placeholder row here would be permanent noise on every other tab.
     _window_deco = cm_state.render_func_dict.deep.decorators.window()

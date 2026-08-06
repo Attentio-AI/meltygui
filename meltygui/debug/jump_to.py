@@ -1,4 +1,3 @@
-import threading
 import types
 
 import imgui
@@ -72,14 +71,8 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
         draw_state._jump_btn_rect = (_bx, _by, _bx + _bw, _by + _bh)
     if flat_button(f"{_open_label}##jump_to{unique}", draw_state,
                    view_id=f"jump_open{unique}", width=_bw, height=_bh):
-        from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
-
-        threading.Thread(
-            target=open_in_intellij,
-            args=(str(input_value.path),),
-            kwargs={"line_number": line_number},
-            daemon=True,
-        ).start()
+        from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+        open_in_editor(str(input_value.path), line_number=line_number)
 
     imgui.same_line()
     imgui.align_text_to_frame_padding()

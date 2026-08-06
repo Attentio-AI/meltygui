@@ -336,8 +336,14 @@ class DiskSpanText(str):
     comparison, and an edited buffer can never be served a disk-keyed entry.
     Carrying the span key here (rather than relying on `jump_to`) matters: the
     code-host chain only receives jump_to on an Index pulse, so the text itself
-    is the only reliable address carrier on the parse path."""
-    __slots__ = ("_disk_mtime", "_disk_span")   # _disk_span = (realpath, start, end)
+    is the only reliable address carrier on the parse path.
+
+    `_codec` (stamped by TypeCodec.load) carries the codec that loaded this
+    text, so a consumer rendering it outside the loader's subtree (the
+    open-files editor) re-establishes the codec context — core_render's
+    codec block reads it as the last-resort active codec."""
+    __slots__ = ("_disk_mtime", "_disk_span",   # _disk_span = (realpath, start, end)
+                 "_codec")                      # the codec class that loaded this text
 
 
 def chain_parse_cache_has(span_key, disk_mtime):

@@ -255,6 +255,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 factor=1.0, saturation=1.2, text_saturation=0.8, alpha=1.0,
                 corner_radius=6.0, text_pad=15, hover_boost=0.05,
                 hover_text_boost=1.5, max_bg_brightness=0.25,
+                event="left_mouse_clicked",
                 style_manager=None):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
@@ -299,7 +300,9 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     imgui.dummy(w, h)
     if draw_state is None:
         return False
-    return draw_state.on_action("left_mouse_clicked", view_id=view_id,
+    # `event` picks the trigger: the default full click, or "left_mouse_down"
+    # for press-reactive controls (tab switches) that should feel immediate.
+    return draw_state.on_action(event, view_id=view_id,
                                 rect=(x, y, x + w, y + h),
                                 priority_delta=2) is not None
 

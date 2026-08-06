@@ -566,6 +566,45 @@ class Melty:
     # late in the frame to inject directly). One-shot.
     search_click_pending = None
 
+    # ── App-load lifecycle ──────────────────────────────────────────
+    # Callbacks fired once, after the app model has finished loading (the
+    # studio fires fire_on_load right after load_app_model). Registering after
+    # the fire runs the callback immediately, so feature modules imported
+    # later in the load (the feature imports) still get the hook.
+    # Each callback: fn(vis, root).
+    on_load_callbacks = []
+    _on_load_fired = None  # (vis, root) once fired
+
+    @classmethod
+    def on_load(cls, func):
+        """Register an app-loaded lifecycle callback (decorator-friendly).
+        Re-registration from a hotswap re-exec replaces the old callback
+        (keyed on module+qualname) instead of stacking a duplicate."""
+        key = (getattr(func, "__module__", None), getattr(func, "__qualname__", None))
+        cls.on_load_callbacks = [
+            f for f in cls.on_load_callbacks
+            if (getattr(f, "__module__", None), getattr(f, "__qualname__", None)) != key]
+        cls.on_load_callbacks.append(func)
+        if cls._on_load_fired is not None:
+            cls._run_on_load(func, *cls._on_load_fired)
+        return func
+
+    @classmethod
+    def fire_on_load(cls, vis, root):
+        cls._on_load_fired = (vis, root)
+        for func in list(cls.on_load_callbacks):
+            cls._run_on_load(func, vis, root)
+
+    @staticmethod
+    def _run_on_load(func, vis, root):
+        # One broken callback must not take down the load (or the others).
+        try:
+            func(vis, root)
+        except Exception:
+            import traceback
+            print(f"[on_load] callback {getattr(func, '__qualname__', func)} FAILED:")
+            traceback.print_exc()
+
     _converters = {}
     _converter_to_type = {}
     converter_flags_by_type = {}

@@ -304,6 +304,77 @@ class Codec:
     def save(data, file_path, **kwargs):
         return False
 
+    # ── Per-file attributes (AppModel.file_meta_collection) ────────────────
+    # The codec is an input source (the _ViewSource row / SourcePriority.
+    # CODEC). Its class-level render_kwargs are in-memory and codec-wide;
+    # per-FILE attributes instead land in FileMetaCollection.file_meta - the
+    # DictConversion mirroring the file tree - keyed by the file this
+    # element's Address resolves to. Living on AppModel makes persistence
+    # automatic (rides the root save), and the folder tree re-applies thes
+    # as meta on every run (folder_files._apply_meta).
+
+    @classmethod
+    def file_meta_key(cls, draw_state):
+        """The file-meta dict key (path string) for the file this element
+        belongs to, memoized on the draw_state's `_file_meta` field. O(1) BY
+        DESIGN — this runs in the wrapper's per-render codec layer, so no
+        ancestor walk: the ds's OWN codec-stamped Address resolves it, else
+        the key propagates one hop from the parent's memo (parents render
+        before children, so a subtree under a resolved view fills in top-down
+        across frames; an unbounded walk here froze startup — cycles aside,
+        it was O(depth) per view per frame across every codec subtree)."""
+        key = getattr(draw_state, "_file_meta", None)
+        if isinstance(key, str):
+            return key
+        path = getattr(getattr(draw_state, "_address", None), "path", None)
+        if path:
+            key = str(path)
+        else:
+            parent = getattr(draw_state, "_parent", None)
+            pkey = getattr(parent, "_file_meta", None) if parent is not None else None
+            key = pkey if isinstance(pkey, str) else None
+        if key is not None:
+            draw_state._file_meta = key
+        return key
+
+    @classmethod
+    def file_meta_entry(cls, draw_state, create=False):
+        """This file's params dict in AppModel.file_meta_collection.file_meta,
+        or None (no root yet / no file resolves / no entry and not create).
+        create=True materializes the entry (and backfills the collection onto
+        a pre-field root, same self-heal as folder_files._file_meta)."""
+        from src.lsd.gl_gui.melty import Melty
+        root = getattr(getattr(Melty, "vis", None), "root", None)
+        if root is None:
+            return None
+        col = getattr(root, "file_meta_collection", None)
+        if col is None:
+            from src.lsd.gl_gui.model.app_model import FileMetaCollection
+            col = root.file_meta_collection = FileMetaCollection()
+        if not isinstance(getattr(col, "file_meta", None), dict):
+            col.file_meta = {}
+        path = cls.file_meta_key(draw_state)
+        if path is None:
+            return None
+        entry = col.file_meta.get(path)
+        if not isinstance(entry, dict):
+            if not create:
+                return None
+            from src.lsd.gl_gui.model.app_model import FileMeta
+            entry = col.file_meta[path] = FileMeta()
+        return entry
+
+    @classmethod
+    def update_file_meta(cls, draw_state, key, value):
+        """Stamp a per-file attribute into the correct file's metadata entry.
+        Returns True when the write landed (a file resolved), False when it
+        couldn't — the caller falls back to codec-wide behavior."""
+        entry = cls.file_meta_entry(draw_state, create=True)
+        if entry is None:
+            return False
+        entry[key] = value
+        return True
+
 
 @register_codec(for_type=(type, EnumType))
 class TypeCodec(Codec):
@@ -367,8 +438,8 @@ class TypeCodec(Codec):
         return address
 
 
-    @staticmethod
-    def load(address, source_text=None, **kwargs):
+    @classmethod
+    def load(cls, address, source_text=None, **kwargs):
         # In-memory overlay: a queued-but-unflushed edit for this span (saves
         # defer to shutdown) is the freshest text; return it as the now-stale
         # disk content, and skip the disk read below. An explicit source_text
@@ -418,6 +489,12 @@ class TypeCodec(Codec):
                 stamped._disk_mtime = address.path.stat().st_mtime
                 stamped._disk_span = (os.path.realpath(str(address.path)),
                                       address.start, address.end)
+                # Value-carried provenance: the loaded text knows its codec,
+                # so rendering it OUTSIDE this codec's own subtree (the
+                # the an editor drawing host["value"] with draw_text)
+                # still re-establishes the codec context - and with it the
+                # per-file kwargs layer. See core_render's codec_scope.
+                stamped._codec = cls
                 return stamped
             except OSError:
                 pass

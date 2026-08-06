@@ -2319,14 +2319,12 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
 
 
 def _open_usage_ref(ref):
-    """Open one UsageRef in IntelliJ — the same opener the jump-to header
-    button uses. Async (daemon thread) so a slow IDE never stalls the loop."""
-    import threading
-    from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
-    threading.Thread(target=open_in_intellij,
-                     args=(str(ref.path),),
-                     kwargs={"line_number": getattr(ref, 'line', None)},
-                     daemon=True).start()
+    """Open one UsageRef (Ctrl+B) in the in-app code editor: opens the file's
+    tab, summons the editor window, and stashes the line on
+    OpenFiles.jump_to_line — draw_code_editor consumes it to place the caret
+    (the editor's cursor-follow scroll then brings it into view)."""
+    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    open_in_editor(str(ref.path), line_number=getattr(ref, 'line', None))
 
 
 def _focus_in_context_menu_over(editor_ds, max_steps=64):
@@ -5336,8 +5334,7 @@ def _describe_code_tree(code_tree):
 
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, tint=(0.406, 0.361, 0.318),
-             disable_scroll=False, with_header=draw_header, shadow=False, max_bg_depth=0, max_bg_value=0.10,
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, max_bg_depth=0, max_bg_value=0.10,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
@@ -5354,7 +5351,6 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, unique=0):
     ds = draw_state
-
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
@@ -5369,22 +5365,16 @@ def draw_text(input_value: str, height=None,
     def _pf(
             label):
         _pf_marks.append((label, time.perf_counter()))
-        
-        
-        
-        
-        
-        
-        
-        
+
+
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
     if not syntax_highlight:
         token_views = {}
-        
+
     elif token_views is None:
         token_views = DEFAULT_TOKEN_VIEWS   # an experiment fallback (see a     
-        
+
     # Symbol-usage source: the parse arrives as `code_tree` in the
     # address_to_general_parse routes, as `code_dict` in the CODE_UI routes
     # (cst_module_to_dict - which is also where the run_jedi() pass attaches
@@ -5397,7 +5387,7 @@ def draw_text(input_value: str, height=None,
     _usage_tree = code_tree if (code_tree is not None
                                 and not (isinstance(code_tree, dict)
                                          and "__error__" in code_tree)) else code_dict
-                            
+
     _usage_off = getattr(_usage_tree, 'line_offset', 0) or 0
     if not _usage_off and jump_to is not None:
         _usage_off = getattr(jump_to, 'start', 0) or 0
@@ -5482,7 +5472,7 @@ def draw_text(input_value: str, height=None,
         if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
             _active_fixes = _fi[1]
     _qf_fixes = {}
-    
+
 
     _qf_names = {}   # line → {names the fixes would bind} - drives the underlines
     if _active_fixes:
@@ -5616,7 +5606,7 @@ def draw_text(input_value: str, height=None,
 
     def _get_vcols():
         return _window()[3]
-    
+
 
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
@@ -5781,7 +5771,7 @@ def draw_text(input_value: str, height=None,
                     return True
                 return False
         return False
-        
+
     # A press inside a PLAIN owns_mouse token widget (number drag - rects
     # recorded by last body run's token loop) belongs to the widget, not the
     # text: skip caret/focus/selection for the whole gesture, matching what the
@@ -5818,7 +5808,7 @@ def draw_text(input_value: str, height=None,
         if _lv_pressed_line in (getattr(ds, "_lv_gutter_markers", None) or {}):
             ds._lv_btn_pressed_line = _lv_pressed_line
             left_mouse_down = None
-            
+
     if left_mouse_down:
         if Toggles.TextEditor.text_focus_stack_trace and Melty.text_focused_ds is not ds:
             print(f"[focus-grant] click -> {ds.name} ({ds._tile_id})")
@@ -5878,7 +5868,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_end = click_pos
             ds.text_drag_anchor_lo = ds.text_selection_start
             ds.text_drag_anchor_hi = ds.text_selection_end
-            
+
     # Extend the selection on cursor motion, and also every frame the button is
     # held (left_mouse_held) once a drag is underway - so holding the cursor
     # past the top/bottom edge keeps auto-scrolling and selecting more text,
@@ -5966,10 +5956,10 @@ def draw_text(input_value: str, height=None,
                 ds._ac_suppress_anchor = getattr(ds, '_ac_anchor', -1)
                 ds._ac_request_anchor = -1
                 _fired.discard(glfw.KEY_ESCAPE)
-                
-                
-                
-    
+
+
+
+
             elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _ac_cands:
                 step = 1 if pressed(glfw.KEY_DOWN) else -1
                 _ac_idx = (_ac_idx + step) % len(_ac_cands)
@@ -5997,7 +5987,7 @@ def draw_text(input_value: str, height=None,
                     while _replace_to < len(text) and (text[_replace_to].isalnum()
                                                        or text[_replace_to] == '_'):
                         _replace_to += 1
-        
+
                 _ins, _coff, _extra = _ac_pick_insert(ds, chosen,
                                                       following=text[_replace_to:_replace_to + 64],
                                                       preceding=text[max(0, anchor - 64):anchor],
@@ -6025,7 +6015,7 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
                 _fired.discard(glfw.KEY_TAB)
-          
+
         # --- Usage-jump picker: navigation & accept --- same key model as the
         # suggestion popup above: while open, Esc/arrows/Enter drive the picker
         # and are consumed before the caret handlers see them.
@@ -6078,7 +6068,7 @@ def draw_text(input_value: str, height=None,
                 _dd_scroll_cursor_into_view(
                     Melty.cache.key_to_draw_state.get(getattr(ds, '_qf_menu_tile', None)),
                     _qf_idx)
-                
+
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
@@ -6206,7 +6196,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
             changed = True
-        
+
         # --- Enter / Shift+Enter --- (skipped for single-line fields like the
         # search box, where Enter is reserved for find-next / Shift+Enter
         # find-prev).
@@ -6281,7 +6271,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
-                
+
         # --- Backspace ---
         if pressed(glfw.KEY_BACKSPACE):
             ds.text_cursor_blink_time = time.time()
@@ -6337,7 +6327,7 @@ def draw_text(input_value: str, height=None,
                 else:
                     text = text[:ds.text_cursor_pos] + text[ds.text_cursor_pos + 1:]
                 changed = True
-                
+
         # --- Left ---
         if pressed(glfw.KEY_LEFT):
             ds.text_cursor_blink_time = time.time()
@@ -6404,8 +6394,8 @@ def draw_text(input_value: str, height=None,
             else:
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
-                
-            
+
+
 
         # --- Home ---
         if pressed(glfw.KEY_HOME):
@@ -6460,7 +6450,7 @@ def draw_text(input_value: str, height=None,
             ds.text_cursor_blink_time = time.time()
             clipboard = imgui.get_clipboard_text()
             if clipboard:
-    
+
                 if _has_selection(ds):
                     text, ds.text_cursor_pos = _delete_selection(text, ds)
                 # Smart reindent on paste. A copied indented line block is dropped
@@ -6840,7 +6830,7 @@ def draw_text(input_value: str, height=None,
             lambda term, sess, _t=_match_text: sess.claim(len(_find_matches(_t, term))))
     else:
         ds._search_matcher = None
-        
+
     if should_scroll:
         ms, me = search_matches[current_local]
         line, _col = _index_to_line_col(text, ms)
@@ -6936,7 +6926,7 @@ def draw_text(input_value: str, height=None,
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
     if Toggles.TextEditor.definition_tints and not is_search_box:
         _t_dt = time.perf_counter()
-        
+
 
         _k_dt = getattr(ds, "_def_tints_key", None)
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
@@ -7069,7 +7059,7 @@ def draw_text(input_value: str, height=None,
                         draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey,
                                                   _l_col, 3.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
-        
+
 
         for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
             _s_line, _ = _index_to_line_col(text, _s_start)
@@ -7195,7 +7185,6 @@ def draw_text(input_value: str, height=None,
                     _usage_line_heat[u_line] = _usage_line_heat.get(u_line, 0) + n
             ds._uh_memo = ((id(_uspans), _ui0, _ui1), _uspans, _usage_line_heat)
             _pf_info['uh_n'] = _ui1 - _ui0
-
 
     _pf("body:usage_heat")
     # Search match highlights (drawn under the text so glyphs stay readable).
@@ -7661,7 +7650,7 @@ def draw_text(input_value: str, height=None,
             x = origin_x
             y += line_px
             _cur_ln += 1
-        
+
             start = nl + 1
         src_i += len(token)
 
@@ -7797,8 +7786,8 @@ def draw_text(input_value: str, height=None,
                 px, py = nx, ny
                 cx = nx
                 up = not up
-                
-        
+
+
     # Cursor. Drawn at the caret even while a selection exists, so the active
     # (moving) edge of a drag or shift-selection shows where delete and arrow
     # keys will act from - text_cursor_pos already tracks that location.
@@ -8151,7 +8140,7 @@ def draw_text(input_value: str, height=None,
         ds._ac_request_anchor = -1
         ds._ac_snip_site = None   # same disarm as a keyboard accept
         changed = True
-        
+
     _pf("ac_popup")
     # --- Usage-jump picker (multi-use symbols) ---
     # Same latched window contract as the suggestion popup above: draw_dd_menu
@@ -8462,7 +8451,7 @@ def draw_text(input_value: str, height=None,
                 cpu_ms=round((time.thread_time() - _pf_cpu0) * 1000.0, 1),
                 changed=changed, lines=text.count('\n') + 1, breakdown=_bd,
                 **_pf_info)
-        
+
     if changed:
         # Timeline: WHAT changed. Chunked common-prefix scan: equal 4KB slices
         # skip at C speed, per-char refinement only inside the first differing
