@@ -113,6 +113,9 @@ def draw_search_highlight_multi(draw_list, segs, *, current):
         x0, y0, x1, y1 = segs[0]
         draw_search_highlight(draw_list, x0, y0, x1, y1, current=current)
         return
+    # Same pixel-snap as draw_search_highlight - see the comment there.
+    segs = [(round(x0), round(y0), round(x1), round(y1))
+            for (x0, y0, x1, y1) in segs]
     spec = (Toggles.SearchSettings.ActiveElement if current
             else Toggles.SearchSettings.InactiveElements)
     bx0 = min(s[0] for s in segs)
@@ -132,6 +135,11 @@ def draw_search_highlight(draw_list, x0, y0, x1, y1, *, current, rounding=0.0):
     """Highlight a search match with its glow (rect cut out) plus an optional
     thin outline. The current match uses the ActiveElement spec; the rest use
     InactiveElements, so both states are tuned independently."""
+    # Pixel-snap: the rect usually derives from the live flow cursor at bake
+    # time, and sub-pixel drift between bakes makes the gradient triangles
+    # shimmer (glyphs don't - they're pixel-snapped). Rounding pins the whole
+    # halo to the pixel grid, so successive bakes bake identically.
+    x0, y0, x1, y1 = round(x0), round(y0), round(x1), round(y1)
     spec = (Toggles.SearchSettings.ActiveElement if current
             else Toggles.SearchSettings.InactiveElements)
     _draw_glow(draw_list, x0, y0, x1, y1, spec)

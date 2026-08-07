@@ -118,10 +118,9 @@ class ExternalChanges:
         """External changes are no longer hotswapped directly from here (the
         raw whole-module reload bypassed the pending machinery and caused
         stale-tile invalidation issues). Delegate to the Pending Saves window:
-        PendingSave.recompile_all first absorbs every tracked external change
-        (3-way merged with any overlapping pending edits, then queued as a
-        whole-file pending entry — absorb_external_changes), then hotswaps the
-        queue through the established per-entry path. recompile_all_ui drives
+        PendingSave.recompile_all hotswaps the pending queue through the
+        established per-entry path — external drift is NOT absorbed; it is
+        merged manually via the merge window. recompile_all_ui drives
         the Pending Saves button's own runner draw_state (busy spinner,
         fading check mark + summary), so any caller of this alias gets the
         exact button-click UI. Kept for backward compatibility — the MCP

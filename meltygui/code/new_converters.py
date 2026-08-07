@@ -68,6 +68,7 @@ succeeds. Recompile (hotswap, no disk write) is a separate concern: it just
 hotswaps the live object and flashes a checkmark.
 """
 
+import difflib
 import inspect
 import linecache
 import sys
@@ -118,7 +119,8 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.pending_save import PendingSave, three_way_merge
+from src.lsd.gl_gui.view.core_views.pending_save import (
+    PendingSave, _diff_lines_with_numbers)
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
@@ -619,7 +621,7 @@ class CodeState(DictConversion):
         self._external_load_frame = None
         self._external_load_time = None
         # What the fading external-load stamp says: None = "loaded from disk";
-        # the automerge path sets its own override.
+        # a manual load path may set its own message.
         self._external_load_label = None
 
     def is_file_stale(self):
@@ -2022,71 +2024,31 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             self_write = False
         conflict = file_stale and code_state._pending_save
 
-        # ── Automerge: external change under an ACTIVE local edit ─────────────
-        # An external write while this span has a live edit (the unsaved buffer,
-        # or an edit already queued in PendingSave - _pending_save drops once the
-        # save runner queues it) needs to either auto-load (auto_load_edits: disk
-        # replaces the edit in every view) or park on the manual buttons. Try a
-        # line-level 3-way merge first:
-        #   base   = the disk span this edit was sourced from (PendingSave original)
-        #   mine   = the live buffer (conflict) / the queued edit text
-        #   theirs = the span as the rewritten file holds it NOW - read through
-        #            codec.load(source_text=disk), which also re-baselines the
-        #            save guard's _span_cache to the NEW disk
-        # Non-overlapping edits splice: the buffer gets the merged text and the
-        # pending entry re-queues under the freshly loaded address (an external
-        # write shifts span coordinates - rebasing also supports any shutdown
-        # splice). Overlapping edits are a genuine conflict: merge_failed makes
-        # the branches below fall through to the manual Load / Keep-mine buttons
-        # instead of auto-loading over the edit.
-        merge_failed = False
+        # No automerge: pending is the current state, and an external write is
+        # the INCOMING side - it is merged in manually (merge window / editor
+        # banner), never silently by this code. A drift file with a live edit
+        # parks on the conflict indicator below until the user resolves it.
+        #
+        # ── Resolved merge: reload from the pending overlay ──────────────
+        # After the user resolved this file's drift (Merge / Keep pending /
+        # Disc save - resolve_external arms the is_absorbed marker), the
+        # pending overlay holds the file's truth: reloading is safe, and
+        # codec.load answers span loads from the pending overlay, so the
+        # MERGED text lands in this buffer - never a disk save; disk is only
+        # written by an explicit save or the shutdown flush. is_absorbed is a
+        # pure held-object identity check (no content compare); a NEW external
+        # write replaces the disk object and naturally re-parks the view.
         if file_stale and not self_write and not code_state._save_refused:
-            entry = PendingSave.entry_for(address)
-            mine = (code_state.text_cache
-                    if conflict and isinstance(code_state.text_cache, str) else None)
-            if mine is None and entry is not None:
-                queued = entry[2].get("data")
-                mine = queued if isinstance(queued, str) else None
-            base_hit = PendingSave.original_for(address) if mine is not None else None
-            if base_hit is not None and isinstance(base_hit[1], str) and mine != base_hit[1]:
-                disk_text = Melty.read_code(address.path)
-                # A failed merge leaves the file stale, so this re-runs every
-                # frame until the user picks a side - memoize on object
-                # identity (all three texts are held objects: the buffer /
-                # queued data, the original entry holds the code_cache text), per
-                # the no-content-hashing rule. Only a real change re-diffs.
-                memo_key = (id(base_hit[1]), id(mine), id(disk_text))
-                memo = draw_state.misc.get("_automerge_memo")
-                if memo is not None and memo[0] == memo_key:
-                    theirs, merged = memo[1], memo[2]
-                else:
-                    theirs = (codec.load(address, source_text=disk_text)
-                              if disk_text is not None else None)
-                    merged = (three_way_merge(base_hit[1], mine, theirs)
-                              if isinstance(theirs, str) else None)
-                    draw_state.misc["_automerge_memo"] = (memo_key, theirs, merged)
-                if merged is not None:
-                    old_addr = entry[0] if entry is not None else base_hit[0]
-                    merge_codec = entry[1] if entry is not None else codec
-                    extra = ({k: v for k, v in entry[2].items() if k != "data"}
-                             if entry is not None else {})
-                    PendingSave.rebase_entry(old_addr, address, merge_codec,
-                                             merged, theirs, **extra)
-                    code_state.text_cache = merged
-                    code_state.mark_file_current()
-                    code_state._pending_save = False
-                    code_state._save_refused = False
-                    code_state._external_load_frame = Melty.frame_count
-                    code_state._external_load_time = datetime.now().strftime("%H:%M:%S")
-                    code_state._external_load_label = "automerged external change"
-                    external_change = True
-                    file_stale = False
-                    conflict = False
-                    draw_state.invalidate_up(max_depth=6)
-                    request_render()
-                else:
-                    merge_failed = True
-                    conflict = True
+            from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+            _dpath = str(address.path)
+            _disk_now = Melty.read_code(_dpath)
+            if _disk_now is not None and ExternalChanges.is_absorbed(_dpath, _disk_now):
+                load = True
+                code_state._loaded_externally = True
+                code_state._pending_save = False
+                code_state.mark_file_current()
+                file_stale = False
+                conflict = False
 
         # ── Cross-view sync via the PendingSave cache (deferred-save model) ────────
         # A sibling view's save now only goes into PendingSave - no disk write,
@@ -2111,19 +2073,18 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 draw_state.invalidate(note=Note(name="pending-sync", tint=(1, 0.6, 0.2)))
                 request_render()
 
-        if file_stale and not code_state._pending_save and not merge_failed:
-            if auto_load_edits:
+        if file_stale and not code_state._pending_save:
+            if auto_load_edits and self_write:
                 # A VERIFIED self-write (a sibling editor of the same file - the
                 # code-host str_host, another window, a lens save - synced
                 # through disk) is picked up IN-PROCESS from the exact text that
                 # write produced: no disk reload, no "Loading..." banner, no
                 # external stamp. A reparse still fires (text_cache change +
                 # external_change below), so the structured pane updates exactly
-                # as the auto-load path drove it - load their only fires for a
-                # change we did NOT produce. get_self_write_text returns None if
-                # an external write has since raced in, falling through to a disk
-                # load (treated as external, with the stamp).
-                mem_text = FileWatch.get_self_write_text(address.path) if self_write else None
+                # as the disk-load path drove it. get_self_write_text returns
+                # None if an external write has disk raced in - fall through to
+                # the manual branch below rather than auto-loading stale text.
+                mem_text = FileWatch.get_self_write_text(address.path)
                 if mem_text is not None:
                     code_state.text_cache = codec.load(address, source_text=mem_text)
                     code_state.mark_file_current()
@@ -2137,14 +2098,26 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                     request_render()
                 else:
                     load = True
-                    code_state._loaded_externally = not self_write
+                    code_state._loaded_externally = False
                     code_state.mark_file_current()
             else:
-                imgui.same_line(spacing=0)
+                # A genuine external change is NEVER auto-loaded - the write is
+                # the incoming side of a manual merge (merge window / editor
+                # banner). Indicate and offer the merge window, and keep the
+                # explicit per-span buttons as escape hatches.
+                imgui.same_line(spacing=8)
+                imgui.align_text_to_frame_padding()
+                imgui.text_colored("\uf071 changed on disk", 1.0, 0.55, 0.15, 1.0)
+                imgui.same_line(spacing=4)
+                if RenderFuncs.button("Merge…", width=100, height=top_line_height,
+                                      name=f"openmerge{unique}")[0]:
+                    from src.lsd.gl_gui.view.core_views.new_core_view import Core
+                    Core.melty.open_window("merge_files")
+                    request_render()
+                imgui.same_line()
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
                     code_state._loaded_externally = not self_write
-
                 imgui.same_line()
                 if RenderFuncs.button("Keep mine", width=100, height=top_line_height, name=f"keepmine{unique}")[0]:
                     save = True
@@ -2153,14 +2126,19 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             # External write + local unsaved edits: a write conflict. Auto-save
             # is blocked below until the user picks a side - splicing a buffer
             # that came from the OLD file into the rewritten one is exactly the
-            # file-mangling path. Keep mine writes with force (skips the codec's
-            # span-failure guard) through the freshly re-resolved span.
+            # file-mangling bug. The merge window is the primary resolution;
+            # Keep mine writes with force (skipping the codec's span-fingerprint
+            # guard) through the freshly re-resolved span.
             imgui.same_line(spacing=8)
             imgui.align_text_to_frame_padding()
-            label = ("\uf071 conflicts with edit" if merge_failed
-                     else "\uf071 changed on disk")
-            imgui.text_colored(label, 1.0, 0.55, 0.15, 1.0)
+            imgui.text_colored("\uf071 changed on disk", 1.0, 0.55, 0.15, 1.0)
             imgui.same_line(spacing=4)
+            if RenderFuncs.button("Merge…", width=100, height=top_line_height,
+                                  name=f"openmerge{unique}")[0]:
+                from src.lsd.gl_gui.view.core_views.new_core_view import Core
+                Core.melty.open_window("merge_files")
+                request_render()
+            imgui.same_line()
             if RenderFuncs.button("Load theirs", width=110, height=top_line_height, name=f"reload{unique}")[0]:
                 load = True
                 code_state._loaded_externally = True
@@ -2182,6 +2160,43 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.same_line(spacing=0)
             if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save{unique}")[0]:
                 save = True
+
+        # ── Pending diff: the span's queued edit vs its load-time original ──
+        # Pending is the current state; the diff shows what it changes.
+        # Collapsed by default behind a toggle so editors don't grow taller
+        # while editing. Memoized by object identity (both of the held
+        # objects - the queue entry and the originals entry), never hashed.
+        _p_entry = PendingSave.entry_for(address)
+        _p_base = PendingSave.original_for(address) if _p_entry is not None else None
+        _p_data = _p_entry[2].get("data") if _p_entry is not None else None
+        if (_p_base is not None and isinstance(_p_data, str)
+                and isinstance(_p_base[1], str) and _p_data != _p_base[1]):
+            imgui.same_line(spacing=8)
+            _show = bool(draw_state.misc.get("_show_pending_diff"))
+            if RenderFuncs.button(("▼" if _show else "▶") + " pending diff",
+                                  width=130, height=top_line_height,
+                                  name=f"pendingdiff{unique}")[0]:
+                _show = not _show
+                draw_state.misc["_show_pending_diff"] = _show
+                draw_state.invalidate_up(max_depth=6)
+                request_render()
+            if _show:
+                _memo = draw_state.misc.get("_pending_diff_memo")
+                _dkey = (id(_p_base[1]), id(_p_data))
+                if _memo is None or _memo[0] != _dkey:
+                    _diff = difflib.unified_diff(
+                        fromfile=str(address.path), tofile=str(address.path),
+                        a=_p_base[1].splitlines(keepends=True),
+                        b=_p_data.splitlines(keepends=True), n=3)
+                    _lines, _nums = _diff_lines_with_numbers(
+                        _diff, _p_entry[0].start or 0)
+                    _memo = (_dkey, "".join(_lines), _nums)
+                    draw_state.misc["_pending_diff_memo"] = _memo
+                    # Content edge: the queued edit changed - recapture it.
+                    draw_state.invalidate_up(max_depth=6)
+                RenderFuncs.draw_text(_memo[1], show_name=False,
+                                      name=f"pending diff{unique}",
+                                      is_diff=True, line_numbers=_memo[2])
 
         # if auto_save:
         #     imgui.same_line(spacing=16)

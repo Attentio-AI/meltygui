@@ -345,6 +345,27 @@ def _draw_glyph(dl, idx, cx, cy, color, maximized):
     dl.add_text(cx - ts.x / 2.0, cy - ts.y / 2.0, color, icon)
 
 
+def _close_blocked_by_merge():
+    """True when quitting would lose pending state: some file has BOTH pending
+    edits and unmerged external drift (PendingSave.needs_merge). Instead of
+    closing, surface the merge window — the manual merge is the only way that
+    state resolves. Errors never block the close."""
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        if not PendingSave.needs_merge():
+            return False
+        from src.lsd.gl_gui.view.core_views.new_core_view import Core
+        from src.lsd.gl_gui.notifications import notify
+        Core.melty.open_window("merge_files")
+        notify("Unmerged external changes — merge before closing",
+               tint=(1.0, 0.7, 0.2))
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+        return True
+    except Exception:
+        return False
+
+
 def draw_titlebar(window):
     """Per-frame entry point — call inside the imgui frame on the viz thread.
 
@@ -405,6 +426,8 @@ def draw_titlebar(window):
                 glfw.iconify_window(window)
             elif _pressed_button == 1:
                 _toggle_maximize(window)
+            elif _close_blocked_by_merge():
+                pass        # merge window opened instead; app stays up
             else:
                 glfw.set_window_should_close(window, True)
         _pressed_button = None

@@ -589,12 +589,21 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             # so glyphs stay readable). Strong fill + outline for the active
             # (global-current) match; a faint fill for the rest. The flags are
             # set by draw_collection when this header's key matches the query.
+            # Lifted to a HIGHER depth channel (restore after, the
+            # DrawState.draw_rect idiom): the halo spills past this row's rect,
+            # and at the content channel a sibling row's background composites
+            # over the spill — cropped edges and bake-order flicker.
             if kwargs.get("search_match", False):
                 hx0, hy0 = cursor_pos[0], cursor_pos[1]
                 hx1 = cursor_pos[0] + text_width
                 hy1 = cursor_pos[1] + imgui.get_text_line_height()
+                if Melty.channels_split:
+                    draw_list.channels_set_current(
+                        min(Melty.get_channel() + 2, Melty.max_depth - 1))
                 draw_search_highlight(draw_list, hx0, hy0, hx1, hy1,
                                       current=kwargs.get("search_current", False))
+                if Melty.channels_split:
+                    draw_list.channels_set_current(Melty.get_channel())
             packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())
@@ -848,12 +857,19 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                                          imgui.get_text_line_height())
                 _name_clip = (_o_left, _o_top, _o_right, _o_bottom)
                 Melty.push_clip(_name_clip)
+            # Same channel lift as the plain-header site above: keep the halo's
+            # spill above sibling rows' backgrounds, restore the flow channel.
             if kwargs.get("search_match", False):
                 hx0, hy0 = cursor_pos[0], cursor_pos[1]
                 hx1 = cursor_pos[0] + text_width
                 hy1 = cursor_pos[1] + imgui.get_text_line_height()
+                if Melty.channels_split:
+                    draw_list.channels_set_current(
+                        min(Melty.get_channel() + 2, Melty.max_depth - 1))
                 draw_search_highlight(draw_list, hx0, hy0, hx1, hy1,
                                       current=kwargs.get("search_current", False))
+                if Melty.channels_split:
+                    draw_list.channels_set_current(Melty.get_channel())
             packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             if _name_clip is not None:

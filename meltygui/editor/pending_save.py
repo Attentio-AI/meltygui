@@ -90,10 +90,11 @@ def three_way_merge(base, mine, theirs):
 class PendingSave:
     pending_saves = defaultdict(Any)
     originals = defaultdict(Any)
-    # Result lines from the last absorb_external_changes run (MERGED /
-    # ADOPTED / CONFLICT per file). Shown in draw_pending_saves until
-    # dismissed - unlike the button's save summary, a merge rewrites the
-    # queue, so its outcome must stay inspectable.
+    # Result lines from manual merge actions (MERGED / ADOPTED / KEPT OURS /
+    # TOOK THEIRS / CONFLICT per file - resolve_external via the merge
+    # window's / commit banner's buttons). Shown by draw_pending_saves until
+    # dismissed - a merge rewrites the queue, so its outcome must stay
+    # inspectable.
     merge_results = []
     # Monotonic per-file edit counter, bumped on every queue_save. A cheap,
     # content-free cache-invalidation signal (see CLAUDE.md - never hash files):
@@ -113,8 +114,8 @@ class PendingSave:
         # A load answered from the pending overlay (codec.load returns the
         # pending edit, not disk) must NOT re-baseline: basing the result as
         # the "original" turns a real pending edit into a no-op (data ==
-        # original) - drop_noop_entries_for would then discard it on the next
-        # external write, so the automerge base would be wrong.
+        # original) — drop_noop_entries_for would then discard it on the next
+        # external write, and the merge base would be wrong.
         if isinstance(data, str) and cls.pending_text_for(address) == data:
             return
         cls.originals[address] = data
@@ -165,7 +166,7 @@ class PendingSave:
         """Move a queued edit onto a freshly resolved span: drop the
         stale-coordinate entry and its load-time original, re-baseline the
         original to `original` (the CURRENT disk span), and queue `data` under
-        the new address. The automerge path calls this after splicing an
+        the new address. The manual merge path calls this after splicing an
         external change into a pending edit, so apply_all_saves later splices
         at coordinates that match the rewritten file."""
         if old_address != new_address:
@@ -362,12 +363,12 @@ class PendingSave:
                 if data == cls.originals.get(addr):
                     return None
                 return data
-        # A whole-file pending entry (absorb_external_changes queues one per
-        # tracked external change) holds merged edits that are NOT on disk - a
-        # span consumer reloading from disk would lose them. Serve the slice
-        # from the merged text. Span coords are valid against it: absorb runs
-        # inside recompile_all, whose module hotswap resyncs live linenos to
-        # the merged source (the same coords the consumer resolved from).
+        # A whole-file pending entry (a manual merge queues one per merged
+        # external change) holds span edits that are NOT on disk - a span
+        # consumer reloading from disk would lose them. Serve the slice from
+        # the merged text. The coords are valid against it: resolve_external
+        # resyncs live linenos to the merged source (the same coords the
+        # consumer resolved from).
         if address.start is not None:
             for addr, (codec, kwargs) in list(cls.pending_saves.items()):
                 if addr.start is not None or addr.path != address.path:
@@ -411,26 +412,12 @@ class PendingSave:
         from src.lsd.gl_gui.view.core_conversion.new_codecs import SaveConflict
         from src.lsd.gl_gui.notifications import notify
 
-        # Merge-on-save: fold tracked external drift into the batch FIRST so a
-        # file changed on both sides flushes with both edits - without this,
-        # drift-invalidated fingerprints make codec.save refuse those spans,
-        # and on real shutdown a refused entry is simply lost. allow_merge is
-        # forced on (clean merges only; Toggles.auto_merge keeps gating the
-        # interactive recompile path). A CONFLICT absorbs nothing for the
-        # file: those spans still save via the .span' guard, rather
-        # than splice from stale offsets.
-        try:
-            from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
-            merge_lines = []
-            for path in list(ExternalChanges.originals):
-                line = cls.resolve_external(path, allow_merge=True)
-                if line is not None:
-                    merge_lines.append(line)
-            if merge_lines:
-                cls.merge_results = list(cls.merge_results) + merge_lines
-                cls._wake_windows()
-        except Exception:
-            pass
+        # No merge-on-save: external drift is resolved MANUALLY (merge window /
+        # editor banner) before the flush - the main-window close guard
+        # (needs_merge?) blocks a shutdown that would land here with pending
+        # edits on a changed file. If a changed span does reach codec.save, its
+        # _span_fp fingerprint refuses the write (SaveConflict) and the entry
+        # defers below instead of splicing at stale offsets.
 
         # Apply same-file saves bottom-up (highest start line first). A splice
         # only shifts the lines BELOW its span, so saving the lowest span last
@@ -463,39 +450,115 @@ class PendingSave:
         cls.pending_saves.update(survivors)
 
     @classmethod
-    def absorb_external_changes(cls):
-        """Fold every tracked external change into the pending queue and
-        return the per-file result lines.
+    def studio_text_for(cls, path):
+        """The studio's current view of `path`: the sync-frame text (the last
+        disk state the pending queue was rebased to — ExternalChanges.synced,
+        falling back to the drift baseline, falling back to disk) with this
+        file's real pending span edits spliced in bottom-up. This is the BASE
+        side of the manual merge diff: pending is treated as current, and the
+        external disk change is the incoming side diffed against it.
 
-        For each ExternalChanges entry: decompose the drift into per-span
-        pending entries and merge them with the file's existing pending
-        entries — rebase, per-span 3-way merge, adopt; see resolve_external.
-        The external entry is marked absorbed — it stays VISIBLE in the
-        external window until the user dismisses it; the marker only stops
-        re-absorbing. An unmergeable overlap leaves the file completely
-        untouched: both trackers keep their entries and the Merge window
-        keeps showing the conflict.
-
-        Texts are newline-normalized to '\\n' (same convention as
-        current_file_text). Runs on recompile_all's worker thread."""
+        NOT current_file_text — that splices pending into the CURRENT disk
+        text, which already contains the external edits, so diffing it against
+        disk would hide the incoming side. Newline-normalized to '\\n'.
+        Returns None when no text is available at all."""
+        from pathlib import Path as _P
+        from src.lsd.gl_gui.melty import Melty
         from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
-        # Pick up project files/dirs created since startup (idempotent, only
-        # uncached files are read) so their NEXT external edit is tracked -
-        # this runs on the recompile worker, never the render thread.
+        _norm = cls._norm_text
+        key = str(path)
+        base = ExternalChanges.synced.get(key,
+                                          ExternalChanges.originals.get(key))
+        if base is None:
+            base = Melty.read_code(path)
+        if base is None:
+            return None
+        base_n = _norm(base)
         try:
-            from src.lsd.gl_gui.melty import FileWatch
-            FileWatch.watch_project_files()
-        except Exception:
-            pass
-        results = []
-        for path in list(ExternalChanges.originals):
-            line = cls.resolve_external(path)
-            if line is not None:
-                results.append(line)
-        if results:
-            cls.merge_results = results
-            cls._wake_windows()
-        return results
+            rp = _P(path).resolve()
+        except OSError:
+            return base_n
+        edits = []
+        for addr, (codec, kwargs) in list(cls.pending_saves.items()):
+            data = kwargs.get("data")
+            if not isinstance(data, str) or data == cls.originals.get(addr):
+                continue
+            try:
+                if _P(addr.path).resolve() != rp:
+                    continue
+            except Exception:
+                continue
+            edits.append((addr.start, addr.end, data))
+        if not edits:
+            return base_n
+        whole = [d for (s, e, d) in edits if s is None]
+        if whole:
+            return _norm(whole[-1])
+        lines = base_n.split("\n")
+        for start, end, data in sorted((e for e in edits if e[0] is not None),
+                                       key=lambda e: -e[0]):
+            d = _norm(data)
+            if d.endswith("\n"):
+                d = d[:-1]
+            lines[start:end] = d.split("\n")
+        return "\n".join(lines)
+
+    # path → ((id(sync), id(disk)), unmerged: bool). Identity-keyed memo for
+    # unmerged_drift_paths: both texts are held objects (synced/originals are
+    # setdefault/assign-once per event; the watcher pops code_cache on disk
+    # write), so the O(file) normalize+compare runs once per actual change,
+    # not per render/frame (editor banner and merge window call this hot).
+    _drift_memo = {}
+
+    @classmethod
+    def unmerged_drift_paths(cls):
+        """Paths (resolved strs, ExternalChanges keys) whose tracked external
+        drift has NOT been merged into pending yet: normalized sync-frame text
+        differs from current disk. Comparison is memoized by object identity —
+        never a per-call content pass over unchanged texts."""
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
+        _norm = cls._norm_text
+        out = []
+        for path, baseline in list(ExternalChanges.originals.items()):
+            disk = Melty.read_code(path)
+            if disk is None:
+                continue
+            sync = ExternalChanges.synced.get(path, baseline)
+            key = (id(sync), id(disk))
+            hit = cls._drift_memo.get(path)
+            if hit is None or hit[0] != key:
+                hit = (key, _norm(sync) != _norm(disk))
+                cls._drift_memo[path] = hit
+            if hit[1]:
+                out.append(path)
+        return out
+
+    @classmethod
+    def needs_merge(cls):
+        """True iff some file has BOTH a real pending edit (data differs from
+        its load-time original) and unmerged external drift — the state where
+        exiting would lose or clobber pending. Drives the main-window close
+        guard. Pure read over existing state."""
+        from pathlib import Path as _P
+        drifted = set()
+        for p in cls.unmerged_drift_paths():
+            try:
+                drifted.add(_P(p).resolve())
+            except OSError:
+                continue
+        if not drifted:
+            return False
+        for addr, (codec, kwargs) in list(cls.pending_saves.items()):
+            data = kwargs.get("data")
+            if not isinstance(data, str) or data == cls.originals.get(addr):
+                continue
+            try:
+                if _P(addr.path).resolve() in drifted:
+                    return True
+            except Exception:
+                continue
+        return False
 
     @staticmethod
     def _norm_text(t):
@@ -508,10 +571,9 @@ class PendingSave:
         untracked path, or drift that healed back to the baseline).
 
         allow_merge gates the per-span 3-way merge for OVERLAPPING spans:
-        None reads Toggles.auto_merge (the interactive recompile path);
-        apply_all_saves passes True — merge-on-save when it's clean — and
-        False forces overlaps to CONFLICT. Rebase/adopt of non-overlapping
-        work never depends on it.
+        only an explicit merge action (the Merge buttons) passes True;
+        the default (None/False) forces overlaps to CONFLICT. Rebase/adopt
+        of non-overlapping work never depends on it.
 
         The disk drift (sync frame → current disk, see ExternalChanges.synced)
         is decomposed into the SAME shape as in-studio edits — span pending
@@ -554,8 +616,7 @@ class PendingSave:
         from src.lsd.gl_gui.mcp_hotswap import _resolve_module
 
         if allow_merge is None:
-            from src.lsd.gl_gui.toggles import Toggles
-            allow_merge = Toggles.auto_merge
+            allow_merge = False     # merging only allowed on explicit request
 
         _norm = cls._norm_text
         baseline = ExternalChanges.originals.get(path)
@@ -657,10 +718,9 @@ class PendingSave:
         elif prefer == "theirs":
             merged = disk_n
         else:
-            # 3-way merge gated by allow_merge (resolved from Toggles.auto_merge
-            # by resolve_external unless the caller forced it); None →
-            # overlapping pending entries report as a conflict for the manual
-            # Merge window instead of merging silently.
+            # 3-way merge gated by allow_merge (True only on an explicit Merge
+            # action); off → overlapping pending edits report as a conflict
+            # for the manual merge window instead of merging silently.
             if mine == base_n:
                 merged = disk_n
             elif allow_merge:
@@ -784,8 +844,7 @@ class PendingSave:
             else:
                 # base = the sync-frame slice: the common ancestor both the
                 # pending edit and the disk drift derived from. Gated by
-                # allow_merge (Toggles.auto_merge on the recompile path,
-                # forced True by apply_all_saves for merge-on-save).
+                # allow_merge (allow only on an explicit Merge action).
                 if not allow_merge:
                     return (f"CONFLICT {name}: external change overlaps a "
                             f"pending edit — see Merge window")
@@ -976,10 +1035,11 @@ class PendingSave:
 
     @classmethod
     def recompile_all(cls):
-        """Absorb tracked external changes into the queue (see
-        absorb_external_changes), then hotswap every changed pending edit into
-        the running process — no disk write; the queue stays intact for
-        apply_all_saves at shutdown.
+        """Hotswap every changed pending edit into the running process — no
+        disk write; the queue stays intact for apply_all_saves at shutdown.
+        External disk drift is IGNORED here: pending is the current state,
+        and drift is merged in manually (merge window / editor banner), never
+        as a recompile side effect.
 
         Rides the editor Run button's worker (recompile_source): each queued
         span recompiles its OWN live object in place (class / function /
@@ -991,9 +1051,16 @@ class PendingSave:
         from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
         from src.lsd.gl_gui.view.core_conversion.chain_converters import record_compile
 
-        merge_lines = cls.absorb_external_changes()
+        # Pick up project files/dirs created since startup (idempotent, only
+        # uncached files are read) so their NEXT pending edit is tracked -
+        # this runs on the recompile worker, never the render thread.
+        try:
+            from src.lsd.gl_gui.melty import FileWatch
+            FileWatch.watch_project_files()
+        except Exception:
+            pass
 
-        compiled, failures, skipped = [], [], 0
+        compiled, failures = [], []
         # Snapshot: this runs in a worker thread (draw_function run_in_thread)
         # while the render thread may still queue edits mid-iteration.
         for address, (codec, kwargs) in list(cls.pending_saves.items()):
@@ -1008,24 +1075,17 @@ class PendingSave:
             source = getattr(address, "source", None)
             if not isinstance(source, (type, types.FunctionType,
                                        types.ModuleType, CallSite, Decorations)):
-                skipped += 1   # pure text / no live object - nothing to hotswap
+                # Plain text with no live object - nothing to hotswap; the text
+                # still flushes to disk at save. Not worth reporting.
                 continue
-            if address.start is None and isinstance(source, types.ModuleType):
-                # Disk-coordinate invariant: a whole-module hotswap moves every
-                # function to the disk file's linenos, so it is only allowe
-                # from text that IS the disk file (mcp_hotswap writes disk on
-                # success for the same reason). A whole-file address holding
-                # anything else (a legacy merged entry) would mangle every
-                # span resolution - refuse it; the entry still flushes at
-                # shutdown, and disk-loaded modules recompile fine.
-                from src.lsd.gl_gui.melty import Melty
-                disk_now = Melty.read_code(address.path)
-                if (disk_now is None
-                        or cls._norm_text(disk_now) != cls._norm_text(data)):
-                    failures.append(f"{label}: refused whole-module hotswap "
-                                    f"from non-disk text — it would desync "
-                                    f"live linenos from disk")
-                    continue
+            # Whole-file module entries hotswap from their PENDING text - the
+            # same whole-module path the per-editor Run button uses on the
+            # live buffer (_recompile_module). The old refusal of non-disk
+            # text guarded the absorb-era merged entries, which matched
+            # neither the editors nor disk; a whole-file entry now IS the
+            # editor's buffer truth, and span consumers read that same text
+            # through the pending overlay (pending_text_for's whole-file
+            # filtering), so live linenos and the served source are coherent.
             try:
                 err = recompile_source(source, data, address.path, address=address)
             except Exception as e:
@@ -1041,9 +1101,9 @@ class PendingSave:
             else:
                 failures.append(f"{label}: {type(err).__name__}: {err}")
 
-        if not (compiled or failures or skipped or merge_lines):
+        if not (compiled or failures or skipped):
             return "Nothing to recompile — no changed pending edits."
-        lines = list(merge_lines)
+        lines = []
         if compiled:
             lines.append(f"Recompiled {len(compiled)}: {', '.join(compiled)}")
         if skipped:
@@ -1203,7 +1263,7 @@ def draw_pending_saves():
             # codec.load answers with the queued edit itself, and stamping the
             # edit as its own "original" reclassifies the entry as a no-op
             # (dropped on the next disk write, invisible in this diff) and
-            # poisons the automerge base. source_text pins the load to disk.
+            # poisons the merge base. source_text pins the load to disk.
             from src.lsd.gl_gui.melty import Melty
             disk_text = Melty.read_code(address.path) if address.path is not None else None
             PendingSave.originals[address] = codec.load(

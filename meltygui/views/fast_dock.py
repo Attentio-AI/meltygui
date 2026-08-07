@@ -116,8 +116,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # ---- styling ----
     open_bg_value, open_text_value = 0.16, 1.357          # name button, window open
     open_factor, open_saturation = 0.659, 1.315
-    closed_bg_value, closed_text_value = 0.067, 0.248     # name button, window closed
-    closed_factor, closed_saturation = 0.90, 1.096
+    closed_bg_value, closed_text_value = 0.045, 0.341     # name button, window closed
+    closed_factor, closed_saturation = 0.90, 1.091
     target_bg_value, target_text_value = 0.103, 1.269     # summon button
     target_factor, target_saturation = 0.799, 0.764
     hover_bg_boost, hover_text_boost = 0.05, 1.5
@@ -245,7 +245,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
             continue
 
         tint = wds.locate_tint
-        
+
 
         if name == "Window Manager":
             tx = _mix(style_manager, tint, target_text_value, 1.0, text_saturation)

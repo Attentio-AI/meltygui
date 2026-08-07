@@ -3729,8 +3729,15 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
     # Search match highlight (drawn under the text): the current row radiates a
     # circular gradient glow with its rect cut out so its content stays legible;
     # other matches get a thin outline. Tunable via Toggles.SearchSettings.
+    # Lifted to a higher depth channel (restored after) so the halo's glow
+    # past this row's rect isn't composited over by sibling rows' backgrounds.
     if search_match:
+        if Melty.channels_split:
+            draw_list.channels_set_current(
+                min(Melty.get_channel() + 2, Melty.max_depth - 1))
         draw_search_highlight(draw_list, bx0, by0, bx1, by1, current=search_current, rounding=rnd)
+        if Melty.channels_split:
+            draw_list.channels_set_current(Melty.get_channel())
 
     if text_align == "left":
         draw_list.add_text(draw_state.abs_left + 5,
@@ -3798,7 +3805,10 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
               max_height=100, min_height=20, header_same_line=True,
               selectable=False, left_mouse_drag=None, left_mouse_held=False, align_header=True,
               left_mouse_down=False):
-
+    print("external")
+    # external change
+    # external change 2
+    print("new external")
     left_margin = 3
     box_h = 21
     text_inset = 11
@@ -5655,13 +5665,57 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
         _active_cache = {}
         target._sa_active_src = _active_cache
 
-    term = (search_text or "").lower()
+    # ── Search - the DEFAULT search path. Term resolution mirrors
+    # draw_search: a injected str/SearchTerm in search_text (the menu's
+    # search box / an ancestor session), or this tab's OWN find-bar term -
+    # the search_text kwarg is only injected from an ancestor session, so a
+    # self-triggered Ctrl+F never arrives through it and must be read off
+    # draw_state.search_text directly.
+    _term = search_text or (draw_state.search_text if draw_state.search_active else "")
+    if isinstance(_term, SearchTerm):
+        _session = _term
+    elif draw_state.search_active and draw_state._search_session is not None:
+        _session = draw_state._search_session
+    else:
+        _session = None
+    term = str(_term).lower() if _term else ""
+
+    # Param NAMES are matched by THIS view - one result slot per matching
+    # row, in draw order. Rows without a value widget (the cue rows, "not set
+    # here") have no child matcher of their own, so without this claim they
+    # are invisible to the search count/highlight/nav. Child editors still
+    # claim their content matches separately (no double count: names here,
+    # content there).
+    # NB: `for p in proxy` yields (param, value) PAIRS (ParamProxy's one
+    # weird deviation from dict) - keys() yields plain keys.
+    _param_names = tuple(p.lower() for p in proxy.keys())
+    def _search_matcher(t, session, _names=_param_names):
+        q = str(t).lower()
+        if q:
+            session.claim(sum(1 for n in _names if _fuzzy_key_match(q, n)))
+    draw_state._search_matcher = _search_matcher
+
+    # The view's pre-body walk (search_walk) stashed the local ordinal of the
+    # global-current match on us when one of our names holds it.
+    _current_local = draw_state._search_active_local if term else None
+    _match_ord = 0
+    _current_row_y = None
+
     any_changed = False
     index = 0
     for param, value in proxy.items():
         index = index+1
-        if term and term not in param.lower():
-            continue
+        # Highlight, don't hide: every row stays visible (like the default
+        # search everywhere else); matching rows get the highlight via the
+        # search_match/search_current kwargs their header reads.
+        is_match = bool(term) and _fuzzy_key_match(term, param.lower())
+        is_current = (is_match and _current_local is not None
+                      and _match_ord == _current_local)
+        if is_match:
+            _match_ord += 1
+        if is_current:
+            _current_row_y = imgui.get_cursor_screen_pos()[1]
+        _search_kw = {"search_match": is_match, "search_current": is_current}
         if parses_ready:
             # The ACTIVE source: the highest-priority setter (precomputed in
             # active_map, one render pass) - unless a diverged auto_param
@@ -5744,7 +5798,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
             # placeholders; bind the widget to the RESOLVED value and route
             # edits through the proxy pick when the sources are real.
             item_return = draw_any(value, name=param,
-                                   show_bg=False, show_header=True)
+                                   show_bg=False, show_header=True, **_search_kw)
             item_changed, out_val = item_return[0], item_return[1]
             if item_changed:
                 proxy[param] = out_val
@@ -5785,7 +5839,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
                                          label="+", display_name=param,
                                          show_name=True, show_bg=False,
 
-                                         wrap=True, min_width=24)
+                                         wrap=True, min_width=24, **_search_kw)
                 if clicked:
                     # Resolved value when there is one; a None (header params
                     # nothing sets) stamps the DECLARED signature default -
@@ -5801,18 +5855,25 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
                     any_changed = True
             else:
                 text(f"{param}: not set here", name=f"ro_{row_uid}",
-                     editable=False)
+                     editable=False, **_search_kw)
         elif sel_writable:
             item_return = draw_any(stored, name=param,
-                                   show_bg=False, show_header=True)
+                                   show_bg=False, show_header=True, **_search_kw)
             item_changed, out_val = item_return[0], item_return[1]
             if item_changed:
                 set_anywhere(param, out_val, target, allow_any=True,
                              ds_fallback=True, source=sel)
                 any_changed = True
         else:
-            text(f"{param}: {stored}", name=f"ro_{row_uid}", editable=False)
+            text(f"{param}: {stored}", name=f"ro_{row_uid}", editable=False,
+                 **_search_kw)
         imgui.dummy(0, 2)
+
+    # Scroll the current search match into view - only on real full-search
+    # frames (term change / Enter/arrow nav), same gate as draw_collection.
+    if (_current_row_y is not None and _session is not None
+            and getattr(_session, "scroll_to", False)):
+        _scroll_into_view(draw_state, _current_row_y, _current_row_y + 24)
 
     if any_changed:
         target.invalidate()
@@ -6750,9 +6811,9 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False,
-             temp=True)
+             temp=True, searchable=True)
 def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True, unique=None, class_to_show=None,
-                   enter_key_pressed=None, inverted_ctrl_f_down=None, **kwargs):
+                   enter_key_pressed=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
       1. RENDER FUNCTION — the render_func whose body produced the view, edited
@@ -6795,30 +6856,14 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         run_recompile(input_value._view_func, code_state, draw_state,
                       start=clicked or hotkey, name=f"recompile{unique}")
 
-    # ── Filter box - active while the tab is open, focused on the display ─
-    # The shared find UI (render_search) drawn directly against THIS tab's
-    # draw_state - no Ctrl+F, no floating draw_search window, so the box lives
-    # and dies with the tab, and the tab stays ready to type. regrab_focus=False
-    # keeps the claim to that one display only: the default "re-grab whenever
-    # nothing holds text focus" steals focus from the tab's OTHER inputs - raw
-    # imgui.input_text() never set Melty.text_focused_ds, so to the re-grab
-    # they look permanently unfocused and become untypeable. The term lives on
-    # draw_state.search_text and feeds draw_param_matrix's fuzzy param filter
-    # below, which auto-switches on screen to the best match (render_search's
-    # keystroke handler already invalidates this subtree, so the matrix
-    # refilters per keystroke).
-    # Ctrl+F re-focuses the box once focus has moved elsewhere on the tab -
-    # inverted_ctrl_f_down is the auto-subscribed hover-routed InputEvent (the
-    # same name the searchable wrapper subscribes; inverted because this handler
-    # outranks its searchable descendants, and the BVH root fallback yields to
-    # it by detecting the param on the signature). _search_focus_pending is the
-    # one-shot focus claim render_search honors even with regrab_focus=False.
-    if inverted_ctrl_f_down:
-        draw_state._search_focus_pending = True
-    imgui.dummy(0, 4)
-    render_search(draw_state, draw_state, width=draw_state.content_width - 49,
-                  unique=f"input_filter{unique}", regrab_focus=False)
-    imgui.dummy(0, 4)
+    # ── Search - the STANDARD searchable path, no special filter box. The tab
+    # is searchable=True, so Ctrl+F on it opens the framework's floating
+    # find bar (core_render's searchable block), which maintains the term on
+    # this draw_state.search_text and invalidates this subtree per keystroke.
+    # That same text hits draw_param_matrix's live param filter below (which
+    # auto-switches the screen to the best match), and the search session on
+    # Melty.search_stack reaches the matrix cells' strings for in-place
+    # highlighting like any other searchable widget.
 
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,

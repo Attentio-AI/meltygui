@@ -1107,11 +1107,6 @@ class Toggles:
     # [tint=(0.75, 0.46218, 0.00)]
     yield_to_ui = True
 
-    # Automatic 3-way merge of external file changes against pending/live edits
-    # (code_file_io's automerge + PendingSave's recompile-time absorb). Off =
-    # fall back to the manual Merge window / Merge / Keep-mine buttons.
-    auto_merge = False
-
     # Timeline logging of the symbol-index / code-host load path: every
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
