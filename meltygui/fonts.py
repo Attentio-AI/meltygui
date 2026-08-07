@@ -115,6 +115,7 @@ def detect_auto_scale(window=None) -> float:
 
 
 class FontManager:
+    # no external change
     """Owns the imgui font atlas: one handle per Font enum entry, all baked
     at `scale` x their authored pixel size.
 

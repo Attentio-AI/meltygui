@@ -33,9 +33,7 @@ from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 ROW_H = 31.0
 ROW_GAP = 4.0
 ROW_STRIDE = ROW_H + ROW_GAP
-SWATCH_W = 0
-SWATCH_X = 0
-NAME_X = 42.0
+NAME_X = 20.0
 TARGET_W = 26.0
 RIGHT_PAD = 4.0
 CORNER = 6.0
@@ -54,13 +52,6 @@ def _row_tint(mw, wds):
     if iv is not None and getattr(iv, "tint", None) is not None:
         return iv.tint
     return wds.tint
-
-
-def _set_row_tint(mw, wds, tint):
-    iv = mw.input_value
-    if iv is not None and hasattr(iv, "tint"):
-        iv.tint = tint
-    wds.tint = tint
 
 
 def _row_icon(name, mw, wds):
@@ -131,24 +122,18 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     target_factor, target_saturation = 0.799, 0.764
     hover_bg_boost, hover_text_boost = 0.05, 1.5
     text_saturation = 0.8
-    empty_swatch_color = (1.0, 1.0, 1.0, 0.25)
 
     # ---- geometry, authored at ui_scale 1.0 and scaled once per frame ----
     px = Melty.px
     row_h, row_stride = px(ROW_H), px(ROW_STRIDE)
 
-
-    swatch_w, swatch_x = px(SWATCH_W), px(SWATCH_X)
     name_x, target_w, right_pad = px(NAME_X), px(TARGET_W), px(RIGHT_PAD)
     corner = px(CORNER)
     text_nudge_x, text_nudge_y = px(2.0), px(-1.0)        # optical centering of text
-    swatch_rounding = px(4.0)
     name_target_gap = px(6.0)                             # gap between name and summon button
     name_pad_x = px(10.9)                                  # left padding for icon/name text
     icon_gap = px(6.0)                                    # gap between icon and name
     manager_row_text_x, manager_row_text_y = px(8.0), px(7.0)  # "Window Manager" label offsets
-    picker_width, picker_height = px(216), px(180 + 14 + 4 * 26 + 26)
-    picker_gap_y = px(0.0)                                # popover gap below its row
 
     if style_manager is None:
         style_manager = Melty.style_manager
@@ -190,7 +175,6 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     clip = getattr(draw_state, "abs_clip_rect", None)
 
     # ---- name loop-geometry (loop-invariant; only y varies per row) ----
-    sw_x0, sw_x1 = x0 + swatch_x, x0 + swatch_x + swatch_w
     tg_x1 = x0 + cw - right_pad
     tg_x0 = tg_x1 - target_w
     nm_x0, nm_x1 = x0 + name_x, tg_x0 - name_target_gap
@@ -231,9 +215,6 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # the view's center.
     draw_state._search_current_rect = None
 
-    edit_name = getattr(draw_state, "tint_edit_name", None)
-    edit_row_top = None
-    edit_row = None
     # Highlights are deferred to a second pass AFTER the row loop: the current
     # match's radial glow spills over neighbouring rows, so drawn in-row it gets
     # painted over by the later row's background rect. draw_search_highlight
@@ -243,13 +224,9 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     for i, (name, mw, wds) in enumerate(rows):
         ry0 = y0 + i * row_stride
         ry1 = ry0 + row_h
-        if edit_name == name:
-            edit_row_top = ry0
-            edit_row = (name, mw, wds)
 
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
         icon = _row_icon(name, mw, wds)
-
 
         # Match bookkeeping runs for EVERY row - clipped ones too - so the
         # ordinal sequence stays aligned with the matcher's count, and the
@@ -276,10 +253,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
                         imgui.get_color_u32_rgba(*tx[:3], 1.0), name)
             continue
 
-        # ---- geometry (x is loop-invariant, hoisted above) ----
-        sw_y0, sw_y1 = ry0 + (row_h - swatch_w) / 2.0, ry0 + (row_h + swatch_w) / 2.0
-
-        in_swatch = sw_x0 <= mx <= sw_x1 and sw_y0 <= my <= sw_y1
+        # ---- hit-testing (x is loop-invariant, hoisted above) ----
         in_target = tg_x0 <= mx <= tg_x1 and ry0 <= my <= ry1
         in_name = nm_x0 <= mx <= nm_x1 and ry0 <= my <= ry1
 
@@ -319,17 +293,6 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
         dl.add_text(text_x, ry0 + (row_h - ts[1]) / 2.0 + text_nudge_y,
                     imgui.get_color_u32_rgba(*tx[:3], 1.0), display)
 
-        # # ---- tint swatch ----
-        # if isinstance(tint, tuple) and len(tint) >= 3:
-        #     a = tint[3] if len(tint) > 3 else 1.0
-        #     dl.add_rect_filled(sw_x0, sw_y0, sw_x1, sw_y1,
-        #                        imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], a),
-        #                        rounding=swatch_rounding)
-        # else:
-        #     dl.add_rect(sw_x0, sw_y0, sw_x1, sw_y1,
-        #                 imgui.get_color_u32_rgba(*empty_swatch_color),
-        #                 rounding=swatch_rounding)
-
         # ---- target (summon) button - only for open windows ----
         if open_:
             hov_t = hover_ok and in_target
@@ -349,7 +312,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
         # ---- live indicator ----
         if wds.live:
             ls = imgui.calc_text_size(LIVE_ICON)
-            dl.add_text(x0 + (swatch_x - ls[0]) / 2.0,
+            dl.add_text(x0 + (name_x - ls[0]) / 2.0,
                         ry0 + (row_h - ls[1]) / 2.0 + text_nudge_y,
                         imgui.get_color_u32_rgba(*LIVE_TINT, 1.0), LIVE_ICON)
 
@@ -368,45 +331,10 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
                 _summon(wds, draw_state, ry0)
                 Core.melty.cache.invalidate_up_by_obj(mw)
                 request_render()
-            elif sw_x0 <= cx <= sw_x1 and sw_y0 <= click[1] <= sw_y1:
-                if not (isinstance(tint, tuple) and len(tint) >= 3):
-                    _set_row_tint(mw, wds, (0.0, 0.0, 0.0, 1.0))
-                was_open = (Melty.popover_focused_ds is draw_state and edit_name == name)
-                if was_open:
-                    Melty.popover_focused_ds = None
-                    draw_state.tint_edit_name = None
-                else:
-                    Melty.popover_focused_ds = draw_state
-                    Melty._popover_open_frame = Melty.frame_count
-                    draw_state.tint_edit_name = name
-                    edit_name = name
-                    edit_row_top = ry0
-                    edit_row = (name, mw, wds)
-                request_render()
 
     # ---- search highlights (second pass, over every row's background) ----
     for hy0, hy1, hcur in highlight_rects:
         draw_search_highlight(dl, nm_x0, hy0, nm_x1, hy1,
                               current=hcur, rounding=corner)
-
-    # ---- tint picker popover (only rendered while open - zero idle cost) ----
-    if edit_name is not None:
-        is_open = Melty.popover_focused_ds is draw_state and edit_row is not None
-        if not is_open:
-            draw_state.tint_edit_name = None
-        else:
-            from src.lsd.gl_gui.modes import Modes
-            from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
-            name, mw, wds = edit_row
-            cur = _row_tint(mw, wds)
-            changed, new_color = draw_color_picker(
-                cur, name="fast_dock_picker", closed=False,
-                window_pos=(swatch_x, (edit_row_top or y0) - y0 + row_h + picker_gap_y),
-                parent_window=draw_state, width=picker_width, height=picker_height,
-                mode=Modes.POPOVER)
-            if changed and new_color is not None:
-                _set_row_tint(mw, wds, tuple(new_color))
-                Core.melty.cache.invalidate_up_by_obj(mw)
-                request_render()
 
     return False, input_value

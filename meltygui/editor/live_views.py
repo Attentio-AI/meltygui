@@ -1445,7 +1445,7 @@ def draw_function_live(input_value, draw_state=None, unique=None,
     inner_h = avail - 2 * cols.padding
     with cols.cell(0, height=avail) as col_w:
         draw_function(_run_proxy(fn), height=inner_h, width=col_w, temp=True,
-                      name=f"{fn.__name__} runner", run_in_thread=run_in_thread)
+                      name=f"{fn.__name__} runner", run_in_thread=run_in_thread, rounding=None)
     with cols.cell(1, height=avail) as col_w:
         draw_any(fn, mode=source_mode or Mode.FILE_TREE, height=inner_h,
                  width=col_w, name=f"{fn.__name__} live source",

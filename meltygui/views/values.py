@@ -5053,7 +5053,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
     imgui.new_line()
     if show_run_button and button(f"Run {input_value.__name__}()##{unique}", icon=kwargs.get("icon", ""), height=35,
-                                  bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32), shadow=True)[0]:
+                                  bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32), shadow=True, rounding=None)[0]:
         _run()
 
     # Fading result (result_fade_frames): the check mark + result text hold,
@@ -6750,9 +6750,9 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False,
-             temp=True, searchable=True)
+             temp=True)
 def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True, unique=None, class_to_show=None,
-                   enter_key_pressed=None, **kwargs):
+                   enter_key_pressed=None, inverted_ctrl_f_down=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
       1. RENDER FUNCTION — the render_func whose body produced the view, edited
@@ -6795,14 +6795,30 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
         run_recompile(input_value._view_func, code_state, draw_state,
                       start=clicked or hotkey, name=f"recompile{unique}")
 
-    # ── Search - the STANDARD searchable path; no special find box. The tab
-    # is searchable=True, so Ctrl+F over it opens the framework's floating
-    # find bar (view_render, searchable=True) which maintains the term on
-    # this draw_state.search_text and invalidates this tab per keystroke.
-    # That same term feeds draw_param_matrix's fuzzy-row filter below (which
-    # auto-switches the screen to the best match), and the search session's
-    # Melty.search_stack reaches the matrix cells' editors for in-place
-    # highlighting like any other searchable editor.
+    # ── Filter box - active while the tab is open, focused on the display ─
+    # The shared find UI (render_search) drawn directly against THIS tab's
+    # draw_state - no Ctrl+F, no floating draw_search window, so the box lives
+    # and dies with the tab, and the tab stays ready to type. regrab_focus=False
+    # keeps the claim to that one display only: the default "re-grab whenever
+    # nothing holds text focus" steals focus from the tab's OTHER inputs - raw
+    # imgui.input_text() never set Melty.text_focused_ds, so to the re-grab
+    # they look permanently unfocused and become untypeable. The term lives on
+    # draw_state.search_text and feeds draw_param_matrix's fuzzy param filter
+    # below, which auto-switches on screen to the best match (render_search's
+    # keystroke handler already invalidates this subtree, so the matrix
+    # refilters per keystroke).
+    # Ctrl+F re-focuses the box once focus has moved elsewhere on the tab -
+    # inverted_ctrl_f_down is the auto-subscribed hover-routed InputEvent (the
+    # same name the searchable wrapper subscribes; inverted because this handler
+    # outranks its searchable descendants, and the BVH root fallback yields to
+    # it by detecting the param on the signature). _search_focus_pending is the
+    # one-shot focus claim render_search honors even with regrab_focus=False.
+    if inverted_ctrl_f_down:
+        draw_state._search_focus_pending = True
+    imgui.dummy(0, 4)
+    render_search(draw_state, draw_state, width=draw_state.content_width - 49,
+                  unique=f"input_filter{unique}", regrab_focus=False)
+    imgui.dummy(0, 4)
 
     if sources:
         _, matrix = param_source_matrix(sources, func=input_value._view_func,
