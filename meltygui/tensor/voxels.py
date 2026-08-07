@@ -1616,6 +1616,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # (the scrollbar jitter as rows crossed the viewport).
         _anchor_y = win.abs_top if draw_state.closable else draw_state.abs_top
         imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, _anchor_y))
+        
+        # [tint=(0.003, 0.172, 0.031), show_tint=True]
         changed, _, panel_ds = draw_any(draw_state.locate_params,
                                         name=f"controls##{draw_state.name}",
                                         is_tree=False,

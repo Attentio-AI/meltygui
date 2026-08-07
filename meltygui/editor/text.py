@@ -1557,7 +1557,7 @@ def _fmt_color_channel(v):
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
-             show_name=False, selectable=False, z_offset=3)
+             show_name=False, selectable=False, z_offset=3, tint=(0.85, 0.45, 0.05))
 def draw_color3_token(input_value, draw_state=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
@@ -7633,10 +7633,6 @@ def draw_text(input_value: str, height=None,
             continue
         start = 0
 
-
-
-
-
         while True:
             nl = token.find('\n', start)
             seg = token[start:nl] if nl != -1 else token[start:]
@@ -8113,8 +8109,9 @@ def draw_text(input_value: str, height=None,
     imgui.dummy(draw_state.content_width, max(draw_state._kwargs.get("min_height", 0), text_height))
 
     # draw_dd_menu is a LATCHED window: called every frame with closed=not _ac_show
-    # so it persists when this (slow) body is skipped. Hover/keys wake the loop;
-    # background results wake it via the future's done-callback (_ac_on_future).
+    # so it persists when this (cached) body is skipped. Hover/keys wake the loop;
+    # background results wake it via the future's done-callback (_wake_on_future).
+    # [tint=(0.867, 0.255, 0.255), show_tint=True]
     ac_changed, ac_pick, _ac_menu_ds = draw_dd_menu(
         _ac_items, name=f"{ds.name}_ac_menu", view_offset=False,
         temp=True, show_search=False, swoosh=False, closed=not _ac_show, max_height=800,
@@ -8124,6 +8121,8 @@ def draw_text(input_value: str, height=None,
         row_suffixes=(getattr(ds, '_ac_params', None) if _ac_show else None),
         parent_window=draw_state, root_state=ac_state, path_prefix=(),
         return_extras=True)
+    
+    
     # Latch the popup's exact tile id from the call itself (return_extras hands
     # back its draw_state on every wrapper path, including closed/deferred). The
     # old name-prefix scan of cache._tiles mis-latched ANOTHER editor's popup
@@ -8217,11 +8216,12 @@ def draw_text(input_value: str, height=None,
             uj_state._kbd_mode = False
         uj_state._last_mouse = (_mp[0], _mp[1])
 
+    # [tint=(0.071, 0.354, 0.511), show_tint=True]
     uj_changed, uj_pick, _uj_menu_ds = draw_dd_menu(
         _uj_items, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
-        temp=True, show_search=False, swoosh=False, closed=not _uj_show, min_height=140, bg_offset=0, auto_resize=False, min_width=500,
+        temp=True, show_search=False, swoosh=False, closed=not _uj_show, bg_offset=0, min_width=500,
         window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
-        row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None),
+        row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None), mode=None,
         parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13),
         return_extras=True)
 
@@ -8230,6 +8230,7 @@ def draw_text(input_value: str, height=None,
     # across same-named editors (see the AC popup note above).
     if _uj_menu_ds is not None:
         ds._uj_menu_tile = _uj_menu_ds._tile_id
+        
     # Mirror a hover-moved cursor back into the keyboard index so Enter/arrows
     # continue from the hovered row.
     if _uj_show and not uj_state._kbd_mode:

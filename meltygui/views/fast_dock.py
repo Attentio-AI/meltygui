@@ -118,8 +118,8 @@ def _mix(style_manager, tint, value, factor, saturation):
 
 
 @render_func(use_cache=True, selectable=False, show_add_delete=False, is_tree=False,
-             show_name=False, searchable=True, shadow=True)
-def draw_fast_dock(input_value, draw_state, style_manager=None,
+             show_name=False, searchable=True, hide_internal=False, shadow=True)
+def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=None,
                    left_mouse_down=False, search_text="", **kwargs):
     # ---- styling ----
     open_bg_value, open_text_value = 0.16, 1.357          # name button, window open
@@ -161,6 +161,9 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
             continue
         name = str(wds.name)
         if name in WindowManager.excluded_windows or str(key) in WindowManager.excluded_windows:
+            continue
+
+        if hide_internal and not wds._kwargs.get("icon", None):
             continue
         if not wds.persistent and not wds.seen and wds.closed:
             Core.melty.delete_window(wds)
@@ -241,6 +244,10 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
             edit_row_top = ry0
             edit_row = (name, mw, wds)
 
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        icon = _row_icon(name, mw, wds)
+
+
         # Match bookkeeping runs for EVERY row - clipped ones too - so the
         # ordinal sequence stays aligned with the matcher's count, and the
         # current match can scroll into view from off-screen.
@@ -288,12 +295,16 @@ def draw_fast_dock(input_value, draw_state, style_manager=None,
             highlight_rects.append((ry0, ry1, is_current))
 
         text_x = nm_x0 + name_pad_x + text_nudge_x
-        icon = _row_icon(name, mw, wds)
+
+
         if icon:
             ics = imgui.calc_text_size(icon)
             dl.add_text(text_x, ry0 + (row_h - ics[1]) / 2.0 + text_nudge_y,
                         imgui.get_color_u32_rgba(*tx[:3], 1.0), icon)
             text_x += ics[0] + icon_gap
+
+
+
         ts = imgui.calc_text_size(display)
         dl.add_text(text_x, ry0 + (row_h - ts[1]) / 2.0 + text_nudge_y,
                     imgui.get_color_u32_rgba(*tx[:3], 1.0), display)

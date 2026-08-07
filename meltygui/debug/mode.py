@@ -170,7 +170,7 @@ class Mode(Enum):
                     "show_tint": False, "show_header": True, "with_footer": draw_footer, 'indent_size': 5,
                     "search_text": "",
                     "show_add_delete": False, "with_header": draw_header, "min_width": 200, "min_height": 60,
-                    "initial": {"width": 900, "height": 600, "window_pos": (100, 500)}},
+                    "initial": {"width": 319, "height": 600, "window_pos": (100, 500)}},
 
             recursive=False
         )
@@ -733,4 +733,3 @@ LENSES_BY_ATTR = {
 
 class ModeGroup:
     CODE = (Mode.CODE_UI, Mode.CODE_PLAIN_TEXT)
-

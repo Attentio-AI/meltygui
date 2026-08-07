@@ -5444,83 +5444,19 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
 # column by calling it with column=t_idx; the tab then owns a single-column
 # region, so the inner views inside it no longer pass column themselves.
 
-@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, searchable=True, show_name=False, selectable=False)
-def draw_info_tab(input_value, search_text='', unique=None, **kwargs):
-    """Read-only dump of the inspected view's draw_state fields. `search_text`
-    (the menu's resolved search term) probes an arbitrary kwarg/attr by name."""
-    info_items = ["name", "searchable", "scroll_disabled", "_default_view_func", "column", "closable", "current_mode",
-                  "mode",
-                  "show_add_delete", "_source", "window_pos", "left", "top", "width", "height", 
-                  "content_width", "content_height",
-                  "scroll_offset",
-                  "final_max_column", "_column_cursor", "_content_rect", "_max_column_index", "_outside_column_height",
-                  "disable_scroll"]
-
-    if search_text is None or search_text == "":
-        item_value = ""
-    elif search_text in input_value._kwargs:
-        item_value = input_value._kwargs.get(search_text, 'Not found')
-    elif search_text in input_value.__dict__:
-        item_value = getattr(input_value, search_text, 'Not found')
-    else:
-        item_value = 'Not found'
-
-    imgui.spacing()
-    text(str(item_value), show_bg=False, tint=(0.5, 0.5, 0.0), show_header=True, show_name=True,
-         wrap=False, name=f"{search_text}##it", editable=False)
-
-    draw_str(str(len(input_value._view_children)),
-             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-             name=f"._view_children##{unique}", editable=False)
-    draw_str(str(input_value.scroll_visible),
-             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-             name=f"scroll_enabled##{unique}", editable=False)
-
-    draw_str(str(input_value.abs_clipped_height),
-             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-             name=f"abs_clip_height##{unique}", editable=False)
-    draw_str(str(input_value._observed_content_height),
-             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-             name=f"_observed_content_height##{unique}", editable=False)
-    draw_str(str(input_value.height),
-             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-             name=f"height##{unique}", editable=False)
-
-    draw_str(str(input_value.abs_content_height),
-             show_bg=True, tint=(0.1, 0.01, 0.4), show_header=True, wrap=False, show_name=True,
-             name=f"abs_content_height##{unique}", editable=False)
-    text(f"{input_value._view_func.__name__}", show_bg=True, show_name=True, show_header=True, wrap=True,
-         name="Rendered by", editable=False, tint=(0.84, 0.68, 0.639))
-    text(f"{type(input_value._raw_input_value).__name__}", show_name=True,
-         show_header=True, name="input_value type", editable=False)
-
-    text(f"{input_value.window_index}", show_name=True, show_header=True, name="window_index",
-         editable=False, tint=(0.8, 0.8, 0.2))
-
-    text(f"{input_value._default_view_func}", show_name=True, name="default_view_func", editable=False)
-
-    text(f"{input_value._kwargs.get('real_type', None)}", show_name=True, name="kwargs type", editable=False)
-
-    text(f"{input_value._kwargs.get('type_collection', None)}", show_name=True,
-         name="kwargs collection type", editable=False)
-
-    for info_item in info_items:
-        if info_item in input_value._kwargs:
-            item_value = input_value._kwargs.get(info_item, 'Not found')
-        elif info_item in input_value.__dict__:
-            item_value = getattr(input_value, info_item, 'Not found')
-        else:
-            item_value = 'Not found'
-
-        if isinstance(item_value, (int, float, str, bool, Enum)):
-            text(f"{item_value}", name=info_item, show_name=True, show_header=True, editable=False)
-        else:
-            draw_any(item_value, name=info_item, show_name=True,
-                     show_header=True, show_add_delete=False, draw=True)
-
-    if button("print_stack_trace")[0]:
-        print_stack_trace()
+@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, 
+             searchable=True, show_name=False, selectable=False)
+@window(icon="")
+def draw_info_tab(input_value, search_text='', draw_state=None,unique=None, **kwargs):
+  
+    changed, _ = draw_any(input_value.locate_params, show_bg=False, show_name=False, show_header=False,
+                                            name=f"controls##{draw_state.name}" )
+    
+    if changed:
+        input_value.invalidate()
+        request_render()
     return False, input_value
+    
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)

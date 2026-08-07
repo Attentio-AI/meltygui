@@ -353,6 +353,7 @@ _ds_reserved_cache = None
 _ds_reserved_for_cls = None
 
 
+
 def _draw_state_reserved_names():
     """Every name the current DrawState already owns (init fields, properties,
     methods). Auto-state must not touch these — a param sharing one of these
@@ -5243,5 +5244,4 @@ def jet_color(val: float):
     g = min(four_value - 0.5, -four_value + 3.5)
     b = min(four_value + 0.5, -four_value + 2.5)
     return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
-
 
