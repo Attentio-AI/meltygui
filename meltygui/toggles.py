@@ -243,13 +243,14 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.1, 0.12, 0.14))
+    @defaults(tint=(0.17, 0.2, 0.228))
     def line_number_bg():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
 
         hue_delta = 0.00
-        saturation_factor = 1.6
+        # Live knob - see Toggles.TextEditor.gutter_saturation.
+        saturation_factor = Toggles.TextEditor.gutter_saturation
         value_factor = 0.35
 
         active_hsv = ((active_hsv[0] + hue_delta),
@@ -274,7 +275,7 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.9, 0.0, 0))
+    @defaults(tint=(0.367, 0.112, 0.112))
     def subtle_text():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
@@ -406,7 +407,7 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.25, 0.29, 0.31))
+@window(tint=(0.112, 0.124, 0.144))
 class Toggles:
 
     @defaults(tint=(0.15, 0.135, 0.117, 1.0))
@@ -745,17 +746,43 @@ class Toggles:
         # involved, so it works in any text, mid-edit or unparseable. Flip the
         # toggle to disable; the (r, g, b, a) tint is read live.
         highlight_token_matches = True
+        
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
         def_block_alpha = 0.148
         def_symbol_alpha = 0.616
-        def_line_alpha = 0.089
+        def_line_alpha = 0.078
+    
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        bg_tint_saturation = 0.52
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        bg_tint_value = 0.48
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        bg_min_brightness = 0.03
+        bg_max_brightness = 0.349
+        
+        
         # Outline drawn around each def-tint wash rect (blocks, line bands,
         # symbol washes) - makes the highlight edges read crisply against
         # the background. The outline color is the wash color BRIGHTENED by
         # def_outline_brightness (multiplied after the bg brightness clamp,
         # so it pops where the fill stays muted). 0 alpha disables.
         def_outline_alpha = 1.0
-        def_outline_brightness = 0.8
-        def_outline_thickness = 1.5
+        def_outline_brightness = 1.2
+        def_outline_thickness = 0.3
+        # Compositor shadows under the def-tint washes (add_shadow depth
+        # marks): the signed depth offset for class/func block rects and for
+        # per-occurrence symbol washes. Symbols sit above blocks so the widget
+        # chip casts onto its enclosing block wash; negative values recess
+        # instead; 0 disables.
+        def_block_shadow_offset = 2.0
+        def_symbol_shadow_offset = 4.0
+        # Line-number shadows: negative = recessed below the editor surface
+        # (the body casts into the gutter along its edge); 0 disables.
+        gutter_shadow_offset = -2.0
+        # Line-number background saturation - the hsv saturation multiplier
+        # Tint.line_number_bg applies to the theme color (was a hardcoded
+        # 1.6; lower = greyer, dull muted strip).
+        gutter_saturation = -0.6
 
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
@@ -777,7 +804,7 @@ class Toggles:
         # color out over def_line_blur_radius pixels past the band's edge
         # (a cheap drawcall gaussian - no blur pass). The radius also
         # bleeds vertically into neighboring lines, which is the point.
-        def_line_blur = True
+        def_line_blur = False
 
         def_line_blur_radius = 460
         # Alpha multiplier for the blurred band only - feathering spreads
@@ -851,17 +878,6 @@ class Toggles:
         # background does); the brightness clamp still shares bg_max_brightness.
         comment_min_brightness = 0.170
 
-        # Background wash color adjustment - applies to ALL def-tint
-        # backgrounds (symbol washes, line bands, block washes, number
-        # boxes, the glyph-mix target) AND, sans the brightness clamp, to
-        # tinted comment text: hsv factors plus a clamp on PERCEIVED
-        # brightness (0.299r+0.587g+0.114b) so text stays visible even when the
-        # tint is very bright (scaled down to max) or very dark (lifted to
-        # min, hue kept). Neutral = 1 / 1 / 0 / 1.
-        bg_tint_saturation = 1.15
-        bg_tint_value = 0.48
-        bg_min_brightness = 0.18
-        bg_max_brightness = 0.349
 
     class Voxels:
         # Output gamma on the finished voxel image, folded into the raymarch

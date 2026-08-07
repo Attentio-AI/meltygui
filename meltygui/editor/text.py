@@ -10,6 +10,7 @@ import imgui
 from src.lsd.gl_gui.model.core_model.draw_state import DropDownState
 from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
+from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight_multi
@@ -2776,7 +2777,7 @@ def _scan_def_tint(path, line, name=None):
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 27
+_DEF_TINTS_VER = 28
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -3269,11 +3270,36 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
             return None
         return text.count("\n", 0, m.start()) + 1 + line_offset
 
+    def _decor_start(def_line, indent):
+        # Re reverse mirror of _snap_to_def: extend the block top over the
+        # decorator/comment run directly above the class/def keyword, so the
+        # wash covers `@window(...)` etc. Reverse paren-balanced - a
+        # multi-line `@defaults(\n    foo,\n)` is consumed from its closing
+        # paren up to its `@` opener - stopping at a blank line or any
+        # non-decorator statement. Comments between decorators are stepped
+        # over but only an actual `@` line moves the top.
+        start, j, depth = def_line, def_line - 1, 0
+        while j >= 0 and j > def_line - 40:
+            s = lines[j].strip()
+            if not s and depth == 0:
+                break
+            depth += s.count(")") - s.count("(")
+            if depth == 0:
+                if s.startswith("@"):
+                    start = j
+                elif not s.startswith("#"):
+                    break
+            elif depth < 0:
+                break
+            j -= 1
+        return start
+
     def _block_extent(buf_line):
         if not (0 <= buf_line < len(lines)):
             return None
         # The recorded def line may be the decorated statement's first line
-        # (`@defaults X`); the wash starts at the class/def keyword.
+        # (`@defaults(...)`); snap to the class/def keyword for the indent
+        # and body extent, then extend the top back up over the decorators.
         buf_line = _snap_to_def(lines, buf_line)
         def_line_text = lines[buf_line]
         indent = len(def_line_text) - len(def_line_text.lstrip())
@@ -3285,7 +3311,8 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
             if len(s) - len(s.lstrip()) <= indent:
                 break
             end = k
-        return buf_line, line_start_idx[buf_line] + indent, end
+        start = _decor_start(buf_line, indent)
+        return start, line_start_idx[start] + indent, end, buf_line
 
     def walk(node, depth=0):
         if not isinstance(node, dict) or depth > 64 or id(node) in node_seen:
@@ -3318,14 +3345,17 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                     tinted_lines[ln] = (tint, k.split("#", 1)[0])
                     blk = _block_extent(ln - 1 - line_offset)
                     if blk is not None:
-                        blocks.append((*blk, tint))
+                        _b_start, _b_lidx, _b_bend, _b_def = blk
+                        blocks.append((_b_start, _b_lidx, _b_bend, tint))
                         # Save the block range under both line conventions
                         # - the index-recorded def line (may be the decorator)
                         # and the keyword class line (what the scanner's
                         # src_line reports) - so either lookup below hits.
-                        rng = (blk[0], blk[2])
+                        # The range itself starts at the decorator-extended
+                        # top so spans inside the decorators stay suppressed.
+                        rng = (_b_start, _b_bend)
                         own_block_range[ln] = rng
-                        own_block_range[blk[0] + 1 + line_offset] = rng
+                        own_block_range[_b_def + 1 + line_offset] = rng
             walk(v, depth + 1)
 
     _pm("init")
@@ -5651,7 +5681,13 @@ def draw_text(input_value: str, height=None,
                  else 0.0)
     gutter_w += _lv_btn_w
 
-    text_visible_width = draw_state.content_width - gutter_w
+    # Breathing room between the number strip and the code: folded into the
+    # text inset (origin_x → rect_min_x below) only - the strip itself keeps
+    # gutter_w, so the numbers stay snug in their column and the margin
+    # reads the editor background.
+    gutter_margin = 5.0 if gutter_w > 0 else 0.0
+
+    text_visible_width = draw_state.content_width - gutter_w - gutter_margin
     # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
     # come from the imgui cursor the wrapper positioned at abs_top *before* this
     # func ran; the drag handlers just below then mutate scroll_offset (here and
@@ -5673,7 +5709,7 @@ def draw_text(input_value: str, height=None,
         sx, sy = ds.scroll_offset
         ds.scroll_offset = (sx, sy - horizontal_scroll_drag.dy)
 
-    origin_x = left + gutter_w - ds.text_h_scroll
+    origin_x = left + gutter_w + gutter_margin - ds.text_h_scroll
     origin_y = top
 
     # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
@@ -6937,14 +6973,14 @@ def draw_text(input_value: str, height=None,
     max_line_width = max((len(l) for l in text.split('\n')), default=0) * char_w
     max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
-    origin_x = left + gutter_w - ds.text_h_scroll
+    origin_x = left + gutter_w + gutter_margin - ds.text_h_scroll
 
     _pf("autoscroll")
     # --- Drawing ---
     draw_list = imgui.get_window_draw_list()
     # Text content is clipped to start after the gutter, so highlights never
     # bleed under the line numbers when scrolled horizontally.
-    rect_min_x = left + gutter_w
+    rect_min_x = left + gutter_w + gutter_margin
     # Clip the text body to start below the floating jump-to bar so scrolled code
     # never appears over it (the bar is drawn above, before the body).
     rect_min_y = draw_state.abs_clip_rect[1] + bar_height
@@ -6956,7 +6992,7 @@ def draw_text(input_value: str, height=None,
     # Definition tints (drawn FIRST, under everything): a block wash behind
     # every tinted class/def/etc in this buffer - top-left corner at the def
     # keyword's first character, bottom at the last line before the dedent,
-    # right side at the view edge - and a small wash behind every occurrence
+    # right edge wrapping the block's widest line - plus a small wash behind every occurrence
     # of a symbol whose definition (here or in another file) carries a tint,
     # in that definition's color. Ties usages to their definitions at a glance.
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
@@ -6993,6 +7029,39 @@ def draw_text(input_value: str, height=None,
         _dt_outline_a = Toggles.TextEditor.def_outline_alpha
         _dt_outline_t = Toggles.TextEditor.def_outline_thickness
         _dt_outline_b = Toggles.TextEditor.def_outline_brightness
+        # Compositor shadows under the washes (add_shadow depth marks; 0
+        # disables). All marks clip to the visible text rect - partially
+        # scrolled rows still draw here.
+        _dt_block_sh = Toggles.TextEditor.def_block_shadow_offset
+        _dt_sym_sh = Toggles.TextEditor.def_symbol_shadow_offset
+        _sh_clip = (rect_min_x, rect_min_y, rect_max_x, rect_max_y)
+        # Scope-aware depth: each block's shadow base is its NESTING level
+        # (how many other blocks contain it) × the block offset, so a
+        # method's wash sits above its class's, and the class above the
+        # page surface. Per block the mark then PEELS: top corners at the
+        # base (stuck flush to the enclosing scope - no shadow at the top
+        # edge), bottom corners one step up, easing down (the peel).
+        _b_list = list(_dt_blocks) if _dt_block_sh else []
+        _b_lvls = []
+        for _l0, _i0, _e0, _t0 in _b_list:
+            _b_lvls.append(sum(
+                1 for _l1, _i1, _e1, _t1 in _b_list
+                if (_l1 <= _l0 and _e0 <= _e1
+                    and (_l1, _e1) != (_l0, _e0))))
+
+        def _scope_surface(line):
+            # Depth of the enclosing-t's surface at `line`: the innermost
+            # containing block's base + its peel, interpolated with the same
+            # smoothstep the gradient shader applies, so chips ride a
+            # constant lift above the surface beneath them.
+            best, best_lvl = 0.0, -1
+            for _sbi, (_l0, _i0, _e0, _t0) in enumerate(_b_list):
+                if _l0 <= line <= _e0 and _b_lvls[_sbi] > best_lvl:
+                    best_lvl = _b_lvls[_sbi]
+                    t = (line - _l0) / max(1, _e0 - _l0)
+                    t = t * t * (3.0 - 2.0 * t)
+                    best = _dt_block_sh * (_b_lvls[_sbi] + t)
+            return best
 
         def _ol_rgb(c):
             # Outline color: the wash color pushed BRIGHTER than the bg
@@ -7001,18 +7070,43 @@ def draw_text(input_value: str, height=None,
             return (min(1.0, c[0] * _dt_outline_b),
                     min(1.0, c[1] * _dt_outline_b),
                     min(1.0, c[2] * _dt_outline_b))
-        for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
+        # Per-line content lengths (rstripped chars) cached on the
+        # draw_state per text identity: the block washes below wrap to the
+        # widest line in their span instead of running to the view edge.
+        _ll = getattr(ds, "_dt_line_lens", None)
+        if _dt_blocks and (_ll is None
+                           or getattr(ds, "_dt_line_lens_text", None) is not text):
+            _ll = ds._dt_line_lens = [len(_l.rstrip()) for _l in text.split('\n')]
+            ds._dt_line_lens_text = text
+        for _bi, (_b_line, _b_idx, _b_end, _b_tint) in enumerate(_dt_blocks):
             sy = origin_y + _b_line * line_px
             ey = origin_y + (_b_end + 1) * line_px
             if ey < rect_min_y or sy > rect_max_y:
                 continue
             sx = origin_x + _colx(_b_idx)
+            # Wrap to the block's content: right edge at its widest line
+            # plus one character of air, clamped to the view edge (and never
+            # narrower than a stub when the span is blank/stale mid-edit).
+            _e0, _e1 = min(_b_line, len(_ll)), min(_b_end + 1, len(_ll))
+            _bx1 = min(rect_max_x,
+                       origin_x + (max(_ll[_e0:_e1] or (0,)) + 1) * char_w)
+            _bx1 = max(_bx1, sx + 2 * char_w)
             _b_rgb = _bg_adjust(tuple(_b_tint[:3]), _bg_f)
             _b_col = imgui.get_color_u32_rgba(_b_rgb[0], _b_rgb[1], _b_rgb[2], _dt_block_a)
-            draw_list.add_rect_filled(sx, sy, rect_max_x, ey, _b_col, 4.0)
+            if _dt_block_sh:
+                # The peel: top corners sit AT the enclosing scope's surface
+                # (base = nesting level × block offset - flat, no shadow at
+                # the top edge), bottom corners one step above it, depth
+                # easing down the block.
+                _base = _dt_block_sh * _b_lvls[_bi]
+                _peel = _base + _dt_block_sh
+                add_shadow((sx, sy, _bx1 - sx, ey - sy),
+                           offset=(_base, _base, _peel, _peel),
+                           corner_radius=4.0, clip=_sh_clip)
+            draw_list.add_rect_filled(sx, sy, _bx1, ey, _b_col, 4.0)
             if _dt_outline_a > 0:
                 _b_ol = _ol_rgb(_b_rgb)
-                draw_list.add_rect(sx, sy, rect_max_x, ey,
+                draw_list.add_rect(sx, sy, _bx1, ey,
                                    imgui.get_color_u32_rgba(
                                        _b_ol[0], _b_ol[1], _b_ol[2],
                                        _dt_outline_a), 4.0,
@@ -7110,6 +7204,14 @@ def draw_text(input_value: str, height=None,
             _sa = _bg_adjust(tuple(_s_tint[:3]), _bg_f)
             _s_col = imgui.get_color_u32_rgba(_sa[0], _sa[1], _sa[2],
                                               _dt_sym_a * _s_scale)
+            if _dt_sym_sh:
+                # Ride the scope surface: the wash's lift is the peeling
+                # block surface at its line plus the symbol offset, so a
+                # chip deep in a nested method casts off THAT wash, not
+                # the entire background's flat depth.
+                add_shadow((sx - 1, sy + 1, ex - sx + 2, ey - sy - 2),
+                           offset=_scope_surface(_s_line) + _dt_sym_sh,
+                           corner_radius=3.0, clip=_sh_clip)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
             if _dt_outline_a > 0:
                 _s_ol = _ol_rgb(_sa)
@@ -7858,6 +7960,13 @@ def draw_text(input_value: str, height=None,
         # ride up over the header bar above it; rect_min_y still works once the
         # body has scrolled up past the clip top.
         gutter_top = max(rect_min_y, origin_y)
+        _gut_sh = Toggles.TextEditor.gutter_shadow_offset
+        if _gut_sh:
+            # Recessed strip (negative shadow): the code surface casts into
+            # the gutter along its edge. The rect IS the exact strip (the
+            # shadow sits outside _sh_clip's text-body bounds), so no clip.
+            add_shadow((left, gutter_top, gutter_w, rect_max_y - gutter_top),
+                       offset=_gut_sh, corner_radius=0.0, clip=False)
         draw_list.push_clip_rect(left, gutter_top, left + gutter_w, rect_max_y, True)
         draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, imgui.get_color_u32_rgba(*gutter_bg))
         # Line-tint lookup for the heat wash below: a line with a definition

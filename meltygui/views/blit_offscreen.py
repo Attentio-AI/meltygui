@@ -651,6 +651,46 @@ void main() {
 }
 """
 
+# add_shadow() marks: rank interpolated across the rect from four per-corner
+# values - the peeling effect. Smoothstep-bilinear: smoothstep each UV axis,
+# then bilinearly mix the corner ranks with the eased axes. That is
+# C1-continuous in 2D (zero gradient at every corner, so each corner's depth
+# appears as a wide flat shelf before easing toward its neighbours), monotonic
+# between adjacent corners, and exactly hits the corner values. A scalar
+# offset is just four equal corners, so this one program serves every case;
+# uCornerRadius=0 degenerates to the sharp rect (the SDF also discards
+# outside the box).
+_SHADOW_GRAD_FS = """
+#version 330 core
+uniform vec4 uRankCorners;   // (TL, TR, BL, BR), screen orientation
+uniform vec2 uRectSize;      // Width and height in pixels
+uniform float uCornerRadius; // Corner radius in pixels
+uniform float uMargin;
+in vec2 vUV;
+out vec4 oColor;
+
+float sdRoundedBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return min(max(q.x, q.y), uMargin) + length(max(q, uMargin)) - r;
+}
+
+void main() {
+    vec2 pixelPos = (vUV - 0.5) * uRectSize;
+    vec2 halfSize = uRectSize * 0.5;
+    float r = min(uCornerRadius, min(halfSize.x, halfSize.y));
+    if (sdRoundedBox(pixelPos, halfSize, r) > 0.0) {
+        discard;
+    }
+    // Ease each axis, then bilinear — see the comment block above.
+    vec2 t = vUV * vUV * (3.0 - 2.0 * vUV);
+    // vUV.y runs bottom-to-top in the framebuffer, while uRankCorners is
+    // authored top-first in screen orientation: t.y=1 is the screen TOP row.
+    float top    = mix(uRankCorners.x, uRankCorners.y, t.x);
+    float bottom = mix(uRankCorners.z, uRankCorners.w, t.x);
+    oColor = vec4(mix(bottom, top, t.y), 0.0, 0.0, 1.0);
+}
+"""
+
 _MASK_TEXTURED_FS = """
 #version 330 core
 uniform sampler2D uTex;
@@ -913,8 +953,8 @@ class TileCacheMasked:
         self._mask_rects: List[_Rect] = []
         self._shadow_mask_keys = set()
         # Standalone shadow marks from add_shadow(): (x, y, w, h,
-        # depth_and_layer, corner_radius, margin, clip_xyxy, owner_key,
-        # inset).
+        # rank, (tl, tr, bl, br), corner_radius, margin, clip_xyxy,
+        # tile_key, inset).
         # Stamped into _full_mask_tex at the end of PASS 5 (this frame's
         # shadow), and into any pending enclosing tile's cached mask in
         # PASS 4 (so the mark survives frames where the tile's mask is
@@ -941,6 +981,12 @@ class TileCacheMasked:
         self._loc_maskr_uRectSize = None
         self._loc_maskr_uCornerRadius = None
         self._loc_maskr_uMargin = None
+
+        self._prog_shadow_grad: Optional[int] = None
+        self._loc_sg_uRankCorners = None
+        self._loc_sg_uRectSize = None
+        self._loc_sg_uCornerRadius = None
+        self._loc_sg_uMargin = None
         self._loc_tex_uTex = None
 
         self._loc_texr_uTex = None
@@ -1745,6 +1791,17 @@ class TileCacheMasked:
         only lower depth), so the surrounding surface casts INTO the rect —
         the sunken-widget look.
 
+        `offset` may also be a 4-tuple (top_left, top_right, bottom_left,
+        bottom_right): each corner gets its own depth and the mark's depth
+        eases between them across the quad (smoothstep-bilinear — C1-smooth
+        in 2D, exact at the corners), so e.g. (0, 0, 0, 8) reads as the
+        bottom-right corner peeling up off the surface with the shadow
+        widening toward it. All corners <= 0 carves a graded recess
+        (MIN-blended, owner-scoped like any inset mark). Mixed signs stamp
+        MAX-blended: the raised portion casts, while regions easing below
+        the surrounding surface clamp to it rather than carving — stamp a
+        second all-negative mark if you want true mixed relief.
+
         Raised marks stamp into the full depth mask at the end of PASS 5,
         max-blended so they never lower an existing (higher) window mark.
         Neither kind touches the flat mask, so a mark cannot steal tile
@@ -1784,9 +1841,23 @@ class TileCacheMasked:
         if clip_xyxy is not None and self._fully_clipped(x, y, w, h, clip_xyxy):
             return
         owner_key = self._stack[-1].key if self._stack else None
+        if isinstance(offset, (tuple, list)):
+            offs = tuple(float(o) for o in offset)
+            if len(offs) != 4:
+                raise ValueError(
+                    "add_shadow offset must be a scalar or a 4-tuple "
+                    "(top_left, top_right, bottom_left, bottom_right)")
+        else:
+            offs = (float(offset),) * 4
+        # MIN-blend (recess) only when the whole quad is at-or-below the
+        # surface; any raised corner stamps MAX so the mark doesn't carve
+        # neighbours it eases across.
+        inset = all(o <= 0 for o in offs) and any(o < 0 for o in offs)
+        ranks = tuple(max(0.0, shadow_depth_at(depth + o, layer))
+                      for o in offs)
         self._shadow_rects.append(
-            (x, y, w, h, max(0.0, shadow_depth_at(depth + offset, layer)),
-             corner_radius, margin, clip_xyxy, owner_key, offset < 0))
+            (x, y, w, h, ranks, corner_radius, margin, clip_xyxy, owner_key,
+             inset))
 
     def _stamp_shadow_marks(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
                             scissor_fb=None):
@@ -1829,17 +1900,52 @@ class TileCacheMasked:
                 gl.glScissor(scx0, scy0, scw, sch)
             else:
                 gl.glDisable(gl.GL_SCISSOR_TEST)
+            if (iw > 4096 or ih > 4096) and sc is not None:
+                # A mark the size of a whole cache block can exceed GL
+                # viewport limits. Clamp it to the scissor plus a margin
+                # (off-screen depth still leaks into view near the edges),
+                # re-evaluating the corner ranks at the clamped edges with
+                # the same smoothstep-bilinear the shader applies - exact at
+                # the new corners, the shader re-eases the interior, which
+                # only nudges mid-span values.
+                _m = 256.0
+                nx0 = max(ix0, int(floor(sc[0] - _m)))
+                ny0 = max(iy0, int(floor(sc[1] - _m)))
+                nx1 = min(ix1, int(ceil(sc[2] + _m)))
+                ny1 = min(iy1, int(ceil(sc[3] + _m)))
+                if nx1 <= nx0 or ny1 <= ny0:
+                    continue
+
+                def _ss(t):
+                    t = min(1.0, max(0.0, t))
+                    return t * t * (3.0 - 2.0 * t)
+
+                _tl, _tr, _bl, _br = d_and_l
+
+                def _ev(su, sv):
+                    top = _tl + (_tr - _tl) * su
+                    bot = _bl + (_br - _bl) * su
+                    return bot + (top - bot) * sv
+                su0, su1 = _ss((nx0 - ix0) / iw), _ss((nx1 - ix0) / iw)
+                sv0, sv1 = _ss((ny0 - iy0) / ih), _ss((ny1 - iy0) / ih)
+                d_and_l = (_ev(su0, sv1), _ev(su1, sv1),
+                           _ev(su0, sv0), _ev(su1, sv0))
+                ix0, iy0, ix1, iy1 = nx0, ny0, nx1, ny1
+                iw, ih = ix1 - ix0, iy1 - iy0
             gl.glViewport(ix0, iy0, iw, ih)
-            rank_norm = float(d_and_l) / 65535.5
-            if cr > 0:
-                gl.glUseProgram(self._prog_mask_rounded)
-                gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
-                gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
-                gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
-                gl.glUniform1f(self._loc_maskr_uMargin, margin)
-            else:
-                gl.glUseProgram(self._prog_mask)
-                gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
+            # d_and_l is the per-corner rank 4-tuple (tl, tr, bl, br); the
+            # gradient shader eases between them (smoothstep-bilinear), and a
+            # scalar offset arrives as four equal corners - one shader for
+            # every mark, cr=0 just means sharp corners.
+            gl.glUseProgram(self._prog_shadow_grad)
+            gl.glUniform4f(self._loc_sg_uRankCorners,
+                           float(d_and_l[0]) / 65535.5,
+                           float(d_and_l[1]) / 65535.5,
+                           float(d_and_l[2]) / 65535.5,
+                           float(d_and_l[3]) / 65535.5)
+            gl.glUniform2f(self._loc_sg_uRectSize, float(iw), float(ih))
+            gl.glUniform1f(self._loc_sg_uCornerRadius, max(0.0, cr))
+            gl.glUniform1f(self._loc_sg_uMargin, margin)
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glBlendEquation(gl.GL_FUNC_ADD)
@@ -2682,6 +2788,15 @@ class TileCacheMasked:
             self._loc_maskr_uCornerRadius = gl.glGetUniformLocation(self._prog_mask_rounded, "uCornerRadius")
             self._loc_maskr_uMargin = gl.glGetUniformLocation(self._prog_mask_rounded, "uMargin")
 
+        if self._prog_shadow_grad is None:
+            vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
+            fs = _compile(gl.GL_FRAGMENT_SHADER, _SHADOW_GRAD_FS)
+            self._prog_shadow_grad = _link(vs, fs)
+            self._loc_sg_uRankCorners = gl.glGetUniformLocation(self._prog_shadow_grad, "uRankCorners")
+            self._loc_sg_uRectSize = gl.glGetUniformLocation(self._prog_shadow_grad, "uRectSize")
+            self._loc_sg_uCornerRadius = gl.glGetUniformLocation(self._prog_shadow_grad, "uCornerRadius")
+            self._loc_sg_uMargin = gl.glGetUniformLocation(self._prog_shadow_grad, "uMargin")
+
         if self._prog_mask_textured is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_FS)
@@ -3101,11 +3216,27 @@ class TileCacheMasked:
                     t_child = self._tiles.get(r.key)
                     is_self = (r.key == p.key)
 
+                    # A frozen child mid-drag: its body (and its whole
+                    # subtree) skipped this frame, so the fresh-flat fallback
+                    # below would render a featureless rect and erase every
+                    # nested mark baked in its cached mask - nested child
+                    # would visibly drop out of the drag. Serve the cached
+                    # mask the way the frozen pixel blit serves the tile:
+                    # captured (t_child.size) quad, top-left anchored, the
+                    # live-rect scissor crops a shrink. The not-size_change
+                    # below guard doesn't apply - the quad stays at the
+                    # tile's own size, so uv mapping is unstretched.
+                    frozen_child = (
+                            (not is_self) and size_change
+                            and t_child is not None
+                            and t_child.mask_tex is not None
+                            and draw_state is not None
+                            and getattr(draw_state, "freeze_resize", False))
                     use_child_cache = (
                             (not is_self)
                             and (t_child is not None)
                             and (t_child.mask_tex is not None)
-                            and (not size_change)
+                            and (not size_change or frozen_child)
                     )
 
                     self.apply_blend_mode(r)
@@ -3130,7 +3261,12 @@ class TileCacheMasked:
                     # Mirrors PASS 5. Under the not-size_change guard the live
                     # size equals the tile's logical size, so uv_rect mapping
                     # stays unstretched.
-                    if (draw_state is not None and draw_state.width is not None
+                    if frozen_child:
+                        cx, cy = draw_state.abs_left, draw_state.abs_top
+                        cw, ch = t_child.size
+                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
+                                                                          fb_h)
+                    elif (draw_state is not None and draw_state.width is not None
                             and draw_state.height is not None):
                         cx, cy = draw_state.abs_left, draw_state.abs_top
                         cw, ch = draw_state.width, draw_state.height
@@ -3256,7 +3392,17 @@ class TileCacheMasked:
                     t = self._tiles.get(r.key)
 
                     size_change = draw_state.size_change if draw_state else False
-                    can_use_cached = (t is not None) and (t.mask_tex is not None) and (not size_change)
+                    # freeze_resize mid-drag: same serve-the-cached-mask
+                    # exception as PASS 4's frozen_child - a flat fallback
+                    # would flatten the whole frozen subtree's depth for the
+                    # drag. Quad at the tile's logical size (unstretched),
+                    # clip-rect scissor.
+                    frozen_mask = (size_change and t is not None
+                                   and t.mask_tex is not None
+                                   and draw_state is not None
+                                   and getattr(draw_state, "freeze_resize", False))
+                    can_use_cached = ((t is not None) and (t.mask_tex is not None)
+                                      and (not size_change or frozen_mask))
 
                     # abs_clip = draw_state.abs_clip_rect if draw_state else None
                     # abs_clip_w = abs_clip[2] - abs_clip[0] if abs_clip is not None else r.w
@@ -3272,10 +3418,10 @@ class TileCacheMasked:
 
                     if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
                         tx, ty = draw_state.abs_left, draw_state.abs_top
-                        # if can_use_cached and t is not None:
-                        #     tw, th = t.size
-                        # else:
-                        tw, th = draw_state.width, draw_state.height
+                        if frozen_mask:
+                            tw, th = t.size
+                        else:
+                            tw, th = draw_state.width, draw_state.height
                         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
                     else:
                         x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
@@ -3345,8 +3491,12 @@ class TileCacheMasked:
                     continue
                 _ot = self._tiles.get(s[8])
                 _ods = self.key_to_draw_state.get(s[8])
+                # size_change no longer voids the cached-mask path for
+                # freeze_resize tiles (frozen_mask serves it above), so
+                # their insets stay excluded here.
                 _served = (_ot is not None and _ot.mask_tex is not None
-                           and not (_ods is not None and _ods.size_change))
+                           and not (_ods is not None and _ods.size_change
+                                    and not getattr(_ods, "freeze_resize", False)))
                 if not _served:
                     _standalone.append(s)
             if _standalone:
@@ -3398,8 +3548,11 @@ def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
     — no @render_func, key, or draw_state required. `offset` is the signed
     depth delta from the surrounding surface: positive (default +2) lifts the
     rect so it casts a shadow, negative carves a recess so the surroundings
-    cast into it. layer/depth default to Melty.active_layer/Melty.shadow_depth
-    at call time. Cheap enough to call every frame; see
+    cast into it. A 4-tuple (top_left, top_right, bottom_left, bottom_right)
+    gives each corner its own delta and eases the depth between them across
+    the quad — e.g. offset=(0, 0, 0, 8) peels the bottom-right corner up.
+    layer/depth default to Melty.active_layer/Melty.shadow_depth at call
+    time. Cheap enough to call every frame; see
     TileCacheMasked.add_shadow."""
     cache = Melty.cache
     if cache is not None:

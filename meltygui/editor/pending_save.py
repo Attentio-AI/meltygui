@@ -1101,13 +1101,11 @@ class PendingSave:
             else:
                 failures.append(f"{label}: {type(err).__name__}: {err}")
 
-        if not (compiled or failures or skipped):
+        if not (compiled or failures):
             return "Nothing to recompile — no changed pending edits."
         lines = []
         if compiled:
             lines.append(f"Recompiled {len(compiled)}: {', '.join(compiled)}")
-        if skipped:
-            lines.append(f"Skipped {skipped} non-code edit(s)")
         for failure in failures:
             lines.append(f"FAILED {failure}")
         return "\n".join(lines)

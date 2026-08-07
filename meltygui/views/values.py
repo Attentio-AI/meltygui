@@ -388,7 +388,6 @@ def _jump_to_symbol_def(obj, path):
 # mid-typing; the content key only rebuilds when a module actually (un)loads.
 _symbol_hits_memo = (None, None)
 
-
 @search_index
 def symbol_index():
     """Every function and class defined in a loaded src module — module-level
@@ -3805,10 +3804,6 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
               max_height=100, min_height=20, header_same_line=True,
               selectable=False, left_mouse_drag=None, left_mouse_held=False, align_header=True,
               left_mouse_down=False):
-    print("external")
-    # external change
-    # external change 2
-    print("new external")
     left_margin = 3
     box_h = 21
     text_inset = 11
@@ -5703,177 +5698,187 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
 
     any_changed = False
     index = 0
-    for param, value in proxy.items():
-        index = index+1
-        # Highlight, don't hide: every row stays visible (like the default
-        # search everywhere else); matching rows get the highlight via the
-        # search_match/search_current kwargs their header reads.
-        is_match = bool(term) and _fuzzy_key_match(term, param.lower())
-        is_current = (is_match and _current_local is not None
-                      and _match_ord == _current_local)
-        if is_match:
-            _match_ord += 1
-        if is_current:
-            _current_row_y = imgui.get_cursor_screen_pos()[1]
-        _search_kw = {"search_match": is_match, "search_current": is_current}
-        if parses_ready:
-            # The ACTIVE source: the highest-priority setter (precomputed in
-            # active_map, one render pass) - unless a diverged auto_param
-            # outranks it at runtime (the ds beats every setter not in
-            # _ABOVE_DRAW_STATE; the ds row only registers whitelisted
-            # attrs, so detect any divergence directly. A bare `param in
-            # target.__dict__` would be wrong: DrawState.__init__ stamps its
-            # own fields on every load).
-            setting = active_map.get(param)
-            ds_has = param in (getattr(target, "auto_params", None) or {})
-            if ds_has and (setting is None
-                           or _prio[setting][0] not in _ABOVE_DRAW_STATE):
-                active = "draw_state"
-            else:
-                active = setting
-            _active_cache[param] = active
-            known = True
-        else:
-            # ACTIVE-SOURCE CACHE DISABLED (perf A/B): never serve cached
-            # picks - loading rows draw no dropdown until sources are live.
-            # Re-enable by restoring: known = param in _active_cache;
-            # active = _active_cache.get(param)
-            known = False
-            active = None
-
-        # Names only need to be distinct among SIBLINGS - core_render's
-        # name_id scopes them per parent view, so no unique threading.
-        row_uid = param
-
-        if known:
-            # Dropdown of ALL sources in SourcePriority order, active one
-            # tinted + row-washed - memoized per distinct active source
-            # (_options_for above), not rebuilt per param.
-            options, _row_tints = _options_for(active)
-
-            # Selection is per-tab view state; default to the active source.
-            sel_key = f"src_sel::{param}"
-            sel = draw_state.misc.get(sel_key)
-            if sel not in options:
-                if active is not None:
-                    sel = active
-                elif parses_ready:
-                    sel = _default_source_once()
-                else:
-                    sel = "draw_state"
-
-            # Subtle trigger: no button bg/shadow, short, narrow - it's a
-            # provenance label with a popover, not a primary control.
-            # Per-row trash INSIDE the popover: clears this param at the
-            # source without exiting the dropdown, so several sources can be
-            # cleared in one visit. Only rows that actually SET the param
-            # get one (setters_map, plus the ds when an auto_param diverged);
-            # codec rows are out - clear_anywhere can't reverse the
-            # codec's per-file/render_kwargs fan-out yet.
-            def _clear_at(src, _p=param):
-                from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
-                if clear_anywhere(_p, target, str(src)) is not None:
-                    target.invalidate()
-                    draw_state.invalidate()
-            _row_actions = {s: _clear_at for s in setters_map.get(param, ())
-                            if srcs["kinds"].get(s) != "codec"}
-            if param in (getattr(target, "auto_params", None) or {}):
-                _row_actions["draw_state"] = _clear_at
-            pick_changed, new_pick = draw_dropdown(
-                options.get(sel, sel), collection=options, width=181, z_offset=0,
-                shadow=False, show_button_bg=False, trigger_height=22, show_bg=False,
-                text_pad=3, row_tints=_row_tints, row_actions=_row_actions,
-                name=f"src_{row_uid}_dd{index}", show_header=False)
-            if pick_changed and new_pick:
-                sel = str(new_pick)
-                draw_state.misc[sel_key] = sel
-        else:
-            sel = None
-            imgui.dummy(181, 22)     # hold the dropdown slot = no reflow when it expands
-
-        imgui.same_line()
-
-        if not parses_ready:
-            # Registry still loading: stored-at-source reads would hit
-            # placeholders; bind the widget to the RESOLVED value and route
-            # edits through the proxy pick when the sources are real.
-            item_return = draw_any(value, name=param,
-                                   show_bg=False, show_header=True, **_search_kw)
-            item_changed, out_val = item_return[0], item_return[1]
-            if item_changed:
-                proxy[param] = out_val
-                any_changed = True
-            imgui.dummy(0, 2)
+    # Grouped proxy: the view's own params, then the header's, each its
+    # own nested live dict (GroupedParamProxy). A dim divider separates the
+    # header section; rows are identical either side of it.
+    for _glabel, _group in ((None, proxy.get('params')),
+                            ('header', proxy.get('header'))):
+        if not _group:
             continue
+        if _glabel:
+            imgui.dummy(0, 6)
+            text(_glabel, name=f'grp_{_glabel}', editable=False)
+        for param, value in _group.items():
+            index = index+1
+            # Highlight, don't hide: every row stays visible (like the default
+            # search everywhere else), matching rows get the glow via the
+            # search_match/search_current kwargs their header reads.
+            is_match = bool(term) and _fuzzy_key_match(term, param.lower())
+            is_current = (is_match and _current_local is not None
+                          and _match_ord == _current_local)
+            if is_match:
+                _match_ord += 1
+            if is_current:
+                _current_row_y = imgui.get_cursor_screen_pos()[1]
+            _search_kw = {"search_match": is_match, "search_current": is_current}
+            if parses_ready:
+                # The ACTIVE source: the highest-priority setter (precomputed in
+                # active_map, one registry pass) - unless a diverged auto_param
+                # outranks it at runtime (the ds beats every setter not in
+                # _ABOVE_DRAW_STATE; the ds row only registers whitelisted
+                # attrs, so read the dict directly. A bare `x in
+                # target.__dict__` would be wrong: DrawState.__init__ stamps its
+                # own fields on every instance).
+                setting = active_map.get(param)
+                ds_has = param in (getattr(target, "auto_params", None) or {})
+                if ds_has and (setting is None
+                               or _prio[setting][0] not in _ABOVE_DRAW_STATE):
+                    active = "draw_state"
+                else:
+                    active = setting
+                _active_cache[param] = active
+                known = True
+            else:
+                # ACTIVE-SOURCE CACHE DISABLED (for A/B): never serve cached
+                # picks - loading rows draw no dropdown until sources are live.
+                # Re-enable by restoring: known = param in _active_cache;
+                # active = _active_cache.get(param)
+                known = False
+                active = None
 
-        # The value AT the selected source (not the resolved value) - that's
-        # what looking at a source means. draw_state reads the live attr.
-        sdict = srcs["sources"].get(sel)
-        stored = sdict.get(param) if isinstance(sdict, dict) else None
-        if sel == "draw_state" and stored is None:
-            stored = (getattr(target, "auto_params", None) or {}).get(
-                param, target.__dict__.get(param))
-        sel_writable = sel in writable or sel == "draw_state"
+            # Names only need to be distinct among SIBLINGS - core_render's
+            # push_state scopes them per parent view, so no unique threading.
+            row_uid = param
 
-        # In-flight write cache (_sa_pending - the same one anywhere_value
-        # serves): a slow-source write, or EVERY write while a drag is held
-        # (deferred), hasn't reached the source dict yet - a raw stored read
-        # snaps the slider back to the stale value next frame ("stuck").
-        # Serve the pending UI value while the trip is in flight, but only
-        # when this param's selected source is the one the write targeted.
-        # proxy set() above runs anywhere_value per param, which retires
-        # entries once the live value moves off its at-set baseline.
-        _pending = getattr(target, "_sa_pending", None)
-        if _pending and param in _pending:
-            _lastsrc = getattr(target, "_sa_last_source", None) or {}
-            if _lastsrc.get(param, sel) == sel:
-                stored = _pending[param][0]
+            if known:
+                # Dropdown of ALL sources in SourcePriority order, active one
+                # tinted + row-wrapped - memoized per distinct active source
+                # (_options_for above), not rebuilt per param.
+                options, _row_tints = _options_for(active)
 
-        if stored is None:
-            if sel_writable:
-                # Selected source doesn't set the param yet: + stamps a value
-                # into it (creating the entry); next frame the widget takes
-                # over. draw_button is a header and value-row button
-                # (draw_float's shape) - same header chrome as widget rows.
-                clicked, _ = draw_button("+", name=f"+##add_{row_uid}",
-                                         label="+", display_name=param,
-                                         show_name=True, show_bg=False,
+                # Selection is per-tabview state; default = the active source.
+                sel_key = f"src_sel::{param}"
+                sel = draw_state.misc.get(sel_key)
+                if sel not in options:
+                    if active is not None:
+                        sel = active
+                    elif parses_ready:
+                        sel = _default_source_once()
+                    else:
+                        sel = "draw_state"
 
-                                         wrap=True, min_width=24, **_search_kw)
-                if clicked:
-                    # Resolved value when there is one; a None (header params
-                    # nothing sets) stamps the DECLARED signature default -
-                    # stamping None would create an entry that still shows
-                    # to unset (the "+ does nothing" feel).
-                    stamp = value
-                    if stamp is None:
-                        from src.lsd.gl_gui.view.core_views.anywhere import (
-                            signature_default_for)
-                        stamp = signature_default_for(param, target)
-                    set_anywhere(param, stamp, target, allow_any=True,
+                # Subtle trigger: no button bg/shadow, short, narrow - it's a
+                # provenance label with a popover, not a primary control.
+                # Per-row trash INSIDE the popover: clear the param at THAT
+                # source without closing the list, so several sources can be
+                # cleared in one visit. Only rows that actually SET the param
+                # get one (setters_map, plus the ds when an auto_param diverged);
+                # codec rows are excluded - clear_anywhere can't reverse the
+                # codec's per-file/render_kwargs fan-out yet.
+                def _clear_at(src, _p=param):
+                    from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
+                    if clear_anywhere(_p, target, str(src)) is not None:
+                        target.invalidate()
+                        draw_state.invalidate()
+                _row_actions = {s: _clear_at for s in setters_map.get(param, ())
+                                if srcs["kinds"].get(s) != "codec"}
+                if param in (getattr(target, "auto_params", None) or {}):
+                    _row_actions["draw_state"] = _clear_at
+                pick_changed, new_pick = draw_dropdown(
+                    options.get(sel, sel), collection=options, width=181, z_offset=0,
+                    shadow=False, show_button_bg=False, trigger_height=22, show_bg=False,
+                    text_pad=3, row_tints=_row_tints, row_actions=_row_actions,
+                    name=f"src_{row_uid}_dd{index}", show_header=False)
+                if pick_changed and new_pick:
+                    sel = str(new_pick)
+                    draw_state.misc[sel_key] = sel
+            else:
+                sel = None
+                imgui.dummy(181, 22)     # hold the dropdown slot - no reflowing it yet
+
+            imgui.same_line()
+
+            if not parses_ready:
+                # Sources still loading: stored-at-source reads would hit
+                # placeholders - bind the widget to the RESOLVED value and route
+                # edits through the automatic pick when the sources are real.
+                item_return = draw_any(value, name=param,
+                                       show_bg=False, show_header=True, **_search_kw)
+                item_changed, out_val = item_return[0], item_return[1]
+                if item_changed:
+                    _group[param] = out_val
+                    any_changed = True
+                imgui.dummy(0, 2)
+                continue
+
+            # The value AT the selected source (not the resolved value) - that's
+            # what looking at a dropdown shows. draw_state reads the live attr.
+            sdict = srcs["sources"].get(sel)
+            stored = sdict.get(param) if isinstance(sdict, dict) else None
+            if sel == "draw_state" and stored is None:
+                stored = (getattr(target, "auto_params", None) or {}).get(
+                    param, target.__dict__.get(param))
+            sel_writable = sel in writable or sel == "draw_state"
+
+            # In-flight display cache (_sa_pending - the same one anywhere_value
+            # serves): a slow-source write, and EVERY write while a drag is held
+            # (deferred), hasn't reached the source host yet - a raw stored read
+            # snaps the slider back to the stale value next frame ("stuck").
+            # Serve the pending UI value while the trip is in progress, but only
+            # when this row's selected source is the one the write targeted.
+            # proxy.items() above runs anywhere_value per param, which retires
+            # entries once the live value moves beyond their at-set baseline.
+            _pending = getattr(target, "_sa_pending", None)
+            if _pending and param in _pending:
+                _lastsrc = getattr(target, "_sa_last_source", None) or {}
+                if _lastsrc.get(param, sel) == sel:
+                    stored = _pending[param][0]
+
+            if stored is None:
+                if sel_writable:
+                    # Selected source doesn't set the param yet: + stamps a value
+                    # into it (creating the entry); next frame the widget takes
+                    # over. draw_button is the header's value-row button
+                    # (draw_float's +) - same header chrome as widget rows.
+                    clicked, _ = draw_button("+", name=f"+##add_{row_uid}",
+                                             label="+", display_name=param,
+                                             show_name=True, show_bg=False,
+
+                                             wrap=True, min_width=24, **_search_kw)
+                    if clicked:
+                        # Resolved value when there is one; a None (header params
+                        # nothing sets) stamps the DECLARED signature default -
+                        # stamp with None would create an entry that still reads
+                        # as unset (the "+ does nothing" feel).
+                        stamp = value
+                        if stamp is None:
+                            from src.lsd.gl_gui.view.core_views.anywhere import (
+                                signature_default_for)
+                            stamp = signature_default_for(param, target)
+                        set_anywhere(param, stamp, target, allow_any=True,
+                                     ds_fallback=True, source=sel)
+                        any_changed = True
+                else:
+                    text(f"{param}: not set here", name=f"ro_{row_uid}",
+                         editable=False, **_search_kw)
+            elif sel_writable:
+                item_return = draw_any(stored, name=param,
+                                       show_bg=False, show_header=True, **_search_kw)
+                item_changed, out_val = item_return[0], item_return[1]
+                if item_changed:
+                    set_anywhere(param, out_val, target, allow_any=True,
                                  ds_fallback=True, source=sel)
                     any_changed = True
             else:
-                text(f"{param}: not set here", name=f"ro_{row_uid}",
-                     editable=False, **_search_kw)
-        elif sel_writable:
-            item_return = draw_any(stored, name=param,
-                                   show_bg=False, show_header=True, **_search_kw)
-            item_changed, out_val = item_return[0], item_return[1]
-            if item_changed:
-                set_anywhere(param, out_val, target, allow_any=True,
-                             ds_fallback=True, source=sel)
-                any_changed = True
-        else:
-            text(f"{param}: {stored}", name=f"ro_{row_uid}", editable=False,
-                 **_search_kw)
-        imgui.dummy(0, 2)
+                text(f"{param}: {stored}", name=f"ro_{row_uid}", editable=False,
+                     **_search_kw)
+            imgui.dummy(0, 2)
 
-    # Scroll the current search match into view - only on real full-search
-    # frames (term change / Enter/arrow nav), same gate as draw_collection.
-    if (_current_row_y is not None and _session is not None
-            and getattr(_session, "scroll_to", False)):
-        _scroll_into_view(draw_state, _current_row_y, _current_row_y + 24)
+        # Scroll the current search match into view - only on real full-search
+        # frames (term change not Enter/arrow nav), same gate as draw_collection.
+        if (_current_row_y is not None and _session is not None
+                and getattr(_session, "scroll_to", False)):
+            _scroll_into_view(draw_state, _current_row_y, _current_row_y + 24)
 
     if any_changed:
         target.invalidate()
@@ -7368,7 +7373,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # header row it sits in: the disagreement between the drawn size and the
     # measured item rect is exactly what reads as animation jitter.
     _slot_w = kwargs.get("width") or draw_state.content_width
-    compact = _slot_w < kwargs.get("compact_below", 50)
+    compact = _slot_w < kwargs.get("compact_below", 34) and len(input_value) > 2
     bg_offset = 4 if is_open else 7
 
     # A compact trigger hugs its glyph: minimal text pad and a centered label,

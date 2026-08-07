@@ -869,15 +869,15 @@ class DrawState(DictConversion):
 
     @property
     def locate_all_params(self):
-        """`locate_params` plus the HEADER's params: the resolved
-        `with_header` function's own inputs (icon, tint sources, ...) join
-        the view's. Same proxy semantics (reads resolve, item-writes go
-        through set_anywhere); a separate cached instance, same identity
-        rules as locate_params above."""
-        from src.lsd.gl_gui.view.core_views.anywhere import ParamProxy
+        """`locate_params` plus the HEADER's params, GROUPED: two nested
+        dicts — {'params': <view params>, 'header': <header-only params>} —
+        each a live ParamProxy (reads resolve, item-writes go through
+        set_anywhere). A separate cached instance, same identity rules as
+        locate_params above."""
+        from src.lsd.gl_gui.view.core_views.anywhere import GroupedParamProxy
         proxy = self.__dict__.get('_locate_all_proxy')
-        if proxy is None:
-            proxy = ParamProxy(self, include_header=True)
+        if proxy is None or not isinstance(proxy, GroupedParamProxy):
+            proxy = GroupedParamProxy(self)
             object.__setattr__(self, '_locate_all_proxy', proxy)
             return proxy
         return proxy.refresh()

@@ -1185,24 +1185,20 @@ class ParamProxy(dict):
     # named like a dict method (`items`, `values`, ...) a bound method instead
     # of its value. With __slots__ the proxy is storage-only and every read
     # resolves through __getitem__.
-    __slots__ = ("_ds", "_include_header")
+    __slots__ = ("_ds", "_names_fn")
 
-    def __init__(self, draw_state, include_header=False):
+    def __init__(self, draw_state, names_fn=None):
         super().__init__()
         self._ds = draw_state
-        # include_header extends the param set with the view's with_header
-        # function's own parameters (locate_all_params) - same read/write
-        # semantics, the header draws against the same draw_state view view.
-        self._include_header = include_header
+        # names_fn: which params this proxy spans - view_param_names by
+        # default; the grouped locate_all_params supplies the header-only
+        # supplier for its 'header' sub-dict. Same read/write semantics
+        # either way (the header draws against the same draw_state/kwargs).
+        self._names_fn = names_fn
         self.refresh()
 
     def _names(self):
-        names = view_param_names(self._ds)
-        if self._include_header:
-            seen = set(names)
-            names = names + [n for n in header_param_names(self._ds)
-                             if n not in seen]
-        return names
+        return (self._names_fn or view_param_names)(self._ds)
 
     def _specialize(self, name, value):
         """Re-wrap a plain parsed value in the signature default's subtype
@@ -1256,6 +1252,48 @@ class ParamProxy(dict):
 
     def __repr__(self):
         return f"ParamProxy({dict(self.items())!r})"
+
+
+def _header_only_param_names(draw_state):
+    """Header params MINUS ones the view itself declares — those belong to
+    the 'params' group (view-first dedup, same rule the flat proxy had)."""
+    own = set(view_param_names(draw_state))
+    return [n for n in header_param_names(draw_state) if n not in own]
+
+
+class GroupedParamProxy(dict):
+    """locate_all_params' shape: two nested live dicts —
+
+        {'params': <ParamProxy over the view's own params>,
+         'header': <ParamProxy over the header-only params>}
+
+    Each leaf keeps ParamProxy semantics (reads resolve via anywhere_value,
+    item-writes route through set_anywhere); the grouping just separates the
+    two origins so they render/route as distinct nested dicts. refresh()
+    re-snapshots both — the DrawState property calls it per access, same
+    stable-identity rules as locate_params."""
+    __slots__ = ()
+
+    def __init__(self, draw_state):
+        super().__init__()
+        dict.__setitem__(self, "params", ParamProxy(draw_state))
+        dict.__setitem__(self, "header",
+                         ParamProxy(draw_state,
+                                    names_fn=_header_only_param_names))
+
+    def refresh(self):
+        for v in dict.values(self):
+            v.refresh()
+        return self
+
+    def __setitem__(self, key, value):
+        # draw_collection writes the changed CHILD dict into its parent
+        # (`grouped['params'] = edited`) - accepting that would swap the live
+        # sub-proxy for a plain dict snapshot and disconnect routing. The
+        # sub-proxies are canonical and already received the leaf writes in
+        # place, so a group-slot write is a no-op; unknown keys are refused.
+        if key not in self:
+            raise KeyError(f"GroupedParamProxy has fixed groups, not {key!r}")
 
 
 # ── draw_state.locate_* ─────────────────────────────────────────────────────
