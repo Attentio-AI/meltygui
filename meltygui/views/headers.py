@@ -256,7 +256,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 corner_radius=6.0, text_pad=15, hover_boost=0.05,
                 hover_text_boost=1.5, max_bg_brightness=0.25,
                 event="left_mouse_clicked", text_offset_x=None,
-                style_manager=None):
+                style_manager=None, layout=True, draw_list=None):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
     rect + centered label straight to the draw list, hover from the live
@@ -280,7 +280,9 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                and draw_state._bounding_hovered
                and not Melty.on_drag
                and x <= mx < x + w and y <= my < y + h)
-    dl = imgui.get_window_draw_list()
+    # draw_list: paint into a caller-provided list instead of the window's
+    # (e.g. the overlay list a DragDrop ghost rides) — pairs with layout=False.
+    dl = draw_list if draw_list is not None else imgui.get_window_draw_list()
     if alpha > 0.0 and color is not None:
         from src.lsd.gl_gui.view.core_views.new_core_view import _brightness_clamp
         bg = style_manager.make_color_rgb(
@@ -301,6 +303,11 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
     dl.add_text(tx, y + (h - ts.y) * 0.5,
                 imgui.get_color_u32_rgba(tc[0], tc[1], tc[2], 1.0), text)
+    # layout=False: draw-only — no dummy (nothing submitted to the window
+    # group, so an out-of-flow draw like a DragDrop ghost can't stretch the
+    # view's measured content) and no click subscription.
+    if not layout:
+        return False
     imgui.dummy(w, h)
     if draw_state is None:
         return False

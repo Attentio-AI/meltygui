@@ -65,6 +65,18 @@ How a drag flows, end to end:
 The older drag/drop fields on Melty (dragged_item, drag_in_progress,
 drag_drop_target, draw_drag_drop_target, ...) are a previous, separate
 attempt and are not used here.
+
+Immediate-mode items (no per-item @render_func): a view that paints its own
+rows straight to the draw list (flat_button tabs, fast-dock rows) opts each
+row in with DragDrop.on_drag(rect, key) and closes the body with
+DragDrop.on_drop() — see the "immediate-mode API" section below. Pickup,
+slot lines, home/cancel and commit all ride the machinery above; the only
+behavioral difference is the drag's middle: there is no per-item draw_state
+to float as a cached window, so the OWNER's tile is force-dirtied every
+frame and the owner's body draws the ghost itself at the position on_drag
+hands back. Drops don't go through Melty.dnd_requests either — the owner
+receives a one-shot DropEvent from on_drop() and applies the mutation in
+its own code, the immediate-mode way.
 """
 import math
 from dataclasses import dataclass
@@ -89,6 +101,81 @@ _EVENTS = ["left_mouse_drag", "left_mouse_drag_released"]
 # position. It carries no insert index - dropping on it cancels the reorder.
 _HOME = object()
 
+# view_id prefix for immediate-mode drag handles. on_action prepends the
+# owner's tile id + "_", so full event keys look like
+# "<tile_id>_dnd_im:<key>" - _watch_for_pickup finds them by _IM_MARK.
+_IM_PREFIX = "dnd_im:"
+_IM_MARK = "_" + _IM_PREFIX
+
+
+@dataclass
+class _ImItem:
+    """One immediate-mode item as registered by on_drag this frame: enough
+    to pick it up (rect → grab offset/size/home) and to place it in its
+    owner's collection (index = on_drag call order = collection order)."""
+    ds: object       # the OWNER view's draw_state (not a per-item one)
+    key: object
+    value: object
+    rect: tuple      # (x0, y0, x1, y1) absolute
+    index: int
+
+
+@dataclass
+class DragInfo:
+    """Truthy return of on_drag while its item is the active drag: the ghost
+    rect (top-left glued to the cursor minus the grab offset) plus the draw
+    list to paint it into. `draw_list` is the OVERLAY list with its channel
+    already set (the owner's window list renders into a tile clipped to the
+    window rect — a ghost dragged past the edge would crop there; the
+    overlay is unclipped and above every window, same home as the slot
+    lines). The imgui cursor has also been placed at (x, y) for
+    text-position-based drawing. Draw with raw draw-list calls only — no
+    dummy/layout, or the window group swallows the rect and stretches the
+    view's measured content to the mouse — then call DragDrop.end_drag() to
+    restore the cursor."""
+    x: float
+    y: float
+    w: float
+    h: float
+    draw_list: object = None
+
+
+@dataclass(frozen=True)
+class DropEvent:
+    """One-shot result handed to an immediate owner by on_drop().
+
+    kind: "reorder" — an item of THIS view moved (index → insert_index);
+          "insert"  — something dropped IN from another collection (value
+                      carries the dragged value; if the source was a
+                      @render_func collection its Remove has ALREADY been
+                      applied, so an ignoring handler drops the value on
+                      the floor);
+          "remove"  — this view's item was dropped into ANOTHER collection;
+                      the handler should remove it locally.
+    index / insert_index are in on_drag call order (== collection order),
+    insert_index in pre-removal coordinates, same as Reorder."""
+    kind: str
+    key: object
+    value: object
+    index: int = None
+    insert_index: int = None
+
+    def apply(self, coll):
+        """Convenience: apply this event to a live list/dict via the same
+        mutation classes the render_func path uses. Returns changed."""
+        if self.kind == "reorder":
+            k = self.index if isinstance(coll, list) else self.key
+            changed, _c, _inv = Reorder(k, self.insert_index).apply(coll)
+        elif self.kind == "insert":
+            changed, _c, _inv = Insert(self.key, self.value,
+                                       self.insert_index).apply(coll)
+        elif self.kind == "remove":
+            k = self.index if isinstance(coll, list) else self.key
+            changed, _c, _inv = Remove(k).apply(coll)
+        else:
+            changed = False
+        return changed
+
 @window
 class DragDrop:
     item_ds = None        # the dragged item's draw_state
@@ -101,6 +188,14 @@ class DragDrop:
     home_rect = None          # (abs_left, abs_top) of the inline slot at pickup
     slots = ()                # this frame's (y, x0, x1, h, coll_ds, insert_idx)
     nearest = None
+
+    # ── immediate-mode state ─────────────────────────────────────────────
+    immediate = False     # the active drag is an on_drag item (no item_ds)
+    im_index = None       # dragged item's on_drag call-order index
+    _im_items = {}        # full event view_id → _ImItem (pickup lookup)
+    _im_lists = {}        # owner ds → (frame_count, [_ImItem...]) this frame
+    _pending_drops = {}   # owner ds → DropEvent, popped by on_drop
+    _ghost_saved = None   # (x, y) cursor to restore in end_drag, or None
 
     # ── wrapper hooks (called from core_render for every view) ──────────
 
@@ -156,6 +251,169 @@ class DragDrop:
         cur = draw_state.window_pos or (0.0, 0.0)
         draw_state.window_pos = (int(cur[0] + (mx - cls.grab_offset[0]) - left),
                                  int(cur[1] + (my - cls.grab_offset[1]) - top))
+
+    # ── immediate-mode API (items without a @render_func) ────────────────
+    #
+    # For views that render their own rows straight to the draw list. Call
+    # per item, in collection order, inside the view body:
+    #
+    #     drag = DragDrop.on_drag((x0, y0, x1, y1), key=path)
+    #     if drag:
+    #         # cursor and channel already set to draw the ghost, draw-list only
+    #         dl.add_rect_filled(drag.x, drag.y, drag.x + drag.w, ...)
+    #         DragDrop.end_drag()
+    #         continue          # leave the inline slot empty (home target)
+    #     ... draw the row normally ...
+    #
+    # and once after the loop:
+    #
+    #     drop = DragDrop.on_drop(horizontal=True)
+    #     if drop:
+    #         drop.apply(my_list)   # or handle the drop by hand
+    #
+    # The owner draw_state comes from melty.draw_state_stack (or pass
+    # draw_state=). While one of its items is dragged the owner's tile is
+    # force-dirtied every frame (frame_update), so the body re-runs and the
+    # ghost tracks the cursor - the else is managed for you.
+
+    @classmethod
+    def on_drag(cls, source_rect, key, value=None, draw_state=None):
+        """Register `source_rect` as the drag handle for item `key` of the
+        current view, and — when this item IS the active drag — arrange the
+        draw list for ghost drawing and return a truthy DragInfo.
+
+        value: what a cross-collection drop delivers (defaults to key).
+        Returns None while the item is at rest (or another item drags)."""
+        cls.end_drag()   # clean for the previous item, if its caller didn't
+        melty = Core.melty
+        if draw_state is None:
+            stack = melty.draw_state_stack
+            draw_state = stack[-1] if stack else None
+        if draw_state is None:
+            return None
+
+        frame = melty.frame_count
+        entry = cls._im_lists.get(draw_state)
+        if entry is None or entry[0] != frame:
+            entry = (frame, [])
+            cls._im_lists[draw_state] = entry
+        item = _ImItem(draw_state, key, key if value is None else value,
+                       tuple(source_rect), len(entry[1]))
+        entry[1].append(item)
+
+        view_id = _IM_PREFIX + str(key)
+        cls._im_items[str(draw_state._tile_id) + "_" + view_id] = item
+        # Same subscription as register_item: the input system captures the
+        # gesture at mouse-down and keeps delivering drag events to this id
+        # for the whole drag; priority_delta=1 beats same-depth handlers.
+        draw_state.on_action(_EVENTS, view_id=view_id, rect=item.rect,
+                             priority_delta=1)
+
+        if (cls.active and cls.immediate and cls.source_ds is draw_state
+                and cls.key == key):
+            return cls._ghost_begin()
+        return None
+
+    @classmethod
+    def end_drag(cls):
+        """Restore what _ghost_begin set: put the imgui cursor back where the
+        view's flow had it. Safe to call when no ghost is open (no-op) —
+        on_drag/on_drop also call it, so a forgotten end_drag heals at the
+        next DragDrop call (the overlay channel needs no restore: every
+        overlay user sets its own channel before drawing)."""
+        if cls._ghost_saved is None:
+            return
+        imgui.set_cursor_screen_pos(cls._ghost_saved)
+        cls._ghost_saved = None
+
+    @classmethod
+    def on_drop(cls, horizontal=False, draw_state=None):
+        """Close an immediate owner's body: publish its drop slots (derived
+        from this frame's on_drag rects — one insert-before line per item
+        plus one append-after-last) and return the pending DropEvent if a
+        drop landed here since the last body run, else None. Call AFTER all
+        on_drag calls; horizontal=True gives vertical insertion lines (a tab
+        bar / row of items)."""
+        cls.end_drag()
+        melty = Core.melty
+        if draw_state is None:
+            stack = melty.draw_state_stack
+            draw_state = stack[-1] if stack else None
+        if draw_state is None:
+            return None
+
+        # Slot geometry through the same _dnd_extra_slots gauntlet
+        # draw_collection_as_tabs runs - radius, occlusion and clip-space
+        # clamping in _collection_body apply here.
+        draw_state._dnd_immediate = True
+        slots = []
+        entry = cls._im_lists.get(draw_state)
+        if entry is not None and entry[0] == melty.frame_count:
+            dragged_key = (cls.key if cls.active and cls.immediate
+                           and cls.source_ds is draw_state else _HOME)
+            last = None
+            for it in entry[1]:
+                if it.key == dragged_key:
+                    continue   # its gap is the home/cancel target
+                x0, y0, x1, y1 = it.rect
+                if horizontal:
+                    slots.append((it.index, y0, y1, x0 - 2, True))
+                else:
+                    slots.append((it.index, x0, x1, y0 - 2, False))
+                last = it
+            if last is not None:
+                x0, y0, x1, y1 = last.rect
+                if horizontal:
+                    slots.append((last.index + 1, y0, y1, x1 + 3, True))
+                else:
+                    slots.append((last.index + 1, x0, x1, y1 + 3, False))
+        draw_state._dnd_extra_slots = slots
+
+        return cls._pending_drops.pop(draw_state, None)
+
+    @classmethod
+    def _ghost_begin(cls):
+        """Arrange ghost drawing: remember the cursor, aim the OVERLAY draw
+        list at the same never-stencil-masked top channel the slot lines
+        use, and set the cursor to the ghost's top-left — cursor minus grab
+        offset, the same glue as the floating-window path."""
+        melty = Core.melty
+        mx, my = imgui.get_io().mouse_pos
+        gx, gy = mx - cls.grab_offset[0], my - cls.grab_offset[1]
+        if cls._ghost_saved is None:
+            cls._ghost_saved = tuple(imgui.get_cursor_screen_pos())
+        overlay = imgui.get_overlay_draw_list()
+        if melty._overlay_channels_active:
+            overlay.channels_set_current(melty.max_layer - 5)
+        imgui.set_cursor_screen_pos((gx, gy))
+        w, h = cls.size
+        return DragInfo(gx, gy, w or 0.0, h or 0.0, overlay)
+
+    @classmethod
+    def _begin_immediate(cls, item, ev):
+        """Pick an on_drag item up — the immediate twin of _begin. No
+        item_ds/floating window: the owner's body draws the ghost."""
+        cls.active = True
+        cls.immediate = True
+        cls.item_ds = None
+        cls.source_ds = item.ds
+        cls.key = item.key
+        cls.value = item.value
+        cls.im_index = item.index
+        x0, y0, x1, y1 = item.rect
+        down_x, down_y = ev.x - ev.total_dx, ev.y - ev.total_dy
+        cls.grab_offset = (max(0.0, down_x - x0), max(0.0, down_y - y0))
+        cls.size = (x1 - x0, y1 - y0)
+        cls.home_rect = (x0, y0)
+        Core.melty.dnd_home_rect = (x0, y0, cls.size[0], cls.size[1])
+        cls.slots = ()
+        cls.nearest = None
+        cls._wake(item.ds)
+
+    @classmethod
+    def _queue_drop(cls, ds, event):
+        cls._pending_drops[ds] = event
+        cls._wake(ds)
 
     # ── draw_collection hooks ────────────────────────────────────────
 
@@ -276,12 +534,22 @@ class DragDrop:
     @classmethod
     def frame_update(cls):
         melty = Core.melty
+        # A body that opened a ghost and never closed it can't be repaired
+        # here (popping its window outside the window would unbalance imgui's
+        # stack) - just drop the record so the next drag starts clean.
+        cls._ghost_saved = None
         if not cls.active:
+            cls._housekeep()
             cls._watch_for_pickup(melty)
             if not cls.active:
                 return
 
-        if (cls.item_ds is None or cls.source_ds is None
+        if cls.immediate:
+            if (cls.source_ds is None or cls.source_ds.closed
+                    or cls.source_ds.abs_closed):
+                cls._reset()
+                return
+        elif (cls.item_ds is None or cls.source_ds is None
                 or cls.source_ds.closed or cls.source_ds.abs_closed):
             cls._reset()
             return
@@ -298,12 +566,35 @@ class DragDrop:
             cls._reset()
             return
 
+        if cls.immediate:
+            # Immediate ghosts are drawn by the owner's own body straight
+            # into its render list - force the owner's tile dirty every frame
+            # so the body re-runs and the ghost tracks the cursor. This is
+            # the immediate-mode tradeoff; render-only items ride the
+            # invalidation-free floating-window path below instead.
+            cls._wake(cls.source_ds)
+            return
+
         # NO per-frame invalidation: the floating window is a cached tile
         # blitted at its moving window_pos - the closable-window fast path.
         # The only per-frame work is keeping it registered with its layer,
         # usually done by the deferring inline call in the source
         # collection's body, which a clean (blitted) collection rightly skips.
         cls._keep_alive(melty)
+
+    @classmethod
+    def _housekeep(cls):
+        """Idle-time pruning of the immediate registries. Entries are
+        re-registered every body run, so clearing costs nothing beyond a
+        re-fill — but never mid-gesture (a press could be captured on an
+        entry we'd need at arm time)."""
+        if cls._pending_drops:
+            for ds in [d for d in cls._pending_drops if d.closed]:
+                del cls._pending_drops[ds]
+        if (len(cls._im_items) > 4096
+                and not Core.melty.event_handler.is_down("left_mouse")):
+            cls._im_items.clear()
+            cls._im_lists.clear()
 
     @classmethod
     def _keep_alive(cls, melty):
@@ -342,18 +633,30 @@ class DragDrop:
         if melty.imgui_active or melty.imgui_popup_open:
             return
         for view_id, events in melty.events.items():
-            if not (isinstance(view_id, str) and view_id.endswith(_VIEW_ID_SUFFIX)):
+            if not isinstance(view_id, str):
                 continue
-            ev = events.get("left_mouse_drag")
-            if ev is None:
-                continue
-            if math.hypot(ev.total_dx, ev.total_dy) < ARM_DISTANCE:
-                continue
-            ds = cache.key_to_draw_state.get(view_id[:-len(_VIEW_ID_SUFFIX)])
-            if ds is None:
-                continue
-            cls._begin(ds, ev)
-            return
+            if view_id.endswith(_VIEW_ID_SUFFIX):
+                ev = events.get("left_mouse_drag")
+                if ev is None:
+                    continue
+                if math.hypot(ev.total_dx, ev.total_dy) < ARM_DISTANCE:
+                    continue
+                ds = cache.key_to_draw_state.get(view_id[:-len(_VIEW_ID_SUFFIX)])
+                if ds is None:
+                    continue
+                cls._begin(ds, ev)
+                return
+            if _IM_MARK in view_id:
+                ev = events.get("left_mouse_drag")
+                if ev is None:
+                    continue
+                if math.hypot(ev.total_dx, ev.total_dy) < ARM_DISTANCE:
+                    continue
+                item = cls._im_items.get(view_id)
+                if item is None or item.ds.closed or item.ds.abs_closed:
+                    continue
+                cls._begin_immediate(item, ev)
+                return
 
     @classmethod
     def _begin(cls, draw_state, ev):
@@ -422,6 +725,10 @@ class DragDrop:
 
     @classmethod
     def _is_drop_collection(cls, draw_state):
+        # Immediate owners (on_drop stamps _dnd_immediate) publish all their
+        # slots via _dnd_extra_slots - no collection value to sanity-check.
+        if getattr(draw_state, "_dnd_immediate", False):
+            return not cls._inside_dragged(draw_state)
         # draw_collection by name; any other view may participate by stamping
         # _dnd_drop_target = True on its draw_state each render (it must also
         # maintain ds._children ordered by collection key, with each child's
@@ -564,6 +871,11 @@ class DragDrop:
                     if h1 > h0:
                         cls._add_slot(out, ds, e_idx, h0, h1, cross,
                                       ct - 6, cb + 6, mx, my)
+
+        # Immediate views have NO _children/_raw_input_value collection to
+        # derive rows from - their extra slots above are ALL their slots.
+        if getattr(ds, "_dnd_immediate", False):
+            return
 
         if isinstance(coll, dict):
             keys = list(coll.keys())
@@ -716,7 +1028,11 @@ class DragDrop:
         another window there. The floating dragged window (and anything in
         it) never occludes: the slot under the user's hand is the one they
         most want."""
-        owners = set()
+        # Seed with the collection ds itself: an immediate owner (e.g. the
+        # code editor's tabs) IS its own window, and a top-level window's
+        # parent_window is None - starting the walk one step up would leave
+        # owners empty and the window would occlude its own slots.
+        owners = {id(coll_ds)}
         win = coll_ds.parent_window
         hops = 0
         while win is not None and hops < 32:
@@ -899,32 +1215,48 @@ class DragDrop:
         melty = Core.melty
         _dist, _a0, _a1, _cross, target_ds, insert_idx, _vert = cls.nearest
         src_ds, key = cls.source_ds, cls.key
+        target_im = getattr(target_ds, "_dnd_immediate", False)
 
         if target_ds is src_ds:
-            melty.dnd_requests[src_ds] = Reorder(key, insert_idx)
-            cls._wake(src_ds)
-        else:
-            src = src_ds._raw_input_value
-            if isinstance(src, dict):
-                if key not in src:
-                    return
-                value = src[key]
-            elif isinstance(src, list):
-                if not (isinstance(key, int) and 0 <= key < len(src)):
-                    return
-                value = src[key]
+            if cls.immediate:
+                cls._queue_drop(src_ds, DropEvent("reorder", key, cls.value,
+                                                  cls.im_index, insert_idx))
             else:
-                return
-            melty.dnd_requests[src_ds] = Remove(key)
-            melty.dnd_requests[target_ds] = Insert(key, value, insert_idx)
-            cls._wake(src_ds)
-            cls._wake(target_ds)
+                melty.dnd_requests[src_ds] = Reorder(key, insert_idx)
+                cls._wake(src_ds)
+        else:
+            if cls.immediate:
+                value = cls.value
+                cls._queue_drop(src_ds, DropEvent("remove", key, value,
+                                                  cls.im_index))
+            else:
+                src = src_ds._raw_input_value
+                if isinstance(src, dict):
+                    if key not in src:
+                        return
+                    value = src[key]
+                elif isinstance(src, list):
+                    if not (isinstance(key, int) and 0 <= key < len(src)):
+                        return
+                    value = src[key]
+                else:
+                    return
+                melty.dnd_requests[src_ds] = Remove(key)
+                cls._wake(src_ds)
+            if target_im:
+                cls._queue_drop(target_ds, DropEvent("insert", key, value,
+                                                     insert_index=insert_idx))
+            else:
+                melty.dnd_requests[target_ds] = Insert(key, value, insert_idx)
+                cls._wake(target_ds)
         request_render()
 
     @classmethod
     def _reset(cls):
         src, item = cls.source_ds, cls.item_ds
         cls.active = False
+        cls.immediate = False
+        cls.im_index = None
         cls.item_ds = None
         cls.source_ds = None
         cls.key = None

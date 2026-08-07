@@ -2,6 +2,7 @@
 Filter execution engine - applies shaders to textures.
 """
 
+from collections import OrderedDict
 from typing import Dict, Any, Optional, Tuple
 import ctypes
 
@@ -19,6 +20,13 @@ def _get_numpy():
     """Lazy import of numpy."""
     import numpy as np
     return np
+
+
+# Most recent distinct render-target sizes to keep FBOs and textures for.
+# Big enough for any concurrently-used size in a frame (screen, shadow
+# map-res, a few filtered textures); small enough that a resize drag's
+# hundreds of intermediate sizes get evicted instead of accumulating.
+_MAX_CACHED_SIZES = 8
 
 
 class FilterExecutor:
@@ -42,11 +50,14 @@ class FilterExecutor:
         self._quad_vbo = None
         self._initialized = False
 
-        # FBO cache: maps (width, height) -> FBO ID
-        self._fbo_cache: Dict[Tuple[int, int], int] = {}
+        # FBO cache: maps (width, height) -> FBO ID. LRU-bounded (see
+        # _MAX_CACHED_SIZES): a continuous window resize sweeps hundreds of
+        # unique sizes through here, and unbounded growth kept a full-size
+        # RGBA8 temp render texture per size - the resize VRAM leak.
+        self._fbo_cache: "OrderedDict[Tuple[int, int], int]" = OrderedDict()
 
         # Temp texture cache for in-place operations: maps (width, height) -> texture ID
-        self._temp_texture_cache: Dict[Tuple[int, int], int] = {}
+        self._temp_texture_cache: "OrderedDict[Tuple[int, int], int]" = OrderedDict()
 
         # Output texture cache: maps input_texture_id -> (output_texture_id, width, height)
         # Each input texture gets its own persistent output texture
@@ -287,6 +298,19 @@ class FilterExecutor:
         if size not in self._temp_texture_cache:
             self._temp_texture_cache[size] = self._create_texture(width, height)
 
+        # LRU-bound both caches: evict the least recently used sizes so a
+        # window resize (a new size every frame) can't accumulate a temp
+        # texture + FBO per intermediate size. Runs on the GL thread (only
+        # execute() calls this), so deleting here is safe.
+        self._fbo_cache.move_to_end(size)
+        self._temp_texture_cache.move_to_end(size)
+        while len(self._fbo_cache) > _MAX_CACHED_SIZES:
+            _, old_fbo = self._fbo_cache.popitem(last=False)
+            GL.glDeleteFramebuffers(1, [old_fbo])
+        while len(self._temp_texture_cache) > _MAX_CACHED_SIZES:
+            _, old_tex = self._temp_texture_cache.popitem(last=False)
+            GL.glDeleteTextures(1, [old_tex])
+
         return self._fbo_cache[size], self._temp_texture_cache[size]
     
     def _create_texture(self, width: int, height: int) -> int:
@@ -388,17 +412,22 @@ class FilterExecutor:
             GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, original_read_fbo)
             return (texture_id, width, height)
 
-        # Otherwise, copy framebuffer contents to a temporary texture
-        # Create or reuse temp texture for this size
-        cache_key = f"fbo_input_{framebuffer_id}_{width}_{height}"
+        # Otherwise, copy framebuffer contents to a temporary texture.
+        # ONE copy target per framebuffer, reused when that framebuffer's
+        # size changes - framebuffer 0 is read every filtered frame and
+        # resizes with the window, and the old per-(fb, w, h) keys leaked a
+        # full-screen texture for every intermediate size during a resize.
         if not hasattr(self, '_fbo_input_cache'):
             self._fbo_input_cache = {}
 
-        if cache_key in self._fbo_input_cache:
-            temp_texture = self._fbo_input_cache[cache_key]
+        cached = self._fbo_input_cache.get(framebuffer_id)
+        if cached is not None and cached[1] == width and cached[2] == height:
+            temp_texture = cached[0]
         else:
+            if cached is not None:
+                GL.glDeleteTextures(1, [cached[0]])
             temp_texture = self._create_texture(width, height)
-            self._fbo_input_cache[cache_key] = temp_texture
+            self._fbo_input_cache[framebuffer_id] = (temp_texture, width, height)
 
         # Copy framebuffer contents to the texture
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, framebuffer_id)
@@ -468,9 +497,12 @@ class FilterExecutor:
             if self._quad_vbo is not None:
                 GL.glDeleteBuffers(1, [self._quad_vbo])
 
-        # Clean up input framebuffer cache
+        # Clean up input framebuffer cache. Values are (texture, w, h); a
+        # copy-swapped-over instance may still hold bare texture ids from the
+        # old per-size cache, so accept both shapes.
         if hasattr(self, '_fbo_input_cache'):
-            for texture_id in self._fbo_input_cache.values():
+            for entry in self._fbo_input_cache.values():
+                texture_id = entry[0] if isinstance(entry, tuple) else entry
                 GL.glDeleteTextures(1, [texture_id])
             self._fbo_input_cache.clear()
 

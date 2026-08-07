@@ -1714,9 +1714,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # editor also inserts a newline, which used to be invisible when every
     # activation dismissed and cleared the box, and shows up now that toggle
     # rows keep the search visible.
-    box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False,
+    box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False, show_bg=False,
                     font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False, is_search_box=True,
-                    single_line=True, return_extras=True, tint=(1, 1, 1))
+                    single_line=True, return_extras=True)
     changed, new_query = box[0], box[1]
     box_ds = box[2] if len(box) > 2 else None
     if changed:
@@ -3949,13 +3949,10 @@ def draw_str(input_value: str, draw_state, editable=True, wrap=False, min_width=
             changed, value = imgui.input_text("##str", str(input_value),
                                               flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
-        imgui.set_cursor_screen_pos((snap_int(draw_state.abs_left), snap_int(draw_state.abs_top)))
         # disable scrolling
-        imgui.new_line()
-        changed, value = draw_text(str(input_value), name=draw_state.name +"##innder", 
-                                    editable=True, with_header=draw_header,
+        changed, value = draw_text(str(input_value), name=draw_state.name +"##innder", show_bg=True,
+                                    editable=True, with_header=draw_header, width=draw_state.content_width - 10,
                                    show_name=False, is_tree=False, temp=True)
-        imgui.dummy(draw_state.content_width, text_height - height + 10)
 
     if not show_controls:
         imgui.pop_style_var(1)
@@ -4573,7 +4570,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
 
 
 @render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
-             indent_size=2, is_tree=False, align_header=True, header_same_line=False, wrap=False,
+             indent_size=2, is_tree=False, align_header=True, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
                info=None):

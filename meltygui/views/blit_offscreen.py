@@ -132,6 +132,21 @@ class Tile:
     # invalidations can be skipped. Reset on tile recreation and clamped in place
     # on a within-bucket logical resize.
     filled_bbox: Optional[Tuple[int, int, int, int]] = None
+    # freeze_resize tiles only: per-axis high-water mark of the logical size -
+    # the extent of ever-rendered content still resident in the texture.
+    # Shrinks leave those texels in place (no band clear, alloc never
+    # shrinks) so a grow-drag's frozen blit can reveal them instead of
+    # background. None for normal tiles (logical size == content extent).
+    content_size: Optional[Tuple[int, int]] = None
+    # Scroll offset those beyond-logical texels were rendered at (clamped on
+    # shrink). If the view scrolls away from it while small, those texels no
+    # longer line up with the live content - _scrub_stale_content clears them
+    # to transparent once (content_bg flags the scrub so repeated scroll
+    # frames don't re-clear); the frozen blit paints the real background
+    # (content_bg) underneath, so a grow-drag pops in the view's exact bg
+    # instead of misaligned stale pixels.
+    content_scroll: Optional[Tuple[int, int]] = None
+    content_bg: bool = False
 
 
 @dataclass
@@ -315,6 +330,16 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     aw = _bucket(w)
     ah = _bucket_h(h)
 
+    # freeze_resize tiles never shrink their allocation: a shrink stays on the
+    # in-place path below with the beyond-logical texels left intact, so a
+    # later grow-drag can reveal them (see Tile.content_size). Recreate only
+    # on a genuine grow past the ever-max alloc.
+    no_shrink = bool(getattr(draw_state, "freeze_resize", False))
+    if no_shrink and existing:
+        eaw, eah = _tile_alloc(existing)
+        aw = max(aw, snap_int(eaw))
+        ah = max(ah, snap_int(eah))
+
     if existing and _tile_alloc(existing) == (aw, ah):
         # Same bucket: update the logical size in place - no GL realloc, no
         # crop-blit (top-anchored content keeps the screen-top-left corner on
@@ -329,7 +354,13 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         # mask-gated copy discards where the tile has no fresh geometry, so it
         # would NOT overwrite stale texels left by an earlier larger logical
         # era. Clear the newly exposed bands on grow.
-        if w > ow or h > oh:
+        #
+        # freeze_resize tiles deliberately break this invariant: earlier-era
+        # texels beyond the logical rect are the feature (revealed during a
+        # grow-drag), so the bands are kept and content_size records how far
+        # they extend. The settle re-render overwrites them inside the logical
+        # rect; anything beyond content_size is creation-cleared transparent.
+        if (w > ow or h > oh) and not no_shrink:
             st = _GLState()
             try:
                 bands = []
@@ -363,6 +394,16 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
                       min_interval=0.5)
         except Exception:
             pass
+        if no_shrink:
+            cs = getattr(existing, "content_size", None) or (ow, oh)
+            existing.content_size = (min(aw, max(cs[0], w)), min(ah, max(cs[1], h)))
+            if w < ow or h < oh:
+                # Shrink: the texels now beyond the logical rect are freshly
+                # cleared - anchor them to the current scroll so a later
+                # scroll can detect they've gone stale.
+                so = getattr(draw_state, "scroll_offset", None) or (0, 0)
+                existing.content_scroll = (snap_int(so[0]), snap_int(so[1]))
+                existing.content_bg = False
         existing.size = (w, h)
         # Always stamp alloc_size: also upgrades a pre-bucketing tile whose
         # exact size happened to be bucket-aligned (getattr fallback saw
@@ -425,8 +466,16 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             old_aw, old_ah = _tile_alloc(existing)
             ow = snap_int(existing.size[0])
             oh = snap_int(existing.size[1])
-            cw = max(0, min(ow, w))
-            ch = max(0, min(oh, h))
+            if no_shrink:
+                # Recreate under no_shrink only happens on a genuine grow
+                # (aw/ah >= old alloc), so the full content extent - not just
+                # the logical size - fits the new surface. Carry it over.
+                cs = getattr(existing, "content_size", None) or (ow, oh)
+                cw = max(0, min(snap_int(cs[0]), aw))
+                ch = max(0, min(snap_int(cs[1]), ah))
+            else:
+                cw = max(0, min(ow, w))
+                ch = max(0, min(oh, h))
             if cw > 0 and ch > 0:
                 gl.glBlitFramebuffer(
                     0, snap_int(old_ah) - ch, cw, snap_int(old_ah),  # src (old FBO, top-left in screen)
@@ -476,6 +525,11 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         t.filled_bbox = (0, 0, cw, ch) if cw > 0 and ch > 0 else None
     else:
         t.filled_bbox = None
+    if no_shrink and existing is not None:
+        cs = getattr(existing, "content_size", None) or (ow, oh)
+        t.content_size = (min(aw, max(cs[0], w)), min(ah, max(cs[1], h)))
+        t.content_scroll = getattr(existing, "content_scroll", None)
+        t.content_bg = getattr(existing, "content_bg", False)
     _bump_note(t, "tile-recreate")
     t.last_invalidated_frame = max(t.last_invalidated_frame, frame_id + 1)
     request_render()
@@ -1884,6 +1938,116 @@ class TileCacheMasked:
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count
 
+    def draw_freeze_bg(self, draw_state, left, top, width, height, live: bool):
+        """Single owner of background rendering for freeze_resize views — the
+        wrapper's show_bg block delegates here instead of calling draw_bg
+        itself, so live and frozen frames share one code path and can never
+        drift apart in color or geometry.
+
+        live=True: called by core_render at the exact frame position the
+        show_bg block draws, with the globals draw_bg reads (bg_depth ramp,
+        bg_stack bleed, style tint) in their correct state — draw with them
+        and capture them into _frozen_bg_kwargs. live=False: called by the
+        frozen blit at mark_start time, where those globals belong to a
+        different stack position — replay the captured state around the call
+        (same save/restore pattern as the deferred-window pass in melty.py).
+
+        Note: PASS 3 snapshots the framebuffer with alpha forced to 1, so the
+        bg drawn on live frames is still baked into the tile like any other
+        pixel. Ownership buys a single code path, not a transparent tile.
+        Returns draw_bg's (changed, bg_color) or None when there is no bg to
+        draw — the wrapper uses bg_color for Melty.bg_color_stack."""
+        fb = getattr(draw_state, "_frozen_bg_kwargs", None)
+        if (not fb or not fb.get("show_bg")
+                or width is None or height is None or width <= 5 or height <= 5):
+            return None
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+        style_manager = Melty.global_attrs['style_manager']
+        if live:
+            fb.update({
+                "depth": Melty.shadow_depth,
+                "bg_depth": Melty.bg_depth,
+                "bg_stack": copy(Melty.bg_stack),
+                "style_tint": style_manager.get_tint(),
+            })
+        _sv_depth, _sv_stack = Melty.bg_depth, Melty.bg_stack
+        _sv_tint = style_manager.get_tint()
+        if not live:
+            Melty.bg_depth = fb.get("bg_depth", _sv_depth)
+            if fb.get("bg_stack") is not None:
+                Melty.bg_stack = fb["bg_stack"]
+            if fb.get("style_tint") is not None:
+                style_manager.set_imgui_tint(*fb["style_tint"])
+        try:
+            # outline=False: freeze views render no outline at all - the baked
+            # outline in the tile is what floats as a stamped ghost during
+            # drags, and clipping it out proved fragile (AA feather, corner
+            # arcs). No outline drawn -> none captured -> nothing to clip.
+            return draw_bg(bypass=True, left=left, top=top,
+                           width=width, height=height, outline=False,
+                           rounding=getattr(draw_state, "corner_radius", 6),
+                           bg_offset=fb.get("bg_offset", 0),
+                           max_bg_depth=fb.get("max_bg_depth", None),
+                           max_bg_value=fb.get("max_bg_value", None),
+                           depth=fb.get("depth", Melty.shadow_depth),
+                           selected=False,
+                           opacity=1.0, saturation=fb.get("saturation", 1.0),
+                           pressed=False,
+                           style_manager=style_manager,
+                           nested_bg=fb.get("nested_bg", False))
+        finally:
+            if not live:
+                Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
+                style_manager.set_imgui_tint(*_sv_tint)
+
+    def _scrub_stale_content(self, t: Tile, draw_state) -> None:
+        """freeze_resize tiles: drop preserved beyond-logical texels once the
+        view scrolls away from the position they were captured at. They are
+        cleared to transparent; the frozen blit paints the real background
+        live (draw_bg) under the stale image, so the cleared bands read as
+        the view's exact bg — rounding, outline, saturation included.
+        One-shot per capture era — content_bg suppresses re-clears until a
+        shrink re-exposes fresh texels. Only the view's OWN scroll is
+        tracked; a descendant's inner scroll can still leave stale pixels in
+        the bands (acceptable for a mid-drag preview)."""
+        cs = getattr(t, "content_size", None)
+        if cs is None or getattr(t, "content_bg", False):
+            return
+        w, h = snap_int(t.size[0]), snap_int(t.size[1])
+        cw, ch = snap_int(cs[0]), snap_int(cs[1])
+        if cw <= w and ch <= h:
+            return
+        so = getattr(draw_state, "scroll_offset", None) or (0, 0)
+        so = (snap_int(so[0]), snap_int(so[1]))
+        anchor = getattr(t, "content_scroll", None)
+        if anchor is None:
+            # Pre-field tile (hotswap) or first sighting: anchor here.
+            t.content_scroll = so
+            return
+        if anchor == so:
+            return
+
+        aw, ah = _tile_alloc(t)
+        bands = []
+        if ch > h:  # bottom band: screen rows [h, ch)
+            bands.append((0, ah - ch, cw, ch - h))
+        if cw > w:  # right band: screen cols [w, cw), full content height
+            bands.append((w, ah - ch, cw - w, ch))
+        st = _GLState()
+        try:
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, t.fbo)
+            gl.glEnable(gl.GL_SCISSOR_TEST)
+            gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+            gl.glClearColor(0, 0, 0, 0.0)
+            for x, y, bw, bh in bands:
+                gl.glScissor(int(x), int(y), int(bw), int(bh))
+                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            _clear_mask_regions(t.mask_tex, bands)
+        finally:
+            st.restore()
+        t.content_scroll = so
+        t.content_bg = True
+
     def mark_start_offscreen(self, draw_state) -> bool:
 
 
@@ -1979,23 +2143,65 @@ class TileCacheMasked:
                          and (not self._is_dirty(t))
                          and (not draw_state.size_change))
 
-            if use_image:
+            # Frozen resize (opt-in via freeze_resize, off by default): while a
+            # mouse drag is actively changing this view's size, skip the live
+            # re-render and blit the stale tile at its captured size, anchored
+            # top-left and clipped to the live rect. Layout (the dummy below)
+            # still advances by the LIVE size so the cursor tracks; on mouse-up
+            # the size mismatch falls through to the normal live-render +
+            # _ensure_tile path in mark_for_offscreen and the view redraws
+            # once at the settled size. Scoped to a size mismatch so drags
+            # inside the view (scroll, selection) never freeze it.
+            frozen = (not use_image
+                      and t is not None and has_area
+                      and getattr(draw_state, "freeze_resize", False)
+                      and t.size != (size[0], size[1])
+                      and (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+                           or imgui.is_mouse_down(2) or Melty.on_drag))
+
+            if use_image or frozen:
                 imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
                 a = draw_state.abs_left, draw_state.abs_top
-                b = draw_state.abs_left + size[0], draw_state.abs_top + size[1]
-                # Top-anchored logical subrect of the (possibly zero-padded)
-                # texture: it spans u [0, lw/aw], v [1 - lh/ah, 1].
+                # Frozen: draw the full resident content (the high-water
+                # extent, >= logical size for no-shrink tiles) - a clip to
+                # the live rect below crops it, so a grow/drag reveals
+                # preserved earlier-era pixels instead of background.
+                draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
+                if frozen:
+                    # The content's right/bottom edge has the view's own
+                    # outline and scrollbar baked in; mid-drag that edge sits
+                    # inside the live rect and reads as a stamped seam. Trim
+                    # it off and let the live draw_bg show through the strip.
+                    # (During a shrink the strip is outside the live clip
+                    # anyway, so the trim only ever hides the baked edge.)
+                    # Horizontal trim is wider: the scrollbar gutter lives there.
+                    draw_size = (max(1, draw_size[0] - snap_int(Melty.px(20))),
+                                 max(1, draw_size[1] - snap_int(Melty.px(5))))
+                b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
+                # Top-anchored subrect of the (possibly bucket-padded)
+                # texture: content spans u [0, dw/aw], v [1 - dh/ah, 1].
                 taw, tah = _tile_alloc(t)
                 uv_a = (0.0, 1.0)
-                uv_b = (t.size[0] / taw, 1.0 - t.size[1] / tah)
+                uv_b = (draw_size[0] / taw, 1.0 - draw_size[1] / tah)
 
-                imgui.get_window_draw_list().add_image_rounded(t.tex,
-                                                               a=a,
-                                                               b=b,
-                                                               uv_a=uv_a,
-                                                               uv_b=uv_b,
-                                                               rounding=getattr(draw_state, "corner_radius", 6))
+                dl = imgui.get_window_draw_list()
+                if frozen:
+                    # Paint the background live over the full live rect
+                    # (under the frozen image) - outline-less for freeze
+                    # views, so nothing baked in the tile interferes with it.
+                    self.draw_freeze_bg(draw_state, a[0], a[1],
+                                        size[0], size[1], live=False)
+                    dl.push_clip_rect(a[0], a[1],
+                                      a[0] + size[0], a[1] + size[1], True)
+                dl.add_image_rounded(t.tex,
+                                     a=a,
+                                     b=b,
+                                     uv_a=uv_a,
+                                     uv_b=uv_b,
+                                     rounding=getattr(draw_state, "corner_radius", 6))
+                if frozen:
+                    dl.pop_clip_rect()
 
                 # Drag-n-drop home slot: when this cached tile contains the
                 # dragged item's slot, its pixels there can be stale (the
@@ -2254,6 +2460,9 @@ class TileCacheMasked:
 
                     self.invalidate_up(ctx.key, max_depth=4, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
                 self._tiles[ctx.key] = t
+
+            if t is not None:
+                self._scrub_stale_content(t, ctx.draw_state)
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
                 self._pending.append(

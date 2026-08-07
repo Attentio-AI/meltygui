@@ -5734,6 +5734,43 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_end = len(text)
             ds.text_cursor_pos = len(text)
 
+    def _goto_usage_ref(ref):
+        """Route one picked UsageRef: a site that lands inside THIS buffer's
+        rendered span just moves the caret — the editor's own cursor-follow
+        scroll brings it into view on the next body run — instead of
+        round-tripping through the external jump (open tab + jump_to_line),
+        which re-summons the editor window and loses the local context.
+        Anything outside the span (other file, or a line outside a span
+        buffer's range) still goes through _open_usage_ref."""
+        _line = getattr(ref, 'line', None)
+        _rpath = getattr(ref, 'path', None)
+        _vp = getattr(jump_to, 'path', None) if jump_to is not None else None
+        if _line is not None and _rpath is not None and _vp is not None:
+            try:
+                import os
+                _same = os.path.realpath(str(_rpath)) == os.path.realpath(str(_vp))
+            except OSError:
+                _same = False
+            _li = _line - 1 - _usage_off   # ref line → buffer line index
+            if _same and 0 <= _li <= text.count('\n'):
+                _offs = _line_offsets(text)
+                _ls = _offs[_li]
+                _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(text)
+                _pos = min(_ls + (getattr(ref, 'column', 0) or 0), _le)
+                if _pos == _ls:
+                    # No column info - focus on the code, not the indent.
+                    while _pos < _le and text[_pos] in ' \t':
+                        _pos += 1
+                ds.text_cursor_pos = _pos
+                ds.text_selection_start = ds.text_selection_end = _pos
+                Melty.text_focused_ds = ds
+                Melty._text_focus_grant_frame = Melty.frame_count
+                ds.text_cursor_blink_time = time.time()
+                ds.invalidate()
+                request_render()
+                return
+        _open_usage_ref(ref)
+
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
         straight in IntelliJ; several open the usage-jump picker under the
@@ -5766,7 +5803,7 @@ def draw_text(input_value: str, height=None,
                     request_render()
                     return True
                 if _targets:
-                    _open_usage_ref(_targets[0])
+                    _goto_usage_ref(_targets[0])
                     return True
                 return False
         return False
@@ -6039,7 +6076,7 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
             elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _uj_keys and not ctrl:
-                _open_usage_ref(ds._uj_items[_uj_keys[min(_uj_idx, len(_uj_keys) - 1)]])
+                _goto_usage_ref(ds._uj_items[_uj_keys[min(_uj_idx, len(_uj_keys) - 1)]])
                 ds._uj_open = False
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
@@ -8214,7 +8251,7 @@ def draw_text(input_value: str, height=None,
     else:
         ds._uj_menu_sig = None   # force one repaint on the next open
     if uj_changed and getattr(uj_pick, 'path', None) is not None:
-        _open_usage_ref(uj_pick)
+        _goto_usage_ref(uj_pick)
         ds._uj_open = False
 
     # --- Import quick-fix chooser --- same latched-window contract as the two

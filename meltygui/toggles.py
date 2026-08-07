@@ -421,10 +421,13 @@ class Toggles:
         # too. Captured stores persist untouched and the markers come back
         # on re-enable. Read live.
         enable_live_view = True
+
         # Hovering a live-view marker shows its value window as a TEMPORARY
         # preview (closes on mouse-leave); double-click still latches it
         # open permanently. Read live per marker render.
         live_hover_preview = False
+
+
         # Auto-open the value window for 3-D+ tensors (typically voxel volumes)
         # the moment an instrumented run captures them. Off = every snapshot
         # marker starts closed (click-gutter to open) - with loop
@@ -894,6 +897,27 @@ class Toggles:
         scale = 0.80
 
     # [icon=""]
+    @defaults(tint=(0.36, 0.42, 0.52))
+    class Melty:
+        # Custom client-side titlebar: undecorated OS window so the UI sticks
+        # to the top of the display, with min/max/close drawn to the overlay
+        # drawlist top-right and drag/edge-resize handed to the WM via
+        # _NET_WM_MOVERESIZE (titlebar.py). X11/XWayland only - on native
+        # Wayland the toggle is ignored and server decorations stay. Applied
+        # live each frame (glfw.set_window_attrib) and read at boot from the
+        # DECORATED window hint.
+        enhanced_titlebar = True
+
+        # px height of the invisible drag strip along the top edge - a drag
+        # outside inside it (a few px of travel past the press) moves the OS
+        # window; a clean click there falls through to whatever view is under
+        # the cursor. Double-click toggles maximize.
+        drag_strip_height = 50
+
+        # px hit zones for edge/corner resize on the undecorated window.
+        resize_border = 6
+        resize_corner = 18
+
     @defaults(tint=(0.103, 0.341, 0.617))
     class WindowSettings:
         # Sticky resize: re-anchor the window top at the drag-start point each
@@ -963,7 +987,7 @@ class Toggles:
 
     @defaults(tint=(0.47, 0.463, 0.417))
     class ScrollSettings:
-        scroll_speed = 611
+        scroll_speed = 214
         max_increment_fraction = 0.169
         acceleration_threshold = 0.036  # ms
         bg_offset = 30

@@ -2151,6 +2151,28 @@ def render_func(*args, **o_kwargs):
             use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not draw_state._external_change
             draw_state._bypass_cache = kwargs.get("draw", False)
             draw_state.use_cache = use_cache
+            # Opt-in (off by default): during window mouse-dragging the view's
+            # stale cache is blitted instead of live re-rendering every frame.
+            # Read by mark_start_offscreen via getattr (corner_radius pattern).
+            draw_state.freeze_resize = kwargs.get("freeze_resize", False)
+            if draw_state.freeze_resize:
+                # Blit owns all bg rendering for freeze_resize views
+                # (Melty.cache.draw_freeze_bg, called from the show_bg block
+                # below on live frames and by the frozen blit mid-drag) -
+                # stamp the recipe it draws with. update(), not overwrite: the
+                # live call adds a capture of current color globals
+                # (bg_depth/bg_stack/tint) that must survive frozen frames'
+                # re-stamps.
+                if getattr(draw_state, "_frozen_bg_kwargs", None) is None:
+                    draw_state._frozen_bg_kwargs = {}
+                draw_state._frozen_bg_kwargs.update({
+                    "show_bg": kwargs.get("show_bg", False),
+                    "bg_offset": kwargs.get("bg_offset", 0),
+                    "max_bg_depth": kwargs.get("max_bg_depth", None),
+                    "max_bg_value": kwargs.get("max_bg_value", None),
+                    "saturation": kwargs.get("saturation", 1.0),
+                    "nested_bg": not closable and kwargs.get("bg_offset", 0) >= 0,
+                })
             # if (draw_state.parent_window is not None and draw_state.window_pos is not None and
             #         draw_state.parent_window.window_pos is not None and closable):
             draw_state.left = draw_state.abs_left
@@ -3206,16 +3228,26 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                        bg_return = draw_bg(bypass=True, left=draw_state.abs_left, top=draw_state.abs_top,
-                                            width=draw_state.width, height=draw_state.height,
-                                            rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
-                                            max_bg_depth=kwargs.get("max_bg_depth", None),
-                                            max_bg_value=kwargs.get("max_bg_value", None),
-                                            depth=Melty.shadow_depth, selected=False,
-                                            opacity=1.0 if show_bg else 0.0,
-                                            saturation=kwargs.get("saturation", 1.0),
-                                            pressed=False,
-                                            style_manager=style_manager, nested_bg=nested_bg)
+                        if getattr(draw_state, "freeze_resize", False):
+                            # Blit owns ALL bg rendering for freeze_resize
+                            # views: the same draw_freeze_bg runs here (live,
+                            # capturing the color globals), and during frozen
+                            # mid-drag frames (reusing them), so the two views
+                            # never drift apart. The view itself draws no bg.
+                            bg_return = Melty.cache.draw_freeze_bg(
+                                draw_state, draw_state.abs_left, draw_state.abs_top,
+                                draw_state.width, draw_state.height, live=True)
+                        else:
+                            bg_return = draw_bg(bypass=True, left=draw_state.abs_left, top=draw_state.abs_top,
+                                                width=draw_state.width, height=draw_state.height,
+                                                rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
+                                                max_bg_depth=kwargs.get("max_bg_depth", None),
+                                                max_bg_value=kwargs.get("max_bg_value", None),
+                                                depth=Melty.shadow_depth, selected=False,
+                                                opacity=1.0 if show_bg else 0.0,
+                                                saturation=kwargs.get("saturation", 1.0),
+                                                pressed=False,
+                                                style_manager=style_manager, nested_bg=nested_bg)
                         # draw_bg paints into this view's tile rather than owning
                         # one, so register it against this view's key for invalidate_by_func.
                         Melty.cache.register_func_key(draw_bg, draw_state._tile_id)
