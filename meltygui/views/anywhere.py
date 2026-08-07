@@ -28,49 +28,58 @@ class SourcePriority(Enum):
                                  # other kwargs merges, so at runtime it
                                  # beats @defaults, callers, and codecs alike
     MODE = 1
-    RENDER_FUNC = 2              # signature defaults (def draw_x(speed=3))
-    WINDOW_DECORATION = 3        # @window(...) on a class or class - outranks
+    WINDOW_DECORATION = 2        # @window(...) on the func or class - outranks
                                  # @defaults (the window kwargs drive the
                                  # window that renders the value)
-    CALLER = 4                   # call-site kwargs are EXPLICITLY passed, so in
-                                 # the wrapper's gauntlet they beat EVERY
+    CALLER = 3                   # call-site kwargs - EXPLICITLY passed, so in
+                                 # the wrapper's gauntlet they beat every
                                  # injected default layer, @defaults included
                                  # (verified live: draw_code_tabs_and_cache's
                                  # child_kwargs= wins over the GeneralParse
                                  # class @defaults). DEPTH is the natural
                                  # tiebreaker (see _source_priority) - no
                                  # CALLER_0/CALLER_1 members needed
-    MODE_CHILD_KWARGS = 5        # child_kwargs={...} inside the PARENT's mode
+    MODE_CHILD_KWARGS = 4        # child_kwargs={...} inside the PARENT's mode
                                  # entry (Modes.NEW_CODE). Same merge into the
                                  # child call as CHILD_KWARGS below. but on the
                                  # parent it's the MODE setting child_kwargs -
                                  # and mode outranks the parent's caller and
                                  # @defaults - so it wins the dict whenever the
                                  # mode entry carries one
-    CHILD_KWARGS = 6             # the PARENT view's child_kwargs={...} - an
+    CHILD_KWARGS = 5             # the PARENT view's child_kwargs={...} - an
                                  # explicit call kwarg on the child, so
                                  # caller-strength: above @defaults for the
                                  # same reason as CALLER; the dict itself
                                  # lives at any of the parent's OWN sources,
                                  # resolved via from_anywhere("child_kwargs",
                                  # parent)
-    AT_DEFAULT_CODE_TYPE = 7     # @defaults on a PARSED class in the value tree
-    AT_DEFAULT_OBJ_TYPE = 8      # @defaults on the value's runtime class
-    DECORATION = 9               # @render_func(...) kwargs on the view func
-    INSTANCE_ATTR = 10           # whitelisted live attr on the value object
+    AT_DEFAULT_CODE_TYPE = 6     # @defaults on a PARSED class in the value tree
+    AT_DEFAULT_OBJ_TYPE = 7     # @defaults on the value's runtime class
+    DECORATION = 8               # @render_func(...) kwargs on the view func
+    INSTANCE_ATTR = 9            # whitelisted instance attr on the value object
                                  # (core_render.OBJ_ATTR_PARAMS, e.g.
                                  # Lora.tint) - injected via setdefault, so
                                  # every kwargs-borne source above wins
-    CLASS_VAR = 11               # class-level assignment on the value's class -
-                                 # drives the view through the SAME getattr
+    CLASS_VAR = 10               # class-body assignment on the value's class -
+                                 # reaches the view through the SAME getattr
                                  # injection as INSTANCE_ATTR, where the
                                  # instance var shadows it (Python lookup
                                  # order), so it ranks below the instance
-    CODEC = 12                   # the active codec's render_kwargs - the
+    CODEC = 11                   # the active codec's render_kwargs - the
                                  # wrapper's lowest kwargs MERGE layer
                                  # (core_render `render_kwargs | ...`);
                                  # loses to every getattr-injected source
-                                 # above, beats only the ds fallback
+                                 # above, drives only the layers below
+    RENDER_FUNC = 12             # signature defaults (def draw_x(speed=3)) —
+                                 # the WEAKEST code source: Python only applies
+                                 # a default when the name is absent from
+                                 # kwargs entirely, so every kwargs-borne
+                                 # source above wins. Ranked at 2 it used to
+                                 # mask caller/child_kwargs as _setting_source
+                                 # for any signature-defaulted param
+                                 # (syntax_highlight on draw_text), sending
+                                 # set_anywhere's ds_fallback when a draw_state
+                                 # write the explicit kwarg then shadowed
     DRAW_STATE = 13              # the draw_state's own attrs (ds.tint - the
                                  # style cascade's lowest fallback, persisted
                                  # with window state) - the default: drives
@@ -326,7 +335,7 @@ def _stamp_pending(attr_name, value, draw_state):
     getattr(draw_state, "_sa_verify", {}).pop(attr_name, None)
 
 
-def _defer_write(attr_name, value, draw_state, class_to_show):
+def _defer_write(attr_name, value, draw_state, class_to_show, source=None):
     """Park a slow-source write for the duration of the drag: the display
     cache serves reads immediately; flush_deferred_writes runs the real
     set_anywhere on release."""
@@ -334,7 +343,7 @@ def _defer_write(attr_name, value, draw_state, class_to_show):
     if deferred is None:
         deferred = {}
         draw_state._sa_deferred = deferred
-    deferred[attr_name] = (value, class_to_show)
+    deferred[attr_name] = (value, class_to_show, source)
     _DEFERRED_DS.add(draw_state)
     _stamp_pending(attr_name, value, draw_state)
 
@@ -358,9 +367,9 @@ def flush_deferred_writes():
         deferred = getattr(ds, "_sa_deferred", None) or {}
         items = list(deferred.items())
         deferred.clear()
-        for attr_name, (value, class_to_show) in items:
+        for attr_name, (value, class_to_show, source) in items:
             set_anywhere(attr_name, value, ds, class_to_show=class_to_show,
-                         allow_any=True, ds_fallback=True)
+                         allow_any=True, ds_fallback=True, source=source)
 
 
 def _pref_matches(pref, kind):
@@ -450,6 +459,88 @@ def _driving_source(srcs, attr_name):
 def get_source_for(attr_name, draw_state, class_to_show=None):
     """Name of the source driving `attr_name` on this view (display label)."""
     return _driving_source(_sources_for(draw_state, class_to_show), attr_name)
+
+
+# Call sites in these framework locations are BAD default write targets - a
+# kwarg stamped into view_collection's dispatch call, the render loop
+# (end_frame / update_melty_windows / the studio's draw), or any core_view
+# plumbing would restyle every view app-wide. Caller rows located here are
+# skipped by default_write_source's pick - they stay visible and manually
+# pickable in the info tab's dropdown.
+_FRAMEWORK_CALLER_DIRS = ("view/core_views", "view/core_conversion",
+                          "model/", "utils/")
+_FRAMEWORK_CALLER_FILES = ("melty.py", "lsd_studio.py", "background.py",
+                           "latent_descent.py")
+
+
+def _is_framework_caller(location):
+    """True when a caller row's (file, line) sits inside the melty framework
+    — or is unknown, which must never be defaulted into either."""
+    if not location or not location[0]:
+        return True
+    p = str(location[0]).replace("\\", "/")
+    if any(d in p for d in _FRAMEWORK_CALLER_DIRS):
+        return True
+    return p.rsplit("/", 1)[-1] in _FRAMEWORK_CALLER_FILES
+
+
+def default_write_source(attr_name, draw_state, class_to_show=None, srcs=None):
+    """The source name a NEW write of `attr_name` should default to — the
+    info tab's picker preselection.
+
+    1. A source already setting the attr wins (the normal driving pick).
+    2. Otherwise, use the view's OTHER params as a cue: the writable source
+       already defining the most of them is where this view is being
+       configured, so a new param belongs there too (SourcePriority as the
+       tie-breaker). The signature is excluded — it defines EVERY param by
+       construction and would always win — and so is the draw_state (it's
+       the fallback, not a configuration site).
+    3. No cue at all: the highest-priority writable code source, else the
+       draw_state."""
+    if srcs is None:
+        srcs = _sources_for(draw_state, class_to_show)
+    writable = set(srcs["writable"])
+
+    def _eligible(sname):
+        kind = srcs["kinds"].get(sname)
+        if sname not in writable or kind in ("signature", "draw state"):
+            return False
+        if isinstance(kind, str) and kind.startswith("caller"):
+            # Caller row names are the frame's function name (with an
+            # optional " ^N" dedup suffix). A dunder name (__call__ - a
+            # wrapper/dispatch protocol) is machinery regardless of where
+            # it lives, never a place to stamp a view kwarg.
+            fn = sname.split(" ^", 1)[0]
+            if fn.startswith("__") and fn.endswith("__"):
+                return False
+            return not _is_framework_caller(srcs["locations"].get(sname))
+        return True
+
+    target = _setting_source(srcs, attr_name)
+    if target is not None and _eligible(target):
+        return target
+    others = set(view_param_names(draw_state))
+    others.discard(attr_name)
+
+    candidates = [s for s in srcs["sources"] if _eligible(s)]
+    best, best_key = None, None
+    for sname in candidates:
+        sdict = srcs["sources"][sname]
+        try:
+            count = sum(1 for k in sdict if k in others)
+        except Exception:
+            count = 0
+        if not count:
+            continue
+        key = (-count, _source_priority(srcs["kinds"].get(sname)))
+        if best_key is None or key < best_key:
+            best, best_key = sname, key
+    if best is not None:
+        return best
+    if candidates:
+        return min(candidates,
+                   key=lambda s: _source_priority(srcs["kinds"].get(s)))
+    return "draw_state"
 
 
 def from_anywhere(attr_name, draw_state, class_to_show=None, default=None):
@@ -574,7 +665,23 @@ def _owning_code_host(cm_state, kind):
         return cm_state.render_func_str, (cm_state.host_key or (None, None))[0]
     if kind in ("class var", "class default", "class decoration"):
         return cm_state.class_str, (cm_state.host_key or (None, None))[1]
-    if kind == "mode":
+    if isinstance(kind, str) and kind.startswith("caller"):
+        # One host pair per walked frame (_collect_input_sources), indexed by
+        # the kind's depth suffix. The str host's input is the CallSite, which
+        # recompile_source hotswaps via _recompile_caller (the ENCLOSING
+        # function, with the edited statement spliced-in).
+        depth = int(kind.split("+", 1)[1]) if "+" in kind else 0
+        hosts = cm_state.call_site_hosts or []
+        if depth < len(hosts) and hosts[depth][0] is not None:
+            _sh = hosts[depth][0]
+            return _sh, getattr(_sh, "input_value", None)
+        return None, None
+    if kind in ("mode", "mode child kwargs"):
+        # "mode child kwargs" rows are registered off the PARENT's mode host,
+        # but code_hosts_for caches per-mode reference, so the target's own
+        # mode host (same enum class) is the same host pair. A leaf whose
+        # current_mode enum differs from the parent's would stamp the wrong
+        # host and the recompile wait times out harmlessly.
         return cm_state.mode_str, cm_state.mode_key
     return None, None
 
@@ -591,6 +698,13 @@ def _anywhere_recompile_tick(draw_state):
     pend = getattr(draw_state, "_sa_recompile", None)
     if not pend:
         return
+    # Once per frame: anywhere_value calls this per PARAM (the params panel /
+    # info tab read every param each refresh), and a second run_recompile
+    # of the same name in one frame triggers run_in_background's duplicate-
+    # unique detection (sa_recompile<u> : Forcing re-render" spam).
+    if pend.get("tick_frame") == Core.melty.frame_count:
+        return
+    pend["tick_frame"] = Core.melty.frame_count
     from src.lsd.gl_gui.view.core_conversion.new_converters import (
         host_code_state, run_recompile)
     # Keep the owning host alive through the wait - it may be an idle-swept
@@ -623,7 +737,7 @@ def _anywhere_recompile_tick(draw_state):
 
 
 def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=False,
-                 ds_fallback=False):
+                 ds_fallback=False, source=None):
     """Set `attr_name` at whichever input source is actually driving it —
     code, comment, decoration, mode entry — using the same registry the input
     tab edits. The write is a plain item-set on the source's bubbling parse
@@ -646,7 +760,14 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     `ds_fallback` changes what happens when NO source sets the param: instead
     of stamping the signature default (the + affordance's behavior), the value
     is kept on the draw_state. Also generic-accessor behavior — see the branch
-    below."""
+    below.
+
+    `source` names an EXPLICIT target (a registered source name, or the
+    literal "draw_state") — the info tab's per-param picker passes it. It
+    overrides preferred_source and the driving pick entirely; the write can
+    also CREATE the entry at that source (a new caller kwarg, a new class
+    var), which is how the picker's + affordance stamps a param nothing
+    sets yet."""
     from src.lsd.gl_gui.notifications import notify
     if not allow_any and attr_name not in SET_ANYWHERE_PARAMS:
         notify(f"set_anywhere: '{attr_name}' not in SET_ANYWHERE_PARAMS",
@@ -658,7 +779,9 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     # makes drag frames ~ instantaneous.
     _deferred = getattr(draw_state, "_sa_deferred", None)
     if _deferred and attr_name in _deferred and _input_busy():
-        _deferred[attr_name] = (value, class_to_show)
+        _prev = _deferred[attr_name]
+        deferred_source = source if source is not None else _prev[2]
+        _deferred[attr_name] = (value, class_to_show, deferred_source)
         _stamp_pending(attr_name, value, draw_state)
         _last = getattr(draw_state, "_sa_last_source", None)
         return _last.get(attr_name) if _last else None
@@ -672,7 +795,28 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     # and its first write materializes one). Falls through to the normal
     # pick when no writable source of that kind is registered (tree unparsed).
     target = None
-    pref = _preferred_source_for(draw_state)
+    if source is not None:
+        # Explicit target from the picker: honor it or fail loudly - silently
+        # falling back to the automatic pick would write somewhere the user
+        # didn't choose.
+        _writable = set(srcs["writable"])
+        if source in sources and source in _writable:
+            target = source
+        elif source == "draw_state":
+            # The ds row only registers once a whitelisted attr diverged, so
+            # the picker offers the literal name even when unregistered.
+            setattr(draw_state, attr_name, value)
+            _last_ds = getattr(draw_state, "_sa_last_source", None)
+            if _last_ds is None:
+                _last_ds = {}
+                draw_state._sa_last_source = _last_ds
+            _last_ds[attr_name] = "draw state"
+            return "draw state"
+        else:
+            notify(f"set_anywhere: picked source {source!r} isn't writable "
+                   f"for '{attr_name}'", tag="set_anywhere")
+            return None
+    pref = _preferred_source_for(draw_state) if target is None else None
     if pref is not None:
         _writable = set(srcs["writable"])
         target = next((s for s in sources
@@ -710,6 +854,14 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
                 or (_mirrored
                     and _source_priority(_kind)[0] not in _ABOVE_DRAW_STATE)):
             setattr(draw_state, attr_name, value)
+            # Stamp provenance like every explicit target - without it a ds
+            # write is invisible ("where did my line_height=2 go?"): the
+            # value lives only in auto_params.
+            _last_ds = getattr(draw_state, "_sa_last_source", None)
+            if _last_ds is None:
+                _last_ds = {}
+                draw_state._sa_last_source = _last_ds
+            _last_ds[attr_name] = "draw state"
             return "draw state"
     if target is None:
         target = _driving_source(srcs, attr_name)
@@ -731,7 +883,7 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     # instead of running the save/recompile cycle per event (see the
     # full-speed block above).
     if _input_busy() and source_is_slow(srcs["kinds"].get(target)):
-        _defer_write(attr_name, value, draw_state, class_to_show)
+        _defer_write(attr_name, value, draw_state, class_to_show, source=source)
         return target
 
     # (No write-time sanity cross-check here: mid-trip the live value
@@ -761,6 +913,16 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
             except Exception:
                 pass
     sources[target][attr_name] = write_value
+    # A write to a BELOW-draw_state layer (signature, @defaults, class var,
+    # codec, var) would be otherwise shadowed by a diverged auto_param
+    # riding kwargs. The ds layer is framework session state, not user code -
+    # so the code write CLAIMS the param: drop the stale auto_param and let
+    # the new source value drive (the field case: a stale
+    # auto_params['hide_internal'] kept overriding a fresh signature edit).
+    if _source_priority(_t_kind)[0] not in _ABOVE_DRAW_STATE:
+        _ap = getattr(draw_state, "auto_params", None)
+        if isinstance(_ap, dict):
+            _ap.pop(attr_name, None)
     # In-flight display cache - see _stamp_pending. The FULL-precision value:
     # the UI keeps serving it through the trip, then the overlay takes over.
     _stamp_pending(attr_name, value, draw_state)
@@ -769,8 +931,16 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     # chain_out. Snapshot the current buffer identity; the per-frame tick
     # (anywhere_value → _anywhere_recompile_tick) starts the recompile when
     # the buffer moves and polls the runner until the hotswap lands.
-    cm_state = getattr(draw_state, "_sa_cm_state", None)
-    if _t_kind in ("child kwargs", "attr default"):
+    _arm_recompile(draw_state, sources, target, _t_kind)
+    return target
+
+
+def _arm_recompile(draw_state, sources, target, kind):
+    """Stamp the deferred writer-side hotswap for a code-backed edit at
+    `target` (kind caption `kind`) — shared by set_anywhere and
+    clear_anywhere. The per-frame tick (_anywhere_recompile_tick) starts the
+    recompile when the owning host's buffer moves off the snapshot."""
+    if kind in ("child kwargs", "attr default"):
         # These rows are parse rows of an ANCESTOR's code (stacked
         # @defaults) - which ancestor is not guessable from the ds graph (a
         # Lora item's parent is a plain dict view), but the written row KNOWS
@@ -792,9 +962,10 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
                     "host": _sh, "source": _src_obj, "started": False,
                     "start_frame": 0,
                     "buf": _cs.text_cache if _cs is not None else None}
-        return target
+        return
+    cm_state = getattr(draw_state, "_sa_cm_state", None)
     if cm_state is not None:
-        _rc_host, _rc_source = _owning_code_host(cm_state, _t_kind)
+        _rc_host, _rc_source = _owning_code_host(cm_state, kind)
         if _rc_host is not None and _rc_source is not None:
             from src.lsd.gl_gui.view.core_conversion.new_converters import host_code_state
             _cs = host_code_state(_rc_host)
@@ -802,7 +973,60 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
                 "host": _rc_host, "source": _rc_source, "started": False,
                 "start_frame": 0,
                 "buf": _cs.text_cache if _cs is not None else None}
-    return target
+
+
+def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
+    """Delete `attr_name`'s entry AT `source` — the info tab's trash button.
+    A code source loses its parse entry (bubbling __delitem__ dirties the
+    host → normal chain_out/save) and the module hotswaps through the same
+    deferred trip as a set_anywhere write. "draw_state" drops the diverged
+    auto_param (and nulls a whitelisted ds attr), so lower-priority layers
+    resume driving. Returns the source cleared, or None when it held
+    nothing."""
+    from src.lsd.gl_gui.notifications import notify
+    srcs = _sources_for(draw_state, class_to_show)
+    # In-flight caches for this attr are stale either way a clear goes.
+    for _slot in ("_sa_pending", "_sa_precise", "_sa_deferred"):
+        _d = getattr(draw_state, _slot, None)
+        if isinstance(_d, dict):
+            _d.pop(attr_name, None)
+    kind = srcs["kinds"].get(source)
+    if source == "draw_state" or kind == "draw state":
+        cleared = False
+        _ap = getattr(draw_state, "auto_params", None)
+        if isinstance(_ap, dict) and attr_name in _ap:
+            del _ap[attr_name]
+            cleared = True
+        from src.lsd.gl_gui.view.core_views.core_render import OBJ_ATTR_PARAMS
+        if (attr_name in OBJ_ATTR_PARAMS
+                and getattr(draw_state, attr_name, None) is not None):
+            setattr(draw_state, attr_name, None)
+            cleared = True
+        return "draw_state" if cleared else None
+    sdict = srcs["sources"].get(source)
+    if not isinstance(sdict, dict) or attr_name not in sdict:
+        notify(f"clear_anywhere: {source!r} doesn't set '{attr_name}'",
+               tag="set_anywhere")
+        return None
+    if kind == "instance attr" and hasattr(sdict, "_obj"):
+        # Snapshot adapter over the live object - clear the OBJECT, not just
+        # the snapshot (a snapshot del would resurrect next collect).
+        try:
+            delattr(sdict._obj, attr_name)
+        except AttributeError:
+            setattr(sdict._obj, attr_name, None)
+        dict.__delitem__(sdict, attr_name)
+        draw_state.invalidate_up(max_depth=6)
+        return source
+    if kind == "codec":
+        # _CodecSource writes fan out to per-file meta / class render_kwargs;
+        # a snapshot del wouldn't reach them. Not wired yet.
+        notify(f"clear_anywhere: clearing at the codec isn't supported yet",
+               tag="set_anywhere")
+        return None
+    del sdict[attr_name]
+    _arm_recompile(draw_state, srcs["sources"], source, kind)
+    return source
 
 
 def view_param_names(draw_state):
@@ -821,8 +1045,14 @@ def view_param_names(draw_state):
     Also deliberately NOT extended with render_func_kwarg_names(): those
     framework kwargs are shared by every view and would bury its actual
     params."""
+    return _func_param_names(getattr(draw_state, "_view_func", None))
+
+
+def _func_param_names(func):
+    """Input param names of a render func (unwrapped), with the wrapper's
+    injected/plumbing/event/state params filtered — the engine behind
+    view_param_names and header_param_names."""
     import inspect
-    func = getattr(draw_state, "_view_func", None)
     if func is None:
         return []
     try:
@@ -835,6 +1065,8 @@ def view_param_names(draw_state):
     for name, p in params.items():
         if name in _AUTO_PARAM_EXCLUDE or _is_event_param_name(name):
             continue
+        if name.startswith("_"):
+            continue        # placeholder/private (`_`), not a real input
         if p.kind in (inspect.Parameter.VAR_POSITIONAL,
                       inspect.Parameter.VAR_KEYWORD):
             continue
@@ -844,6 +1076,41 @@ def view_param_names(draw_state):
             continue        # injected state (GLState / CodeState / ...)
         out.append(name)
     return out
+
+
+def signature_default_for(attr_name, draw_state):
+    """The param's DECLARED default: the view function's signature, else the
+    header function's (locate_all_params spans both). None when neither
+    declares one — the + affordance falls back to this when the resolved
+    value is None (a header param nothing sets resolves to None; stamping
+    that None would create an entry that still reads as unset)."""
+    import inspect
+    for fn in (getattr(draw_state, "_view_func", None),
+               (getattr(draw_state, "_kwargs", None) or {}).get("with_header")):
+        if not callable(fn):
+            continue
+        try:
+            p = inspect.signature(inspect.unwrap(fn)).parameters.get(attr_name)
+        except (TypeError, ValueError):
+            continue
+        if p is not None and p.default is not inspect.Parameter.empty:
+            return p.default
+    return None
+
+
+# Header plumbing _AUTO_PARAM_EXCLUDE didn't cover - the header receives
+# these from the wrapper/parent per call, they're never user inputs.
+_HEADER_PARAM_EXCLUDE = {"melty", "parent_show_add_delete", "name_func"}
+
+
+def header_param_names(draw_state):
+    """Params of the view's HEADER function — the resolved `with_header`
+    kwarg (a render_func or plain callable). Empty when the view has no
+    header. Same filtering as the view's own params."""
+    hf = (getattr(draw_state, "_kwargs", None) or {}).get("with_header")
+    if not callable(hf):
+        return []
+    return [n for n in _func_param_names(hf) if n not in _HEADER_PARAM_EXCLUDE]
 
 
 # Builtin bases a signature default may SPECIALIZE (TensorDim(int)). The
@@ -918,12 +1185,24 @@ class ParamProxy(dict):
     # named like a dict method (`items`, `values`, ...) a bound method instead
     # of its value. With __slots__ the proxy is storage-only and every read
     # resolves through __getitem__.
-    __slots__ = ("_ds",)
+    __slots__ = ("_ds", "_include_header")
 
-    def __init__(self, draw_state):
+    def __init__(self, draw_state, include_header=False):
         super().__init__()
         self._ds = draw_state
+        # include_header extends the param set with the view's with_header
+        # function's own parameters (locate_all_params) - same read/write
+        # semantics, the header draws against the same draw_state view view.
+        self._include_header = include_header
         self.refresh()
+
+    def _names(self):
+        names = view_param_names(self._ds)
+        if self._include_header:
+            seen = set(names)
+            names = names + [n for n in header_param_names(self._ds)
+                             if n not in seen]
+        return names
 
     def _specialize(self, name, value):
         """Re-wrap a plain parsed value in the signature default's subtype
@@ -943,7 +1222,7 @@ class ParamProxy(dict):
         stale, including for consumers that read the storage directly."""
         ds = self._ds
         live = {k: self._specialize(k, anywhere_value(k, ds))
-                for k in view_param_names(ds)}
+                for k in self._names()}
         dict.clear(self)
         dict.update(self, live)     # bypasses __setitem__; a snapshot, not a set
         return self

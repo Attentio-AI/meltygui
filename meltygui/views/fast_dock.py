@@ -4,9 +4,9 @@ One @render_func body replaces draw_collection + the per-row
 draw_managed_window / button / draw_tuple widgets. Rows are plain draw-list
 rects/text with manual hit-testing, so a frame costs a handful of draw calls
 instead of a render_func wrapper per widget. It still lives inside a normal
-melty window (Mode.WINDOW chrome: drag, header, scroll, blit cache) — only the
-per-row framework shadows are gone, since individual buttons no longer exist
-as draw_states the compositor can see.
+melty window (Mode.WINDOW chrome: drag, header, scroll, blit cache). Open
+rows' buttons get their shadows from add_shadow() — standalone depth marks
+that need no per-button draw_state for the compositor to see.
 
 Interaction model: while the view is hovered the wrapper invalidates its tile
 every frame (core_render's _bounding_hovered branch), so hover highlights and
@@ -20,6 +20,7 @@ import imgui
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.utils.glfw_utils import request_render
+from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
@@ -32,8 +33,8 @@ from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 ROW_H = 31.0
 ROW_GAP = 4.0
 ROW_STRIDE = ROW_H + ROW_GAP
-SWATCH_W = 18.0
-SWATCH_X = 18.0
+SWATCH_W = 0
+SWATCH_X = 0
 NAME_X = 42.0
 TARGET_W = 26.0
 RIGHT_PAD = 4.0
@@ -118,15 +119,15 @@ def _mix(style_manager, tint, value, factor, saturation):
 
 
 @render_func(use_cache=True, selectable=False, show_add_delete=False, is_tree=False,
-             show_name=False, searchable=True, hide_internal=False, shadow=True)
-def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=None,
+             show_name=False, searchable=True, shadow=True)
+def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=False,
                    left_mouse_down=False, search_text="", **kwargs):
     # ---- styling ----
     open_bg_value, open_text_value = 0.16, 1.357          # name button, window open
     open_factor, open_saturation = 0.659, 1.315
-    closed_bg_value, closed_text_value = 0.035, 0.305     # name button, window closed
-    closed_factor, closed_saturation = 0.92, 0.872
-    target_bg_value, target_text_value = 0.103, 1.023     # summon button
+    closed_bg_value, closed_text_value = 0.067, 0.248     # name button, window closed
+    closed_factor, closed_saturation = 0.90, 1.096
+    target_bg_value, target_text_value = 0.103, 1.269     # summon button
     target_factor, target_saturation = 0.799, 0.764
     hover_bg_boost, hover_text_boost = 0.05, 1.5
     text_saturation = 0.8
@@ -135,17 +136,19 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=No
     # ---- geometry, authored at ui_scale 1.0 and scaled once per frame ----
     px = Melty.px
     row_h, row_stride = px(ROW_H), px(ROW_STRIDE)
+
+
     swatch_w, swatch_x = px(SWATCH_W), px(SWATCH_X)
     name_x, target_w, right_pad = px(NAME_X), px(TARGET_W), px(RIGHT_PAD)
     corner = px(CORNER)
     text_nudge_x, text_nudge_y = px(2.0), px(-1.0)        # optical centering of text
     swatch_rounding = px(4.0)
     name_target_gap = px(6.0)                             # gap between name and summon button
-    name_pad_x = px(8.0)                                  # left inset for icon and text
+    name_pad_x = px(10.9)                                  # left padding for icon/name text
     icon_gap = px(6.0)                                    # gap between icon and name
     manager_row_text_x, manager_row_text_y = px(8.0), px(7.0)  # "Window Manager" label offsets
     picker_width, picker_height = px(216), px(180 + 14 + 4 * 26 + 26)
-    picker_gap_y = px(2.0)                                # popover offset below its trigger
+    picker_gap_y = px(0.0)                                # popover gap below its row
 
     if style_manager is None:
         style_manager = Melty.style_manager
@@ -264,7 +267,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=No
         if clip is not None and (ry1 < clip[1] or ry0 > clip[3]):
             continue
 
-        tint = _row_tint(mw, wds)
+        tint = wds.locate_tint
+        
 
         if name == "Window Manager":
             tx = _mix(style_manager, tint, target_text_value, 1.0, text_saturation)
@@ -288,6 +292,12 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=No
             factor, bg_value, text_value, sat = closed_factor, closed_bg_value, closed_text_value, closed_saturation
         bg = _mix(style_manager, tint, bg_value + (hover_bg_boost if hov else 0.0), factor, sat)
         tx = _mix(style_manager, tint, text_value + (hover_text_boost if hov else 0.0), factor, text_saturation)
+        if open_:
+            # Shadow under the open row's name button - a standalone depth
+            # mark (rows aren't draw_states the compositor can see). Clipped
+            # to the dock's rect: partially scrolled rows still draw here.
+            add_shadow((nm_x0, ry0, nm_x1 - nm_x0, row_h), offset=6,
+                       corner_radius=corner, clip=clip)
         dl.add_rect_filled(nm_x0, ry0, nm_x1, ry1,
                            imgui.get_color_u32_rgba(*bg[:3], 1.0), rounding=corner)
 
@@ -309,16 +319,16 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=No
         dl.add_text(text_x, ry0 + (row_h - ts[1]) / 2.0 + text_nudge_y,
                     imgui.get_color_u32_rgba(*tx[:3], 1.0), display)
 
-        # ---- tint swatch ----
-        if isinstance(tint, tuple) and len(tint) >= 3:
-            a = tint[3] if len(tint) > 3 else 1.0
-            dl.add_rect_filled(sw_x0, sw_y0, sw_x1, sw_y1,
-                               imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], a),
-                               rounding=swatch_rounding)
-        else:
-            dl.add_rect(sw_x0, sw_y0, sw_x1, sw_y1,
-                        imgui.get_color_u32_rgba(*empty_swatch_color),
-                        rounding=swatch_rounding)
+        # # ---- tint swatch ----
+        # if isinstance(tint, tuple) and len(tint) >= 3:
+        #     a = tint[3] if len(tint) > 3 else 1.0
+        #     dl.add_rect_filled(sw_x0, sw_y0, sw_x1, sw_y1,
+        #                        imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], a),
+        #                        rounding=swatch_rounding)
+        # else:
+        #     dl.add_rect(sw_x0, sw_y0, sw_x1, sw_y1,
+        #                 imgui.get_color_u32_rgba(*empty_swatch_color),
+        #                 rounding=swatch_rounding)
 
         # ---- target (summon) button - only for open windows ----
         if open_:
@@ -327,6 +337,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=No
                         target_factor, target_saturation)
             tx_t = _mix(style_manager, tint, target_text_value + (hover_text_boost if hov_t else 0.0),
                         target_factor, text_saturation)
+            add_shadow((tg_x0, ry0, tg_x1 - tg_x0, row_h),
+                       corner_radius=corner, clip=clip)
             dl.add_rect_filled(tg_x0, ry0, tg_x1, ry1,
                                imgui.get_color_u32_rgba(*bg_t[:3], 1.0), rounding=corner)
             its = imgui.calc_text_size(TARGET_ICON)

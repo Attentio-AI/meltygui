@@ -8121,8 +8121,8 @@ def draw_text(input_value: str, height=None,
         row_suffixes=(getattr(ds, '_ac_params', None) if _ac_show else None),
         parent_window=draw_state, root_state=ac_state, path_prefix=(),
         return_extras=True)
-    
-    
+
+
     # Latch the popup's exact tile id from the call itself (return_extras hands
     # back its draw_state on every wrapper path, including closed/deferred). The
     # old name-prefix scan of cache._tiles mis-latched ANOTHER editor's popup
@@ -8230,7 +8230,7 @@ def draw_text(input_value: str, height=None,
     # across same-named editors (see the AC popup note above).
     if _uj_menu_ds is not None:
         ds._uj_menu_tile = _uj_menu_ds._tile_id
-        
+
     # Mirror a hover-moved cursor back into the keyboard index so Enter/arrows
     # continue from the hovered row.
     if _uj_show and not uj_state._kbd_mode:

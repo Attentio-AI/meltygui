@@ -227,10 +227,10 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
         # across the stacked volume as the leading dim grows.
         # [tint=(0.31, 0.24, 0.71), dim_names=['head', 'key', 'feature']]
         k_l = k.roll(shifts=l_idx * shift, dims=1)
-        # [tint=(0.217, 0.119, 0.822), cam_brightness=0.19, cam_contrast=0.712,
-        # spin=0.548, tilt=0.219, cam_zoom=1.7142]
+        # [tint=(0.217, 0.119, 0.822), cam_brightness=0.08, cam_contrast=0.752,
+        # spin=3.828, tilt=0.019, cam_zoom=1.7142]
         scores = q @ k_l.transpose(-2, -1) / (dim ** 0.5 * temp)
-        # [tint=(0.60, 0, 0), cam_brightness=0.92, cam_contrast=0.392, dim_names=['head', 'query', 'key'], cam_zoom=2.7014]
+        # [tint=(0.60, 0, 0), cam_brightness=0.52, cam_contrast=0.392, dim_names=['head', 'query', 'key'], cam_zoom=1.355, spin=1.86, tilt=0.123]
         attn = torch.softmax(scores, dim=-1)
         # Non-tensor loop example: accumulates as a plain list, one per layer.
         sharpness = round(float(attn.amax(dim=-1).mean()), 4)
@@ -244,7 +244,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
 
 
 @window
-@render_func(tint=(0.02, 0.07, 0.14), auto_resize=True)
+@render_func(tint=(0.16, 0.13, 0.08), auto_resize=True)
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner")

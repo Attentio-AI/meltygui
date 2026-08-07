@@ -148,13 +148,12 @@ for _n in ("src.lsd.gl_gui.view.core_views.external_changes",
         break
 
 
-@window(disable_scroll=False, tint=(0.16296297311782837, 0.21243055828288198, 0.2611111))
+@window(disable_scroll=False, tint=(0.16296297311782837, 0.21243055828288198, 0.2611111), icon=None)
 @render_func()
 def draw_external_changes(draw_state=None):
     from src.lsd.gl_gui.melty import Melty, FileWatch
     ExternalChanges._window_ds = draw_state
-    RenderFuncs.draw_function(ExternalChanges.dismiss_all, icon="",
-                              tint=(0, 0, 0, 1), show_bg=False, shadow=False)
+    RenderFuncs.draw_function(ExternalChanges.dismiss_all, tint=(0, 0, 0, 1), show_bg=False, shadow=False, icon=None)
 
     # DEBUG: what the tracker will actually see. A file only gets a baseline if
     # its text sat in Melty.code_cache when the fs event fired (old_lines is the

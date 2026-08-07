@@ -894,7 +894,7 @@ class Toggles:
         # 20x font atlas. Changing it re-rasterizes all 18 fonts - a ~0.3s
         # operation and a ~64->128MB atlas at 1.25 - so it is a setting to
         # change deliberately, not to animate. 1.0 = the authored look.
-        scale = 0.80
+        scale = 1.00
 
     # [icon=""]
     @defaults(tint=(0.36, 0.42, 0.52))
@@ -1089,7 +1089,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
 
     show_filled_tiles = False
     gl_check_error = False

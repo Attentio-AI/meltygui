@@ -41,11 +41,12 @@ from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, con
     recompile_button, recompile_status, run_recompile
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow
 from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names
 from src.lsd.gl_gui.view.core_views.anywhere import SourcePriority, _source_priority, _sources_for, \
-    _driving_source, get_value_for_source, get_source_for, from_anywhere, anywhere_value, set_anywhere, \
+    _driving_source, _setting_source, default_write_source, get_value_for_source, get_source_for, \
+    from_anywhere, anywhere_value, set_anywhere, \
     flush_deferred_writes, \
     SET_ANYWHERE_PARAMS
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
@@ -1138,10 +1139,11 @@ def draw_symbol_usage(input_value):
              use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
-             wrap=False, with_header=draw_header, indent_size=3, searchable=True)
+             wrap=False, with_header=draw_header, indent_size=3, searchable=True,
+             child_kwargs=None)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
-                    child_kwargs=None, show_bg=False, show_search=True, align_header=False, wrap=False,
+                    child_kwargs=None, show_bg=False, show_search=False, align_header=False, wrap=False,
                     on_collapse=False, search_text="", return_item=False, close_triggers_delete=False,
                     on_expand=False, show_add_delete=False, show_add_types=None, item_spacing_y=3, show_system=False,
                     included=None, horizontal=False, show_indices=False, excluded=None, annotation=None,
@@ -1157,7 +1159,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     if excluded is None:
         excluded = set()
-        
+
     if included is None:
         included = set()
 
@@ -1165,7 +1167,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         child_kwargs = {}
 
     changed = False
-    
+
     if hasattr(input_value, 'children') and isinstance(input_value.children, (list, dict, defaultdict,
                                                                               types.MappingProxyType, deque)):
         input_value = input_value.children
@@ -1177,7 +1179,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     # --- configure per collection type ---
     collection = input_value
-    
+
     # When the value *is* a class (e.g. an @window-registered class drawn
     # directly), its per-attribute `{field}_meta` overrides live on the class
     # itself, not on its metaclass. Use the class as parent_type so get_child_meta
@@ -1271,7 +1273,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
             return
         mk = _collection_match_keys(_iv, _keys, _excl, _se)
         session.claim(sum(1 for _, k in mk if _fuzzy_key_match(q, k)))
-    
+
     draw_state._search_matcher = _search_matcher
 
     # The owner's pre-body walk picked the global-current match and stashed its
@@ -1302,8 +1304,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     max_items = 5000
     start_index = 0
     end_index = min(len(keys) - 1, max_items)
-    
-    
+
+
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
@@ -2294,28 +2296,47 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         target = None
         owns_ctrl_f = False
         _hits = Core.melty.bvh_query(mx, my)
-        # Only the front window's blocker competes - hits from windows layered
-        # behind the cursor must neither own the key nor become the target.
-        _front_win = _hits[0].root_window if _hits else None
-        for ds in _hits:
-            if _front_win is not None and ds.root_window is not _front_win:
-                continue
-            # A view whose render func declares the inverted_ctrl_f_down event
-            # param (e.g. the context menu's Input tab, which routes Ctrl+F to
-            # its own filter box) OWNS the key for its duration - activating a
-            # searchable descendant's find bar here would fight that filter.
-            _fn = getattr(ds, '_view_func', None)
-            if _fn is not None:
-                _code = getattr(inspect.unwrap(_fn), '__code__', None)
-                if _code is not None and 'inverted_ctrl_f_down' in _code.co_varnames[:_code.co_argcount]:
-                    owns_ctrl_f = True
+        # Only the hovered window's searchable competes - its nearest enclosing
+        # WINDOW, not root_window: nested windows all share a root, so a
+        # root-based filter let a different nested window layered BEHIND the
+        # hovered one win the parent-most scan (its searchable has a lower
+        # z-pos) and open its find bar instead. If the hovered window has no
+        # searchable, fall back outward through its ANCESTOR chain (a small
+        # floating window over a searchable pane keeps Ctrl+F working) - never
+        # to siblings behind, which never outside the hovered window.
+        from src.lsd.gl_gui.view.core_views.core_render import _owning_window
+        _chain = []
+        if _hits:
+            _w = _owning_window(_hits[0])
+            for _ in range(32):
+                _chain.append(_w)
+                _p = _w.parent_window
+                if _p is None or _p is _w:
                     break
-            kw = getattr(ds, '_kwargs', None) or {}
-            if not (kw.get('searchable')
-                    or getattr(kw.get('render_func'), '_searchable', False)):
-                continue
-            if target is None or getattr(ds, 'z_pos', 0) < getattr(target, 'z_pos', 0):
-                target = ds
+                _w = _p
+        for _win in _chain:
+            for ds in _hits:
+                if _owning_window(ds) is not _win:
+                    continue
+                # A view whose render func declares the inverted_ctrl_f_down
+                # event param (e.g. the context menu's Input tab, which routes
+                # Ctrl+F to its own filter box) OWNS the key for its subtree -
+                # activating a searchable descendant's search bar here would
+                # fight that filter.
+                _fn = getattr(ds, '_view_func', None)
+                if _fn is not None:
+                    _code = getattr(inspect.unwrap(_fn), '__code__', None)
+                    if _code is not None and 'inverted_ctrl_f_down' in _code.co_varnames[:_code.co_argcount]:
+                        owns_ctrl_f = True
+                        break
+                kw = getattr(ds, '_kwargs', None) or {}
+                if not (kw.get('searchable')
+                        or getattr(kw.get('render_func'), '_searchable', False)):
+                    continue
+                if target is None or getattr(ds, 'z_pos', 0) < getattr(target, 'z_pos', 0):
+                    target = ds
+            if owns_ctrl_f or target is not None:
+                break
         _find_box = None
         if target is None and not owns_ctrl_f:
             # No searchable view under the cursor - the press may sit on a
@@ -2338,8 +2359,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                             target = rv        # floating Find window root
                         break
                     node = p
-            if target is None and _front_win is not None:
-                rv = getattr(_front_win, '_raw_input_value', None)
+            if target is None and _chain:
+                rv = getattr(_chain[0], '_raw_input_value', None)
                 if isinstance(rv, DrawState) and getattr(rv, 'search_active', False):
                     target = rv
         if target is not None and not owns_ctrl_f:
@@ -2717,7 +2738,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
 
         # zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
         # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
-        
+
     if jet:
         texture_id = Core.melty.filter.brightness_contrast(
             input_value,
@@ -3630,8 +3651,8 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
-             min_height=10, wrap=True, show_add_delete=False)
-def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_mouse_held=False, shadow=True, left_mouse_down=False,
+             min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None)
+def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left_mouse_held=False, shadow=True, left_mouse_down=False,
            color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
            factor=1.0, tint_value=0.16, text_value=1.023, saturation=1.2, text_saturation=0.8, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15,
@@ -3647,7 +3668,7 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.0, left_
                 draw_state.z_offset = 3.0
         else:
             draw_state.z_offset = 0.0
-            
+
         if hovered and highlight_hovered:
             mixed_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=tint_value + 0.05,
                                                        factor=factor, saturation_scale=saturation, alpha=1.0)
@@ -3770,16 +3791,17 @@ def draw_none(input_value: NoneType):
     return False, input_value
 
 
-@render_func(is_default_for=(bool), use_cache=True, auto_resize=True,
-             is_tree=False, wrap=True, header_same_line=True, min_width=83, align_header=True, shadow=False, 
+@render_func(is_default_for=(bool), use_cache=True,
+             is_tree=False, min_width=83, shadow=False, 
              with_header=draw_header, temp=True)
 def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=359,
-              selectable=False, left_mouse_drag=None, left_mouse_held=False,
+              max_height=100, min_height=20, header_same_line=True,
+              selectable=False, left_mouse_drag=None, left_mouse_held=False, align_header=True,
               left_mouse_down=False):
 
-    left_margin = 5
+    left_margin = 3
     box_h = 21
-    text_inset = 8
+    text_inset = 11
     cursor_start = imgui.get_cursor_pos_x()
     
     if input_value:
@@ -3807,11 +3829,11 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
     # the label won't fit the available space we collapse to a square that shows
     # just the icon. `width` is the box's right edge measured from the cell left,
     # matching the original cursor-relative geometry below.
-    avail = min(draw_state.width - 14, cell_width)
+    avail = min(draw_state.width - 18, cell_width)
     full_width = left_margin + text_inset * 2 + label_w
     compact = full_width > avail
     if compact:
-        width = left_margin + box_h
+        width = 30
     else:
         width = full_width
 
@@ -3851,7 +3873,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
     if compact:
         # Center just the icon inside the square (which spans [left_margin, width]).
         box_w = width - left_margin
-        imgui.same_line(left_margin + (box_w - icon_w) / 2.0 + right_offset)
+        imgui.same_line(left_margin + (box_w - icon_w) / 2.0 + right_offset + 1 )
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         imgui.text_colored(icon, *text_color)
     else:
@@ -4569,7 +4591,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     return False, input_value
 
 
-@render_func(is_default_for=('tint', 'help_yellow_tint', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
+@render_func(is_default_for=('tint', 'help_yellow_tint', 'color', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
              indent_size=2, is_tree=False, align_header=True, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
@@ -4722,13 +4744,13 @@ def draw_float_ctx(input_value):
                        col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
-@render_func(is_default_for=float, use_cache=True, shadow=False,
-             is_tree=False, show_bg=False,
-             with_header=draw_header, temp=True)
+@render_func(is_default_for=(float), shadow=False, use_cache=False, wrap=False,
+             is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_float(input_value: float,
                draw_state,
                wrap=False,
                min_width=80,
+               max_height=100, min_height=20,
                min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
@@ -4747,6 +4769,49 @@ def draw_float(input_value: float,
         return True, value
 
     return False, input_value
+
+
+@render_func(shadow=False, use_cache=False, wrap=False, is_tree=False,
+             with_header=draw_header, align_header=True, temp=True)
+def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 1.0), min_width=80,
+                min_height=14, wrap=False, height=23):
+    """A VALUE-ROW button — draw_float's shape with a button where the slider
+    sits, so it composes with the standard header (name label, tint, layout)
+    that `def button` fights. `changed` IS the click; input_value passes
+    through untouched (the caller acts on the click, e.g. the info tab's +
+    stamping a param into a source).
+
+    Styled from draw_state.tint (raw imgui.button's stock style reads pure
+    white in the melty theme). The label wraps: it's drawn OVER a label-less
+    button with a text-wrap pos, and the button height grows to fit."""
+    w = min_width if wrap else (draw_state.content_width or min_width)
+    _t = tint
+    r, g, b = (_t[:3] if isinstance(_t, (tuple, list)) and len(_t) >= 3
+               else (0.45, 0.47, 0.55))
+    pad_x, pad_y = 8, 4
+    _lbl = str(label)
+    ts = imgui.calc_text_size(_lbl, wrap_width=max(10.0, w - pad_x * 2))
+    h = height or max(min_height, ts[1] + pad_y * 2)
+
+    imgui.push_style_color(imgui.COLOR_BUTTON, r * 0.28, g * 0.28, b * 0.28, 0.6)
+    imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, r * 0.42, g * 0.42, b * 0.42, 0.8)
+    imgui.push_style_color(imgui.COLOR_BUTTON_ACTIVE, r * 0.55, g * 0.55, b * 0.55, 0.95)
+    pos = imgui.get_cursor_screen_pos()
+    # Shadow on the button rect only - the default shadow (decorator
+    # shadow=True) would mark the whole value row, name label included.
+    add_shadow((pos[0], pos[1], w, h),
+               corner_radius=imgui.get_style().frame_rounding)
+    clicked = imgui.button("##btn", width=w, height=h)
+    imgui.pop_style_color(3)
+
+    # Wrapped label over the button; restore the flow cursor after.
+    flow = imgui.get_cursor_screen_pos()
+    imgui.set_cursor_screen_pos((pos[0] + pad_x, pos[1] + pad_y))
+    imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + w - pad_x * 2)
+    imgui.text(_lbl)
+    imgui.pop_text_wrap_pos()
+    imgui.set_cursor_screen_pos(flow)
+    return clicked, input_value
 
 
 @render_func(is_default_for=(Parameter), wraps=render_func, with_header=draw_header)
@@ -4984,11 +5049,11 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             params_edited or draw_state.misc.get("_auto_run_ver") != auto_run):
         draw_state.misc["_auto_run_ver"] = auto_run
         _run()
-    
-    
+
+
     imgui.new_line()
-    if show_run_button and button(f"Run {input_value.__name__}()##{unique}", icon=kwargs.get("icon", ""), height=29,
-                                  bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32))[0]:
+    if show_run_button and button(f"Run {input_value.__name__}()##{unique}", icon=kwargs.get("icon", ""), height=35,
+                                  bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32), shadow=True)[0]:
         _run()
 
     # Fading result (result_fade_frames): the check mark + result text hold,
@@ -5045,7 +5110,8 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
 @render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
-def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20, min_width=80, wrap=False, min_value=-1000.0, 
+def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20,
+             min_width=80, wrap=False, min_value=-1000.0, 
              max_value=1000.0, speed=0.1, unique=0):
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
@@ -5294,6 +5360,8 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
             # shadows/z-offset on the active tab are gone (no draw_state) -
             # the fast-dock tradeoff.
             if active:
+                # flat_button applies its own shadow when it draws a bg (the
+                # inactive alpha=0 tabs stay flat).
                 clicked = flat_button(
                     label, draw_state, view_id=f"tab_{i}",
                     width=tab_width, height=btn_height,
@@ -5444,19 +5512,317 @@ def run_scoped_eval(code, view_func, draw_state, local_vars):
 # column by calling it with column=t_idx; the tab then owns a single-column
 # region, so the inner views inside it no longer pass column themselves.
 
-@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, 
+class _SourceItem(str):
+    """A source name as a dropdown value. `.tint` colors its row and the
+    trigger via _dd_obj_tint — yellow marks the source actively driving
+    the param."""
+
+    def __new__(cls, name, tint=None):
+        self = str.__new__(cls, name)
+        self.tint = tint
+        return self
+
+
+_ACTIVE_SRC_TINT = (0.9, 0.8, 0.2)
+
+
+@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
              searchable=True, show_name=False, selectable=False)
-@window(icon="")
-def draw_info_tab(input_value, search_text='', draw_state=None,unique=None, **kwargs):
-  
-    changed, _ = draw_any(input_value.locate_params, show_bg=False, show_name=False, show_header=False,
-                                            name=f"controls##{draw_state.name}" )
-    
-    if changed:
-        input_value.invalidate()
+@window(tint=(0.767, 0.671, 0.183))
+def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **kwargs):
+    """One row per view param: a source dropdown for LOOKING at the different
+    input sources, plus the value stored at the selected source — editable
+    when that source is writable, an inline + when it doesn't set the param
+    there yet. The dropdown defaults to the source actively driving the
+    param (yellow row/trigger); switching it never deletes or moves
+    anything, it just changes which source you're viewing/editing.
+    Selection lives on THIS tab's draw_state (misc) — pure view state."""
+    from src.lsd.gl_gui.view.core_views.anywhere import (_ABOVE_DRAW_STATE,
+                                                         _unset_value)
+    target = input_value
+    # locate_all_params: the view's own params PLUS the header's
+    # (with_header function inputs - icon, show_name, name_color, etc),
+    # deduped, view params first. Same read/write semantics.
+    proxy = target.locate_all_params
+    srcs = _sources_for(target)
+    writable = set(srcs["writable"])
+
+    # ONE pass over the registry per render - the active source is simply
+    # the highest-priority writable source with a SET value. The old shape
+    # re-walked every source dict per PARAM (_setting_source per row, plus
+    # the default_write_source cue re-counting key overlaps), which is
+@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
+             searchable=True, show_name=False, selectable=False)
+@window(tint=(0.767, 0.671, 0.183))
+def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **kwargs):
+    """One row per view param: a source dropdown for LOOKING at the different
+    input sources, plus the value stored at the selected source — editable
+    when that source is writable, an inline + when it doesn't set the param
+    there yet. The dropdown defaults to the source actively driving the
+    param (yellow row/trigger); switching it never deletes or moves
+    anything, it just changes which source you're viewing/editing.
+    Selection lives on THIS tab's draw_state (misc) — pure view state."""
+    from src.lsd.gl_gui.view.core_views.anywhere import (_ABOVE_DRAW_STATE,
+                                                         _unset_value)
+    target = input_value
+    # locate_all_params: the view's own params PLUS the header's
+    # (with_header function inputs - icon, show_name, name_color, etc),
+    # deduped, view params first. Same read/write semantics.
+    proxy = target.locate_all_params
+    srcs = _sources_for(target)
+    writable = set(srcs["writable"])
+
+    # ONE pass over the registry per render - the active source is simply
+    # the highest-priority writable source with a SET value. The old shape
+    # re-walked every source dict per PARAM (_setting_source per row, plus
+    # the default_write_source cue re-counting key overlaps), which is
+    # O(params × sources × keys) through lazy bubbling parse wrappers.
+    _prio = {s: _source_priority(srcs["kinds"].get(s)) for s in srcs["sources"]}
+    _ordered_all = sorted(srcs["sources"], key=_prio.get)
+    active_map = {}      # param -> highest-priority setter
+    setters_map = {}     # param -> [every source setting it, priority order]
+    for _s in _ordered_all:
+        if _s not in writable:
+            continue
+        _sd = srcs["sources"][_s]
+        if not isinstance(_sd, dict):
+            continue
+        for _k, _v in _sd.items():
+            if _unset_value(_v):
+                continue
+            if _k not in active_map:
+                active_map[_k] = _s
+            setters_map.setdefault(_k, []).append(_s)
+
+    # The + default for params the source sets (the other-params cue) is
+    # param-independent to first order - compute at most once per render,
+    # not per row (its overlap counting walks every source dict).
+    _cue = []
+    def _default_source_once():
+        if not _cue:
+            _cue.append(default_write_source("", target, srcs=srcs))
+        return _cue[0]
+
+    # Dropdown options/row-tints are IDENTICAL for every param sharing the
+    # same active source - and a view usually has only one or two distinct
+    # actives. Build once per distinct active, not per param (the per-row
+    # dict of _SourceItems was N_params × N_sources object churn per render).
+    _row_cache = {}
+    def _options_for(active):
+        hit = _row_cache.get(active)
+        if hit is None:
+            options = {s: _SourceItem(s, _ACTIVE_SRC_TINT if s == active else None)
+                       for s in _ordered_all}
+            options.setdefault(
+                "draw_state",
+                _SourceItem("draw_state",
+                            _ACTIVE_SRC_TINT if active == "draw_state" else None))
+            row_tints = ({str(active): _ACTIVE_SRC_TINT}
+                         if active is not None else None)
+            hit = (options, row_tints)
+            _row_cache[active] = hit
+        return hit
+
+    # _sources_for's keep-alive registers the TARGET as the code hosts'
+    # consumer; this tab is cached separately, so register it too - a parse
+    # landing (an editor's save/hotswap + an external change) then invalidates
+    # these rows and the active-source cache tracks the live registry.
+    _cm = getattr(target, "_sa_cm_state", None)
+    if _cm is not None:
+        for _h in (_cm.render_func_dict, _cm.class_dict, _cm.mode_dict,
+                   *[dh for (_sh, dh) in (_cm.call_site_hosts or [])]):
+            if _h is not None:
+                _h.notify_on_change(draw_state)
+
+    # Cold-session guard: while the render-func parse hasn't materialized
+    # (signature row still the unwritable placeholder), keep re-rendering.
+    # A cached tab stops pulsing the registry and its consumer stamp goes stale,
+    # and the parse-landing notify can miss it - the tab then shows "not
+    # set here" placeholders forever on a fresh session.
+    _sig = next((s for s, k in srcs["kinds"].items() if k == "signature"), None)
+    parses_ready = _sig in writable
+    if not parses_ready:
+        draw_state.invalidate()
+        request_render()
+
+    # Active-source cache on the TARGET ds: parses take a time on a cold
+    # open, and provenance shouldn't hide while they load. Ready registry →
+    # recompute and refresh the cache; loading → serve the cached pick, and
+    # a param with NO cached pick hides the dropdown until the registry is
+    # known (the value widget still draws, bound to the resolved value).
+    _active_cache = getattr(target, "_sa_active_src", None)
+    if _active_cache is None:
+        _active_cache = {}
+        target._sa_active_src = _active_cache
+
+    term = (search_text or "").lower()
+    any_changed = False
+    index = 0
+    for param, value in proxy.items():
+        index = index+1
+        if term and term not in param.lower():
+            continue
+        if parses_ready:
+            # The ACTIVE source: the highest-priority setter (precomputed in
+            # active_map, one render pass) - unless a diverged auto_param
+            # outranks it at runtime (the ds beats every setter not in
+            # _ABOVE_DRAW_STATE; the ds row only registers whitelisted
+            # attrs, so detect any divergence directly. A bare `param in
+            # target.__dict__` would be wrong: DrawState.__init__ stamps its
+            # own fields on every load).
+            setting = active_map.get(param)
+            ds_has = param in (getattr(target, "auto_params", None) or {})
+            if ds_has and (setting is None
+                           or _prio[setting][0] not in _ABOVE_DRAW_STATE):
+                active = "draw_state"
+            else:
+                active = setting
+            _active_cache[param] = active
+            known = True
+        else:
+            # ACTIVE-SOURCE CACHE DISABLED (perf A/B): never serve cached
+            # picks - loading rows draw no dropdown until sources are live.
+            # Re-enable by restoring: known = param in _active_cache;
+            # active = _active_cache.get(param)
+            known = False
+            active = None
+
+        # Names only need to be distinct among SIBLINGS - core_render's
+        # name_id scopes them per parent view, so no unique threading.
+        row_uid = param
+
+        if known:
+            # Dropdown of ALL sources in SourcePriority order, active one
+            # tinted + row-washed - memoized per distinct active source
+            # (_options_for above), not rebuilt per param.
+            options, _row_tints = _options_for(active)
+
+            # Selection is per-tab view state; default to the active source.
+            sel_key = f"src_sel::{param}"
+            sel = draw_state.misc.get(sel_key)
+            if sel not in options:
+                if active is not None:
+                    sel = active
+                elif parses_ready:
+                    sel = _default_source_once()
+                else:
+                    sel = "draw_state"
+
+            # Subtle trigger: no button bg/shadow, short, narrow - it's a
+            # provenance label with a popover, not a primary control.
+            # Per-row trash INSIDE the popover: clears this param at the
+            # source without exiting the dropdown, so several sources can be
+            # cleared in one visit. Only rows that actually SET the param
+            # get one (setters_map, plus the ds when an auto_param diverged);
+            # codec rows are out - clear_anywhere can't reverse the
+            # codec's per-file/render_kwargs fan-out yet.
+            def _clear_at(src, _p=param):
+                from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
+                if clear_anywhere(_p, target, str(src)) is not None:
+                    target.invalidate()
+                    draw_state.invalidate()
+            _row_actions = {s: _clear_at for s in setters_map.get(param, ())
+                            if srcs["kinds"].get(s) != "codec"}
+            if param in (getattr(target, "auto_params", None) or {}):
+                _row_actions["draw_state"] = _clear_at
+            pick_changed, new_pick = draw_dropdown(
+                options.get(sel, sel), collection=options, width=181, z_offset=0,
+                shadow=False, show_button_bg=False, trigger_height=22, show_bg=False,
+                text_pad=3, row_tints=_row_tints, row_actions=_row_actions,
+                name=f"src_{row_uid}_dd{index}", show_header=False)
+            if pick_changed and new_pick:
+                sel = str(new_pick)
+                draw_state.misc[sel_key] = sel
+        else:
+            sel = None
+            imgui.dummy(181, 22)     # hold the dropdown slot = no reflow when it expands
+
+        imgui.same_line()
+
+        if not parses_ready:
+            # Registry still loading: stored-at-source reads would hit
+            # placeholders; bind the widget to the RESOLVED value and route
+            # edits through the proxy pick when the sources are real.
+            item_return = draw_any(value, name=param,
+                                   show_bg=False, show_header=True)
+            item_changed, out_val = item_return[0], item_return[1]
+            if item_changed:
+                proxy[param] = out_val
+                any_changed = True
+            imgui.dummy(0, 2)
+            continue
+
+        # The value AT the selected source (not the resolved value) - that's
+        # what looking at a source means. draw_state reads the live attr.
+        sdict = srcs["sources"].get(sel)
+        stored = sdict.get(param) if isinstance(sdict, dict) else None
+        if sel == "draw_state" and stored is None:
+            stored = (getattr(target, "auto_params", None) or {}).get(
+                param, target.__dict__.get(param))
+        sel_writable = sel in writable or sel == "draw_state"
+
+        # In-flight write cache (_sa_pending - the same one anywhere_value
+        # serves): a slow-source write, or EVERY write while a drag is held
+        # (deferred), hasn't reached the source dict yet - a raw stored read
+        # snaps the slider back to the stale value next frame ("stuck").
+        # Serve the pending UI value while the trip is in flight, but only
+        # when this param's selected source is the one the write targeted.
+        # proxy set() above runs anywhere_value per param, which retires
+        # entries once the live value moves off its at-set baseline.
+        _pending = getattr(target, "_sa_pending", None)
+        if _pending and param in _pending:
+            _lastsrc = getattr(target, "_sa_last_source", None) or {}
+            if _lastsrc.get(param, sel) == sel:
+                stored = _pending[param][0]
+
+        if stored is None:
+            if sel_writable:
+                # Selected source doesn't set the param yet: + stamps a value
+                # into it (creating the entry); next frame the widget takes
+                # over. draw_button is a header and value-row button
+                # (draw_float's shape) - same header chrome as widget rows.
+                clicked, _ = draw_button("+", name=f"+##add_{row_uid}",
+                                         label="+", display_name=param,
+                                         show_name=True, show_bg=False,
+
+                                         wrap=True, min_width=24)
+                if clicked:
+                    # Resolved value when there is one; a None (header params
+                    # nothing sets) stamps the DECLARED signature default -
+                    # stamping None would create an entry that still shows
+                    # to unset (the "+ does nothing" feel).
+                    stamp = value
+                    if stamp is None:
+                        from src.lsd.gl_gui.view.core_views.anywhere import (
+                            signature_default_for)
+                        stamp = signature_default_for(param, target)
+                    set_anywhere(param, stamp, target, allow_any=True,
+                                 ds_fallback=True, source=sel)
+                    any_changed = True
+            else:
+                text(f"{param}: not set here", name=f"ro_{row_uid}",
+                     editable=False)
+        elif sel_writable:
+            item_return = draw_any(stored, name=param,
+                                   show_bg=False, show_header=True)
+            item_changed, out_val = item_return[0], item_return[1]
+            if item_changed:
+                set_anywhere(param, out_val, target, allow_any=True,
+                             ds_fallback=True, source=sel)
+                any_changed = True
+        else:
+            text(f"{param}: {stored}", name=f"ro_{row_uid}", editable=False)
+        imgui.dummy(0, 2)
+
+    if any_changed:
+        target.invalidate()
+        # The rows themselves are cached: re-render so the active tint and
+        # stored values reflect the write this frame (parse/dict writes are
+        # synchronous; the hosts' notify covers the later reload/hotswap).
+        draw_state.invalidate()
         request_render()
     return False, input_value
-    
+
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
@@ -6358,15 +6724,15 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     if isinstance(_cls_window_deco, dict) and _cls_window_deco:
         _add_source(f"@window({cls_name})", _cls_window_deco,
                     DecorationsCodec, location=cls_loc, kind="class decoration")
-    # @render_func(...) only for FUNCTION values: its kwargs (tint especially)
-    # are for tinting renders of that function - a legitimate source when the
-    # inspected object IS a function. On any other view the matrix would edit
-    # the shared view func's decorator, re-tinting every render of that view
-    # app-wide from one value's context menu.
-    if isinstance(getattr(input_value, "_raw_input_value", None), types.FunctionType):
-        _add_source(f"@render_func({fn_name})",
-                    cm_state.render_func_dict.deep.decorators.render_func(),
-                    DecorationsCodec, location=fn_loc, kind="decoration")
+    # @render_func(...) - the view func's decorator kwargs. Registered for
+    # EVERY value (not just function values, the old gate): decorator kwargs
+    # outrank signature defaults in the wrapper gauntlet, so a param set
+    # there (fast_toggle's show_cache=False) is the TRUE driver and hiding
+    # the row made provenance lie. The app-wide blast radius of an edit is
+    # real but the row is only ever written by an explicit pick.
+    _add_source(f"@render_func({fn_name})",
+                cm_state.render_func_dict.deep.decorators.render_func(),
+                DecorationsCodec, location=fn_loc, kind="decoration")
     # @window only exists as a source on actually-@window-decorated funcs -
     # a placeholder row here would be permanent noise on every other tab.
     _window_deco = cm_state.render_func_dict.deep.decorators.window()
@@ -6529,7 +6895,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
     # if up_key_pressed:
-    #     print("up key pressed")
+    #     print("Up key pressed")g
     fa_up_arrow = ""
     fa_down_arrow = ""
     if input_value._parent.id is not None:
@@ -6825,9 +7191,10 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
         elif this_tab == live_tab:
             draw_live_tab(input_value, name=f"live_tab_{t_idx}##{unique}", **size_kw)
+    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
+    imgui.text(f"{input_value._raw_input_value.__class__.__name__}")
 
     imgui.dummy(0, 30)
-
     return False, input_value
 
 
@@ -6883,11 +7250,11 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 
 
 
-@render_func(use_cache=True, show_bg=False, shadow=True, selectable=False,
+@render_func(use_cache=True, show_bg=False, selectable=False,
              tint=(0.083, 0.10, 0.144),
              is_tree=False, show_name=True, with_header=draw_header)
 @window
-def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, text_align="left", **kwargs):
+def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True, text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-to-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
@@ -6941,12 +7308,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # measured item rect is exactly what reads as animation jitter.
     _slot_w = kwargs.get("width") or draw_state.content_width
     compact = _slot_w < kwargs.get("compact_below", 50)
-    if compact:
-        # Show the VALUE itself (not the label/key). For a name->glyph dropdown
-        # the trigger must stay the glyph, not become the picked key's name.
-        drop_down_display_str = str(input_value if input_value is not None else current)[:30]
-    else:
-        drop_down_display_str = f"{caret} {str(current)[:30]}"
     bg_offset = 4 if is_open else 7
 
     # A compact trigger hugs its glyph: minimal text pad and a centered label,
@@ -6955,13 +7316,29 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     trigger_align = "center" if compact else text_align
     trigger_w = max(15 if compact else 18, _slot_w)
 
+    # The label must FIT the fixed trigger width in pixels - a long label
+    # overflows the button rect and the measured item rect disagrees with
+    # the drawn size, the same disagreement the width comment above calls
+    # out as height jitter. Ellipsis-trim via a text width, not a
+    # character count (glyph widths vary wildly with font/monospace).
+    _label_px = max(4.0, trigger_w - trigger_pad * 2)
+    if compact:
+        # Show the VALUE itself (not the label/key). For a name->glyph dropdown
+        # the trigger must hug the glyph, not become the picked value's name.
+        drop_down_display_str = _dd_fit_label(
+            str(input_value if input_value is not None else current), _label_px)
+    else:
+        drop_down_display_str = _dd_fit_label(f"{caret} {str(current)}", _label_px)
+
     trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else 25
     # Colour the trigger by the selected item's embedded tint (input_value is the
     # current selection passed by the caller), falling back to the view's tint.
     trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
-    clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger", show_bg=False, width=trigger_w,
-                         show_button_bg=True, shadow=True, tint=trigger_tint, height=19, disable_scroll=True,
-                        z_offset=3, text_align=trigger_align, bg_offset=bg_offset, text_pad=trigger_pad)
+    clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger{unique}", show_bg=False, width=trigger_w,
+                         show_button_bg=kwargs.get("show_button_bg", True),
+                         shadow=shadow, tint=trigger_tint,
+                         height=kwargs.get("trigger_height", 19), disable_scroll=True,
+                        z_offset=0, text_align=trigger_align, bg_offset=bg_offset, text_pad=trigger_pad)
 
     if clicked:
 
@@ -7015,6 +7392,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                                      closed=not is_open, temp=True, shadow=False,
                                      window_pos=(0, trigger_h -_DD_ROW_H), max_height=500,
                                      parent_window=draw_state, swoosh=False, disable_scroll=False,
+                                     row_tints=kwargs.get("row_tints"),
+                                     row_actions=kwargs.get("row_actions"),
                                      root_state=drop_down_state, path_prefix=())
     if is_open:
         if changed:
@@ -7215,6 +7594,18 @@ def _dd_as_tuple(x):
     if isinstance(x, list):
         return tuple(x)
     return ()
+
+
+def _dd_fit_label(s, px):
+    """`s` ellipsis-trimmed to render within `px` (imgui text metrics), so a
+    fixed-width trigger never draws wider than its own button rect."""
+    if px <= 0:
+        return ""
+    if imgui.calc_text_size(s)[0] <= px:
+        return s
+    while s and imgui.calc_text_size(s + "…")[0] > px:
+        s = s[:-1]
+    return s + "…"
 
 
 def _dd_obj_tint(obj, fallback=None):
@@ -7443,7 +7834,7 @@ def _dd_noop_set(*_a, **_k):
 
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
-                 row_suffixes=None, left_pad=10):
+                 row_suffixes=None, row_actions=None, left_pad=10):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -7564,6 +7955,26 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             dl.add_rect_filled(tx - 6, y + 1, tx + tw + 6, y + h - 1, mask)
         dl.add_text(tx, ty, imgui.get_color_u32_rgba(0.55, 0.6, 0.72, 0.85), tag)
 
+    # Per-row ACTION (`row_actions`: dict value→callable, or single callable for
+    # every row): a right-aligned trash icon whose click runs the action and
+    # CONSUMES the click - no pick, popover stays open, so several rows can
+    # be acted on in one visit (the info tab's clear-at-action).
+    _act = None
+    if row_actions is not None:
+        _act = (row_actions.get(value) if isinstance(row_actions, dict)
+                else row_actions)
+    if _act is not None:
+        _ax = x + w - 24
+        _over_act = hovered and mp[0] >= _ax - 4
+        dl.add_text(_ax, y + (h - line_h) * 0.5,
+                    imgui.get_color_u32_rgba(0.85, 0.32, 0.28,
+                                             0.95 if _over_act else 0.4),
+                    "")
+        if _over_act and imgui.is_mouse_clicked(0):
+            _act(value)
+            request_render()
+            return UNSET_VALUE
+
     if hovered and imgui.is_mouse_clicked(0):
         root_state._picked_path = tuple(row_path)
         return value
@@ -7575,7 +7986,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
              max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
-                 row_suffixes=None,
+                 row_suffixes=None, row_actions=None,
                  full_render=False, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
@@ -7697,7 +8108,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
             picked = _dd_leaf_row(key, value, label, draw_state, root_state,
                                   tuple(path_prefix), cursor_path, tint=tint,
                                   row_tags=row_tags, row_tints=row_tints,
-                                  row_suffixes=row_suffixes)
+                                  row_suffixes=row_suffixes,
+                                  row_actions=row_actions)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result

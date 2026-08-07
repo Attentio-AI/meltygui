@@ -1299,6 +1299,9 @@ def _run_chain_out(input_value, chain=None, _out_gen=None, **extra):
 # 215ms of parse+compile); beyond it the first parse runs async so a
 # pathological buffer can't freeze its first frame for seconds.
 _INLINE_FIRST_PARSE_MAX_CHARS = 128 * 1024
+# background_load_*' inline opt-out: small enough that a window-drag
+# hidden-host load stays an invisible few ms (a 16KB span parses ~10ms).
+_BG_INLINE_FIRST_PARSE_MAX_CHARS = 16 * 1024
 
 # Typing debounce for chain_in re-parses: every keystroke fires a START edge,
 # and with no debounce a big buffer queues a full str→dict→convert per key -
@@ -1679,10 +1682,15 @@ def convert_in_and_out_value(input_value, draw_state, view_func=None, chain_in=N
         # background_load=True hidden cache hosts (input-tab feeders) opt OUT of
         # the synchronous first parse - nobody's looking at them the frame
         # they load, and a big span's inline parse puts a visible 100ms+ hitch
-        # on whatever the user IS doing (dragging a window).
-        inline = (not background_load
-                  and isinstance(input_value, str)
-                  and len(input_value) <= _INLINE_FIRST_PARSE_MAX_CHARS)
+        # on whatever the user IS doing (dragging a window). SMALL functions
+        # are carved back in: a function span parse is single-digit ms, and
+        # the context-menu tabs DO look at these hosts the moment they load -
+        # the async hop (worker + debounce + next-frame) was the seconds-long
+        # "sources not loading" feel on every cold menu open.
+        _inline_cap = (_BG_INLINE_FIRST_PARSE_MAX_CHARS if background_load
+                       else _INLINE_FIRST_PARSE_MAX_CHARS)
+        inline = (isinstance(input_value, str)
+                  and len(input_value) <= _inline_cap)
         # A direct cst-cache hit is a ~26ms pickle.loads, not a parse - the
         # async path's frame-hop tax (~90ms+ per span at boot) costs more than
         # the work. Inline it even for background_load hosts and big spans.

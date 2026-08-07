@@ -407,6 +407,16 @@ def _codec_render_kwargs(value_type):
     return getattr(codec, "render_kwargs", None) or {}
 
 
+def _owning_window(ds):
+    """The nearest window that owns `ds`: the draw_state itself when it IS a
+    window (closable, or a top-level root), else its parent_window. This is
+    NOT root_window — nested windows all share a root, and Ctrl+F routing
+    must distinguish sibling nested windows from each other."""
+    if ds is None or ds.closable or ds.parent_window is None:
+        return ds
+    return ds.parent_window
+
+
 def _selection_for_search(owner_ds):
     """Selected text to prefill the find box with on Ctrl+F, or None. The
     selection lives on the text-focused editor's draw_state
@@ -1249,6 +1259,7 @@ def render_func(*args, **o_kwargs):
                                       imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
                                       f"ID {draw_state.name}")
                 kwargs['use_cache'] = False
+                print(f"Duplicate unique detected: {unique} for {draw_state.name} {input_value.__class__.__name__} {func.__name__}. Forcing re-render.")
                 # return False, None
 
         Melty.seen_unique.add(unique)
@@ -2563,6 +2574,19 @@ def render_func(*args, **o_kwargs):
                 # action, so Ctrl+Shift+F (draw_main's global search) lands in a
                 # different bucket and never reaches here.
                 search_requested = draw_state.on_action("inverted_ctrl_f_down")
+
+                if search_requested:
+                    # Inverted dispatch delivers Ctrl+F to the BACK-most hovered
+                    # subscriber, and hover eligibility ignores window occlusion
+                    # - so a searchable inside a nested window layered BEHIND
+                    # the hovered one receives the press. Act only when this
+                    # view lives in the window actually under the cursor - every
+                    # other case (occluded sibling, floating window in front) is
+                    # resolved by draw_main's root fallback, which ranks hits by
+                    # window and always runs (non_blocking).
+                    _hits = Melty.bvh_query(*imgui.get_mouse_pos())
+                    if _hits and _owning_window(_hits[0]) is not _owning_window(draw_state):
+                        search_requested = False
 
                 if len(Melty.search_stack) > 0:
                     kwargs["search_text"] = Melty.search_stack[-1]

@@ -299,8 +299,7 @@ def _init_file_meta(vis, root):
 
 
 # ── debug window: the persisted per-file metadata tree ──────────────────────────
-@window(disable_scroll=False, use_cache=True)
-@render_func(tint=(0.22, 0.14, 0.05))
+@window(disable_scroll=False, use_cache=True, tint=(0.18, 0.11, 0.11))
 def file_meta_debug(_, draw_state=None):
     """Raw view of AppModel.file_meta_collection.file_meta — the path-keyed
     params store the folder tree and the codec layer read/write (tint, order,

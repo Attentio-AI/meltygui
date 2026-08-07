@@ -18,6 +18,7 @@ from src.lsd.gl_gui.utils.custom_views import push_style_var, push_style_color, 
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDict
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
+from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
@@ -256,7 +257,8 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 corner_radius=6.0, text_pad=15, hover_boost=0.05,
                 hover_text_boost=1.5, max_bg_brightness=0.25,
                 event="left_mouse_clicked", text_offset_x=None,
-                style_manager=None, layout=True, draw_list=None):
+                style_manager=None, layout=True, draw_list=None,
+                shadow=True, **kwargs):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
     rect + centered label straight to the draw list, hover from the live
@@ -284,6 +286,14 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     # (e.g. the overlay list a DragDrop ghost rides) — pairs with layout=False.
     dl = draw_list if draw_list is not None else imgui.get_window_draw_list()
     if alpha > 0.0 and color is not None:
+        # Shadow under any button that draws a bg — a standalone depth mark
+        # (no draw_state for the compositor to shadow; the default offset +2
+        # mirrors the legacy active-button z_offset lift). Label-only buttons
+        # (alpha=0, e.g. inactive tabs) cast nothing, matching the old
+        # per-call-site marks. layout=False draw-only ghosts skip it too —
+        # they ride an overlay list outside the mark's snapshotted clip.
+        if shadow and layout:
+            add_shadow((x, y, w, h), corner_radius=Melty.px(corner_radius))
         from src.lsd.gl_gui.view.core_views.new_core_view import _brightness_clamp
         bg = style_manager.make_color_rgb(
             color[0], color[1], color[2],

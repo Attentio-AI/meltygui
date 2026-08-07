@@ -14,7 +14,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
-from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.toggles import Toggles, shadow_depth_at
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, get_live_frames
 from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -147,6 +147,10 @@ class Tile:
     # instead of misaligned stale pixels.
     content_scroll: Optional[Tuple[int, int]] = None
     content_bg: bool = False
+    # last_clean_frame value at which the logical-edge scrollbar/outline
+    # strips were last cleared (see _scrub_view_edges). A fresh capture bumps
+    # last_clean_frame past this, re-arming the clear until the next freeze.
+    edge_scrub_frame: int = -1
 
 
 @dataclass
@@ -908,7 +912,14 @@ class TileCacheMasked:
 
         self._mask_rects: List[_Rect] = []
         self._shadow_mask_keys = set()
-        self._shadow_rects: List[_Rect] = []
+        # Standalone shadow marks from add_shadow(): (x, y, w, h,
+        # depth_and_layer, corner_radius, margin, clip_xyxy, owner_key,
+        # inset).
+        # Stamped into _full_mask_tex at the end of PASS 5 (this frame's
+        # shadow), and into any pending enclosing tile's cached mask in
+        # PASS 4 (so the mark survives frames where the tile's mask is
+        # cache-served). No key, no draw_state, never in the flat mask.
+        self._shadow_rects: List[tuple] = []
 
         self._rect_seq: int = 0
 
@@ -1700,6 +1711,7 @@ class TileCacheMasked:
                     gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
         self._mask_rects.clear()
+        self._shadow_rects.clear()
         self._rect_seq = 0
 
     def mask_mark_rect(
@@ -1717,6 +1729,136 @@ class TileCacheMasked:
 
         self._mask_rects.append(
             _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
+
+    def add_shadow(
+            self, rect: Tuple[float, float, float, float], offset: float = 2.0,
+            layer: int = None, depth: int = None, corner_radius: float = 5.0,
+            margin: float = 0.0, clip: bool = True,
+    ) -> None:
+        """Mark a screen-space rect as a shadow caster, for code that is not
+        a @render_func (raw draw-list overlays, dock rows, drag ghosts).
+
+        `offset` is the SIGNED depth delta from the surrounding surface
+        (depth, default Melty.shadow_depth). Positive lifts the rect so it
+        casts onto its surroundings (default +2, the legacy active-button
+        z_offset). NEGATIVE carves a recess: the mark is MIN-blended (it can
+        only lower depth), so the surrounding surface casts INTO the rect —
+        the sunken-widget look.
+
+        Raised marks stamp into the full depth mask at the end of PASS 5,
+        max-blended so they never lower an existing (higher) window mark.
+        Neither kind touches the flat mask, so a mark cannot steal tile
+        pixels or invalidate anything — safe to call every frame. To keep a
+        recess carve from cutting into unrelated windows floating above, an
+        owned negative mark lands only in its own tile's cached mask
+        (PASS 4); the full mask picks it up through the cached-mask path.
+        Ownerless negative marks (no tile recording) stamp the full mask
+        directly and are the caller's responsibility to keep topmost.
+
+        Persistence: if the call happens while a tile is recording, the mark
+        also bakes into that tile's cached mask (PASS 4), so it keeps casting
+        on frames where the caller's body is cache-served — the same
+        persistence regular view marks get, and it ages out naturally on the
+        owner's next fresh capture.
+
+        rect is (x, y, w, h) in screen coords. layer defaults to
+        Melty.active_layer, depth to Melty.shadow_depth, both read at call
+        time. clip=True snapshots the LIVE clip rect now and scissors the
+        mark with it at draw time; an explicit (x0, y0, x1, y1) tuple clips
+        to that rect instead (e.g. a draw-list view's abs_clip_rect);
+        False/None disables clipping.
+        """
+        x, y, w, h = rect
+        if w <= 0 or h <= 0:
+            return
+        if layer is None:
+            layer = Melty.active_layer
+        if depth is None:
+            depth = Melty.shadow_depth
+        if clip is True:
+            clip_xyxy = Melty.get_clip_rect()
+        elif clip:
+            clip_xyxy = tuple(clip)
+        else:
+            clip_xyxy = None
+        if clip_xyxy is not None and self._fully_clipped(x, y, w, h, clip_xyxy):
+            return
+        owner_key = self._stack[-1].key if self._stack else None
+        self._shadow_rects.append(
+            (x, y, w, h, max(0.0, shadow_depth_at(depth + offset, layer)),
+             corner_radius, margin, clip_xyxy, owner_key, offset < 0))
+
+    def _stamp_shadow_marks(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
+                            scissor_fb=None):
+        """Draw add_shadow() marks into the currently bound R16 mask FBO.
+        Raised marks MAX-blend (can only raise depth), inset marks MIN-blend
+        (can only lower it — the recess carve); either way stamping the same
+        mark into several masks (tile caches in PASS 4 + the full mask in
+        PASS 5) is idempotent, and the rounded shader discards outside its
+        SDF so MIN never punches the quad corners. scissor_fb optionally
+        intersects every mark's own clip with an outer (x0, y0, x1, y1)
+        framebuffer-space rect (PASS 4's tile rect). Leaves scissor disabled
+        and blend restored to FUNC_ADD/off."""
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+        for (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
+             inset) in shadows:
+            gl.glBlendEquation(gl.GL_MIN if inset else gl.GL_MAX)
+            x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
+                sx, sy, sw, sh, dp_x, dp_y, s_x, s_y, fb_h)
+            ix0, iy0 = int(floor(x0)), int(floor(y0))
+            ix1, iy1 = int(ceil(x1)), int(ceil(y1))
+            iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+            if iw <= 0 or ih <= 0:
+                continue
+            sc = scissor_fb
+            if clip_xyxy is not None:
+                cx0, cy0, cx1, cy1 = clip_xyxy
+                fx0, fy0, fx1, fy1 = self._screen_rect_to_fb_xyxy(
+                    cx0, cy0, cx1 - cx0, cy1 - cy0, dp_x, dp_y, s_x, s_y, fb_h)
+                sc = ((fx0, fy0, fx1, fy1) if sc is None else
+                      (max(sc[0], fx0), max(sc[1], fy0),
+                       min(sc[2], fx1), min(sc[3], fy1)))
+            if sc is not None:
+                scx0, scy0 = int(floor(sc[0])), int(floor(sc[1]))
+                scw = int(ceil(sc[2])) - scx0
+                sch = int(ceil(sc[3])) - scy0
+                if scw <= 0 or sch <= 0:
+                    continue
+                gl.glEnable(gl.GL_SCISSOR_TEST)
+                gl.glScissor(scx0, scy0, scw, sch)
+            else:
+                gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glViewport(ix0, iy0, iw, ih)
+            rank_norm = float(d_and_l) / 65535.5
+            if cr > 0:
+                gl.glUseProgram(self._prog_mask_rounded)
+                gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
+                gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+                gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
+                gl.glUniform1f(self._loc_maskr_uMargin, margin)
+            else:
+                gl.glUseProgram(self._prog_mask)
+                gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
+            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        gl.glBlendEquation(gl.GL_FUNC_ADD)
+        gl.glDisable(gl.GL_BLEND)
+
+    def _shadows_owned_by(self, root_key):
+        """add_shadow() marks whose owner tile sits in root_key's subtree
+        (owner chains up to root_key through key_to_parent_key)."""
+        owned = []
+        parent_of = self.key_to_parent_key
+        for s in self._shadow_rects:
+            k = s[8]
+            hops = 0
+            while k is not None and k != root_key and hops < 64:
+                k = parent_of.get(k)
+                hops += 1
+            if k == root_key:
+                owned.append(s)
+        return owned
 
     def mark_shadow(
             self, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
@@ -2000,6 +2142,48 @@ class TileCacheMasked:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
                 style_manager.set_imgui_tint(*_sv_tint)
 
+    def _scrub_view_edges(self, t: Tile) -> None:
+        """freeze_resize tiles, on entering a frozen drag: the last live
+        render baked the view's scrollbar gutter and bg outline at the
+        LOGICAL (t.size) right/bottom edges — for no-shrink tiles that edge
+        can sit strictly inside the resident texture (content_size is the
+        high-water extent), so the content-edge trim in the frozen blit
+        never reaches it and it reads as a stamped seam mid-image. Clear a
+        thin strip at the logical edges to transparent; the frozen blit
+        paints the real background (draw_freeze_bg) underneath, so the
+        strips read as seamless bg. One-shot per capture era (keyed on
+        last_clean_frame). The texels are destroyed, so the tile is also
+        invalidated — the settled view re-renders once even when the drag
+        releases back at the exact captured size."""
+        if getattr(t, "edge_scrub_frame", -1) == t.last_clean_frame:
+            return
+        w, h = snap_int(t.size[0]), snap_int(t.size[1])
+        # Right strip is wider: the scrollbar gutter lives there.
+        trim_r = snap_int(Melty.px(20))
+        trim_b = snap_int(Melty.px(5))
+        if w <= trim_r or h <= trim_b:
+            return
+        aw, ah = _tile_alloc(t)
+        bands = [
+            (w - trim_r, ah - h, trim_r, h),  # right strip, full view height
+            (0, ah - h, w, trim_b),           # bottom strip, full view width
+        ]
+        st = _GLState()
+        try:
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, t.fbo)
+            gl.glEnable(gl.GL_SCISSOR_TEST)
+            gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+            gl.glClearColor(0, 0, 0, 0.0)
+            for x, y, bw, bh in bands:
+                gl.glScissor(int(x), int(y), int(bw), int(bh))
+                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            _clear_mask_regions(t.mask_tex, bands)
+        finally:
+            st.restore()
+        t.edge_scrub_frame = t.last_clean_frame
+        t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id)
+        t.dirty = True
+
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
         view scrolls away from the position they were captured at. They are
@@ -2187,6 +2371,10 @@ class TileCacheMasked:
 
                 dl = imgui.get_window_draw_list()
                 if frozen:
+                    # Drop the scrollbar/outline pixels baked at the logical
+                    # (t.size) edges - inside the tile texture, where the
+                    # content-edge trim above can't reach them.
+                    self._scrub_view_edges(t)
                     # Paint the background live over the full live rect
                     # (under the frozen image) - outline-less for freeze
                     # views, so nothing baked in the tile interferes with it.
@@ -2673,7 +2861,7 @@ class TileCacheMasked:
         if self._snapshot_fbo is None:
             return
 
-        if not self._pending and not self._mask_rects:
+        if not self._pending and not self._mask_rects and not self._shadow_rects:
             return
 
         # Grab direct references (we clear at end anyway)
@@ -2695,7 +2883,7 @@ class TileCacheMasked:
             self.last_capture_stats = (len(local_pending), -1,
                                        len(local_mask_rects))
 
-        if not local_pending and not local_mask_rects:
+        if not local_pending and not local_mask_rects and not self._shadow_rects:
             self._pending.clear()
             self._mask_rects.clear()
             self._enq_mask_keys.clear()
@@ -2999,6 +3187,19 @@ class TileCacheMasked:
                             gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
                         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
+                # Bake add_shadow() marks owned by this tile's subtree into
+                # the cached mask, so they keep casting on frames where the
+                # owner's tile is cache-served - the same persistence regular
+                # view marks get from this rebuild. A body only runs when its
+                # tile is dirty, so the frame a body is (re)marked is always
+                # a frame its tile is in local cache; conversely the next
+                # local capture without the call ages the mark out.
+                if self._shadow_rects:
+                    _owned = self._shadows_owned_by(p.key)
+                    if _owned:
+                        self._stamp_shadow_marks(_owned, dp_x, dp_y, s_x, s_y,
+                                                 fb_h, scissor_fb=(x0, y0, x1, y1))
+
                 gl.glDisable(gl.GL_SCISSOR_TEST)
 
                 # Save _full_sub_mask_tex to tile's mask_tex and remember the layer
@@ -3120,6 +3321,38 @@ class TileCacheMasked:
 
             gl.glDisable(gl.GL_SCISSOR_TEST)
 
+            # Standalone add_shadow() marks: stamped last, MAX-blended so they
+            # can only shadow depth - a shadow under an already-higher window
+            # mark is a no-op, everywhere else it becomes a caster edge for
+            # the post_frame shadow_cast pass. (Owned marks were also baked
+            # into their pending tile's cached mask in PASS 4; MAX blend makes
+            # the double-stamp idempotent.) OWNED INSET marks are excluded: a
+            # MIN carve stamped over the finished full mask would cut into
+            # surrounding windows floating above the recess - they reach the
+            # full mask only through their tile's cached mask (PASS 4), which
+            # scopes the carve to the owner's subtree.
+            # ...with one exception: an owned inset whose cached-mask path
+            # was skipped this frame (likely mid-resize: size_change makes
+            # PASS 5 stamp the owner with a flat rank mask, or the tile has no
+            # mask yet). Excluding it here would drop the recess for exactly
+            # the resize frames, so stamp it again - still MIN-blended and
+            # scissored to its own snapshotted clip, which keeps the
+            # transient carve inside the resizing view's region.
+            _standalone = []
+            for s in self._shadow_rects:
+                if not (s[9] and s[8] is not None):
+                    _standalone.append(s)
+                    continue
+                _ot = self._tiles.get(s[8])
+                _ods = self.key_to_draw_state.get(s[8])
+                _served = (_ot is not None and _ot.mask_tex is not None
+                           and not (_ods is not None and _ods.size_change))
+                if not _served:
+                    _standalone.append(s)
+            if _standalone:
+                self._stamp_shadow_marks(_standalone,
+                                         dp_x, dp_y, s_x, s_y, fb_h)
+
             gl.glViewport(0, 0, fb_w, fb_h)
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
@@ -3158,3 +3391,17 @@ class TileCacheMasked:
             self._recording = False
             self.did_deviate.clear()
             self.seen_ids.clear()
+
+def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
+               margin=0.0, clip=True):
+    """Mark a screen-space (x, y, w, h) rect as a shadow caster from anywhere
+    — no @render_func, key, or draw_state required. `offset` is the signed
+    depth delta from the surrounding surface: positive (default +2) lifts the
+    rect so it casts a shadow, negative carves a recess so the surroundings
+    cast into it. layer/depth default to Melty.active_layer/Melty.shadow_depth
+    at call time. Cheap enough to call every frame; see
+    TileCacheMasked.add_shadow."""
+    cache = Melty.cache
+    if cache is not None:
+        cache.add_shadow(rect, offset=offset, layer=layer, depth=depth,
+                         corner_radius=corner_radius, margin=margin, clip=clip)
