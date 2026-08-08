@@ -1142,7 +1142,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
 
     show_filled_tiles = False
     gl_check_error = False

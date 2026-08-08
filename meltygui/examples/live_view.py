@@ -227,6 +227,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
         # [tint=(0.122, 0.0, 0.8), dim_names=['head', 'key', 'feature']]
         k_l = k.roll(shifts=l_idx * shift, dims=1)
         
+        # Hello! Testing git diff
         # [tint=(0.066, 0.045, 0.189), cam_brightness=0.08, cam_contrast=0.752,
         # spin=3.828, tilt=0.019, cam_zoom=1.7142]
         scores = q @ k_l.transpose(-2, -1) / (dim ** 0.5 * temp)
@@ -244,6 +245,11 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
     def some_text():
         pass
 
+
+
+
+
+
     return attn, focus
 
 
@@ -252,3 +258,5 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner", icon=None, display_name=None)
+    
+    
