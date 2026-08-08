@@ -2303,10 +2303,19 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         # searchable, fall back outward through its ANCESTOR chain (a small
         # floating window over a searchable pane keeps Ctrl+F working) - never
         # to siblings behind, which never outside the hovered window.
-        from src.lsd.gl_gui.view.core_views.core_render import _owning_window
+        from src.lsd.gl_gui.view.core_views.core_render import (_owning_window,
+                                                                _window_descends_from)
         _chain = []
         if _hits:
             _w = _owning_window(_hits[0])
+            # Start the chain at the DEEPEST hovered window, not hits[0]'s: a
+            # stale z_pos on a nested-window subtree can sort a parent-window
+            # hit to the front, which started the chain at the parent and let
+            # it steal Ctrl+F from the nested child under the cursor.
+            for _h in _hits:
+                _hw = _owning_window(_h)
+                if _hw is not _w and _window_descends_from(_hw, _w):
+                    _w = _hw
             for _ in range(32):
                 _chain.append(_w)
                 _p = _w.parent_window
@@ -6019,7 +6028,7 @@ def draw_live_tab(input_value, **kwargs):
 
 
 def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
-                  height=None, **kwargs):
+                  height=None, select_line=None, **kwargs):
     """Editable source of the inspected view function; hotswaps on save.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
     folder-files leaf uses — so all editors share one code path.
@@ -6049,6 +6058,11 @@ def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
             _kw["height"] = height
         if name is not None:
             _kw["key"] = name
+        if select_line is not None:
+            # File-absolute line to auto-select (scope-up nav) - rides through
+            # code_file_io's child_kwargs to draw_text_from_code_cache, which
+            # validates it against the span buffer.
+            _kw["child_kwargs"] = {"select_line": select_line}
         code_file_io(view_func, auto_load_edits=True,
                      view_func=draw_text_from_code_cache,
                      disable_scroll=disable_scroll, show_name=False,
@@ -6957,6 +6971,42 @@ def draw_mode_tab(input_value, draw_state, current_mode=None, **kwargs):
     return False, input_value
 
 
+def _ancestor_call_line(target_ds, ancestor_ds):
+    """File-absolute line inside `ancestor_ds`'s view function whose statement
+    (transitively) rendered `target_ds`'s element — e.g. inspecting a button
+    drawn by draw_tab_bar and walking up one scope resolves the `button(...)`
+    call line in draw_tab_bar. The func tab auto-selects it.
+
+    Scans the TARGET's cached _call_stack (innermost-first tuples, captured
+    once on menu-open — never the live stack, see the capture note in
+    core_render) for the nearest frame executing the ancestor's function; that
+    frame's lineno is the call statement. A view rendered inside a deferred
+    layer has a stack that bottoms out at the layer loop, so each deferred
+    ancestor's queue-time _deferred_call_stack is appended to continue the
+    chain outward. None when the ancestor's frame isn't in the chain (stack
+    not captured yet, or the ancestor rendered from cache with parents
+    skipped)."""
+    view_func = getattr(ancestor_ds, "_view_func", None)
+    if view_func is None:
+        return None
+    code = getattr(inspect.unwrap(view_func), "__code__", None)
+    if code is None:
+        return None
+    stack = list(getattr(target_ds, "_call_stack", None) or ())
+    node = target_ds
+    for _ in range(64):
+        if getattr(node, "_is_deferred_layer", False):
+            stack.extend(getattr(node, "_deferred_call_stack", None) or ())
+        parent = getattr(node, "_parent", None)
+        if node is ancestor_ds or parent is None or parent is node:
+            break
+        node = parent
+    for filename, lineno, func_name in stack:
+        if func_name == code.co_name and filename == code.co_filename:
+            return lineno
+    return None
+
+
 @render_func(use_cache=True, disable_scroll=True, show_header=False,
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
@@ -7088,7 +7138,16 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         if Core.melty.cache is not None:
             Core.melty.cache.invalidate_up(offset_ds._tile_id, max_depth=5)
         request_render()
-        
+
+    # Scope-up auto-select: when the menu is walked up to an ancestor, resolve
+    # the line inside the ancestor's view function that drew the ORIGINAL
+    # element (from the original target's cached _call_stack, available
+    # immediately, no waiting on the ancestor's lazy capture above), and have
+    # the func tab select it.
+    func_tab_select_line = None
+    if offset_ds is not input_value:
+        func_tab_select_line = _ancestor_call_line(input_value, offset_ds)
+
     input_value._offset_ds = offset_ds
     input_value = offset_ds
 
@@ -7223,7 +7282,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             # A persisted selection that outran the current tab set: fall back
             # to the func tab rather than indexing out of range.
             draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
-                          disable_scroll=True, **size_kw)
+                          disable_scroll=True, select_line=func_tab_select_line,
+                          **size_kw)
             continue
         this_tab = tab_names[static_tab]
         if this_tab == tint_tab_name:
@@ -7240,7 +7300,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
         elif this_tab == func_tab:
             draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
-                          disable_scroll=False, **size_kw)
+                          disable_scroll=False, select_line=func_tab_select_line,
+                          **size_kw)
 
         elif this_tab == eval_tab_name:
             draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,
@@ -7328,7 +7389,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
 @window
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True, text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
-    selection; clicking it opens the (click-to-open) root popover. Nested dict
+    selection; clicking it opens the (click-o-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
     (changed, selected_leaf) when the user picks a value.
 
@@ -7380,6 +7441,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # measured item rect is exactly what reads as animation jitter.
     _slot_w = kwargs.get("width") or draw_state.content_width
     compact = _slot_w < kwargs.get("compact_below", 34) and len(input_value) > 2
+    compact = False
     bg_offset = 4 if is_open else 7
 
     # A compact trigger hugs its glyph: minimal text pad and a centered label,
@@ -7406,9 +7468,17 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # Colour the trigger by the selected item's embedded tint (input_value is the
     # current selection passed by the caller), falling back to the view's tint.
     trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
+    # Quiet text dimming (text_toward_bg - the info tab's info rows): a
+    # selection WITHOUT an embedded tint fades toward the background, so a
+    # tinted one (the active source in yellow) is what draws the eye.
+    _ttb = kwargs.get("text_toward_bg", 0.0)
+    trigger_text_value = 1.023
+    if _ttb and getattr(input_value, "tint", None) is None:
+        trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger{unique}", show_bg=False, width=trigger_w,
                          show_button_bg=kwargs.get("show_button_bg", True),
                          shadow=shadow, tint=trigger_tint,
+                         text_value=trigger_text_value,
                          height=kwargs.get("trigger_height", 19), disable_scroll=True,
                         z_offset=0, text_align=trigger_align, bg_offset=bg_offset, text_pad=trigger_pad)
 
@@ -7898,6 +7968,19 @@ _DD_MENU_W = 170
 _DD_ROW_H = 24
 
 
+
+def _dd_row_lookup(mapping, value):
+    """mapping.get(value), tolerant of UNHASHABLE row values — a BRANCH row's
+    value is the nested collection dict itself, which raised TypeError from
+    every value-keyed style lookup (row_tags/row_tints/...)."""
+    if not mapping:
+        return None
+    try:
+        return mapping.get(value)
+    except TypeError:
+        return None
+
+
 def _dd_noop_set(*_a, **_k):
     """No-op set_attr for the draw_collection rendering a dropdown level: the rows
     list is rebuilt each frame, so draw_collection must NOT write a picked value
@@ -7948,7 +8031,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # as a colored BACKGROUND wash with near-white text over it - the editor's
     # wash styling - rather than colored text. Under the active highlight so
     # keyboard/hover selection still reads on tinted rows.
-    row_tint = row_tints.get(value) if row_tints else None
+    row_tint = _dd_row_lookup(row_tints, value)
     _ROW_TINT_A = 0.35
     _ROW_TINT_V_CAP = 0.55   # max RGB component - near-white text must stay legible
     _ROW_TINT_S_BOOST = 1.25  # saturation boost on capped tints - keeps hue vivid
@@ -8007,7 +8090,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # rows): same tint as the label but reduced alpha, so it's subtle on
     # plain, tinted and active rows alike. imgui text (not raw dl.add_text) so
     # the row's measured width includes it and auto-resize fits the popup.
-    sfx = row_suffixes.get(value) if row_suffixes else None
+    sfx = _dd_row_lookup(row_suffixes, value)
     if sfx:
         imgui.same_line(spacing=0)
         imgui.text_colored(sfx, color[0], color[1], color[2], 0.45)
@@ -8017,7 +8100,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # Dimmed tag, right-aligned (autocomplete's func/class/... label). Opaque
     # backing mask first so a long label can't run off it; the mask reuses the
     # menu fill (+active wash) so it's invisible on plain and highlighted rows.
-    tag = row_tags.get(value) if row_tags else None
+    tag = _dd_row_lookup(row_tags, value)
     if tag:
         tw = imgui.calc_text_size(tag).x
         tx = x + w - tw - 10
@@ -8043,8 +8126,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # be acted on in one visit (the info tab's clear-at-action).
     _act = None
     if row_actions is not None:
-        _act = (row_actions.get(value) if isinstance(row_actions, dict)
-                else row_actions)
+        _act = (_dd_row_lookup(row_actions, value)
+                if isinstance(row_actions, dict) else row_actions)
     if _act is not None:
         _ax = x + w - 24
         _over_act = hovered and mp[0] >= _ax - 4
@@ -8220,13 +8303,13 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
     cursor_path = _dd_as_tuple(cursor_path)
     sub_open = open_path[:len(row_path)] == row_path
     is_cursor = cursor_path == row_path
-    tag = row_tags.get(value) if row_tags else None
+    tag = _dd_row_lookup(row_tags, value)
 
     hovered = draw_state._bounding_hovered
     # Colour the row by its value's embedded tint (e.g. a Lora's .tint), falling
     # back to the per-row override (autocomplete's symbol tints), then the menu
     # tint for plain values.
-    row_tint = row_tints.get(value) if row_tints else None
+    row_tint = _dd_row_lookup(row_tints, value)
     tint = _dd_obj_tint(value, row_tint or tint)
     fa_chrevron_right = f"\uf054"
 

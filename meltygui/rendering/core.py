@@ -417,6 +417,27 @@ def _owning_window(ds):
     return ds.parent_window
 
 
+def _window_descends_from(win, ancestor):
+    """True when window `win` is a STRICT descendant of window `ancestor`
+    (its parent_window chain reaches `ancestor`; a window is not its own
+    descendant). Bounded walk, self-loop guarded — used by the Ctrl+F
+    routing to keep parent windows from stealing the key from searchables
+    inside their nested children."""
+    if win is None or ancestor is None or win is ancestor:
+        return False
+    node = win.parent_window
+    for _ in range(32):
+        if node is None:
+            return False
+        if node is ancestor:
+            return True
+        nxt = node.parent_window
+        if nxt is node:
+            return False
+        node = nxt
+    return False
+
+
 def _selection_for_search(owner_ds):
     """Selected text to prefill the find box with on Ctrl+F, or None. The
     selection lives on the text-focused editor's draw_state
@@ -2585,8 +2606,27 @@ def render_func(*args, **o_kwargs):
                     # resolved by draw_main's root fallback, which ranks hits by
                     # window and always runs (non_blocking).
                     _hits = Melty.bvh_query(*imgui.get_mouse_pos())
-                    if _hits and _owning_window(_hits[0]) is not _owning_window(draw_state):
+                    _my_win = _owning_window(draw_state)
+                    if _hits and _owning_window(_hits[0]) is not _my_win:
                         search_requested = False
+                    elif _hits:
+                        # hits[0] alone can't be trusted for the window test: a
+                        # higher z_pos on a nested-window subtree sorts a PARENT-
+                        # window hit to the front, so the parent passes the
+                        # check above and steals Ctrl+F from the nested child.
+                        # Scan every hit: a searchable living in a DESCENDANT
+                        # window under the cursor owns the key over this view -
+                        # yield (its own subscription or the root fallback
+                        # opens its bar instead).
+                        for _h in _hits:
+                            _hw = _owning_window(_h)
+                            if _hw is _my_win or not _window_descends_from(_hw, _my_win):
+                                continue
+                            _hkw = getattr(_h, '_kwargs', None) or {}
+                            if (_hkw.get('searchable')
+                                    or getattr(_hkw.get('render_func'), '_searchable', False)):
+                                search_requested = False
+                                break
 
                 if len(Melty.search_stack) > 0:
                     kwargs["search_text"] = Melty.search_stack[-1]

@@ -2951,6 +2951,10 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     reloads from the file, and the editor picks up the fresh parse a beat
     later — the leaf and the cache only ever talk through the file."""
     code_dict, cache_error, dict_host = None, None, None
+    # Scope-up auto-select (contextual func tab): a file-ABSOLUTE line whose
+    # statement should be selected in this editor - consumed here (popped so it
+    # never leaks into draw_text as a stray kwarg) and applied one-shot below.
+    select_line = kwargs.pop("select_line", None)
     _t_editor0 = time.monotonic()
     if root_input is not None:
         _str_host, dict_host = code_hosts_for(root_input)
@@ -3025,7 +3029,8 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
 
         if len(_str_host.values()) > 0:
             _t_dt0 = time.monotonic()
-            changed, value, ds = RenderFuncs.draw_text(list(_str_host.values())[0], code_dict=code_dict,
+            buffer_text = list(_str_host.values())[0]
+            changed, value, ds = RenderFuncs.draw_text(buffer_text, code_dict=code_dict,
                                                        code_tree=cache_error, error=error,
                                                        import_fixes=import_fixes,
                                                        return_extras=True, **{**kwargs, "is_tree": False})
@@ -3035,6 +3040,30 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # lands). Not gated on `changed` - an open-but-unedited editor still
             # owns the host, and the sweep would otherwise immediately-register it.
             dict_host.notify_on_change(ds)
+            # Apply a pending start-up auto-select: map the file-absolute line
+            # into this span buffer via jump_to.start (the 0-based file line of
+            # buffer line #0) and select that line's code - same shape as the
+            # mouse-click line-select and draw_code_editor's jump_to_line
+            # consumption (caret placement + focus grant; the editor's own
+            # cursor-follow scroll brings it into view on the next body frame).
+            # One-shot per requested line (stamped on ds.misc): re-renders must
+            # not keep clamping the selection while the user moves the caret.
+            if (select_line is not None and ds is not None
+                    and isinstance(buffer_text, str)
+                    and ds.misc.get("_applied_select_line") != select_line):
+                ds.misc["_applied_select_line"] = select_line
+                _start0 = getattr(kwargs.get("jump_to"), "start", 0) or 0
+                _lines = buffer_text.split("\n")
+                _li = max(0, min(int(select_line) - 1 - _start0, len(_lines) - 1))
+                _line_start = sum(len(l) + 1 for l in _lines[:_li])
+                _indent = len(_lines[_li]) - len(_lines[_li].lstrip())
+                ds.text_selection_start = _line_start + _indent
+                ds.text_selection_end = _line_start + len(_lines[_li])
+                ds.text_cursor_pos = ds.text_selection_end
+                Melty.text_focused_ds = ds
+                Melty._text_focus_grant_frame = Melty.frame_count
+                ds.invalidate()
+                request_render()
             if changed:
                 _key0 = list(_str_host.keys())[0]
                 _held0 = _str_host[_key0]

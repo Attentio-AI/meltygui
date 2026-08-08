@@ -30,7 +30,6 @@ class SwooshMode(Enum):
     LINE = "line"
     RIBBON = "ribbon"
 
-
 class Counters:
     # Nested window
     nested_window_count = 18
@@ -114,7 +113,6 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 1.2
         value_factor = -0.002
-
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
@@ -309,8 +307,6 @@ class Tint:
     select_outline_alpha = 0.65          # selection outline opacity
     select_bg_alpha = 0.08               # selection fill opacity
 
-
-
 @window
 class Swoosh:
     # Nested-window "swoosh" connector (parent outline -> nested view)
@@ -449,6 +445,8 @@ class Toggles:
         # typical span buffer takes well under 1ms; buffers over
         # fast_check_max_chars skip it and keep the debounced-only behavior.
         # No effect with check_syntax_errors off. Read live.
+
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
         fast_syntax_check = True
 
         # Size cap for the fast path above: buffers larger than this skip the
@@ -1144,7 +1142,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
 
     show_filled_tiles = False
     gl_check_error = False

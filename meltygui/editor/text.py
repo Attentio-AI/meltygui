@@ -2122,55 +2122,172 @@ def _text_splice(old_text, new_text):
     return p, old_end, d, d_lines, edit_line, old_end_line
 
 
-def _shift_usage_spans(spans, splice):
-    """Remap [(start, end, su, at_def)] through a text splice: spans before it
-    keep, after it shift, overlapping it drop (the real recompute re-derives
-    them at the next debounce expiry)."""
-    p, old_end, d, _dl, _el, _oel = splice
+# ---- Statement-anchored wash coordinates -----------------------------------
+# The wash/tint results are collected once against a BASE text (often the
+# tree's own tree.source) and then rendered against whatever the buffer says
+# current. The old bridge was splice arithmetic that DROPPED every entry
+# overlapping the edit - destructively, chained per keystroke - so an entry
+# lost once never came back until the next line happened to change (the
+# missing-tints-after-edit problem). The bridge is now identity-based: each
+# entry is ANCHORED to its line's content and, when the tree maps, the
+# owning statement's cst key path (LineMap NodeRef.path - unique within a
+# scope and independent of line numbers). Resolution re-derives
+# current-buffer coordinates FROM THE RAW RESULT on every cursor move: first
+# by splice arithmetic, then by line-content identity, verified by a
+# bounded monotonic content search. Entries drop only while their anchored
+# line no longer exists - and reappear on undo, because resolution always
+# restarts from the immutable raw result instead of mutating it.
+
+def _anchor_key_paths(code_tree, lines_needed, base_text):
+    """{0-based base line -> cst key path tuple} — the statement identity that
+    owns each anchored line, resolved through the tree's LineMap. Best-effort:
+    {} when the tree's positions weren't computed from base_text (the dedented
+    code-host route) or the map can't build. The path is carried on the anchor
+    as the durable statement association; line resolution itself verifies by
+    content, which needs no tree."""
+    if not lines_needed or not isinstance(code_tree, dict):
+        return {}
+    if getattr(code_tree, "source", None) is not base_text:
+        return {}
+    try:
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import LineMap
+        lm = LineMap(code_tree)
+        out = {}
+        for ln in lines_needed:
+            ref = lm.node_at_line(ln + 1)
+            if ref is not None:
+                out[ln] = ref.path
+        return out
+    except Exception:
+        return {}
+
+
+def _anchor_span_set(entry_lines, extra_lines, base_text, code_tree):
+    """Build the (line_map, span_lines) anchor pair: span_lines pins each
+    entry to its 0-based base line; line_map holds, per referenced line, the
+    line's text (content-identity match target) and its statement key path."""
+    lines = base_text.split("\n")
+    needed = set(entry_lines)
+    needed.update(extra_lines)
+    paths = _anchor_key_paths(code_tree, needed, base_text)
+    line_map = {ln: (lines[ln] if 0 <= ln < len(lines) else "", paths.get(ln))
+                for ln in needed}
+    return (line_map, tuple(entry_lines))
+
+
+def _span_entry_lines(entries, base_text):
+    starts = _line_starts(base_text)
+    return [bisect.bisect_right(starts, sp[0]) - 1 for sp in entries]
+
+
+def _resolve_anchor_lines(line_map, base_text, text):
+    """{base 0-based line -> current 0-based line | None} for every anchored
+    line. None means the line's exact content no longer exists near where the
+    edit put it — the only case that drops entries. Monotonic (a floor tracks
+    the last resolved line) so two anchors can never cross."""
+    if base_text is text:
+        return {ln: ln for ln in line_map}
+    cur_lines = text.split("\n")
+    n = len(cur_lines)
+    splice = _text_splice(base_text, text)
+    if splice is None:            # Same content, different identity
+        return {ln: (ln if 0 <= ln < n else None) for ln in line_map}
+    _p, _oe, _d, dl, el, oel = splice
+    out = {}
+    floor = 0
+    for ln in sorted(line_map):
+        ltext = line_map[ln][0]
+        if ln < el:
+            guess = ln
+        elif ln > oel:
+            guess = ln + dl
+        else:
+            guess = ln + max(dl, 0)
+        got = None
+        if floor <= guess < n and cur_lines[guess] == ltext:
+            got = guess
+        elif not ltext.strip():
+            # Whitespace-only anchor (a block's blank end line): content can't
+            # identify it - accept the arithmetic guess.
+            got = guess if floor <= guess < n else None
+        else:
+            lo = max(floor, guess - 64)
+            hi = min(n, guess + 65)
+            best = None
+            for j in range(lo, hi):
+                if cur_lines[j] == ltext and (
+                        best is None or abs(j - guess) < abs(best - guess)):
+                    best = j
+            got = best
+        out[ln] = got
+        if got is not None:
+            floor = got + 1
+    return out
+
+
+def _resolve_usage_spans(raw, anchors, base_text, text):
+    """Project a raw [(start, end, su, at_def)] set (base-text coords) onto the
+    current buffer via its anchors. Columns transfer verbatim — a resolved
+    line's content is identical by construction."""
+    if base_text is text or not raw:
+        return raw
+    line_map, span_lines = anchors
+    m = _resolve_anchor_lines(line_map, base_text, text)
+    b_starts = _line_starts(base_text)
+    c_starts = _line_starts(text)
     out = []
-    for sp in spans:
-        if sp[1] <= p:
-            out.append(sp)
-        elif sp[0] >= old_end:
-            out.append((sp[0] + d, sp[1] + d) + sp[2:])
+    for sp, bl in zip(raw, span_lines):
+        nl = m.get(bl)
+        if nl is None:
+            continue
+        s = c_starts[nl] + (sp[0] - b_starts[bl])
+        out.append((s, s + (sp[1] - sp[0])) + sp[2:])
     return tuple(out)
 
 
-def _shift_def_tints(res, splice):
-    """Remap a cached _collect_def_tints result through a text splice — index
-    entries shift like _shift_usage_spans; line entries shift by the splice's
-    line delta; the block containing the edit keeps its head and stretches its
-    end (typing inside a tinted class must not drop its wash)."""
-    blocks, spans, line_tints, name_tints = res
-    p, old_end, d, dl, el, oel = splice
+def _resolve_def_tints(raw, anchors, base_text, text):
+    """Project a raw _collect_def_tints 4-tuple (base-text coords) onto the
+    current buffer via its anchors. name_tints is coordinate-free and passes
+    through. A block whose end line vanished keeps its head and carries its
+    old extent, clamped — matching the old stretch behavior for edits inside
+    a tinted block."""
+    if base_text is text:
+        return raw
+    blocks, spans, line_tints, name_tints = raw
+    line_map, span_lines = anchors
+    m = _resolve_anchor_lines(line_map, base_text, text)
+    b_starts = _line_starts(base_text)
+    c_starts = _line_starts(text)
+    n_cur = len(c_starts)
+
+    def _reidx(idx, bl, nl):
+        return c_starts[nl] + (idx - b_starts[bl])
 
     nb = []
     for (bl, idx, bend, tint) in blocks:
-        if bend < el:
-            nb.append((bl, idx, bend, tint))
-        elif bl > oel:
-            nb.append((bl + dl, idx + d, bend + dl, tint))
-        elif bl < el or (bl == el and idx <= p):
-            nb.append((bl, idx, bend + dl, tint))   # edit inside the block
-        # else: block head inside the edited region - drop until recompute
+        nl = m.get(bl)
+        if nl is None:
+            continue
+        ne = m.get(bend)
+        if ne is None or ne < nl:
+            ne = min(bend + (nl - bl), n_cur - 1)
+        nb.append((nl, _reidx(idx, bl, nl), ne, tint))
 
-    def _idx_spans(entries):
-        out = []
-        for sp in entries:
-            if sp[1] <= p:
-                out.append(sp)
-            elif sp[0] >= old_end:
-                out.append((sp[0] + d, sp[1] + d) + sp[2:])
-        return tuple(out)
+    nsp = []
+    for sp, bl in zip(spans, span_lines):
+        nl = m.get(bl)
+        if nl is None:
+            continue
+        s = _reidx(sp[0], bl, nl)
+        nsp.append((s, s + (sp[1] - sp[0])) + sp[2:])
 
-    nl = []
+    nlt = []
     for (ln, rgb, sc, si, ei) in line_tints:
-        if ln < el and ei <= p:
-            nl.append((ln, rgb, sc, si, ei))
-        elif ln > oel and si >= old_end:
-            nl.append((ln + dl, rgb, sc, si + d, ei + d))
-        # else: the edited line's band - drop until recompute
-    return (tuple(nb), _idx_spans(spans), tuple(nl), name_tints)
+        nl = m.get(ln)
+        if nl is None:
+            continue
+        nlt.append((nl, rgb, sc, _reidx(si, ln, nl), _reidx(ei, ln, nl)))
+    return (tuple(nb), tuple(nsp), tuple(nlt), name_tints)
 
 
 def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
@@ -2196,7 +2313,9 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
     # which carries refreshed positions and rebuilds exactly.
     key = (id(code_tree), id(su_top), line_offset, str(view_path))
     _old_key = getattr(ds, '_usage_spans_key', None)
-    if _old_key != key:
+    # Cold-migration: a hotswapped ds carrying only the legacy resolved tuple -
+    # recompute rather than serving spans the new resolve path can't re-anchor.
+    if _old_key != key or getattr(ds, "_usage_spans_raw", None) is None:
         now = time.monotonic()
         # One layer in typing: an incremental merge ships a fresh tree
         # whose per-node __symbol_usages__ hasn't been attached yet
@@ -2220,49 +2339,56 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
             # exactly. Guard: a totally-different source (the DEDENTED
             # code-host route) yields one giant covering splice - fall back to
             # the buffer collect there instead of dropping everything.
-            _base, _sp_bt = text, None
+            _base = text
             _src = getattr(code_tree, 'source', None)
             if isinstance(_src, str) and _src != text:
                 _cand = _text_splice(_src, text)
                 if _cand is not None and (_cand[1] - _cand[0]) <= 512 and abs(_cand[2]) <= 512:
-                    _base, _sp_bt = _src, _cand
+                    _base = _src
             try:
                 _fresh = _collect_usage_spans(code_tree, _base, line_offset, view_path)
             except Exception:
                 _fresh = ()
-            if _sp_bt is not None:
-                _fresh = _shift_usage_spans(_fresh, _sp_bt)
+            # The raw result + anchors are IMMUTABLE in base coords; every
+            # text change re-resolves from them (see the anchor block above) -
+            # no destructive per-keystroke remap here.
+            ds._usage_spans_raw = _fresh
+            ds._usage_spans_base = _base
+            ds._usage_spans_anchors = _anchor_span_set(
+                _span_entry_lines(_fresh, _base), (), _base, code_tree)
+            _resolved = _resolve_usage_spans(
+                _fresh, ds._usage_spans_anchors, _base, text)
             # DEBUG timeline: a recompute that sheds >30% of the held spans is
             # the blink-out signature - name WHICH key component moved and
             # which text base was collected on.
             _prev_n = len(getattr(ds, "_usage_spans", ()) or ())
-            if _prev_n >= 10 and len(_fresh) < _prev_n * 0.7:
+            if _prev_n >= 10 and len(_resolved) < _prev_n * 0.7:
                 _why = ("cold" if _old_key is None else ",".join(
                     n for n, i in (("tree", 0), ("su", 1), ("off", 2), ("path", 3))
                     if _old_key[i] != key[i]))
                 _ptrace("usage spans DROP on recompute", prev=_prev_n,
-                        new=len(_fresh), changed=_why,
-                        base=("source" if _sp_bt is not None else
-                              "text" if _base is text else "source=text"),
+                        new=len(_resolved), changed=_why,
+                        base=("source" if _base is not text else "text"),
                         src_is_str=isinstance(_src, str))
-            ds._usage_spans = _fresh
+            ds._usage_spans = _resolved
             ds._usage_spans_key = key
             ds._usage_spans_time = now
             ds._usage_spans_text = text
             ds._usage_tc = {}   # per-(su, at_def) jump-target counts; valid per span set
     # Text drift since the held set was computed (typing between reparses):
-    # remap through the edit so spans track the buffer. Chained per keystroke;
-    # the stored text always reflects what the stored spans are aligned to.
+    # re-resolve from the immutable raw result so entries displaced by the
+    # edit are re-found by content and never chained-splice-dropped.
     prev_text = getattr(ds, "_usage_spans_text", None)
     if (prev_text is not None and prev_text is not text
-            and getattr(ds, "_usage_spans", None)):
-        splice = _text_splice(prev_text, text)
-        if splice is not None:
+            and getattr(ds, "_usage_spans", None) is not None):
+        _raw = getattr(ds, "_usage_spans_raw", None)
+        if _raw is not None:
             _n0 = len(ds._usage_spans)
-            ds._usage_spans = _shift_usage_spans(ds._usage_spans, splice)
+            ds._usage_spans = _resolve_usage_spans(
+                _raw, ds._usage_spans_anchors, ds._usage_spans_base, text)
             if _n0 >= 10 and len(ds._usage_spans) < _n0 * 0.7:
-                _ptrace("usage spans DROP on remap", prev=_n0,
-                        new=len(ds._usage_spans), splice=str(splice))
+                _ptrace("usage spans DROP on resolve", prev=_n0,
+                        new=len(ds._usage_spans))
         ds._usage_spans_text = text
     return ds._usage_spans
 
@@ -2777,7 +2903,7 @@ def _scan_def_tint(path, line, name=None):
 # Salt for the _def_tints memo key; bump on any change to the collector or
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
-_DEF_TINTS_VER = 28
+_DEF_TINTS_VER = 29
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -3857,6 +3983,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
             and len(ds._def_tints) != 4):
         ds._def_tints = None
         ds._def_tints_key = None
+        ds._def_tints_raw = None
     su_top = code_tree.get("__symbol_usages__")
     # NO text in the key - same reasoning as _usage_spans: text-only churn is
     # handled exactly by the shift remap; a recompute on a stale tree
@@ -3865,7 +3992,9 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     # gen still recompute.
     key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset,
            str(view_path), _tint_total_gen() - _tint_gen_of(view_path))
-    if getattr(ds, "_def_tints_key", None) != key:
+    # raw-missing: a hotswapped ds has only the legacy resolved tuple.
+    if (getattr(ds, "_def_tints_key", None) != key
+            or getattr(ds, "_def_tints_raw", None) is None):
         now = time.monotonic()
         # Symbol layer in flight (see _usage_spans): a merged tree whose
         # carried flat map hasn't been folded into per-node
@@ -3879,30 +4008,39 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
                      or now - getattr(ds, "_def_tints_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
             request_render()   # typing/debounced: serve held (remapped below), retry later
         else:
-            # Collect on the tree's own text + remap to the buffer - same
-            # root-cause fix as _usage_spans (see there).
-            _base, _sp_bt = text, None
+            # Collect on the tree's own text, then RESOLVE onto the buffer -
+            # same root-cause fix as _usage_spans (see the anchor block).
+            _base = text
             _src = getattr(code_tree, 'source', None)
             if isinstance(_src, str) and _src != text:
                 _cand = _text_splice(_src, text)
                 if _cand is not None and (_cand[1] - _cand[0]) <= 512 and abs(_cand[2]) <= 512:
-                    _base, _sp_bt = _src, _cand
+                    _base = _src
             try:
                 _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
             except Exception:
                 _fresh = ((), (), (), {})
-            if _sp_bt is not None:
-                _fresh = _shift_def_tints(_fresh, _sp_bt)
-            ds._def_tints = _fresh
+            _blocks, _spans, _lts, _ = _fresh
+            ds._def_tints_raw = _fresh
+            ds._def_tints_base = _base
+            ds._def_tints_anchors = _anchor_span_set(
+                _span_entry_lines(_spans, _base),
+                [b[0] for b in _blocks] + [b[2] for b in _blocks]
+                + [lt[0] for lt in _lts],
+                _base, code_tree)
+            ds._def_tints = _resolve_def_tints(
+                _fresh, ds._def_tints_anchors, _base, text)
             ds._def_tints_key = key
             ds._def_tints_time = now
             ds._def_tints_text = text
-    # Glue the held washes to the new text (see _usage_spans).
+    # Re-resolve the held washes onto the edited buffer from the immutable raw
+    # result (see _usage_spans) - displaced lines are re-found by content.
     prev_text = getattr(ds, "_def_tints_text", None)
     if prev_text is not None and prev_text is not text:
-        splice = _text_splice(prev_text, text)
-        if splice is not None:
-            ds._def_tints = _shift_def_tints(ds._def_tints, splice)
+        _raw = getattr(ds, "_def_tints_raw", None)
+        if _raw is not None:
+            ds._def_tints = _resolve_def_tints(
+                _raw, ds._def_tints_anchors, ds._def_tints_base, text)
         ds._def_tints_text = text
     return ds._def_tints
 
@@ -5379,6 +5517,7 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
+              diff_blocks=None, diff_partner_ds=None,
               completion_source=None, unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -7570,6 +7709,13 @@ def draw_text(input_value: str, height=None,
                                    imgui.get_color_u32_rgba(0.72, 0.82, 1.0, 1.0),
                                    _po_label)
 
+    # Side-by-side diff anchors: enough for the PARTNER editor (the reference
+    # pane's ribbon body) to map this pane's buffer lines to live screen y
+    # without another body running. origin_y moves with scroll, but
+    # abs_top + inset - scroll_offset re-derives it from stable ds fields.
+    ds._diff_top_inset = (origin_y + ds.scroll_offset[1]) - ds.abs_top
+    ds._diff_line_px = line_px
+
     # Diff washes: in is_diff mode each line's leading marker (the +/- left over
     # from the unified diff, with the ---/+++/@@ headers already stripped by the
     # caller) drives a full-width background — added lines green, deleted lines
@@ -8007,6 +8153,16 @@ def draw_text(input_value: str, height=None,
                               cursor_col=_cur_col)
 
     _pf("body:tv_overlay")
+    # --- Side-by-side diff ribbons ---------------------------------------------
+    # This editor is the REFERENCE pane of a side-by-side compare: draw the
+    # IntelliJ-style ribbons connecting each change block in the partner
+    # (the editable editor, to the LEFT) to its counterpart block here.
+    # Drawn in this pane's left gutter column, over the glyphs.
+    if diff_blocks and diff_partner_ds is not None:
+        _draw_diff_ribbons(ds, diff_partner_ds, diff_blocks,
+                           origin_x, origin_y, line_px,
+                           rect_min_y, rect_max_y)
+
     # --- Spell-check squiggles -------------------------------------------------
     # Red wavy lines under unknown words. Gated behind the global toggle and
     # only recomputed when the buffer text changes (cached on the draw_state), so
@@ -8771,3 +8927,93 @@ def draw_text(input_value: str, height=None,
                 diff_at=_di, old=repr(_old[_di:_di + 24]), new=repr(text[_di:_di + 24]))
         return True, text
     return False, original_input
+
+
+# ── Side-by-side diff ribbons ──────────────────────────────────────────────────
+# The reference pane of a CompareDiff split draws these: curved bands in its
+# left gutter strip mapping each change block in the PARTNER editor (the
+# open buffer, rendered to the left) to the counterpart block in this
+# pane. Blocks are SequenceMatcher opcodes - (p0, p1, o0, o1, tag) with
+# 0-based half-open LINE ranges, p* in the partner's buffer, o* in this
+# view's - computed by compare_files._diff_blocks. Partner ys are derived from
+# its LIVE draw_state (abs_top, stashed inset, scroll_offset), so a cached
+# partner tile still maps correctly; the code editor invalidates this pane
+# when the partner's scroll changes (its own body doesn't run while cached).
+
+_RIBBON_TINTS = {"insert": (0.30, 0.72, 0.38),   # lines only in the buffer
+                 "delete": (0.82, 0.32, 0.26),   # lines only in the reference
+                 "replace": (0.85, 0.62, 0.20)}  # changed in place
+
+
+def _draw_diff_ribbons(ds, partner, blocks, origin_x, origin_y, line_px,
+                       rect_min_y, rect_max_y):
+    p_inset = getattr(partner, "_diff_top_inset", None)
+    if p_inset is None:
+        return                       # partner hasn't rendered itself yet
+    p_line_px = getattr(partner, "_diff_line_px", line_px)
+    p_origin_y = partner.abs_top + p_inset - partner.scroll_offset[1]
+    # Partner's visible band: its own clip rect when known, else its bounds.
+    p_clip = getattr(partner, "abs_clip_rect", None)
+    if p_clip is not None:
+        p_min_y, p_max_y = p_clip[1], p_clip[3]
+    else:
+        p_min_y = partner.abs_top
+        p_max_y = partner.abs_top + (partner.height or 0)
+
+    # The ribbon: from this pane's left edge to the start of its origin (the
+    # line-number gutter). Without a gutter, overlay a fixed-width strip.
+    xl = ds.abs_left + 1.0
+    xr = origin_x - 2.0
+    if xr - xl < 8.0:
+        xr = xl + Melty.px(26.0)
+
+    dl = imgui.get_window_draw_list()
+    steps = 14
+    for (p0, p1, o0, o1, tag) in blocks:
+        col3 = _RIBBON_TINTS.get(tag, _RIBBON_TINTS["replace"])
+        # Left endpoints track the PARTNER's lines, right endpoints ours.
+        ya0 = p_origin_y + p0 * p_line_px
+        ya1 = p_origin_y + p1 * p_line_px
+        yb0 = origin_y + o0 * line_px
+        yb1 = origin_y + o1 * line_px
+        # A pure insert/delete has a zero-y range on one side - keep a
+        # tiny minimum so the ribbon still reads.
+        if ya1 - ya0 < 3.0:
+            ya1 = ya0 + 3.0
+        if yb1 - yb0 < 3.0:
+            yb1 = yb0 + 3.0
+        # Clamp each side into its pane's visible band; skip a ribbon whose
+        # BOTH sides are fully out of view.
+        ca0, ca1 = max(ya0, p_min_y), min(ya1, p_max_y)
+        cb0, cb1 = max(yb0, rect_min_y), min(yb1, rect_max_y)
+        if ca1 <= ca0 and cb1 <= cb0:
+            continue
+        # An off-screen side collapses to a sliver at the band edge it left
+        # through, so the ribbon visibly leads back toward it.
+        if ca1 <= ca0:
+            edge = p_min_y if ya1 <= p_min_y else p_max_y
+            ca0, ca1 = edge - 1.5, edge + 1.5
+        if cb1 <= cb0:
+            edge = rect_min_y if yb1 <= rect_min_y else rect_max_y
+            cb0, cb1 = edge - 1.5, edge + 1.5
+
+        fill = imgui.get_color_u32_rgba(*col3, 0.22)
+        # Smoothstepped slices left→right - the curved band.
+        prev_t = 0.0
+        prev_s = 0.0
+        for i in range(1, steps + 1):
+            t = i / steps
+            s = t * t * (3.0 - 2.0 * t)
+            x0 = xl + (xr - xl) * prev_t
+            x1 = xl + (xr - xl) * t
+            dl.add_quad_filled(x0, ca0 + (cb0 - ca0) * prev_s,
+                               x1, ca0 + (cb0 - ca0) * s,
+                               x1, ca1 + (cb1 - ca1) * s,
+                               x0, ca1 + (cb1 - ca1) * prev_s,
+                               fill)
+            prev_t, prev_s = t, s
+        # Side accents: a solid bar on each side of the seam marking the
+        # block's rows.
+        accent = imgui.get_color_u32_rgba(*col3, 0.8)
+        dl.add_rect_filled(xl, ca0, xl + 3.0, ca1, accent)
+        dl.add_rect_filled(xr - 3.0, cb0, xr, cb1, accent)

@@ -230,6 +230,9 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
         # [tint=(0.066, 0.045, 0.189), cam_brightness=0.08, cam_contrast=0.752,
         # spin=3.828, tilt=0.019, cam_zoom=1.7142]
         scores = q @ k_l.transpose(-2, -1) / (dim ** 0.5 * temp)
+    
+        # [tint=(1.0, 0.0, 0.0, 1.0), show_tint=True]
+        some_val = 1
         
         # [tint=(0.60, 0, 0), cam_brightness=0.52, cam_contrast=0.392, dim_names=['head', 'query', 'key'], cam_zoom=1.355, spin=1.86, tilt=0.123]
         attn = torch.softmax(scores, dim=-1)

@@ -451,7 +451,15 @@ class ColumnLayout:
         self.edges = edges
         self.owned = owned
 
-        window._edge_views[draw_state.id] = (draw_state, edges)
+        # Keyed ("row", id), NOT bare draw_state.id: when the host ds IS the
+        # window (a window body that draws its own cells, e.g. the code
+        # editor's compare split), draw_state.id == window.id and this entry
+        # and window_edge_pass's frame-edge entry (window.id) clobber each
+        # other - the interior edges then never reach _all_edges, so
+        # _solve_collisions doesn't find a dragged edge and silently drops the
+        # drag (the divider reads as "not draggable"). Keys are opaque
+        # (consumers iterate them); the eviction pass matches by ds.
+        window._edge_views[("row", draw_state.id)] = (draw_state, edges)
 
         # Grab handles for OWNED edges (foreign far edges already have the
         # container's handles on the same line).
