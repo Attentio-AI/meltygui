@@ -2954,7 +2954,10 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
     # Scope-up auto-select (contextual func tab): a file-ABSOLUTE line whose
     # statement should be selected in this editor - consumed here (popped so it
     # never leaks into draw_text as a stray kwarg) and applied one-shot below.
+    # select_seq is the arrow-press generation: it keys the one-shot, so every
+    # click re-selects even when the same line repeats in a persisted ds.
     select_line = kwargs.pop("select_line", None)
+    select_seq = kwargs.pop("select_seq", 0)
     _t_editor0 = time.monotonic()
     if root_input is not None:
         _str_host, dict_host = code_hosts_for(root_input)
@@ -3046,12 +3049,13 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # mouse-click line-select and draw_code_editor's jump_to_line
             # consumption (caret placement + focus grant; the editor's own
             # cursor-follow scroll brings it into view on the next body frame).
-            # One-shot per requested line (stamped on ds.misc): re-renders must
-            # not keep clamping the selection while the user moves the caret.
+            # One-shot per (arrow press, line) - stamped on ds.misc so re-renders
+            # must not keep clamping the selection while the user edits the
+            # editor, but a new press (select_seq bump) re-applies it.
             if (select_line is not None and ds is not None
                     and isinstance(buffer_text, str)
-                    and ds.misc.get("_applied_select_line") != select_line):
-                ds.misc["_applied_select_line"] = select_line
+                    and ds.misc.get("_applied_select_line") != (select_seq, select_line)):
+                ds.misc["_applied_select_line"] = (select_seq, select_line)
                 _start0 = getattr(kwargs.get("jump_to"), "start", 0) or 0
                 _lines = buffer_text.split("\n")
                 _li = max(0, min(int(select_line) - 1 - _start0, len(_lines) - 1))

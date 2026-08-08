@@ -5517,7 +5517,6 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
-              diff_blocks=None, diff_partner_ds=None,
               completion_source=None, unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -7709,12 +7708,26 @@ def draw_text(input_value: str, height=None,
                                    imgui.get_color_u32_rgba(0.72, 0.82, 1.0, 1.0),
                                    _po_label)
 
-    # Side-by-side diff anchors: enough for the PARTNER editor (the reference
-    # pane's ribbon body) to map this pane's buffer lines to live screen y
-    # without another body running. origin_y moves with scroll, but
-    # abs_top + inset - scroll_offset re-derives it from stable ds fields.
+    # Side-by-side diff anchors: enough for an OUTSIDE ribbon pass (the code
+    # editor's compare tile) to map this view's buffer lines onto live screen
+    # coords without this body running. Both stored RELATIVE to the view's
+    # pane corner - an absolute value goes stale the moment the window moves
+    # while this body is a cached blit - so the overlay re-derives
+    # origin_y = live abs_top + inset - scroll, origin_x = live abs_left +
+    # offset. origin_x is the text start (right of the line-number gutter).
     ds._diff_top_inset = (origin_y + ds.scroll_offset[1]) - ds.abs_top
     ds._diff_line_px = line_px
+    ds._diff_origin_x_off = origin_x - ds.abs_left
+    # Pane corner relative to the enclosing WINDOW, and the visible text band
+    # relative to the pane. The end_frame overlay derives everything from
+    # window abs_left/abs_top + these: the window property's memo key
+    # includes its own window_pos, so a mid-frame drag update recomputes everything
+    # - while a split ds's memo key holds only its OWN fields and serves a
+    # pre-drag value stamped earlier in the frame (the one-frame trail).
+    _w = ds.parent_window
+    ds._diff_pane_off = ((ds.abs_left - _w.abs_left, ds.abs_top - _w.abs_top)
+                         if _w is not None and _w is not ds else None)
+    ds._diff_clip_off = (rect_min_y - ds.abs_top, rect_max_y - ds.abs_top)
 
     # Diff washes: in is_diff mode each line's leading marker (the +/- left over
     # from the unified diff, with the ---/+++/@@ headers already stripped by the
@@ -8153,16 +8166,6 @@ def draw_text(input_value: str, height=None,
                               cursor_col=_cur_col)
 
     _pf("body:tv_overlay")
-    # --- Side-by-side diff ribbons ---------------------------------------------
-    # This editor is the REFERENCE pane of a side-by-side compare: draw the
-    # IntelliJ-style ribbons connecting each change block in the partner
-    # (the editable editor, to the LEFT) to its counterpart block here.
-    # Drawn in this pane's left gutter column, over the glyphs.
-    if diff_blocks and diff_partner_ds is not None:
-        _draw_diff_ribbons(ds, diff_partner_ds, diff_blocks,
-                           origin_x, origin_y, line_px,
-                           rect_min_y, rect_max_y)
-
     # --- Spell-check squiggles -------------------------------------------------
     # Red wavy lines under unknown words. Gated behind the global toggle and
     # only recomputed when the buffer text changes (cached on the draw_state), so
@@ -8927,93 +8930,3 @@ def draw_text(input_value: str, height=None,
                 diff_at=_di, old=repr(_old[_di:_di + 24]), new=repr(text[_di:_di + 24]))
         return True, text
     return False, original_input
-
-
-# ── Side-by-side diff ribbons ──────────────────────────────────────────────────
-# The reference pane of a CompareDiff split draws these: curved bands in its
-# left gutter strip mapping each change block in the PARTNER editor (the
-# open buffer, rendered to the left) to the counterpart block in this
-# pane. Blocks are SequenceMatcher opcodes - (p0, p1, o0, o1, tag) with
-# 0-based half-open LINE ranges, p* in the partner's buffer, o* in this
-# view's - computed by compare_files._diff_blocks. Partner ys are derived from
-# its LIVE draw_state (abs_top, stashed inset, scroll_offset), so a cached
-# partner tile still maps correctly; the code editor invalidates this pane
-# when the partner's scroll changes (its own body doesn't run while cached).
-
-_RIBBON_TINTS = {"insert": (0.30, 0.72, 0.38),   # lines only in the buffer
-                 "delete": (0.82, 0.32, 0.26),   # lines only in the reference
-                 "replace": (0.85, 0.62, 0.20)}  # changed in place
-
-
-def _draw_diff_ribbons(ds, partner, blocks, origin_x, origin_y, line_px,
-                       rect_min_y, rect_max_y):
-    p_inset = getattr(partner, "_diff_top_inset", None)
-    if p_inset is None:
-        return                       # partner hasn't rendered itself yet
-    p_line_px = getattr(partner, "_diff_line_px", line_px)
-    p_origin_y = partner.abs_top + p_inset - partner.scroll_offset[1]
-    # Partner's visible band: its own clip rect when known, else its bounds.
-    p_clip = getattr(partner, "abs_clip_rect", None)
-    if p_clip is not None:
-        p_min_y, p_max_y = p_clip[1], p_clip[3]
-    else:
-        p_min_y = partner.abs_top
-        p_max_y = partner.abs_top + (partner.height or 0)
-
-    # The ribbon: from this pane's left edge to the start of its origin (the
-    # line-number gutter). Without a gutter, overlay a fixed-width strip.
-    xl = ds.abs_left + 1.0
-    xr = origin_x - 2.0
-    if xr - xl < 8.0:
-        xr = xl + Melty.px(26.0)
-
-    dl = imgui.get_window_draw_list()
-    steps = 14
-    for (p0, p1, o0, o1, tag) in blocks:
-        col3 = _RIBBON_TINTS.get(tag, _RIBBON_TINTS["replace"])
-        # Left endpoints track the PARTNER's lines, right endpoints ours.
-        ya0 = p_origin_y + p0 * p_line_px
-        ya1 = p_origin_y + p1 * p_line_px
-        yb0 = origin_y + o0 * line_px
-        yb1 = origin_y + o1 * line_px
-        # A pure insert/delete has a zero-y range on one side - keep a
-        # tiny minimum so the ribbon still reads.
-        if ya1 - ya0 < 3.0:
-            ya1 = ya0 + 3.0
-        if yb1 - yb0 < 3.0:
-            yb1 = yb0 + 3.0
-        # Clamp each side into its pane's visible band; skip a ribbon whose
-        # BOTH sides are fully out of view.
-        ca0, ca1 = max(ya0, p_min_y), min(ya1, p_max_y)
-        cb0, cb1 = max(yb0, rect_min_y), min(yb1, rect_max_y)
-        if ca1 <= ca0 and cb1 <= cb0:
-            continue
-        # An off-screen side collapses to a sliver at the band edge it left
-        # through, so the ribbon visibly leads back toward it.
-        if ca1 <= ca0:
-            edge = p_min_y if ya1 <= p_min_y else p_max_y
-            ca0, ca1 = edge - 1.5, edge + 1.5
-        if cb1 <= cb0:
-            edge = rect_min_y if yb1 <= rect_min_y else rect_max_y
-            cb0, cb1 = edge - 1.5, edge + 1.5
-
-        fill = imgui.get_color_u32_rgba(*col3, 0.22)
-        # Smoothstepped slices left→right - the curved band.
-        prev_t = 0.0
-        prev_s = 0.0
-        for i in range(1, steps + 1):
-            t = i / steps
-            s = t * t * (3.0 - 2.0 * t)
-            x0 = xl + (xr - xl) * prev_t
-            x1 = xl + (xr - xl) * t
-            dl.add_quad_filled(x0, ca0 + (cb0 - ca0) * prev_s,
-                               x1, ca0 + (cb0 - ca0) * s,
-                               x1, ca1 + (cb1 - ca1) * s,
-                               x0, ca1 + (cb1 - ca1) * prev_s,
-                               fill)
-            prev_t, prev_s = t, s
-        # Side accents: a solid bar on each side of the seam marking the
-        # block's rows.
-        accent = imgui.get_color_u32_rgba(*col3, 0.8)
-        dl.add_rect_filled(xl, ca0, xl + 3.0, ca1, accent)
-        dl.add_rect_filled(xr - 3.0, cb0, xr, cb1, accent)

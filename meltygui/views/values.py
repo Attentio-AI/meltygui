@@ -2439,6 +2439,10 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         draw_fast_dock(Core.melty.registered_windows, name="Fast Dock", with_header=draw_header,
                        mode=Mode.WINDOW, bg_offset=-3)
 
+    # (Multi-split overlays moved to Melty.end_frame - drawn from this
+    # root they ran BEFORE the dragged window's position update and trailed
+    # window drags by one frame.)
+
     for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
 
         # Copy: the stored dict is the @window decorator kwargs and persists
@@ -6028,7 +6032,7 @@ def draw_live_tab(input_value, **kwargs):
 
 
 def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
-                  height=None, select_line=None, **kwargs):
+                  height=None, select_line=None, select_seq=0, **kwargs):
     """Editable source of the inspected view function; hotswaps on save.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
     folder-files leaf uses — so all editors share one code path.
@@ -6059,10 +6063,12 @@ def draw_func_tab(input_value, name=None, disable_scroll=True, width=None,
         if name is not None:
             _kw["key"] = name
         if select_line is not None:
-            # File-absolute line to auto-select (scope-up nav) - rides through
-            # code_file_io's child_kwargs to draw_text_from_code_cache, which
-            # validates it against the span buffer.
-            _kw["child_kwargs"] = {"select_line": select_line}
+            # File-absolute line to auto-select (scope-up nav) — rides through
+            # code_file_io's child_kwargs into draw_text_from_code_cache, which
+            # consumes it against the span buffer. select_seq (the key-press
+            # generation) keys the one-shot so each press re-selects.
+            _kw["child_kwargs"] = {"select_line": select_line,
+                                   "select_seq": select_seq}
         code_file_io(view_func, auto_load_edits=True,
                      view_func=draw_text_from_code_cache,
                      disable_scroll=disable_scroll, show_name=False,
@@ -7023,6 +7029,11 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if input_value._parent.id is not None:
         if button(fa_up_arrow, height=50)[0]:
             input_value.context_menu_offset += 1
+            # Nav generation; rides into the func tab's select_line guard so
+            # EVERY arrow press re-applies the auto-selection, even when
+            # returning to a level whose line was selected before (the previous
+            # ds persists, and its one-shot marker would otherwise skip it).
+            input_value._scope_nav_seq = getattr(input_value, "_scope_nav_seq", 0) + 1
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
 
@@ -7030,6 +7041,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if input_value.context_menu_offset > 0:
         if button(fa_down_arrow, height=50)[0]:
             input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
+            input_value._scope_nav_seq = getattr(input_value, "_scope_nav_seq", 0) + 1
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
@@ -7044,13 +7056,22 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # Deferred so the menu isn't in the shot: front the owning window (so the
     # view is visible), queue the view capture, hide this menu (asking to reopen
     # it afterward), then let screenshot.process_take_screenshot_flags grab the
-    # view's rect a few frames later and reopen the menu.
+    # view's shot a few frames later, open the shot in nemo, and reopen the menu.
     if button(f" ", height=30, tint=(0,0,0,1.0), name=f"screenshot_window##{unique}")[0]:
         from src.lsd.gl_gui.screenshot import request_view_capture
+
+        def _open_in_nemo(shot_path):
+            # Full path + close_fds=False => posix_spawn, not fork (forking this
+            # CUDA/GL process stalls the render thread).
+            import shutil, subprocess
+            nemo = shutil.which("nemo") or "/usr/bin/nemo"
+            subprocess.Popen([nemo, shot_path], close_fds=False)
+
         view_ds = input_value  # the view this menu is for (offset-walked)
         Core.melty.move_window_to_front(view_ds.root_window)
         draw_state._reopen = True
-        request_view_capture(view_ds, Core.melty.frame_count, reopen_menu_ds=draw_state)
+        request_view_capture(view_ds, Core.melty.frame_count, reopen_menu_ds=draw_state,
+                             on_captured=_open_in_nemo)
         draw_state.closed = True
         request_render()
 
@@ -7147,6 +7168,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     func_tab_select_line = None
     if offset_ds is not input_value:
         func_tab_select_line = _ancestor_call_line(input_value, offset_ds)
+    # Arrow-press generation: part of the selection's one-shot key, so each
+    # press re-selects but keeping the resolved line (and editor tab) changes.
+    func_tab_select_seq = getattr(input_value, "_scope_nav_seq", 0)
 
     input_value._offset_ds = offset_ds
     input_value = offset_ds
@@ -7283,7 +7307,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             # to the func tab rather than indexing out of range.
             draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
                           disable_scroll=True, select_line=func_tab_select_line,
-                          **size_kw)
+                          select_seq=func_tab_select_seq, **size_kw)
             continue
         this_tab = tab_names[static_tab]
         if this_tab == tint_tab_name:
@@ -7301,7 +7325,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         elif this_tab == func_tab:
             draw_func_tab(input_value, name=f"func_tab_{t_idx}##{unique}",
                           disable_scroll=False, select_line=func_tab_select_line,
-                          **size_kw)
+                          select_seq=func_tab_select_seq, **size_kw)
 
         elif this_tab == eval_tab_name:
             draw_eval_tab(input_value, unique=unique, enter_key_down=enter_key_down,

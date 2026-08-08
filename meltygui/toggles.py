@@ -1056,6 +1056,25 @@ class Toggles:
         # this off until the .ini is fully deprecated.
         ini_save = False
 
+    @defaults(tint=(0.36, 0.56, 0.44))
+    class CodeEditor:
+        # ── Compare-split ribbons (open_files._draw_compare_ribbons) ──
+        # Block colors by kind. Read live per frame.
+        ribbon_insert_tint = (0.52, 0.92, 0.60)   # lines only in the copy
+        ribbon_delete_tint = (0.95, 0.42, 0.34)   # lines only in the reference
+        ribbon_replace_tint = (0.98, 0.76, 0.28)  # changed in place
+        # Shared fill alpha for the block washes AND the seam band - same fill
+        # so highlight → band → highlight reads as ONE continuous shape.
+        ribbon_fill_alpha = 0.18
+        # Boundary stroke around the whole shape (wash edges + S-curves).
+        ribbon_edge_alpha = 0.6
+        ribbon_edge_thickness = 2.0
+        # Thin insertion line where a side has no rows (pure insert/delete).
+        ribbon_insertion_alpha = 0.85
+        ribbon_insertion_thickness = 2.5
+        # Seam curve sampling (smoothstep slices).
+        ribbon_curve_steps = 12
+
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
         # Kill switch for folder_io's reconcile deletes: while True, a key

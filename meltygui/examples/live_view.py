@@ -245,13 +245,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
     def some_text():
         pass
 
-
-
-
-
-
     return attn, focus
-
 
 @window
 @render_func(tint=(0.16, 0.13, 0.08), auto_resize=True)
