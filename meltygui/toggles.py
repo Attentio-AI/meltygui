@@ -987,6 +987,14 @@ class Toggles:
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
         default_tab = 0
 
+        # ── Info tab source dropdown styling ────────────────────────────────
+        # Row wash + trigger tint marking the source actively driving a param.
+        active_source_tint = (0.9, 0.8, 0.2)
+        # Row LABEL text pulled toward the menu background (0 = the stock
+        # near/black dd text, 1 = invisible) so the active-source yellow
+        # stands out against quiet rows.
+        source_text_toward_bg = 0.55
+
     # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
     class SearchSettings:

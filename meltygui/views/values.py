@@ -5608,6 +5608,11 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
             _cue.append(default_write_source("", target, srcs=srcs))
         return _cue[0]
 
+    # Dropdown styling from Toggles.ContextMenu (live-editable): the active
+    # source's yellow, and how far source-row text pulls toward the menu bg.
+    _active_tint = tuple(Toggles.ContextMenu.active_source_tint)
+    _text_toward_bg = float(Toggles.ContextMenu.source_text_toward_bg)
+
     # Dropdown options/row-tints are IDENTICAL for every param sharing the
     # same active source - and a view usually has only one or two distinct
     # actives. Build once per distinct active, not per param (the per-row
@@ -5616,13 +5621,13 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     def _options_for(active):
         hit = _row_cache.get(active)
         if hit is None:
-            options = {s: _SourceItem(s, _ACTIVE_SRC_TINT if s == active else None)
+            options = {s: _SourceItem(s, _active_tint if s == active else None)
                        for s in _ordered_all}
             options.setdefault(
                 "draw_state",
                 _SourceItem("draw_state",
-                            _ACTIVE_SRC_TINT if active == "draw_state" else None))
-            row_tints = ({str(active): _ACTIVE_SRC_TINT}
+                            _active_tint if active == "draw_state" else None))
+            row_tints = ({str(active): _active_tint}
                          if active is not None else None)
             hit = (options, row_tints)
             _row_cache[active] = hit
@@ -5788,6 +5793,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
                     options.get(sel, sel), collection=options, width=181, z_offset=0,
                     shadow=False, show_button_bg=False, trigger_height=22, show_bg=False,
                     text_pad=3, row_tints=_row_tints, row_actions=_row_actions,
+                    text_toward_bg=_text_toward_bg,
                     name=f"src_{row_uid}_dd{index}", show_header=False)
                 if pick_changed and new_pick:
                     sel = str(new_pick)
@@ -7460,6 +7466,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                                      parent_window=draw_state, swoosh=False, disable_scroll=False,
                                      row_tints=kwargs.get("row_tints"),
                                      row_actions=kwargs.get("row_actions"),
+                                     text_toward_bg=kwargs.get("text_toward_bg", 0.0),
                                      root_state=drop_down_state, path_prefix=())
     if is_open:
         if changed:
@@ -7900,7 +7907,8 @@ def _dd_noop_set(*_a, **_k):
 
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
-                 row_suffixes=None, row_actions=None, left_pad=10):
+                 row_suffixes=None, row_actions=None, left_pad=10,
+                 text_toward_bg=0.0):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -7976,6 +7984,14 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     else:
         color = _dd_obj_tint(value, tint)
         color = Tint.dd_text(requested_tint=color)
+        # Quiet-row dimming: pull the label toward the menu bg so tinted
+        # rows (the info popup's active-source yellow) stand out. Skipped for
+        # washed rows above - their label is already contrast-managed.
+        if text_toward_bg and Melty.bg_color_stack:
+            _bg = Melty.bg_color_stack[-1]
+            _k = min(max(float(text_toward_bg), 0.0), 1.0)
+            color = tuple(c * (1 - _k) + _b * _k
+                          for c, _b in zip(color[:3], _bg[:3]))
     imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) * 0.5))
 
     if active:
@@ -8052,7 +8068,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
              max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
-                 row_suffixes=None, row_actions=None,
+                 row_suffixes=None, row_actions=None, text_toward_bg=0.0,
                  full_render=False, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
@@ -8175,7 +8191,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   tuple(path_prefix), cursor_path, tint=tint,
                                   row_tags=row_tags, row_tints=row_tints,
                                   row_suffixes=row_suffixes,
-                                  row_actions=row_actions)
+                                  row_actions=row_actions,
+                                  text_toward_bg=text_toward_bg)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result
