@@ -407,10 +407,10 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.112, 0.124, 0.144))
+@window(tint=(0.54, 0.374, 0.042))
 class Toggles:
 
-    @defaults(tint=(0.15, 0.135, 0.117, 1.0))
+    @defaults(tint=(0.789, 0.719, 0.649))
     class TextEditor:
 
         enable_spell_check = False
@@ -746,43 +746,67 @@ class Toggles:
         # involved, so it works in any text, mid-edit or unparseable. Flip the
         # toggle to disable; the (r, g, b, a) tint is read live.
         highlight_token_matches = True
-        
+
         # [tint=(0.72, 0.11, 0.11), show_tint=True]
-        def_block_alpha = 0.148
+        def_block_alpha = 1.0
         def_symbol_alpha = 0.616
         def_line_alpha = 0.078
-    
+
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        bg_tint_saturation = 0.52
+        bg_tint_saturation = 0.67
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        bg_tint_value = 0.48
+        bg_tint_value = 0.12
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
-        bg_min_brightness = 0.03
-        bg_max_brightness = 0.349
-        
-        
-        # Outline drawn around each def-tint wash rect (blocks, line bands,
-        # symbol washes) - makes the highlight edges read crisply against
+        bg_min_brightness = 0.01
+        bg_max_brightness = 0.137
+
+        # Per-occurrence symbol-wash color adjustment - same hsv factor
+        # pattern as bg_tint_*, but independent of the block/line washes so
+        # the chips can run hotter or duller than the surfaces under them.
+        # The shared brightness clamp (bg_min/max) still applies after.
+        symbol_tint_saturation = 1.02
+        symbol_tint_value = 0.25
+
+        # Line-band color adjustment - the third independent hsv pair
+        # (blocks = bg_tint_*, symbols = symbol_tint_*). Applies to the
+        # hard rect AND the blurred band alike. Shared clamp applies.
+        line_tint_saturation = 0.72
+        line_tint_value = 0.54
+
+        # Outline drawn around the BG washes ( class/func block rects and
+        # hard line bands) - so the highlight edges read crisply against
         # the background. The outline color is the wash color BRIGHTENED by
         # def_outline_brightness (multiplied after the bg brightness clamp,
         # so it pops where the fill stays muted). 0 alpha disables.
         def_outline_alpha = 1.0
-        def_outline_brightness = 1.2
+        def_outline_brightness = 1.6
         def_outline_thickness = 0.3
+        # Same three knobs for the per-occurrence symbol wash outlines,
+        # independent of the bg wash above. 0 alpha disables.
+        def_symbol_outline_alpha = 1.0
+        def_symbol_outline_brightness = 1.1
+        def_symbol_outline_thickness = 0.3
         # Compositor shadows under the def-tint washes (add_shadow depth
         # marks): the signed depth offset for class/func block rects and for
         # per-occurrence symbol washes. Symbols sit above blocks so the widget
         # chip casts onto its enclosing block wash; negative values recess
         # instead; 0 disables.
         def_block_shadow_offset = 2.0
-        def_symbol_shadow_offset = 4.0
+        def_symbol_shadow_offset = 3.7
         # Line-number shadows: negative = recessed below the editor surface
         # (the body casts into the gutter along its edge); 0 disables.
         gutter_shadow_offset = -2.0
+        # Compositor shadow under the gutter usage-heat boxes: each use
+        # counted on the line adds this much lift, so hotter lines float
+        # higher off the gutter background. The magnitude is capped at
+        # usage_heat_shadow_max (sign preserved - negative recesses);
+        # 0 disables.
+        usage_heat_shadow_offset = 1.0
+        usage_heat_shadow_max = 8.0
         # Line-number background saturation - the hsv saturation multiplier
         # Tint.line_number_bg applies to the theme color (was a hardcoded
         # 1.6; lower = greyer, dull muted strip).
-        gutter_saturation = -0.6
+        gutter_saturation = 0.9
 
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
@@ -804,26 +828,32 @@ class Toggles:
         # color out over def_line_blur_radius pixels past the band's edge
         # (a cheap drawcall gaussian - no blur pass). The radius also
         # bleeds vertically into neighboring lines, which is the point.
-        def_line_blur = False
+        def_line_blur = True
 
-        def_line_blur_radius = 460
+        def_line_blur_radius = 440
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 1.622
+        def_line_blur_alpha = 1.32
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 4.162
+        def_line_blur_falloff = 2.116
+        # Perceived-brightness clamp on the BLURRED band's color only -
+        # applied on top of the line_tint_* adjustment (which already ran
+        # through bg_min/max), so the feathered glow can hold a different
+        # brightness window than the hard band. 0.0/1.0 = no extra clamp.
+        def_line_blur_min_value = 0.292
+        def_line_blur_max_value = 5.835
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
-        def_line_blur_samples = 103
+        def_line_blur_samples = 142
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
         # app-wide so text reads as part of its panel. 0 disables.
-        # [tint=(0.278, 0.076, 0.126, 1.0)]
+        # [tint=(0.789, 0.18, 0.332, 1.0)]
         def_text_tint_mix = 0.293
 
         # Brightness multiplier for glyphs on NON-tinted lines while
@@ -987,6 +1017,7 @@ class Toggles:
             corner_segments = 15       # arc subdivisions in each rounded cutout corner
             outline_alpha = 1.00       # 0 = rely on the glow's bright inner halo alone
             outline_thickness = 1.626
+
         @defaults(tint=(0.36, 0.52, 0.93, 0.484))
         class InactiveElements:
             gradient_color = (0.73, 0.84, 0.91)  # cooler hue so the active match stands out
@@ -1105,7 +1136,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
 
     show_filled_tiles = False
     gl_check_error = False
@@ -1140,7 +1171,7 @@ class Toggles:
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
     brightness = 0.762
-    # [tint=(0.025, 0.032, 0.044)]
+    # [tint=(0.458, 0.474, 0.5)]
     contrast = 2.518
 
     debug_z_depth = False

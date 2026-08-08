@@ -1050,6 +1050,7 @@ class PendingSave:
         from src.lsd.gl_gui.view.core_conversion.new_converters import recompile_source
         from src.lsd.gl_gui.view.core_conversion.new_codecs import CallSite, Decorations
         from src.lsd.gl_gui.view.core_conversion.chain_converters import record_compile
+        from src.lsd.gl_gui.view.core_conversion.file_converters import module_for_path
 
         # Pick up project files/dirs created since startup (idempotent, only
         # uncached files are read) so their NEXT pending edit is tracked -
@@ -1075,9 +1076,15 @@ class PendingSave:
             source = getattr(address, "source", None)
             if not isinstance(source, (type, types.FunctionType,
                                        types.ModuleType, CallSite, Decorations)):
-                # Plain text with no live object - nothing to hotswap; the text
-                # still flushes to disk at save. Not worth reporting.
-                continue
+                # Whole-file text entries (TextFileCodec) carry the PATH as
+                # source - a spanless .py entry with a live module still
+                # hotswaps (recompile_source resolves the module). Anything
+                # else is plain text / no live object - nothing to hotswap;
+                # the entry simply flushes to disk at save. Not worth reporting.
+                if not (address.start is None and address.path is not None
+                        and address.path.suffix.lower() == ".py"
+                        and module_for_path(address.path) is not None):
+                    continue
             # Whole-file module entries hotswap from their PENDING text - the
             # same whole-module path the per-editor Run button uses on the
             # live buffer (_recompile_module). The old refusal of non-disk

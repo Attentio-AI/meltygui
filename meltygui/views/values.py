@@ -4793,7 +4793,7 @@ def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 
     _t = tint
     r, g, b = (_t[:3] if isinstance(_t, (tuple, list)) and len(_t) >= 3
                else (0.45, 0.47, 0.55))
-    pad_x, pad_y = 8, 4
+    pad_x, pad_y = 6, 2
     _lbl = str(label)
     ts = imgui.calc_text_size(_lbl, wrap_width=max(10.0, w - pad_x * 2))
     h = height or max(min_height, ts[1] + pad_y * 2)

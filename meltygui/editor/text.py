@@ -5825,6 +5825,7 @@ def draw_text(input_value: str, height=None,
                     ds._uj_items = _items
                     ds._uj_tags = _tags
                     ds._uj_anchor = _us   # picker hangs under the symbol
+                    ds._uj_anchor_gutter = None
                     ds._uj_index = 0
                     ds._uj_open = True
                     uj_state._kbd_mode = True
@@ -5843,6 +5844,72 @@ def draw_text(input_value: str, height=None,
                     return True
                 return False
         return False
+
+    def _line_usage_picker(line):
+        """Gutter heat-box click: the usage-jump picker for ALL usage spans
+        on `line`, grouped per SYMBOL — the menu's top level is the symbol
+        names (that's the label saying what each list relates to), each
+        nesting into its refs ({symbol: {scope: ref}}, draw_dd_menu renders
+        dict values as submenus). ALWAYS the picker, even for a single
+        target — a gutter click asks to SEE the users, not jump. The first
+        symbol's submenu opens pre-expanded so one symbol needs no second
+        click. True if it opened (a line with no jump targets returns
+        False)."""
+        _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        _lss = _line_starts(text)
+        if not (0 <= line < len(_lss)):
+            return False
+        _l0 = _lss[line]
+        _l1 = _lss[line + 1] if line + 1 < len(_lss) else len(text) + 1
+        _vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
+        _groups, _seen, _anchor = {}, set(), None
+        for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree,
+                                                   _usage_off, _vpath):
+            if _us < _l0:
+                continue
+            if _us >= _l1:
+                break
+            if _anchor is None:
+                _anchor = _us
+            # The symbol's label is its text in the buffer - repeated
+            # occurrences on the line collapse into one group, and their
+            # jump destinations dedupe per group.
+            _sym = text[_us:_ue] or getattr(_su, 'name', '?')
+            for _t in _usage_jump_targets(_su, at_def=_at_def,
+                                          view_path=_vpath, view_span=_vspan):
+                _k = (_sym, str(getattr(_t, 'path', None)),
+                      getattr(_t, 'line', None))
+                if _k not in _seen:
+                    _seen.add(_k)
+                    _groups.setdefault(_sym, []).append(_t)
+        if not _groups:
+            return False
+        _items, _tags = {}, {}
+        for _sym, _refs in _groups.items():
+            _sub, _sub_tags = _usage_ref_items(_refs)
+            _items[_sym] = _sub
+            _tags.update(_sub_tags)   # row tags forwards into nested levels
+        ds._uj_items = _items
+        ds._uj_tags = _tags
+        ds._uj_anchor = _anchor           # fallback if the gutter hides
+        ds._uj_anchor_gutter = line       # picker docks beside the heat box
+        ds._uj_index = 0
+        ds._uj_open = True
+        uj_state._kbd_mode = True
+        _sym0 = next(iter(_items))
+        uj_state.open_path = (_sym0,)
+        uj_state.cursor_path = (_sym0, next(iter(_items[_sym0])))
+        # Same latched-scroll snap as _try_usage_jump.
+        from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+        _dd_scroll_cursor_into_view(
+            Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
+        # The picker only shows while its editor owns text focus. The gutter
+        # press never reaches the caret/focus path (the event is claimed), so
+        # grant it here, same as _goto_usage_ref's local jump.
+        Melty.text_focused_ds = ds
+        Melty._text_focus_grant_frame = Melty.frame_count
+        request_render()
+        return True
 
     # A press inside a PLAIN owns_mouse token widget (number drag - rects
     # recorded by last body run's token loop) belongs to the widget, not the
@@ -5879,6 +5946,17 @@ def draw_text(input_value: str, height=None,
         _lv_pressed_line = int((left_mouse_down.y - origin_y) // line_px)
         if _lv_pressed_line in (getattr(ds, "_lv_gutter_markers", None) or {}):
             ds._lv_btn_pressed_line = _lv_pressed_line
+            left_mouse_down = None
+
+    # Usage-heat gutter click: a press in the number column on a line with
+    # usage spans opens the usage-jump picker for that line (see
+    # _line_usage_picker - always the picker, single-ref included). A line
+    # with no jump targets falls through to the normal click path, so plain
+    # gutter clicks still place the caret at line start.
+    if (left_mouse_down and gutter_w
+            and left + _lv_btn_w <= left_mouse_down.x < left + gutter_w):
+        _uh_line = int((left_mouse_down.y - origin_y) // line_px)
+        if _line_usage_picker(_uh_line):
             left_mouse_down = None
 
     if left_mouse_down:
@@ -6092,8 +6170,27 @@ def draw_text(input_value: str, height=None,
         # suggestion popup above: while open, Esc/arrows/Enter drive the picker
         # and are consumed before the caret handlers see them.
         if getattr(ds, '_uj_open', False):
-            _uj_keys = list(getattr(ds, '_uj_items', None) or ())
+            # Level-aware nav: the gutter-opened picker nests {symbol:
+            # {scope: ref}}; the cursor's level is its path minus the last
+            # key. Ctrl+B's flat picker resolves to prefix () and behaves
+            # exactly as before.
+            def _uj_resolve(_path):
+                _v = getattr(ds, '_uj_items', None)
+                for _pk in (_path or ()):
+                    if not isinstance(_v, dict):
+                        return None
+                    _v = _v.get(_pk)
+                return _v
+            _uj_cp = (uj_state.cursor_path
+                      if isinstance(uj_state.cursor_path, tuple) else ())
+            _uj_prefix = _uj_cp[:-1]
+            _uj_lvl = _uj_resolve(_uj_prefix)
+            if not isinstance(_uj_lvl, dict) or not _uj_lvl:
+                _uj_prefix, _uj_lvl = (), (getattr(ds, '_uj_items', None) or {})
+            _uj_keys = list(_uj_lvl)
             _uj_idx = getattr(ds, '_uj_index', 0)
+            if _uj_cp and _uj_cp[-1] in _uj_lvl:
+                _uj_idx = _uj_keys.index(_uj_cp[-1])
             if pressed(glfw.KEY_ESCAPE):
                 ds._uj_open = False
                 _fired.discard(glfw.KEY_ESCAPE)
@@ -6102,18 +6199,32 @@ def draw_text(input_value: str, height=None,
                 _uj_idx = (_uj_idx + step) % len(_uj_keys)
                 ds._uj_index = _uj_idx
                 uj_state._kbd_mode = True
-                uj_state.cursor_path = (_uj_keys[_uj_idx],)
-                # Same scroll-into-view as the suggestion popup's arrow nav.
-                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
-                _dd_scroll_cursor_into_view(
-                    Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
-                    _uj_idx)
+                uj_state.cursor_path = _uj_prefix + (_uj_keys[_uj_idx],)
+                # Same scroll-into-view as the suggestion popup's arrow keys
+                # - root level only; submenu tiles are their own windows and
+                # their lists are short.
+                if not _uj_prefix:
+                    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                    _dd_scroll_cursor_into_view(
+                        Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
+                        _uj_idx)
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
             elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _uj_keys and not ctrl:
-                _goto_usage_ref(ds._uj_items[_uj_keys[min(_uj_idx, len(_uj_keys) - 1)]])
-                ds._uj_open = False
+                _pick = _uj_resolve(
+                    _uj_prefix + (_uj_keys[min(_uj_idx, len(_uj_keys) - 1)],))
+                if isinstance(_pick, dict):
+                    # Branch row (a symbol group): descend - expand it and
+                    # put the cursor on its first ref.
+                    uj_state.open_path = _uj_prefix + (_uj_keys[_uj_idx],)
+                    if _pick:
+                        uj_state.cursor_path = uj_state.open_path + (next(iter(_pick)),)
+                        ds._uj_index = 0
+                    request_render()
+                elif _pick is not None:
+                    _goto_usage_ref(_pick)
+                    ds._uj_open = False
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
 
@@ -7019,16 +7130,24 @@ def draw_text(input_value: str, height=None,
         if Melty.channels_split:
 
             draw_list.channels_set_current(Core.melty.get_channel() - 1)
-        # Shared background color adjustment (hsv factors + brightness clamp)
-        # for every usage-tint wash below - see _bg_adjust.
+        # Per-row color adjustment (hsv shift and brightness clamp) - see
+        # _bg_adjust. Blocks, line bands, and symbol washes each get their
+        # own saturation/value pair; the brightness clamp is shared.
+        _min_b = Toggles.TextEditor.bg_min_brightness
+        _max_b = Toggles.TextEditor.bg_max_brightness
         _bg_f = (Toggles.TextEditor.bg_tint_saturation,
-                 Toggles.TextEditor.bg_tint_value,
-                 Toggles.TextEditor.bg_min_brightness,
-                 Toggles.TextEditor.bg_max_brightness)
+                 Toggles.TextEditor.bg_tint_value, _min_b, _max_b)
+        _sym_f = (Toggles.TextEditor.symbol_tint_saturation,
+                  Toggles.TextEditor.symbol_tint_value, _min_b, _max_b)
+        _line_f = (Toggles.TextEditor.line_tint_saturation,
+                   Toggles.TextEditor.line_tint_value, _min_b, _max_b)
         _dt_block_a = Toggles.TextEditor.def_block_alpha
         _dt_outline_a = Toggles.TextEditor.def_outline_alpha
         _dt_outline_t = Toggles.TextEditor.def_outline_thickness
         _dt_outline_b = Toggles.TextEditor.def_outline_brightness
+        _dt_sym_ol_a = Toggles.TextEditor.def_symbol_outline_alpha
+        _dt_sym_ol_t = Toggles.TextEditor.def_symbol_outline_thickness
+        _dt_sym_ol_b = Toggles.TextEditor.def_symbol_outline_brightness
         # Compositor shadows under the washes (add_shadow depth marks; 0
         # disables). All marks clip to the visible text rect - partially
         # scrolled rows still draw here.
@@ -7063,13 +7182,14 @@ def draw_text(input_value: str, height=None,
                     best = _dt_block_sh * (_b_lvls[_sbi] + t)
             return best
 
-        def _ol_rgb(c):
+        def _ol_rgb(c, b=None):
             # Outline color: the wash color pushed BRIGHTER than the bg
             # clamp allows - a 1-2px edge needs far more luminance than a
             # translucent fill to pop against the editor background.
-            return (min(1.0, c[0] * _dt_outline_b),
-                    min(1.0, c[1] * _dt_outline_b),
-                    min(1.0, c[2] * _dt_outline_b))
+            b = _dt_outline_b if b is None else b
+            return (min(1.0, c[0] * b),
+                    min(1.0, c[1] * b),
+                    min(1.0, c[2] * b))
         # Per-line content lengths (rstripped chars) cached on the
         # draw_state per text identity: the block washes below wrap to the
         # widest line in their span instead of running to the view edge.
@@ -7127,6 +7247,8 @@ def draw_text(input_value: str, height=None,
 
             _dt_line_blur_k = Toggles.TextEditor.def_line_blur_falloff
             _dt_line_blur_n = Toggles.TextEditor.def_line_blur_samples
+            _dt_line_blur_minv = Toggles.TextEditor.def_line_blur_min_value
+            _dt_line_blur_maxv = Toggles.TextEditor.def_line_blur_max_value
 
             def _blur_rect(x0, y0, x1, y1, rgb, alpha, rounding):
                 # Feathered band with an INVERSE-SQUARE profile - a hot
@@ -7160,13 +7282,19 @@ def draw_text(input_value: str, height=None,
                 ey = sy + line_px
                 if ey < rect_min_y or sy > rect_max_y:
                     continue
-                _la = _bg_adjust(tuple(_l_rgb[:3]), _bg_f)
+                _la = _bg_adjust(tuple(_l_rgb[:3]), _line_f)
+                # The blurred band's own brightness clamp, on top of the
+                # line_tint_* adjustment above - the feathered glow reads
+                # differently from the hard rect at the same value.
+                _lb = _brightness_clamp(_la[0], _la[1], _la[2],
+                                        _dt_line_blur_minv, _dt_line_blur_maxv) \
+                    if (_dt_line_blur and _dt_line_blur_r > 0) else _la
                 _l_col = imgui.get_color_u32_rgba(_la[0], _la[1], _la[2],
                                                   _dt_line_a * _l_sc)
                 if _dt_line_full:
                     if _dt_line_blur and _dt_line_blur_r > 0:
                         _blur_rect(rect_min_x, sy, rect_max_x, ey,
-                                   _la, _dt_line_a * _l_sc, 0.0)
+                                   _lb, _dt_line_a * _l_sc, 0.0)
                     else:
                         draw_list.add_rect_filled(rect_min_x, sy, rect_max_x,
                                                   ey, _l_col, 0.0)
@@ -7175,7 +7303,7 @@ def draw_text(input_value: str, height=None,
                     ex = origin_x + _colx(_l_e)
                     if _dt_line_blur and _dt_line_blur_r > 0:
                         _blur_rect(sx - 3, sy, ex + 3, ey,
-                                   _la, _dt_line_a * _l_sc, 3.0)
+                                   _lb, _dt_line_a * _l_sc, 3.0)
                     elif _dt_outline_a > 0:
                         draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey,
                                                   _l_col, 3.0)
@@ -7201,7 +7329,7 @@ def draw_text(input_value: str, height=None,
             ex = origin_x + _colx(_s_end)
             # _s_scale < 1 indicates a PROPAGATED tint (reference flow) - same
             # color family, fainter wash per hop from the tinted definition.
-            _sa = _bg_adjust(tuple(_s_tint[:3]), _bg_f)
+            _sa = _bg_adjust(tuple(_s_tint[:3]), _sym_f)
             _s_col = imgui.get_color_u32_rgba(_sa[0], _sa[1], _sa[2],
                                               _dt_sym_a * _s_scale)
             if _dt_sym_sh:
@@ -7213,13 +7341,13 @@ def draw_text(input_value: str, height=None,
                            offset=_scope_surface(_s_line) + _dt_sym_sh,
                            corner_radius=3.0, clip=_sh_clip)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
-            if _dt_outline_a > 0:
-                _s_ol = _ol_rgb(_sa)
+            if _dt_sym_ol_a > 0:
+                _s_ol = _ol_rgb(_sa, _dt_sym_ol_b)
                 draw_list.add_rect(sx - 1, sy + 1, ex + 1, ey - 1,
                                    imgui.get_color_u32_rgba(
                                        _s_ol[0], _s_ol[1], _s_ol[2],
-                                       _dt_outline_a * _s_scale), 3.0,
-                                   thickness=_dt_outline_t)
+                                       _dt_sym_ol_a * _s_scale), 3.0,
+                                   thickness=_dt_sym_ol_t)
         # Back to the body's text channel for everything after the washes.
         if Melty.channels_split:
             draw_list.channels_set_current(Core.melty.get_channel() + 1)
@@ -7961,6 +8089,9 @@ def draw_text(input_value: str, height=None,
         # body has scrolled up past the clip top.
         gutter_top = max(rect_min_y, origin_y)
         _gut_sh = Toggles.TextEditor.gutter_shadow_offset
+        _uh_sh = Toggles.TextEditor.usage_heat_shadow_offset
+        _uh_sh_max = Toggles.TextEditor.usage_heat_shadow_max
+        _gut_clip = (left, gutter_top, left + gutter_w, rect_max_y)
         if _gut_sh:
             # Recessed strip (negative shadow): the code surface casts into
             # the gutter along its edge. The rect IS the exact strip (the
@@ -8012,6 +8143,17 @@ def draw_text(input_value: str, height=None,
                                                    0.55 * _lt[2])
                 else:
                     _hb = _usage_wash_color(heat)
+                if _uh_sh:
+                    # Heat-scaled lift: the box's depth is the usage count
+                    # times the per-usage offset, magnitude-capped so a
+                    # hub line doesn't cast across the whole strip.
+                    _uh_off = _uh_sh * heat
+                    _uh_off = max(-_uh_sh_max, min(_uh_sh_max, _uh_off))
+                    add_shadow((nx - 3.0, ly + 1,
+                                (left + gutter_w - 3.0) - (nx - 3.0),
+                                line_px - 2),
+                               offset=_uh_off, corner_radius=3.0,
+                               clip=_gut_clip)
                 draw_list.add_rect_filled(nx - 3.0, ly + 1, left + gutter_w - 3.0,
                                           ly + line_px - 1, _hb, 3.0)
             draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
@@ -8297,7 +8439,16 @@ def draw_text(input_value: str, height=None,
                 and bool(getattr(ds, '_uj_items', None)))
     _uj_items = ds._uj_items if _uj_show else {}
     _uj_anchor = getattr(ds, '_uj_anchor', ds.text_cursor_pos)
-    _uj_x, _uj_y = _char_pos_to_xy(text, _uj_anchor, origin_x, origin_y, line_px, vcols=vcols)
+    _uj_gut = getattr(ds, '_uj_anchor_gutter', None)
+    if _uj_gut is not None and show_gutter and gutter_w > 0:
+        # Gutter-opened picker docks beside the clicked heat box: right of
+        # the gutter bar, top aligned to the line. Downside both the
+        # window_pos and the first-open hover fallback add line_px to
+        # _uj_y (the under-the-symbol convention), so subtract one line high.
+        _uj_x = left + gutter_w + 4.0
+        _uj_y = origin_y + (_uj_gut - 1) * line_px
+    else:
+        _uj_x, _uj_y = _char_pos_to_xy(text, _uj_anchor, origin_x, origin_y, line_px, vcols=vcols)
     if _uj_show:
         # Keyboard-vs-hover highlight: same dance as the suggestion popup -
         # keyboard selection shows unless the mouse actively MOVES over the

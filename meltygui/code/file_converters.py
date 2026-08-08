@@ -754,6 +754,30 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     return None
 
 
+def module_for_path(path):
+    """The live module loaded from `path` (resolved), or None.
+
+    Whole-file editors resolve through TextFileCodec, whose Address carries the
+    PATH as `source` — there is no module object to dispatch on until hotswap
+    time, so recompile callers resolve it here (same scan as the MCP server's
+    hotswap_file)."""
+    import sys
+    try:
+        target = Path(path).resolve()
+    except (OSError, ValueError):
+        return None
+    for mod in list(sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        if not f:
+            continue
+        try:
+            if Path(f).resolve() == target:
+                return mod
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 @lag_traced("recompile module (hotswap)", 50)
 def _recompile_module(module: types.ModuleType, source: str,
                       filename: str) -> None:
@@ -770,6 +794,7 @@ def _recompile_module(module: types.ModuleType, source: str,
     # __code__ we update below). Each entry is a zero-arg restore closure.
     _member_restores = []
     _swapped_funcs = []
+    _swapped_classes = []
     new_code_ids = set()
     try:
         # annotation_scope: module bodies hold @window classes whose field
@@ -859,6 +884,7 @@ def _recompile_module(module: types.ModuleType, source: str,
                 _redirect_class_registrations(old_obj, new_obj)
                 invalidate_address_cache(old_obj)
                 new_code_ids |= _class_code_objects(new_obj)
+                _swapped_classes.append(old_obj)
     except Exception as e:
         # Roll back to old attributes on error
         module.__dict__.update(old_attrs)
@@ -880,6 +906,11 @@ def _recompile_module(module: types.ModuleType, source: str,
     # blitting old pixels (and old code) until something invalidates them.
     for fn in _swapped_funcs:
         Melty.cache.invalidate_up_by_func(fn, max_depth=10)
+    # Same for class-driven views - the class-span route (_recompile_class)
+    # invalidates by object; without this a whole-file swap leaves views
+    # reading class attrs (Toggles etc.) blitting stale tiles.
+    for c in _swapped_classes:
+        Melty.cache.invalidate_up_by_obj(c, max_depth=10)
 
 
 # An enum's member bookkeeping. These are ordinary (non-dunder) class attrs, so

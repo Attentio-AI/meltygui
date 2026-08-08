@@ -108,7 +108,7 @@ from src.lsd.gl_gui.view.core_conversion.chain_converters import (
 from src.lsd.gl_gui.view.core_conversion.code_checks import (
     check_source, check_source_incremental, collect_import_suggestions)
 from src.lsd.gl_gui.view.core_conversion.file_converters import (
-    _recompile, _recompile_class, _recompile_module,
+    _recompile, _recompile_class, _recompile_module, module_for_path,
 )
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     cst_module_to_dict, dict_to_cst_module,
@@ -177,6 +177,19 @@ def recompile_source(source, code_str, file_path, address=None):
         result = _recompile_module(source, code_str, str(file_path))
     elif isinstance(source, CallSite):
         result = _recompile_caller(source, code_str, file_path, address)
+    elif isinstance(source, (str, Path)) and str(file_path).endswith(".py"):
+        # Whole-file edits resolve through TextFileCodec, whose Address
+        # carries the PATH as source - resolve the live module here so the file
+        # recompile patches its classes/functions the same way the span
+        # recompile does. No live module is a real failure (previously this
+        # fell through to result=None and reported success while swapping
+        # nothing).
+        module = module_for_path(file_path)
+        if module is not None:
+            result = _recompile_module(module, code_str, str(file_path))
+        else:
+            result = NameError(f"no live module loaded from {file_path} — "
+                               f"nothing to hotswap")
     return result
 
 
@@ -1907,7 +1920,7 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
 @render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=False,
-                 show_code_buttons=False, show_name=False, is_tree=False,
+                 show_code_buttons=False, show_name=True, is_tree=False,
                  child_kwargs=None, draw_state=None, auto_save=True, auto_recompile_edits=False, save=False, load=False,
                  recompile=False, run_jedi=False, save_debounce_ms=0, bg_offset=-0.5,
                  ensure_import=None, s_key_pressed=None, unique=None,
@@ -2222,7 +2235,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             code_state._pending_save = False
             code_state._save_refused = False
             external_change = True
-            
+
             if code_state._loaded_externally:
                 # This load was triggered by a disk change (not the initial
                 # load) - stamp the fading "loaded from disk" label.
