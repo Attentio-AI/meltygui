@@ -2457,16 +2457,33 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
     return [d] if d is not None else callers
 
 
-def _open_usage_ref(ref, token=None):
+def _enclosing_editor_window(ds):
+    """The code-editor WINDOW draw_state a text editor renders inside, or
+    None (editors outside draw_code_editor — chain views, search boxes).
+    Jumps fired inside an editor instance pass this so the target opens in
+    the SAME instance instead of hopping to the primary window."""
+    w, n = ds, 0
+    while w is not None and n < 8:
+        if 'draw_code_editor' in (getattr(w, 'name', '') or ''):
+            return w
+        nw = getattr(w, 'parent_window', None)
+        if nw is w:
+            return None
+        w, n = nw, n + 1
+    return None
+
+
+def _open_usage_ref(ref, token=None, editor_window=None):
     """Open one UsageRef (Ctrl+B) in the in-app code editor: opens the file's
     tab, summons the editor window, and stashes the line on
     OpenFiles.jump_to_line — draw_code_editor consumes it to place the caret
     (the editor's cursor-follow scroll then brings it into view). `token`
     rides along on OpenFiles.jump_to_token so the caret lands ON the symbol
-    rather than at the line's first code character."""
+    rather than at the line's first code character; `editor_window` keeps the
+    jump in the originating editor instance."""
     from src.lsd.gl_gui.view.playground.open_files import open_in_editor
     open_in_editor(str(ref.path), line_number=getattr(ref, 'line', None),
-                   token=token)
+                   token=token, editor_window=editor_window)
 
 
 def _focus_in_context_menu_over(editor_ds, max_steps=64):
@@ -6143,7 +6160,8 @@ def draw_text(input_value: str, height=None,
         request_render()
         _uj_log(f"goto EXTERNAL {getattr(ref.path, 'name', ref.path)}:"
                 f"{getattr(ref, 'line', None)} token={token!r}")
-        _open_usage_ref(ref, token=token)
+        _open_usage_ref(ref, token=token,
+                        editor_window=_enclosing_editor_window(ds))
 
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
@@ -6445,98 +6463,25 @@ def draw_text(input_value: str, height=None,
                 f"(focus_owner={getattr(Melty.text_focused_ds, 'name', None)!r}) "
                 f"uj_open={getattr(ds, '_uj_open', False)} "
                 f"caret={ds.text_cursor_pos} text_len={len(text)}")
-    def _flash_word(pos, tint):
-        """Emphasis box around the word under `pos` — the visible answer to a
-        Ctrl+B that can't jump (red: no target; amber: symbols still loading)."""
-        _w0 = _select_unit_left(text, pos)
-        _w1 = _select_unit_right(text, pos)
-        _vc = _get_vcols()
-        _fx0, _fy0 = _char_pos_to_xy(text, _w0, origin_x, origin_y,
-                                     line_px, vcols=_vc)
-        _fx1, _ = _char_pos_to_xy(text, max(_w1, _w0 + 1), origin_x,
-                                  origin_y, line_px, vcols=_vc)
-        if _fx1 <= _fx0:   # word wrapped onto the next line - fold back
-            _fx1 = _fx0 + imgui.calc_text_size(text[_w0:_w1] or " ").x
-        Melty.emphasize(f"jump_fail {ds.name}",
-                        (_fx0 - 3, _fy0 - 1, _fx1 + 3, _fy0 + line_px + 1),
-                        tint=tint)
-        request_render()
-
-    def _usages_loading():
-        """True while the span's symbol pass hasn't landed for the live buffer
-        — a Ctrl+B miss right now may just be EARLY, not wrong. Two windows:
-        the cache sig isn't fresh (compute pending/running), or the cache IS
-        fresh (e.g. an instant hash rescue on load) but the frame-boundary
-        attach hasn't stamped the parse yet and no spans exist to jump from."""
-        if jump_to is None:
-            return False
-        from src.lsd.gl_gui.toggles import Toggles
-        if not Toggles.enable_jedi:
-            return False
-        try:
-            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-                usages_fresh_for_address)
-            if not usages_fresh_for_address(jump_to):
-                return True
-        except Exception:
-            return False
-        if getattr(_usage_tree, '_symbol_gen', None) is not None:
-            return False   # a real compute attached - a miss is a real miss
-        _vp = getattr(jump_to, 'path', None)
-        return not _usage_spans(ds, text, _usage_tree, _usage_off, _vp)
-
     if (ctrl_b_down and is_focused and not single_line and not is_search_box
             and not getattr(ds, '_uj_open', False)):
         _cb_pos = min(ds.text_cursor_pos, max(len(text) - 1, 0))
         if not _try_usage_jump(_cb_pos):
-            if _usages_loading():
-                # Symbols still loading - don't answer "no target" to a
-                # question the index can't answer yet. Start a pending state:
-                # the poll below retries per frame while the body layer keeps
-                # the ensure pass (draw_code_editor's auto-index) driving the
-                # load, then jumps / opens the picker the moment it lands.
-                ds._uj_pending = {"pos": _cb_pos, "started": time.time(),
-                                  "text_len": len(text), "fresh_at": None}
-                _uj_log(f"ctrl_b PENDING (symbols loading) pos={_cb_pos}")
-                _flash_word(_cb_pos, tint=(0.95, 0.72, 0.2))
-                ds.invalidate()
-            else:
-                # No jump target here - flash the word under the caret red so
-                # the shortcut visibly answers instead of silently doing
-                # nothing.
-                _flash_word(_cb_pos, tint=(0.9, 0.28, 0.22))
-
-    # Deferred Ctrl+B: the user asked to jump while the symbol pass was still
-    # loading. Retry until the symbols land (jump or picker), and give up -
-    # with the red no-target flash - once they're fresh and there's STILL no
-    # jump target, the user moved on (caret/text/focus changed), or 6s pass
-    # (covers a cold-first-ever compute).
-    _ujp = getattr(ds, '_uj_pending', None)
-    if _ujp is not None:
-        _now = time.time()
-        if (not is_focused or ds.text_cursor_pos != _ujp["pos"]
-                or len(text) != _ujp["text_len"]):
-            ds._uj_pending = None   # stale request - a late jump would jank
-        elif _try_usage_jump(_ujp["pos"]):
-            _uj_log(f"ctrl_b pending RESOLVED pos={_ujp['pos']} "
-                    f"after {_now - _ujp['started']:.2f}s")
-            ds._uj_pending = None
-        else:
-            if _ujp["fresh_at"] is None and not _usages_loading():
-                _ujp["fresh_at"] = _now   # landed - grace for the attach post
-            if (_now - _ujp["started"] > 6.0
-                    or (_ujp["fresh_at"] is not None
-                        and _now - _ujp["fresh_at"] > 0.5)):
-                _uj_log(f"ctrl_b pending GIVE-UP pos={_ujp['pos']} "
-                        f"fresh_at={_ujp['fresh_at']}")
-                ds._uj_pending = None
-                _flash_word(_ujp["pos"], tint=(0.9, 0.28, 0.22))
-            else:
-                # Keep ourselves (and the parent body's ensure pass) alive -
-                # symbols attach at a frame boundary and this poll only runs
-                # if the body does.
-                ds.invalidate()
-                request_render()
+            # No jump target here - flash the word under the caret red so the
+            # shortcut has answers instead of silently doing nothing.
+            _w0 = _select_unit_left(text, _cb_pos)
+            _w1 = _select_unit_right(text, _cb_pos)
+            _vc = _get_vcols()
+            _fx0, _fy0 = _char_pos_to_xy(text, _w0, origin_x, origin_y,
+                                         line_px, vcols=_vc)
+            _fx1, _ = _char_pos_to_xy(text, max(_w1, _w0 + 1), origin_x,
+                                      origin_y, line_px, vcols=_vc)
+            if _fx1 <= _fx0:   # word wrapped onto the next line - fall back
+                _fx1 = _fx0 + imgui.calc_text_size(text[_w0:_w1] or " ").x
+            Melty.emphasize(f"jump_fail {ds.name}",
+                            (_fx0 - 3, _fy0 - 1, _fx1 + 3, _fy0 + line_px + 1),
+                            tint=(0.9, 0.28, 0.22))
+            request_render()
 
     _pf("mouse")
     # --- Keyboard handling ---

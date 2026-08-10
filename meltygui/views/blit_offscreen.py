@@ -2072,6 +2072,28 @@ class TileCacheMasked:
             hops += 1
         return w
 
+    @staticmethod
+    def _glow_window_ds(ds):
+        """Nearest enclosing WINDOW draw_state (ds itself when it IS a
+        window, per Melty.registered_windows). Kill scoping uses THIS, not
+        the chain root: within one nested-window chain every window shares
+        a root, so root-scoped kills let a sibling nested window's
+        hover-repaint captures kill glow in the quiet window beside it. A
+        content swap always captures inside the emitter's OWN window, so
+        window scoping keeps the tab-switch kill exact."""
+        if ds is None:
+            return None
+        try:
+            # Root windows live in registered_windows; nested windows carry
+            # _is_nested. Everything else delegates to its parent_window.
+            if (getattr(ds, "_tile_id", None) in Melty.registered_windows
+                    or getattr(ds, "_is_nested", False)):
+                return ds
+            pw = getattr(ds, "parent_window", None)
+            return pw if pw is not None else ds
+        except Exception:
+            return ds
+
     def clear_glows(self, draw_state) -> None:
         """Start of an emitter's glow group for this body run: retained marks
         from its previous run drop at finalize unless re-emitted this frame.
@@ -4016,7 +4038,7 @@ class TileCacheMasked:
                         _pend_rects.append(
                             (p.pos[0], p.pos[1],
                              p.pos[0] + p.size[0], p.pos[1] + p.size[1],
-                             self._glow_root_ds(p.draw_state),
+                             self._glow_window_ds(p.draw_state),
                              _anc_ids(p.draw_state), p.draw_state))
                     except Exception:
                         pass
@@ -4121,7 +4143,6 @@ class TileCacheMasked:
                         continue  # stamped via the normal fresh path already
                     _delta = (_eds.abs_left - _anchor[0],
                               _eds.abs_top - _anchor[1])
-                    _root_ds = self._glow_root_ds(_eds)
                     if (getattr(_eds, "last_seen", None)
                             == Melty.frame_count):
                         # Reached this frame - wrapper ran, so its pixels
@@ -4133,8 +4154,9 @@ class TileCacheMasked:
                         # swaps still kill.
                         self._depth_kill_pending.discard(_eid)
                     else:
-                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
-                                              _live_clip_of(_eds))
+                        _hit = _territory_hit(marks, _delta,
+                                              self._glow_window_ds(_eds),
+                                              _eds, _live_clip_of(_eds))
                         if _hit is not None:
                             _log_kill("depth", _eds, _hit, not _settled)
                             if _settled:
@@ -4196,44 +4218,79 @@ class TileCacheMasked:
                     gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE,
                                    gl.GL_TRUE)
 
-                # Tunable band offsets, applied LINEARLY in rank units -
-                # never by shifting shadow_depth_at's depth argument (the
-                # depth term is non-monotonic: peaks ~530 rank units at d~59
-                # then decreases, so a large depth offset can cross a bound
-                # and collapse the band). Step unit: one shallow depth
-                # step (~layer_inc * 53.42/5.975 rank units).
+                # Tunable band offsets in DEPTH units. Bounds are the exact
+                # ENVELOPE of shadow_depth_at over the offset span - never a
+                # single shifted evaluation (the f term is non-monotone:
+                # ~9x slope near a spike at d=59.395, peaking ~530 rank
+                # units then falling, so f(d+off) values can sit BELOW real
+                # receivers) and never a linear rank offset (~12 ru/step -
+                # deep-nested emitters' peel is hundreds of ru near the
+                # spike, so linear headroom gated the band out whenever the
+                # mask served detailed ranks and glow FLICKERED against
+                # partial rebuilds). f is unimodal, so max/min over the
+                # interval endpoints + the spike point is enough; the
+                # envelope also grows monotonically with the offsets, so
+                # +/-1000 genuinely opens the whole band.
+                _g_lo_raw = float(getattr(
+                    Toggles, "glow_mask_lower_offset", -4.0))
+                _g_hi_raw = float(getattr(
+                    Toggles, "glow_mask_upper_offset", 8.0))
                 _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
-                _g_lo_off = float(getattr(
-                    Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
-                _g_hi_off = float(getattr(
-                    Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
+                _SPIKE_D = 59.395
+
+                def _band_hi(eds, rel):
+                    dl = getattr(eds, "depth_and_layer", None)
+                    if not (isinstance(dl, tuple) and len(dl) == 2):
+                        return None
+                    d0, lay = dl
+                    a = d0 + rel
+                    b = a + _g_hi_raw
+                    lo_d, hi_d = min(a, b), max(a, b)
+                    cands = [a, b]
+                    if lo_d < _SPIKE_D < hi_d:
+                        cands.append(_SPIKE_D)
+                    return max(max(0.0, shadow_depth_at(x, lay))
+                               for x in cands)
+
+                def _band_lo(root_ds):
+                    dl = getattr(root_ds, "depth_and_layer", None) \
+                        if root_ds is not None else None
+                    if not (isinstance(dl, tuple) and len(dl) == 2):
+                        return None
+                    dr, lay = dl
+                    return min(max(0.0, shadow_depth_at(dr + _g_lo_raw, lay)),
+                               max(0.0, shadow_depth_at(dr, lay)))
 
                 def _resolve_glow(m, delta, eds, root_ds):
-                    # Band anchors are the LIVE shadow_depth properties -
-                    # the exact same units those views' mask rects stamp
-                    # (depth_and_layer through shadow_depth_at), so the band
-                    # is always in the mask's own units. Emitter anchor:
-                    # the emitting view's surface + the mark's relative
-                    # offset; floor anchor: the root window's surface.
+                    # Bounds comes from the LIVE depth_and_layer pairs (the
+                    # wrapper refreshes them on every reach) - the same
+                    # inputs those views' mask ranks come from, so the band
+                    # is always in the count's own units. Emitter: envelope
+                    # over [surface + mark offset, + upper toggle]; floor:
+                    # the root window's surface + lower toggle. Linear rank
+                    # fallbacks serve hotswap-era / partial draw_states.
                     _anchor_rank = None
                     if eds is not None:
-                        try:
-                            _anchor_rank = (float(eds.shadow_depth)
-                                            + m[6] * _g_step)
-                        except Exception:
-                            _anchor_rank = None
+                        _anchor_rank = _band_hi(eds, m[6])
+                        if _anchor_rank is None:
+                            try:
+                                _anchor_rank = (float(eds.shadow_depth)
+                                                + (m[6] + _g_hi_raw)
+                                                * _g_step)
+                            except Exception:
+                                _anchor_rank = None
                     if _anchor_rank is None:
-                        _anchor_rank = m[7]  # record-time absolute fallback
-                    _lo_anchor = None
-                    if root_ds is not None:
-                        try:
-                            _lo_anchor = float(root_ds.shadow_depth)
-                        except Exception:
-                            _lo_anchor = None
+                        _anchor_rank = m[7] + _g_hi_raw * _g_step
+                    _lo_anchor = _band_lo(root_ds)
                     if _lo_anchor is None:
-                        _lo_anchor = _anchor_rank
-                    _rank = (_anchor_rank + _g_hi_off) / 65535.5
-                    _floor = (_lo_anchor + _g_lo_off) / 65535.5
+                        try:
+                            _lo_anchor = (float(root_ds.shadow_depth)
+                                          + _g_lo_raw * _g_step)
+                        except Exception:
+                            _lo_anchor = _anchor_rank - abs(
+                                _g_lo_raw) * _g_step
+                    _rank = _anchor_rank / 65535.5
+                    _floor = _lo_anchor / 65535.5
                     return (m, delta, min(1.0, _rank), max(0.0, _floor),
                             _live_clip_of(eds))
 
@@ -4272,8 +4329,9 @@ class TileCacheMasked:
                         # never reached, so this swaps to kill.
                         self._glow_kill_pending.discard(_eid)
                     else:
-                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
-                                              _live_clip_of(_eds))
+                        _hit = _territory_hit(marks, _delta,
+                                              self._glow_window_ds(_eds),
+                                              _eds, _live_clip_of(_eds))
                         if _hit is not None:
                             _log_kill("glow", _eds, _hit, not _settled)
                             if _settled:

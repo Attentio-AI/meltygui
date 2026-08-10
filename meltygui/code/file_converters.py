@@ -198,7 +198,7 @@ def rf_str_to_dict(input_value) -> dict:
 
 
 @render_func()
-def rf_dict_to_str(input_value) -> str:
+def rf_diclaudct_to_str(input_value) -> str:
     """dict → str."""
     try:
         return None, str(input_value)

@@ -1279,8 +1279,8 @@ class Toggles:
     # depth curve is non-monotone, so offsets never go through it, which
     # makes large values (+/-1000) genuinely open the whole band, same as
     # glow_debug_no_mask.
-    glow_mask_lower_offset = -1.199
-    glow_mask_upper_offset = 1.863
+    glow_mask_lower_offset = -22.668
+    glow_mask_upper_offset = 12.674
 
     # --- Glow debug ---
     # Bypass the glow-mask receiver gate: light falls on EVERY pixel under
@@ -1297,7 +1297,7 @@ class Toggles:
     glow_debug_view = False
     # ~1/sec console print of pipeline counts (frame marks, retained
     # emitters, stamped quads, first mark's rank/floor band).
-    glow_debug_log = True
+    glow_debug_log = False
 
     caller_walk_steps = 7
     draw_legacy = False
