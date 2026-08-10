@@ -72,7 +72,8 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
     if flat_button(f"{_open_label}##jump_to{unique}", draw_state,
                    view_id=f"jump_open{unique}", width=_bw, height=_bh):
         from src.lsd.gl_gui.view.playground.open_files import open_in_editor
-        open_in_editor(str(input_value.path), line_number=line_number)
+        open_in_editor(str(input_value.path), line_number=line_number,
+                       token=fn.__name__ if fn is not None else None)
 
     imgui.same_line()
     imgui.align_text_to_frame_padding()

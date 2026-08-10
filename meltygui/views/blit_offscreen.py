@@ -2006,9 +2006,19 @@ class TileCacheMasked:
         # cached-mask path to avoid cutting windows floating above.
         if draw_state is not None and not inset:
             self._ensure_glow_state()
+            # Anchor carries the emitter's CURRENT shadow rank alongside
+            # its position: mark ranks are absolute, so a later z change
+            # (another window raised above, this one lowered) re-stamps
+            # them via the live-vs-recorded shadow_depth delta - without
+            # it, retained marks kept casting at their old high ranks and
+            # MAX-punched through windows now floating lower.
+            try:
+                _base_rank = float(draw_state.shadow_depth)
+            except Exception:
+                _base_rank = None
             self._depth_frame.append(
                 (mark, draw_state,
-                 (draw_state.abs_left, draw_state.abs_top)))
+                 (draw_state.abs_left, draw_state.abs_top, _base_rank)))
 
     def _ensure_glow_state(self) -> None:
         """Lazily create the glow bookkeeping fields. A hotswap patches
@@ -4137,14 +4147,45 @@ class TileCacheMasked:
                             self._depth_kill_pending.discard(_eid)
                             continue
                     dx, dy = _delta
+                    # Re-stamped marks clip to the emitter's LIVE rect -
+                    # same rule as glow origin rects: during a freeze-resize
+                    # drag the body doesn't re-run but width/height track
+                    # the drag, so record-time clips (and clip=False marks
+                    # like the header strip) must not stamp depth past the
+                    # live clip edge.
+                    _live = _live_clip_of(_eds)
+                    # Live rank shift (see the above comment in
+                    # add_shadow): re-anchor absolute mark ranks on the
+                    # emitter's CURRENT surface rank so z reorders since
+                    # record re-gauge them. Guarded for hotswap-era 2-tuple
+                    # anchors and transient shadow_depth failures.
+                    _shift = 0.0
+                    try:
+                        if len(_anchor) > 2 and _anchor[2] is not None:
+                            _shift = float(_eds.shadow_depth) - _anchor[2]
+                    except Exception:
+                        _shift = 0.0
                     for (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
                          _ins) in marks:
+                        if mclip is not None:
+                            _c = (mclip[0] + dx, mclip[1] + dy,
+                                  mclip[2] + dx, mclip[3] + dy)
+                            if _live is not None:
+                                _c = (max(_c[0], _live[0]),
+                                      max(_c[1], _live[1]),
+                                      min(_c[2], _live[2]),
+                                      min(_c[3], _live[3]))
+                        else:
+                            _c = _live
+                        if _c is not None and (_c[2] <= _c[0]
+                                               or _c[3] <= _c[1]):
+                            continue
+                        if _shift:
+                            ranks = tuple(max(0.0, rk + _shift)
+                                          for rk in ranks)
                         _depth_stamp.append(
                             (mx + dx, my + dy, mw, mh, ranks, cr, margin,
-                             (mclip[0] + dx, mclip[1] + dy,
-                              mclip[2] + dx, mclip[3] + dy)
-                             if mclip is not None else None,
-                             None, False))
+                             _c, None, False))
                 if _depth_stamp:
                     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
                                          self._full_mask_fbo)

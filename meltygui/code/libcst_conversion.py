@@ -1212,13 +1212,23 @@ def _symbol_refs_worker(file_path: str, start_line: int, end_line: int, text=Non
 
 
 def _rebuild_symbol_usages(raw: dict) -> dict:
-    """Rebuild {symbol: SymbolUsage} from the worker's plain-tuple output."""
+    """Rebuild {symbol: SymbolUsage} from the worker's plain-tuple output.
+
+    Drops SELF-callers on the way through: the ref scan records the
+    `def foo` / `class Foo` / class-body binding statement itself as a
+    module-scope reference, so every symbol listed its own declaration as its
+    first "caller" — the usage dropdown led with the symbol itself and every
+    caller count read one high. The declaration is the jump SOURCE (at_def),
+    never a target; a caller on the definition's own line in the definition's
+    own file is that artifact. (One-line self-recursion `def f(): return f()`
+    is also dropped — acceptably rare.)"""
     result = {}
     for sym, e in raw.items():
         dp, dl, dc, dm = e["definition"]
         definition = UsageRef(path=_Path(dp) if dp else None, line=dl, column=dc, module_name=dm)
         callers = [UsageRef(path=_Path(c[0]) if c[0] else None, line=c[1], column=c[2],
-                            scope=c[3], module_name=c[4]) for c in e["callers"]]
+                            scope=c[3], module_name=c[4]) for c in e["callers"]
+                   if not (dp is not None and c[1] == dl and c[0] == dp)]
         # Display spelling defaults to the key, but a local-variable entry keys on
         # scope+name+line (collision-proof) and carries its bare identifier in "name"
         # - that's what the user highlights / completes against.

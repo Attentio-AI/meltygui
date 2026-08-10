@@ -2432,6 +2432,15 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
         d = None
     callers = [c for c in (getattr(su, 'callers', None) or ())
                if getattr(c, 'path', None) is not None]
+    # Self-caller filter for CACHED symbol: entries computed before
+    # _rebuild_symbol_usages started dropping the declaration-as-caller
+    # artifact (pickle-restored / cold-seeded) may still carry the symbol
+    # itself as a caller - filter it at display time too so the dropdown
+    # never leads with the row you clicked.
+    if d is not None:
+        _dl, _dp = getattr(d, 'line', None), str(getattr(d, 'path', None))
+        callers = [c for c in callers
+                   if not (c.line == _dl and str(c.path) == _dp)]
 
     if at_def is None:
         at_def = False
@@ -2448,13 +2457,16 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
     return [d] if d is not None else callers
 
 
-def _open_usage_ref(ref):
+def _open_usage_ref(ref, token=None):
     """Open one UsageRef (Ctrl+B) in the in-app code editor: opens the file's
     tab, summons the editor window, and stashes the line on
     OpenFiles.jump_to_line — draw_code_editor consumes it to place the caret
-    (the editor's cursor-follow scroll then brings it into view)."""
+    (the editor's cursor-follow scroll then brings it into view). `token`
+    rides along on OpenFiles.jump_to_token so the caret lands ON the symbol
+    rather than at the line's first code character."""
     from src.lsd.gl_gui.view.playground.open_files import open_in_editor
-    open_in_editor(str(ref.path), line_number=getattr(ref, 'line', None))
+    open_in_editor(str(ref.path), line_number=getattr(ref, 'line', None),
+                   token=token)
 
 
 def _focus_in_context_menu_over(editor_ds, max_steps=64):
@@ -5948,14 +5960,20 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_end = len(text)
             ds.text_cursor_pos = len(text)
 
-    def _goto_usage_ref(ref):
+    def _goto_usage_ref(ref, token=None):
         """Route one picked UsageRef: a site that lands inside THIS buffer's
         rendered span just moves the caret — the editor's own cursor-follow
         scroll brings it into view on the next body run — instead of
         round-tripping through the external jump (open tab + jump_to_line),
         which re-summons the editor window and loses the local context.
         Anything outside the span (other file, or a line outside a span
-        buffer's range) still goes through _open_usage_ref."""
+        buffer's range) still goes through _open_usage_ref.
+
+        `token` is the symbol's spelling: when given, the caret lands ON that
+        token at the target (definition refs carry the def-STATEMENT line with
+        col 0 — the caret used to sit on `def`; caller refs record the
+        statement-start col). Verify-recovered by _site_span, so a drifted or
+        unfindable token falls back to the old statement-start placement."""
         _line = getattr(ref, 'line', None)
         _rpath = getattr(ref, 'path', None)
         _vp = getattr(jump_to, 'path', None) if jump_to is not None else None
@@ -5971,14 +5989,31 @@ def draw_text(input_value: str, height=None,
                 # whether to center or keep the current scroll.
                 _src_li = text.count(
                     '\n', 0, max(0, min(ds.text_cursor_pos, len(text))))
+                # Record on the undo timeline before moving the caret: local
+                # jumps bypass open_to_line (the only other recorder), so
+                # Ctrl+Shift+Left had nothing to step back to after a same-
+                # file hop - broken targets included.
+                from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+                NavUndo.record_location(
+                    (str(_vp), _src_li + 1 + _usage_off), (str(_vp), _line))
                 _offs = _line_offsets(text)
                 _ls = _offs[_li]
                 _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(text)
-                _pos = min(_ls + (getattr(ref, 'column', 0) or 0), _le)
-                if _pos == _ls:
-                    # No column info - focus on the code, not the indent.
-                    while _pos < _le and text[_pos] in ' \t':
-                        _pos += 1
+                _pos = None
+                if token:
+                    # Caret ON the jumped-to token (leaf of a dotted path),
+                    # not the statement start.
+                    _tsp = _site_span(text, _line,
+                                      getattr(ref, 'column', 0) or 0,
+                                      token.rsplit('.', 1)[-1], _usage_off)
+                    if _tsp is not None:
+                        _pos = _tsp[0]
+                if _pos is None:
+                    _pos = min(_ls + (getattr(ref, 'column', 0) or 0), _le)
+                    if _pos == _ls:
+                        # No column info - land on the code, not the indent.
+                        while _pos < _le and text[_pos] in ' \t':
+                            _pos += 1
                 ds.text_cursor_pos = _pos
                 ds.text_selection_start = ds.text_selection_end = _pos
                 # Center distant targets so they land with context; a nearby
@@ -6022,8 +6057,8 @@ def draw_text(input_value: str, height=None,
         _dd_close(uj_state)
         request_render()
         _uj_log(f"goto EXTERNAL {getattr(ref.path, 'name', ref.path)}:"
-                f"{getattr(ref, 'line', None)}")
-        _open_usage_ref(ref)
+                f"{getattr(ref, 'line', None)} token={token!r}")
+        _open_usage_ref(ref, token=token)
 
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
@@ -6048,6 +6083,10 @@ def draw_text(input_value: str, height=None,
                     _items, _tags = _usage_ref_items(_targets)
                     ds._uj_items = _items
                     ds._uj_tags = _tags
+                    # ref -> symbol spelling, so a pick lands the caret ON the
+                    # token (see _goto_usage_ref).
+                    ds._uj_names = {t: getattr(_su, 'name', None)
+                                    for t in _targets}
                     ds._uj_anchor = _us   # picker hangs under the symbol
                     ds._uj_anchor_gutter = None
                     ds._uj_index = 0
@@ -6065,7 +6104,8 @@ def draw_text(input_value: str, height=None,
                     request_render()
                     return True
                 if _targets:
-                    _goto_usage_ref(_targets[0])
+                    _goto_usage_ref(_targets[0],
+                                    token=getattr(_su, 'name', None))
                     return True
                 return False
         _uj_log(f"try_jump MISS pos={pos} spans_scanned={_n_spans} "
@@ -6086,7 +6126,7 @@ def draw_text(input_value: str, height=None,
         _l0 = _lss[line]
         _l1 = _lss[line + 1] if line + 1 < len(_lss) else len(text) + 1
         _vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
-        _groups, _seen, _anchor = {}, set(), None
+        _groups, _seen, _anchor, _names = {}, set(), None, {}
         for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree,
                                                    _usage_off, _vpath):
             if _us < _l0:
@@ -6106,6 +6146,7 @@ def draw_text(input_value: str, height=None,
                 if _k not in _seen:
                     _seen.add(_k)
                     _groups.setdefault(_sym, []).append(_t)
+                    _names[_t] = getattr(_su, 'name', None) or _sym
         if not _groups:
             return False
         # ONE flat level - nested {symbol: {scope: ref}} submenus were fudly
@@ -6120,6 +6161,7 @@ def draw_text(input_value: str, height=None,
             _tags.update(_sub_tags)
         ds._uj_items = _items
         ds._uj_tags = _tags
+        ds._uj_names = _names
         ds._uj_anchor = _anchor           # fallback if the gutter hides
         ds._uj_anchor_gutter = line       # picker docks beside the heat box
         ds._uj_index = 0
@@ -6476,7 +6518,8 @@ def draw_text(input_value: str, height=None,
                 elif _pick is not None:
                     _uj_log(f"pick ENTER ref={getattr(getattr(_pick, 'path', None), 'name', None)}:"
                             f"{getattr(_pick, 'line', None)}")
-                    _goto_usage_ref(_pick)
+                    _goto_usage_ref(_pick, token=(getattr(ds, '_uj_names', None)
+                                                  or {}).get(_pick))
                     ds._uj_open = False
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
@@ -7887,6 +7930,7 @@ def draw_text(input_value: str, height=None,
     ds._diff_top_inset = (origin_y + ds.scroll_offset[1]) - ds.abs_top
     ds._diff_line_px = line_px
     ds._diff_origin_x_off = origin_x - ds.abs_left
+    ds._diff_char_w = char_w
     # Pane corner relative to the enclosing WINDOW, and the visible text band
     # relative to the pane. The end_frame overlay derives everything from
     # window abs_left/abs_top + these: the window property's memo key
@@ -8866,7 +8910,8 @@ def draw_text(input_value: str, height=None,
                 f"open_age={Melty.frame_count - getattr(ds, '_uj_open_frame', -99)}")
     if (uj_changed and getattr(uj_pick, 'path', None) is not None
             and Melty.frame_count - getattr(ds, '_uj_open_frame', -99) > 1):
-        _goto_usage_ref(uj_pick)
+        _goto_usage_ref(uj_pick, token=(getattr(ds, '_uj_names', None)
+                                        or {}).get(uj_pick))
         ds._uj_open = False
 
     # --- Import quick-fix chooser --- same latched-window contract as the two
