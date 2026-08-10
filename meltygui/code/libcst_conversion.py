@@ -967,7 +967,9 @@ def _intra_usage_worker(source: str, is_class: bool) -> dict[str, list[str]]:
 # keys CANNOT be persisted) does not lapse existing spans - those serve
 # instantly from this cache while the refs rebuild in the background.
 _SYMBOL_INDEX_PICKLE = _Path.home() / ".lsd" / "symbol_index.pkl"
-_SYMBOL_INDEX_PICKLE_VERSION = 1
+# v2: definition lines now point at the `def`/`class` keyword (decorators
+# skipped) - old pickles hold decorator-line defs, invalidate at once.
+_SYMBOL_INDEX_PICKLE_VERSION = 2
 
 
 def _disk_cache_enabled() -> bool:
@@ -1012,6 +1014,39 @@ def _load_symbol_store() -> dict:
     return store
 
 
+def _prune_symbol_store():
+    """Drop span entries whose file has moved on since they were computed
+    (sig mtime != the file's CURRENT disk mtime, or the file is gone).
+
+    A span's key is (path, start, end) and `end` tracks the file's length, so
+    every content edit mints a NEW key — the superseded-sibling evict in
+    _store_usages only fires when the live view walks off a span in-session.
+    Stale keys from prior sessions therefore accumulate forever (observed:
+    a 121MB pickle of ~200 dead whole-file spans at ~2MB each). One stat per
+    unique path (content-free — the CLAUDE.md hashing ban stays respected);
+    spans still in use have their sig mtime refreshed by the hash rescue on
+    every serve, so anything failing this check was never served since its
+    file changed on disk."""
+    _unstatted = object()
+    cur_mtime: dict = {}
+    for k in list(_symbol_usage_cache):
+        path = k[0]
+        m = cur_mtime.get(path, _unstatted)
+        if m is _unstatted:
+            try:
+                m = path.stat().st_mtime
+            except OSError:
+                m = None
+            cur_mtime[path] = m
+        entry = _symbol_usage_cache.get(k)
+        if entry is None or m is None or entry[0][0] != m:
+            _symbol_usage_cache.pop(k, None)
+            _span_text.pop(k, None)
+            _span_hashes.pop(k, None)
+    for path in [p for p in _mtime_snapshot if cur_mtime.get(p, 0) is None]:
+        _mtime_snapshot.pop(path, None)
+
+
 def _save_symbol_store():
     """Atomic pickle of the portable index results (spans + generation + mtime
     snapshot). The refs cache is deliberately NOT saved — its keys are live-
@@ -1020,6 +1055,10 @@ def _save_symbol_store():
     are immutable tuples)."""
     if not _disk_cache_enabled():  # cache off: keep the pickle clean
         return
+    try:
+        _prune_symbol_store()
+    except Exception:
+        pass
     with _pspan("store: save pickle", min_ms=5.0, spans=len(_symbol_usage_cache)):
         try:
             import pickle, os
@@ -1624,13 +1663,28 @@ def _collect_targets(file_tree, module, s: int, e: int):
     return obj_targets, mem_targets, obj_by_name, sites, def_lines
 
 
+def _def_stmt_line(lines, start) -> int:
+    """The `def`/`class` STATEMENT line of a getsourcelines block. The block
+    (and co_firstlineno) starts at the first DECORATOR line for decorated
+    defs, while ast/libcst linenos (the usage SITES) point at the statement
+    itself — a decorated def's recorded definition then never matched its own
+    at-def occurrence, so Ctrl+B on `def button` jumped to `@render_func`,
+    and its usages elsewhere landed on the decorator line."""
+    for i, ln in enumerate(lines):
+        s = ln.lstrip()
+        if s.startswith(("def ", "async def ", "class ")):
+            return start + i
+    return start
+
+
 def _cached_def_line(target, df) -> int:
-    """`inspect.getsourcelines(target)[1]` (the def's first line), cached by
-    (defining-file, qualname) and invalidated on the file's mtime. getsourcelines
-    on a class ast.parses the whole file every call — this skips that when the
-    file is unchanged (the common case in the def-resolution loop). `df` is the
-    already-resolved getsourcefile (cheap, no parse). Raises like getsourcelines
-    on a miss, so the caller's try/except still covers it."""
+    """The def's STATEMENT line (decorators skipped — see _def_stmt_line),
+    cached by (defining-file, qualname) and invalidated on the file's mtime.
+    getsourcelines on a class ast.parses the whole file every call — this
+    skips that when the file is unchanged (the common case in the
+    def-resolution loop). `df` is the already-resolved getsourcefile (cheap,
+    no parse). Raises like getsourcelines on a miss, so the caller's
+    try/except still covers it."""
     qn = getattr(target, "__qualname__", None)
     try:
         mt = _Path(df).stat().st_mtime if df else None
@@ -1640,7 +1694,8 @@ def _cached_def_line(target, df) -> int:
     ce = _def_line_cache.get(key)
     if ce is not None and ce[0] == mt:
         return ce[1]
-    dl = inspect.getsourcelines(target)[1]
+    lines, start = inspect.getsourcelines(target)
+    dl = _def_stmt_line(lines, start)
     _def_line_cache[key] = (mt, dl)
     return dl
 
@@ -1657,7 +1712,8 @@ def _member_def_site(base, attr):
         # is why DrawState.get_clip_rect - a @property - resolved to nothing).
         m = getattr(m, "fget", None) or getattr(m, "func", None) or m
         val = inspect.unwrap(m)
-        return inspect.getsourcefile(val), inspect.getsourcelines(val)[1]
+        lines, start = inspect.getsourcelines(val)
+        return inspect.getsourcefile(val), _def_stmt_line(lines, start)
     except Exception:
         pass
     try:

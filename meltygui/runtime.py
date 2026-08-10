@@ -765,6 +765,10 @@ class Melty:
     frame_count = 0
     last_print_invalidate = 0
 
+    # Emphasis flashes: key -> SimpleNamespace note, drawn in the overlay
+    # pass (see the emphasize renderer next to the InvalidateTracker above).
+    emphasis_notes = {}
+
     # File-text cache keyed by resolved path name. Populated by read_code,
     # invalidated by FileWatch on external change. Lets the symbol-usage index
     # avoid re-reading the same source on every index pass.
@@ -1101,6 +1105,39 @@ class Melty:
             return min(cls.nested_layer_max - 1, parent_layer + layer_offset)
         return min(cls.nested_layer_max - 1,
                    cls.nested_layer_base + parent_layer + layer_offset)
+
+    @classmethod
+    def emphasize(cls, key, rect, tint=(1.0, 0.85, 0.3), auto_fade=True,
+                  rounding=6.0, fade_frames=18, thickness=2.0):
+        """Register a rounded-rect emphasis flash, drawn by the overlay pass
+        (next to the InvalidateTracker loop) with the same frame-based fade:
+        alpha = 1 - frames_past / fade_frames.
+
+        auto_fade=True: fire-and-forget — call once and the fade plays out on
+        its own (the note keeps requesting frames until it expires). Repeat
+        calls while it is fading do NOT re-stamp it, so a per-frame caller can
+        keep passing a fresh rect without freezing the animation.
+
+        auto_fade=False: the note holds at full alpha — no frames of the fade
+        play until the caller says so — so it sticks around (e.g. until the
+        mouse moves a little). Call again with auto_fade=True to release it
+        and let the fade play out from that moment. Holding notes draw from
+        whatever frames render anyway (no render requests), so the release
+        check naturally runs when input wakes the caller's view back up.
+
+        rect is (x0, y0, x1, y1) in absolute screen coords, or a zero-arg
+        callable returning one (or None to skip a frame) so the flash can
+        track a scrolling target."""
+        note = cls.emphasis_notes.get(key)
+        if note is None or not auto_fade or not note.auto_fade:
+            cls.emphasis_notes[key] = types.SimpleNamespace(
+                rect=rect, tint=tint, frame=cls.frame_count,
+                auto_fade=auto_fade, rounding=rounding,
+                fade_frames=fade_frames, thickness=thickness)
+        else:
+            # Already fading automatically: refresh geometry/looks only.
+            note.rect, note.tint = rect, tint
+            note.rounding, note.thickness = rounding, thickness
 
     @classmethod
     def overlay_channel_for(cls, ds) -> int:
@@ -3315,6 +3352,34 @@ class Melty:
         if cls._overlay_channels_active:
             overlay.channels_set_current(cls.max_layer - 1)
 
+        # Emphasis flashes (Melty.emphasize): rounded rect fades on the same
+        # frame-count scale as the InvalidateTracker notes below. Manual
+        # (auto_fade=False) notes hold at full alpha until the caller
+        # releases them with an auto_fade=True call.
+        for key in list(cls.emphasis_notes.keys()):
+            note = cls.emphasis_notes[key]
+            if note.auto_fade:
+                frames_past = cls.frame_count - note.frame
+                alpha = 1.0 - frames_past / max(1, note.fade_frames)
+                if alpha <= 0.0:
+                    del cls.emphasis_notes[key]
+                    continue
+                # Keep frames flowing so the fade animates even while input
+                # is idle. Holding (manual) notes are static - they just
+                # ride whatever frames render anyway.
+                request_render()
+            else:
+                alpha = 1.0
+            rect = note.rect() if callable(note.rect) else note.rect
+            if rect is not None:
+                x0, y0, x1, y1 = rect
+                r, g, b = note.tint[:3]
+                overlay.add_rect_filled(x0, y0, x1, y1,
+                                        imgui.get_color_u32_rgba(r, g, b, 0.25 * alpha),
+                                        rounding=note.rounding)
+                overlay.add_rect(x0, y0, x1, y1,
+                                 imgui.get_color_u32_rgba(r, g, b, 0.9 * alpha),
+                                 rounding=note.rounding, thickness=note.thickness)
 
         if Toggles.InvalidateTracker.enable:
             for key, note in InvalidateTracker.invalidations.items():
@@ -3532,6 +3597,14 @@ class Melty:
                 # bilateral upsample so the low-res shadow sticks to the crisp
                 # rounded-rect edges instead of fringing.
                 composite_shadow_size = shadow_size or (int(fb_w), int(fb_h))
+                # Glow rects as light sources: hand the composite the low-res
+                # glow buffer (add_glow marks, stamped in finalize_captures
+                # PASS 6). glow_strength=0 skips the path in the shader, so an
+                # empty/absent glow costs nothing; texture 0 is a legal
+                # placeholder bind for the sampler in that case.
+                _glow_tex = (Melty.cache.glow_tex
+                             if Melty.cache.glow_active else None)
+                _glow_on = _glow_tex is not None and Toggles.glow
                 Melty.filter.shadow_composite(
                     input_framebuffer=0,
                     output_framebuffer=0,
@@ -3543,7 +3616,18 @@ class Melty:
                     shadow_size=(float(composite_shadow_size[0]),
                                  float(composite_shadow_size[1])),
                     depth_sharpness=float(Toggles.shadow_edge_sharpness),
+                    glow_map=_glow_tex if _glow_on else 0,
+                    glow_strength=(float(Toggles.glow_strength)
+                                   if _glow_on else 0.0),
+                    glow_shadow_cut=float(Toggles.glow_shadow_cut),
                 )
+
+        # Debug: replace the frame with the raw low-res glow light buffer -
+        # shows exactly what PASS 6 stamped, independent of the composite.
+        if getattr(Toggles, "glow_debug_view", False):
+            _gdbg = Melty.cache.glow_tex
+            if _gdbg is not None:
+                Melty.filter.passthrough(_gdbg, output_framebuffer=0)
 
         _gt.stamp("filters")
         _ps_t4 = _pp()

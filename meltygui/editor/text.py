@@ -10,7 +10,7 @@ import imgui
 from src.lsd.gl_gui.model.core_model.draw_state import DropDownState
 from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, add_glow, clear_glows
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight_multi
@@ -2495,18 +2495,40 @@ def _focus_in_context_menu_over(editor_ds, max_steps=64):
     return False
 
 
-def _usage_ref_items(targets):
+def _shorten_dotted(s):
+    """Cap a dotted name at 2 dots: deep paths (`Toggles.A.B.attr`) collapse
+    to their last three parts with a leading dot (`.A.B.attr`) so picker rows
+    stay scannable."""
+    parts = s.split('.')
+    return s if len(parts) <= 3 else '.' + '.'.join(parts[-3:])
+
+
+def _uj_file_tint(p):
+    """The file's FileMeta tint for a picker row (same source the editor tabs
+    use), or None."""
+    root = getattr(Melty.vis, 'root', None)
+    meta = getattr(getattr(root, 'file_meta_collection', None), 'file_meta',
+                   None) or {}
+    entry = meta.get(str(p)) if p is not None else None
+    t = entry.get('tint') if isinstance(entry, dict) else None
+    return tuple(t) if t else None
+
+
+def _usage_ref_items(targets, prefix=""):
     """({label: UsageRef}, {UsageRef: tag}) rows for the usage-jump picker: the
-    label is the user's enclosing scope, the dim right-aligned tag its
+    label is the user's enclosing scope (optionally prefixed with the symbol
+    name for merged multi-symbol lists), the dim right-aligned tag its
     file:line. Duplicate scope labels get a numeric suffix (dict keys feed
     draw_dd_menu, so they must be unique)."""
     items, tags = {}, {}
     for ref in targets:
         scope = (getattr(ref, 'scope', '') or getattr(ref, 'module_name', '')
                  or '<module>')
-        label, n = scope, 2
+        scope = _shorten_dotted(scope)
+        base = f"{prefix}{scope}"
+        label, n = base, 2
         while label in items:
-            label = f"{scope} ({n})"
+            label = f"{base} ({n})"
             n += 1
         items[label] = ref
         p = getattr(ref, 'path', None)
@@ -5517,7 +5539,7 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
-              completion_source=None, unique=0):
+              completion_source=None, show_jump_bar=True, unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -5664,7 +5686,11 @@ def draw_text(input_value: str, height=None,
     # right-aligned box above the error line (see after the body is drawn).
     bar_height = 0.0
     _err_msg = None
-    if jump_to is not None:
+    # show_jump_bar=False: jump_to serves ONLY as the buffer's edit scroll
+    # offset (tree-derived washes) - no header bar. The search's code rows
+    # use a bare offset shim that isn't a full Address, so the bar (which
+    # reads .source/.file for its label) must not draw for them.
+    if jump_to is not None and show_jump_bar:
         _err_msg = _err_markers[0][1] if _err_markers else None
         # Float the jump-to/error bar at the top of the visible viewport instead
         # of letting it scroll away with the code. When the body has scrolled up
@@ -5927,6 +5953,10 @@ def draw_text(input_value: str, height=None,
                 _same = False
             _li = _line - 1 - _usage_off   # ref line → buffer line index
             if _same and 0 <= _li <= text.count('\n'):
+                # Source line (the symbol the jump left from) - decides below
+                # whether to center or keep the current scroll.
+                _src_li = text.count(
+                    '\n', 0, max(0, min(ds.text_cursor_pos, len(text))))
                 _offs = _line_offsets(text)
                 _ls = _offs[_li]
                 _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(text)
@@ -5937,12 +5967,45 @@ def draw_text(input_value: str, height=None,
                         _pos += 1
                 ds.text_cursor_pos = _pos
                 ds.text_selection_start = ds.text_selection_end = _pos
+                # Center distant targets so they land with context; a nearby
+                # one (< 30 lines) keeps the current scroll, with a minimal
+                # edge nudge if it sits just past the viewport.
+                _ty = origin_y + _li * line_px
+                _scroll_into_view(ds, _ty, _ty + line_px,
+                                  center=abs(_li - _src_li) >= 30)
                 Melty.text_focused_ds = ds
                 Melty._text_focus_grant_frame = Melty.frame_count
                 ds.text_cursor_blink_time = time.time()
                 ds.invalidate()
+                # Success flash on the landing line - same yellow emphasis the
+                # same-file jump gets for draw_code_editor's consumption.
+                _eli = text.count('\n', 0, _pos)
+
+                def _local_jump_rect(ds=ds, li=_eli):
+                    lp = getattr(ds, '_diff_line_px', None) or 16
+                    inset = getattr(ds, '_diff_top_inset', 0)
+                    y0 = ds.abs_top + inset + li * lp - ds.scroll_offset[1]
+                    if y0 < ds.abs_top - lp or y0 > ds.abs_top + (ds.height or 0):
+                        return None
+                    return (ds.abs_left, y0 - 1,
+                            ds.abs_left + (ds.width or 0), y0 + lp + 1)
+
+                Melty.emphasize(f"jump_line {ds.name}", _local_jump_rect)
                 request_render()
                 return
+        # External jump: the picked site opens in another tab, so this buffer's
+        # per-file draw_text would never run again - its latched picker window
+        # would never see another closed=True call and stuck open (a classic
+        # orphaned-popover leak). Force-close it before switching away.
+        ds._uj_open = False
+        _pop = Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None))
+        if _pop is not None and not _pop.closed:
+            _pop.closed = True
+            if _pop._tile_id is not None:
+                Melty.cache.invalidate_up(_pop._tile_id, force=True, bypass_clip=True)
+        from src.lsd.gl_gui.view.core_views.new_core_view import _dd_close
+        _dd_close(uj_state)
+        request_render()
         _open_usage_ref(ref)
 
     def _try_usage_jump(pos, force_picker=False):
@@ -5966,6 +6029,7 @@ def draw_text(input_value: str, height=None,
                     ds._uj_anchor_gutter = None
                     ds._uj_index = 0
                     ds._uj_open = True
+                    ds._uj_open_frame = Melty.frame_count
                     uj_state._kbd_mode = True
                     uj_state.cursor_path = (next(iter(_items)),)
                     uj_state.open_path = ()
@@ -5985,14 +6049,11 @@ def draw_text(input_value: str, height=None,
 
     def _line_usage_picker(line):
         """Gutter heat-box click: the usage-jump picker for ALL usage spans
-        on `line`, grouped per SYMBOL — the menu's top level is the symbol
-        names (that's the label saying what each list relates to), each
-        nesting into its refs ({symbol: {scope: ref}}, draw_dd_menu renders
-        dict values as submenus). ALWAYS the picker, even for a single
-        target — a gutter click asks to SEE the users, not jump. The first
-        symbol's submenu opens pre-expanded so one symbol needs no second
-        click. True if it opened (a line with no jump targets returns
-        False)."""
+        on `line`, as ONE flat list — each row is "symbol  scope" (symbol
+        prefix only when several symbols share the line, capped at 2 dots),
+        with the file:line tag on the right. ALWAYS the picker, even for a
+        single target — a gutter click asks to SEE the users, not jump.
+        True if it opened (a line with no jump targets returns False)."""
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
         _lss = _line_starts(text)
         if not (0 <= line < len(_lss)):
@@ -6022,21 +6083,26 @@ def draw_text(input_value: str, height=None,
                     _groups.setdefault(_sym, []).append(_t)
         if not _groups:
             return False
+        # ONE flat level - nested {symbol: {scope: ref}} submenus were fudly
+        # (extra click, submenu-window latching) - each row is
+        # "symbol  scope" with the symbol capped at 2 dots.
         _items, _tags = {}, {}
         for _sym, _refs in _groups.items():
-            _sub, _sub_tags = _usage_ref_items(_refs)
-            _items[_sym] = _sub
-            _tags.update(_sub_tags)   # row tags forwards into nested levels
+            _pref = (f"{_shorten_dotted(_sym)}   "
+                     if len(_groups) > 1 else "")
+            _sub, _sub_tags = _usage_ref_items(_refs, prefix=_pref)
+            _items.update(_sub)
+            _tags.update(_sub_tags)
         ds._uj_items = _items
         ds._uj_tags = _tags
         ds._uj_anchor = _anchor           # fallback if the gutter hides
         ds._uj_anchor_gutter = line       # picker docks beside the heat box
         ds._uj_index = 0
         ds._uj_open = True
+        ds._uj_open_frame = Melty.frame_count
         uj_state._kbd_mode = True
-        _sym0 = next(iter(_items))
-        uj_state.open_path = (_sym0,)
-        uj_state.cursor_path = (_sym0, next(iter(_items[_sym0])))
+        uj_state.open_path = ()
+        uj_state.cursor_path = (next(iter(_items)),)
         # Same latched-scroll snap as _try_usage_jump.
         from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
         _dd_scroll_cursor_into_view(
@@ -6211,7 +6277,23 @@ def draw_text(input_value: str, height=None,
     # focus so a stale caret in some other merely-hovered editor can't jump.
     if (ctrl_b_down and is_focused and not single_line and not is_search_box
             and not getattr(ds, '_uj_open', False)):
-        _try_usage_jump(min(ds.text_cursor_pos, max(len(text) - 1, 0)))
+        _cb_pos = min(ds.text_cursor_pos, max(len(text) - 1, 0))
+        if not _try_usage_jump(_cb_pos):
+            # No jump target here: tint the word under the caret red so the
+            # shortcut visibly answers instead of silently doing nothing.
+            _w0 = _select_unit_left(text, _cb_pos)
+            _w1 = _select_unit_right(text, _cb_pos)
+            _vc = _get_vcols()
+            _fx0, _fy0 = _char_pos_to_xy(text, _w0, origin_x, origin_y,
+                                         line_px, vcols=_vc)
+            _fx1, _ = _char_pos_to_xy(text, max(_w1, _w0 + 1), origin_x,
+                                      origin_y, line_px, vcols=_vc)
+            if _fx1 <= _fx0:   # word wraps onto the next line - fall back
+                _fx1 = _fx0 + imgui.calc_text_size(text[_w0:_w1] or " ").x
+            Melty.emphasize(f"jump_fail {ds.name}",
+                            (_fx0 - 3, _fy0 - 1, _fx1 + 3, _fy0 + line_px + 1),
+                            tint=(0.9, 0.28, 0.22))
+            request_render()
 
     _pf("mouse")
     # --- Keyboard handling ---
@@ -7208,7 +7290,13 @@ def draw_text(input_value: str, height=None,
     # view. Same cursor-moved test so wheel/middle-drag pans that leave the caret
     # put are not snapped back. Anchors on origin_y and hands _scroll_into_view
     # the caret line's full vertical band exactly like the search scroll above.
-    if ds.text_cursor_pos != ds.text_prev_cursor_pos and line_px:
+    # Never for the find box: it's pinned to the host view's clip (bottom-left),
+    # so _scroll_into_view walks up to the HOST editor's scroll container and
+    # nudges it by the box's bottom-height overflow - and since the pin leaves
+    # the box put, the same overflow reapplies every keystroke, creeping the
+    # host view up a line per typed character.
+    if (ds.text_cursor_pos != ds.text_prev_cursor_pos and line_px
+            and not is_search_box):
         cursor_line, _ = _index_to_line_col(text, ds.text_cursor_pos)
         cursor_top_abs = origin_y + cursor_line * line_px
         _scroll_into_view(ds, cursor_top_abs, cursor_top_abs + line_px)
@@ -7245,6 +7333,11 @@ def draw_text(input_value: str, height=None,
     # of a symbol whose definition (here or in another file) carries a tint,
     # in that definition's color. Ties usages to their definitions at a glance.
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
+    # Open this body run's glow group: live cache lets glows from the last
+    # run drop unless re-emitted below (so toggling tints off or scrolling the
+    # bands away really clears them), while cache-skipped frames never reach
+    # this and keep them.
+    clear_glows(ds)
     if Toggles.TextEditor.definition_tints and not is_search_box:
         _t_dt = time.perf_counter()
 
@@ -7265,9 +7358,16 @@ def draw_text(input_value: str, height=None,
         # able to land over glyphs - the tile pipeline composites re-renders
         # over prior content, so transparent-over-text accumulates copies and
         # clouds the final color with tile count.
+        # single_line micro-buffers (global search's code rows) stay on the
+        # TEXT channel instead: their single tiles fully repaint on every
+        # re-render (no partial-recomposite accumulation to guard against),
+        # and the under channel loses to the enclosing window's composite
+        # there so washes only showed while typing forced live re-renders. The
+        # washes draw before the glyphs, so same-channel command order still
+        # keeps them underneath.
         if Melty.channels_split:
-
-            draw_list.channels_set_current(Core.melty.get_channel() - 1)
+            draw_list.channels_set_current(
+                Core.melty.get_channel() - (0 if single_line else 1))
         # Per-row color adjustment (hsv shift and brightness clamp) - see
         # _bg_adjust. Blocks, line bands, and symbol washes each get their
         # own saturation/value pair; the brightness clamp is shared.
@@ -7387,6 +7487,23 @@ def draw_text(input_value: str, height=None,
             _dt_line_blur_n = Toggles.TextEditor.def_line_blur_samples
             _dt_line_blur_minv = Toggles.TextEditor.def_line_blur_min_value
             _dt_line_blur_maxv = Toggles.TextEditor.def_line_blur_max_value
+            # GL glow path: the band goes through add_glow to the low-res
+            # light buffer and onto the screen via the shadow composite as
+            # a real light source (brightens neighbors, pushes back shadows)
+            # - one quad instead of the draw-list feather stack below.
+            _dt_line_glow = (Toggles.TextEditor.def_line_glow
+                             and Toggles.glow and Toggles.filters
+                             and not Toggles.draw_legacy)
+            _dt_line_glow_i = Toggles.TextEditor.def_line_glow_intensity
+
+            def _glow_rect(x0, y0, x1, y1, rgb, alpha, rounding, line):
+                add_glow((x0, y0, x1 - x0, y1 - y0), rgb,
+                         intensity=alpha * _dt_line_blur_a * _dt_line_glow_i,
+                         radius=float(_dt_line_blur_r),
+                         falloff=max(0.0, _dt_line_blur_k),
+                         offset=_scope_surface(line),
+                         corner_radius=rounding, clip=_sh_clip,
+                         draw_state=ds)
 
             def _blur_rect(x0, y0, x1, y1, rgb, alpha, rounding):
                 # Feathered band with an INVERSE-SQUARE profile - a hot
@@ -7431,8 +7548,12 @@ def draw_text(input_value: str, height=None,
                                                   _dt_line_a * _l_sc)
                 if _dt_line_full:
                     if _dt_line_blur and _dt_line_blur_r > 0:
-                        _blur_rect(rect_min_x, sy, rect_max_x, ey,
-                                   _lb, _dt_line_a * _l_sc, 0.0)
+                        if _dt_line_glow:
+                            _glow_rect(rect_min_x, sy, rect_max_x, ey,
+                                       _lb, _dt_line_a * _l_sc, 0.0, _l_line)
+                        else:
+                            _blur_rect(rect_min_x, sy, rect_max_x, ey,
+                                       _lb, _dt_line_a * _l_sc, 0.0)
                     else:
                         draw_list.add_rect_filled(rect_min_x, sy, rect_max_x,
                                                   ey, _l_col, 0.0)
@@ -7440,8 +7561,12 @@ def draw_text(input_value: str, height=None,
                     sx = origin_x + _colx(_l_s)
                     ex = origin_x + _colx(_l_e)
                     if _dt_line_blur and _dt_line_blur_r > 0:
-                        _blur_rect(sx - 3, sy, ex + 3, ey,
-                                   _lb, _dt_line_a * _l_sc, 3.0)
+                        if _dt_line_glow:
+                            _glow_rect(sx - 3, sy, ex + 3, ey,
+                                       _lb, _dt_line_a * _l_sc, 3.0, _l_line)
+                        else:
+                            _blur_rect(sx - 3, sy, ex + 3, ey,
+                                       _lb, _dt_line_a * _l_sc, 3.0)
                     elif _dt_outline_a > 0:
                         draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey,
                                                   _l_col, 3.0)
@@ -8626,7 +8751,7 @@ def draw_text(input_value: str, height=None,
         else:
             # First-open-frame fallback before the picker's tile id is known.
             _pop_h = min(len(_uj_items) * 24 + 10, 312)
-            _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
+            _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 680
                      and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
         _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
         if not _over:
@@ -8635,12 +8760,16 @@ def draw_text(input_value: str, height=None,
             uj_state._kbd_mode = False
         uj_state._last_mouse = (_mp[0], _mp[1])
 
+    # Per-user file tints (the ref's FileMeta color, same as the editor tabs).
+    _uj_row_tints = ({v: _uj_file_tint(getattr(v, 'path', None))
+                      for v in _uj_items.values()} if _uj_show else None)
     # [tint=(0.071, 0.354, 0.511), show_tint=True]
     uj_changed, uj_pick, _uj_menu_ds = draw_dd_menu(
         _uj_items, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
-        temp=True, show_search=False, swoosh=False, closed=not _uj_show, bg_offset=0, min_width=500,
+        temp=True, show_search=False, swoosh=False, closed=not _uj_show, bg_offset=0, min_width=680,
         window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None), mode=None,
+        row_tints=_uj_row_tints,
         parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13),
         return_extras=True)
 
@@ -8670,7 +8799,13 @@ def draw_text(input_value: str, height=None,
                 request_render()
     else:
         ds._uj_menu_sig = None   # force one repaint on the next open
-    if uj_changed and getattr(uj_pick, 'path', None) is not None:
+    # Ignore a mouse pick landing on the picker's very open frame(s): the
+    # window is LATCHED, so on a re-open it can draw one frame at its stale
+    # previous position/contents - a click there replayed the LAST session's
+    # row (seen as "gutter click instantly jumps to the previously-jumped
+    # file"). Real picks always come ≥2 frames after the open.
+    if (uj_changed and getattr(uj_pick, 'path', None) is not None
+            and Melty.frame_count - getattr(ds, '_uj_open_frame', -99) > 1):
         _goto_usage_ref(uj_pick)
         ds._uj_open = False
 

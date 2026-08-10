@@ -1,7 +1,9 @@
 import inspect
+import os
 import re
 import sys
 import threading
+import time
 import traceback
 import types
 from collections import deque, defaultdict, namedtuple
@@ -49,7 +51,7 @@ from src.lsd.gl_gui.view.core_views.anywhere import SourcePriority, _source_prio
     from_anywhere, anywhere_value, set_anywhere, \
     flush_deferred_writes, \
     SET_ANYWHERE_PARAMS
-from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+from src.lsd.gl_gui.view.core_views.core_undo import NavUndo, UndoManager
 # Module import (not "from ... import DragDrop`) so hotswaps rebind cleanly.
 from src.lsd.gl_gui.view.core_views import drag_drop as _drag_drop
 from src.lsd.gl_gui.view.core_views.cst_proxy import *
@@ -192,29 +194,75 @@ def _fuzzy_key_match(q, k):
 
 # --- Global search indexes ---------------------------------------------------
 # Global search queries a fixed set of index providers instead of walking the
-# live draw_state tree. Each provider returns SearchHit objects - a display
-# label, a row tint, and an activate() that performs the jump - so a data
+# live draw_state tree. Each provider returns SearchHit entries — a display
+# label, a row tint, and an activate() that performs the jump — so a data
 # source is searchable whether or not it's on screen (or exists as draw_states
 # at all). To add a data source, register a provider with @search_index.
-# `match` (optional) is the substring queries run against when the label has
-# extra context - e.g. a file hit's label is the full relative path but its
+# `match` (optional) is the string queries run against when the label carries
+# extra context — e.g. a file hit's label is the full relative path but its
 # match key is the bare filename. None → match the label itself.
-# `state` (optional) is a zero-arg callable returning the hit's current VALUE -
-# a row that has one renders its label: a bool as an on/off toggle, an
+# `state` (optional) is a zero-arg callable returning the hit's current VALUE —
+# a row that has one renders it live: a bool as an on/off switch, an
 # int/float/str as its editing widget (`set_state(value)` writes an edit back).
-# `keep_open` marks a hit whose activation is a toggle rather than a jump: the
-# source window stays up afterwards so a row of settings can be changed
+# `keep_open` marks a hit whose activation is an EDIT rather than a jump: the
+# search window stays up afterwards so a run of settings can be changed
 # without reopening it.
-SearchHit = namedtuple("SearchHit", "label tint activate kind match state keep_open set_state",
-                       defaults=("", None, None, False, None))
+# `icon` (optional) is a glyph string drawn before the label in the result row
+# (e.g. an action's @defaults(icon=...)).
+# `parts` (optional) is a pre-coloured render plan for the row's text:
+# [(segment, color_u32 | None, wash_u32 | None)] — color None means "the
+# row's own tint"; a non-None wash paints the editor's definition block-wash
+# band behind the segment (2-tuples are accepted, wash None). Text hits use
+# it to draw snippets exactly as the editor renders them; rows without parts
+# draw the plain label.
+# `goto` (optional) is a zero-arg callable jumping to the hit's DEFINITION —
+# Shift+Enter on the row — for hits whose plain activation does something
+# other than jump (actions run, toggles edit; both goto their toggles.py code).
+# `code_row` (optional) = (path, line, prefix, code, suffix): render the code
+# through the REAL editor (draw_text + the file's live cst-dict parse), so a
+# search row is pixel-identical to the editor at the jump target — washes,
+# token colors, everything. `parts` stays as the fallback plan when the
+# editor path fails.
+# `file` (optional) = the BASENAME of the file the hit lives in, drawn as a
+# dim suffix after the label (skipped on Files rows — there the label IS the
+# file). Display-only: label keeps the full identity/match text.
+SearchHit = namedtuple("SearchHit", "label tint activate kind match state keep_open set_state icon parts goto code_row file",
+                       defaults=("", None, None, False, None, None, None, None, None, None))
 
-# Result categories in selector order. A hit's `kind` keys into this; hits
-# with an unknown kind list after these under their own name.
-SEARCH_CATEGORY_ORDER = ("Windows", "Files", "Classes", "Functions", "Toggles")
+# The combined meta-category: every category's best hits interleaved
+# (see _all_tab_items). Always a selector chip; never a hit's `kind`.
+ALL_CATEGORY = "All"
+
+
+def _search_cats(extra_kinds=()):
+    """Selector order: the All tab, then Toggles.GlobalSearch.search_priority,
+    then any hit kinds the priority list doesn't name (under their own name)."""
+    cats = [ALL_CATEGORY] + [str(k) for k in Toggles.GlobalSearch.search_priority]
+    cats += [k for k in extra_kinds if k not in cats]
+    return cats
 
 _WINDOW_CAT_TINT = (0.55, 0.9, 0.65)
 _FILE_CAT_TINT = (0.72, 0.62, 0.35)
+_TEXT_CAT_TINT = (0.38, 0.68, 0.72)
 _TOGGLE_CAT_TINT = (0.63, 0.47, 0.86)
+_ACTION_CAT_TINT = (0.92, 0.58, 0.25)
+
+
+# FontAwesome glyphs (merged into the UI fonts) shown before a search
+# row's label. A hit's own icon (e.g. an action's @defaults icon) wins.
+_CATEGORY_ICONS = {
+    "Toggles": "",    # sliders
+    "Actions": "",    # bolt
+    "Windows": "",    # window-maximize
+    "Files": "",      # file
+    "Text": "",       # align-left
+    "Classes": "",    # cube
+    "Functions": "",  # code
+}
+
+
+def _category_icon(kind):
+    return _CATEGORY_ICONS.get(kind)
 
 
 def _cst_parse_tint(*parse_types):
@@ -240,8 +288,12 @@ def _category_tint(kind):
         return _WINDOW_CAT_TINT
     if kind == "Files":
         return _FILE_CAT_TINT
+    if kind == "Text":
+        return _TEXT_CAT_TINT
     if kind == "Toggles":
         return _TOGGLE_CAT_TINT
+    if kind == "Actions":
+        return _ACTION_CAT_TINT
     return (1, 1, 1)
 
 
@@ -279,6 +331,44 @@ def _class_source_tint(obj, path):
         tint = None
     _symbol_tint_memo[key] = tint
     return tint
+
+
+def _hit_own_tint(hit):
+    """True when the hit carries its OWN tint — a window's real tint, a class's
+    source tint, a toggle group's @defaults tint, a file's FileMeta tint —
+    rather than the bare category fallback colour. The All tab ranks these
+    ahead of untinted hits."""
+    tint = hit.tint() if callable(hit.tint) else hit.tint
+    if not (isinstance(tint, (tuple, list)) and len(tint) >= 3):
+        return False
+    return tuple(tint[:3]) != tuple(_category_tint(hit.kind)[:3])
+
+
+# Group label for the All tab's leading block (every category's #1 hit).
+# Not a hit kind - _category_tint falls through to white for it.
+TOP_GROUP = "Top"
+
+
+def _all_tab_items(by_kind):
+    """(rows, groups) for the All tab — `groups` is parallel to `rows` and
+    names each row's label line: a "Top" block first (every category's #1
+    hit, priority order), then each category's next-best hits (up to 3 per
+    category total) under the category's own label. Categories follow
+    Toggles.GlobalSearch.search_priority. Own-tinted hits (see _hit_own_tint)
+    ALWAYS outrank untinted ones: within a category (so they claim its 3
+    slots) and within the Top block. Sorts are stable, so rank order and
+    priority order hold within a tint tier."""
+    order = [k for k in _search_cats(by_kind) if k != ALL_CATEGORY and by_kind.get(k)]
+    ranked = {k: sorted(by_kind[k], key=lambda h: not _hit_own_tint(h))[:3]
+              for k in order}
+    tops = sorted((ranked[k][0] for k in order), key=lambda h: not _hit_own_tint(h))
+    rows, groups = list(tops), [TOP_GROUP] * len(tops)
+    for k in order:
+        rest = ranked[k][1:]
+        rows.extend(rest)
+        groups.extend([k] * len(rest))
+    return rows, groups
+
 
 GLOBAL_SEARCH_INDEXES = []
 
@@ -327,12 +417,11 @@ def window_index():
         # with), falling back to the @window registration - its kwargs, then
         # the registered class's own tint attr.
         tint = (wds._kwargs or {}).get("tint") if wds is not None else None
-        if not tint:
-            reg = (Melty.annotated_window_classes.get(label)
-                   or Melty.annotated_window_classes.get(str(name)))
-            if reg is not None:
-                w_cls, w_kwargs = reg
-                tint = w_kwargs.get("tint") or getattr(w_cls, "tint", None)
+        reg = (Melty.annotated_window_classes.get(label)
+               or Melty.annotated_window_classes.get(str(name)))
+        if not tint and reg is not None:
+            w_cls, w_kwargs = reg
+            tint = w_kwargs.get("tint") or getattr(w_cls, "tint", None)
         hits.append(SearchHit(label, tint, lambda n=str(name): _launch_window(n),
                               kind="Windows"))
     return hits
@@ -348,13 +437,15 @@ def _symbol_def_line(obj):
         obj = inspect.unwrap(obj)
     except Exception:
         pass  # no proxy fabricating @wrapped__ - use the object as-is
-    code = getattr(obj, "__code__", None)
-    if code is not None:
-        return code.co_firstlineno
     try:
-        return inspect.getsourcelines(obj)[1]
+        # getsourcelines (and co_firstlineno) start at the first DECORATOR
+        # line - land on the `def`/`class` statement itself instead.
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _def_stmt_line
+        lines, start = inspect.getsourcelines(obj)
+        return _def_stmt_line(lines, start)
     except Exception:
-        return None
+        code = getattr(obj, "__code__", None)
+        return code.co_firstlineno if code is not None else None
 
 
 def _jump_to_symbol_def(obj, path):
@@ -423,7 +514,8 @@ def symbol_index():
                 if is_class else fn_tint)
         hits.append(SearchHit(f"{qn} - {stem}", tint,
                               lambda o=obj, p=path: _jump_to_symbol_def(o, p),
-                              kind="Classes" if is_class else "Functions"))
+                              kind="Classes" if is_class else "Functions",
+                              file=path.name))
 
     for path, mod in mod_map.items():
         mod_name = mod.__name__
@@ -471,6 +563,166 @@ def file_index():
                               kind="Files", match=path.name))
     _file_hits_memo = (mod_sig, hits)
     return hits
+
+
+# --- Text category (full-text trigram search) --------------------------------
+# Unlike the other categories, full text can't have a static SearchHit corpus -
+# hits are (file, line) pairs that only exist on query. So Text bypasses the
+# scorer entirely: a query change kicks a debounced background search against
+# the mmapped trigram index (text_index.py - pending files are the source of
+# truth there), pre-made SearchHits land on GlobalSearch.text_results, and
+# run_global_search injects them into its by_kind buckets. Picks are never
+# recorded in the GlobalSearchStore: a "path:line: snippet" label is a
+# per-query string, useless as a popularity signal.
+
+def _jump_to_text_hit(path, line):
+    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    open_in_editor(str(path), line)
+
+
+def _file_meta_tint(path):
+    """The tint the user painted on this file (FileMeta — same store the
+    editor tabs and folder tree read), or None."""
+    col = getattr(getattr(Melty.vis, "root", None), "file_meta_collection", None)
+    meta = getattr(col, "file_meta", None) or {}
+    entry = meta.get(str(path))
+    tint = entry.get("tint") if isinstance(entry, dict) else None
+    return tuple(tint[:3]) if tint else None
+
+
+class _RowSpan:
+    """jump_to shim for a one-line search-row buffer: draw_text reads `.start`
+    (0-based file line of the buffer's first line) to offset every tree-derived
+    wash into buffer space. `path` stays None on purpose — our line numbers are
+    already PENDING coordinates, and a real path would run the disk→pending
+    delta bridge a second time. `source` mirrors Address's slot (None) for any
+    duck-typed reader; the jump-to BAR itself is off (show_jump_bar=False)."""
+    __slots__ = ("start", "path", "end", "source")
+
+    def __init__(self, start):
+        self.start = start
+        self.end = start + 1
+        self.path = None
+        self.source = None
+
+
+def _row_code_hosts(path):
+    """(code_dict, dict_host) for a search row's file from the SHARED
+    code-host cache — the same parse the editor renders with. Creating a host
+    is cheap; its whole-file parse runs in the background and rows repaint
+    when it lands (notify_on_change on the row's ds). Only called for rows
+    actually drawn (≤ max_visible), and hosts are cached across queries.
+    Non-Python files get (None, None) — plain syntax colors."""
+    if not str(path).endswith(".py"):
+        return None, None
+    try:
+        from src.lsd.gl_gui.view.core_conversion.new_converters import code_hosts_for
+        _str_host, dict_host = code_hosts_for(Path(path))
+        code_dict = dict_host._held()
+        return (code_dict if isinstance(code_dict, dict) else None), dict_host
+    except Exception:
+        traceback.print_exc()
+        return None, None
+
+
+def _def_wash_u32(tint):
+    """The exact block-wash color the text editor paints behind a tinted
+    definition's lines: the same _bg_adjust hsv/brightness transform under
+    the same Toggles.TextEditor knobs, packed ABGR at def_block_alpha — so a
+    washed search row previews precisely what jump-to will show."""
+    from src.lsd.gl_gui.view.core_views.text_editor import _bg_adjust
+    TE = Toggles.TextEditor
+    r, g, b = _bg_adjust(tuple(tint[:3]),
+                         (TE.bg_tint_saturation, TE.bg_tint_value,
+                          TE.bg_min_brightness, TE.bg_max_brightness))
+    a = max(0.0, min(1.0, TE.def_block_alpha))
+    return ((int(a * 255) << 24) | (int(b * 255) << 16)
+            | (int(g * 255) << 8) | int(r * 255))
+
+
+def _text_hit(row, show_path=False):
+    """A text-index row dict → SearchHit. The ROW is always coloured by the
+    FILE's tint (FileMeta — the colour its editor tab wears), so hits group
+    visually by file. The definition tint renders INSIDE the line instead,
+    the way the editor will show it on jump: code segments carry the
+    definition's block wash behind the editor's tokenize()/COLORS syntax
+    palette. Locations render as bare `name.py:line` — the full relative
+    path only when `show_path` (this result set has another file with the
+    same basename). Labels keep the full path either way (stable identity).
+    Location prefixes stay in the row (file) tint, dim suffixes in the
+    gutter gray."""
+    from src.lsd.gl_gui.view.core_views.text_editor import tokenize, COLORS
+    kind, rel, line, text = row["kind"], row["rel"], row["line"], row["text"]
+    tint = _file_meta_tint(row["path"]) or _TEXT_CAT_TINT
+    wash = _def_wash_u32(row["tint"]) if row.get("tint") else None
+    loc = rel if show_path else os.path.basename(rel)
+    disp = text.strip()
+
+    def _tokens(code):
+        try:
+            toks = [(tok, COLORS.get(ck, COLORS["default"]))
+                    for tok, ck in tokenize(code)]
+        except Exception:
+            toks = [(code, COLORS["default"])]
+        return [(t, c, wash) for t, c in toks]
+
+    code_row = None
+    if kind == "file":
+        parts = [(os.path.basename(rel), None, None)]
+        if show_path:
+            parts.append((f"   {rel}", COLORS["line_no"], None))
+        label = rel
+    elif kind == "symbol":
+        # `text` is the RAW def line (indent kept) - draw_text maps the
+        # file's tree-derived washes by column, so the code must match.
+        code_row = (row["path"], line, "", text[:200], f"{loc}:{line}")
+        parts = _tokens(disp[:90]) + [(f"   {loc}:{line}", COLORS["line_no"], None)]
+        label = f"{disp[:90]} - {rel}:{line}"
+    else:
+        code_row = (row["path"], line, f"{loc}:{line}: ", text[:200], "")
+        parts = [(f"{loc}:{line}: ", None, None)] + _tokens(disp[:90])
+        label = f"{rel}:{line}: {disp[:90]}"
+    return SearchHit(label, tint,
+                     (lambda p=row["path"], l=line: _jump_to_text_hit(p, l)),
+                     kind="Text", match=text, parts=parts, code_row=code_row)
+
+
+def _kick_text_search(q):
+    """Start a background full-text search when the query changed. Debounced by
+    a generation counter: the thread sleeps briefly, and a newer keystroke's
+    generation abandons the older thread both before and after the search."""
+    if q == GlobalSearch._text_query:
+        return
+    GlobalSearch._text_query = q
+    GlobalSearch._text_gen += 1
+    gen = GlobalSearch._text_gen
+    if len(q) < 3:                      # below the trigram minimum
+        GlobalSearch.text_results = []
+        return
+
+    def _run():
+        time.sleep(0.18)
+        if GlobalSearch._text_gen != gen:
+            return
+        try:
+            from src.lsd.gl_gui import text_index
+            rows = text_index.search(q)
+        except Exception:
+            traceback.print_exc()
+            rows = []
+        if GlobalSearch._text_gen != gen:
+            return
+        # Bare `name.py:line` locations, full paths only where this result
+        # set has two files sharing a basename - then we spell it out.
+        rels_by_name = {}
+        for row in rows:
+            rels_by_name.setdefault(os.path.basename(row["rel"]), set()).add(row["rel"])
+        GlobalSearch.text_results = [
+            _text_hit(row, show_path=len(rels_by_name[os.path.basename(row["rel"])]) > 1)
+            for row in rows]
+        _repaint_global_search()
+
+    threading.Thread(target=_run, daemon=True, name="global-text-search").start()
 
 
 # --- Toggles category -------------------------------------------------------
@@ -534,6 +786,48 @@ def _setting_group_tint(path):
             return _TOGGLE_CAT_TINT
     tint = Melty.default_kwargs_by_type.get(owner, {}).get("tint") if owner is not Toggles else None
     return tuple(tint[:3]) if tint else _TOGGLE_CAT_TINT
+
+
+def _setting_def_line(setting_path, path):
+    """The 1-based line of a setting's assignment in toggles.py (None if not
+    found): anchor on `class Toggles`, walk each nested group's `class <name>`
+    line in path order, then take the first `<attr> =` / `<attr>:` after it.
+    Scans Melty.read_code — the PENDING text, i.e. what the editor buffer
+    shows — so the jump line matches the buffer even with unsaved edits."""
+    src = Melty.read_code(path)
+    if not src:
+        return None
+    lines = src.splitlines()
+    parts = setting_path.split(".")
+    idx = 0
+    for name in [Toggles.__name__] + parts[:-1]:
+        pat = re.compile(rf"^\s*class\s+{re.escape(name)}\b")
+        idx = next((i + 1 for i in range(idx, len(lines)) if pat.match(lines[i])), None)
+        if idx is None:
+            return None
+    attr_pat = re.compile(rf"^\s*{re.escape(parts[-1])}\s*[:=]")
+    return next((i + 1 for i in range(idx, len(lines)) if attr_pat.match(lines[i])), None)
+
+
+def _jump_to_setting_def(setting_path):
+    """Open toggles.py in the in-app editor at a setting's assignment — the
+    Shift+Enter jump on a Toggles row. Same open-now/resolve-line-off-thread
+    shape as _jump_to_symbol_def (the line scan reads the whole file)."""
+    import src.lsd.gl_gui.toggles as _toggles_mod
+    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    path = Path(_toggles_mod.__file__)
+    open_in_editor(path)
+
+    def _go():
+        line = _setting_def_line(setting_path, path)
+        if line is None:
+            return
+        root = getattr(Melty.vis, "root", None)
+        open_files = getattr(root, "open_files", None)
+        if open_files is not None and open_files.selected_path == str(path):
+            open_files.jump_to_line = line
+            request_render()
+    threading.Thread(target=_go, daemon=True, name="search-setting-jump").start()
 
 
 def _toggles_dict_host():
@@ -706,7 +1000,9 @@ def toggle_index():
                       (lambda pp=p: _activate_setting(pp)), kind="Toggles",
                       match=p.rsplit(".", 1)[-1],
                       state=(lambda pp=p: _setting_live(pp)), keep_open=True,
-                      set_state=(lambda v, pp=p: _set_setting(pp, v)))
+                      set_state=(lambda v, pp=p: _set_setting(pp, v)),
+                      goto=(lambda pp=p: _jump_to_setting_def(pp)),
+                      file="toggles.py")
             for p in paths]
     _toggle_hits_memo = (sig, hits)
     return hits
@@ -763,6 +1059,8 @@ def _activate_hit(hit, store):
     if store is None:
         print("GlobalSearchStore: pick NOT recorded — store is None "
               "(Core.melty.vis or root.global_search_store missing)")
+    elif hit.kind == "Text":
+        pass  # per-query "path:line:col" hits - churn, not popularity
     else:
         try:
             store.record(hit.kind, hit.label)
@@ -1693,7 +1991,7 @@ def draw_type(input_value: type, **kwargs):
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
-             with_header=None, bg_offset=-1, auto_resize=True, temp=True)
+             with_header=None, bg_offset=-1, auto_resize=False, temp=True)
 def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching hits
     from the registered search indexes (GLOBAL_SEARCH_INDEXES). Results are
@@ -1730,14 +2028,21 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         input_value.results = (global_search_results(q, store) if len(q) >= 2
                                else _popular_hits(store))
         input_value.selected = 0  # reset highlight to the top match on a new query
+    # Full-text hits arrive async from the trigram index (no-op while q is
+    # unchanged); they land on input_value.text_results and repaint us.
+    _kick_text_search(q)
 
     # Group ranked hits by category; only the ACTIVE category's results render
     # (one at a time), picked by the selector row under the box.
     by_kind = {}
     for hit in input_value.results:
         by_kind.setdefault(hit.kind, []).append(hit)
-    cats = (list(SEARCH_CATEGORY_ORDER)
-            + [k for k in by_kind if k not in SEARCH_CATEGORY_ORDER])
+    if len(q) >= 3 and input_value.text_results:
+        by_kind["Text"] = list(input_value.text_results)
+    cats = _search_cats(by_kind)
+    # The All tab's combined rows + parallel group labels, built once per
+    # frame: used as its rows in _items_for AND as its side headers.
+    all_rows, all_groups = _all_tab_items(by_kind)
     # The active category is STICKY - it never auto-switches, so the chips
     # remember where you put it.
     active = input_value.active_kind
@@ -1755,6 +2060,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
 
         The returned order IS the on-screen order, which is what lets the
         highlight index (input_value.selected) address rows directly."""
+        if kind == ALL_CATEGORY:
+            return all_rows, False
         own = by_kind.get(kind) or []
         if own or not input_value.results:
             return own, False
@@ -1809,13 +2116,24 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         if vstep and n_vis:
             input_value.selected = (input_value.selected + vstep) % n_vis
             request_render()
-        if n_vis and any(k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER) for k, _m in keys):
+        _enter_mods = [m for k, m in keys
+                       if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
+        if n_vis and _enter_mods:
             _hit = items[input_value.selected]
-            _activate_hit(_hit, store)
-            # keep_open hits (toggles) EDIT rather than jump: stay up, with the
-            # highlight where it is, so Enter flips the same row back and forth.
-            if not _hit.keep_open:
+            _goto = getattr(_hit, "goto", None)
+            if (_enter_mods[0] & glfw.MOD_SHIFT) and _goto is not None:
+                # Shift+Enter: jump to the hit's DEFINITION (its action's /
+                # toggle's code in toggles.py) instead of activating it -
+                # always a jump, so always dismiss.
+                _goto()
                 _dismiss_global_search()
+            else:
+                _activate_hit(_hit, store)
+                # keep_open hits (toggles) EDIT rather than jump: stay up, with
+                # the highlight where it is, so editing flips the same row back
+                # and forth.
+                if not _hit.keep_open:
+                    _dismiss_global_search()
 
     # ---- raw draw-list rendering (direct-draw style) ----
     # Category chips + result rows are plain rects/text with manual
@@ -1823,6 +2141,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # While hovered the window re-renders every frame (the _bounding_hovered
     # branch), so hover highlights and clicks resolve here with no row state.
     ROW_H, ROW_GAP = 24.0, 2.0
+    # Width of the icon gutter at each row's left - the category (or file)
+    # icon sits here, OUTSIDE the row's background rect.
+    ICON_COL = 22.0
     CHIP_H, CHIP_GAP, CHIP_PAD = 22.0, 6.0, 8.0
     CHIP_ROW_GAP = 6.0
     MORE_H = 18.0
@@ -1833,6 +2154,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     chip_text_idle, chip_text_hover = 0.62, 1.0
     row_bg_value, row_bg_hot = 0.045, 0.10
     row_text_value, row_text_hot = 0.9, 1.5
+    # The file name at a row's far right (hit.file) - just barely above the
+    # row background (bg is 0.045/0.10), so it reads only when looked for.
+    # Files rows skip it (label IS the file).
+    file_text_value, file_text_hot = 0.18, 0.28
     text_saturation = 0.8
     # Live value, drawn at a row's right edge: a bool gets an on/off switch,
     # everything else a real drag/text widget of this width.
@@ -1875,12 +2200,39 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                 saturation_scale=sat)
         return imgui.get_color_u32_rgba(col[0], col[1], col[2], 1.0)
 
+    # ---- category chip layout, calculated first so the content dummy can
+    # report the right height: chips flow left-to-right and WRAP into further
+    # rows when they'd overflow the content width (too many categories for one
+    # row now that the window is user-sized). The wrap limit is the window's
+    # width - an input, never the measured chip width. ----
+    CHIP_VGAP = 4.0
+    chip_layout = []  # (kind, label, cx, cy, chip_w)
+    cx, cy = x0, y0
+    for k in cats:
+        cnt = len(all_rows) if k == ALL_CATEGORY else len(by_kind.get(k, ()))
+        lbl = f"{k} {cnt}"
+        chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
+        if cx > x0 and cx + chip_w > x0 + w:
+            cx = x0
+            cy += CHIP_H + CHIP_VGAP
+        chip_layout.append((k, lbl, cx, cy, chip_w))
+        cx += chip_w + CHIP_GAP
+    chip_block_h = (cy - y0) + CHIP_H + CHIP_ROW_GAP
+
     # One dummy reports the full content height so everything draws over it.
     # (Live widgets are real imgui items placed by screen position, so the
     # cursor is parked back here once the rows are done.)
     n_over = len(items) - n_vis
-    n_groups = len(set(h.kind for h in items[:n_vis])) if fallback else 0
-    imgui.dummy(w, CHIP_H + CHIP_ROW_GAP + n_vis * (ROW_H + ROW_GAP)
+    # Group label lines: the All tab always groups ("Top", then one label per
+    # category with 2nd/3rd hits); the fallback mode groups by borrowed kind.
+    if active == ALL_CATEGORY:
+        row_groups = all_groups
+    elif fallback:
+        row_groups = [h.kind for h in items]
+    else:
+        row_groups = None
+    n_groups = len(dict.fromkeys(row_groups[:n_vis])) if row_groups else 0
+    imgui.dummy(w, chip_block_h + n_vis * (ROW_H + ROW_GAP)
                 + (HINT_H + HINT_GAP if fallback else 0) + n_groups * GROUP_H
                 + (MORE_H if n_over > 0 else 0))
     after_rows = imgui.get_cursor_screen_pos()
@@ -1888,33 +2240,28 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # ---- category chips: count per category. The ACTIVE one is a filled
     # chip; the rest are bare coloured text (brighter under the cursor).
     # Clicking a chip picks it (empty ones too), same as Tab. ----
-    cx = x0
-    for k in cats:
-        cnt = len(by_kind.get(k, ()))
+    for k, lbl, cx, cy, chip_w in chip_layout:
         is_active = k == active
-        lbl = f"{k} {cnt}"
-        chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
-        hov = hover_ok and cx <= mx <= cx + chip_w and y0 <= my <= y0 + CHIP_H
+        hov = hover_ok and cx <= mx <= cx + chip_w and cy <= my <= cy + CHIP_H
         tint = _category_tint(k)
         tx_v = chip_text_active if is_active else (chip_text_hover if hov else chip_text_idle)
         if is_active:
-            dl.add_rect_filled(cx, y0, cx + chip_w, y0 + CHIP_H,
+            dl.add_rect_filled(cx, cy, cx + chip_w, cy + CHIP_H,
                                _mix(tint, chip_bg_active), rounding=4.0)
-        dl.add_text(cx + CHIP_PAD, y0 + (CHIP_H - line_h) / 2.0,
+        dl.add_text(cx + CHIP_PAD, cy + (CHIP_H - line_h) / 2.0,
                     _mix(tint, tx_v, sat=text_saturation), lbl)
         if (click is not None and cx <= click[0] <= cx + chip_w
-                and y0 <= click[1] <= y0 + CHIP_H):
+                and cy <= click[1] <= cy + CHIP_H):
             input_value.active_kind = k
             input_value.selected = 0
             request_render()
-        cx += chip_w + CHIP_GAP
 
     # ---- result rows: the active category (or, if it's empty, every
     # category), capped at max_results for render cost. Rows are coloured by
     # the hit's tint (a window row uses the window's real tint; symbols the
     # tint their on-dict parse renders in) and the highlighted row is
     # outlined. ----
-    ry = y0 + CHIP_H + CHIP_ROW_GAP
+    ry = y0 + chip_block_h
     if fallback:
         # The empty result on its own line, in the category's own colour, then
         # a breather before the borrowed categories start.
@@ -1925,15 +2272,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     _counts = store.counts if store is not None else {}
     group_shown = None
     for idx, hit in enumerate(items[:n_vis]):
-        # Borrowed rows are grouped, so each group names itself once, on its
-        # own line above its rows - small and dark in the category's colour.
-        if fallback and hit.kind != group_shown:
-            group_shown = hit.kind
+        # Grouped rows (All tab, fallback view) draw their group once, on its
+        # own line above its hits - small and dark in the group's colour
+        # ("Top" falls through _category_tint to white).
+        if row_groups and row_groups[idx] != group_shown:
+            group_shown = row_groups[idx]
             if small_font is not None:
                 imgui.push_font(small_font)
             dl.add_text(x0 + 8, ry + 2.0,
-                        _mix(_category_tint(hit.kind), 0.55, sat=text_saturation),
-                        hit.kind)
+                        _mix(_category_tint(group_shown), 0.55, sat=text_saturation),
+                        group_shown)
             if small_font is not None:
                 imgui.pop_font()
             ry += GROUP_H
@@ -1943,11 +2291,114 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # A class hit's tint is a lazy resolver (source scan) - call it here,
         # so only displayed rows pay for it (memoized inside).
         tint = hit.tint() if callable(hit.tint) else hit.tint
-        dl.add_rect_filled(x0, ry, x0 + w, ry + ROW_H,
+        # Icon gutter: the hit's own icon (e.g. an action's @function icon) or
+        # its category's, drawn OUTSIDE the row's background rect in a fixed
+        # column, so every row's rect and label align. (getattr: memoized hits
+        # from before a hotswap may predate the SearchHit class.)
+        rx = x0 + ICON_COL
+        _icon = getattr(hit, "icon", None) or _category_icon(hit.kind)
+        if _icon:
+            dl.add_text(x0 + 2, ry + (ROW_H - line_h) / 2.0,
+                        _mix(tint, row_text_hot if hot else row_text_value,
+                             sat=text_saturation), _icon)
+        dl.add_rect_filled(rx, ry, x0 + w, ry + ROW_H,
                            _mix(tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
-        dl.add_text(x0 + 8, ry + (ROW_H - line_h) / 2.0,
-                    _mix(tint, row_text_hot if hot else row_text_value,
-                         sat=text_saturation), hit.label)
+        text_x = rx + 8
+        # Text hits carry a pre-coloured render plan (`parts` - the editor's
+        # syntax palette, built off-thread with the hit); segments with color
+        # None take the row tint, so location prefixes still hover-brighten.
+        # A segment's third slot is a definition-tint WASH (the editor's
+        # block-wash color, see _def_wash_32): consecutive washed segments
+        # paint one continuous rectangle under the code, previewing exactly how
+        # the line renders in the editor after jump-to.
+        _row_col = _mix(tint, row_text_hot if hot else row_text_value,
+                        sat=text_saturation)
+        # The hit's file name, drawn at the row's FAR RIGHT (after the value
+        # widget / pick count claim their space). File rows skip it - there
+        # the label is the file.
+        _row_file = None if hit.kind == "Files" else getattr(hit, "file", None)
+        # code_row hits render their code through the REAL editor: draw_text
+        # with the file's live cst-dict parse and a jump_to line-offset shim,
+        # so washes/token colors are pixel-identical to the jump target. The
+        # raw label prefix/suffix frames it; a higher-priority click sub
+        # below reclaims activation from the editor's own caret sub (the tab
+        # close-button pattern). parts serves as the fallback plan.
+        _cr = getattr(hit, "code_row", None)
+        _cr_drawn = False
+        if _cr is not None:
+            _cp, _cl, _cpre, _ccode, _csuf = _cr
+            _ty = ry + (ROW_H - line_h) / 2.0
+            if _cpre:
+                dl.add_text(text_x, _ty, _row_col, _cpre)
+                text_x += imgui.calc_text_size(_cpre)[0]
+            _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
+            _cw = max(60.0, x0 + w - 8 - _sw - (12.0 if _csuf else 0.0) - text_x)
+            _cdict, _chost = _row_code_hosts(_cp)
+            imgui.set_cursor_screen_pos((text_x, ry))
+            try:
+                # use_cache=False on purpose: GlobalSearch lives on the
+                # always_on_top layer (188), past the layer-64 masking cliff —
+                # up there the blit mask's maxamp depths tie and a per-row
+                # tile z-fights the window's own composite (the def-tint
+                # washes lost the flip, and hover forced live renders).
+                # Uncached rows draw live into whatever frame the window
+                # renders, so the WINDOW tile captures the full composite and
+                # no row-tile depth ever competes at the clamp. ~15 one-line
+                # bodies, only on frames the window repaints out.
+                _res = draw_text(_ccode, name=f"gs_code_row_{idx}", unique=idx,
+                                 show_header=False, show_bg=True, shadow=True,
+                                 single_line=True, width=_cw, height=ROW_H,
+                                 use_cache=True, code_dict=_cdict,
+                                 jump_to=_RowSpan(_cl - 1), is_tree=False,
+                                 show_jump_bar=False,
+                                 selectable=False, return_extras=True)
+                if _chost is not None:
+                    # Repaint when the background parse lands (washes pop in).
+                    # The WINDOW ds, not the row's: rows are uncached, so even
+                    # a window-tile invalidation makes them re-render.
+                    _chost.notify_on_change(draw_state)
+                _cr_drawn = True
+            except Exception:
+                traceback.print_exc()
+            if _cr_drawn and _csuf:
+                dl.add_text(x0 + w - 8 - _sw, _ty,
+                            imgui.get_color_u32_rgba(0.52, 0.55, 0.6, 1.0), _csuf)
+            if _cr_drawn and draw_state.on_action(
+                    "left_mouse_down", view_id=f"gs_row_act_{idx}",
+                    rect=(x0, ry, x0 + w, ry + ROW_H),
+                    priority_delta=4) is not None:
+                input_value.selected = idx
+                _activate_hit(hit, store)
+                if not hit.keep_open:
+                    _dismiss_global_search()
+        _parts = getattr(hit, "parts", None)
+        if _cr_drawn:
+            pass
+        elif _parts:
+            _ty = ry + (ROW_H - line_h) / 2.0
+            for _part in _parts:
+                _seg, _col = _part[0], _part[1]
+                _wash = _part[2] if len(_part) > 2 else None
+                if text_x > x0 + w - 12:
+                    break
+                _seg_w = imgui.calc_text_size(_seg)[0]
+                if _wash is not None:
+                    dl.add_rect_filled(text_x, ry + 2.0,
+                                       min(text_x + _seg_w, x0 + w - 8),
+                                       ry + ROW_H - 2.0, _wash)
+                dl.add_text(text_x, _ty, _row_col if _col is None else _col, _seg)
+                text_x += _seg_w
+        else:
+            # The label keeps the full identity/match text; only the DISPLAY
+            # drops a trailing " - stem" that would duplicate the file name
+            # drawn at the row's far right (symbol labels carry one).
+            _main = hit.label
+            if _row_file:
+                _fstem = os.path.splitext(_row_file)[0]
+                if _main.endswith(f" - {_fstem}"):
+                    _main = _main[: -len(f" - {_fstem}")]
+            dl.add_text(text_x, ry + (ROW_H - line_h) / 2.0, _row_col, _main)
+            text_x += imgui.calc_text_size(_main)[0]
         # Right edge: a hit with live state shows it - a bool as a switch drawn
         # here, anything else as a real widget (drag/text) done by _value_widget.
         r_edge = x0 + w - 8
@@ -1974,8 +2425,17 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             dl.add_text(r_edge - cw, ry + (ROW_H - line_h) / 2.0,
                         imgui.get_color_u32_rgba(0.62, 0.62, 0.62, 1.0), cs)
             r_edge -= cw + 8
+        # File name, right-aligned at whatever far-right space is left -
+        # barely brighter than the row background (see file_text_value).
+        if _row_file:
+            _fw = imgui.calc_text_size(_row_file)[0]
+            if text_x + 12.0 <= r_edge - _fw:
+                dl.add_text(r_edge - _fw, ry + (ROW_H - line_h) / 2.0,
+                            _mix(tint, file_text_hot if hot else file_text_value,
+                                 sat=text_saturation), _row_file)
+                r_edge -= _fw + 8
         if sel:
-            dl.add_rect(x0, ry, x0 + w, ry + ROW_H, sel_color,
+            dl.add_rect(rx, ry, x0 + w, ry + ROW_H, sel_color,
                         rounding=4.0, thickness=sel_thickness)
         # A click INSIDE the value widget belongs to the widget (drag or caret),
         # never to the row - activating there would re-open the editor mid-drag.
@@ -1997,7 +2457,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     return False, input_value
 
 
-@window(view_func=draw_global_search, mode=Modes.WINDOW_AUTO_FIT, always_on_top=True)
+@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True)
 @defaults(tint=(0.15076258778572083, 0.2957677, 0.4697674512863159))
 class GlobalSearch:
     query = ""
@@ -2005,8 +2465,11 @@ class GlobalSearch:
     _focus_requested = False
     _last_query = None
     results = []  # cached [SearchHit] for the current query
+    text_results = []  # async [SearchHit] from the tracy full-text index
+    _text_query = None  # last query handed to _kick_text_search
+    _text_gen = 0  # generation counter that debounces/cancels text search
     selected = 0  # index (in on-screen order) of the arrow-key highlight
-    active_kind = "Windows"  # the category whose rows show (Left/Right cycles)
+    active_kind = ALL_CATEGORY  # the category whose rows show (Left/Right cycles)
     editing = None  # label of the row whose value widget owns the keyboard
     _edit_focus = False  # one-shot: grab the keyboard on the next show
 
@@ -2217,7 +2680,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         if gs is not None and not gs.closed:
             # Already open: repeated Ctrl+Shift+F cycles the result category
             # (same as Tab inside the box) instead of re-summoning the window.
-            cats = list(SEARCH_CATEGORY_ORDER)
+            cats = _search_cats()
             ci = cats.index(GlobalSearch.active_kind) if GlobalSearch.active_kind in cats else -1
             GlobalSearch.active_kind = cats[(ci + 1) % len(cats)]
             GlobalSearch.selected = 0
@@ -2406,14 +2869,34 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             or draw_state.on_action("non_blocking_ctrl_y_down")):
         UndoManager.redo()
 
-    # Esc dismisses the GlobalSearch window while it's open. Handled here on the
-    # root (always hover-eligible) rather than on the window itself, so it works
-    # no matter where the cursor is. non_blocking so the front window's blocker
-    # doesn't eat it; only subscribes while open, so it doesn't swallow Esc from
-    # a per-view search otherwise.
+    # Navigation stack (tab switches / jump-tos / window open/close): its own
+    # timeline on Ctrl+Shift+arrows. Suppressed while text is focused -
+    # Ctrl+Shift+Left/Right is extend-selection-by-word in the editor.
+    if Core.melty.text_focused_ds is None:
+        if draw_state.on_action("non_blocking_ctrl_shift_left_arrow_down"):
+            NavUndo.undo()
+        if draw_state.on_action("non_blocking_ctrl_shift_right_arrow_down"):
+            NavUndo.redo()
+
+    # Esc dismisses the GlobalSearch window - and its ActionRunner popup -
+    # while open. Handled here on the root (always hover-eligible) rather than
+    # on the windows themselves, so it works no matter where the cursor is.
+    # Non_blocking so the front window's blocker doesn't eat it; only
+    # subscribes while one of them is open, so it doesn't swallow Esc in a
+    # per-view context otherwise.
     _gs = Core.melty.find_window("GlobalSearch")
-    if _gs is not None and not _gs.closed and draw_state.on_action("non_blocking_escape_key_down_inverted", priority_delta=512):
-        if GlobalSearch.editing is not None:
+    _ar = Core.melty.find_window("ActionRunner")
+    _gs_open = _gs is not None and not _gs.closed
+    _ar_open = _ar is not None and not _ar.closed
+    if ((_gs_open or _ar_open)
+            and draw_state.on_action("non_blocking_escape_key_down_inverted", priority_delta=512)):
+        if _ar_open:
+            # The runner is the topmost of the two (activating an Actions hit
+            # dismissed the search), so Esc peels it first; if the search is
+            # somehow open too, the next Esc handles it.
+            from src.lsd.gl_gui.view.playground.actions_playground import _close_action_runner
+            _close_action_runner()
+        elif GlobalSearch.editing is not None:
             # Editing a term: Esc leaves the widget (imgui reverts a temp text
             # input on its own), and the NEXT Esc closes the search.
             _end_editing()
@@ -7357,29 +7840,30 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
 @render_func(show_bg=True, use_cache=True, shadow=False, with_header=draw_header)
 def draw_undo_manager(input_value, **kwargs):
-    """Render the undo history grouped by undo step (one user action), newest
-    first. Changes from the same action share a group_id and undo together, so we
-    draw a separator between groups and indent the changes within each. input_value
-    is the UndoManager class (handed in by @window), read its `history` deque."""
-    history = list(getattr(input_value, "history", ()))
-    # Count distinct groups for the summary line.
-    group_count = len({c.group_id for c in history})
-    imgui.text(f"{group_count} undo step(s), {len(history)} change(s)")
-
-    prev_gid = None
-    shown = 0
-    for change in reversed(history):
-        if change.group_id != prev_gid:
-            imgui.separator()
-            prev_gid = change.group_id
-        name = getattr(change.draw_state, "name", None) or "?"
-        from_val = str(change.old)[:20]  # truncate long values for readability
-        to_val = str(change.new)[:20]
-        imgui.text(f"  {name}: {from_val} -> {to_val}")
-        shown += 1
-        if shown >= 12:
-            imgui.text(f"... and {len(history) - shown} more")
-            break
+    """Render both undo timelines — edits (input_value is the UndoManager
+    class, handed in by @window) and NavUndo's navigation stack — grouped by
+    undo step (one user action), newest first. Changes from the same action
+    share a group_id and undo together, so we draw a separator between groups
+    and indent the changes within each."""
+    for title, stack in (("Edits", input_value.stack), ("Navigation", NavUndo.stack)):
+        history = list(stack.history)
+        group_count = len({c.group_id for c in history})
+        imgui.text(f"{title}: {group_count} undo step(s), {len(history)} change(s)"
+                   f"  (redo: {len(stack.redo_stack)})")
+        prev_gid = None
+        shown = 0
+        for change in reversed(history):
+            if change.group_id != prev_gid:
+                imgui.separator()
+                prev_gid = change.group_id
+            from_val = str(change.old)[:20]  # truncate long values for readability
+            to_val = str(change.new)[:20]
+            imgui.text(f"  {change.display_name}: {from_val} -> {to_val}")
+            shown += 1
+            if shown >= 12:
+                imgui.text(f"... and {len(history) - shown} more")
+                break
+        imgui.dummy(1, 8)
     return False, input_value
 
 

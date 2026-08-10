@@ -36,10 +36,10 @@ def sample_function():
 '''
 
 
-@window(disable_scroll=False, icon="", display_name="Tint Debug",
+@window(disable_scroll=False, icon="",
         tint=(0.08, 0.03, 0.16))
 @render_func(tint=(0.35, 0.18, 0.42))
-def tint_debug(draw_state=None):
+def external_editor(draw_state=None):
     misc = draw_state.misc
     buffer = misc.get("_sample_buffer")
 

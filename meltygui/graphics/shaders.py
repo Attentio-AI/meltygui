@@ -206,6 +206,15 @@ class ShadowComposite:
         # raw R16 depth mask, and s.a (receiver depth baked by ShadowCast) is
         # already scaled, so the bilateral compare needs both in the same units.
         'depth_scale': (GLType.FLOAT, 1.0),
+        # Glow light buffer (TileCacheMasked add_glow marks, low-res RGBA16F):
+        # rgb = accumulated emitted light, already depth-gated per emitter at
+        # stamp time (the glow stamp shader samples the depth rank mask and
+        # only lands light between the emitter's root-window surface and its
+        # own depth). Composite-side the light cancels shadow where it falls
+        # (glow_shadow_cut) then adds its emission on top (glow_strength).
+        'glow_map': (GLType.SAMPLER2D, None),
+        'glow_strength': (GLType.FLOAT, 0.0),   # 0 disables the whole path
+        'glow_shadow_cut': (GLType.FLOAT, 1.0),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -253,8 +262,20 @@ void main() {
         ? (shadow_sum / weight_sum)
         : texture(shadow_map, uv).r;
 
+    // Glow rects as light sources: sample the low-res light buffer (bilinear
+    // sampler upscales the smooth falloff for free; depth gating already
+    // happened per emitter at stamp time). Light eats shadow first, then
+    // adds its own emission below.
+    vec3 glow_light = vec3(0.0);
+    if (glow_strength > 0.0) {
+        glow_light = texture(glow_map, uv).rgb;
+        float glum = dot(glow_light, vec3(0.299, 0.587, 0.114));
+        shadow_intensity *= max(0.0, 1.0 - glum * glow_shadow_cut);
+    }
+
     // Apply shadow by darkening toward shadow_color
     vec3 shadowed = mix(color.rgb, shadow_color, shadow_intensity * shadow_opacity);
+    shadowed += glow_light * glow_strength;
 
     fragColor = vec4(vec3(shadowed), color.a);
 }

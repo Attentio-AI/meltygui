@@ -828,25 +828,36 @@ class Toggles:
         # bleeds vertically into neighboring lines, which is the point.
         def_line_blur = True
 
-        def_line_blur_radius = 440
+        # Render the line band through the GL glow pipeline (add_glow →
+        # low-res light buffer → shadow composite) instead of the draw-list
+        # feather stack: the band becomes a real light source - it brightens
+        # neighbors and pushes back compositor shadows - and costs one small
+        # quad instead of def_line_blur_samples rects of overdraw. Falls back
+        # to the draw-list stack when False (or Toggles.glow is off).
+        def_line_glow = True
+        # Intensity of the emitted light for line bands (on top of the band
+        # alpha; Toggles.glow_intensity scales all glows globally).
+        def_line_glow_intensity = 1.0
+
+        def_line_blur_radius = 236
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 1.32
+        def_line_blur_alpha = 2.244
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 2.116
+        def_line_blur_falloff = 0.964
         # Perceived-brightness clamp on the BLURRED band's color only -
         # applied on top of the line_tint_* adjustment (which already ran
         # through bg_min/max), so the feathered glow can hold a different
         # brightness window than the hard band. 0.0/1.0 = no extra clamp.
-        def_line_blur_min_value = 0.292
-        def_line_blur_max_value = 5.835
+        def_line_blur_min_value = 0.401
+        def_line_blur_max_value = 15.849
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
-        def_line_blur_samples = 142
+        def_line_blur_samples = 4
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -1038,6 +1049,14 @@ class Toggles:
             outline_alpha = 1.00
             outline_thickness = 1.366
 
+    @defaults(tint=(0.58, 0.47, 0.24))
+    class GlobalSearch:
+        # Category order for the search dialog and the All tab's interleave:
+        # All shows each category's #1 hit first (in this order), then it
+        # categories show next-best hits up to 3 per category. Kinds not listed
+        # here fall in after these.
+        search_priority = ("Toggles", "Actions", "Windows", "Files", "Text", "Classes", "Functions")
+
     @defaults(tint=(0.47, 0.463, 0.417))
     class ScrollSettings:
         scroll_speed = 214
@@ -1058,6 +1077,12 @@ class Toggles:
 
     @defaults(tint=(0.36, 0.56, 0.44))
     class CodeEditor:
+        # Record navigation (file tab switches, jump-to, split open/close)
+        # onto NavUndo's own stack - separate from the Ctrl+Z edit history.
+        # Step back/forward with Ctrl+Shift+Left/Right or the Fast Dock's
+        # arrow buttons.
+        undo_navigation = True
+
         # ── Compare-split ribbons (open_files._draw_compare_ribbons) ──
         # Block colors by kind. Read live per frame.
         ribbon_insert_tint = (0.52, 0.92, 0.60)   # lines only in the copy
@@ -1209,6 +1234,50 @@ class Toggles:
     shadow_downscale = 2
     shadow_edge_sharpness = 49.833
 
+    # Glow Settings - add_glow() marks rendered as light sources in the
+    # shadow composite (blit_offscreen PASS 6 stamps the low-res light
+    # buffer; ShadowComposite adds it and cuts shadow under it).
+    glow = True
+    # Resolution divisor for the glow light buffer. The falloff is smooth by
+    # construction, so it survives aggressive downscaling; the composite's
+    # bilinear fetch upsamples for free.
+    glow_downscale = 4
+    # Master strength of the glow light at composite time.
+    glow_strength = 1.0
+    # How strongly glow luminance cancels shadow beneath it (0 = shadows
+    # ignore glows, >1 = a full lit glow erases the shadow under it).
+    glow_shadow_cut = 1.459
+
+    # Band offsets for the glow receiver mask, applied live in PASS 6 (no
+    # re-render needed to tune). Lower bound is relative to the emitter's
+    # ROOT WINDOW surface (negative reaches below the window, positive
+    # trims up into it); upper bound is relative to the EMITTER's own
+    # surface (how far above it a receiver may sit and still catch light).
+    # Units: one shallow depth step (~one Melty.shadow_depth increment
+    # near depth 0). Applied LINEARLY in rank space - shadow_depth_at's
+    # depth curve is non-monotone, so offsets never go through it, which
+    # makes large values (+/-1000) genuinely open the whole band, same as
+    # glow_debug_no_mask.
+    glow_mask_lower_offset = -4.00
+    glow_mask_upper_offset = 8.00
+
+    # --- Glow debug ---
+    # Bypass the glow-mask receiver gate: light falls on EVERY pixel under
+    # the quad. Glows appearing only with this on = the rank maths is broken
+    # (emitter/floor vs the mask's receiver ranks), not the stamping.
+    glow_debug_no_mask = False
+    # Stamp hard full-intensity rects instead of the falloff: solid inside
+    # the emitting quad, 30% across the skirt - shows position + radius
+    # extent through the real pipeline.
+    glow_debug_rects = False
+    # Draw the entire low-res glow buffer over the whole frame (replaces the
+    # image). Buffer has content but the normal view doesn't = composite
+    # hookup broken; buffer empty = stamping broken.
+    glow_debug_view = False
+    # ~1/sec console print of pipeline counts (frame marks, retained
+    # emitters, stamped quads, first mark's rank/floor band).
+    glow_debug_log = True
+
     caller_walk_steps = 7
     draw_legacy = False
     show_full_call_stack = False
@@ -1220,6 +1289,22 @@ class Toggles:
 
     debug_set_anywhere = False
     ignore_call_from = ()
+
+
+@window
+class Actions:
+    """General-purpose stash for app triggers ("New file", "New Render
+    Function", ...). Rendered by draw_actions (actions_playground.py)."""
+
+    @staticmethod
+    def new_file(name: str):
+        pass
+
+    @defaults(icon="")
+    @staticmethod
+    def new_render_func(name="draw_other"):
+        pass
+
 
 @window
 class LegacyToggles:

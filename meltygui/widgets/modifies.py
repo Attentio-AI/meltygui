@@ -84,9 +84,9 @@ from src.lsd.gl_gui.view.core_conversion.new_converters import code_hosts_for
 string_proxy, dict_proxy = code_hosts_for(draw_text)
 
 
-@window(disable_scroll=False, use_cache=True)
-@render_func(tint=(0.043, 0.11, 0.20), auto_resize=True)
-def test_code_ui(_, draw_state):
+# @window(disable_scroll=False, use_cache=True)
+# @render_func(tint=(0.043, 0.11, 0.20), auto_resize=True)
+# def test_code_hosts(_, draw_state):
     # Both proxies show themselves in their own windows (draw_main → draw()). This
     # window just inspects them AS ordinary dicts - the framework has no idea they're
     # proxies; it's rendering ordinary dicts whose single value was materialized by
@@ -96,7 +96,7 @@ def test_code_ui(_, draw_state):
     # changed, value = draw_collection(string_proxy, name="String Proxy", disable_scroll=False, child_kwargs={"view_func": draw_text, "code_dict": dict_proxy})
     # changed, value = draw_collection(dict_proxy, name="Dict Proxy", disable_scroll=False)
 
-    draw_columns({"text":string_proxy, "dict": dict_proxy})
+    # draw_columns({"text":string_proxy, "dict":dict_proxy})
 
     # global draw_text_static_file_load
     # changed, value = draw_text(draw_text_static_file_load, show_name=True, use_cache=True, name="static baseline")

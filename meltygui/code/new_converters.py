@@ -2722,6 +2722,18 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
             _post_symbol_attach(dict_host, max(0, gen - 1), _flat)
             return
     if gen < 1:
+        # Cold store (deleted / first-run pickle): the generation gate only
+        # opens via a warmer build or a src-watch bump, and the periodic
+        # warmer daemon's autostart is disabled (b4a3a9c, perf) - so if no
+        # src edit ever occurs, gen stays 0 and the usage graph would stay
+        # empty FOREVER. Kick exactly one warmer build; its gate bump
+        # (gen 0 -> 1 even with no src changes) unblocks the trigger and
+        # spans then recompute lazily per open tab. Guard on sys so the same
+        # module identities / re-execs share the one-shot.
+        if not getattr(sys, "_symbol_index_cold_kick", False):
+            sys._symbol_index_cold_kick = True
+            _ptrace("ensure-index: cold store, kicking one-off warmer build")
+            _lc.SymbolIndexCache.rebuild()
         _ptrace_rl("ensure-gen0",
                    "ensure-index: waiting for first warmer build (gen=0)",
                    min_interval=5.0)

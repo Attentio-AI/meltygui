@@ -956,7 +956,10 @@ def draw_header_end(input_value=None, name="", key=None, melty=None, parent_show
         close_icon = ""
         from src.lsd.gl_gui.view.core_views.new_core_view import button
         if button(f"{close_icon}##{unique}", show_bg=True, shadow=True, z_offset=20, tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+            _was_closed = draw_state.closed
             draw_state.closed = not draw_state.closed
+            from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+            NavUndo.record_window(draw_state, _was_closed, draw_state.closed)
             Melty.cache.invalidate_up_by_obj(Melty.registered_windows)
 
             # draw_state._parent.invalidate_up()

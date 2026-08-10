@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import traceback
 from collections import deque, defaultdict
 from copy import copy
 from dataclasses import dataclass
@@ -691,6 +692,74 @@ void main() {
 }
 """
 
+# add_glow() marks: a rounded-rect emitter with an inverse-square falloff
+# skirt - the same "hot core, long faint tail" profile the old draw-list
+# _blur_rect approximated with stacked rects, evaluated per-fragment from the
+# SDF instead. The quad is the rect EXPANDED by uRadius on every side; inside
+# the rect the profile is 1, outside it decays over uRadius pixels:
+#   P(t) = ((1/(1+k*t)**2) - floor) / (1 - floor), where t = d / uRadius
+# (k = uFalloff, floor = P at t=1, the tail lands exactly at 0).
+#
+# Depth gating happens HERE, per fragment, against the finished full depth
+# mask (PASS 6 runs after PASS 5): light only lands on receivers whose rank
+# sits in [uRankLo, uRankHi] - uRankLo is the emitter's ROOT-window surface
+# (anything up the window chain, i.e. windows floating underneath it, gets no
+# light) and uRankHi the emitter's own surface plus a hair (views floating
+# above the emitter mask the glow instead of being lit through). Needing a
+# depth mask per mark is why the gate lives in the stamp and not the
+# composite: each mark knows its own band; a single shared glow texture
+# couldn't carry per-emitter ranges through additive layers.
+_GLOW_FS = """
+#version 330 core
+uniform vec4 uColor;         // rgb = light color, a = intensity
+uniform float uRankLo;       // root-window surface rank (mask-normalized)
+uniform float uRankHi;       // emitter surface rank + bias (mask-normalized)
+uniform sampler2D uDepthMask;// full R16 rank mask (fb-sized)
+uniform vec2 uGlowSize;      // glow buffer dims, for gl_FragCoord -> mask UV
+uniform vec2 uRectSize;      // EXPANDED quad size in glow-buffer pixels
+uniform float uCornerRadius; // corner radius of the inner rect, glow px
+uniform float uRadius;       // falloff skirt width, glow px
+uniform float uFalloff;      // inverse-square hardness k (0 = linear)
+uniform int uDebugSolid;     // 1 = hard rect + 30% skirt (positioning debug)
+in vec2 vUV;
+out vec4 oColor;
+
+float sdRoundedBox(vec2 p, vec2 b, float r) {
+    vec2 q = abs(p) - b + r;
+    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+}
+
+void main() {
+    vec2 pixelPos = (vUV - 0.5) * uRectSize;
+    vec2 halfSize = uRectSize * 0.5 - vec2(uRadius);
+    float r = min(uCornerRadius, min(halfSize.x, halfSize.y));
+    float d = sdRoundedBox(pixelPos, halfSize, r);
+    if (d >= uRadius) {
+        discard;
+    }
+    // Receiver depth at this fragment: the glow buffer and the mask cover
+    // the same logical framebuffer edge-to-edge, so the fragment's own
+    // position over the glow buffer IS the mask UV. (glow_debug_no_mask
+    // widens the band to [0, 1] python-side rather than branching here.)
+    float receiver = texture(uDepthMask, gl_FragCoord.xy / uGlowSize).r;
+    if (receiver < uRankLo || receiver > uRankHi) {
+        discard;
+    }
+    float t = clamp(d / max(uRadius, 1.0), 0.0, 1.0);
+    float p;
+    if (uDebugSolid == 1) {
+        p = (d <= 0.0) ? 1.0 : 0.3;
+    } else if (uFalloff > 0.0) {
+        float flr = 1.0 / ((1.0 + uFalloff) * (1.0 + uFalloff));
+        float iv = 1.0 / ((1.0 + uFalloff * t) * (1.0 + uFalloff * t));
+        p = (iv - flr) / (1.0 - flr);
+    } else {
+        p = 1.0 - t;
+    }
+    oColor = vec4(uColor.rgb * uColor.a * p, 1.0);
+}
+"""
+
 _MASK_TEXTURED_FS = """
 #version 330 core
 uniform sampler2D uTex;
@@ -961,6 +1030,42 @@ class TileCacheMasked:
         # cache-served). No key, no draw_state, never in the flat mask.
         self._shadow_rects: List[tuple] = []
 
+        # Glow marks from add_glow(). Unlike shadow marks they carry COLOR, so
+        # they can't bake into the R16 tile masks - persistence across
+        # cache-served frames is CPU-side instead, keyed by the EMITTING
+        # draw_state (never by tile-capture lifecycle: a window tile can
+        # partially recapture without the emitting's body running, so
+        # tile-keyed retention dropped marks on any sibling invalidation).
+        # Protocol: an emitter's body calls clear_glows() after each run, then
+        # re-emits; marks persist untouched while the body is cache-skipped.
+        # Each entry: (mark_tuple, emitter_ds,_id, anchor_xy).
+        self._glow_rects: List[tuple] = []
+        # id(ds) -> (mark, ds, anchor): marks from the emitter's last body
+        # run, with its abs pos at record time so a later move re-stamps at
+        # the live offset. Entries die on clear_glows-without-re-emit or when
+        # the emitter's window closes.
+        self._glow_marks_by_emitter: Dict[int, tuple] = {}
+        # id(ds) set: emitters whose bodies ran this frame (clear_glows) -
+        # their retained entries drop before this frame's emissions re-add.
+        self._glow_cleared: set = set()
+        # Low-res additive light buffer (RGBA16F): rgb = accumulated glow
+        # light, a = MAX-blended emitter rank (full-mask depth) so the
+        # emitter can occlude glow under windows floating above the emitter.
+        self._glow_tex: Optional[int] = None
+        self._glow_fbo: Optional[int] = None
+        self._glow_size: Tuple[int, int] = (0, 0)
+        self._glow_tex_empty: bool = True
+        self._prog_glow: Optional[int] = None
+        self._loc_gl_uColor = None
+        self._loc_gl_uRankLo = None
+        self._loc_gl_uRankHi = None
+        self._loc_gl_uDepthMask = None
+        self._loc_gl_uGlowSize = None
+        self._loc_gl_uRectSize = None
+        self._loc_gl_uCornerRadius = None
+        self._loc_gl_uRadius = None
+        self._loc_gl_uFalloff = None
+
         self._rect_seq: int = 0
 
         self._prog_mask: Optional[int] = None
@@ -1030,6 +1135,17 @@ class TileCacheMasked:
     @property
     def full_mask_tex(self) -> Optional[int]:
         return self._full_mask_tex
+
+    @property
+    def glow_tex(self) -> Optional[int]:
+        """The low-res glow light buffer, or None before any glow stamped."""
+        return getattr(self, "_glow_tex", None)
+
+    @property
+    def glow_active(self) -> bool:
+        """True when the glow buffer holds any light this frame."""
+        return (getattr(self, "_glow_tex", None) is not None
+                and not getattr(self, "_glow_tex_empty", True))
 
     def _is_dirty(self, t: Optional[Tile]) -> bool:
         if t is None:
@@ -1657,6 +1773,21 @@ class TileCacheMasked:
         if self._prog_solid:
             gl.glDeleteProgram(self._prog_solid)
             self._prog_solid = None
+        if getattr(self, "_glow_fbo", None):
+            gl.glDeleteFramebuffers(1, [self._glow_fbo])
+            self._glow_fbo = None
+        if getattr(self, "_glow_tex", None):
+            gl.glDeleteTextures(1, [self._glow_tex])
+            self._glow_tex = None
+        if getattr(self, "_prog_glow", None):
+            gl.glDeleteProgram(self._prog_glow)
+            self._prog_glow = None
+        if getattr(self, "_glow_marks_by_emitter", None):
+            self._glow_marks_by_emitter.clear()
+        if getattr(self, "_glow_cleared", None):
+            self._glow_cleared.clear()
+        self._glow_size = (0, 0)
+        self._glow_tex_empty = True
 
     def mask_begin_frame(self, framebuffer_size: Tuple[int, int]) -> None:
         fb_w, fb_h = map(int, framebuffer_size)
@@ -1758,6 +1889,10 @@ class TileCacheMasked:
 
         self._mask_rects.clear()
         self._shadow_rects.clear()
+        if getattr(self, "_glow_rects", None) is not None:
+            self._glow_rects.clear()
+        if getattr(self, "_glow_cleared", None) is not None:
+            self._glow_cleared.clear()
         self._rect_seq = 0
 
     def mask_mark_rect(
@@ -1858,6 +1993,249 @@ class TileCacheMasked:
         self._shadow_rects.append(
             (x, y, w, h, ranks, corner_radius, margin, clip_xyxy, owner_key,
              inset))
+
+    def _ensure_glow_state(self) -> None:
+        """Lazily create the glow bookkeeping fields. A hotswap patches
+        methods onto a live instance whose __init__ predates them — skipping
+        glow silently (or crashing on a missing attr) until the next restart
+        is exactly the failure mode this heals: state just starts empty."""
+        if getattr(self, "_glow_rects", None) is None:
+            self._glow_rects = []
+        if getattr(self, "_glow_marks_by_emitter", None) is None:
+            self._glow_marks_by_emitter = {}
+        if getattr(self, "_glow_cleared", None) is None:
+            self._glow_cleared = set()
+        if getattr(self, "_glow_tex", "MISSING") == "MISSING":
+            self._glow_tex = None
+            self._glow_fbo = None
+            self._glow_size = (0, 0)
+            self._glow_tex_empty = True
+
+    @staticmethod
+    def _glow_root_ds(ds):
+        """ROOT window draw_state enclosing `ds` (ds itself if un-windowed).
+        Its live `shadow_depth` property is the glow's floor anchor — the
+        same scalar rank its mask rect stamps, so the floor is ALWAYS in
+        mask units. (Never derive layers from z_pos: that's the fine-grained
+        z clamped to 2048, a different unit from active_layer — feeding it
+        into shadow_depth_at put the floor near rank 1.0 and emptied the
+        receiver band.)"""
+        w = ds
+        hops = 0
+        while w is not None and hops < 64:
+            pw = getattr(w, "parent_window", None)
+            if pw is None or pw is w:
+                break
+            w = pw
+            hops += 1
+        return w
+
+    def clear_glows(self, draw_state) -> None:
+        """Start of an emitter's glow group for this body run: retained marks
+        from its previous run drop at finalize unless re-emitted this frame.
+        Call unconditionally at the top of any body that MAY add_glow — a run
+        that then emits nothing (feature toggled off, content changed) clears
+        its stale glow, while cache-skipped runs never reach this and keep
+        glowing."""
+        self._ensure_glow_state()
+        self._glow_cleared.add(id(draw_state))
+        # Also drop marks this SAME ds emitted earlier THIS frame: bodies
+        # can run twice a frame (double layout/render passes), and both
+        # runs' emissions would otherwise accumulate into the retained
+        # buffer - the glow stamped at 2x intensity because the view
+        # rendered live, then snapped back to 1x for the cached blit. The
+        # last body run is authoritative.
+        if self._glow_rects:
+            self._glow_rects[:] = [e for e in self._glow_rects
+                                   if e[1] is not draw_state]
+
+    def add_glow(
+            self, rect: Tuple[float, float, float, float],
+            color: Tuple[float, float, float], intensity: float = 1.0,
+            radius: float = 24.0, falloff: float = 2.0, offset: float = 2.0,
+            layer: int = None, depth: int = None, corner_radius: float = 3.0,
+            clip: bool = True, draw_state=None,
+    ) -> None:
+        """Mark a screen-space rect as a GLOWING light emitter. The rect is
+        rendered into the low-res glow light buffer with an inverse-square
+        falloff skirt of `radius` px, and the shadow composite adds the
+        result as emitted light: it brightens what it lands on and pushes
+        back shadow there — the surroundings read as lit by the rect.
+
+        `color` is the light's rgb (0-1); `intensity` scales it. `falloff` is
+        the inverse-square hardness (same knob as the old draw-list blur's
+        def_line_blur_falloff; 0 = linear fade). `offset`/`layer`/`depth`
+        place the EMITTING surface in the depth mask's rank space exactly like
+        add_shadow. The light lands only on receivers between the emitter's
+        ROOT window surface and the emitter's own surface (per-fragment gate
+        against the full depth mask in the stamp shader): windows behind the
+        chain get nothing, views floating above the emitter mask it out.
+        clip follows add_shadow's convention (True = snapshot the live clip
+        now, tuple = explicit, falsy = none).
+
+        Persistence: pass the emitting view's `draw_state` and the mark is
+        retained across cache-served frames, re-stamped at the view's live
+        position; pair with clear_glows(draw_state) at the top of the body so
+        a run that stops emitting drops its stale glow. Without a draw_state
+        the mark lasts one frame — re-call every frame, same as add_shadow's
+        drag-ghost usage."""
+        self._ensure_glow_state()
+        x, y, w, h = rect
+        if w <= 0 or h <= 0 or intensity <= 0:
+            return
+        if layer is None:
+            layer = Melty.active_layer
+        if depth is None:
+            depth = Melty.shadow_depth
+        if clip is True:
+            clip_xyxy = Melty.get_clip_rect()
+        elif clip:
+            clip_xyxy = tuple(clip)
+        else:
+            clip_xyxy = None
+        if clip_xyxy is not None and self._fully_clipped(
+                x - radius, y - radius, w + 2 * radius, h + 2 * radius,
+                clip_xyxy):
+            return
+        # Ranks are NOT frozen here - PASS 6 anchors the glow on the LIVE
+        # `shadow_depth` of the emitting view and its root window (the same
+        # scalar ranks their mask rects stamp), so the band always matches
+        # the mask's units and tracks z changes. The mark stores only the
+        # RELATIVE offset above the emitting view's surface, plus a
+        # record-time absolute rank as the fallback anchor for emitterless
+        # marks (no draw_state to read live).
+        anchor = (0.0, 0.0)
+        if draw_state is not None:
+            anchor = (draw_state.abs_left, draw_state.abs_top)
+        abs_rank = max(0.0, shadow_depth_at(depth + offset, layer))
+        rgb = (float(color[0]), float(color[1]), float(color[2]))
+        mark = (x, y, w, h, rgb, float(intensity),
+                float(offset), abs_rank,
+                float(radius), float(falloff), float(corner_radius),
+                clip_xyxy)
+        self._glow_rects.append((mark, draw_state, anchor))
+
+    def _ensure_glow_target(self, fb_w: int, fb_h: int) -> None:
+        """(Re)allocate the low-res RGBA16F glow light buffer at the current
+        framebuffer size / Toggles.glow_downscale. 16F because alpha carries
+        the emitter rank in full-mask units — 8 bits there would re-introduce
+        the quantized-depth wobble the R16 mask migration removed."""
+        ds_f = max(1, int(getattr(Toggles, "glow_downscale", 4)))
+        gw = max(1, int(fb_w) // ds_f)
+        gh = max(1, int(fb_h) // ds_f)
+        if self._glow_tex is not None and (gw, gh) == self._glow_size:
+            return
+        if self._glow_tex is None:
+            self._glow_tex = gl.glGenTextures(1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._glow_tex)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_BORDER)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_BORDER)
+            gl.glTexParameterfv(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_BORDER_COLOR, [0.0, 0.0, 0.0, 0.0])
+        else:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._glow_tex)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, gw, gh, 0,
+                        gl.GL_RGBA, gl.GL_FLOAT, None)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        if self._glow_fbo is None:
+            self._glow_fbo, _ = _create_fbo_with_tex(self._glow_tex, False, gw, gh)
+        self._glow_size = (gw, gh)
+        self._glow_tex_empty = True
+
+    def _stamp_glow_marks(self, glows, dp_x, dp_y, s_x, s_y, fb_w, fb_h):
+        """Clear the glow buffer and draw glow marks into it. Each entry is
+        (mark, delta, rank, floor, live_clip): mark as built by add_glow
+        (x/y/clip in screen coords), delta the emitter's live-position
+        offset since record, rank/floor the mask-normalized receiver band
+        resolved from LIVE draw_state ranks in PASS 6, live_clip the
+        emitter's live rect. Clips apply to the ORIGIN rect only — the
+        falloff skirt of whatever survives spills unclipped. Depth gating
+        happens per fragment in the shader against the full mask (bound on
+        unit 0 — PASS 5 is complete by now). RGB is plain additive; alpha
+        is unused. Leaves blend/scissor disabled."""
+        self._ensure_glow_target(fb_w, fb_h)
+        gw, gh = self._glow_size
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._glow_fbo)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        gl.glDisable(gl.GL_BLEND)
+        gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+        gl.glViewport(0, 0, gw, gh)
+        gl.glClearColor(0, 0, 0, 0.0)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        self._glow_tex_empty = not glows
+        if not glows:
+            return
+        # Screen px -> glow-buffer px: the fb transform, then the downscale.
+        sc_x = gw / max(1.0, float(fb_w))
+        sc_y = gh / max(1.0, float(fb_h))
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+        gl.glUseProgram(self._prog_glow)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._full_mask_tex)
+        gl.glUniform1i(self._loc_gl_uDepthMask, 0)
+        gl.glUniform2f(self._loc_gl_uGlowSize, float(gw), float(gh))
+        _dbg_no_mask = getattr(Toggles, "glow_debug_no_mask", False)
+        gl.glUniform1i(self._loc_gl_uDebugSolid,
+                       1 if getattr(Toggles, "glow_debug_rects", False) else 0)
+        # Small rank slack above the emitter so coplanar pixels (the band's
+        # own glow, sibling text at the same depth) stay lit through R16
+        # rounding; ~2 rank units.
+        _bias = 2.0 / 65535.5
+        for ((sx, sy, sw, sh, rgb, inten, _d_off, _layer_rec, radius, falloff,
+              cr, clip_xyxy), delta, rank, floor_rank, live_clip) in glows:
+            sx += delta[0]
+            sy += delta[1]
+            # Clip the ORIGIN rect, never the rendered light: intersect the
+            # original rect with the recorded clip (delta-edplied) and the
+            # emitter's live rect, then let the clipped rect's skirt spill
+            # through - the visible part of the band still lights past a
+            # column seam, and a scrolled/clipped-out band emits nothing.
+            # (The live-rect term is what makes a freeze-resize column drag
+            # track: the body doesn't re-run mid-drag, but resize does.)
+            ex1, ey1 = sx + sw, sy + sh
+            if clip_xyxy is not None:
+                sx = max(sx, clip_xyxy[0] + delta[0])
+                sy = max(sy, clip_xyxy[1] + delta[1])
+                ex1 = min(ex1, clip_xyxy[2] + delta[0])
+                ey1 = min(ey1, clip_xyxy[3] + delta[1])
+            if live_clip is not None:
+                sx = max(sx, live_clip[0])
+                sy = max(sy, live_clip[1])
+                ex1 = min(ex1, live_clip[2])
+                ey1 = min(ey1, live_clip[3])
+            sw, sh = ex1 - sx, ey1 - sy
+            if sw <= 0 or sh <= 0:
+                continue
+            x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
+                sx - radius, sy - radius, sw + 2 * radius, sh + 2 * radius,
+                dp_x, dp_y, s_x, s_y, fb_h)
+            ix0, iy0 = int(floor(x0 * sc_x)), int(floor(y0 * sc_y))
+            ix1, iy1 = int(ceil(x1 * sc_x)), int(ceil(y1 * sc_y))
+            iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+            if iw <= 0 or ih <= 0:
+                continue
+            gl.glViewport(ix0, iy0, iw, ih)
+            gl.glUniform4f(self._loc_gl_uColor, rgb[0], rgb[1], rgb[2],
+                           float(inten))
+            if _dbg_no_mask:
+                gl.glUniform1f(self._loc_gl_uRankLo, 0.0)
+                gl.glUniform1f(self._loc_gl_uRankHi, 1.0)
+            else:
+                gl.glUniform1f(self._loc_gl_uRankLo,
+                               max(0.0, float(floor_rank) - _bias))
+                gl.glUniform1f(self._loc_gl_uRankHi, float(rank) + _bias)
+            gl.glUniform2f(self._loc_gl_uRectSize, float(iw), float(ih))
+            gl.glUniform1f(self._loc_gl_uCornerRadius,
+                           max(0.0, cr * s_x * sc_x))
+            gl.glUniform1f(self._loc_gl_uRadius,
+                           max(1.0, radius * s_x * sc_x))
+            gl.glUniform1f(self._loc_gl_uFalloff, max(0.0, falloff))
+            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        gl.glDisable(gl.GL_BLEND)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
     def _stamp_shadow_marks(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
                             scissor_fb=None):
@@ -2797,6 +3175,29 @@ class TileCacheMasked:
             self._loc_sg_uCornerRadius = gl.glGetUniformLocation(self._prog_shadow_grad, "uCornerRadius")
             self._loc_sg_uMargin = gl.glGetUniformLocation(self._prog_shadow_grad, "uMargin")
 
+        # Re-key based on the NEWEST uniform's location, not just program
+        # presence: a hotswap onto a live instance can leave an OLD glow
+        # program (compiled from a previous _GLOW_FS with different uniforms)
+        # cached - the new stamp code would then set uniforms that were
+        # never fetched and die. Bump the probed name as _GLOW_FS grows.
+        if (getattr(self, "_prog_glow", None) is None
+                or getattr(self, "_loc_gl_uDebugSolid", None) is None):
+            if getattr(self, "_prog_glow", None):
+                gl.glDeleteProgram(self._prog_glow)
+            vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
+            fs = _compile(gl.GL_FRAGMENT_SHADER, _GLOW_FS)
+            self._prog_glow = _link(vs, fs)
+            self._loc_gl_uColor = gl.glGetUniformLocation(self._prog_glow, "uColor")
+            self._loc_gl_uRankLo = gl.glGetUniformLocation(self._prog_glow, "uRankLo")
+            self._loc_gl_uRankHi = gl.glGetUniformLocation(self._prog_glow, "uRankHi")
+            self._loc_gl_uDepthMask = gl.glGetUniformLocation(self._prog_glow, "uDepthMask")
+            self._loc_gl_uGlowSize = gl.glGetUniformLocation(self._prog_glow, "uGlowSize")
+            self._loc_gl_uRectSize = gl.glGetUniformLocation(self._prog_glow, "uRectSize")
+            self._loc_gl_uCornerRadius = gl.glGetUniformLocation(self._prog_glow, "uCornerRadius")
+            self._loc_gl_uRadius = gl.glGetUniformLocation(self._prog_glow, "uRadius")
+            self._loc_gl_uFalloff = gl.glGetUniformLocation(self._prog_glow, "uFalloff")
+            self._loc_gl_uDebugSolid = gl.glGetUniformLocation(self._prog_glow, "uDebugSolid")
+
         if self._prog_mask_textured is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
             fs = _compile(gl.GL_FRAGMENT_SHADER, _MASK_TEXTURED_FS)
@@ -2976,7 +3377,9 @@ class TileCacheMasked:
         if self._snapshot_fbo is None:
             return
 
-        if not self._pending and not self._mask_rects and not self._shadow_rects:
+        if (not self._pending and not self._mask_rects
+                and not self._shadow_rects
+                and not getattr(self, "_glow_rects", None)):
             return
 
         # Grab direct references (we clear at end anyway)
@@ -2998,7 +3401,9 @@ class TileCacheMasked:
             self.last_capture_stats = (len(local_pending), -1,
                                        len(local_mask_rects))
 
-        if not local_pending and not local_mask_rects and not self._shadow_rects:
+        if (not local_pending and not local_mask_rects
+                and not self._shadow_rects
+                and not getattr(self, "_glow_rects", None)):
             self._pending.clear()
             self._mask_rects.clear()
             self._enq_mask_keys.clear()
@@ -3503,6 +3908,199 @@ class TileCacheMasked:
                 self._stamp_shadow_marks(_standalone,
                                          dp_x, dp_y, s_x, s_y, fb_h)
 
+            # ================================================================
+            # PASS 6: Glow stencil buffer (after PASS 5 - the stamp shader
+            # samples the finished full depth mask for its depth gate).
+            # Retention is keyed by EMITTING draw_state, decoupled from tile
+            # captures: clear_glows(ds) ran → the emitter's body ran this
+            # frame, so its retained entry drops AND this frame's emissions
+            # re-add it; bodies that were cache-skipped keep their entry
+            # untouched. Every retained entry re-stamps at the emitter's
+            # LIVE abs pos (record-time clips go stale when a cache-skip
+            # sibling reflows - see project_blit_shadow_clip). Emitterless
+            # marks are one-shot.
+            # ================================================================
+            # Glow must never abort the capture pass (an exception here would
+            # leave tiles un-processed AND read as a broken hotswap to the
+            # rollback guard) - it's purely visual, so trap and report once.
+            try:
+                self._ensure_glow_state()
+                _glow_retained = self._glow_marks_by_emitter
+                for _eid in self._glow_cleared:
+                    _glow_retained.pop(_eid, None)
+
+                # Tunable band offsets, applied LINEARLY in rank units -
+                # never by shifting shadow_depth_at's depth argument (the
+                # depth term is non-monotonic: peaks ~530 rank units at d~59
+                # then decreases, so a large depth offset can cross a bound
+                # and collapse the band). Step unit: one shallow depth
+                # step (~layer_inc * 53.42/5.975 rank units).
+                _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
+                _g_lo_off = float(getattr(
+                    Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
+                _g_hi_off = float(getattr(
+                    Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
+
+                def _live_clip_of(eds):
+                    # The emitter's LIVE rect - clips the glow ORIGIN rect
+                    # (never the rendered light): during a freeze-resize
+                    # cell drag the body doesn't re-run, but width/height
+                    # track the drag live, so recorded marks shrink to the
+                    # live cell instead of glowing at the original extent.
+                    if eds is None:
+                        return None
+                    try:
+                        l, t = eds.abs_left, eds.abs_top
+                        w, h = eds.width, eds.height
+                        if w is None or h is None:
+                            return None
+                        return (l, t, l + w, t + h)
+                    except Exception:
+                        return None
+
+                def _resolve_glow(m, delta, eds, root_ds):
+                    # Band anchors are the LIVE shadow_depth properties -
+                    # the exact same units those views' mask rects stamp
+                    # (depth_and_layer through shadow_depth_at), so the band
+                    # is always in the mask's own units. Emitter anchor:
+                    # the emitting view's surface + the mark's relative
+                    # offset; floor anchor: the root window's surface.
+                    _anchor_rank = None
+                    if eds is not None:
+                        try:
+                            _anchor_rank = (float(eds.shadow_depth)
+                                            + m[6] * _g_step)
+                        except Exception:
+                            _anchor_rank = None
+                    if _anchor_rank is None:
+                        _anchor_rank = m[7]  # record-time absolute fallback
+                    _lo_anchor = None
+                    if root_ds is not None:
+                        try:
+                            _lo_anchor = float(root_ds.shadow_depth)
+                        except Exception:
+                            _lo_anchor = None
+                    if _lo_anchor is None:
+                        _lo_anchor = _anchor_rank
+                    _rank = (_anchor_rank + _g_hi_off) / 65535.5
+                    _floor = (_lo_anchor + _g_lo_off) / 65535.5
+                    return (m, delta, min(1.0, _rank), max(0.0, _floor),
+                            _live_clip_of(eds))
+
+                _stamp_list = []
+                _emitted_now = defaultdict(list)
+                for mark, _eds, _anchor in self._glow_rects:
+                    if _eds is None:
+                        _stamp_list.append(
+                            _resolve_glow(mark, (0.0, 0.0), None, None))
+                    else:
+                        _emitted_now[id(_eds)].append((mark, _eds, _anchor))
+                for _eid, entries in _emitted_now.items():
+                    _glow_retained[_eid] = (
+                        [m for m, _d, _a in entries],
+                        entries[0][1], entries[0][2])
+
+                # Kill evidence for retained glow: the rects of every tile
+                # capturing FRESH this frame, tagged by their root window.
+                # A capture in the emitter's OWN window that repaints its
+                # territory while the emitter didn't re-emit means the
+                # marks of the glow were replaced (tab switch, jump-to
+                # content scroll, any culled branch) - the marks die. This is
+                # a truth about the framebuffer, so it needs no view
+                # chain pointers (a culled emitter's _parent chain goes
+                # stale and any-view-based verdicts lie). Captures in
+                # OTHER windows (popups floating above) never repaint the
+                # emitter's surface - same-root overlap check keeps them from
+                # killing glow beneath.
+                _pend_rects = []
+                for p in local_pending:
+                    try:
+                        _pend_rects.append(
+                            (p.pos[0], p.pos[1],
+                             p.pos[0] + p.size[0], p.pos[1] + p.size[1],
+                             self._glow_root_ds(p.draw_state)))
+                    except Exception:
+                        pass
+
+                def _territory_repainted(marks, delta, root):
+                    for m in marks:
+                        mx0 = m[0] + delta[0]
+                        my0 = m[1] + delta[1]
+                        mx1, my1 = mx0 + m[2], my0 + m[3]
+                        for px0, py0, px1, py1, proot in _pend_rects:
+                            if proot is not root:
+                                continue
+                            if (mx0 < px1 and px0 < mx1
+                                    and my0 < py1 and py0 < my1):
+                                return True
+                    return False
+
+                for _eid, (marks, _eds, _anchor) in list(
+                        _glow_retained.items()):
+                    if _eds is None or getattr(_eds, "abs_closed", False):
+                        _glow_retained.pop(_eid, None)
+                        continue
+                    _delta = (_eds.abs_left - _anchor[0],
+                              _eds.abs_top - _anchor[1])
+                    _root_ds = self._glow_root_ds(_eds)
+                    # Freshly-emitted entries skip the kill: their own
+                    # tile's capture legitimately overlaps their territory.
+                    if (_eid not in _emitted_now
+                            and _territory_repainted(marks, _delta,
+                                                     _root_ds)):
+                        _glow_retained.pop(_eid, None)
+                        continue
+                    for m in marks:
+                        _stamp_list.append(
+                            _resolve_glow(m, _delta, _eds, _root_ds))
+                # Per-surface dedupe: identical origin rects (same pos,
+                # size, color after the live-position delta) collapse to
+                # ONE emission at the strongest intensity. The old
+                # draw-list blur alpha-blended duplicates into
+                # near-invisibility; the light field is ADDITIVE, so a
+                # doubled origin (duplicate _dt_lines entries, a body
+                # drawn twice through different paths) appear as a glaring
+                # 2x glow.
+                _dedup = {}
+                _dup_count = 0
+                for _se in _stamp_list:
+                    _m, _d = _se[0], _se[1]
+                    _k = (round(_m[0] + _d[0], 1), round(_m[1] + _d[1], 1),
+                          round(_m[2], 1), round(_m[3], 1), _m[4])
+                    _prev = _dedup.get(_k)
+                    if _prev is None or _se[0][5] > _prev[0][5]:
+                        if _prev is not None:
+                            _dup_count += 1
+                        _dedup[_k] = _se
+                    else:
+                        _dup_count += 1
+                _stamp_list = list(_dedup.values())
+
+                if (getattr(Toggles, "glow_debug_log", False)
+                        and self._frame_id % 60 == 0):
+                    _s0 = _stamp_list[0] if _stamp_list else None
+                    print(
+                        f"glow6 f{self._frame_id}: glow={getattr(Toggles, 'glow', '?')} "
+                        f"frame_marks={len(self._glow_rects)} "
+                        f"retained={len(_glow_retained)} "
+                        f"cleared={len(self._glow_cleared)} "
+                        f"stamped={len(_stamp_list)} dups={_dup_count} "
+                        f"tex={getattr(self, '_glow_size', None)} "
+                        f"empty={self._glow_tex_empty}"
+                        + (f" first: rect={tuple(round(v, 1) for v in _s0[0][:4])}"
+                           f" rank={_s0[2]:.5f} floor={_s0[3]:.5f}"
+                           f" inten={_s0[0][5]:.3f}" if _s0 else ""))
+                if not getattr(Toggles, "glow", False):
+                    _stamp_list = []  # retained entries stay warm
+                if _stamp_list or not self._glow_tex_empty:
+                    self._stamp_glow_marks(_stamp_list, dp_x, dp_y, s_x, s_y,
+                                           fb_w, fb_h)
+            except Exception:
+                if not getattr(self, "_glow_error_logged", False):
+                    self._glow_error_logged = True
+                    print("glow PASS 6 failed (glow disabled this frame):")
+                    traceback.print_exc()
+
             gl.glViewport(0, 0, fb_w, fb_h)
             gl.glDisable(gl.GL_BLEND)
             gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
@@ -3535,6 +4133,10 @@ class TileCacheMasked:
             self._pending.clear()
             self._mask_rects.clear()
             self._shadow_rects.clear()
+            if getattr(self, "_glow_rects", None) is not None:
+                self._glow_rects.clear()
+            if getattr(self, "_glow_cleared", None) is not None:
+                self._glow_cleared.clear()
             self._enq_mask_keys.clear()
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()
@@ -3558,3 +4160,37 @@ def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
     if cache is not None:
         cache.add_shadow(rect, offset=offset, layer=layer, depth=depth,
                          corner_radius=corner_radius, margin=margin, clip=clip)
+
+
+def add_glow(rect, color, intensity=1.0, radius=24.0, falloff=2.0,
+             offset=2.0, layer=None, depth=None, corner_radius=3.0,
+             clip=True, draw_state=None):
+    """Mark a screen-space (x, y, w, h) rect as a GLOWING light emitter. The
+    rect lands in the low-res glow light buffer with an inverse-square
+    falloff skirt of `radius` px; the shadow composite adds it as emitted
+    light and pushes back shadow where it falls. The light only reaches
+    receivers between the emitter's ROOT window surface and its own depth
+    (offset/layer/depth, add_shadow semantics): nothing behind the window
+    chain is lit, and views floating above the emitter mask it out.
+
+    Pass the emitting view's `draw_state` (and call clear_glows(draw_state)
+    at the top of the body) to persist the mark across cache-served frames;
+    without it the mark lasts one frame — re-call every frame, like
+    add_shadow's drag-ghost usage. See TileCacheMasked.add_glow."""
+    cache = Melty.cache
+    if cache is not None and getattr(cache, "add_glow", None) is not None:
+        cache.add_glow(rect, color, intensity=intensity, radius=radius,
+                       falloff=falloff, offset=offset, layer=layer,
+                       depth=depth, corner_radius=corner_radius, clip=clip,
+                       draw_state=draw_state)
+
+
+def clear_glows(draw_state):
+    """Open `draw_state`'s glow group for this body run: retained glow marks
+    it emitted earlier drop at frame end unless re-emitted this frame. Call
+    unconditionally at the top of any body that MAY add_glow — runs that stop
+    emitting shed their stale glow, cache-skipped runs never get here and
+    keep glowing."""
+    cache = Melty.cache
+    if cache is not None and getattr(cache, "clear_glows", None) is not None:
+        cache.clear_glows(draw_state)

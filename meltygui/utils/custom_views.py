@@ -659,11 +659,11 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
     if file is None:
         file = sys.stdout
 
-    if Core.melty.imgui_crashed:
-        #p
-        import time
-        time.sleep(0.1)
-        os._exit(1)
+    # NOTE: this used to os._exit(1) when Melty.imgui_crashed was latched.
+    # The latch persists across studio runs inside the launcher process, so a
+    # recovered ImGui hiccup earlier in the session turned any later traceback
+    # print (launcher, restart, studio teardown) into a silent hard-kill of
+    # the whole launcher. A crash printer should never kill the process.
 
     #
     # traceback_lines = traceback.format_exception(exc_type, exc_value, exc_traceback, limit=limit)

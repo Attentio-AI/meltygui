@@ -22,6 +22,7 @@ from src.lsd.gl_gui.toggles import WindowManager
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 
@@ -38,6 +39,8 @@ TARGET_W = 26.0
 RIGHT_PAD = 4.0
 CORNER = 6.0
 TARGET_ICON = ""
+BACK_ICON = ""      # FA arrow-left  - NavUndo.undo
+FORWARD_ICON = ""   # FA arrow-right - NavUndo.redo
 LIVE_ICON = ""
 LIVE_TINT = (0.409, 0.1, 0.1)
 DEFAULT_TINT = (2.558, 0.5, 0.5)
@@ -77,6 +80,9 @@ def _dock_signature():
             continue
         rows.append((str(wds.name), wds.closed, wds.live, _row_tint(mw, wds)))
     rows.sort(key=lambda r: r[0])
+    # Nav-stack depths: the back/forward buttons' enabled state must repaint
+    # the cached blit when navigation happens outside the dock (hotkeys).
+    rows.append((len(NavUndo.stack.history), len(NavUndo.stack.redo_stack)))
     return tuple(rows)
 
 
@@ -166,7 +172,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # header - boost the content height by that top inset or the last row can
     # never scroll fully into view.
     top_inset = (y0 + draw_state.scroll_offset[1]) - draw_state.abs_top
-    imgui.dummy(cw, max(1.0, len(rows) * row_stride + max(0.0, top_inset)))
+    # +1 stride: the NavUndo back/forward row sits above the window rows.
+    imgui.dummy(cw, max(1.0, (len(rows) + 1) * row_stride + max(0.0, top_inset)))
 
     mx, my = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
@@ -178,6 +185,38 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     tg_x1 = x0 + cw - right_pad
     tg_x0 = tg_x1 - target_w
     nm_x0, nm_x1 = x0 + name_x, tg_x0 - name_target_gap
+
+    # ---- navigation back/forward row (NavUndo) - above the window rows ----
+    # Two half-width buttons in the name column: step back / forward through
+    # the navigation stack (tab switches, jump-tos, window open/close). Same
+    # hover/click model as the rows; buttons dim while their side is empty.
+    nav_y0, nav_y1 = y0, y0 + row_h
+    half_w = (nm_x1 - nm_x0 - name_target_gap) / 2.0
+    for bx0, enabled, nav_icon, nav_action in (
+            (nm_x0, NavUndo.stack.can_undo(), BACK_ICON, NavUndo.undo),
+            (nm_x1 - half_w, NavUndo.stack.can_redo(), FORWARD_ICON, NavUndo.redo)):
+        bx1 = bx0 + half_w
+        hov_n = hover_ok and enabled and bx0 <= mx <= bx1 and nav_y0 <= my <= nav_y1
+        bg_n = _mix(style_manager, None,
+                    target_bg_value + (hover_bg_boost if hov_n else 0.0),
+                    target_factor, target_saturation)
+        tx_n = _mix(style_manager, None,
+                    (target_text_value if enabled else closed_text_value)
+                    + (hover_text_boost if hov_n else 0.0),
+                    target_factor, text_saturation)
+        if enabled:
+            add_shadow((bx0, nav_y0, bx1 - bx0, row_h), corner_radius=corner,
+                       clip=clip)
+        dl.add_rect_filled(bx0, nav_y0, bx1, nav_y1,
+                           imgui.get_color_u32_rgba(*bg_n[:3], 1.0), rounding=corner)
+        gs = imgui.calc_text_size(nav_icon)
+        dl.add_text(bx0 + ((bx1 - bx0) - gs[0]) / 2.0 + text_nudge_x,
+                    nav_y0 + (row_h - gs[1]) / 2.0 + text_nudge_y,
+                    imgui.get_color_u32_rgba(*tx_n[:3], 1.0), nav_icon)
+        if (enabled and click is not None
+                and bx0 <= click[0] <= bx1 and nav_y0 <= click[1] <= nav_y1):
+            nav_action()
+            request_render()
 
     # ---- local find-bar search ----
     # The window's find UI (searchable=True) counts matches by walking
@@ -222,7 +261,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     highlight_rects = []
 
     for i, (name, mw, wds) in enumerate(rows):
-        ry0 = y0 + i * row_stride
+        ry0 = y0 + (i + 1) * row_stride    # +1: nav row occupies the first slot
         ry1 = ry0 + row_h
 
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
@@ -320,11 +359,13 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
         if click is not None and ry0 <= click[1] <= ry1:
             cx = click[0]
             if nm_x0 <= cx <= nm_x1:
+                was_closed = wds.closed
                 if wds.closed:
                     wds.closed = False
                     _summon(wds, draw_state, ry0)
                 else:
                     wds.closed = True
+                NavUndo.record_window(wds, was_closed, wds.closed)
                 Core.melty.cache.invalidate_up_by_obj(mw)
                 request_render()
             elif open_ and tg_x0 <= cx <= tg_x1:

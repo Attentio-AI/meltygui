@@ -240,6 +240,10 @@ class ImGuiBackend:
         glfw.KEY_S: "s",
         glfw.KEY_Z: "z",
         glfw.KEY_SLASH: "slash",
+        # Arrows - navigation undo/redo (Ctrl+Shift+Left/Right) subscribes to
+        # these; the text editor keeps reading its arrows from frame_key_events.
+        glfw.KEY_LEFT: "left_arrow",
+        glfw.KEY_RIGHT: "right_arrow",
         # Numpad - Blender-style viewport hotkeys (voxel views) live on these.
         glfw.KEY_KP_0: "kp_0",
         glfw.KEY_KP_1: "kp_1",

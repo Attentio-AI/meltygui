@@ -186,6 +186,20 @@ class Mode(Enum):
         )
     }
 
+    # WINDOW_AUTO_FIT's chrome without the auto-fit: the user sizes the window
+    # and content lays out to it (global search - its columns/rows wrap to the
+    # width you give it).
+    WINDOW_RESIZABLE = {
+        Any: ModeOverrides(
+            kwargs={"use_cache": True, "melty_window": False, "closable": True, "layer_offset": 4,
+                    "auto_resize": False, "draggable": True, 'min_width': 600, "swoosh": False,
+                    "inline": True, "show_header": False,
+                    "initial": {"width": 400, "height": 320}},
+
+            recursive=False
+        )
+    }
+
     WINDOW = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": True, "melty_window": False, "closable": True,

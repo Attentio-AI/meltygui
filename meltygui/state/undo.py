@@ -40,10 +40,127 @@ class Change:
         # touched, used to decide group membership.
         self.group_id = group_id
         self.frame = frame
+
+    @property
+    def display_name(self):
+        return getattr(self.draw_state, "name", None) or "?"
+
+    def apply(self, undo):
+        """Re-apply one side of this change (undo → `old`, redo → `new`).
+        Subclasses override this — it's the ONLY kind-specific hook, so
+        UndoStack never inspects change types."""
+        if undo:
+            UndoManager._request(self.draw_state, self.old, self.ui)
+        else:
+            UndoManager._request(self.draw_state, self.new, self.ui_after)
     #
     # def __repr__(self):
     #     name = getattr(self.draw_state, "name", "?")
     #     return f"Change({name}: {self.old!r} -> {self.new!r})"
+
+class UndoStack:
+    """One independent undo/redo timeline. The edit stack (UndoManager.stack)
+    and the navigation stack (NavUndo.stack) are instances; adding another
+    timeline is: make an UndoStack, push Change subclasses into it, and wire
+    something to its undo()/redo(). Changes re-apply THEMSELVES (Change.apply)
+    — a stack never inspects change kinds. Grouping (several changes from one
+    user action undoing as a unit) rides group_id, same as before the split."""
+
+    def __init__(self, name, maxlen=128):
+        self.name = name
+        self.history = collections.deque(maxlen=maxlen)
+        # undo() moves a popped group here; redo() moves it back. Any fresh
+        # push clears this - you can't redo after diverging.
+        self.redo_stack = collections.deque(maxlen=maxlen)
+        self._next_group_id = 0
+
+    def new_group_id(self):
+        self._next_group_id += 1
+        return self._next_group_id
+
+    def push(self, change):
+        self.redo_stack.clear()
+        self.history.append(change)
+
+    def can_undo(self):
+        return bool(self.history)
+
+    def can_redo(self):
+        return bool(self.redo_stack)
+
+    def _pop_group(self):
+        """Pop the newest group (all trailing changes sharing the top group_id)
+        off `history`, newest-first."""
+        if not self.history:
+            return []
+        gid = self.history[-1].group_id
+        group = []
+        while self.history and self.history[-1].group_id == gid:
+            group.append(self.history.pop())
+        return group
+
+    def undo(self):
+        group = self._pop_group()
+        if not group:
+            return
+        self.redo_stack.append(group)
+        for change in group:
+            change.apply(undo=True)
+
+    def redo(self):
+        if not self.redo_stack:
+            return
+        group = self.redo_stack.pop()
+        for change in reversed(group):   # restore original append order
+            self.history.append(change)
+        for change in group:
+            change.apply(undo=False)
+
+
+class NavChange(Change):
+    """A file-navigation step (editor tab switch / jump-to). `old`/`new` are
+    (path, line) locations — not values — and there is no draw_state: replay
+    navigates (open_in_editor / tab select) instead of writing a value back
+    through the wrapper. line None means "wherever that file's editor last
+    left its caret" (each file's draw_text keeps its own caret/scroll on its
+    persistent draw_state)."""
+
+    def __init__(self, old_loc, new_loc, t=0.0, group_id=0, frame=0):
+        super().__init__(None, old_loc, new_loc, t=t, group_id=group_id,
+                         frame=frame)
+
+    @property
+    def display_name(self):
+        return "goto"
+
+    def apply(self, undo):
+        NavUndo._apply_location(self.old if undo else self.new)
+
+
+class WindowChange(Change):
+    """A window open/close step. `draw_state` is the WINDOW's draw_state;
+    `old`/`new` are the `closed` flag before/after the user's toggle. Replay
+    just writes the flag back (raising the window when it reopens)."""
+
+    def __init__(self, window_ds, closed_before, closed_after, t=0.0,
+                 group_id=0, frame=0):
+        super().__init__(window_ds, closed_before, closed_after, t=t,
+                         group_id=group_id, frame=frame)
+
+    @property
+    def display_name(self):
+        base = str(getattr(self.draw_state, "name", "?")).split("##")[0]
+        return f"{'close' if self.new else 'open'} {base}"
+
+    def apply(self, undo):
+        wds = self.draw_state
+        wds.closed = self.old if undo else self.new
+        if not wds.closed:
+            Core.melty.move_window_to_front(wds)
+        # Same repaint the dock/window-manager close paths do.
+        Core.melty.cache.invalidate_up_by_obj(Core.melty.registered_windows)
+        request_render()
+
 
 @window(view_func=RenderFuncs.draw_undo_manager, live=True)
 class UndoManager:
@@ -60,15 +177,13 @@ class UndoManager:
     # as snapshotting for richer types is implemented.
     APPROVED_TYPES = (float, int, str, bool, tuple, Enum, RelaxedEnum)
 
-    # Global timeline of every Change in the order it happened. This is the
-    # companion that bounds total size: when this grows past MAX_HISTORY the
-    # oldest Change is dropped from here and from its per-node list above.
-    history = collections.deque(maxlen=MAX_HISTORY)
-
-    # Redo timeline: undo() moves the popped Change here; redo() moves it back to
-    # `history` and re-applies its `new`. Any fresh user action (a record() that
-    # isn't an undo/redo restore) clears this - you can't redo after diverging.
-    redo_stack = collections.deque(maxlen=MAX_HISTORY)
+    # The EDIT timeline (value changes). Navigation lives on its own stack -
+    # NavUndo.stack - so Ctrl+Z never yanks the viewport and Ctrl+Shift+arrows
+    # never deletes text. `history`/`redo_stack` alias the stack's deques (same
+    # objects) for the render func and older call sites.
+    stack = UndoStack("edits", maxlen=MAX_HISTORY)
+    history = stack.history
+    redo_stack = stack.redo_stack
 
     # Undo coalescing: consecutive edits to the same draw_state fold into the last
     # group instead of adding a new entry, so undo reverts a whole burst at once
@@ -88,7 +203,6 @@ class UndoManager:
     # doesn't see edits alternating back and forth between views. (Same-draw_state
     # bursts still fold in _can_coalesce regardless of frame distance.)
     GROUP_FRAME_WINDOW = 2
-    _next_group_id = 0
 
     settle_for = 2 # 2 frame at start
 
@@ -110,39 +224,12 @@ class UndoManager:
         request_render()
 
     @classmethod
-    def _pop_group(cls):
-        """Pop the newest group (all trailing changes sharing the top group_id)
-        off `history`, newest-first."""
-        if not cls.history:
-            return []
-        gid = cls.history[-1].group_id
-        group = []
-        while cls.history and cls.history[-1].group_id == gid:
-            group.append(cls.history.pop())
-        return group
-
-    @classmethod
     def undo(cls):
-        # Move the newest group to the redo stack and restore every change in
-        # it (pre-edit value + caret), so all views from one action revert at once.
-        group = cls._pop_group()
-        if not group:
-            return
-        cls.redo_stack.append(group)
-        for change in group:
-            cls._request(change.draw_state, change.old, change.ui)
+        cls.stack.undo()
 
     @classmethod
     def redo(cls):
-        # Move the most-recently-undone group back to history and re-apply every
-        # change in it (post-edit value + caret).
-        if not cls.redo_stack:
-            return
-        group = cls.redo_stack.pop()
-        for change in reversed(group):   # preserve original append order
-            cls.history.append(change)
-        for change in group:
-            cls._request(change.draw_state, change.new, change.ui_after)
+        cls.stack.redo()
 
     @classmethod
     def _can_coalesce(cls, last, draw_state, old, new, now, direction):
@@ -246,8 +333,7 @@ class UndoManager:
                     gid = None                           # ds already in this group -> new group
                     break
         if gid is None:
-            cls._next_group_id += 1
-            gid = cls._next_group_id
+            gid = cls.stack.new_group_id()
 
         change = Change(draw_state, old, new, ui=getattr(draw_state, "_undo_pre", None),
                         t=now, direction=direction, ui_after=ui_after, group_id=gid, frame=frame)
@@ -260,6 +346,92 @@ class UndoManager:
         #         per_node.remove(evicted)
         #         if not per_node:
         #             del cls.change_history[evicted.draw_state]
+
+
+class NavUndo:
+    """The navigation timeline — a separate UndoStack from text edits, so
+    stepping back through WHERE you were never touches WHAT you typed.
+    Records location moves (editor tab switches, jump-tos) and window
+    open/close toggles. Driven by Ctrl+Shift+Left/Right (root handler in
+    new_core_view) and the Fast Dock back/forward buttons. Gated on
+    Toggles.CodeEditor.undo_navigation."""
+
+    stack = UndoStack("navigation")
+
+    # Reentrancy guard: while undo/redo replays, the navigation it triggers
+    # (open_in_editor → tab select + jump-to, window closed writes) should not
+    # record fresh entries.
+    _restoring = False
+
+    @classmethod
+    def _recordable(cls):
+        from src.lsd.gl_gui.toggles import Toggles
+        return (Toggles.CodeEditor.undo_navigation and not cls._restoring
+                and Core.melty.frame_count >= UndoManager.settle_for)
+
+    @classmethod
+    def record_location(cls, old_loc, new_loc):
+        """Push a location step. Locations are (path, line) tuples (line may
+        be None). Each step is its own group."""
+        if not cls._recordable():
+            return
+        if old_loc == new_loc:
+            return
+        # Re-selecting the currently-selected file with no target line moves
+        # nothing - not worth an undo step.
+        if new_loc[1] is None and old_loc[0] == new_loc[0]:
+            return
+        cls.stack.push(NavChange(old_loc, new_loc, t=time.time(),
+                                 group_id=cls.stack.new_group_id(),
+                                 frame=Core.melty.frame_count))
+
+    @classmethod
+    def record_window(cls, window_ds, closed_before, closed_after):
+        """Push a window open/close step (the user toggled `closed` — dock row
+        click, chrome ×)."""
+        if not cls._recordable() or closed_before == closed_after:
+            return
+        cls.stack.push(WindowChange(window_ds, closed_before, closed_after,
+                                    t=time.time(),
+                                    group_id=cls.stack.new_group_id(),
+                                    frame=Core.melty.frame_count))
+
+    @classmethod
+    def _apply_location(cls, loc):
+        """Replay one side of a NavChange: select the tab (reopening it if it
+        was closed) and land on the recorded line."""
+        path, line = loc if loc else (None, None)
+        if path is None:
+            return
+        from src.lsd.gl_gui.model.app_model import OpenFiles
+        if path.startswith(OpenFiles.GIT_DIFF_PREFIX):
+            # Pseudo-path - never route through open_in_editor (open_file
+            # would spin up a real host for it). Only re-select if the
+            # diff tab is still open.
+            root = getattr(Core.melty.vis, "root", None)
+            open_files = getattr(root, "open_files", None)
+            if open_files is not None and path in open_files.open_paths:
+                open_files.selected_path = path
+                request_render()
+            return
+        from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+        open_in_editor(path, line_number=line)
+
+    @classmethod
+    def undo(cls):
+        cls._restoring = True
+        try:
+            cls.stack.undo()
+        finally:
+            cls._restoring = False
+
+    @classmethod
+    def redo(cls):
+        cls._restoring = True
+        try:
+            cls.stack.redo()
+        finally:
+            cls._restoring = False
 
 
 def _edit_direction(old, new):

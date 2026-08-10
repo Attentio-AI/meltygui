@@ -248,7 +248,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
     return attn, focus
 
 @window
-@render_func(tint=(0.16, 0.13, 0.08), auto_resize=True)
+@render_func(tint=(0.611, 0.42, 0.095), auto_resize=True)
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner", icon=None, display_name=None)
