@@ -2869,14 +2869,16 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             or draw_state.on_action("non_blocking_ctrl_y_down")):
         UndoManager.redo()
 
-    # Navigation stack (tab switches / jump-tos / window open/close): its own
-    # timeline on Ctrl+Shift+arrows. Suppressed while text is focused -
-    # Ctrl+Shift+Left/Right is extend-selection-by-word in the editor.
-    if Core.melty.text_focused_ds is None:
-        if draw_state.on_action("non_blocking_ctrl_shift_left_arrow_down"):
-            NavUndo.undo()
-        if draw_state.on_action("non_blocking_ctrl_shift_right_arrow_down"):
-            NavUndo.redo()
+    # Navigation stack (tab switches / jump-tos / window open-close): its own
+    # timeline on Ctrl+Shift+arrows. Fires even while text is focused - a
+    # Ctrl+B jump reges the editor focus, so the natural jump-then-undo flow
+    # would otherwise never reach these. The editor ignores the chord (its
+    # Left/Right handlers skip ctrl+shift), same as Ctrl+Z routing to the
+    # global UndoManager.
+    if draw_state.on_action("non_blocking_ctrl_shift_left_arrow_down"):
+        NavUndo.undo()
+    if draw_state.on_action("non_blocking_ctrl_shift_right_arrow_down"):
+        NavUndo.redo()
 
     # Esc dismisses the GlobalSearch window - and its ActionRunner popup -
     # while open. Handled here on the root (always hover-eligible) rather than
@@ -7434,6 +7436,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     #              name=f"{class_to_show.__name__} decorations##deco_{unique}", **common)
 
     return False, input_value
+
 
 
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, show_name=False, selectable=False)

@@ -157,7 +157,11 @@ class WindowChange(Change):
         wds.closed = self.old if undo else self.new
         if not wds.closed:
             Core.melty.move_window_to_front(wds)
-        # Same repaint the dock/window-manager close paths do.
+        # Repaint the window's own subtree (a reopen must redraw its content,
+        # a close must clear its blit from the compositor) ...
+        if Core.melty.cache is not None and wds._tile_id is not None:
+            Core.melty.cache.invalidate_up(wds._tile_id, force=True, max_depth=4)
+        # ... and the dock/window list rows, same frame for interactive paths.
         Core.melty.cache.invalidate_up_by_obj(Core.melty.registered_windows)
         request_render()
 
@@ -412,6 +416,15 @@ class NavUndo:
             open_files = getattr(root, "open_files", None)
             if open_files is not None and path in open_files.open_paths:
                 open_files.selected_path = path
+                # The summon + past-the-blank invalidate open_in_editor does -
+                # the tab selection is consumed inside the editor body.
+                win = Core.melty.find_window("draw_code_editor##@window")
+                if win is not None:
+                    win.closed = False
+                    Core.melty.move_window_to_front(win)
+                    if Core.melty.cache is not None and win._tile_id is not None:
+                        Core.melty.cache.invalidate_up(win._tile_id, force=True,
+                                                       max_depth=4)
                 request_render()
             return
         from src.lsd.gl_gui.view.playground.open_files import open_in_editor

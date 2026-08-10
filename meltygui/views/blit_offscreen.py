@@ -1893,6 +1893,8 @@ class TileCacheMasked:
             self._glow_rects.clear()
         if getattr(self, "_glow_cleared", None) is not None:
             self._glow_cleared.clear()
+        if getattr(self, "_depth_frame", None) is not None:
+            self._depth_frame.clear()
         self._rect_seq = 0
 
     def mask_mark_rect(
@@ -1914,7 +1916,7 @@ class TileCacheMasked:
     def add_shadow(
             self, rect: Tuple[float, float, float, float], offset: float = 2.0,
             layer: int = None, depth: int = None, corner_radius: float = 5.0,
-            margin: float = 0.0, clip: bool = True,
+            margin: float = 0.0, clip: bool = True, draw_state=None,
     ) -> None:
         """Mark a screen-space rect as a shadow caster, for code that is not
         a @render_func (raw draw-list overlays, dock rows, drag ghosts).
@@ -1990,9 +1992,23 @@ class TileCacheMasked:
         inset = all(o <= 0 for o in offs) and any(o < 0 for o in offs)
         ranks = tuple(max(0.0, shadow_depth_at(depth + o, layer))
                       for o in offs)
-        self._shadow_rects.append(
-            (x, y, w, h, ranks, corner_radius, margin, clip_xyxy, owner_key,
-             inset))
+        mark = (x, y, w, h, ranks, corner_radius, margin, clip_xyxy,
+                owner_key, inset)
+        self._shadow_rects.append(mark)
+        # Emitter-keyed retention, mirroring add_glow: on frames where the
+        # enclosing tile rebuilds its mask WITHOUT this body running (a
+        # neighbour invalidated), the baked raised detail (block peels, chip
+        # lifts) drops out of the full mask - shadows and the glow gate
+        # stay flat until the body finally runs. Retained raised marks
+        # re-stamp into the full mask every finalize (MAX blend =
+        # idempotent), keeping them complete on partial-rebuild frames.
+        # Insets stay unretained: MIN carves need their owner-scoped
+        # cached-mask path to avoid cutting windows floating above.
+        if draw_state is not None and not inset:
+            self._ensure_glow_state()
+            self._depth_frame.append(
+                (mark, draw_state,
+                 (draw_state.abs_left, draw_state.abs_top)))
 
     def _ensure_glow_state(self) -> None:
         """Lazily create the glow bookkeeping fields. A hotswap patches
@@ -2010,6 +2026,22 @@ class TileCacheMasked:
             self._glow_fbo = None
             self._glow_size = (0, 0)
             self._glow_tex_empty = True
+        if getattr(self, "_depth_frame", None) is None:
+            # Retained depth (add_shadow) marks: same lifecycle as glow -
+            # frame list and per-emitter store, cleared/killed by the same
+            # protocol.
+            self._depth_frame = []
+            self._depth_marks_by_emitter = {}
+        if getattr(self, "_glow_kill_pending", None) is None:
+            # Territory kills observed mid-interaction (mouse down / drag)
+            # are DEFERRED here instead of executing - resize drags pass
+            # over live glow territory constantly and killing there lost
+            # the glow for the whole drag. Flags fire on release unless
+            # the emitter re-emitted meanwhile (resize release re-renders
+            # the editor, clearing its flag; a quick tab-switch never
+            # re-emits, so its flag kills on release).
+            self._glow_kill_pending = set()
+            self._depth_kill_pending = set()
 
     @staticmethod
     def _glow_root_ds(ds):
@@ -2048,6 +2080,9 @@ class TileCacheMasked:
         if self._glow_rects:
             self._glow_rects[:] = [e for e in self._glow_rects
                                    if e[1] is not draw_state]
+        if self._depth_frame:
+            self._depth_frame[:] = [e for e in self._depth_frame
+                                    if e[1] is not draw_state]
 
     def add_glow(
             self, rect: Tuple[float, float, float, float],
@@ -3926,8 +3961,199 @@ class TileCacheMasked:
             try:
                 self._ensure_glow_state()
                 _glow_retained = self._glow_marks_by_emitter
+                _depth_retained = self._depth_marks_by_emitter
                 for _eid in self._glow_cleared:
                     _glow_retained.pop(_eid, None)
+                    _depth_retained.pop(_eid, None)
+
+                # Kill evidence shared by BOTH retained stores: the rects of
+                # every tile that FUTURE this frame, tagged with their
+                # root emitter AND their live ancestor chain. A capture in
+                # the emitter's OWN subtree that repaints its territory
+                # without the emitter re-emitting means the views under the
+                # marks were replaced (tab switch, jump-to-line swap, any
+                # culled branch) - the marks die. Two exemptions keep
+                # legitimate repaints from flickering the glow:
+                # - captures INSIDE the emitter's subtree (scrolled-in
+                #   widgets capturing during the parent's frame_delta window,
+                #   token overlays) repaint fragments OF the glowing
+                #   content, not over it - walking the CAPTURING tile's
+                #   _parent chain is safe, it just rendered so its pointers
+                #   are fresh (only the culled emitter's parent goes stale);
+                # - the territory is the marks INTERSECTED with the
+                #   emitter's LIVE rect (same origin-clip the stamp
+                #   applies), so a freeze-resize drag that shrinks the view
+                #   stops stale-wide marks from overlapping the sibling
+                #   column's next-frame captures across the seam.
+                # Captures in OTHER columns (popups and tooltips) never
+                # repaint the emitter's surface - glow-root scoping keeps
+                # them from killing marks beneath.
+                def _anc_ids(node):
+                    ids = set()
+                    hops = 0
+                    while node is not None and hops < 64:
+                        ids.add(id(node))
+                        parent = getattr(node, "_parent", None)
+                        if parent is None or parent is node:
+                            break
+                        node = parent
+                        hops += 1
+                    return ids
+
+                _pend_rects = []
+                for p in local_pending:
+                    try:
+                        _pend_rects.append(
+                            (p.pos[0], p.pos[1],
+                             p.pos[0] + p.size[0], p.pos[1] + p.size[1],
+                             self._glow_root_ds(p.draw_state),
+                             _anc_ids(p.draw_state), p.draw_state))
+                    except Exception:
+                        pass
+
+                def _live_clip_of(eds):
+                    # The emitter's LIVE rect - clips glow ORIGIN rects and
+                    # kill territory alike (never the rendered pixels):
+                    # during a freeze-resize drag the wrapper doesn't re-run,
+                    # but width/height track the drag live.
+                    if eds is None:
+                        return None
+                    try:
+                        l, t = eds.abs_left, eds.abs_top
+                        w, h = eds.width, eds.height
+                        if w is None or h is None:
+                            return None
+                        return (l, t, l + w, t + h)
+                    except Exception:
+                        return None
+
+                # Kills only EXECUTE while interaction is settled: mid-drag
+                # repaints (column resize, freeze resize reflows) hit live
+                # glow territory constantly and immediate kills lost the
+                # glow for the whole drag. Unsettled hits flag the emitter
+                # (it keeps glowing); the flag executes on settle unless
+                # the emitter re-emitted since (which clears it).
+                _settled = not (imgui.is_mouse_down(0)
+                                or imgui.is_mouse_down(1)
+                                or imgui.is_mouse_down(2)
+                                or Melty.on_drag)
+
+                def _territory_hit(marks, delta, root, eds, live):
+                    # Returns the pending capture that repainted the
+                    # emitter's territory, or None. Exempt: captures inside
+                    # the emitter's subtree (live _parent walk) and small
+                    # fragment captures fully CONTAINED inside the emitter's
+                    # live rect (< half its area) - inline widgets / token
+                    # overlays hosted outside the emitter's parent chain
+                    # repaint fragments OF the glowing content on hover; a
+                    # real content swap covers the region wholesale.
+                    e_id = id(eds)
+                    e_area = ((live[2] - live[0]) * (live[3] - live[1])
+                              if live is not None else None)
+                    for m in marks:
+                        mx0 = m[0] + delta[0]
+                        my0 = m[1] + delta[1]
+                        mx1, my1 = mx0 + m[2], my0 + m[3]
+                        if live is not None:
+                            mx0, my0 = max(mx0, live[0]), max(my0, live[1])
+                            mx1, my1 = min(mx1, live[2]), min(my1, live[3])
+                            if mx1 <= mx0 or my1 <= my0:
+                                continue
+                        for pr in _pend_rects:
+                            px0, py0, px1, py1, proot, p_ancs, _pds = pr
+                            if proot is not root or e_id in p_ancs:
+                                continue
+                            if (e_area
+                                    and px0 >= live[0] and py0 >= live[1]
+                                    and px1 <= live[2] and py1 <= live[3]
+                                    and ((px1 - px0) * (py1 - py0)
+                                         < 0.5 * e_area)):
+                                continue
+                            if (mx0 < px1 and px0 < mx1
+                                    and my0 < py1 and py0 < my1):
+                                return pr
+                    return None
+
+                def _log_kill(kind, eds, hit, deferred):
+                    if not getattr(Toggles, "glow_debug_log", False):
+                        return
+                    _pds = hit[6]
+                    print(f"glow kill[{kind}]"
+                          f"{' DEFERRED' if deferred else ''}: "
+                          f"emitter={getattr(eds, 'name', None)!r} "
+                          f"by={getattr(_pds, 'name', None)!r} "
+                          f"cap_rect=({hit[0]:.0f},{hit[1]:.0f},"
+                          f"{hit[2]:.0f},{hit[3]:.0f})")
+
+                # Retained DEPTH marks re-stamp into the full mask FIRST -
+                # before the glow stamp samples it - so on frames when an
+                # enclosing tile rebuilt its mask without this emitter's
+                # body running, its interior depth change (block peels, chip
+                # lifts) is retained instead of flashing. The additive blend
+                # makes re-stamping marks that were also freshly emitted
+                # this frame idempotent.
+                _depth_emitted = defaultdict(list)
+                for mark, _eds, _anchor in self._depth_frame:
+                    _depth_emitted[id(_eds)].append((mark, _eds, _anchor))
+                for _eid, entries in _depth_emitted.items():
+                    _depth_retained[_eid] = (
+                        [m for m, _d, _a in entries],
+                        entries[0][1], entries[0][2])
+                _depth_stamp = []
+                for _eid, (marks, _eds, _anchor) in list(
+                        _depth_retained.items()):
+                    if _eds is None or getattr(_eds, "abs_closed", False):
+                        _depth_retained.pop(_eid, None)
+                        self._depth_kill_pending.discard(_eid)
+                        continue
+                    if _eid in _depth_emitted:
+                        self._depth_kill_pending.discard(_eid)
+                        continue  # stamped via the normal fresh path already
+                    _delta = (_eds.abs_left - _anchor[0],
+                              _eds.abs_top - _anchor[1])
+                    _root_ds = self._glow_root_ds(_eds)
+                    if (getattr(_eds, "last_seen", None)
+                            == Melty.frame_count):
+                        # Reached this frame - wrapper ran, so its pixels
+                        # are on screen fresh or via its OWN cached blit. A
+                        # hovered ANCESTOR rebuild around it did not
+                        # replace them (the use_cache child blits inside
+                        # the parent's fresh capture). Tab-switched/culled
+                        # emitters are never reached, so real content
+                        # swaps still kill.
+                        self._depth_kill_pending.discard(_eid)
+                    else:
+                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                              _live_clip_of(_eds))
+                        if _hit is not None:
+                            _log_kill("depth", _eds, _hit, not _settled)
+                            if _settled:
+                                _depth_retained.pop(_eid, None)
+                                self._depth_kill_pending.discard(_eid)
+                                continue
+                            self._depth_kill_pending.add(_eid)
+                        elif _settled and _eid in self._depth_kill_pending:
+                            _depth_retained.pop(_eid, None)
+                            self._depth_kill_pending.discard(_eid)
+                            continue
+                    dx, dy = _delta
+                    for (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
+                         _ins) in marks:
+                        _depth_stamp.append(
+                            (mx + dx, my + dy, mw, mh, ranks, cr, margin,
+                             (mclip[0] + dx, mclip[1] + dy,
+                              mclip[2] + dx, mclip[3] + dy)
+                             if mclip is not None else None,
+                             None, False))
+                if _depth_stamp:
+                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
+                                         self._full_mask_fbo)
+                    gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE,
+                                   gl.GL_FALSE)
+                    self._stamp_shadow_marks(_depth_stamp, dp_x, dp_y,
+                                             s_x, s_y, fb_h)
+                    gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE,
+                                   gl.GL_TRUE)
 
                 # Tunable band offsets, applied LINEARLY in rank units -
                 # never by shifting shadow_depth_at's depth argument (the
@@ -3940,23 +4166,6 @@ class TileCacheMasked:
                     Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
                 _g_hi_off = float(getattr(
                     Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
-
-                def _live_clip_of(eds):
-                    # The emitter's LIVE rect - clips the glow ORIGIN rect
-                    # (never the rendered light): during a freeze-resize
-                    # cell drag the body doesn't re-run, but width/height
-                    # track the drag live, so recorded marks shrink to the
-                    # live cell instead of glowing at the original extent.
-                    if eds is None:
-                        return None
-                    try:
-                        l, t = eds.abs_left, eds.abs_top
-                        w, h = eds.width, eds.height
-                        if w is None or h is None:
-                            return None
-                        return (l, t, l + w, t + h)
-                    except Exception:
-                        return None
 
                 def _resolve_glow(m, delta, eds, root_ds):
                     # Band anchors are the LIVE shadow_depth properties -
@@ -4000,56 +4209,42 @@ class TileCacheMasked:
                         [m for m, _d, _a in entries],
                         entries[0][1], entries[0][2])
 
-                # Kill evidence for retained glow: the rects of every tile
-                # capturing FRESH this frame, tagged by their root window.
-                # A capture in the emitter's OWN window that repaints its
-                # territory while the emitter didn't re-emit means the
-                # marks of the glow were replaced (tab switch, jump-to
-                # content scroll, any culled branch) - the marks die. This is
-                # a truth about the framebuffer, so it needs no view
-                # chain pointers (a culled emitter's _parent chain goes
-                # stale and any-view-based verdicts lie). Captures in
-                # OTHER windows (popups floating above) never repaint the
-                # emitter's surface - same-root overlap check keeps them from
-                # killing glow beneath.
-                _pend_rects = []
-                for p in local_pending:
-                    try:
-                        _pend_rects.append(
-                            (p.pos[0], p.pos[1],
-                             p.pos[0] + p.size[0], p.pos[1] + p.size[1],
-                             self._glow_root_ds(p.draw_state)))
-                    except Exception:
-                        pass
-
-                def _territory_repainted(marks, delta, root):
-                    for m in marks:
-                        mx0 = m[0] + delta[0]
-                        my0 = m[1] + delta[1]
-                        mx1, my1 = mx0 + m[2], my0 + m[3]
-                        for px0, py0, px1, py1, proot in _pend_rects:
-                            if proot is not root:
-                                continue
-                            if (mx0 < px1 and px0 < mx1
-                                    and my0 < py1 and py0 < my1):
-                                return True
-                    return False
-
                 for _eid, (marks, _eds, _anchor) in list(
                         _glow_retained.items()):
                     if _eds is None or getattr(_eds, "abs_closed", False):
                         _glow_retained.pop(_eid, None)
+                        self._glow_kill_pending.discard(_eid)
                         continue
                     _delta = (_eds.abs_left - _anchor[0],
                               _eds.abs_top - _anchor[1])
                     _root_ds = self._glow_root_ds(_eds)
                     # Freshly-emitted entries skip the kill: their own
                     # tile's capture legitimately overlaps their territory.
-                    if (_eid not in _emitted_now
-                            and _territory_repainted(marks, _delta,
-                                                     _root_ds)):
-                        _glow_retained.pop(_eid, None)
-                        continue
+                    if _eid in _emitted_now:
+                        self._glow_kill_pending.discard(_eid)
+                    elif (getattr(_eds, "last_seen", None)
+                          == Melty.frame_count):
+                        # Reached this frame (fresh render or its own
+                        # cached blit): pixels authoritative on screen - a
+                        # hovered ancestor's capture around the use_cache
+                        # barrier did not overlap them. Culled emitters are
+                        # never reached, so this swaps to kill.
+                        self._glow_kill_pending.discard(_eid)
+                    else:
+                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                              _live_clip_of(_eds))
+                        if _hit is not None:
+                            _log_kill("glow", _eds, _hit, not _settled)
+                            if _settled:
+                                _glow_retained.pop(_eid, None)
+                                self._glow_kill_pending.discard(_eid)
+                                continue
+                            self._glow_kill_pending.add(_eid)
+                        elif (_settled
+                              and _eid in self._glow_kill_pending):
+                            _glow_retained.pop(_eid, None)
+                            self._glow_kill_pending.discard(_eid)
+                            continue
                     for m in marks:
                         _stamp_list.append(
                             _resolve_glow(m, _delta, _eds, _root_ds))
@@ -4137,6 +4332,8 @@ class TileCacheMasked:
                 self._glow_rects.clear()
             if getattr(self, "_glow_cleared", None) is not None:
                 self._glow_cleared.clear()
+            if getattr(self, "_depth_frame", None) is not None:
+                self._depth_frame.clear()
             self._enq_mask_keys.clear()
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()
@@ -4145,7 +4342,7 @@ class TileCacheMasked:
             self.seen_ids.clear()
 
 def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
-               margin=0.0, clip=True):
+               margin=0.0, clip=True, draw_state=None):
     """Mark a screen-space (x, y, w, h) rect as a shadow caster from anywhere
     — no @render_func, key, or draw_state required. `offset` is the signed
     depth delta from the surrounding surface: positive (default +2) lifts the
@@ -4159,7 +4356,8 @@ def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
     cache = Melty.cache
     if cache is not None:
         cache.add_shadow(rect, offset=offset, layer=layer, depth=depth,
-                         corner_radius=corner_radius, margin=margin, clip=clip)
+                         corner_radius=corner_radius, margin=margin, clip=clip,
+                         draw_state=draw_state)
 
 
 def add_glow(rect, color, intensity=1.0, radius=24.0, falloff=2.0,

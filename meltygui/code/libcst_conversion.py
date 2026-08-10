@@ -969,7 +969,9 @@ def _intra_usage_worker(source: str, is_class: bool) -> dict[str, list[str]]:
 _SYMBOL_INDEX_PICKLE = _Path.home() / ".lsd" / "symbol_index.pkl"
 # v2: definition lines now point at the `def`/`class` keyword (decorators
 # skipped) - old pickles hold decorator-line defs, invalidate at once.
-_SYMBOL_INDEX_PICKLE_VERSION = 2
+# v3: unresolved member/module defs no longer record line 0 (base class
+# header / module import line instead) - flush cached line-0 defs.
+_SYMBOL_INDEX_PICKLE_VERSION = 3
 
 
 def _disk_cache_enabled() -> bool:
@@ -1016,7 +1018,8 @@ def _load_symbol_store() -> dict:
 
 def _prune_symbol_store():
     """Drop span entries whose file has moved on since they were computed
-    (sig mtime != the file's CURRENT disk mtime, or the file is gone).
+    (sig mtime != the file's CURRENT disk mtime, or the file is gone) —
+    EXCEPT one stale entry per file, kept as the incremental SEED.
 
     A span's key is (path, start, end) and `end` tracks the file's length, so
     every content edit mints a NEW key — the superseded-sibling evict in
@@ -1026,9 +1029,23 @@ def _prune_symbol_store():
     unique path (content-free — the CLAUDE.md hashing ban stays respected);
     spans still in use have their sig mtime refreshed by the hash rescue on
     every serve, so anything failing this check was never served since its
-    file changed on disk."""
+    file changed on disk.
+
+    Seed retention (stale_gen_incremental): the next session's first compute
+    on a changed file can reuse a stale entry's cross-file half incrementally
+    instead of cold-recomputing — but only if a stale entry survives the
+    prune. Keep the best one per still-existing path (latest content, then
+    widest span — the widest overlaps whatever span gets opened next); bounded
+    at ONE per path so the unbounded-growth bug stays fixed."""
+    try:
+        from src.lsd.gl_gui.toggles import Toggles  # lazy: avoid import cycle
+        _keep_seeds = Toggles.TextEditor.SymbolUsages.stale_gen_incremental
+    except Exception:
+        _keep_seeds = True
     _unstatted = object()
     cur_mtime: dict = {}
+    stale: list = []
+    best_seed: dict = {}  # path -> ((mtime, span_width), key)
     for k in list(_symbol_usage_cache):
         path = k[0]
         m = cur_mtime.get(path, _unstatted)
@@ -1040,9 +1057,19 @@ def _prune_symbol_store():
             cur_mtime[path] = m
         entry = _symbol_usage_cache.get(k)
         if entry is None or m is None or entry[0][0] != m:
-            _symbol_usage_cache.pop(k, None)
-            _span_text.pop(k, None)
-            _span_hashes.pop(k, None)
+            stale.append(k)
+            if _keep_seeds and entry is not None and m is not None:
+                rank = (entry[0][0] or 0, k[2] - k[1])
+                cur = best_seed.get(path)
+                if cur is None or rank > cur[0]:
+                    best_seed[path] = (rank, k)
+    seeds = {v[1] for v in best_seed.values()}
+    for k in stale:
+        if k in seeds:
+            continue
+        _symbol_usage_cache.pop(k, None)
+        _span_text.pop(k, None)
+        _span_hashes.pop(k, None)
     for path in [p for p in _mtime_snapshot if cur_mtime.get(p, 0) is None]:
         _mtime_snapshot.pop(path, None)
 
@@ -1700,6 +1727,20 @@ def _cached_def_line(target, df) -> int:
     return dl
 
 
+def _import_def_line(text, name):
+    """1-based line of the column-0 `import …` / `from … import …` statement
+    that binds `name` in `text`, or 0. The definition target for names whose
+    object has no usable source line — C-extension modules (imgui), package
+    modules (getsourcelines(module) starts at 0) — so a click jumps to the
+    local import instead of the top of some file."""
+    pat = re.compile(rf'^(?:from\s+[\w.]+\s+)?import\s.*\b{re.escape(name)}\b')
+    for i, ln in enumerate(text.splitlines(), 1):
+        s = ln.lstrip()   # indented too; `try`-guarded and function-local imports
+        if s.startswith(("import", "from")) and pat.match(s):
+            return i
+    return 0
+
+
 def _member_def_site(base, attr):
     """Best-effort (file, line) where member `attr` of class/module `base` is
     DEFINED. Functions/classes resolve via inspect; plain class vars and enum
@@ -1980,11 +2021,14 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     reflect the live buffer rather than the stale file.
 
     `prev` is the raw result of a PRIOR compute of this span whose expensive half
-    is still valid — the caller (_compute_symbol_usages) only passes it when the
-    index generation is unchanged, i.e. no other file's content and no live object
-    moved, only the local buffer did. A symbol's callers in OTHER files are then
-    invariant, as is a DEFINITION living in another file (resolved against a live
-    object via inspect — the ~65% cost). A definition in the EDITED file is NOT
+    is still (or acceptably) valid. At an unchanged index generation it is exact:
+    no other file's content and no live object moved, only the local buffer did.
+    With stale_gen_incremental the caller (_compute_symbol_usages) also passes a
+    STALE-generation prev (cross-session restore / gen bump from another file's
+    edit) — cross-file callers reused from it can then lag, and the caller marks
+    the result to heal with one full pass at the next generation bump. Either
+    way, a symbol's callers in OTHER files are reused, as is a DEFINITION living
+    in another file (resolved against a live object via inspect — the ~65% cost). A definition in the EDITED file is NOT
     reusable: it moves with the buffer as lines shift, and a stale line breaks the
     editor's at_def direction (the declaration stops matching, jumps to a stale
     copy of itself, and hides its callers) — so in-file defs re-resolve fresh
@@ -2070,8 +2114,16 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             if obj is not None:
                 if id(obj) not in obj_targets:
                     obj_targets[id(obj)] = payload
-                    obj_by_name.setdefault(payload, obj)
-                    def_lines.setdefault(payload, line)
+                # Register per NAME, outside the per-OBJ guard: two names
+                # bound to the same object (`import imgui` with an `_ig` alias,
+                # a re-imported class) shares one obj_targets entry, but each
+                # spelling still needs its own obj_by_name/def_lines entry -
+                # otherwise the second name skipped registration, fell into
+                # _resolve_def's "member defined in this file" branch, and
+                # its definition came out as (this file, line 0) → every jump
+                # on it scrolled the file to the very top.
+                obj_by_name.setdefault(payload, obj)
+                def_lines.setdefault(payload, line)
                 # EVERY occurrence is a site: registration above runs once, but
                 # each reference must link. Appending was inside that guard, so
                 # only the FIRST of N references (e.g. draw_window called 9× in
@@ -2189,6 +2241,14 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 df = inspect.getsourcefile(target)
                 dl = _cached_def_line(target, df)  # cached; skips per-class re-parse
                 dm = getattr(target, "__module__", "") or mod_name
+                if not dl and text:
+                    # A MODULE object's source block starts at line 0 (`gl`,
+                    # `cst`) - jumping there scrolled to the top of the
+                    # __init__.py. The local import statement is the real
+                    # definition site.
+                    _il = _import_def_line(text, nm)
+                    if _il:
+                        df, dl = rp_str, _il
             except Exception:
                 # No inspect source: either a plain CONSTANT (int/str/tuple) or a
                 # wrapper object whose __getattr__/__class__ raised (a
@@ -2201,6 +2261,13 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 # listed all the other usages. Only fall back to it on a true miss.
                 df, dl = _const_def_site(nm, obj, (owning, *mod_map.values()))
                 dm = mod_name
+                if df is None and text:
+                    # Sourceless module (C extension - imgui, glfw): no inspect
+                    # source and no `nm = obj` assignment anywhere. The local
+                    # import line is the definition.
+                    _il = _import_def_line(text, nm)
+                    if _il:
+                        df, dl = rp_str, _il
                 if df is None:
                     df, dl = rp_str, def_lines.get(nm, 0)
         elif base is not None:  # reverse ref: member of an
@@ -2208,15 +2275,17 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
             dm = (getattr(base, '__module__', None)
                   or getattr(base, '__name__', '') or '')
             if df is None:
-                # Unresolvable member def: point at the BASE's own file (where the
-                # class lives), never rp_str: the member isn't defined in the file
-                # being analyzed (that gave bogus "new_gl_panel.py:0" for a
-                # local-resolved external member like DrawArgs.abs_clip_rect).
+                # Unresolvable member def (dynamically-set attr, instance attr
+                # from without class, ...): point at the BASE's own def: its file
+                # AND its class-header line, not rp_str/0. Line 0 round-
+                # tripped through the jump as "line 1" and scrolled the base's
+                # file to the very top (`GlobalStyle.some_val` referenced in
+                # the defining file did this on every click).
                 try:
                     df = inspect.getsourcefile(base)
+                    dl = _cached_def_line(base, df)
                 except Exception:
-                    df = None
-                dl = 0
+                    df, dl = None, 0
         else:  # class member: defined in this file
             df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
         return (df, dl, 0, dm)
@@ -2321,6 +2390,24 @@ def _distribute_by_name(gp, flat: dict, _matched=None) -> None:
 # on the render thread or defer to the cooperative-yielded path.
 _NEEDS_RECOMPUTE = object()
 
+
+class InterimUsages:
+    """_NEEDS_RECOMPUTE with a consolation prize: the fast_only probe returns
+    this instead of the bare sentinel when a real recompute is owed BUT a prior
+    (possibly stale/invalid) result exists. `flat` is that prior
+    {sym: SymbolUsage} — a first-paint stopgap so a freshly opened editor shows
+    last-known usages instead of nothing while the deferred recompute runs. It
+    is safe to display as-is: the consumer (_collect_usage_spans/_site_span)
+    verify-recovers each site against the live buffer (±4 lines, name-anchored)
+    and DROPS mismatches, so drifted sites degrade to absent, never wrong.
+    Schedulers must treat this exactly like _NEEDS_RECOMPUTE — the recompute is
+    still pending; only the attach path may read `flat` (and attach it as
+    NON-fresh, so the retry nudge keeps firing)."""
+    __slots__ = ("flat",)
+
+    def __init__(self, flat):
+        self.flat = flat
+
 # Returned by _symbol_refs_index when the CURRENT buffer doesn't parse (an
 # in-progress edit with a syntax error). Distinct from an empty {} result (a the
 # file genuinely has no symbols): on a parse failure _compute_symbol_usages HOLDS
@@ -2419,6 +2506,13 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     Gated by Toggles.TextEditor.SymbolUsages.incremental_symbol_index for A/B
     against the full recompute.
 
+    stale_gen_incremental extends the reuse to STALE-generation entries (a
+    cross-session pickle restore, or a gen bump because another file changed):
+    instead of throwing the entry out and recomputing cold, it seeds the same
+    incremental pass and the result is marked in _stale_seeded_spans — its
+    reused cross-file callers may lag, so the next miss where the generation
+    moved again skips the rescue/reuse and runs one full healing pass.
+
     fast_only=True returns ONLY the cheap outcomes — an exact cache hit or a
     blank-line position offset — and `_NEEDS_RECOMPUTE` the moment a real
     recompute would be needed, doing none of it. The caller runs this inline on
@@ -2457,8 +2551,17 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # file was edited - content is all but guaranteed different, so the O(file)
     # digest is pure per-keystroke render-thread overhead. `chash` stays None on
     # the edit path and is computed lazily by the store sites that need it.
+    # HEAL: this span was seeded from a STALE-generation prev (cross-session
+    # restore / gen-bump reuse - see the prev block below), so its cross-file
+    # callers may lag. The next miss where the generation MOVED again is the
+    # heal point: skip the hash rescue and the prev reuse and run one full
+    # pass. A same-gen miss (a pure edit of this file) keeps the fast
+    # incremental and stays marked - chaining from a marked entry inherits
+    # the mark, so the debt is never laundered, only repaid entirely.
+    heal = (key in _stale_seeded_spans
+            and cached is not None and cached[0][3] != gen)
     chash = None
-    if cached is not None and cached[0][1] == pending_gen:
+    if not heal and cached is not None and cached[0][1] == pending_gen:
         chash = _content_hash(text)
         if cached[0][2] == accurate and _span_hashes.get(key) == chash:
             _store_usages(key, sig, cached[1], text, chash=chash)
@@ -2481,12 +2584,23 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # are added). `src_key` is tracked so we can read its buffer-text snapshot for
     # the position-offset fast path and evict it when the view shifts off it.
     prev = src = src_key = None
-    if not accurate and Toggles.TextEditor.SymbolUsages.incremental_symbol_index:
-        if cached is not None and cached[0][2] is False and cached[0][3] == gen:
+    stale_seed = False
+    _su_t = Toggles.TextEditor.SymbolUsages
+    if not accurate and _su_t.incremental_symbol_index and not heal:
+        # stale_gen_incremental: a prev whose generation lapsed (another file
+        # changed / cross-session restore) still contains a valid expensive
+        # half for THIS file; reuse it instead of re-recomputing and mark the
+        # result (see `heal` above) so it trues up at the next gen bump.
+        any_gen = _su_t.stale_gen_incremental
+        if cached is not None and cached[0][2] is False \
+                and (cached[0][3] == gen or any_gen):
             src, src_key = cached, key
         else:
-            src_key, src = _best_same_file_prev(resolved, start, end, gen, key)
+            src_key, src = _best_same_file_prev(resolved, start, end, gen, key,
+                                                any_gen=any_gen)
         if src is not None:
+            stale_seed = (src[0][3] != gen
+                          or src_key in _stale_seeded_spans)
             # Cheapest path: a position-only edit (blank lines added/removed, no
             # non-blank content change) needs no recompute - remap the prior
             # result's buffer positions by a count delta. _line_offset_map returns
@@ -2546,6 +2660,8 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                             chash = _content_hash(text)
                         _store_usages(key, sig, offset, text, chash=chash,
                                       evict=src_key if src_key != key else None)
+                        if stale_seed:
+                            _stale_seeded_spans.add(key)
                         _ptrace(f"usage offset-remap in {(_time.monotonic() - _t_probe) * 1000:.1f}ms",
                                 file=resolved.name, span=f"{start}-{end}")
                         return offset
@@ -2557,6 +2673,15 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
         _ptrace_rl(("probe-miss", key),
                    f"usage probe miss, deferring (probe cost {(_time.monotonic() - _t_probe) * 1000:.1f}ms/frame)",
                    file=resolved.name, span=f"{start}-{end}")
+        # Any prior result - even a truly empty span - beats an empty first
+        # paint: hand it to the caller as an INTERIM stopgap (the editor's
+        # usage-site verify-recover aligns small drift and drops mismatched
+        # sites, so it never washes wrong tokens) while the real recompute is
+        # deferred. Wrapped so schedulers still treat it as needs-recompute.
+        _stopgap = (src[1] if src is not None
+                    else cached[1] if cached is not None else None)
+        if _stopgap:
+            return InterimUsages(_stopgap)
         return _NEEDS_RECOMPUTE  # only exact-hit + offset are cheap; defer the rest
     # Typing quiet-gate (the cst-merge lesson): a recompute launched mid-burst
     # holds the GIL for 150ms-4s against the render thread and is obsolete by
@@ -2589,7 +2714,14 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # Past every fast path — this is a real incremental/full recompute. Time and
     # notify only here, so cache hits / offsets stay silent.
     recompute_start = _time.monotonic()
-    _mode = "jedi" if accurate else ("incremental" if prev is not None else "cold")
+    _mode = ("jedi" if accurate
+             else "incremental" if prev is not None
+             else "heal-full" if heal else "cold")
+    if prev is None:
+        # Conspicuous: a FULL recompute is the expensive path (~0.4-2s) the
+        # stale-seed reuse exists to avoid - make every one visible on stdout.
+        print(f"\033[1;33;45m[symbol-usage] FULL recompute ({_mode}) "
+              f"{resolved.name}:{start}-{end} miss={_why}\033[0m")
     _ptrace(f"usage recompute start ({_mode}, miss={_why})",
             file=resolved.name, span=f"{start}-{end}", pending_gen=pending_gen)
     try:
@@ -2624,6 +2756,13 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
         chash = _content_hash(text)
     _store_usages(key, sig, usages, text, chash=chash,
                   evict=src_key if (src_key is not None and src_key != key) else None)
+    # Marker lifecycle: a result built on a stale-gen seed owes a full pass
+    # (repaid via `heal` at the next gen bump); a full/incremental-at-gen
+    # result is debt-free and clears any prior mark.
+    if stale_seed:
+        _stale_seeded_spans.add(key)
+    else:
+        _stale_seeded_spans.discard(key)
     _usage_inflight.pop(key, None)
     return usages
 
@@ -2631,6 +2770,13 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
 # Spans with a real recompute currently running - later concurrent triggers
 # return the held result instead of stacking another multi-second pass.
 _usage_inflight = globals().get("_usage_inflight") or {}
+
+# Span keys whose result was seeded from a STALE-generation prev (their
+# cross-file callers might reflect other files' edits). The mark forces one full
+# refresh at the next generation-moved miss (see `heal` in
+# _compute_symbol_usages), then clears. Transient - never pickled; a restored
+# stale entry simply re-marks itself when it's next used as a seed.
+_stale_seeded_spans = globals().get("_stale_seeded_spans") or set()
 
 # resolved-path -> monotonic time of the last position-offset materialization.
 # The render-thread (fast_only) shift path serves the UNSHIFTED base between
@@ -2641,24 +2787,32 @@ _SHIFT_MAT_MIN_S = 0.25   # matches text_editor._TINT_RECOMPUTE_MIN_S
 _shift_last_mat = globals().get("_shift_last_mat") or {}
 
 
-def _best_same_file_prev(resolved, start, end, gen, exclude_key):
+def _best_same_file_prev(resolved, start, end, gen, exclude_key, any_gen=False):
     """Pick the cached entry for the SAME file at the SAME index generation whose
     span best overlaps [start, end] — seeds an incremental refresh when the exact
     (start, end) key shifted (the span grew/shrank as the user edited). Defs +
     callers are keyed by symbol NAME and valid across spans at one generation, so a
     shifted sibling reuses cleanly (names it lacks just recompute). Returns
     (key, entry) or (None, None). The cache is small (≈one entry per open editor
-    span), so the linear scan is negligible."""
-    best = None  # (overlap, key, entry)
+    span), so the linear scan is negligible.
+
+    any_gen=True (stale_gen_incremental) also admits STALE-generation entries —
+    a cross-session pickle restore or a gen bump from another file's edit — as
+    seeds; a same-gen entry still wins over a stale one at any overlap, since
+    only stale seeds incur the heal debt."""
+    best = None  # ((gen_match, overlap), key, entry)
     for k, entry in _symbol_usage_cache.items():
         if k == exclude_key or k[0] != resolved:
             continue
         s = entry[0]
-        if s[2] is not False or s[3] != gen:  # wrong resolver / generation
+        if s[2] is not False:  # different resolver
+            continue
+        if s[3] != gen and not any_gen:  # different generation
             continue
         ov = min(end, k[2]) - max(start, k[1])
-        if ov > 0 and (best is None or ov > best[0]):
-            best = (ov, k, entry)
+        rank = (s[3] == gen, ov)
+        if ov > 0 and (best is None or rank > best[0]):
+            best = (rank, k, entry)
     return (best[1], best[2]) if best else (None, None)
 
 
@@ -2830,27 +2984,45 @@ def _store_usages(key, sig, usages, text, chash=None, evict=None) -> None:
         _symbol_usage_cache.pop(evict, None)
         _span_text.pop(evict, None)
         _span_hashes.pop(evict, None)
+        _stale_seeded_spans.discard(evict)
 
 
-def invalidate_usage_cache(path: _Path | str | None = None) -> None:
-    """Drop cached cross-file references for a path, or all if None."""
-    print("Invalidating usage cache for", path if path else "ALL PATHS")
+def invalidate_usage_cache(path: _Path | str | None = None,
+                           drop_spans: bool = False) -> None:
+    """Invalidate cross-file reference caches for a path, or all if None.
+
+    Span RESULTS are KEPT by default: their sig (mtime / pending_gen / index
+    gen) already detects any staleness this invalidation could signal, and a
+    kept entry is worth a lot — an instant hash rescue when the content is
+    unchanged (the common case: a save writing the buffer verbatim to disk
+    used to wipe the spans here and force a cold recompute of a file whose
+    content didn't change), or the incremental seed (stale_gen_incremental)
+    when it did. drop_spans=True is the scorched-earth path for an EXPLICIT
+    force-refresh (the manual Index button): the next compute is a true cold
+    pass with no reuse."""
+    print(f"Invalidating usage cache for {path if path else 'ALL PATHS'}"
+          f"{' (dropping spans)' if drop_spans else ''}")
     if path is None:
         _xref_cache.clear()
-        _symbol_usage_cache.clear()
-        _span_text.clear()
-        _span_hashes.clear()
         _file_parse_cache.clear()
+        if drop_spans:
+            _symbol_usage_cache.clear()
+            _span_text.clear()
+            _span_hashes.clear()
+            _stale_seeded_spans.clear()
     else:
         resolved = _Path(path).resolve()
         _xref_cache.pop(resolved, None)
         _file_parse_cache.pop(resolved, None)
-        for k in [k for k in _symbol_usage_cache if k[0] == resolved]:
-            _symbol_usage_cache.pop(k, None)
-        for k in [k for k in _span_text if k[0] == resolved]:
-            _span_text.pop(k, None)
-        for k in [k for k in _span_hashes if k[0] == resolved]:
-            _span_hashes.pop(k, None)
+        if drop_spans:
+            for k in [k for k in _symbol_usage_cache if k[0] == resolved]:
+                _symbol_usage_cache.pop(k, None)
+            for k in [k for k in _span_text if k[0] == resolved]:
+                _span_text.pop(k, None)
+            for k in [k for k in _span_hashes if k[0] == resolved]:
+                _span_hashes.pop(k, None)
+            for k in [k for k in _stale_seeded_spans if k[0] == resolved]:
+                _stale_seeded_spans.discard(k)
 
 
 def _get_cross_file_usages(
@@ -4236,7 +4408,9 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
             _sym_note = "skipped:no-gen" if _index_generation < 1 else "skipped:mid-drag"
         if run_jedi:
             print("Index refresh (manual) for", address.path)
-            invalidate_usage_cache(address.path)
+            # Explicit force-refresh: the only caller that really wants a cold
+            # pass with no seed/rescue reuse.
+            invalidate_usage_cache(address.path, drop_spans=True)
         if run_jedi or auto:
             try:
                 _t_sym0 = time.monotonic()

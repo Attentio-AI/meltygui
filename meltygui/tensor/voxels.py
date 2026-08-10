@@ -1209,7 +1209,7 @@ def _render_label_billboards(gl_state, specs, cam, height):
 
 
 @render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True,
-             auto_resize=False, min_width=269, with_header=draw_header,
+             auto_resize=False, min_width=269, with_header=draw_header, tint=(0.126, 0.267, 0.083),
              bg_offset=0, min_height=293, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 draw_state=None,

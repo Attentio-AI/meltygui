@@ -568,6 +568,14 @@ class Toggles:
             # Fast path only.
             incremental_symbol_index = True
 
+            # Also seed the incremental path from a STALE-generation cached
+            # span (cross-session pickle restore, or a gen bump because some
+            # OTHER file changed) instead of cold-recomputing (~50-100ms vs
+            # 0.4-2s). Cross-file callers reused from the stale seed can drift;
+            # the span is marked and replaced with one full pass at the next
+            # generation bump. Off = a stale-gen miss recomputes cold.
+            stale_gen_incremental = True
+
             # Per-edit incremental patching on top of the incremental path: re-derive
             # only the top-level-statement region around the edit (patched parse
             # artifacts + a region-restricted pass) and merge into the prior
@@ -853,7 +861,7 @@ class Toggles:
         # through bg_min/max), so the feathered glow can hold a different
         # brightness window than the hard band. 0.0/1.0 = no extra clamp.
         def_line_blur_min_value = 0.401
-        def_line_blur_max_value = 15.849
+        def_line_blur_max_value = 6.338
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
@@ -1186,12 +1194,12 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
 
     show_filled_tiles = False
     gl_check_error = False
 
-    # [tint=(0.04, 0.286, 0.422), show_tint=True]
+    # [tint=(0.0, 0.374, 0.744), show_tint=True]
     enable_jedi = True
     jedi_correctness = False
 
@@ -1243,10 +1251,17 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 4
     # Master strength of the glow light at composite time.
-    glow_strength = 1.0
+    glow_strength = 1.00
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
-    glow_shadow_cut = 1.459
+    # Keep MODEST: shadows are cast relative from the casters (light_dir),
+    # so a strong cut brightens a band-shaped region DISPLACED from the
+    # glow - it reads as a second copy of the glow drawn over itself, and
+    # it shifts between live-rendered and blit-served frames because the
+    # depth detail under the band differs subtly between those paths.
+    # (Confirmed by glow_debug_log: dups=0 = one stamping, one composite
+    # - the "double" is this cut, not a second glow rendering.)
+    glow_shadow_cut = 0.00
 
     # Band offsets for the glow receiver mask, applied live in PASS 6 (no
     # re-render needed to tune). Lower bound is relative to the emitter's

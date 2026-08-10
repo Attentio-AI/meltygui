@@ -767,6 +767,12 @@ class Melty:
 
     # Emphasis flashes: key -> SimpleNamespace note, drawn in the overlay
     # pass (see the emphasize renderer next to the InvalidateTracker above).
+    # A held (auto_fade=False) note that goes this many RENDERED frames
+    # without its owner re-asserting it gets force-released into the fade -
+    # the stuck-note guard for owners that stop rendering (window closed,
+    # tab switched) without releasing. Idle frames don't count, so a held
+    # note still sticks while nothing is happening.
+    emphasis_hold_grace = 30
     emphasis_notes = {}
 
     # File-text cache keyed by resolved path name. Populated by read_code,
@@ -1124,20 +1130,28 @@ class Melty:
         and let the fade play out from that moment. Holding notes draw from
         whatever frames render anyway (no render requests), so the release
         check naturally runs when input wakes the caller's view back up.
+        A hold is a lease, not a latch: keep re-asserting it (call again with
+        auto_fade=False) while the owner's body runs, and the overlay pass
+        force-releases any hold that goes emphasis_hold_grace rendered frames
+        untouched — so a note can never stick around after its owner stops
+        rendering.
 
         rect is (x0, y0, x1, y1) in absolute screen coords, or a zero-arg
         callable returning one (or None to skip a frame) so the flash can
-        track a scrolling target."""
+        track a scrolling target. A callable that raises (e.g. its captured
+        draw_state died) drops the note."""
         note = cls.emphasis_notes.get(key)
         if note is None or not auto_fade or not note.auto_fade:
             cls.emphasis_notes[key] = types.SimpleNamespace(
                 rect=rect, tint=tint, frame=cls.frame_count,
                 auto_fade=auto_fade, rounding=rounding,
-                fade_frames=fade_frames, thickness=thickness)
+                fade_frames=fade_frames, thickness=thickness,
+                last_touch=cls.frame_count)
         else:
             # Already fading automatically: refresh geometry/looks only.
             note.rect, note.tint = rect, tint
             note.rounding, note.thickness = rounding, thickness
+            note.last_touch = cls.frame_count
 
     @classmethod
     def overlay_channel_for(cls, ds) -> int:
@@ -3358,6 +3372,13 @@ class Melty:
         # releases them with an auto_fade=True call.
         for key in list(cls.emphasis_notes.keys()):
             note = cls.emphasis_notes[key]
+            if (not note.auto_fade and cls.frame_count
+                    - getattr(note, "last_touch", note.frame) > cls.emphasis_hold_grace):
+                # Stuck-note guard: the owner stopped re-asserting its hold
+                # (window closed, tab switched, body no longer runs) -
+                # force-release into the fade.
+                note.auto_fade = True
+                note.frame = cls.frame_count
             if note.auto_fade:
                 frames_past = cls.frame_count - note.frame
                 alpha = 1.0 - frames_past / max(1, note.fade_frames)
@@ -3370,7 +3391,13 @@ class Melty:
                 request_render()
             else:
                 alpha = 1.0
-            rect = note.rect() if callable(note.rect) else note.rect
+            try:
+                rect = note.rect() if callable(note.rect) else note.rect
+            except Exception:
+                # The rect provider died (e.g. captured draw_state torn
+                # down) - a note that can't place itself must not linger.
+                del cls.emphasis_notes[key]
+                continue
             if rect is not None:
                 x0, y0, x1, y1 = rect
                 r, g, b = note.tint[:3]

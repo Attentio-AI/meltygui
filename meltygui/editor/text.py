@@ -2425,7 +2425,10 @@ def _usage_jump_targets(su, view_path=None, view_span=None, at_def=None):
     `at_def=None` falls back to the legacy symbol-level test (is the definition
     anywhere in view_span) for callers that don't pass a per-site flag."""
     d = getattr(su, 'definition', None)
-    if d is not None and getattr(d, 'path', None) is None:
+    # A definition with no path OR no real line (0 = unresolved fallback) is not a
+    # jump target - line 0 scrolled the target file to its very top.
+    if d is not None and (getattr(d, 'path', None) is None
+                          or (getattr(d, 'line', 0) or 0) <= 0):
         d = None
     callers = [c for c in (getattr(su, 'callers', None) or ())
                if getattr(c, 'path', None) is not None]
@@ -2493,6 +2496,17 @@ def _focus_in_context_menu_over(editor_ds, max_steps=64):
         if pwin is not None and pwin is not node:
             stack.append((pwin, via_menu))
     return False
+
+
+def _uj_log(msg):
+    """Usage-jump debug trail (event-driven, not per-frame): every Ctrl+B
+    press, gutter click, span-scan outcome, and pick lands here with the
+    frame count. `tail -f /tmp/uj_debug.log` while reproducing."""
+    try:
+        with open("/tmp/uj_debug.log", "a") as f:
+            f.write(f"[f{Melty.frame_count}] {msg}\n")
+    except OSError:
+        pass
 
 
 def _shorten_dotted(s):
@@ -5991,6 +6005,7 @@ def draw_text(input_value: str, height=None,
                             ds.abs_left + (ds.width or 0), y0 + lp + 1)
 
                 Melty.emphasize(f"jump_line {ds.name}", _local_jump_rect)
+                _uj_log(f"goto LOCAL line={_line} pos={_pos}")
                 request_render()
                 return
         # External jump: the picked site opens in another tab, so this buffer's
@@ -6006,6 +6021,8 @@ def draw_text(input_value: str, height=None,
         from src.lsd.gl_gui.view.core_views.new_core_view import _dd_close
         _dd_close(uj_state)
         request_render()
+        _uj_log(f"goto EXTERNAL {getattr(ref.path, 'name', ref.path)}:"
+                f"{getattr(ref, 'line', None)}")
         _open_usage_ref(ref)
 
     def _try_usage_jump(pos, force_picker=False):
@@ -6015,12 +6032,18 @@ def draw_text(input_value: str, height=None,
         instead of jumping straight. True if the jump or picker happened (a
         span with zero targets returns False)."""
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        _n_spans = 0
         for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree, _usage_off, _vpath):
+            _n_spans += 1
             if _us <= pos < _ue:
                 _targets = _usage_jump_targets(
                     _su, at_def=_at_def,
                     view_path=_vpath,
                     view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
+                _uj_log(f"try_jump HIT pos={pos} sym={getattr(_su, 'name', '?')!r} "
+                        f"at_def={_at_def} targets={len(_targets)} "
+                        f"[{', '.join(f'{getattr(t.path, 'name', t.path)}:{t.line}' for t in _targets[:4])}"
+                        f"{'…' if len(_targets) > 4 else ''}]")
                 if _targets and (len(_targets) > 1 or force_picker):
                     _items, _tags = _usage_ref_items(_targets)
                     ds._uj_items = _items
@@ -6045,6 +6068,8 @@ def draw_text(input_value: str, height=None,
                     _goto_usage_ref(_targets[0])
                     return True
                 return False
+        _uj_log(f"try_jump MISS pos={pos} spans_scanned={_n_spans} "
+                f"vpath={getattr(_vpath, 'name', _vpath)}")
         return False
 
     def _line_usage_picker(line):
@@ -6103,6 +6128,7 @@ def draw_text(input_value: str, height=None,
         uj_state._kbd_mode = True
         uj_state.open_path = ()
         uj_state.cursor_path = (next(iter(_items)),)
+        _uj_log(f"gutter OPEN line={line} rows={len(_items)}")
         # Same latched-scroll snap as _try_usage_jump.
         from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
         _dd_scroll_cursor_into_view(
@@ -6275,6 +6301,11 @@ def draw_text(input_value: str, height=None,
     # so the shortcut silently required a simultaneous mouse press.) The event
     # is global-routed, so it reaches the editor under the pointer; gate on
     # focus so a stale caret in some other merely-hovered editor can't jump.
+    if ctrl_b_down and not single_line and not is_search_box:
+        _uj_log(f"ctrl_b {ds.name!r} focused={is_focused} "
+                f"(focus_owner={getattr(Melty.text_focused_ds, 'name', None)!r}) "
+                f"uj_open={getattr(ds, '_uj_open', False)} "
+                f"caret={ds.text_cursor_pos} text_len={len(text)}")
     if (ctrl_b_down and is_focused and not single_line and not is_search_box
             and not getattr(ds, '_uj_open', False)):
         _cb_pos = min(ds.text_cursor_pos, max(len(text) - 1, 0))
@@ -6443,6 +6474,8 @@ def draw_text(input_value: str, height=None,
                         ds._uj_index = 0
                     request_render()
                 elif _pick is not None:
+                    _uj_log(f"pick ENTER ref={getattr(getattr(_pick, 'path', None), 'name', None)}:"
+                            f"{getattr(_pick, 'line', None)}")
                     _goto_usage_ref(_pick)
                     ds._uj_open = False
                 _fired.discard(glfw.KEY_ENTER)
@@ -6732,7 +6765,10 @@ def draw_text(input_value: str, height=None,
                 changed = True
 
         # --- Left ---
-        if pressed(glfw.KEY_LEFT):
+        # Ctrl+Shift+Left/Right belongs to navigation undo/redo (the root
+        # NavUndo hotkeys, which fire even while text is focused) - the editor
+        # ignores the chord, giving up extend-selection-by-word for it.
+        if pressed(glfw.KEY_LEFT) and not (ctrl and shift):
             ds.text_cursor_blink_time = time.time()
             if ctrl:
                 ds.text_cursor_pos = _word_boundary_left(text, ds.text_cursor_pos)
@@ -6748,7 +6784,7 @@ def draw_text(input_value: str, height=None,
 
 
         # --- Right ---
-        if pressed(glfw.KEY_RIGHT):
+        if pressed(glfw.KEY_RIGHT) and not (ctrl and shift):
             ds.text_cursor_blink_time = time.time()
             if ctrl:
                 ds.text_cursor_pos = _word_boundary_right(text, ds.text_cursor_pos)
@@ -7336,9 +7372,15 @@ def draw_text(input_value: str, height=None,
     # Open this body run's glow group: live cache lets glows from the last
     # run drop unless re-emitted below (so toggling tints off or scrolling the
     # bands away really clears them), while cache-skipped frames never reach
-    # this and keep them.
-    clear_glows(ds)
-    if Toggles.TextEditor.definition_tints and not is_search_box:
+    # this point at all. HOLD the group (skip the clear) when tints are
+    # ON but the code tree is transiently unreadable - _def_tints returns
+    # empty from a non-dict tree BYPASSING its last-good machinery, and a
+    # hover-coincident body run during initial parse churn would read
+    # that as "tints removed" and drop the retained glow at random.
+    _dt_on = Toggles.TextEditor.definition_tints and not is_search_box
+    if not (_dt_on and not isinstance(_usage_tree, dict)):
+        clear_glows(ds)
+    if _dt_on:
         _t_dt = time.perf_counter()
 
 
@@ -7460,7 +7502,8 @@ def draw_text(input_value: str, height=None,
                 _peel = _base + _dt_block_sh
                 add_shadow((sx, sy, _bx1 - sx, ey - sy),
                            offset=(_base, _base, _peel, _peel),
-                           corner_radius=4.0, clip=_sh_clip)
+                           corner_radius=4.0, clip=_sh_clip,
+                           draw_state=ds)
             draw_list.add_rect_filled(sx, sy, _bx1, ey, _b_col, 4.0)
             if _dt_outline_a > 0:
                 _b_ol = _ol_rgb(_b_rgb)
@@ -7602,7 +7645,8 @@ def draw_text(input_value: str, height=None,
                 # the entire background's flat depth.
                 add_shadow((sx - 1, sy + 1, ex - sx + 2, ey - sy - 2),
                            offset=_scope_surface(_s_line) + _dt_sym_sh,
-                           corner_radius=3.0, clip=_sh_clip)
+                           corner_radius=3.0, clip=_sh_clip,
+                           draw_state=ds)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
             if _dt_sym_ol_a > 0:
                 _s_ol = _ol_rgb(_sa, _dt_sym_ol_b)
@@ -8381,7 +8425,8 @@ def draw_text(input_value: str, height=None,
             # the gutter along its edge. The rect IS the exact strip (the
             # shadow sits outside _sh_clip's text-body bounds), so no clip.
             add_shadow((left, gutter_top, gutter_w, rect_max_y - gutter_top),
-                       offset=_gut_sh, corner_radius=0.0, clip=False)
+                       offset=_gut_sh, corner_radius=0.0, clip=False,
+                       draw_state=ds)
         draw_list.push_clip_rect(left, gutter_top, left + gutter_w, rect_max_y, True)
         draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, imgui.get_color_u32_rgba(*gutter_bg))
         # Line-tint lookup for the heat wash below: a line with a definition
@@ -8437,7 +8482,7 @@ def draw_text(input_value: str, height=None,
                                 (left + gutter_w - 3.0) - (nx - 3.0),
                                 line_px - 2),
                                offset=_uh_off, corner_radius=3.0,
-                               clip=_gut_clip)
+                               clip=_gut_clip, draw_state=ds)
                 draw_list.add_rect_filled(nx - 3.0, ly + 1, left + gutter_w - 3.0,
                                           ly + line_px - 1, _hb, 3.0)
             draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
@@ -8721,6 +8766,16 @@ def draw_text(input_value: str, height=None,
                  or _focus_in_context_menu_over(draw_state))
                 and getattr(ds, '_uj_open', False)
                 and bool(getattr(ds, '_uj_items', None)))
+    # Edge-log the "flagged open but not shown" state - an invisible-but-open
+    # picker still gates Ctrl+B off (its `not _uj_open` check), which looks
+    # exactly like "the shortcut is broken".
+    _uj_hidden = getattr(ds, '_uj_open', False) and not _uj_show
+    if _uj_hidden != getattr(ds, '_uj_hidden_prev', False):
+        ds._uj_hidden_prev = _uj_hidden
+        if _uj_hidden:
+            _uj_log(f"picker OPEN-BUT-HIDDEN {ds.name!r} "
+                    f"focus_owner={getattr(Melty.text_focused_ds, 'name', None)!r} "
+                    f"items={len(getattr(ds, '_uj_items', None) or {})}")
     _uj_items = ds._uj_items if _uj_show else {}
     _uj_anchor = getattr(ds, '_uj_anchor', ds.text_cursor_pos)
     _uj_gut = getattr(ds, '_uj_anchor_gutter', None)
@@ -8804,6 +8859,11 @@ def draw_text(input_value: str, height=None,
     # previous position/contents - a click there replayed the LAST session's
     # row (seen as "gutter click instantly jumps to the previously-jumped
     # file"). Real picks always come ≥2 frames after the open.
+    if uj_changed:
+        _uj_log(f"pick changed={uj_changed} "
+                f"ref={getattr(getattr(uj_pick, 'path', None), 'name', None)}:"
+                f"{getattr(uj_pick, 'line', None)} "
+                f"open_age={Melty.frame_count - getattr(ds, '_uj_open_frame', -99)}")
     if (uj_changed and getattr(uj_pick, 'path', None) is not None
             and Melty.frame_count - getattr(ds, '_uj_open_frame', -99) > 1):
         _goto_usage_ref(uj_pick)

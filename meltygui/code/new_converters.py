@@ -2757,6 +2757,21 @@ def _ensure_symbol_index(dict_host, str_host, code_dict, jump_to=None):
     # newline offsets eagerly instead of waiting for the reparse.
     _t_probe0 = time.monotonic()
     flat = _lc.compute_symbol_usages_for_address(jump_to, fast_only=True)
+    if isinstance(flat, getattr(_lc, "InterimUsages", ())):
+        # A real recompute is owed, but a prior (stale/invalid) result exists -
+        # attach it ONCE as a first-paint stopgap so the editor washes
+        # immediately instead of showing nothing (sites verify-recover against
+        # the live buffer in _collect_node_spans; mismatches drop). Then fall
+        # through to the deferred recompute: _post_symbol_attach sees the sig
+        # isn't fresh, stamps _symbol_gen=None, and clears the nudge key, so
+        # the trigger loop keeps firing until the real compute lands.
+        if getattr(dict_host, "_interim_attach_key", None) != key:
+            dict_host._interim_attach_key = key
+            _ptrace(f"ensure-index: interim stale attach (recompute pending, probe "
+                    f"{(time.monotonic() - _t_probe0) * 1000:.1f}ms)",
+                    host=_host_label(dict_host), names=len(flat.flat))
+            _post_symbol_attach(dict_host, gen, flat.flat)
+        flat = _lc._NEEDS_RECOMPUTE
     if flat is not _lc._NEEDS_RECOMPUTE:
         dict_host._auto_index_key = key
         _ptrace(f"ensure-index: inline attach (probe "

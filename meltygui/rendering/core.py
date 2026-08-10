@@ -4609,6 +4609,16 @@ def render_func(*args, **o_kwargs):
         # freshly loaded view starts True and turns False once draw_collection
         # has actually measured the content.
         if not needs_scroll and draw_state.frame_count > 3:
+            if (draw_state.scroll_offset[1] > 1
+                    and Melty.frame_count - getattr(draw_state, "_jump_dbg", -9999) < 120):
+                try:  # jump-scroll debug (see _uj_log in text_editor.py)
+                    with open("/tmp/uj_debug.log", "a") as _jf:
+                        _jf.write(f"[f{Melty.frame_count}] WIPE {draw_state.name!r} "
+                                  f"sy={draw_state.scroll_offset[1]:.0f}->0 "
+                                  f"content_h={draw_state.abs_content_height:.0f} "
+                                  f"h={draw_state.height} ds_frames={draw_state.frame_count}\n")
+                except OSError:
+                    pass
             draw_state.scroll_offset = (0, 0)
         scroll_y_changed = None
         if needs_scroll:
@@ -4665,8 +4675,19 @@ def render_func(*args, **o_kwargs):
                     target_y = new_offset_y
                 else:
                     target_y = current_y
-                draw_state.scroll_offset = (current_x,
-                                            max(min_scroll_y, min(target_y, max_scroll_y)))
+                _clamped_y = max(min_scroll_y, min(target_y, max_scroll_y))
+                if (abs(_clamped_y - current_y) > 1
+                        and Melty.frame_count - getattr(draw_state, "_jump_dbg", -9999) < 120):
+                    try:  # jump-scroll debug (see _uj_log in text_editor.py)
+                        with open("/tmp/uj_debug.log", "a") as _jf:
+                            _jf.write(f"[f{Melty.frame_count}] CLAMP {draw_state.name!r} "
+                                      f"sy={current_y:.0f}->{_clamped_y:.0f} "
+                                      f"max={max_scroll_y:.0f} "
+                                      f"content_h={draw_state.abs_content_height:.0f} "
+                                      f"clip_h={draw_state.abs_clipped_height:.0f}\n")
+                    except OSError:
+                        pass
+                draw_state.scroll_offset = (current_x, _clamped_y)
 
             if scroll_y_changed is not None:
                 note=Note(name=f"scroll change {draw_state.name}", tint=(1, 0, 1))
