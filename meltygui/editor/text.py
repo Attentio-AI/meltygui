@@ -3344,6 +3344,30 @@ def _live_receiver_file(ns, rcv):
 _SITE_RECOVER_LINES = 4
 
 
+def jump_emph_cols(text, pos, span=None):
+    """Column span (col0, col1) the jump emphasis should flash for a landing
+    at buffer index `pos` — shared by the cross-file consumption
+    (draw_code_editor) and the same-file usage jump. Preference order: the
+    explicit token `span` ((start, end) buffer indices, e.g. from
+    _site_span), else the def/class NAME on the landing line, else the
+    identifier at `pos`, else the line's indent→rstrip code span. None when
+    the line has no code at all."""
+    ls = text.rfind('\n', 0, pos) + 1
+    le = text.find('\n', ls)
+    line = text[ls:] if le == -1 else text[ls:le]
+    if span is not None and span[0] >= ls:
+        return (span[0] - ls, span[1] - ls)
+    m = re.match(r"\s*(?:async\s+)?(?:def|class)\s+(\w+)", line)
+    if m is None:
+        m = re.compile(r"[A-Za-z_]\w*").match(line, pos - ls)
+    if m is not None:
+        g = m.lastindex or 0
+        return (m.start(g), m.end(g))
+    code = line.rstrip()
+    indent = len(code) - len(code.lstrip())
+    return (indent, len(code)) if len(code) > indent else None
+
+
 def _site_span(text, ln, col, name, line_offset):
     """(start_index, end_index) in the buffer for one file-absolute (ln, col)
     occurrence of `name`, or None. Same verify-then-recover logic as
@@ -3385,6 +3409,23 @@ def _site_span(text, ln, col, name, line_offset):
     if p is None:
         return None
     return p, p + len(name)
+
+
+def _recover_def_pos(text, token):
+    """Buffer index of `token`'s name inside the buffer's UNIQUE
+    `class`/`def` statement for it, or None. The wide-drift fallback for
+    definition jumps: the symbol index recomputes lazily, so a served def
+    line can be stale by more lines than _site_span's ±4 recovery covers —
+    a `class GlobalSearch` jump landed 10 lines high after edits above it.
+    Only an unambiguous single match retargets; zero or several matches
+    keep the recorded line."""
+    leaf = (token or '').rsplit('.', 1)[-1]
+    if not leaf:
+        return None
+    ms = list(re.finditer(
+        rf'^[ \t]*(?:async[ \t]+)?(?:class|def)[ \t]+({re.escape(leaf)})\b',
+        text, re.M))
+    return ms[0].start(1) if len(ms) == 1 else None
 
 
 def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
@@ -5565,7 +5606,8 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
-              completion_source=None, show_jump_bar=True, unique=0):
+              completion_source=None, show_jump_bar=True, show_file_header=True,
+              unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -5718,32 +5760,38 @@ def draw_text(input_value: str, height=None,
     # reads .source/.file for its label) must not draw for them.
     if jump_to is not None and show_jump_bar:
         _err_msg = _err_markers[0][1] if _err_markers else None
-        # Float the jump-to/error bar at the top of the visible viewport instead
-        # of letting it scroll away with the code. When the body has scrolled up
-        # above its clip rect, shift the bar down by that overflow so it stays
-        # pinned to the clip top; at scroll 0 the content top equals the clip top
-        # so float_dy is 0 and the bar is in its natural place. Drawing it at the
-        # shifted (on-screen) position also keeps draw_jump_to's own clip rect from
-        # collapsing once the content top passes above the viewport.
-        _bx, _by = imgui.get_cursor_screen_pos()
-        float_dy = max(0.0, draw_state.abs_clip_rect[1] - _by)
-        # The pin only holds while there's enough view above the clip top: once
-        # the view's bottom edge rises to meet the bar, the bar follows that edge
-        # up and scrolls away like everything else. The bar's natural position
-        # is the view top, so its maximum downward shift before its bottom
-        # passes the view bottom is height - bar_height (last frame's measure).
-        _bar_h = getattr(draw_state, "_float_bar_height", None) or 34.0
-        if draw_state.height:
-            float_dy = max(0.0, min(float_dy, draw_state.height - _bar_h))
-        imgui.set_cursor_screen_pos((_bx, _by + float_dy))
-        draw_jump_to(jump_to, width=draw_state.content_width, unique=unique,
-                     draw_state=draw_state)
-        bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
-        draw_state._float_bar_height = bar_height
-        # Resume body layout at the real (unscrolled) content position so the code
-        # lines keep their normal positions; only the bar was floated. The text
-        # clip below is raised by bar_height so glyphs never paint over the bar.
-        imgui.set_cursor_screen_pos((_bx, _by + bar_height))
+        if not show_file_header:
+            # No floating bar: _err_msg still feeds the floating error box
+            # after the body, but nothing is drawn inline here. Clear the stashed
+            # OpenRectRect so a stale one can't swallow presses.
+            draw_state._jump_btn_rect = None
+        else:
+            # Float the jump-to-file bar at the top of the visible viewport instead
+            # of letting it scroll away with the code. If the body has scrolled up
+            # under its clip rect, shift the bar down by that overflow so it stays
+            # pinned to the clip top; at scroll 0 the content top equals the clip top
+            # so float_dy is 0 and the bar sits in its natural place. Drawing it at the
+            # shifted (on-screen) cursor also keeps draw_jump_to's own clip rect from
+            # collapsing once the content top passes above the viewport.
+            _bx, _by = imgui.get_cursor_screen_pos()
+            float_dy = max(0.0, draw_state.abs_clip_rect[1] - _by)
+            # The float only holds while there's still view BELOW the clip top - once
+            # the view's bottom edge rises to meet the bar, the bar rides that edge
+            # up and scrolls away like everything else. The bar's natural position
+            # is the view top, so its maximum downward shift before its bottom
+            # touches the view bottom is height - bar_height (last frame's measure).
+            _bar_h = getattr(draw_state, "_float_bar_height", None) or 34.0
+            if draw_state.height:
+                float_dy = max(0.0, min(float_dy, draw_state.height - _bar_h))
+            imgui.set_cursor_screen_pos((_bx, _by + float_dy))
+            draw_jump_to(jump_to, width=draw_state.content_width, unique=unique,
+                         draw_state=draw_state)
+            bar_height = imgui.get_cursor_screen_pos()[1] - (_by + float_dy)
+            draw_state._float_bar_height = bar_height
+            # Resume body layout at the real (unscrolled) content top so the code
+            # lines keep their normal positions; only the bar was floated. The text
+            # clip below is raised by bar_height so glyphs never paint over the bar.
+            imgui.set_cursor_screen_pos((_bx, _by + bar_height))
     _pf("head+jump_bar")
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -6000,6 +6048,7 @@ def draw_text(input_value: str, height=None,
                 _ls = _offs[_li]
                 _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(text)
                 _pos = None
+                _tsp = None
                 if token:
                     # Caret ON the jumped-to token (leaf of a dotted path),
                     # not the statement start.
@@ -6008,6 +6057,16 @@ def draw_text(input_value: str, height=None,
                                       token.rsplit('.', 1)[-1], _usage_off)
                     if _tsp is not None:
                         _pos = _tsp[0]
+                    else:
+                        # Wide-drift recovery: the recorded line is faler
+                        # than ±4 lines - retarget to the buffer's unique
+                        # class/def statement for the token.
+                        _rdp = _recover_def_pos(text, token)
+                        if _rdp is not None:
+                            _pos = _rdp
+                            _li = text.count('\n', 0, _pos)
+                            _line = _li + 1 + _usage_off
+                            _uj_log(f"goto LOCAL def-recover -> line {_line}")
                 if _pos is None:
                     _pos = min(_ls + (getattr(ref, 'column', 0) or 0), _le)
                     if _pos == _ls:
@@ -6018,26 +6077,52 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_selection_end = _pos
                 # Center distant targets so they land with context; a nearby
                 # one (< 30 lines) keeps the current scroll, with a minimal
-                # edge nudge if it sits just past the viewport.
-                _ty = origin_y + _li * line_px
-                _scroll_into_view(ds, _ty, _ty + line_px,
-                                  center=abs(_li - _src_li) >= 30)
+                # edge nudge if it sits just past the viewport. When this
+                # editor owns its scrollbar, center by writing the scroll in
+                # CONTENT coords (same exact math as the cross-file picke
+                # path) - the screen-space _scroll_into_view walk proved
+                # frame-timing sensitive (Ctrl+B landed ~1500 lines off while
+                # the picker path, ms later in the same body, worked fine).
+                _far = abs(_li - _src_li) >= 30
+                _sy0 = ds.scroll_offset[1]
+                if _far and getattr(ds, 'scroll_visible', False):
+                    _target = (_li * line_px
+                               - max(0.0, (ds.height or 0) - line_px) * 0.5)
+                    _mx = getattr(ds, '_max_scroll_y', None)
+                    if _mx is not None:
+                        _target = min(_target, _mx)
+                    ds.scroll_offset = (ds.scroll_offset[0], max(0.0, _target))
+                else:
+                    _ty = origin_y + _li * line_px
+                    _scroll_into_view(ds, _ty, _ty + line_px, center=_far)
+                _uj_log(f"goto LOCAL scroll sy={_sy0:.0f}->{ds.scroll_offset[1]:.0f} "
+                        f"far={_far} scroll_visible={getattr(ds, 'scroll_visible', None)} "
+                        f"li={_li} src_li={_src_li}")
                 Melty.text_focused_ds = ds
                 Melty._text_focus_grant_frame = Melty.frame_count
                 ds.text_cursor_blink_time = time.time()
                 ds.invalidate()
-                # Success flash on the landing line - same yellow emphasis the
-                # same-file jump gets for draw_code_editor's consumption.
+                # Success flash on the target token - same yellow emphasis
+                # (and same rect derivation) the cross-file jump gets from
+                # draw_code_editor's consumption.
                 _eli = text.count('\n', 0, _pos)
+                _cols = jump_emph_cols(text, _pos, span=_tsp)
 
-                def _local_jump_rect(ds=ds, li=_eli):
+                def _local_jump_rect(ds=ds, li=_eli, cols=_cols):
                     lp = getattr(ds, '_diff_line_px', None) or 16
                     inset = getattr(ds, '_diff_top_inset', 0)
                     y0 = ds.abs_top + inset + li * lp - ds.scroll_offset[1]
                     if y0 < ds.abs_top - lp or y0 > ds.abs_top + (ds.height or 0):
                         return None
-                    return (ds.abs_left, y0 - 1,
-                            ds.abs_left + (ds.width or 0), y0 + lp + 1)
+                    x0, x1 = ds.abs_left, ds.abs_left + (ds.width or 0)
+                    cw = getattr(ds, '_diff_char_w', None)
+                    ox = getattr(ds, '_diff_origin_x_off', None)
+                    if cols is not None and cw and ox is not None:
+                        x0 = max(x0, ds.abs_left + ox + cols[0] * cw - 3)
+                        x1 = min(x1, ds.abs_left + ox + cols[1] * cw + 3)
+                        if x1 <= x0:
+                            return None
+                    return (x0, y0 - 1, x1, y0 + lp + 1)
 
                 Melty.emphasize(f"jump_line {ds.name}", _local_jump_rect)
                 _uj_log(f"goto LOCAL line={_line} pos={_pos}")
@@ -6068,46 +6153,58 @@ def draw_text(input_value: str, height=None,
         span with zero targets returns False)."""
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
         _n_spans = 0
-        for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree, _usage_off, _vpath):
+        # NARROWEST span containing pos wins, not the first: a dotted member
+        # span (`GlobalStyle.get_global_constant`, anchored at the start of
+        # the dotted expression) fully covers the same base-name span, so a
+        # caret inside `GlobalStyle` used to hit whichever came first in the
+        # sort and jump TO the METHOD. Specific-over-general resolves this:
+        # caret in the base chars → the base symbol; caret in the member chars
+        # → only the dotted span contains it.
+        _best = None
+        for _sp in _usage_spans(ds, text, _usage_tree, _usage_off, _vpath):
             _n_spans += 1
-            if _us <= pos < _ue:
-                _targets = _usage_jump_targets(
-                    _su, at_def=_at_def,
-                    view_path=_vpath,
-                    view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
-                _uj_log(f"try_jump HIT pos={pos} sym={getattr(_su, 'name', '?')!r} "
-                        f"at_def={_at_def} targets={len(_targets)} "
-                        f"[{', '.join(f'{getattr(t.path, 'name', t.path)}:{t.line}' for t in _targets[:4])}"
-                        f"{'…' if len(_targets) > 4 else ''}]")
-                if _targets and (len(_targets) > 1 or force_picker):
-                    _items, _tags = _usage_ref_items(_targets)
-                    ds._uj_items = _items
-                    ds._uj_tags = _tags
-                    # ref -> symbol spelling, so a pick lands the caret ON the
-                    # token (see _goto_usage_ref).
-                    ds._uj_names = {t: getattr(_su, 'name', None)
-                                    for t in _targets}
-                    ds._uj_anchor = _us   # picker hangs under the symbol
-                    ds._uj_anchor_gutter = None
-                    ds._uj_index = 0
-                    ds._uj_open = True
-                    ds._uj_open_frame = Melty.frame_count
-                    uj_state._kbd_mode = True
-                    uj_state.cursor_path = (next(iter(_items)),)
-                    uj_state.open_path = ()
-                    # The picker window is LATCHED - its scroll state survives
-                    # a close, so a repeat can come up mid-list with the index-0
-                    # cursor scrolled offscreen. Snap it back to the top.
-                    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
-                    _dd_scroll_cursor_into_view(
-                        Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
-                    request_render()
-                    return True
-                if _targets:
-                    _goto_usage_ref(_targets[0],
-                                    token=getattr(_su, 'name', None))
-                    return True
-                return False
+            if _sp[0] <= pos < _sp[1] and (_best is None
+                                           or _sp[1] - _sp[0] < _best[1] - _best[0]):
+                _best = _sp
+        if _best is not None:
+            _us, _ue, _su, _at_def = _best
+            _targets = _usage_jump_targets(
+                _su, at_def=_at_def,
+                view_path=_vpath,
+                view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
+            _uj_log(f"try_jump HIT pos={pos} sym={getattr(_su, 'name', '?')!r} "
+                    f"at_def={_at_def} targets={len(_targets)} "
+                    f"[{', '.join(f'{getattr(t.path, 'name', t.path)}:{t.line}' for t in _targets[:4])}"
+                    f"{'…' if len(_targets) > 4 else ''}]")
+            if _targets and (len(_targets) > 1 or force_picker):
+                _items, _tags = _usage_ref_items(_targets)
+                ds._uj_items = _items
+                ds._uj_tags = _tags
+                # ref -> symbol spelling, so a pick puts the caret ON the
+                # token (see _goto_usage_ref).
+                ds._uj_names = {t: getattr(_su, 'name', None)
+                                for t in _targets}
+                ds._uj_anchor = _us   # picker hangs under the symbol
+                ds._uj_anchor_gutter = None
+                ds._uj_index = 0
+                ds._uj_open = True
+                ds._uj_open_frame = Melty.frame_count
+                uj_state._kbd_mode = True
+                uj_state.cursor_path = (next(iter(_items)),)
+                uj_state.open_path = ()
+                # The picker window is LATCHED - its scroll_offset survives
+                # a close, so a reopen would come up mid-list with the row-0
+                # symbol scrolled off view. Snap it back to the top.
+                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+                _dd_scroll_cursor_into_view(
+                    Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
+                request_render()
+                return True
+            if _targets:
+                _goto_usage_ref(_targets[0],
+                                token=getattr(_su, 'name', None))
+                return True
+            return False
         _uj_log(f"try_jump MISS pos={pos} spans_scanned={_n_spans} "
                 f"vpath={getattr(_vpath, 'name', _vpath)}")
         return False
@@ -6348,25 +6445,98 @@ def draw_text(input_value: str, height=None,
                 f"(focus_owner={getattr(Melty.text_focused_ds, 'name', None)!r}) "
                 f"uj_open={getattr(ds, '_uj_open', False)} "
                 f"caret={ds.text_cursor_pos} text_len={len(text)}")
+    def _flash_word(pos, tint):
+        """Emphasis box around the word under `pos` — the visible answer to a
+        Ctrl+B that can't jump (red: no target; amber: symbols still loading)."""
+        _w0 = _select_unit_left(text, pos)
+        _w1 = _select_unit_right(text, pos)
+        _vc = _get_vcols()
+        _fx0, _fy0 = _char_pos_to_xy(text, _w0, origin_x, origin_y,
+                                     line_px, vcols=_vc)
+        _fx1, _ = _char_pos_to_xy(text, max(_w1, _w0 + 1), origin_x,
+                                  origin_y, line_px, vcols=_vc)
+        if _fx1 <= _fx0:   # word wrapped onto the next line - fold back
+            _fx1 = _fx0 + imgui.calc_text_size(text[_w0:_w1] or " ").x
+        Melty.emphasize(f"jump_fail {ds.name}",
+                        (_fx0 - 3, _fy0 - 1, _fx1 + 3, _fy0 + line_px + 1),
+                        tint=tint)
+        request_render()
+
+    def _usages_loading():
+        """True while the span's symbol pass hasn't landed for the live buffer
+        — a Ctrl+B miss right now may just be EARLY, not wrong. Two windows:
+        the cache sig isn't fresh (compute pending/running), or the cache IS
+        fresh (e.g. an instant hash rescue on load) but the frame-boundary
+        attach hasn't stamped the parse yet and no spans exist to jump from."""
+        if jump_to is None:
+            return False
+        from src.lsd.gl_gui.toggles import Toggles
+        if not Toggles.enable_jedi:
+            return False
+        try:
+            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                usages_fresh_for_address)
+            if not usages_fresh_for_address(jump_to):
+                return True
+        except Exception:
+            return False
+        if getattr(_usage_tree, '_symbol_gen', None) is not None:
+            return False   # a real compute attached - a miss is a real miss
+        _vp = getattr(jump_to, 'path', None)
+        return not _usage_spans(ds, text, _usage_tree, _usage_off, _vp)
+
     if (ctrl_b_down and is_focused and not single_line and not is_search_box
             and not getattr(ds, '_uj_open', False)):
         _cb_pos = min(ds.text_cursor_pos, max(len(text) - 1, 0))
         if not _try_usage_jump(_cb_pos):
-            # No jump target here: tint the word under the caret red so the
-            # shortcut visibly answers instead of silently doing nothing.
-            _w0 = _select_unit_left(text, _cb_pos)
-            _w1 = _select_unit_right(text, _cb_pos)
-            _vc = _get_vcols()
-            _fx0, _fy0 = _char_pos_to_xy(text, _w0, origin_x, origin_y,
-                                         line_px, vcols=_vc)
-            _fx1, _ = _char_pos_to_xy(text, max(_w1, _w0 + 1), origin_x,
-                                      origin_y, line_px, vcols=_vc)
-            if _fx1 <= _fx0:   # word wraps onto the next line - fall back
-                _fx1 = _fx0 + imgui.calc_text_size(text[_w0:_w1] or " ").x
-            Melty.emphasize(f"jump_fail {ds.name}",
-                            (_fx0 - 3, _fy0 - 1, _fx1 + 3, _fy0 + line_px + 1),
-                            tint=(0.9, 0.28, 0.22))
-            request_render()
+            if _usages_loading():
+                # Symbols still loading - don't answer "no target" to a
+                # question the index can't answer yet. Start a pending state:
+                # the poll below retries per frame while the body layer keeps
+                # the ensure pass (draw_code_editor's auto-index) driving the
+                # load, then jumps / opens the picker the moment it lands.
+                ds._uj_pending = {"pos": _cb_pos, "started": time.time(),
+                                  "text_len": len(text), "fresh_at": None}
+                _uj_log(f"ctrl_b PENDING (symbols loading) pos={_cb_pos}")
+                _flash_word(_cb_pos, tint=(0.95, 0.72, 0.2))
+                ds.invalidate()
+            else:
+                # No jump target here - flash the word under the caret red so
+                # the shortcut visibly answers instead of silently doing
+                # nothing.
+                _flash_word(_cb_pos, tint=(0.9, 0.28, 0.22))
+
+    # Deferred Ctrl+B: the user asked to jump while the symbol pass was still
+    # loading. Retry until the symbols land (jump or picker), and give up -
+    # with the red no-target flash - once they're fresh and there's STILL no
+    # jump target, the user moved on (caret/text/focus changed), or 6s pass
+    # (covers a cold-first-ever compute).
+    _ujp = getattr(ds, '_uj_pending', None)
+    if _ujp is not None:
+        _now = time.time()
+        if (not is_focused or ds.text_cursor_pos != _ujp["pos"]
+                or len(text) != _ujp["text_len"]):
+            ds._uj_pending = None   # stale request - a late jump would jank
+        elif _try_usage_jump(_ujp["pos"]):
+            _uj_log(f"ctrl_b pending RESOLVED pos={_ujp['pos']} "
+                    f"after {_now - _ujp['started']:.2f}s")
+            ds._uj_pending = None
+        else:
+            if _ujp["fresh_at"] is None and not _usages_loading():
+                _ujp["fresh_at"] = _now   # landed - grace for the attach post
+            if (_now - _ujp["started"] > 6.0
+                    or (_ujp["fresh_at"] is not None
+                        and _now - _ujp["fresh_at"] > 0.5)):
+                _uj_log(f"ctrl_b pending GIVE-UP pos={_ujp['pos']} "
+                        f"fresh_at={_ujp['fresh_at']}")
+                ds._uj_pending = None
+                _flash_word(_ujp["pos"], tint=(0.9, 0.28, 0.22))
+            else:
+                # Keep ourselves (and the parent body's ensure pass) alive -
+                # symbols attach at a frame boundary and this poll only runs
+                # if the body does.
+                ds.invalidate()
+                request_render()
 
     _pf("mouse")
     # --- Keyboard handling ---

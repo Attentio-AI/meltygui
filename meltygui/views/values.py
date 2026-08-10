@@ -464,9 +464,10 @@ def _jump_to_symbol_def(obj, path):
         line = _symbol_def_line(obj)
         if line is None:
             return
+        import src.lsd.gl_gui.view.playground.open_files as _of_mod
         root = getattr(Melty.vis, "root", None)
         open_files = getattr(root, "open_files", None)
-        if open_files is not None and open_files.selected_path == str(path):
+        if open_files is not None and _of_mod._active_editor[0] == str(path):
             open_files.jump_to_line = line
             request_render()
     threading.Thread(target=_go, daemon=True, name="search-symbol-jump").start()
@@ -822,9 +823,10 @@ def _jump_to_setting_def(setting_path):
         line = _setting_def_line(setting_path, path)
         if line is None:
             return
+        import src.lsd.gl_gui.view.playground.open_files as _of_mod
         root = getattr(Melty.vis, "root", None)
         open_files = getattr(root, "open_files", None)
-        if open_files is not None and open_files.selected_path == str(path):
+        if open_files is not None and _of_mod._active_editor[0] == str(path):
             open_files.jump_to_line = line
             request_render()
     threading.Thread(target=_go, daemon=True, name="search-setting-jump").start()
@@ -2232,9 +2234,28 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     else:
         row_groups = None
     n_groups = len(dict.fromkeys(row_groups[:n_vis])) if row_groups else 0
-    imgui.dummy(w, chip_block_h + n_vis * (ROW_H + ROW_GAP)
-                + (HINT_H + HINT_GAP if fallback else 0) + n_groups * GROUP_H
-                + (MORE_H if n_over > 0 else 0))
+    content_h = (chip_block_h + n_vis * (ROW_H + ROW_GAP)
+                 + (HINT_H + HINT_GAP if fallback else 0) + n_groups * GROUP_H
+                 + (MORE_H if n_over > 0 else 0))
+    # Height auto-fit: whenever the CONTENTS change (new query, async text
+    # hits landing, a category switch), size the window to fit them. The
+    # height is written directly - the wrapper's measured item_rect can't
+    # shrink a fixed-size window (children fill against the current height),
+    # and we know the exact content extent here anyway: everything above the
+    # dummy (window padding + search box, y0 - abs_top) plus the rows dummy,
+    # plus a bottom pad. Width is never touched - it stays user-sized, and
+    # the signature deliberately ignores wrap changes changes from a width
+    # drag (chip_block_h feeds the height only when contents changed it).
+    fit_sig = (q, active, n_vis, n_over, fallback, n_groups)
+    if fit_sig != input_value._fit_sig:
+        input_value._fit_sig = fit_sig
+        new_h = int((y0 - draw_state._abs_top()) + content_h + 10.0)
+        if draw_state.height is None or abs(draw_state.height - new_h) > 1:
+            draw_state.height = new_h
+            draw_state._source["height"] = "global search content auto-fit"
+            draw_state.invalidate()
+            request_render()
+    imgui.dummy(w, content_h)
     after_rows = imgui.get_cursor_screen_pos()
 
     # ---- category chips: count per category. The ACTIVE one is a filled
@@ -2469,6 +2490,7 @@ class GlobalSearch:
     _text_query = None  # last query handed to _kick_text_search
     _text_gen = 0  # generation counter that debounces/cancels text search
     selected = 0  # index (in on-screen order) of the arrow-key highlight
+    _fit_sig = None  # last contents signature the height was auto-fit to
     active_kind = ALL_CATEGORY  # the category whose rows show (Left/Right cycles)
     editing = None  # label of the row whose value widget owns the keyboard
     _edit_focus = False  # one-shot: grab the keyboard on the next show
@@ -2938,20 +2960,35 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         else:
             name = kwargs.get("name", f"Unnamed {window_cls.__class__.__name__}")
 
-        kwargs = dict(stored_kwargs)
-        kwargs.setdefault('show_bg', True)
-        kwargs.setdefault('name', name)
+        instances = stored_kwargs.get("instances", 1)
+        for instance in range(instances):
+            kwargs = dict(stored_kwargs)
+            kwargs.pop("instances", None)
+            kwargs.setdefault('show_bg', True)
+            kwargs.setdefault('name', name)
+            if instances > 1:
+                # Multi-instance windows get their index so the caller can
+                # tell the primary (0) - the target of external commands -
+                # from the extra copies.
+                kwargs['instance'] = instance
+            if instance > 0:
+                # Instance 0 keeps the original name so existing
+                # find_window lookups still work; later instances get
+                # the index folded into the label for a unique draw_state.
+                base = kwargs['name']
+                label, sep, tag = base.partition("##")
+                kwargs['name'] = f"{label}#{instance}{sep}{tag}"
 
-        is_render_func = hasattr(window_cls, "__render_func__")
-        if is_render_func:
-            kwargs.setdefault('mode', Mode.MODE_WINDOW)
-            kwargs.setdefault("disable_scroll", True)
-            window_cls(**kwargs)
-        else:
-            kwargs['disable_scroll'] = True
-            kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.MODE_WINDOW))
-            window_func = kwargs.pop("view_func", code_file_io)
-            window_func(window_cls, **kwargs)
+            is_render_func = hasattr(window_cls, "__render_func__")
+            if is_render_func:
+                kwargs.setdefault('mode', Mode.MODE_WINDOW)
+                kwargs.setdefault("disable_scroll", True)
+                window_cls(**kwargs)
+            else:
+                kwargs['disable_scroll'] = True
+                kwargs.setdefault('mode', (Mode.NEW_CODE, Mode.MODE_WINDOW))
+                window_func = kwargs.pop("view_func", code_file_io)
+                window_func(window_cls, **kwargs)
 
 
     from src.lsd.gl_gui.model.app_model import TensorView

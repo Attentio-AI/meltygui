@@ -1116,7 +1116,7 @@ class Toggles:
         # the file machinery has earned trust.
         block_file_delete = True
 
-    @defaults(tint=(0.27, 0.7, 0.52))
+    @defaults(tint=(0.103, 0.561, 0.145))
     class HostLifecycle:
         # Deregister a RenderHost from Melty.render_hosts (stops its background
         # draw/parse) once none of its consumer windows are active. Host + parse
@@ -1142,11 +1142,16 @@ class Toggles:
         keep_for_frames = 100
         enable = False
         draw_rect = True
+
+        # [tint=(0.85, 0.45, 0.05), show_tint=True]
         invalidate_stack_trace = False
 
-        # [tint=(0.128, 0.25, 0.148), show_tint=True]
+        # [tint=(0.028, 0.561, 0.115), show_tint=True]
         invalidate_request_render = False
+
         attrib_change_stack_trace = False
+
+        # [tint=(0.0, 0.56, 0.872), show_tint=True]
         draw_bvh = False
 
     # Global App Toggles
@@ -1194,7 +1199,8 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
+    show_fps = True
 
     show_filled_tiles = False
     gl_check_error = False
@@ -1251,7 +1257,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 4
     # Master strength of the glow light at composite time.
-    glow_strength = 0.517
+    glow_strength = 0.729
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),
@@ -1299,8 +1305,6 @@ class Toggles:
 
     # Screenshot output dir (screenshot.py / context menu capture)
     screenshots = "/home/lukas/melty/screenshots"
-
-
 
     debug_set_anywhere = False
     ignore_call_from = ()

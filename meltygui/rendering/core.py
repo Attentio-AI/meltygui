@@ -115,7 +115,6 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
 
     return value
 
-
 # Horizontal space content_width always gives up on scrollableable views, so
 # content doesn't render underneath the bar. Sized to cover the track plus its
 # right-edge margin in draw_overlay_scrollbar.
@@ -5329,4 +5328,3 @@ def jet_color(val: float):
     g = min(four_value - 0.5, -four_value + 3.5)
     b = min(four_value + 0.5, -four_value + 2.5)
     return max(0.0, min(1.0, r)), max(0.0, min(1.0, g)), max(0.0, min(1.0, b)), 1.0
-

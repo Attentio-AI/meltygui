@@ -415,9 +415,9 @@ class NavUndo:
             root = getattr(Core.melty.vis, "root", None)
             open_files = getattr(root, "open_files", None)
             if open_files is not None and path in open_files.open_paths:
-                open_files.selected_path = path
+                open_files.jump_to_path = path
                 # The summon + past-the-blank invalidate open_in_editor does -
-                # the tab selection is consumed inside the editor body.
+                # the tab selection is adopted inside the editor body.
                 win = Core.melty.find_window("draw_code_editor##@window")
                 if win is not None:
                     win.closed = False

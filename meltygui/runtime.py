@@ -3312,7 +3312,7 @@ class Melty:
 
 
         window_size = imgui.get_io().display_size
-        if Toggles.developer_mode:
+        if Toggles.show_fps:
             overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
                              f"FPS: {imgui.get_io().framerate:.1f}")
 
