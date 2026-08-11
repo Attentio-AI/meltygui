@@ -41,7 +41,7 @@ _once_keys: set = set()   # keys already emitted via once()
 def _enabled() -> bool:
     try:
         from src.lsd.gl_gui.toggles import Toggles
-        return bool(getattr(Toggles, "symbol_perf_log", True))
+        return bool(Toggles.symbol_perf_log)
     except Exception:
         return True
 

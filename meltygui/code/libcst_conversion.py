@@ -4561,8 +4561,7 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
             if tail_mod.body:
                 return _inc_fallback("span-tail-not-blank")
             new_mod = old_mod.with_changes(footer=tail_mod.header)
-            from src.lsd.gl_gui.toggles import Toggles as _T
-            if getattr(_T.TextEditor, "verify_incremental_cst", True):
+            if Toggles.TextEditor.verify_incremental_cst:
                 if new_mod.code != new_src:
                     return _inc_fallback("span-verify-mismatch")
             merged = GeneralParse(source=new_src)
@@ -4660,7 +4659,7 @@ def _funcdef_span_incremental(prev_gp, old_mod, a, b, pre, suf, new_src):
                 footer=list(wrap_mod.footer) + list(old_mod.footer))
         else:
             new_mod = old_mod.with_changes(body=[new_fd])
-        if getattr(Toggles.TextEditor, "verify_incremental_cst", True):
+        if Toggles.TextEditor.verify_incremental_cst:
             if new_mod.code != new_src:
                 return _inc_fallback("span-verify-mismatch")
         old_memo = getattr(prev_gp, "_value_memo", None) or {}
@@ -4961,7 +4960,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         else:
             new_mod = old_mod.with_changes(body=new_body,
                                            footer=region_mod.footer)
-        if getattr(Toggles.TextEditor, "verify_incremental_cst", True):
+        if Toggles.TextEditor.verify_incremental_cst:
             if new_mod.code != new_src:
                 return _inc_fallback("verify-mismatch")
         region_gp = cst_module_to_dict(region_mod)

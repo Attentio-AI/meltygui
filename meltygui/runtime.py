@@ -176,8 +176,8 @@ class FileWatch:
         call — run it off the render thread."""
         from src.lsd.gl_gui.view.core_conversion.address import _PROJECT_ROOT
         root = Path(root or _PROJECT_ROOT).resolve()
-        skip = {"__pycache__", "venv", ".venv", "node_modules",
-                "build", "dist", "resources"}
+        skip = {"__pycache__", "venv", ".venv", "venv-backup", "node_modules",
+                "build", "dist", "resources", "tests"}
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames
                            if d not in skip and not d.startswith(".")]
@@ -520,6 +520,7 @@ class Melty:
 
     root_draw_states = defaultdict(lambda: list())
     root_draw_states_by_layer = defaultdict(lambda: list())
+    paint_ordered_ds = []
 
     # Callables posted from worker threads, drained on the render thread at
     # end_frame (_drain_render_tasks) - for work that must not race a frame
@@ -2995,6 +2996,10 @@ class Melty:
         cls._overlay_channel_by_ds = {
             id(p_ds): min(rank, cls.max_layer - 2)
             for rank, (_k, p_ds) in enumerate(paint_ordered)}
+        # Exact visual z order of every dispatched window (roots + nested,
+        # back to front) - the blit cache's window-occlusion mask for
+        # shadow/glow stamps is built from this list's LIVE rects.
+        cls.paint_ordered_ds = [p_ds for _k, p_ds in paint_ordered]
 
         # Which swoosh(es) the mouse is over: walk up from the BVH-hovered
         # draw_state (begin_frame's bvh_query hit, so occlusion and hidden
@@ -3651,7 +3656,7 @@ class Melty:
 
         # Debug: replace the frame with the raw low-res glow light buffer -
         # shows exactly what PASS 6 stamped, independent of the composite.
-        if getattr(Toggles, "glow_debug_view", False):
+        if Toggles.glow_debug_view:
             _gdbg = Melty.cache.glow_tex
             if _gdbg is not None:
                 Melty.filter.passthrough(_gdbg, output_framebuffer=0)
@@ -3854,7 +3859,7 @@ class Melty:
         if draw_state is None or disp is None:
             return x, y
         if margin is None:
-            margin = getattr(Toggles.WindowSettings, "edge_margin", 20)
+            margin = Toggles.WindowSettings.edge_margin
         width = draw_state.width or 0
         height = draw_state.height or 0
         return (max(margin, min(x, disp[0] - width - margin)),

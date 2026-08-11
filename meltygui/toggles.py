@@ -845,9 +845,9 @@ class Toggles:
         def_line_glow = True
         # Intensity of the emitted light for line bands (on top of the band
         # alpha; Toggles.glow_intensity scales all glows globally).
-        def_line_glow_intensity = 1.0
+        def_line_glow_intensity = 1.076
 
-        def_line_blur_radius = 236
+        def_line_blur_radius = 304
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
@@ -855,7 +855,7 @@ class Toggles:
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 0.964
+        def_line_blur_falloff = 2.82
         # Perceived-brightness clamp on the BLURRED band's color only -
         # applied on top of the line_tint_* adjustment (which already ran
         # through bg_min/max), so the feathered glow can hold a different
@@ -969,7 +969,7 @@ class Toggles:
         # Wayland the toggle is ignored and server decorations stay. Applied
         # live each frame (glfw.set_window_attrib) and read at boot from the
         # DECORATED window hint.
-        enhanced_titlebar = True
+        enhanced_titlebar = False
 
         # px height of the invisible drag strip along the top edge - a drag
         # outside inside it (a few px of travel past the press) moves the OS
@@ -1059,11 +1059,21 @@ class Toggles:
 
     @defaults(tint=(0.58, 0.47, 0.24))
     class GlobalSearch:
-        # Category order for the search dialog and the All tab's interleave:
-        # All shows each category's #1 hit first (in this order), then it
-        # categories show next-best hits up to 3 per category. Kinds not listed
-        # here fall in after these.
+        # Category order for the search selector and the All tab's interleave:
+        # All shows each category's #1 hit first (in this order), then each
+        # category's next-best hits up to all_tab_per_category per category.
+        # Kinds not matching here fall in after these.
         search_priority = ("Toggles", "Actions", "Windows", "Files", "Text", "Classes", "Functions")
+        # Hits each category contributes to the All tab (the #1 lands in the
+        # top block; the rest sit under the category's own label).
+        all_tab_per_category = 13
+        # Lay the All tab out horizontally: one column per category (its
+        # first on top, hits below), instead of the vertical Top-block
+        # interleave.
+        all_tab_horizontal = False
+        # Per-category cap for the horizontal layout's columns (replaces
+        # all_tab_per_category there - columns have the vertical room).
+        all_tab_horizontal_per_category = 15
 
     @defaults(tint=(0.47, 0.463, 0.417))
     class ScrollSettings:
@@ -1257,7 +1267,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 4
     # Master strength of the glow light at composite time.
-    glow_strength = 0.729
+    glow_strength = 0.522
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),
@@ -1267,7 +1277,7 @@ class Toggles:
     # depth detail under the band differs subtly between those paths.
     # (Confirmed by glow_debug_log: dups=0 = one stamping, one composite
     # - the "double" is this cut, not a second glow rendering.)
-    glow_shadow_cut = 0.00
+    glow_shadow_cut = 0.589
 
     # Band offsets for the glow receiver mask, applied live in PASS 6 (no
     # re-render needed to tune). Lower bound is relative to the emitter's
@@ -1279,8 +1289,26 @@ class Toggles:
     # depth curve is non-monotone, so offsets never go through it, which
     # makes large values (+/-1000) genuinely open the whole band, same as
     # glow_debug_no_mask.
-    glow_mask_lower_offset = -22.668
-    glow_mask_upper_offset = 12.674
+    glow_mask_lower_offset = 0.072
+    glow_mask_upper_offset = -0.018
+
+    # How many consecutive EMPTY body runs (cleared without re-emitting)
+    # before an emitter's retained glow drops. 1 = AUTHORITATIVE: the
+    # first empty run drops the glow - live edits shed stale glow
+    # instantly. Raise it if async tint recomputes (all views rebuilding
+    # their tree per publish, background symbol indexing) start reading as
+    # random glow loss again: each unit is another body run of grace against
+    # a transient stale tint state.
+    glow_clear_hold_frames = 0
+
+    # Automatic culling of retained glow/depth marks from views judged no
+    # longer visible (territory-repaint kills: tab switches, jump-to
+    # content swaps). OFF = retained marks only ever change by the
+    # emitter's own re-emission or explicit clears - stale glow may linger
+    # after tab switches, but if a mysterious glow LOSS stops happening
+    # with this off, the culling misjudged it; if it persists, the
+    # depth-mask gate or the stamp path is the culprit. A narrowing tool.
+    glow_auto_cull = True
 
     # --- Glow debug ---
     # Bypass the glow-mask receiver gate: light falls on EVERY pixel under

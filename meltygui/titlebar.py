@@ -213,10 +213,7 @@ def backend_supported():
 
 def titlebar_enabled():
     from src.lsd.gl_gui.toggles import Toggles
-    melty_toggles = getattr(Toggles, "Melty", None)
-    return (melty_toggles is not None
-            and getattr(melty_toggles, "enhanced_titlebar", False)
-            and backend_supported())
+    return Toggles.Melty.enhanced_titlebar and backend_supported()
 
 
 def sync_decoration(window):

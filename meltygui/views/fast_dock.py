@@ -271,7 +271,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
             # Shadow under the open row's name button - a standalone depth
             # mark (rows aren't draw_states the compositor can see). Clipped
             # to the dock's rect: partially scrolled rows still draw here.
-            add_shadow((nm_x0, ry0, nm_x1 - nm_x0, row_h), offset=6,
+            add_shadow((nm_x0, ry0, nm_x1 - nm_x0, row_h), offset=11,
                        corner_radius=corner, clip=clip)
         dl.add_rect_filled(nm_x0, ry0, nm_x1, ry1,
                            imgui.get_color_u32_rgba(*bg[:3], 1.0), rounding=corner)

@@ -104,7 +104,6 @@ def _tile_uv_rect(t) -> Tuple[float, float, float, float]:
     return (sx, sy, 0.0, 1.0 - sy)
 
 
-
 # ==============================
 # Small structs
 # ==============================
@@ -484,9 +483,9 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
             if cw > 0 and ch > 0:
                 gl.glBlitFramebuffer(
                     0, snap_int(old_ah) - ch, cw, snap_int(old_ah),  # src (old FBO, top-left in screen)
-                    0, ah - ch, cw, ah,                              # dst (new FBO, same screen corner)
+                    0, ah - ch, cw, ah,  # dst (new FBO, same screen corner)
                     gl.GL_COLOR_BUFFER_BIT,
-                    gl.GL_NEAREST,                # no scaling -> NEAREST is exact and cheap
+                    gl.GL_NEAREST,  # No scaling -> NEAREST is exact and cheap
                 )
             _clear_mask_regions(new_mask_tex, [(0, 0, aw, ah)])
         finally:
@@ -667,6 +666,9 @@ uniform vec4 uRankCorners;   // (TL, TR, BL, BR), screen orientation
 uniform vec2 uRectSize;      // Width and height in pixels
 uniform float uCornerRadius; // Corner radius in pixels
 uniform float uMargin;
+uniform sampler2D uWinMask;  // window-occlusion mask (_build_window_mask)
+uniform float uWinZ;         // owner window's encoded rank; 1.0 = ungated
+uniform vec2 uFBSize;        // full-mask dims, for gl_FragCoord -> mask UV
 in vec2 vUV;
 out vec4 oColor;
 
@@ -680,6 +682,10 @@ void main() {
     vec2 halfSize = uRectSize * 0.5;
     float r = min(uCornerRadius, min(halfSize.x, halfSize.y));
     if (sdRoundedBox(pixelPos, halfSize, r) > 0.0) {
+        discard;
+    }
+    // Window occlusion: covered by a window in front of the mark's own.
+    if (texture(uWinMask, gl_FragCoord.xy / uFBSize).r > uWinZ + 0.00048) {
         discard;
     }
     // Ease each axis, then bilinear — see the comment block above.
@@ -715,6 +721,8 @@ uniform vec4 uColor;         // rgb = light color, a = intensity
 uniform float uRankLo;       // root-window surface rank (mask-normalized)
 uniform float uRankHi;       // emitter surface rank + bias (mask-normalized)
 uniform sampler2D uDepthMask;// full R16 rank mask (fb-sized)
+uniform sampler2D uWinMask;  // window-occlusion mask (_build_window_mask)
+uniform float uWinZ;         // emitter window's encoded rank; 1.0 = ungated
 uniform vec2 uGlowSize;      // glow buffer dims, for gl_FragCoord -> mask UV
 uniform vec2 uRectSize;      // EXPANDED quad size in glow-buffer pixels
 uniform float uCornerRadius; // corner radius of the inner rect, glow px
@@ -743,6 +751,11 @@ void main() {
     // widens the band to [0, 1] python-side rather than branching here.)
     float receiver = texture(uDepthMask, gl_FragCoord.xy / uGlowSize).r;
     if (receiver < uRankLo || receiver > uRankHi) {
+        discard;
+    }
+    // Window occlusion: no light on (or through) windows in front of the
+    // emitter's own window — same normalized UV as the depth sample.
+    if (texture(uWinMask, gl_FragCoord.xy / uGlowSize).r > uWinZ + 0.00048) {
         discard;
     }
     float t = clamp(d / max(uRadius, 1.0), 0.0, 1.0);
@@ -1006,6 +1019,13 @@ class TileCacheMasked:
         self._full_mask_tex: Optional[int] = None
         self._full_mask_fbo: Optional[int] = None
 
+        # Window-occlusion mask for shadow andlow stamps (_build_win_mask):
+        # each dispatched window's live rect at its paint-order rank.
+        self._win_mask_tex: Optional[int] = None
+        self._win_mask_fbo: Optional[int] = None
+        self._win_mask_size = (0, 0)
+        self._win_z_by_ds = {}
+
         # Subtree mask for pixel copying - fresh geometry only
         self._sub_mask_tex: Optional[int] = None
         self._sub_mask_fbo: Optional[int] = None
@@ -1130,7 +1150,7 @@ class TileCacheMasked:
         # Scroll-settle deferral for _detect_occluder_changes: last seen
         # Melty.scroll_version and the frame it changed on.
         self._occ_scroll_version: int = -1
-        self._occ_scroll_frame: int = -10**9
+        self._occ_scroll_frame: int = -10 ** 9
 
     @property
     def full_mask_tex(self) -> Optional[int]:
@@ -1315,10 +1335,10 @@ class TileCacheMasked:
             self.invalidate_up(k, max_depth=max_depth, force=force, frame_delta=frame_delta, note=note)
 
     # def apply_invalid(self):
-        # for t in self.pending_invalid:
-        #     if t is not None:
-        #         t.dirty = self._is_dirty(t)
-        # self.pending_invalid.clear()
+    # for t in self.pending_invalid:
+    #     if t is not None:
+    #         t.dirty = self._is_dirty(t)
+    # self.pending_invalid.clear()
 
     def get_parent_keys(self, key):
         all_keys = [key]
@@ -1382,9 +1402,10 @@ class TileCacheMasked:
 
         self.invalidate(k, force=force, note=note, stop_at_filled=stop_at_filled)
         child_keys = self.get_child_keys(k, max_depth=max_depth,
-                                          stop_at_filled=stop_at_filled,
-                                          include_windows=include_windows).values()
+                                         stop_at_filled=stop_at_filled,
+                                         include_windows=include_windows).values()
         child_keys_list = list(child_keys)
+
         # Sort by LIVE abs_top - the same value is_inside_clip uses below -
         # not the tuple's stored top, which is a snapshot from tile
         # registration and diverges from live geometry by the accumulated
@@ -1399,6 +1420,7 @@ class TileCacheMasked:
             ds = entry[2]
             top = ds.abs_top if ds is not None else None
             return top if top is not None else float("-inf")
+
         child_keys_list.sort(key=_live_top)
 
         parent_draw_state = self.key_to_draw_state.get(k, None)
@@ -1460,12 +1482,13 @@ class TileCacheMasked:
         )
 
     def invalidate_parent(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
-                   stop_at_filled: bool = False) -> None:
+                          stop_at_filled: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
         if draw_state is None:
             return
         parent = draw_state.parent_window if draw_state.parent_window is not None else draw_state.parent
-        self.invalidate(parent._tile_id, force=force, do_store=do_store, frame_delta=frame_delta, note=note, stop_at_filled=stop_at_filled)
+        self.invalidate(parent._tile_id, force=force, do_store=do_store, frame_delta=frame_delta, note=note,
+                        stop_at_filled=stop_at_filled)
 
     def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
                    stop_at_filled: bool = False) -> None:
@@ -1490,7 +1513,6 @@ class TileCacheMasked:
         if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
             if draw_state is not None and draw_state._print_last_invalid:
                 print_stack_trace()
-
 
         if Toggles.InvalidateTracker.invalidate_stack_trace:
             # Throttle: at most one trace per 100 frames. last_print_invalidate
@@ -1593,16 +1615,15 @@ class TileCacheMasked:
                                                                                                    ds.abs_top + ds.height))
 
             tile_id = getattr(ds, "_tile_id", None)
-            if tile_id is  None:
+            if tile_id is None:
                 continue
             # Only stale tiles need re-rendering; a fully-filled tile just
             # translates, so leave the cache alone (its bbox was refreshed above).
             if not self._tile_fully_filled(self._tiles.get(tile_id)):
                 self.invalidate(tile_id, frame_delta=0,
-                                   stop_at_filled=False,
-                                   note=Note(name="Scrolled in",
-                                             reason="bvh", tint=(0.3, 1, 0.5)))
-
+                                stop_at_filled=False,
+                                note=Note(name="Scrolled in",
+                                          reason="bvh", tint=(0.3, 1, 0.5)))
 
     def _detect_occluder_changes(self, mask_rects):
         """Invalidate root windows whose occluder set changed (reveals stale cached pixels).
@@ -1629,7 +1650,7 @@ class TileCacheMasked:
             self._occ_scroll_frame = Melty.frame_count
             request_render()
             return
-        if Melty.frame_count - getattr(self, "_occ_scroll_frame", -10**9) < 8:
+        if Melty.frame_count - getattr(self, "_occ_scroll_frame", -10 ** 9) < 8:
             request_render()
             return
 
@@ -2072,28 +2093,6 @@ class TileCacheMasked:
             hops += 1
         return w
 
-    @staticmethod
-    def _glow_window_ds(ds):
-        """Nearest enclosing WINDOW draw_state (ds itself when it IS a
-        window, per Melty.registered_windows). Kill scoping uses THIS, not
-        the chain root: within one nested-window chain every window shares
-        a root, so root-scoped kills let a sibling nested window's
-        hover-repaint captures kill glow in the quiet window beside it. A
-        content swap always captures inside the emitter's OWN window, so
-        window scoping keeps the tab-switch kill exact."""
-        if ds is None:
-            return None
-        try:
-            # Root windows live in registered_windows; nested windows carry
-            # _is_nested. Everything else delegates to its parent_window.
-            if (getattr(ds, "_tile_id", None) in Melty.registered_windows
-                    or getattr(ds, "_is_nested", False)):
-                return ds
-            pw = getattr(ds, "parent_window", None)
-            return pw if pw is not None else ds
-        except Exception:
-            return ds
-
     def clear_glows(self, draw_state) -> None:
         """Start of an emitter's glow group for this body run: retained marks
         from its previous run drop at finalize unless re-emitted this frame.
@@ -2239,6 +2238,10 @@ class TileCacheMasked:
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
         gl.glUseProgram(self._prog_glow)
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D,
+                         getattr(self, "_win_mask_tex", None) or 0)
+        gl.glUniform1i(self._loc_gl_uWinMask, 1)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._full_mask_tex)
         gl.glUniform1i(self._loc_gl_uDepthMask, 0)
@@ -2251,7 +2254,8 @@ class TileCacheMasked:
         # rounding; ~2 rank units.
         _bias = 2.0 / 65535.5
         for ((sx, sy, sw, sh, rgb, inten, _d_off, _layer_rec, radius, falloff,
-              cr, clip_xyxy), delta, rank, floor_rank, live_clip) in glows:
+              cr, clip_xyxy), delta, rank, floor_rank, live_clip,
+             win_z) in glows:
             sx += delta[0]
             sy += delta[1]
             # Clip the ORIGIN rect, never the rendered light: intersect the
@@ -2289,10 +2293,12 @@ class TileCacheMasked:
             if _dbg_no_mask:
                 gl.glUniform1f(self._loc_gl_uRankLo, 0.0)
                 gl.glUniform1f(self._loc_gl_uRankHi, 1.0)
+                gl.glUniform1f(self._loc_gl_uWinZ, 1.0)
             else:
                 gl.glUniform1f(self._loc_gl_uRankLo,
                                max(0.0, float(floor_rank) - _bias))
                 gl.glUniform1f(self._loc_gl_uRankHi, float(rank) + _bias)
+                gl.glUniform1f(self._loc_gl_uWinZ, float(win_z))
             gl.glUniform2f(self._loc_gl_uRectSize, float(iw), float(ih))
             gl.glUniform1f(self._loc_gl_uCornerRadius,
                            max(0.0, cr * s_x * sc_x))
@@ -2305,7 +2311,7 @@ class TileCacheMasked:
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
     def _stamp_shadow_marks(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
-                            scissor_fb=None):
+                            scissor_fb=None, win_gate=True):
         """Draw add_shadow() marks into the currently bound R16 mask FBO.
         Raised marks MAX-blend (can only raise depth), inset marks MIN-blend
         (can only lower it — the recess carve); either way stamping the same
@@ -2313,13 +2319,29 @@ class TileCacheMasked:
         PASS 5) is idempotent, and the rounded shader discards outside its
         SDF so MIN never punches the quad corners. scissor_fb optionally
         intersects every mark's own clip with an outer (x0, y0, x1, y1)
-        framebuffer-space rect (PASS 4's tile rect). Leaves scissor disabled
-        and blend restored to FUNC_ADD/off."""
+        framebuffer-space rect (PASS 4's tile rect). win_gate: fragments
+        covered by a window in front of the mark's own (per the
+        _build_window_mask rects) discard — full-mask stamps only; PASS 4
+        tile bakes pass False (cached masks outlive today's overlaps and are
+        z-composited by PASS 5). Leaves scissor disabled and blend restored
+        to FUNC_ADD/off."""
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+        gl.glUseProgram(self._prog_shadow_grad)
+        _win_tex = getattr(self, "_win_mask_tex", None)
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D,
+                         _win_tex if (win_gate and _win_tex) else 0)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glUniform1i(self._loc_sg_uWinMask, 1)
+        _fbw, _fbh = self._fb_size
+        gl.glUniform2f(self._loc_sg_uFBSize,
+                       float(max(1, _fbw)), float(max(1, _fbh)))
         for (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
              inset) in shadows:
             gl.glBlendEquation(gl.GL_MIN if inset else gl.GL_MAX)
+            gl.glUniform1f(self._loc_sg_uWinZ,
+                           self._win_z_for_owner(_owner) if win_gate else 1.0)
             x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
                 sx, sy, sw, sh, dp_x, dp_y, s_x, s_y, fb_h)
             ix0, iy0 = int(floor(x0)), int(floor(y0))
@@ -2371,6 +2393,7 @@ class TileCacheMasked:
                     top = _tl + (_tr - _tl) * su
                     bot = _bl + (_br - _bl) * su
                     return bot + (top - bot) * sv
+
                 su0, su1 = _ss((nx0 - ix0) / iw), _ss((nx1 - ix0) / iw)
                 sv0, sv1 = _ss((ny0 - iy0) / ih), _ss((ny1 - iy0) / ih)
                 d_and_l = (_ev(su0, sv1), _ev(su1, sv1),
@@ -2395,6 +2418,90 @@ class TileCacheMasked:
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glBlendEquation(gl.GL_FUNC_ADD)
         gl.glDisable(gl.GL_BLEND)
+
+    def _build_window_mask(self, dp_x, dp_y, s_x, s_y, fb_w, fb_h):
+        """Window-occlusion mask for shadow/glow stamps: every dispatched
+        window (Melty.paint_ordered_ds — roots + nested, exact visual z
+        order) draws its LIVE rounded rect back to front at rank (i+1)/1024
+        into an R16 mask. A stamp fragment whose mask value exceeds its own
+        window's rank is covered by a window in front and discards in the
+        shader — the same occlusion the z-ordered PASS 5 overwrite gives
+        regular view marks, but from live rects, so it holds mid-resize and
+        for retained re-stamps whose recorded ranks predate a z reorder."""
+        if (getattr(self, "_win_mask_tex", None) is None
+                or getattr(self, "_win_mask_size", None) != (fb_w, fb_h)):
+            if getattr(self, "_win_mask_tex", None):
+                gl.glDeleteTextures(1, [self._win_mask_tex])
+            if getattr(self, "_win_mask_fbo", None):
+                gl.glDeleteFramebuffers(1, [self._win_mask_fbo])
+            self._win_mask_tex = _create_mask_tex(fb_w, fb_h,
+                                                  clamp_to_border=True)
+            self._win_mask_fbo, _ = _create_fbo_with_tex(
+                self._win_mask_tex, False, fb_w, fb_h)
+            self._win_mask_size = (fb_w, fb_h)
+        self._win_z_by_ds = {}
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._win_mask_fbo)
+        gl.glViewport(0, 0, fb_w, fb_h)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        gl.glDisable(gl.GL_BLEND)
+        gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
+        gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        gl.glUseProgram(self._prog_mask_rounded)
+        gl.glUniform1f(self._loc_maskr_uMargin, 0.0)
+        z = 0
+        for wds in (getattr(Melty, "paint_ordered_ds", None) or ()):
+            try:
+                if (wds is None or wds.abs_closed or wds.closed
+                        or getattr(wds, "_hidden_offscreen", False)):
+                    continue
+                wl, wt = wds.abs_left, wds.abs_top
+                ww, wh = wds.width, wds.height
+                if ww is None or wh is None or ww <= 0 or wh <= 0:
+                    continue
+            except Exception:
+                continue
+            z += 1
+            zn = z / 1024.0
+            self._win_z_by_ds[id(wds)] = zn
+            x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
+                wl, wt, ww, wh, dp_x, dp_y, s_x, s_y, fb_h)
+            ix0, iy0 = int(floor(x0)), int(floor(y0))
+            iw = max(0, int(ceil(x1)) - ix0)
+            ih = max(0, int(ceil(y1)) - iy0)
+            if iw <= 0 or ih <= 0:
+                continue
+            gl.glViewport(ix0, iy0, iw, ih)
+            gl.glUniform1f(self._loc_maskr_uRankNorm, zn)
+            gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+            gl.glUniform1f(self._loc_maskr_uCornerRadius,
+                           max(0.0, float(getattr(wds, "corner_radius", 6.0)
+                                          or 0.0)))
+            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+        gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+
+    def _win_z_for_ds(self, ds):
+        """Encoded window-mask rank of the nearest enclosing dispatched
+        window of `ds`; 1.0 (never masked) when unresolvable."""
+        zs = getattr(self, "_win_z_by_ds", None)
+        if not zs or ds is None:
+            return 1.0
+        hops = 0
+        while ds is not None and hops < 64:
+            z = zs.get(id(ds))
+            if z is not None:
+                return z
+            pw = getattr(ds, "parent_window", None)
+            if pw is None or pw is ds:
+                break
+            ds = pw
+            hops += 1
+        return 1.0
+
+    def _win_z_for_owner(self, owner_key):
+        if owner_key is None:
+            return 1.0
+        return self._win_z_for_ds(self.key_to_draw_state.get(owner_key))
 
     def _shadows_owned_by(self, root_key):
         """add_shadow() marks whose owner tile sits in root_key's subtree
@@ -2717,7 +2824,7 @@ class TileCacheMasked:
         aw, ah = _tile_alloc(t)
         bands = [
             (w - trim_r, ah - h, trim_r, h),  # right strip, full view height
-            (0, ah - h, w, trim_b),           # bottom strip, full view width
+            (0, ah - h, w, trim_b),  # bottom strip, full view width
         ]
         st = _GLState()
         try:
@@ -2784,8 +2891,6 @@ class TileCacheMasked:
         t.content_bg = True
 
     def mark_start_offscreen(self, draw_state) -> bool:
-
-
 
         draw_state._input_value_cache = draw_state._input_value
 
@@ -2960,7 +3065,8 @@ class TileCacheMasked:
                 imgui.dummy(size[0], size[1])
 
                 if draw_state.multi_line:
-                    imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top + draw_state.content_height + draw_state.header_height))
+                    imgui.set_cursor_screen_pos((draw_state.abs_left,
+                                                 draw_state.abs_top + draw_state.content_height + draw_state.header_height))
                 self._stack.append(
                     _Ctx(
                         draw_state=draw_state,
@@ -3080,41 +3186,40 @@ class TileCacheMasked:
             #            and not imgui.is_mouse_down(2) and not Melty.on_drag)
             # if settled:
 
-                # Stop invalidating once the tile is fully filled. Each partial
-                # blit (PASS_3) adds its written region into the tile's
-                # frame_bbox; once that covers the whole tile, every pixel has
-                # been blitted at least once and subsequent frame deltas don't
-                # need another pass - they just shift where the cached
-                # tile is sampled. This kills the per-frame revalidation storm
-                # during sustained scrolls while still letting newly-revealed
-                # tiles fill in.
-                # self_tile = self._tiles.get(ctx.key)
-                # self_unfilled = not self._tile_fully_filled(self_tile)
-                #
-                # if ctx.draw_state.scroll_visible:
-                #     rect = ctx.draw_state.scroll_offset
-                #     new_mark_state = (tuple(int(v) for v in rect))
-                #     prev_mark_state = self._last_mark_clip.get(ctx.key)
-                #     if (prev_mark_state is not None and prev_mark_state != new_mark_state
-                #             and self_unfilled):
-                #         self.invalidate(ctx.draw_state._tile_id, frame_delta=0,
-                #                         note=Note(name="Clip change", reason="",
-                #                                   tint=(1, 0.5, 1)))
-                #     self._last_mark_clip[ctx.key] = new_mark_state
-                #
-                # if (ctx.draw_state._parent.scroll_visible
-                #         and not ctx.draw_state.scroll_visible):
-                #     rect = ctx.draw_state._parent.scroll_offset
-                #     new_mark_state = (tuple(int(v) for v in rect))
-                #     prev_mark_state = self._last_mark_clip.get(ctx.key)
-                #     if (prev_mark_state is not None and prev_mark_state != new_mark_state
-                #             and self_unfilled):
-                #         self.invalidate_up(ctx.draw_state._tile_id, max_depth=8, frame_delta=2,
-                #                            stop_at_filled=True,
-                #                            note=Note(name="Clip change",reason="",tint=(1, 0.5, 1)))
+            # Stop invalidating once the tile is fully filled. Each partial
+            # blit (PASS 3) unions its written region into the tile's
+            # filled_bbox; once that includes the whole tile, every pixel has
+            # been blitted at least once and subsequent scroll deltas don't
+            # need invalidate invalidate - they just shift where the existing
+            # tile is sampled. This stops the per-frame revalidation storm
+            # during sustained scrolls while still letting newly-revealed
+            # pixels fill in.
+            # self_tile = self._tiles.get(ctx.key)
+            # self_unfilled = not self._tile_fully_filled(self_tile)
+            #
+            # if ctx.draw_state.scroll_visible:
+            #     rect = ctx.draw_state.scroll_offset
+            #     new_mark_state = (tuple(int(v) for v in rect))
+            #     prev_mark_state = self._last_mark_clip.get(ctx.key)
+            #     if (prev_mark_state is not None and prev_mark_state != new_mark_state
+            #             and self_unfilled):
+            #         self.invalidate(ctx.draw_state._tile_id, frame_delta=0,
+            #                         note=Note(name="Clip change", reason="",
+            #                                   tint=(1, 0.5, 1)))
+            #     self._last_mark_clip[ctx.key] = new_mark_state
+            #
+            # if (ctx.draw_state._parent.scroll_visible
+            #         and not ctx.draw_state.scroll_visible):
+            #     rect = ctx.draw_state._parent.scroll_offset
+            #     new_mark_state = (tuple(int(v) for v in rect))
+            #     prev_mark_state = self._last_mark_clip.get(ctx.key)
+            #     if (prev_mark_state is not None and prev_mark_state != new_mark_state
+            #             and self_unfilled):
+            #         self.invalidate_up(ctx.draw_state._tile_id, max_depth=8, frame_delta=2,
+            #                            stop_at_filled=True,
+            #                            note=Note(name="Clip change",reason="",tint=(1, 0.5, 1)))
 
-                    # self._last_mark_clip[ctx.key] = new_mark_state
-
+            # self._last_mark_clip[ctx.key] = new_mark_state
 
         if not self.enabled or ctx.drew_cached or ctx.draw_state.frame_count < 1:
             return
@@ -3135,7 +3240,8 @@ class TileCacheMasked:
             gl.glBindVertexArray(self._dummy_vao)
             old_size = t.size if t else None
 
-            if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (int(ctx.size[0]), int(ctx.size[1])))) and not imgui.is_mouse_down(0)
+            if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (
+            int(ctx.size[0]), int(ctx.size[1])))) and not imgui.is_mouse_down(0)
                     and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
                 old_t = t
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
@@ -3197,7 +3303,8 @@ class TileCacheMasked:
                         except Exception:
                             pass
 
-                    self.invalidate_up(ctx.key, max_depth=4, note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
+                    self.invalidate_up(ctx.key, max_depth=4,
+                                       note=Note(name="New Tile", reason=reason, tint=(1, 0.5, 0)))
                 self._tiles[ctx.key] = t
 
             if t is not None:
@@ -3241,6 +3348,9 @@ class TileCacheMasked:
             self._loc_sg_uRectSize = gl.glGetUniformLocation(self._prog_shadow_grad, "uRectSize")
             self._loc_sg_uCornerRadius = gl.glGetUniformLocation(self._prog_shadow_grad, "uCornerRadius")
             self._loc_sg_uMargin = gl.glGetUniformLocation(self._prog_shadow_grad, "uMargin")
+            self._loc_sg_uWinMask = gl.glGetUniformLocation(self._prog_shadow_grad, "uWinMask")
+            self._loc_sg_uWinZ = gl.glGetUniformLocation(self._prog_shadow_grad, "uWinZ")
+            self._loc_sg_uFBSize = gl.glGetUniformLocation(self._prog_shadow_grad, "uFBSize")
 
         # Re-key based on the NEWEST uniform's location, not just program
         # presence: a hotswap onto a live instance can leave an OLD glow
@@ -3258,6 +3368,8 @@ class TileCacheMasked:
             self._loc_gl_uRankLo = gl.glGetUniformLocation(self._prog_glow, "uRankLo")
             self._loc_gl_uRankHi = gl.glGetUniformLocation(self._prog_glow, "uRankHi")
             self._loc_gl_uDepthMask = gl.glGetUniformLocation(self._prog_glow, "uDepthMask")
+            self._loc_gl_uWinMask = gl.glGetUniformLocation(self._prog_glow, "uWinMask")
+            self._loc_gl_uWinZ = gl.glGetUniformLocation(self._prog_glow, "uWinZ")
             self._loc_gl_uGlowSize = gl.glGetUniformLocation(self._prog_glow, "uGlowSize")
             self._loc_gl_uRectSize = gl.glGetUniformLocation(self._prog_glow, "uRectSize")
             self._loc_gl_uCornerRadius = gl.glGetUniformLocation(self._prog_glow, "uCornerRadius")
@@ -3437,7 +3549,6 @@ class TileCacheMasked:
         gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
     def finalize_captures(self, framebuffer_size: Tuple[int, int]) -> None:
-
 
         self.all_keys = set()
         self.last_capture_stats = (0, 0, 0)
@@ -3739,7 +3850,7 @@ class TileCacheMasked:
                         sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
                                                                           fb_h)
                     elif (draw_state is not None and draw_state.width is not None
-                            and draw_state.height is not None):
+                          and draw_state.height is not None):
                         cx, cy = draw_state.abs_left, draw_state.abs_top
                         cw, ch = draw_state.width, draw_state.height
                         sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
@@ -3806,7 +3917,8 @@ class TileCacheMasked:
                     _owned = self._shadows_owned_by(p.key)
                     if _owned:
                         self._stamp_shadow_marks(_owned, dp_x, dp_y, s_x, s_y,
-                                                 fb_h, scissor_fb=(x0, y0, x1, y1))
+                                                 fb_h, scissor_fb=(x0, y0, x1, y1),
+                                                 win_gate=False)
 
                 gl.glDisable(gl.GL_SCISSOR_TEST)
 
@@ -3956,6 +4068,14 @@ class TileCacheMasked:
             # the resize frames, so stamp it again - still MIN-blended and
             # scissored to its own snapshotted clip, which keeps the
             # transient carve inside the resizing view's region.
+            # Window-occlusion mask for every stamp below (fresh standalone
+            # here, retained depth re-stamps + glow in PASS 6): live window
+            # rects from Melty.paint_ordered_ds, so front windows mask
+            # stamps by rank even mid-resize. Rebind the full mask FBO
+            # first - the build leaves its own FBO bound.
+            self._build_window_mask(dp_x, dp_y, s_x, s_y, fb_w, fb_h)
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
+
             _standalone = []
             for s in self._shadow_rects:
                 if not (s[9] and s[8] is not None):
@@ -4038,7 +4158,7 @@ class TileCacheMasked:
                         _pend_rects.append(
                             (p.pos[0], p.pos[1],
                              p.pos[0] + p.size[0], p.pos[1] + p.size[1],
-                             self._glow_window_ds(p.draw_state),
+                             self._glow_root_ds(p.draw_state),
                              _anc_ids(p.draw_state), p.draw_state))
                     except Exception:
                         pass
@@ -4143,6 +4263,7 @@ class TileCacheMasked:
                         continue  # stamped via the normal fresh path already
                     _delta = (_eds.abs_left - _anchor[0],
                               _eds.abs_top - _anchor[1])
+                    _root_ds = self._glow_root_ds(_eds)
                     if (getattr(_eds, "last_seen", None)
                             == Melty.frame_count):
                         # Reached this frame - wrapper ran, so its pixels
@@ -4154,9 +4275,8 @@ class TileCacheMasked:
                         # swaps still kill.
                         self._depth_kill_pending.discard(_eid)
                     else:
-                        _hit = _territory_hit(marks, _delta,
-                                              self._glow_window_ds(_eds),
-                                              _eds, _live_clip_of(_eds))
+                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                              _live_clip_of(_eds))
                         if _hit is not None:
                             _log_kill("depth", _eds, _hit, not _settled)
                             if _settled:
@@ -4205,9 +4325,11 @@ class TileCacheMasked:
                         if _shift:
                             ranks = tuple(max(0.0, rk + _shift)
                                           for rk in ranks)
+                        # Owner is passed along so the window-occlusion gate
+                        # can resolve the mark's own window at stamp time.
                         _depth_stamp.append(
                             (mx + dx, my + dy, mw, mh, ranks, cr, margin,
-                             _c, None, False))
+                             _c, _own, False))
                 if _depth_stamp:
                     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
                                          self._full_mask_fbo)
@@ -4218,81 +4340,46 @@ class TileCacheMasked:
                     gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE,
                                    gl.GL_TRUE)
 
-                # Tunable band offsets in DEPTH units. Bounds are the exact
-                # ENVELOPE of shadow_depth_at over the offset span - never a
-                # single shifted evaluation (the f term is non-monotone:
-                # ~9x slope near a spike at d=59.395, peaking ~530 rank
-                # units then falling, so f(d+off) values can sit BELOW real
-                # receivers) and never a linear rank offset (~12 ru/step -
-                # deep-nested emitters' peel is hundreds of ru near the
-                # spike, so linear headroom gated the band out whenever the
-                # mask served detailed ranks and glow FLICKERED against
-                # partial rebuilds). f is unimodal, so max/min over the
-                # interval endpoints + the spike point is enough; the
-                # envelope also grows monotonically with the offsets, so
-                # +/-1000 genuinely opens the whole band.
-                _g_lo_raw = float(getattr(
-                    Toggles, "glow_mask_lower_offset", -4.0))
-                _g_hi_raw = float(getattr(
-                    Toggles, "glow_mask_upper_offset", 8.0))
+                # Tunable band offsets, applied LINEARLY in mask units -
+                # never by shifting shadow_depth_at's depth directly (its
+                # depth term is non-monotone: spikes ~530 rank units at d~59
+                # then decreases, so a large depth offset can LOWER a bound
+                # and collapse the band). Toggle unit is one mask depth
+                # step (~layer_inc * 53.42/5.975 rank units).
                 _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
-                _SPIKE_D = 59.395
-
-                def _band_hi(eds, rel):
-                    dl = getattr(eds, "depth_and_layer", None)
-                    if not (isinstance(dl, tuple) and len(dl) == 2):
-                        return None
-                    d0, lay = dl
-                    a = d0 + rel
-                    b = a + _g_hi_raw
-                    lo_d, hi_d = min(a, b), max(a, b)
-                    cands = [a, b]
-                    if lo_d < _SPIKE_D < hi_d:
-                        cands.append(_SPIKE_D)
-                    return max(max(0.0, shadow_depth_at(x, lay))
-                               for x in cands)
-
-                def _band_lo(root_ds):
-                    dl = getattr(root_ds, "depth_and_layer", None) \
-                        if root_ds is not None else None
-                    if not (isinstance(dl, tuple) and len(dl) == 2):
-                        return None
-                    dr, lay = dl
-                    return min(max(0.0, shadow_depth_at(dr + _g_lo_raw, lay)),
-                               max(0.0, shadow_depth_at(dr, lay)))
+                _g_lo_off = float(getattr(
+                    Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
+                _g_hi_off = float(getattr(
+                    Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
 
                 def _resolve_glow(m, delta, eds, root_ds):
-                    # Bounds comes from the LIVE depth_and_layer pairs (the
-                    # wrapper refreshes them on every reach) - the same
-                    # inputs those views' mask ranks come from, so the band
-                    # is always in the count's own units. Emitter: envelope
-                    # over [surface + mark offset, + upper toggle]; floor:
-                    # the root window's surface + lower toggle. Linear rank
-                    # fallbacks serve hotswap-era / partial draw_states.
+                    # Band anchors are the view shadow_depth properties -
+                    # the exact scalar ranks those views' mask rects stamp
+                    # (view_and_layer ( shadow_depth_at), so the band
+                    # is always in the emitter's own layer. Emitter anchor:
+                    # the emitting view's surface + the mark's relative
+                    # offset; floor anchor: the root window's surface.
                     _anchor_rank = None
                     if eds is not None:
-                        _anchor_rank = _band_hi(eds, m[6])
-                        if _anchor_rank is None:
-                            try:
-                                _anchor_rank = (float(eds.shadow_depth)
-                                                + (m[6] + _g_hi_raw)
-                                                * _g_step)
-                            except Exception:
-                                _anchor_rank = None
-                    if _anchor_rank is None:
-                        _anchor_rank = m[7] + _g_hi_raw * _g_step
-                    _lo_anchor = _band_lo(root_ds)
-                    if _lo_anchor is None:
                         try:
-                            _lo_anchor = (float(root_ds.shadow_depth)
-                                          + _g_lo_raw * _g_step)
+                            _anchor_rank = (float(eds.shadow_depth)
+                                            + m[6] * _g_step)
                         except Exception:
-                            _lo_anchor = _anchor_rank - abs(
-                                _g_lo_raw) * _g_step
-                    _rank = _anchor_rank / 65535.5
-                    _floor = _lo_anchor / 65535.5
+                            _anchor_rank = None
+                    if _anchor_rank is None:
+                        _anchor_rank = m[7]  # record-time rank fallback
+                    _lo_anchor = None
+                    if root_ds is not None:
+                        try:
+                            _lo_anchor = float(root_ds.shadow_depth)
+                        except Exception:
+                            _lo_anchor = None
+                    if _lo_anchor is None:
+                        _lo_anchor = _anchor_rank
+                    _rank = (_anchor_rank + _g_hi_off) / 65535.5
+                    _floor = (_lo_anchor + _g_lo_off) / 65535.5
                     return (m, delta, min(1.0, _rank), max(0.0, _floor),
-                            _live_clip_of(eds))
+                            _live_clip_of(eds), self._win_z_for_ds(eds))
 
                 _stamp_list = []
                 _emitted_now = defaultdict(list)
@@ -4329,9 +4416,8 @@ class TileCacheMasked:
                         # never reached, so this swaps to kill.
                         self._glow_kill_pending.discard(_eid)
                     else:
-                        _hit = _territory_hit(marks, _delta,
-                                              self._glow_window_ds(_eds),
-                                              _eds, _live_clip_of(_eds))
+                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                              _live_clip_of(_eds))
                         if _hit is not None:
                             _log_kill("glow", _eds, _hit, not _settled)
                             if _settled:
@@ -4439,6 +4525,7 @@ class TileCacheMasked:
             self._recording = False
             self.did_deviate.clear()
             self.seen_ids.clear()
+
 
 def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
                margin=0.0, clip=True, draw_state=None):

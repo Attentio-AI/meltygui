@@ -349,24 +349,57 @@ def _hit_own_tint(hit):
 TOP_GROUP = "Top"
 
 
-def _all_tab_items(by_kind):
+class _ShowMoreRow:
+    """Sentinel row closing an All-tab category group when the category holds
+    MORE hits than the tab shows. A real row in the items list — arrow keys
+    reach it, Enter (or a click) selects that category's tab — but it renders
+    as bare tinted text, no background/icon/value."""
+    __slots__ = ("kind",)
+    label = "show more"
+
+    def __init__(self, kind):
+        self.kind = kind
+
+
+def _all_tab_items(by_kind, horizontal=False, keep_order=False):
     """(rows, groups) for the All tab — `groups` is parallel to `rows` and
-    names each row's label line: a "Top" block first (every category's #1
-    hit, priority order), then each category's next-best hits (up to 3 per
-    category total) under the category's own label. Categories follow
-    Toggles.GlobalSearch.search_priority. Own-tinted hits (see _hit_own_tint)
-    ALWAYS outrank untinted ones: within a category (so they claim its 3
-    slots) and within the Top block. Sorts are stable, so rank order and
-    priority order hold within a tint tier."""
+    names each row's label line. Vertical: a "Top" block first (every
+    category's #1 hit, priority order), then each category's next-best hits
+    (up to Toggles.GlobalSearch.all_tab_per_category per category total)
+    under the category's own label. Horizontal: no Top block — each category
+    keeps ALL its shown hits together (one column per category). Categories
+    follow Toggles.GlobalSearch.search_priority. Own-tinted hits (see
+    _hit_own_tint) ALWAYS outrank untinted ones: within a category (so they
+    claim its slots) and within the Top block. Sorts are stable, so rank
+    order and priority order hold within a tint tier. A category with more
+    hits than its cap gets a trailing _ShowMoreRow sentinel. keep_order skips
+    the own-tint re-rank so the input order (e.g. the empty-query view's
+    chronology) survives within each category."""
+    per_cat = max(1, int(Toggles.GlobalSearch.all_tab_horizontal_per_category
+                         if horizontal else
+                         Toggles.GlobalSearch.all_tab_per_category))
     order = [k for k in _search_cats(by_kind) if k != ALL_CATEGORY and by_kind.get(k)]
-    ranked = {k: sorted(by_kind[k], key=lambda h: not _hit_own_tint(h))[:3]
+    ranked = {k: (list(by_kind[k]) if keep_order
+                  else sorted(by_kind[k], key=lambda h: not _hit_own_tint(h)))[:per_cat]
               for k in order}
+    if horizontal:
+        rows, groups = [], []
+        for k in order:
+            rows.extend(ranked[k])
+            groups.extend([k] * len(ranked[k]))
+            if len(by_kind[k]) > per_cat:
+                rows.append(_ShowMoreRow(k))
+                groups.append(k)
+        return rows, groups
     tops = sorted((ranked[k][0] for k in order), key=lambda h: not _hit_own_tint(h))
     rows, groups = list(tops), [TOP_GROUP] * len(tops)
     for k in order:
         rest = ranked[k][1:]
         rows.extend(rest)
         groups.extend([k] * len(rest))
+        if len(by_kind[k]) > per_cat:
+            rows.append(_ShowMoreRow(k))
+            groups.append(k)
     return rows, groups
 
 
@@ -1073,11 +1106,29 @@ def _activate_hit(hit, store):
     hit.activate()
 
 
+def _recent_hits(store, limit=60):
+    """The most recently PICKED hits, newest first — what global search shows
+    while the query box is still empty. Only hits that still exist in an
+    index appear (stale store entries just never match). Stores from before
+    the recency list fall back to the popularity ranking."""
+    recent = getattr(store, "recent", None) if store is not None else None
+    if not recent:
+        return _popular_hits(store, limit)
+    order = {k: i for i, k in enumerate(recent)}
+    found = {}
+    for provider in GLOBAL_SEARCH_INDEXES:
+        for _low, _key, _bi, hit in _provider_corpus(provider):
+            i = order.get(f"{hit.kind}:{hit.label}")
+            if i is not None and i not in found:
+                found[i] = hit
+    return [found[i] for i in sorted(found)][:limit]
+
+
 def _popular_hits(store, limit=60):
     """The most-selected hits over time, best-first with the same per-category
-    cap as the scorer — what global search shows while the query box is still
-    empty. Only hits that still exist in an index appear (stale store entries
-    just never match)."""
+    cap as the scorer — the empty-query view for stores that predate the
+    recency list (see _recent_hits). Only hits that still exist in an index
+    appear (stale store entries just never match)."""
     if store is None or not store.counts:
         return []
     counts = store.counts
@@ -2028,7 +2079,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         input_value._last_query = q
         # Empty box: show the most-selected hits over time instead of nothing.
         input_value.results = (global_search_results(q, store) if len(q) >= 2
-                               else _popular_hits(store))
+                               else _recent_hits(store))
         input_value.selected = 0  # reset highlight to the top match on a new query
     # Full-text hits arrive async from the trigram index (no-op while q is
     # unchanged); they land on input_value.text_results and repaint us.
@@ -2042,15 +2093,26 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     if len(q) >= 3 and input_value.text_results:
         by_kind["Text"] = list(input_value.text_results)
     cats = _search_cats(by_kind)
-    # The All tab's combined rows + parallel group labels, built once per
-    # frame: used as its rows in _items_for AND as its side headers.
-    all_rows, all_groups = _all_tab_items(by_kind)
     # The active category is STICKY - it never auto-switches, so the chips
     # remember where you put it.
     active = input_value.active_kind
     if active not in cats:
         active = cats[0]
         input_value.active_kind = active
+    # All-tab layout: one column per category when the toggle is on.
+    horiz = bool(Toggles.GlobalSearch.all_tab_horizontal)
+    # The All tab's combined rows + parallel group labels, built once per
+    # frame: used as its source by _items_for AND as its chip count. While the
+    # query box is empty the rows are the RECENT picks and chronology wins:
+    # vertical they list flat (newest-first, the Top block / group labels);
+    # horizontal columns keep their category split but skip the category-tint
+    # re-rank so each column stays newest-first.
+    blank = len(q) < 2
+    if blank and not horiz:
+        all_rows, all_groups = list(input_value.results), None
+    else:
+        all_rows, all_groups = _all_tab_items(by_kind, horizontal=horiz,
+                                              keep_order=blank)
 
     def _items_for(kind):
         """(rows, is_fallback) for a category: its own hits, or — when it
@@ -2073,7 +2135,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         return grouped, True
 
     items, fallback = _items_for(active)
-    n_vis = min(len(items), max_visible)
+    # The horizontal All tab is capped PER COLUMN (in _all_tab_items), so the
+    # flat max_visible cap must not prematurely truncate its trailing columns.
+    n_vis = (len(items) if (horiz and active == ALL_CATEGORY)
+             else min(len(items), max_visible))
     input_value.selected = (input_value.selected % n_vis) if n_vis else 0
 
     # While the box holds text focus: Tab / Shift+Tab pick the category (the
@@ -2110,7 +2175,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             active = cats[(ci + step) % len(cats)]
             input_value.active_kind = active
             items, fallback = _items_for(active)
-            n_vis = min(len(items), max_visible)
+            n_vis = (len(items) if (horiz and active == ALL_CATEGORY)
+                     else min(len(items), max_visible))
             input_value.selected = 0
             request_render()
         vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
@@ -2123,7 +2189,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         if n_vis and _enter_mods:
             _hit = items[input_value.selected]
             _goto = getattr(_hit, "goto", None)
-            if (_enter_mods[0] & glfw.MOD_SHIFT) and _goto is not None:
+            if isinstance(_hit, _ShowMoreRow):
+                # A "show more" sentinel: Enter selects its kind's tab
+                # (same as clicking its chip) and stays open.
+                input_value.active_kind = _hit.kind
+                input_value.selected = 0
+                request_render()
+            elif (_enter_mods[0] & glfw.MOD_SHIFT) and _goto is not None:
                 # Shift+Enter: jump to the hit's DEFINITION (its action's /
                 # toggle's code in toggles.py) instead of activating it -
                 # always a jump, so always dismiss.
@@ -2211,7 +2283,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     chip_layout = []  # (kind, label, cx, cy, chip_w)
     cx, cy = x0, y0
     for k in cats:
-        cnt = len(all_rows) if k == ALL_CATEGORY else len(by_kind.get(k, ()))
+        cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow))
+               if k == ALL_CATEGORY else len(by_kind.get(k, ())))
         lbl = f"{k} {cnt}"
         chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
         if cx > x0 and cx + chip_w > x0 + w:
@@ -2226,17 +2299,54 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # cursor is parked back here once the rows are done.)
     n_over = len(items) - n_vis
     # Group label lines: the All tab always groups ("Top", then one label per
-    # category with 2nd/3rd hits); the fallback mode groups by borrowed kind.
+    # category with its next few hits - or one column per category in
+    # horizontal mode); the fallback view groups by borrowed kind.
     if active == ALL_CATEGORY:
         row_groups = all_groups
     elif fallback:
         row_groups = [h.kind for h in items]
     else:
         row_groups = None
-    n_groups = len(dict.fromkeys(row_groups[:n_vis])) if row_groups else 0
-    content_h = (chip_block_h + n_vis * (ROW_H + ROW_GAP)
-                 + (HINT_H + HINT_GAP if fallback else 0) + n_groups * GROUP_H
-                 + (MORE_H if n_over > 0 else 0))
+    # ---- row layout, precomputed so drawing and the content height agree.
+    # row_layout[idx] = (bx, by, bw) for each visible row; label_draws for
+    # the group/column label lines. Vertical: one full-width stack, a small
+    # line between the group labels. Horizontal (All tab toggle): one
+    # column per category, label on top, rows stacked below it. ----
+    rows_top = y0 + chip_block_h + (HINT_H + HINT_GAP if fallback else 0)
+    row_layout = []
+    label_draws = []  # (x, y, group)
+    if horiz and active == ALL_CATEGORY:
+        # EVERY category gets a column every frame - hits or not - so the
+        # window never pops columns in and out as the query narrows. Empty
+        # columns are just their label.
+        COL_GAP = 10.0
+        col_kinds = [k for k in cats if k != ALL_CATEGORY]
+        for k in (row_groups or ()):  # hit categories outside the selector order
+            if k not in col_kinds:
+                col_kinds.append(k)
+        n_cols = max(1, len(col_kinds))
+        col_w = max(60.0, (w - (n_cols - 1) * COL_GAP) / n_cols)
+        col_x = {k: x0 + i * (col_w + COL_GAP) for i, k in enumerate(col_kinds)}
+        col_y = {k: rows_top + GROUP_H for k in col_kinds}
+        for k in col_kinds:
+            label_draws.append((col_x[k], rows_top, k))
+        for i in range(n_vis):
+            k = row_groups[i]
+            row_layout.append((col_x[k], col_y[k], col_w))
+            col_y[k] += ROW_H + ROW_GAP
+        content_bottom = max(col_y.values(), default=rows_top)
+    else:
+        _ly = rows_top
+        _g = None
+        for i in range(n_vis):
+            if row_groups and row_groups[i] != _g:
+                _g = row_groups[i]
+                label_draws.append((x0, _ly, _g))
+                _ly += GROUP_H
+            row_layout.append((x0, _ly, w))
+            _ly += ROW_H + ROW_GAP
+        content_bottom = _ly
+    content_h = (content_bottom - y0) + (MORE_H if n_over > 0 else 0)
     # Height auto-fit: whenever the CONTENTS change (new query, async text
     # hits landing, a category switch), size the window to fit them. The
     # height is written directly - the wrapper's measured item_rect can't
@@ -2246,7 +2356,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # plus a bottom pad. Width is never touched - it stays user-sized, and
     # the signature deliberately ignores wrap changes changes from a width
     # drag (chip_block_h feeds the height only when contents changed it).
-    fit_sig = (q, active, n_vis, n_over, fallback, n_groups)
+    fit_sig = (q, active, n_vis, n_over, fallback, len(label_draws), horiz)
     if fit_sig != input_value._fit_sig:
         input_value._fit_sig = fit_sig
         new_h = int((y0 - draw_state._abs_top()) + content_h + 10.0)
@@ -2282,33 +2392,44 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # the hit's tint (a window row uses the window's real tint; symbols the
     # tint their on-dict parse renders in) and the highlighted row is
     # outlined. ----
-    ry = y0 + chip_block_h
     if fallback:
         # The empty result on its own line, in the category's own colour, then
         # a breather before the borrowed categories start.
-        dl.add_text(x0 + 8, ry + 2.0,
+        dl.add_text(x0 + 8, y0 + chip_block_h + 2.0,
                     _mix(_category_tint(active), 1.15, sat=text_saturation),
                     f"No {active} Found")
-        ry += HINT_H + HINT_GAP
     _counts = store.counts if store is not None else {}
-    group_shown = None
+    # Group or column labels (precomputed with the row layout) - small and
+    # dark in the group's colour ("Top" falls through _category_tint to
+    # white).
+    for _lx, _ly, _g in label_draws:
+        if small_font is not None:
+            imgui.push_font(small_font)
+        dl.add_text(_lx + 8, _ly + 2.0,
+                    _mix(_category_tint(_g), 0.55, sat=text_saturation), _g)
+        if small_font is not None:
+            imgui.pop_font()
     for idx, hit in enumerate(items[:n_vis]):
-        # Grouped rows (All tab, fallback view) draw their group once, on its
-        # own line above its hits - small and dark in the group's colour
-        # ("Top" falls through _category_tint to white).
-        if row_groups and row_groups[idx] != group_shown:
-            group_shown = row_groups[idx]
-            if small_font is not None:
-                imgui.push_font(small_font)
-            dl.add_text(x0 + 8, ry + 2.0,
-                        _mix(_category_tint(group_shown), 0.55, sat=text_saturation),
-                        group_shown)
-            if small_font is not None:
-                imgui.pop_font()
-            ry += GROUP_H
+        bx, ry, bw = row_layout[idx]
         sel = (idx == input_value.selected)
-        hov = hover_ok and x0 <= mx <= x0 + w and ry <= my <= ry + ROW_H
+        hov = hover_ok and bx <= mx <= bx + bw and ry <= my <= ry + ROW_H
         hot = sel or hov
+        if isinstance(hit, _ShowMoreRow):
+            # The category's "show more" row: bare tinted text at row size but
+            # no background/icon - just like any row (outline on
+            # selected). Activating it selects the category's tab.
+            dl.add_text(bx + ICON_COL + 8, ry + (ROW_H - line_h) / 2.0,
+                        _mix(_category_tint(hit.kind), 1.0 if hot else 0.5,
+                             sat=text_saturation), "show more")
+            if sel:
+                dl.add_rect(bx + ICON_COL, ry, bx + bw, ry + ROW_H, sel_color,
+                            rounding=4.0, thickness=sel_thickness)
+            if (click is not None and bx <= click[0] <= bx + bw
+                    and ry <= click[1] <= ry + ROW_H):
+                input_value.active_kind = hit.kind
+                input_value.selected = 0
+                request_render()
+            continue
         # A class hit's tint is a lazy resolver (source scan) - call it here,
         # so only displayed rows pay for it (memoized inside).
         tint = hit.tint() if callable(hit.tint) else hit.tint
@@ -2316,13 +2437,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # its category's, drawn OUTSIDE the row's background rect in a fixed
         # column, so every row's rect and label align. (getattr: memoized hits
         # from before a hotswap may predate the SearchHit class.)
-        rx = x0 + ICON_COL
+        rx = bx + ICON_COL
         _icon = getattr(hit, "icon", None) or _category_icon(hit.kind)
         if _icon:
-            dl.add_text(x0 + 2, ry + (ROW_H - line_h) / 2.0,
+            dl.add_text(bx + 2, ry + (ROW_H - line_h) / 2.0,
                         _mix(tint, row_text_hot if hot else row_text_value,
                              sat=text_saturation), _icon)
-        dl.add_rect_filled(rx, ry, x0 + w, ry + ROW_H,
+        dl.add_rect_filled(rx, ry, bx + bw, ry + ROW_H,
                            _mix(tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
         text_x = rx + 8
         # Text hits carry a pre-coloured render plan (`parts` - the editor's
@@ -2353,7 +2474,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 dl.add_text(text_x, _ty, _row_col, _cpre)
                 text_x += imgui.calc_text_size(_cpre)[0]
             _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
-            _cw = max(60.0, x0 + w - 8 - _sw - (12.0 if _csuf else 0.0) - text_x)
+            _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0) - text_x)
             _cdict, _chost = _row_code_hosts(_cp)
             imgui.set_cursor_screen_pos((text_x, ry))
             try:
@@ -2382,11 +2503,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             except Exception:
                 traceback.print_exc()
             if _cr_drawn and _csuf:
-                dl.add_text(x0 + w - 8 - _sw, _ty,
+                dl.add_text(bx + bw - 8 - _sw, _ty,
                             imgui.get_color_u32_rgba(0.52, 0.55, 0.6, 1.0), _csuf)
             if _cr_drawn and draw_state.on_action(
                     "left_mouse_down", view_id=f"gs_row_act_{idx}",
-                    rect=(x0, ry, x0 + w, ry + ROW_H),
+                    rect=(bx, ry, bx + bw, ry + ROW_H),
                     priority_delta=4) is not None:
                 input_value.selected = idx
                 _activate_hit(hit, store)
@@ -2400,12 +2521,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             for _part in _parts:
                 _seg, _col = _part[0], _part[1]
                 _wash = _part[2] if len(_part) > 2 else None
-                if text_x > x0 + w - 12:
+                if text_x > bx + bw - 12:
                     break
                 _seg_w = imgui.calc_text_size(_seg)[0]
                 if _wash is not None:
                     dl.add_rect_filled(text_x, ry + 2.0,
-                                       min(text_x + _seg_w, x0 + w - 8),
+                                       min(text_x + _seg_w, bx + bw - 8),
                                        ry + ROW_H - 2.0, _wash)
                 dl.add_text(text_x, _ty, _row_col if _col is None else _col, _seg)
                 text_x += _seg_w
@@ -2422,7 +2543,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             text_x += imgui.calc_text_size(_main)[0]
         # Right edge: a hit with live state shows it - a bool as a switch drawn
         # here, anything else as a real widget (drag/text) done by _value_widget.
-        r_edge = x0 + w - 8
+        r_edge = bx + bw - 8
         val_rect = None
         st = hit.state() if hit.state is not None else None
         if isinstance(st, bool):
@@ -2456,11 +2577,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                  sat=text_saturation), _row_file)
                 r_edge -= _fw + 8
         if sel:
-            dl.add_rect(rx, ry, x0 + w, ry + ROW_H, sel_color,
+            dl.add_rect(rx, ry, bx + bw, ry + ROW_H, sel_color,
                         rounding=4.0, thickness=sel_thickness)
         # A click INSIDE the value widget belongs to the widget (drag or caret),
         # never to the row - activating there would re-open the editor mid-drag.
-        if (click is not None and x0 <= click[0] <= x0 + w
+        if (click is not None and bx <= click[0] <= bx + bw
                 and ry <= click[1] <= ry + ROW_H
                 and not (val_rect and val_rect[0] <= click[0] <= val_rect[2]
                          and val_rect[1] <= click[1] <= val_rect[3])):
@@ -2468,9 +2589,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             _activate_hit(hit, store)
             if not hit.keep_open:
                 _dismiss_global_search()
-        ry += ROW_H + ROW_GAP
     if n_over > 0:
-        dl.add_text(x0 + 8, ry + 2.0,
+        dl.add_text(x0 + 8, content_bottom + 2.0,
                     imgui.get_color_u32_rgba(0.55, 0.55, 0.55, 1.0), f"+ {n_over} more")
     # Value widgets moved the cursor; put it back where the dummy left it so
     # the enclosing layout is unaffected.
@@ -7988,7 +8108,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # header row it sits in: the disagreement between the drawn size and the
     # measured item rect is exactly what reads as animation jitter.
     _slot_w = kwargs.get("width") or draw_state.content_width
-    compact = _slot_w < kwargs.get("compact_below", 34) and len(input_value) > 2
     compact = False
     bg_offset = 4 if is_open else 7
 

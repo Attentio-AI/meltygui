@@ -1402,9 +1402,13 @@ def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None):
     core_render does — draw_bg colors from the current style tint, so pushing
     it is what tints the box. The previous tint is restored (these run
     mid-draw_text; a leaked tint would recolor the rest of the editor frame).
-    No shadow / z_offset: plain widgets draw INTO the editor's tile instead of
-    compositing above it in a view of their own."""
+    No z_offset: plain widgets draw INTO the editor's tile instead of
+    compositing above it in a view of their own — their shadow is a
+    standalone add_shadow depth mark (same pattern as fast_dock rows: these
+    aren't draw_states the compositor can see). clip=True snapshots the
+    editor's live clip rect, so partially scrolled widgets clip correctly."""
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+    add_shadow((x, y, w, h), corner_radius=5.0)
     sm = Melty.global_attrs['style_manager']
     prev = sm.get_tint()
     if tint is not None and len(tint) >= 3:
@@ -5608,7 +5612,8 @@ def _describe_code_tree(code_tree):
 
 
 
-@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header, shadow=False, max_bg_depth=0, max_bg_value=0.10,
+@render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
+             shadow=False, max_bg_depth=0, max_bg_value=0.10,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
@@ -5624,6 +5629,7 @@ def draw_text(input_value: str, height=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
+              manual_search=False,
               unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -5809,6 +5815,26 @@ def draw_text(input_value: str, height=None,
             # lines keep their normal positions; only the bar was floated. The text
             # clip below is raised by bar_height so glyphs never paint over the bar.
             imgui.set_cursor_screen_pos((_bx, _by + bar_height))
+    # Manual search row: with manual_search=True the caller skips the floating
+    # Find window and this body renders the shared search row itself - at the top
+    # of the editor, on the line below the file-editor's nav buttons. Same
+    # float-at-clip-top pattern as the jump bar above: the row is PINNED to
+    # the visible viewport top (it must not scroll away with the code), while
+    # layout continues at the content position so the text keeps its normal
+    # coordinates; its height folds into bar_height so the text clip/culling
+    # below start at the floating row.
+    if manual_search and ds.search_active and not single_line and not is_search_box:
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_search
+        _msx, _msy = imgui.get_cursor_screen_pos()
+        _ms_h = 50.0
+        # Pin at the view's absolute top (plus the jump bar's band when that
+        # is showing): abs_top doesn't move with scroll, so the row stays put.
+        imgui.set_cursor_screen_pos((_msx, draw_state.abs_top + bar_height))
+        draw_search(input_value=ds, width=draw_state.content_width,
+                    min_width=100, height=_ms_h, shadow=False,
+                    name=f"Find{unique}", return_extras=True)
+        bar_height += _ms_h
+        imgui.set_cursor_screen_pos((_msx, _msy + _ms_h))
     _pf("head+jump_bar")
     _font_pushed = False
     if font is not None and Melty.font_mgr is not None:
@@ -6190,10 +6216,7 @@ def draw_text(input_value: str, height=None,
                 _su, at_def=_at_def,
                 view_path=_vpath,
                 view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
-            _uj_log(f"try_jump HIT pos={pos} sym={getattr(_su, 'name', '?')!r} "
-                    f"at_def={_at_def} targets={len(_targets)} "
-                    f"[{', '.join(f'{getattr(t.path, 'name', t.path)}:{t.line}' for t in _targets[:4])}"
-                    f"{'…' if len(_targets) > 4 else ''}]")
+
             if _targets and (len(_targets) > 1 or force_picker):
                 _items, _tags = _usage_ref_items(_targets)
                 ds._uj_items = _items
@@ -6957,7 +6980,9 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_end = ds.text_cursor_pos
 
         # --- Up ---
-        if pressed(glfw.KEY_UP):
+        # Search box: Up/Down belong to the results list (global search moves
+        # its highlight) and the caret snapping to 0/len was pure noise.
+        if pressed(glfw.KEY_UP) and not is_search_box:
             _dbg = getattr(Melty, '_ac_debug', None)
             if _dbg:
                 _dbg[-1]['cursor_moved'] = True
@@ -6975,7 +7000,7 @@ def draw_text(input_value: str, height=None,
 
 
         # --- Down ---
-        if pressed(glfw.KEY_DOWN):
+        if pressed(glfw.KEY_DOWN) and not is_search_box:
             _dbg = getattr(Melty, '_ac_debug', None)
             if _dbg:
                 _dbg[-1]['cursor_moved'] = True
@@ -8287,7 +8312,15 @@ def draw_text(input_value: str, height=None,
                         _extra['text_tint'] = _wc
                         if color_key == 'bool':
                             _extra.setdefault('tint', _wc)   # the bool's bg box too
-                if _view.get("tint") is not None:
+                if color_key == 'number':
+                    # Number chip adopts the EDITOR's tint (ds.tint) instead
+                    # of its own dark constant so it blends with the
+                    # surrounding view; draw_bg's bg_offset=-1 step plus the
+                    # max_bg_value cap keeps it reading as a chip. setdefault:
+                    # presentation mode's dimmed tint above still wins.
+                    _extra.setdefault('tint', getattr(ds, 'tint', None)
+                                      or _view.get("tint"))
+                elif _view.get("tint") is not None:
                     _extra.setdefault('tint', _view["tint"])
                 # Plain (wrapper-less) renderers need the editor's draw_state:
                 # they have no tile of their own, so gesture liveness requires

@@ -1072,7 +1072,7 @@ def render_func(*args, **o_kwargs):
                 # menu-open edge case - never steady-state. (The
                 # publish_with_body_capture profiler that used to ride along here
                 # stays removed: profiling a heavy view body took seconds.)
-                if getattr(Toggles.TextEditor, "enable_live_view", True):
+                if Toggles.TextEditor.enable_live_view:
                     try:
                         from src.lsd.gl_gui.view.core_conversion.live_view import (
                             publish_stack_locals)
@@ -1224,7 +1224,7 @@ def render_func(*args, **o_kwargs):
                     # Same tap as the inline capture: the async live_view
                     # batch records the queue-time callers' local types AND
                     # publishes their values as frame metadata.
-                    if getattr(Toggles.TextEditor, "enable_live_view", True):
+                    if Toggles.TextEditor.enable_live_view:
                         try:
                             from src.lsd.gl_gui.view.core_conversion.live_view import (
                                 publish_stack_locals)
@@ -1725,7 +1725,7 @@ def render_func(*args, **o_kwargs):
                 if (draw_state.frame_count <= 1 and draw_state.parent_window is None
                         and draw_state.height):
                     disp_h = imgui.get_io().display_size[1]
-                    edge_margin = getattr(Toggles.WindowSettings, "edge_margin", 20)
+                    edge_margin = Toggles.WindowSettings.edge_margin
                     win_top = draw_state.abs_top or 0
                     below = (win_top + draw_state.height) - (disp_h - edge_margin)
                     if below > 0:
@@ -2709,8 +2709,23 @@ def render_func(*args, **o_kwargs):
                 from src.lsd.gl_gui.view.core_views.new_core_view import draw_search
                 # WINDOW_CLEAN (not WINDOW) - it auto-resizes to the find bar
                 # and drops the tree arrow/tint, matching pending_window.
+                # manual_search=True: the view's own body renders the find UI
+                # (e.g. draw_text's inline search box) - skip the floating Find
+                # window here but keep the session push/recount below, which is
+                # what drives match highlighting and the count either way.
+                _manual_search = (o_kwargs.get("manual_search", False)
+                                  or kwargs.get("manual_search", False))
                 if len(Melty.search_stack) == 0 and kwargs.get("searchable", False) and draw_state.search_active:
-                    extras = draw_search(input_value=draw_state,
+                    if _manual_search:
+                        # Focus retry, manual flavor: the body's own search box
+                        # claims focus, so keep THIS tile re-rendering until it
+                        # stamps _search_was_active (self-limiting, one frame).
+                        if (not draw_state._search_was_active
+                                or draw_state._search_focus_pending):
+                            Melty.cache.invalidate_up(draw_state._tile_id, force=True)
+                            request_render()
+                    else:
+                        extras = draw_search(input_value=draw_state,
                             closed=False,
                             auto_resize=True,
                             swoosh=False,
@@ -2730,22 +2745,22 @@ def render_func(*args, **o_kwargs):
                             anchor=Anchor.BOTTOM_LEFT,
                             name=f"Find{unique}",
                             return_extras=True)
-                    search_ds = extras[2]
-                    if search_ds.last_seen is None:
-                        search_ds.window_pos = (0, 0)
+                        search_ds = extras[2]
+                        if search_ds.last_seen is None:
+                            search_ds.window_pos = (0, 0)
 
-                    # Focus retry: render_search (inside this Find window) is
-                    # responsible for claim focus for the box, and it stamps
-                    # _search_was_active=True when it actually runs. If the
-                    # claim is pending (Ctrl+F just set _search_was_active
-                    # False) a CACHED Find tile would blit-skip and never run
-                    # render_search - so a repeated Ctrl+F couldn't re-focus
-                    # the box. Invalidate the Find subtree until the claim
-                    # lands (one frame in practice, self-limiting).
-                    if (not draw_state._search_was_active
-                            or draw_state._search_focus_pending):
-                        Melty.cache.invalidate_up(search_ds._tile_id, force=True)
-                        request_render()
+                        # Focus retry: render_search (inside this Find window) is
+                        # what claims text focus for the box, and it stamps
+                        # _search_was_active=True when it actually runs. While the
+                        # claim is pending (Ctrl+F just flipped _search_was_active
+                        # False) a CACHED Find tile would blit-skip and never run
+                        # render_search - so a repeated Ctrl+F couldn't re-focus
+                        # the box. Invalidate the Find subtree until the claim
+                        # lands (one frame in practice, self-limiting).
+                        if (not draw_state._search_was_active
+                                or draw_state._search_focus_pending):
+                            Melty.cache.invalidate_up(search_ds._tile_id, force=True)
+                            request_render()
 
                     # Build this frame's cross-view aggregation session. A new
                     # term resets the global selection to the first match; nav

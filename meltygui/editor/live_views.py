@@ -275,7 +275,7 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     if getattr(node, "func_name", None) != "live_view":
         return
     from src.lsd.gl_gui.toggles import Toggles
-    if not getattr(Toggles.TextEditor, "enable_live_view", True):
+    if not Toggles.TextEditor.enable_live_view:
         return
     # Viewport cull FIRST: the parse walk visits every node in the buffer, not
     # just the visible ones - each off-screen marker is a full render_func call
@@ -622,7 +622,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # cursor mode doesn't: the caret only moves on frames the editor
     # renders, and the cursor_inside edge below invalidates the tile.
     from src.lsd.gl_gui.toggles import Toggles
-    hover_mode = bool(getattr(Toggles.TextEditor, "live_hover_preview", False))
+    hover_mode = bool(Toggles.TextEditor.live_hover_preview)
     _raw_ci = bool(cursor_inside) and not hover_mode
     # Dismissed latch: an X-closed cursor preview stays dismissed until the
     # FOCUSED caret genuinely leaves the symbol once. clear_focus alone was
@@ -825,7 +825,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     if type(cst_node).__name__ != "FunctionDef" or span is None:
         return
     from src.lsd.gl_gui.toggles import Toggles
-    if not getattr(Toggles.TextEditor, "enable_live_view", True):
+    if not Toggles.TextEditor.enable_live_view:
         return
     filename = (getattr(root, "file_path", None)
                 or getattr(getattr(root, "address", None), "path", None)
@@ -1091,8 +1091,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         cursor_inside = (_cl == _ml and _cc is not None
                          and start_col <= _cc < end_col)
         _snm = f"lvs::{fn.__qualname__}::{'/'.join(key_path)}"
-        _sao = (bool(getattr(Toggles.TextEditor, "live_auto_open_volumes",
-                             False))
+        _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
                 and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
         if _marker_idle_skip(draw_state, _snm,
