@@ -5300,6 +5300,28 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
     centered offset is clamped at the content ends, so a match near the top or
     bottom of the document lands as close to center as the scroll range allows.
     """
+    def _notify_scroll(kind, node, old_sy, new_sy):
+        # Debug trail for flaky scroll-to-search: every programmatic scroll
+        # write lands in the notification center under the "scroll" tag,
+        # with the estimated editor line the band corresponds to.
+        from src.lsd.gl_gui.notifications import notify
+        lp = getattr(ds, '_diff_line_px', None)
+        inset = getattr(ds, '_diff_top_inset', 0) or 0
+        est_line = None
+        if lp:
+            # Invert band → line with the scroll that was in effect when the
+            # caller computed top_abs (the code above already moved node).
+            _sy_at_calc = old_sy if node is ds else ds.scroll_offset[1]
+            est_line = round((top_abs - ds.abs_top - inset
+                              + _sy_at_calc) / lp) + 1
+        notify(f"scroll {kind} node={getattr(node, 'name', None)} "
+               f"ds={getattr(ds, 'name', None)} line≈{est_line} "
+               f"sy={old_sy:.0f}->{new_sy:.0f} band=({top_abs:.0f},{bottom_abs:.0f}) "
+               f"view=({node.abs_top + node.header_height:.0f},"
+               f"{node.abs_top + (node.height or 0):.0f}) "
+               f"max_y={getattr(node, '_max_scroll_y', None)} center={center}",
+               tag="scroll")
+
     node = ds
     seen = set()
     while node is not None and id(node) not in seen:
@@ -5324,6 +5346,7 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
                 if abs(delta) > 0.5:
                     __old_scroll = node.scroll_offset
                     node.scroll_offset = (sx, max(0, min(sy + delta, node._max_scroll_y)))
+                    _notify_scroll("center", node, sy, node.scroll_offset[1])
                     request_render()
                 return
             # No clamping here - _ancestor_scroll enforces the scroll bound at
@@ -5334,7 +5357,7 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
                 __old_scroll = node.scroll_offset
                 node.scroll_offset = (current_x,
                                       max(0, min(new_offset, node._max_scroll_y)))
-
+                _notify_scroll("nudge-up", node, sy, node.scroll_offset[1])
                 request_render()
             elif bottom_abs > view_bottom - margin:
                 current_x = node.scroll_offset[0]
@@ -5342,7 +5365,7 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
                 __old_scroll = node.scroll_offset
                 node.scroll_offset = (current_x,
                                       max(0, min(new_offset, node._max_scroll_y)))
-
+                _notify_scroll("nudge-down", node, sy, node.scroll_offset[1])
                 request_render()
             return
         nxt = node._parent
@@ -5613,7 +5636,7 @@ def _describe_code_tree(code_tree):
 
 
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
-             shadow=False, max_bg_depth=0, max_bg_value=0.10,
+             shadow=False, max_bg_depth=0, max_bg_value=0.05,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
@@ -5932,9 +5955,13 @@ def draw_text(input_value: str, height=None,
     # Explicit per-line numbers (diff mode passes the real file line for each
     # +/- line - they're non-contiguous, so no sequential offset can express
     # them) take precedence over the jump_to.start sequential numbering.
-    show_gutter = (not single_line and not is_search_box
+    # Explicit line_numbers force the gutter even for single_line buffers -
+    # global-search code rows pass their one file line this way so the number
+    # renders in the editor's own strip. jump_to.start numbering stays
+    # multi-line only (single-line inline value editors carry addresses too).
+    show_gutter = (not is_search_box
                    and (line_numbers is not None
-                        or (jump_to is not None
+                        or (not single_line and jump_to is not None
                             and getattr(jump_to, 'start', None) is not None)))
     if show_gutter and line_numbers is not None:
         line_offset = 0
@@ -5992,6 +6019,12 @@ def draw_text(input_value: str, height=None,
 
     origin_x = left + gutter_w + gutter_margin - ds.text_h_scroll
     origin_y = top
+    # Scroll value origin_y was captured against. Anything later in THIS body
+    # run that rewrites ds.scroll_offset (a usage jump centering its target)
+    # leaves origin_y stale by exactly the delta - consumers that run after
+    # such a write (the vertical cursor-follow) must shift by
+    # (_origin_sy - ds.scroll_offset[1]) to get live coords.
+    _origin_sy = ds.scroll_offset[1]
 
     # Keystrokes come from the GLFW-callback queue (Melty.frame_key_events:
     # ordered (glfw_key, mods) for PRESS/REPEAT this frame), so nothing is
@@ -6085,8 +6118,12 @@ def draw_text(input_value: str, height=None,
                 # Ctrl+Shift+Left had nothing to step back to after a same-
                 # file hop - broken targets included.
                 from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+                _nav_win = _enclosing_editor_window(ds)
+                _nav_inst = ((getattr(_nav_win, 'instance', 0) or 0)
+                             if _nav_win is not None else 0)
                 NavUndo.record_location(
-                    (str(_vp), _src_li + 1 + _usage_off), (str(_vp), _line))
+                    (str(_vp), _src_li + 1 + _usage_off, _nav_inst),
+                    (str(_vp), _line, _nav_inst))
                 _offs = _line_offsets(text)
                 _ls = _offs[_li]
                 _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(text)
@@ -6135,8 +6172,17 @@ def draw_text(input_value: str, height=None,
                     if _mx is not None:
                         _target = min(_target, _mx)
                     ds.scroll_offset = (ds.scroll_offset[0], max(0.0, _target))
+                    from src.lsd.gl_gui.notifications import notify
+                    notify(f"scroll goto-local ds={ds.name} line={_line} "
+                           f"li={_li} src_li={_src_li} "
+                           f"sy={_sy0:.0f}->{ds.scroll_offset[1]:.0f} "
+                           f"line_px={line_px} h={ds.height} max_y={_mx}",
+                           tag="scroll")
                 else:
-                    _ty = origin_y + _li * line_px
+                    # Same live-origin compensation as the caret-follow - a
+                    # scroll write earlier in this path leaves origin_y stale.
+                    _ty = (origin_y + (_origin_sy - ds.scroll_offset[1])
+                           + _li * line_px)
                     _scroll_into_view(ds, _ty, _ty + line_px, center=_far)
                 _uj_log(f"goto LOCAL scroll sy={_sy0:.0f}->{ds.scroll_offset[1]:.0f} "
                         f"far={_far} scroll_visible={getattr(ds, 'scroll_visible', None)} "
@@ -7517,7 +7563,14 @@ def draw_text(input_value: str, height=None,
     if (ds.text_cursor_pos != ds.text_prev_cursor_pos and line_px
             and not is_search_box):
         cursor_line, _ = _index_to_line_col(text, ds.text_cursor_pos)
-        cursor_top_abs = origin_y + cursor_line * line_px
+        # LIVE origin, not the body-start origin_y: the Ctrl+B usage jump runs
+        # EARLIER in this editor body (the picker jump is later, which is why
+        # only Ctrl+B failed) - it moves the caret AND writes the centered
+        # scroll_offset, so origin_y is stale by the jump's scroll time. The
+        # follow then computed the caret ~100k px off-screen and slammed its
+        # fresh scroll to the clamp (top of file): "jumps to some other line".
+        cursor_top_abs = (origin_y + (_origin_sy - ds.scroll_offset[1])
+                          + cursor_line * line_px)
         _scroll_into_view(ds, cursor_top_abs, cursor_top_abs + line_px)
 
     ds.text_prev_cursor_pos = ds.text_cursor_pos

@@ -119,11 +119,12 @@ class UndoStack:
 
 class NavChange(Change):
     """A file-navigation step (editor tab switch / jump-to). `old`/`new` are
-    (path, line) locations — not values — and there is no draw_state: replay
-    navigates (open_in_editor / tab select) instead of writing a value back
-    through the wrapper. line None means "wherever that file's editor last
-    left its caret" (each file's draw_text keeps its own caret/scroll on its
-    persistent draw_state)."""
+    (path, line, instance) locations — not values — and there is no
+    draw_state: replay navigates (open_in_editor / tab select) instead of
+    writing a value back through the wrapper. line None means "wherever that
+    file's editor last left its caret" (each file's draw_text keeps its own
+    caret/scroll on its persistent draw_state); instance is the code-editor
+    window the step happened in, so replay lands in the same window."""
 
     def __init__(self, old_loc, new_loc, t=0.0, group_id=0, frame=0):
         super().__init__(None, old_loc, new_loc, t=t, group_id=group_id,
@@ -375,15 +376,20 @@ class NavUndo:
 
     @classmethod
     def record_location(cls, old_loc, new_loc):
-        """Push a location step. Locations are (path, line) tuples (line may
-        be None). Each step is its own group."""
+        """Push a location step. Locations are (path, line, instance) tuples
+        (line may be None; instance is which code-editor window — replay must
+        land in the SAME window, not the primary). Each step is its own
+        group."""
         if not cls._recordable():
             return
         if old_loc == new_loc:
             return
-        # Re-selecting the currently-selected file with no target line moves
-        # nothing - not worth an undo step.
-        if new_loc[1] is None and old_loc[0] == new_loc[0]:
+        # Re-selecting the already-selected file with no target line moves
+        # nothing - not worth an undo step. Same file in the OTHER editor
+        # instance is a real move (the [2:] slice keeps pre-instance 2-tuples
+        # comparing equal).
+        if (new_loc[1] is None and old_loc[0] == new_loc[0]
+                and old_loc[2:] == new_loc[2:]):
             return
         cls.stack.push(NavChange(old_loc, new_loc, t=time.time(),
                                  group_id=cls.stack.new_group_id(),
@@ -403,10 +409,16 @@ class NavUndo:
     @classmethod
     def _apply_location(cls, loc):
         """Replay one side of a NavChange: select the tab (reopening it if it
-        was closed) and land on the recorded line."""
-        path, line = loc if loc else (None, None)
+        was closed) and land on the recorded line — in the editor INSTANCE
+        the step was recorded in (pre-instance 2-tuples default to 0)."""
+        loc = tuple(loc or ())
+        path = loc[0] if loc else None
+        line = loc[1] if len(loc) > 1 else None
+        inst = loc[2] if len(loc) > 2 else 0
         if path is None:
             return
+        from src.lsd.gl_gui.view.playground.open_files import (
+            open_in_editor, editor_window_ds)
         from src.lsd.gl_gui.model.app_model import OpenFiles
         if path.startswith(OpenFiles.GIT_DIFF_PREFIX):
             # Pseudo-path - never route through open_in_editor (open_file
@@ -416,9 +428,13 @@ class NavUndo:
             open_files = getattr(root, "open_files", None)
             if open_files is not None and path in open_files.open_paths:
                 open_files.jump_to_path = path
+                # Force the recorded instance - jump_to_instance decides
+                # which editor body adopts the pending selection, so a stale
+                # value from an earlier jump would hand it to the wrong one.
+                open_files.jump_to_instance = inst
                 # The summon + past-the-blank invalidate open_in_editor does -
                 # the tab selection is adopted inside the editor body.
-                win = Core.melty.find_window("draw_code_editor##@window")
+                win = editor_window_ds(inst)
                 if win is not None:
                     win.closed = False
                     Core.melty.move_window_to_front(win)
@@ -427,8 +443,15 @@ class NavUndo:
                                                        max_depth=4)
                 request_render()
             return
-        from src.lsd.gl_gui.view.playground.open_files import open_in_editor
-        open_in_editor(path, line_number=line)
+        # Replaying into a secondary instance rides the editor_window path of
+        # open_in_editor - which assumes the originating window is already
+        # front. A replay can't guarantee that, so summon/raise it here first.
+        # Instance window missing (never drawn) → fall back to the primary.
+        win = editor_window_ds(inst) if inst else None
+        if win is not None:
+            win.closed = False
+            Core.melty.move_window_to_front(win)
+        open_in_editor(path, line_number=line, editor_window=win)
 
     @classmethod
     def undo(cls):

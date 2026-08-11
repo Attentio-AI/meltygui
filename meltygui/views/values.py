@@ -500,7 +500,8 @@ def _jump_to_symbol_def(obj, path):
         import src.lsd.gl_gui.view.playground.open_files as _of_mod
         root = getattr(Melty.vis, "root", None)
         open_files = getattr(root, "open_files", None)
-        if open_files is not None and _of_mod._active_editor[0] == str(path):
+        active = _of_mod._active_editors.get(0) or (None,)
+        if open_files is not None and active[0] == str(path):
             open_files.jump_to_line = line
             request_render()
     threading.Thread(target=_go, daemon=True, name="search-symbol-jump").start()
@@ -701,6 +702,7 @@ def _text_hit(row, show_path=False):
         return [(t, c, wash) for t, c in toks]
 
     code_row = None
+    hit_file = None
     if kind == "file":
         parts = [(os.path.basename(rel), None, None)]
         if show_path:
@@ -709,16 +711,21 @@ def _text_hit(row, show_path=False):
     elif kind == "symbol":
         # `text` is the RAW def line (indent kept) - draw_text maps the
         # file's tree-derived washes by column, so the code must match.
-        code_row = (row["path"], line, "", text[:200], f"{loc}:{line}")
+        # Location lives on `file` (drawn dim at the row's far right); the
+        # line path renders in the editor's own gutter, not as a suffix.
+        code_row = (row["path"], line, "", text[:200], "")
         parts = _tokens(disp[:90]) + [(f"   {loc}:{line}", COLORS["line_no"], None)]
         label = f"{disp[:90]} - {rel}:{line}"
+        hit_file = loc
     else:
-        code_row = (row["path"], line, f"{loc}:{line}: ", text[:200], "")
+        code_row = (row["path"], line, "", text[:200], "")
         parts = [(f"{loc}:{line}: ", None, None)] + _tokens(disp[:90])
         label = f"{rel}:{line}: {disp[:90]}"
+        hit_file = loc
     return SearchHit(label, tint,
                      (lambda p=row["path"], l=line: _jump_to_text_hit(p, l)),
-                     kind="Text", match=text, parts=parts, code_row=code_row)
+                     kind="Text", match=text, parts=parts, code_row=code_row,
+                     file=hit_file)
 
 
 def _kick_text_search(q):
@@ -859,7 +866,8 @@ def _jump_to_setting_def(setting_path):
         import src.lsd.gl_gui.view.playground.open_files as _of_mod
         root = getattr(Melty.vis, "root", None)
         open_files = getattr(root, "open_files", None)
-        if open_files is not None and _of_mod._active_editor[0] == str(path):
+        active = _of_mod._active_editors.get(0) or (None,)
+        if open_files is not None and active[0] == str(path):
             open_files.jump_to_line = line
             request_render()
     threading.Thread(target=_go, daemon=True, name="search-setting-jump").start()
@@ -2462,9 +2470,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # code_row hits render their code through the REAL editor: draw_text
         # with the file's live cst-dict parse and a jump_to line-offset shim,
         # so washes/token colors are pixel-identical to the jump target. The
-        # raw label prefix/suffix frames it; a higher-priority click sub
-        # below reclaims activation from the editor's own caret sub (the tab
-        # close-button pattern). parts serves as the fallback plan.
+        # line number renders in the editor's own gutter (line_numbers=[...]),
+        # the file name right-aligns like every other row (hit.file - space
+        # reserved out of the editor width below); a higher-priority click
+        # sub below reclaims activation from the editor's own caret sub (the
+        # default close-button sub). parts stays as the fallback plan.
         _cr = getattr(hit, "code_row", None)
         _cr_drawn = False
         if _cr is not None:
@@ -2474,7 +2484,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 dl.add_text(text_x, _ty, _row_col, _cpre)
                 text_x += imgui.calc_text_size(_cpre)[0]
             _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
-            _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0) - text_x)
+            _fw_r = ((imgui.calc_text_size(_row_file)[0] + 12.0)
+                     if _row_file else 0.0)
+            _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0)
+                      - _fw_r - text_x)
             _cdict, _chost = _row_code_hosts(_cp)
             imgui.set_cursor_screen_pos((text_x, ry))
             try:
@@ -2487,12 +2500,19 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 # renders, so the WINDOW tile captures the full composite and
                 # no row-tile depth ever competes at the clamp. ~15 one-line
                 # bodies, only on frames the window repaints out.
+                # line_numbers puts the file line in the editor's own gutter
+                # (same strip the tab window draws); bg_offset=-2 keeps the
+                # row's editor bg a couple of gradient steps darker than a
+                # normally nested view so the rows recede into the window.
+                # tint (the row's file tint) rides the wrapper's imgui_tint
+                # push, so the bg and token colors resolve exactly like any
+                # other tinted draw_text call.
                 _res = draw_text(_ccode, name=f"gs_code_row_{idx}", unique=idx,
-                                 show_header=False, show_bg=True, shadow=True,
+                                 show_header=False, show_bg=False, shadow=False,
                                  single_line=True, width=_cw, height=ROW_H,
-                                 use_cache=True, code_dict=_cdict,
-                                 jump_to=_RowSpan(_cl - 1), is_tree=False,
-                                 show_jump_bar=False,
+                                 use_cache=False, code_dict=_cdict, 
+                                 jump_to=_RowSpan(_cl - 1), is_tree=False, z_offset=2,
+                                 show_jump_bar=False, line_numbers=[_cl], tint=tint,
                                  selectable=False, return_extras=True)
                 if _chost is not None:
                     # Repaint when the background parse lands (washes pop in).

@@ -2480,6 +2480,37 @@ class TileCacheMasked:
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
 
+    def _pixels_preserved(self, eds):
+        """True when the retained emitter `eds`'s pixels are authoritative
+        this frame WITHOUT its body having run — the false-positive shield
+        for the territory kill. Walk the _parent chain up to the deepest
+        node reached this frame (last_seen == frame_count):
+
+        - it IS the emitter → alive (fresh render or its own blit);
+        - it was reached and SERVED ITS CACHE (_blit_served_frame == now) →
+          the blit carried the whole subtree, emitter included, intact —
+          the "window re-captured around a doubly-cache-served descendant"
+          case that used to read as inactive and kill the glow;
+        - it was reached and ran its BODY without the emitter's branch being
+          reached → the body chose different children (tab switch, content
+          swap, culled branch) → NOT preserved; the kill may proceed.
+
+        Bodies never stamp _blit_served_frame, so a swap can't shadow as a
+        blit. Nodes below the deepest reached one are stale by construction,
+        so the first hit decides."""
+        now = Melty.frame_count
+        node, hops = eds, 0
+        while node is not None and hops < 64:
+            if getattr(node, "last_seen", None) == now:
+                return (node is eds
+                        or getattr(node, "_blit_served_frame", None) == now)
+            parent = getattr(node, "_parent", None)
+            if parent is None or parent is node:
+                break
+            node = parent
+            hops += 1
+        return False
+
     def _win_z_for_ds(self, ds):
         """Encoded window-mask rank of the nearest enclosing dispatched
         window of `ds`; 1.0 (never masked) when unresolvable."""
@@ -3000,6 +3031,13 @@ class TileCacheMasked:
                            or imgui.is_mouse_down(2) or Melty.on_drag))
 
             if use_image or frozen:
+                # Blit-served: wrapper runs, body (and whole subtree)
+                # skipped; the subtree's pixels ride this blit intact. The
+                # retained glow/shadow kill logic reads this stamp to tell
+                # "tile-served under a re-rendering ancestor" (alive) from
+                # "content swapped away" (body ran, branch not reached) -
+                # see _pixels_preserved.
+                draw_state._blit_served_frame = Melty.frame_count
                 imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
 
                 a = draw_state.abs_left, draw_state.abs_top
@@ -4264,15 +4302,11 @@ class TileCacheMasked:
                     _delta = (_eds.abs_left - _anchor[0],
                               _eds.abs_top - _anchor[1])
                     _root_ds = self._glow_root_ds(_eds)
-                    if (getattr(_eds, "last_seen", None)
-                            == Melty.frame_count):
-                        # Reached this frame - wrapper ran, so its pixels
-                        # are on screen fresh or via its OWN cached blit. A
-                        # hovered ANCESTOR rebuild around it did not
-                        # replace them (the use_cache child blits inside
-                        # the parent's fresh capture). Tab-switched/culled
-                        # emitters are never reached, so real content
-                        # swaps still kill.
+                    if self._pixels_preserved(_eds):
+                        # Emitter reached this frame, or an ancestor was
+                        # reached and blit-served (subtile pixels intact).
+                        # Tab-switched/culled emitters fail both, so real
+                        # content swaps still kill.
                         self._depth_kill_pending.discard(_eid)
                     else:
                         _hit = _territory_hit(marks, _delta, _root_ds, _eds,
@@ -4407,13 +4441,13 @@ class TileCacheMasked:
                     # tile's capture legitimately overlaps their territory.
                     if _eid in _emitted_now:
                         self._glow_kill_pending.discard(_eid)
-                    elif (getattr(_eds, "last_seen", None)
-                          == Melty.frame_count):
-                        # Reached this frame (fresh render or its own
-                        # cached blit): pixels authoritative on screen - a
-                        # hovered ancestor's capture around the use_cache
-                        # barrier did not overlap them. Culled emitters are
-                        # never reached, so this swaps to kill.
+                    elif self._pixels_preserved(_eds):
+                        # Emitter reached this frame, or an ancestor was
+                        # reached and blit-served (its blit carried the
+                        # emitter's pixels intact - a doubly-cache-served
+                        # case that used to read as "changed" and cull the
+                        # glow). Culled/tab-switched emitters fail both, so
+                        # content swaps still kill.
                         self._glow_kill_pending.discard(_eid)
                     else:
                         _hit = _territory_hit(marks, _delta, _root_ds, _eds,

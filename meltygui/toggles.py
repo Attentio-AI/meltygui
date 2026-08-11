@@ -30,6 +30,8 @@ class SwooshMode(Enum):
     LINE = "line"
     RIBBON = "ribbon"
 
+    
+    
 class Counters:
     # Nested window
     nested_window_count = 18
@@ -801,7 +803,7 @@ class Toggles:
         def_symbol_shadow_offset = 3.7
         # Line-number shadows: negative = recessed below the editor surface
         # (the body casts into the gutter along its edge); 0 disables.
-        gutter_shadow_offset = -2.0
+        gutter_shadow_offset = 1.618
         # Compositor shadow under the gutter usage-heat boxes: each use
         # counted on the line adds this much lift, so hotter lines float
         # higher off the gutter background. The magnitude is capped at
@@ -1209,7 +1211,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     show_filled_tiles = False

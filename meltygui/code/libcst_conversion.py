@@ -2298,6 +2298,23 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                     df, dl = None, 0
         else:  # class member: defined in this file
             df, dl, dm = rp_str, def_lines.get(nm, 0), mod_name
+        # Buffer truth beats the live object for defs in THIS file: the
+        # inspect paths above read co_firstlineno, which is the line at the
+        # object's LAST (re)compile - lines inserted above a function that
+        # itself was never code-hotswapped leave it stale. A stale def line
+        # breaks the editor's at_def match (the definition site stops being
+        # recognized, so it hides its callers and re-enters itself as a
+        # <module> self-caller) and lands Ctrl+B definition jumps near the
+        # OLD line (draw_str's def served 4557 while the buffer had 4590).
+        # Snap to the current ast's def statement for the name (or
+        # same-named def when shadowed); non-def symbols (constants) have no
+        # entry and pass through untouched - their paths already read the
+        # current text.
+        if df is not None and df in own_paths:
+            _cand = local_def_lines.get(nm.rsplit('.', 1)[-1])
+            if _cand and dl not in _cand:
+                dl = (_cand[0] if len(_cand) == 1
+                      else min(_cand, key=lambda l: abs(l - (dl or 0))))
         return (df, dl, 0, dm)
 
     # "This file" as a prior definition may have spelled it - rp_str is what the
@@ -2307,6 +2324,15 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     _own_file = getattr(owning, "__file__", None)
     if _own_file:
         own_paths.add(_own_file)
+
+    # def/class STATEMENT lines per name from the CURRENT buffer's ast, for
+    # _resolve_def's in-file verification above. ast linenos exclude the
+    # decorator block, so they match the sites' coords (and _def_site_line's
+    # convention). One walk of the already-parsed tree per compute.
+    local_def_lines = {}
+    for _n in ast.walk(file_tree):
+        if _n.__class__ in (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef):
+            local_def_lines.setdefault(_n.name, []).append(_n.lineno)
 
     _t_def0 = _time.monotonic()
     _def_slept = 0.0
