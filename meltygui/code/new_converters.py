@@ -3087,8 +3087,17 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                 _li = max(0, min(int(select_line) - 1 - _start0, len(_lines) - 1))
                 _line_start = sum(len(l) + 1 for l in _lines[:_li])
                 _indent = len(_lines[_li]) - len(_lines[_li].lstrip())
-                ds.text_selection_start = _line_start + _indent
-                ds.text_selection_end = _line_start + len(_lines[_li])
+                _sel_len = len(_lines[_li]) - _indent
+                # Fold projection: these are FULL-buffer coords; the editor
+                # lays out fold-spliced display text. Expands any collapsed
+                # fold at the line, then shifts the selection start - the
+                # end rides the same line, so it shifts by the same delta.
+                from src.lsd.gl_gui.view.core_views.text_editor import (
+                    fold_project_jump)
+                _sel_s, _ = fold_project_jump(
+                    ds, buffer_text, _line_start + _indent, _li)
+                ds.text_selection_start = _sel_s
+                ds.text_selection_end = _sel_s + _sel_len
                 ds.text_cursor_pos = ds.text_selection_end
                 Melty.text_focused_ds = ds
                 Melty._text_focus_grant_frame = Melty.frame_count

@@ -1317,7 +1317,7 @@ def run_forward_pass(use_gen_pass=True):
                           use_gen_pass=use_gen_pass)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.028, 0.1059, 0.21))
+@window(initial={"width": 350, "height": 540}, tint=(0.19, 0.2039, 0.22))
 @render_func(tint=(0.40, 0.53, 0.78), auto_resize=False)
 def live_view_forward(input_value=None, draw_state=None, **kwargs):
     from src.lsd.train.lsd_train import LSD
@@ -1328,7 +1328,7 @@ def live_view_forward(input_value=None, draw_state=None, **kwargs):
                        source_mode=Mode.NEW_CODE)
 
 
-@window(initial={"width": 350, "height": 540}, tint=(0.11, 0.1204, 0.13))
+@window(initial={"width": 350, "height": 540}, tint=(0.132, 0.159, 0.18))
 @render_func(tint=(0.36, 0.62, 0.66), auto_resize=False)
 def attention_walkthrough(input_value=None, draw_state=None, **kwargs):
     """The minimal real forward pass over the selected model (see

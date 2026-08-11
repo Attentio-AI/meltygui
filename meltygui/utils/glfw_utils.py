@@ -533,6 +533,26 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     if e is not None and exception is None:
         exception = e
 
+    # Every printed stack trace marks the session as crashed - the launcher
+    # reads this sentinel at backup time and logs the log entry. On sys
+    # (not a module global) because this module is recompiled per run while
+    # the launcher reads from its own import identity. First error remains
+    # (root cause); count keeps ticking. Stamped BEFORE the per-frame rate
+    # limit so suppressed traces still register.
+    try:
+        rec = getattr(sys, '_lsd_session_crash', None)
+        if rec is None:
+            rec = {"error": None, "count": 0}
+            sys._lsd_session_crash = rec
+        rec["count"] += 1
+        if rec["error"] is None:
+            if exception is not None:
+                rec["error"] = f"{type(exception).__name__}: {exception}"
+            else:
+                rec["error"] = f"trace from {sys._getframe(1).f_code.co_name}()"
+    except Exception:
+        pass
+
     if this_frame_number != Core.melty.frame_count:
         this_frame_number = Core.melty.frame_count
         stacks_printed_this_frame = 0

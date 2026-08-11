@@ -803,7 +803,7 @@ class Toggles:
         def_symbol_shadow_offset = 3.7
         # Line-number shadows: negative = recessed below the editor surface
         # (the body casts into the gutter along its edge); 0 disables.
-        gutter_shadow_offset = 1.618
+        gutter_shadow_offset = 0.193
         # Compositor shadow under the gutter usage-heat boxes: each use
         # counted on the line adds this much lift, so hotter lines float
         # higher off the gutter background. The magnitude is capped at
@@ -814,7 +814,7 @@ class Toggles:
         # Line-number background saturation - the hsv saturation multiplier
         # Tint.line_number_bg applies to the theme color (was a hardcoded
         # 1.6; lower = greyer, dull muted strip).
-        gutter_saturation = 0.9
+        gutter_saturation = 0.162
 
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
@@ -847,17 +847,29 @@ class Toggles:
         def_line_glow = True
         # Intensity of the emitted light for line bands (on top of the band
         # alpha; Toggles.glow_intensity scales all glows globally).
-        def_line_glow_intensity = 1.076
+        def_line_glow_intensity = 0.41
+        # Emit light from each PER-OCCURRENCE chip (the per-token wash
+        # rects) instead of / in addition to the line band - the glow then
+        # highlights the individual token background's edges. Pair with
+        # def_line_glow = False to make tokens the only light source.
+        def_symbol_glow = True
+        # Intensity of the emitted light per token chip (on top of
+        # def_symbol_alpha and any per-hop propagation scale).
+        def_symbol_glow_intensity = 1.186
+        # Falloff skirt radius for token-chip light, px. Deliberately its
+        # own knob - token halos want a far shorter throw than the
+        # line-band def_line_blur_radius.
+        def_symbol_glow_radius = 0.177
 
         def_line_blur_radius = 271
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 1.972
+        def_line_blur_alpha = 1.985
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 6.96
+        def_line_blur_falloff = 2.662
         # Perceived-brightness clamp on the BLURRED band's color only -
         # applied on top of the line_tint_* adjustment (which already ran
         # through bg_min/max), so the feathered glow can hold a different
@@ -867,7 +879,7 @@ class Toggles:
         # Layer count for the feather stack. More samples = smoother
         # gradient (fewer visible bands) at the cost of overdraw - large
         # radii need more; ~1 sample per 3-4px of radius reads smooth.
-        def_line_blur_samples = 4
+        def_line_blur_samples = 7
 
         # Glyphs inside a symbol wash lean this fraction toward the wash
         # color (syntax color stays the base) — the slight text tinting used
@@ -1112,19 +1124,23 @@ class Toggles:
         # so highlight → band → highlight reads as ONE continuous shape.
         ribbon_fill_alpha = 0.065
         # Boundary stroke around the whole shape (wash edges + S-curves).
-        ribbon_edge_alpha = 0.189
-        ribbon_edge_thickness = 0.042
+        ribbon_edge_alpha = 0.103
+        ribbon_edge_thickness = 2.00
         # Thin insertion line where a side has no rows (pure insert/delete).
         ribbon_insertion_alpha = 0.237
         ribbon_insertion_thickness = 1.046
         # Seam curve sampling (smoothstep slices).
-        ribbon_curve_steps = 16
+        ribbon_curve_steps = 19
+        # Signed depth offset for the shadow cast behind the whole swoosh
+        # (washes + seam band, add_shadow semantics: positive lifts it off
+        # the editor surface, negative carves a hole). 0 disables.
+        ribbon_shadow_offset = 9.476
         # Take-arrow chips riding the swooshes (pull a block from the
         # reference pane into the buffer): flat_buttons colored by the
         # block's ribbon tint - hover boost and text color come from
         # flat_button's own pipeline.
         take_arrow_size = 20.6
-        take_arrow_alpha = 0.7
+        take_arrow_alpha = 1.0
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
@@ -1231,6 +1247,8 @@ class Toggles:
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
 
+
+
     # While typing, pause the background cst→dict parse at statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render
     # [tint=(0.75, 0.46218, 0.00)]
@@ -1262,9 +1280,60 @@ class Toggles:
     layer_stack_trace = False
     show_line_breaks = False
 
-    # Shadow settings
-    shadow_downscale = 2
-    shadow_edge_sharpness = 49.833
+    # Shadow Settings for the compositor shadow pass (melty.py post_frame:
+    # ShadowCast at reduced res over the R16 shadow mask, then
+    # ShadowComposite's joint blend upsample onto the frame). Read once
+    # per frame.
+    shadow_downscale = 3
+    shadow_edge_sharpness = 0.021
+    # Light direction the shadows are cast AWAY from, as a screen-space
+    # vector (x right, y down in UV space). Only the direction matters -
+    # the shader normalizes it; travel distance comes from
+    # shadow_height_scale.
+    shadow_light_dir = (-0.038, 0.128)
+    # How far a shadow travels per unit of caster/receiver depth gap
+    # (in units): higher = deeper stacks cast longer shadows.
+    shadow_height_scale = 3.716
+    # Penumbra widening per unit of depth gap: bigger = softer, more
+    # diffuse shadows from tall casters.
+    shadow_blur_scale = 0.255
+    # Contact-hardening: curve of penumbra growth along the shadow's
+    # LENGTH - 0 at the caster's silhouette edge, 1 at the shadow tip
+    # (the shader measures the edge distance by bisecting along
+    # light_dir). shadow_blur_scale stays the blur magnitude at the far
+    # end; this shapes the ramp: < 1 blooms the blur rapidly just past
+    # the contact edge (long shadows that go soft fast), 1 = linear
+    # growth, > 1 stays crisp for most of the run and softens only the
+    # tip. 0 = legacy uniform blur along the whole shadow.
+    shadow_blur_exponent = -0.384
+    # Blur samples in ShadowCast's penumbra ring (x3 radii per sample).
+    # More = finer/less grainy penumbra, linearly more fragment work at
+    # the shadow edge.
+    shadow_blur_samples = 6
+    # Occlusion each caster hit contributes before the depth-gap decay -
+    # the base darkness of a shadow right under its caster.
+    shadow_hit_strength = 0.503
+    # How fast that contribution decays per unit of caster/receiver depth
+    # gap: higher = deep stacks fade their shadows out sooner (clamped at
+    # 0 in-shader, never lightens).
+    shadow_hit_falloff = 69.627
+    # Max fraction of light a deep stack of casters can block inside
+    # ShadowCast (the light-transmission model's ceiling).
+    shadow_strength = 0.699
+    # Composite-time darkening: how far shadowed pixels mix toward
+    # shadow_color (scales the ShadowCast intensity at the final blend).
+    shadow_opacity = 0.684
+    # What shadows mix TOWARD - a slightly blue gray by default.
+    shadow_color = (0.0, 0.02, 0.05)
+    # Specular highlight on the LIT edge of raised backgrounds - the edge
+    # facing the light source (top-left when the shadow falls down-right;
+    # direction comes from shadow_light_dir so the two always agree).
+    # Value = bevel radius in px: the width of the highlight rim and the
+    # apparent roundness of the edge. 0 disables the pass.
+    specular_bevel = 3.0
+    # Global surface roughness for the specular rim, (0, 1]: low = tight
+    # bright crest line at the edge, high = broad dim sheen at the bevel.
+    specular_roughness = 0.4
 
     # Glow Settings - add_glow() marks rendered as light sources in the
     # shadow composite (blit_offscreen PASS 6 stamps the low-res light
@@ -1273,9 +1342,9 @@ class Toggles:
     # Resolution divisor for the glow light buffer. The falloff is smooth by
     # construction, so it survives aggressive downscaling; the composite's
     # bilinear fetch upsamples for free.
-    glow_downscale = 4
+    glow_downscale = 0
     # Master strength of the glow light at composite time.
-    glow_strength = 0.943
+    glow_strength = 1.149
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),
@@ -1285,7 +1354,50 @@ class Toggles:
     # depth detail under the band differs subtly between those paths.
     # (Confirmed by glow_debug_log: dups=0 = one stamping, one composite
     # - the "double" is this cut, not a second glow rendering.)
-    glow_shadow_cut = 0.589
+    glow_shadow_cut = -4.26
+
+    # Downward AREA-LIGHT glow mode. Off = the omnidirectional
+    # inverse-square skirt. On = each glow rect reads as a downward-facing
+    # area light: no light above or beside the rect, a lit trapezoid below
+    # it that widens by glow_area_spread px per px of drop, brightness held
+    # flat for the first glow_area_hold fraction of the falloff radius and
+    # then cut off with a sharp smoothstep - a much harder transition than
+    # the inverse-square tail.
+    glow_area_light = False
+    # Fraction of the falloff radius over which the area light holds full
+    # brightness before the gradient cutoff begins (0 = fade from the edge,
+    # 0.9 = bright almost all the way down, then a hard stop).
+    glow_area_hold = -0.206
+    # Lateral widening of the lit trapezoid, in px per px of drop below
+    # the rect (tan of the light cone's half-angle; 0 = straight down).
+    glow_area_spread = 0.093
+    # Falloff curve exponent past the hold point: brightness falls as
+    # smoothstep^exponent, smooth at BOTH ends so there is no hard edge at
+    # the far extent. 1 = plain smoothstep; higher = the light dies faster
+    # near the source and trails out longer - a more prominent gradient.
+    glow_area_falloff = 1.265
+    # Fan-edge penumbra: the side edges of the light cone blur by this many
+    # px per px of drop (symmetric about the trapezoid center) - razor-sharp
+    # at the source and progressively softer with distance, like a real
+    # area-light penumbra. 0 = hard fan edges all the way down.
+    glow_area_edge_blur = -0.01
+    # Tilt of the light, in degrees from straight down (clamped to +/-80).
+    # Positive shears the fan toward screen-right as it drops; the whole
+    # fan (center, edges, penumbra) shifts by tan(angle) px per px of drop.
+    glow_area_angle = -0.504
+    # Which edge of the emitting rect the light hangs from. True = the TOP
+    # edge: the fan starts there and washes down THROUGH the rect and past
+    # it (the rect interior gets the gradient too). False = the BOTTOM
+    # edge: the rect interior stays fully lit and the fan starts under it.
+    glow_area_top_edge = True
+    # Emit from the token background's LEFT, RIGHT and BOTTOM edges
+    # instead of a single downward fan (ignore glow_area_top_edge while
+    # on). The hold/falloff profile runs on the distance from the rounded
+    # rect itself, sheared sideways by glow_area_angle as it drops below
+    # the top edge, and the skirt tapers to nothing approaching the top
+    # rect so the top edge remains dark. glow_area_spread /
+    # glow_area_edge_blur are fan-only and ignored here.
+    glow_area_edges = False
 
     # Band offsets for the glow receiver mask, applied live in PASS 6 (no
     # re-render needed to tune). Lower bound is relative to the emitter's
@@ -1297,8 +1409,8 @@ class Toggles:
     # depth curve is non-monotone, so offsets never go through it, which
     # makes large values (+/-1000) genuinely open the whole band, same as
     # glow_debug_no_mask.
-    glow_mask_lower_offset = 0.072
-    glow_mask_upper_offset = -0.018
+    glow_mask_lower_offset = 0.081
+    glow_mask_upper_offset = 0.422
 
     # How many consecutive EMPTY body runs (cleared without re-emitting)
     # before an emitter's retained glow drops. 1 = AUTHORITATIVE: the

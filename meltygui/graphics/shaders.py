@@ -20,8 +20,25 @@ class ShadowCast:
         'light_dir': (GLType.VEC2, (-0.5 * offset_factor, 1.6 * offset_factor)),
         'height_scale': (GLType.FLOAT, 0.5),
         'blur_scale': (GLType.FLOAT, 0.3),
+        # CONTACT-HARDENING curve: how fast the penumbra grows with the
+        # fragment's distance from the caster's silhouette edge (measured
+        # in-shader by bisecting along light_dir, normalized 0 at contact,
+        # 1 at the shadow tip). blur_scale stays the magnitude at the far
+        # end; this shapes the ramp: < 1 blooms the blur rapidly just past
+        # the contact edge, 1 = linear growth, > 1 stays crisp for most of
+        # the shadow and only softens the tip. 0 = the legacy behavior
+        # (uniform blur across the whole shadow).
+        'blur_exponent': (GLType.FLOAT, 1.0),
         'max_steps': (GLType.INT, 64),
         'blur_samples': (GLType.INT, 8),
+        # Occlusion each caster hit contributes before the depth gap decay:
+        # the base darkness of a shadow right at its caster (per-sample,
+        # accumulated into coverage).
+        'hit_strength': (GLType.FLOAT, 0.7),
+        # How fast that contribution decays per unit of caster/receiver
+        # depth gap: higher = deep stacks fade their shadows out sooner
+        # (contribution clamps at 0, never lightens).
+        'hit_falloff': (GLType.FLOAT, 14.0),
         'depth_bias': (GLType.FLOAT, 0.00),
         'surface_threshold': (GLType.FLOAT, -10.0),
         'min_height_diff': (GLType.FLOAT, 0.000),
@@ -66,7 +83,41 @@ void main() {
         float shadow_offset = max(height_diff * height_scale, min_offset);
         vec2 base_sample_pos = uv + light_normalized * shadow_offset;
 
-        float blur_radius = height_diff * blur_scale;
+        // Contact-hardening: the penumbra should grow with the fragment's
+        // DISTANCE FROM THE CASTER EDGE along the shadow, not just the
+        // depth gap (which is constant across a flat caster's whole
+        // shadow, making the blur uniform from contact edge to tip). The
+        // caster lies toward +light_dir from any shadowed fragment, so
+        // bisect [0, shadow_offset] for the nearest sample inside the
+        // caster: fragments hugging the silhouette find it almost
+        // immediately (edge_dist ~ 0, crisp), fragments at the shadow tip
+        // only at full offset (edge_dist ~ 1, full blur). Gated on the
+        // base sample actually hitting the caster — penumbra-fringe
+        // fragments whose center sample misses keep edge_dist = 1 (they
+        // ARE the soft tail). Assumes a contiguous caster interval, true
+        // for the UI's convex rects/strips.
+        float edge_dist = 1.0;
+        float d_at_offset = texture(u_texture, base_sample_pos).r * depth_scale;
+        if (blur_exponent > 0.0
+                && d_at_offset >= test_caster_depth - depth_bias) {
+            float t_lo = 0.0;
+            float t_hi = shadow_offset;
+            for (int b = 0; b < 5; b++) {
+                float mid = 0.5 * (t_lo + t_hi);
+                float d_mid = texture(u_texture,
+                                      uv + light_normalized * mid).r
+                              * depth_scale;
+                if (d_mid >= test_caster_depth - depth_bias) {
+                    t_hi = mid;
+                } else {
+                    t_lo = mid;
+                }
+            }
+            edge_dist = t_hi / max(shadow_offset, 1e-6);
+        }
+        // blur_exponent = 0 -> pow term is 1 -> legacy uniform blur.
+        float blur_radius = height_diff * blur_scale
+                            * pow(max(edge_dist, 1e-4), blur_exponent);
 
         float hits = 0.0;
         float total_samples = 0.0;
@@ -88,7 +139,10 @@ void main() {
                 float scene_depth = texture(u_texture, sample_pos).r * depth_scale;
 
                 if (scene_depth >= test_caster_depth - depth_bias) {
-                    hits += (0.7 - height_diff * 14.0);
+                    // Clamped at 0 so a large falloff fades a slice's
+                    // contribution out instead of going negative and
+                    // eating other slices' coverage.
+                    hits += max(0.0, hit_strength - height_diff * hit_falloff);
                 }
                 total_samples += 1.0;
             }
@@ -215,6 +269,25 @@ class ShadowComposite:
         'glow_map': (GLType.SAMPLER2D, None),
         'glow_strength': (GLType.FLOAT, 0.0),   # 0 disables the whole path
         'glow_shadow_cut': (GLType.FLOAT, 1.0),
+        # Specular rim on the LIT edge of raised surfaces - the edge facing
+        # the light source (opposite side from the cast shadow). The shader
+        # marches the full-res depth mask toward the light: a lower surface
+        # within specular_bevel px marks the silhouette edge, and the pixel
+        # is shaded as if the edge were a quarter-round bevel of that
+        # radius. light_dir must match ShadowCast's so the highlight always
+        # sits opposite the shadow.
+        'light_dir': (GLType.VEC2, (-0.5, 1.6)),
+        # Bevel radius in px = width of the highlight rim, the apparent
+        # roundness of the edge. 0 disables the pass.
+        'specular_bevel': (GLType.FLOAT, 0.0),
+        # Microfacet-style roughness in (0, 1]: low = tight bright rim
+        # hugging the edge profile, high = broad dim sheen across the bevel.
+        'specular_roughness': (GLType.FLOAT, 0.4),
+        # Peak highlight strength added to the frame (white is).
+        'specular_strength': (GLType.FLOAT, 1.0),
+        # Minimum depth drop (in depth_scale'd units) that counts as a
+        # silhouette edge - rejects same-surface rasterization noise.
+        'specular_depth_eps': (GLType.FLOAT, 0.001),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -276,6 +349,44 @@ void main() {
     // Apply shadow by darkening toward shadow_color
     vec3 shadowed = mix(color.rgb, shadow_color, shadow_intensity * shadow_opacity);
     shadowed += glow_light * glow_strength;
+
+    // Specular bevel highlight on the lit edge. March toward the light in
+    // the full-res depth mask: the first sample that drops below this
+    // pixel's surface is the silhouette edge, so this pixel sits on the
+    // rim that faces the light (shadows are displaced the OPPOSITE way,
+    // toward -light_dir, so highlight and shadow stay consistent). Convex
+    // rounded corners fall out for free — the march follows the mask.
+    if (specular_bevel > 0.0) {
+        vec2 texel_full = 1.0 / texture_size;
+        vec2 light_n = normalize(light_dir);
+        float edge_t = -1.0;
+        const int SPEC_STEPS = 8;
+        for (int i = 1; i <= SPEC_STEPS; i++) {
+            float t = specular_bevel * float(i) / float(SPEC_STEPS);
+            float d_s = texture(depth_map, uv + light_n * t * texel_full).r
+                        * depth_scale;
+            if (d_s < depth - specular_depth_eps) { edge_t = t; break; }
+        }
+        if (edge_t > 0.0) {
+            // Quarter-round bevel of radius specular_bevel: at the edge
+            // the normal tilts fully toward the light, flattening to
+            // straight-up one bevel radius in.
+            float f = edge_t / specular_bevel;          // 0 edge .. 1 flat
+            float sin_t = 1.0 - f;
+            float cos_t = sqrt(max(0.0, 1.0 - sin_t * sin_t));
+            vec3 n = vec3(light_n * sin_t, cos_t);
+            // Light at 45 deg elevation from the light_dir side, viewer
+            // straight down; Blinn half-vector with a roughness-driven
+            // exponent (rough = broad+dim, smooth = tight+bright).
+            vec3 L = normalize(vec3(light_n, 1.0));
+            vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
+            float rough = clamp(specular_roughness, 0.02, 1.0);
+            float shininess = 2.0 / (rough * rough);
+            float spec = pow(max(dot(n, H), 0.0), shininess);
+            spec *= 1.0 - 0.5 * rough;
+            shadowed += vec3(spec * specular_strength);
+        }
+    }
 
     fragColor = vec4(vec3(shadowed), color.a);
 }

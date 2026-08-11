@@ -1,6 +1,7 @@
 import bisect
 import builtins as _builtins
 import keyword
+import math
 import re
 import time
 
@@ -5665,7 +5666,11 @@ def _describe_code_tree(code_tree):
 
 
 
-_SCOPE_HEAD_RE = re.compile(r'(?:async\s+)?(?:def|class)\s')
+# NOT `_SCOPE_HEAD_RE` - that name is the completion pool's group-capturing
+# scope regex defined near the top of this module; a module-level redefine
+# here silently clobbered it and broken `_blank_foreign_scopes` (m.group(1)
+# → IndexError). This one matches STRIPPED lines and needs no groups.
+_FOLD_SCOPE_HEAD_RE = re.compile(r'(?:async\s+)?(?:def|class)\s')
 
 
 def _scope_fold_ranges(text):
@@ -5689,7 +5694,7 @@ def _scope_fold_ranges(text):
             _, hdr = stack.pop()
             if last_code > hdr:
                 out.append((hdr, last_code))
-        if _SCOPE_HEAD_RE.match(s):
+        if _FOLD_SCOPE_HEAD_RE.match(s):
             stack.append((ind, i))
         last_code = i
     for _, hdr in stack:
@@ -5855,6 +5860,45 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     return ''.join(parts), new_col
 
 
+def fold_project_jump(ds, text, pos, li):
+    """Project a FULL-buffer jump target (char `pos`, 0-based line `li`) into
+    the editor's fold display space, expanding any collapsed fold hiding the
+    target first — a jump must reveal its destination. External jump writers
+    (the open-files jump_to_line consumer, scope-up auto-select) call this
+    right before stamping caret/scroll onto the draw_state; it's a no-op
+    (identity return) while the editor has nothing collapsed.
+
+    The post-expand layout is built here and PRIMED into ds._fold_cache —
+    same text identity, same range tuple, same collapsed set as the next body
+    run will compute, so the body gets a cache hit and lays out exactly the
+    geometry these coordinates were mapped through."""
+    col = getattr(ds, '_fold_collapsed', None)
+    if not col:
+        return pos, li
+    _fc = getattr(ds, '_fold_cache', None)
+    if _fc is None or _fc[0] is not text:
+        # The fold_cache was built against a different buffer than the
+        # jump's - rather than guess a mapping, expand everything. With no
+        # collapsed fold, full coords ARE display coords.
+        col.clear()
+        ds.invalidate()
+        return pos, li
+    ranges = _fc[1][0]
+    hiding = [r for r in col if r[0] < li <= r[1]]
+    for r in hiding:
+        col.discard(r)
+    built = _fold_build(text, ranges, col)
+    if hiding:
+        ds._fold_cache = (text, (ranges, frozenset(col)), built)
+        ds.invalidate()
+    disp, segments, _folds, d2b = built
+    if not segments:
+        return pos, li
+    dli = bisect.bisect_right(d2b, li) - 1     # li is visible now - exact hit
+    dpos = _line_starts(disp)[dli] + (pos - _line_starts(text)[li])
+    return dpos, dli
+
+
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
              shadow=False, max_bg_depth=0, max_bg_value=0.05,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
@@ -5873,6 +5917,9 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
+              fold_shadow_angle=90.0,
+              fold_shadow_color=(0.0, 0.0, 0.0, 0.3),
+              fold_shadow_saturation=1.0,
               unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -6483,32 +6530,41 @@ def draw_text(input_value: str, height=None,
                 _same = os.path.realpath(str(_rpath)) == os.path.realpath(str(_vp))
             except OSError:
                 _same = False
-            _li = _line - 1 - _usage_off   # ref line → buffer line index
-            if _same and 0 <= _li <= text.count('\n'):
+            _li = _line - 1 - _usage_off   # file line to FULL-buffer line index
+            if _same and 0 <= _li <= _fold_full.count('\n'):
                 # Source line (the symbol the jump left from) - decides below
-                # whether to center or keep the current scroll.
+                # whether to center or keep the current scroll. Display
+                # coords, not the projected target line.
                 _src_li = text.count(
                     '\n', 0, max(0, min(ds.text_cursor_pos, len(text))))
                 # Record on the undo timeline before moving the caret: local
                 # jumps bypass open_to_line (the only other recorder), so
                 # Ctrl+Shift+Left had nothing to step back to after a same-
-                # file hop - broken targets included.
+                # file jump - broken targets appeared. The timeline stores
+                # FILE lines, so the display source line maps back through the
+                # fold layout first.
                 from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
                 _nav_win = _enclosing_editor_window(ds)
                 _nav_inst = ((getattr(_nav_win, 'instance', 0) or 0)
                              if _nav_win is not None else 0)
+                _nav_src_li = (_fold_d2b[min(_src_li, len(_fold_d2b) - 1)]
+                               if _fold_d2b is not None else _src_li)
                 NavUndo.record_location(
-                    (str(_vp), _src_li + 1 + _usage_off, _nav_inst),
+                    (str(_vp), _nav_src_li + 1 + _usage_off, _nav_inst),
                     (str(_vp), _line, _nav_inst))
-                _offs = _line_offsets(text)
+                # Target resolution runs in FULL-text space (_fold_full is
+                # `text` rendered without folds) - the recorded site, ±4 verify,
+                # and def recovery all describe the full file; the projection
+                # below maps the final pos/line into display space.
+                _offs = _line_offsets(_fold_full)
                 _ls = _offs[_li]
-                _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(text)
+                _le = (_offs[_li + 1] - 1) if _li + 1 < len(_offs) else len(_fold_full)
                 _pos = None
                 _tsp = None
                 if token:
                     # Caret ON the jumped-to token (leaf of a dotted path),
                     # not the statement start.
-                    _tsp = _site_span(text, _line,
+                    _tsp = _site_span(_fold_full, _line,
                                       getattr(ref, 'column', 0) or 0,
                                       token.rsplit('.', 1)[-1], _usage_off)
                     if _tsp is not None:
@@ -6517,18 +6573,25 @@ def draw_text(input_value: str, height=None,
                         # Wide-drift recovery: the recorded line is faler
                         # than ±4 lines - retarget to the buffer's unique
                         # class/def statement for the token.
-                        _rdp = _recover_def_pos(text, token)
+                        _rdp = _recover_def_pos(_fold_full, token)
                         if _rdp is not None:
                             _pos = _rdp
-                            _li = text.count('\n', 0, _pos)
+                            _li = _fold_full.count('\n', 0, _pos)
                             _line = _li + 1 + _usage_off
                             _uj_log(f"goto LOCAL def-recover -> line {_line}")
                 if _pos is None:
                     _pos = min(_ls + (getattr(ref, 'column', 0) or 0), _le)
                     if _pos == _ls:
                         # No column info - land on the code, not the indent.
-                        while _pos < _le and text[_pos] in ' \t':
+                        while _pos < _le and _fold_full[_pos] in ' \t':
                             _pos += 1
+                # Fold projection: expands any collapsed fold hiding the
+                # target, then maps pos/line into display space. The caret,
+                # scroll targets and emphasis below all use the projected
+                # values; the emphasis columns need the FULL pos (columns are
+                # per-line, identical in both spaces).
+                _fpos = _pos
+                _pos, _li = fold_project_jump(ds, _fold_full, _pos, _li)
                 ds.text_cursor_pos = _pos
                 ds.text_selection_start = ds.text_selection_end = _pos
                 # Center distant targets so they land with context; a nearby
@@ -6570,8 +6633,8 @@ def draw_text(input_value: str, height=None,
                 # Success flash on the target token - same yellow emphasis
                 # (and same rect derivation) the cross-file jump gets from
                 # draw_code_editor's consumption.
-                _eli = text.count('\n', 0, _pos)
-                _cols = jump_emph_cols(text, _pos, span=_tsp)
+                _eli = _li                    # projected display line
+                _cols = jump_emph_cols(_fold_full, _fpos, span=_tsp)
 
                 def _local_jump_rect(ds=ds, li=_eli, cols=_cols):
                     lp = getattr(ds, '_diff_line_px', None) or 16
@@ -8266,7 +8329,15 @@ def draw_text(input_value: str, height=None,
                         draw_list.add_rect_filled(sx - 3, sy, ex + 3, ey,
                                                   _l_col, 3.0)
         _dt_sym_a = Toggles.TextEditor.def_symbol_alpha
-
+        # GLow path for the TOKEN chips: each symbol-occurrence wash rect
+        # gets its own light emitter (same pipeline as the line bands above),
+        # so the light reads as reflecting off the individual token background's
+        # surface rather than the whole line's.
+        _dt_sym_glow = (Toggles.TextEditor.def_symbol_glow
+                        and Toggles.glow and Toggles.filters
+                        and not Toggles.draw_legacy)
+        _dt_sym_glow_i = Toggles.TextEditor.def_symbol_glow_intensity
+        _dt_sym_glow_r = Toggles.TextEditor.def_symbol_glow_radius
 
         for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
             _s_line, _ = _index_to_line_col(text, _s_start)
@@ -8290,6 +8361,14 @@ def draw_text(input_value: str, height=None,
                            offset=_scope_surface(_s_line) + _dt_sym_sh,
                            corner_radius=3.0, clip=_sh_clip,
                            draw_state=ds)
+            if _dt_sym_glow:
+                add_glow((sx - 1, sy + 1, ex - sx + 2, ey - sy - 2), _sa,
+                         intensity=_dt_sym_a * _s_scale * _dt_sym_glow_i,
+                         radius=float(_dt_sym_glow_r),
+                         falloff=max(
+                             0.0, Toggles.TextEditor.def_line_blur_falloff),
+                         offset=_scope_surface(_s_line) + _dt_sym_sh,
+                         corner_radius=3.0, clip=_sh_clip, draw_state=ds)
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
             if _dt_sym_ol_a > 0:
                 _s_ol = _ol_rgb(_sa, _dt_sym_ol_b)
@@ -9190,19 +9269,36 @@ def draw_text(input_value: str, height=None,
         ds._lv_btn_pressed_line = None
         draw_list.pop_clip_rect()
 
-    # --- Fold badges + collapsed drop shadow ---------------------------------
-    # One badge per fold range at the end of its header line: expanded folds
-    # get a little down-chevron (click collapses), collapsed ones a small
-    # "N more lines" pill with a right-chevron (click expands) plus a shadow
-    # easing in downward over the line below - a cue that content is hidden
-    # under the header. Rects are stashed for NEXT frame's click handler at
-    # the top of the body (raw draw-list calls, same pattern as the
-    # live-view gutter buttons - a render_func per fold would be overkill).
+    # --- Fold headers + collapsed edge light ----------------------------------
+    # One badge per fold range at the end of its header line - bare icons,
+    # no bounding box: expanded folds get a faint down-chevron (click
+    # collapses), collapsed ones a right-chevron + "N more lines" label
+    # (click expands). Under a collapsed header, a LIGHT emanates from the
+    # header's bottom edge downward for one line - a sheared beam of stacked
+    # parallelogram bands (quadratic ease), tinted by fold_shadow_color with
+    # its HSV saturation scaled by fold_shadow_saturation, and leaned from
+    # fold_shadow_angle (degrees: 90 = straight down, <90 leans right,
+    # >90 leans left). Rects are stashed for NEXT frame's toggle handler at
+    # the top of the body (raw draw-list widgets, same pattern as the
+    # live-view gutter buttons — a render_func per fold would be overkill).
     ds._fold_badge_rects = []
     if _fold_folds:
         draw_list.push_clip_rect(left + gutter_w, rect_min_y,
                                  left + ds.content_width, rect_max_y, True)
         _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
+        # Light color: saturation knob applied in HSV, alpha channel is the
+        # light's strength at the edge.
+        _fsr, _fsg, _fsb = fold_shadow_color[:3]
+        _fsa = fold_shadow_color[3] if len(fold_shadow_color) > 3 else 0.3
+        if fold_shadow_saturation != 1.0:
+            import colorsys
+            _fh, _fs, _fv = colorsys.rgb_to_hsv(_fsr, _fsg, _fsb)
+            _fsr, _fsg, _fsb = colorsys.hsv_to_rgb(
+                _fh, max(0.0, min(1.0, _fs * fold_shadow_saturation)), _fv)
+        # Shear per pixel of depth from the light angle, clamped away from
+        # horizontal so a live-edited angle can't blow out the geometry.
+        _frad = math.radians(max(15.0, min(165.0, fold_shadow_angle)))
+        _fshear = math.cos(_frad) / math.sin(_frad)
         for _rng, _dl, _fcol, _nh, _hlen, _fa, _fhl in _fold_folds:
             _fy = origin_y + _dl * line_px
             if _fy > rect_max_y or _fy + 2 * line_px < rect_min_y:
@@ -9217,10 +9313,6 @@ def draw_text(input_value: str, height=None,
             _fr = (_bx, _fy + 1.0, _bx + _bw, _fy + line_px - 1.0)
             _fhov = (_fr[0] <= io.mouse_pos.x < _fr[2]
                      and _fr[1] <= io.mouse_pos.y < _fr[3])
-            _ba = (0.16 if _fcol else 0.06) + (0.12 if _fhov else 0.0)
-            draw_list.add_rect_filled(
-                _fr[0], _fr[1], _fr[2], _fr[3],
-                imgui.get_color_u32_rgba(1.0, 1.0, 1.0, _ba), 4.0)
             _fcc = imgui.get_color_u32_rgba(
                 0.9, 0.9, 0.9, 0.9 if _fhov else 0.55)
             _fcx, _fcy = _fr[0] + 8.0, (_fr[1] + _fr[3]) * 0.5
@@ -9236,22 +9328,26 @@ def draw_text(input_value: str, height=None,
                                               _fcx + 4.0, _fcy - 2.5,
                                               _fcx, _fcy + 3.5, _fcc)
             ds._fold_badge_rects.append((_fr, _rng))
-            if _fcol:
-                # Shadow easing in downward for one line under the collapsed
-                # header: three gradient rectangles give a quadratic falloff
-                # (multicolor rects only interpolate linearly).
+            if _fcol and _fsa > 0.0:
+                # Edge light: 14 parallelogram bands descending one line from
+                # the header's bottom edge, alpha easing out quadratically
+                # (evaluated at band centers - steps stay under ~0.05 alpha).
+                # Each band's x-offset follows the beam angle, so the whole
+                # sheet leans as one and its ends cut on the diagonal - no
+                # box outline anywhere.
                 _sy = _fy + line_px
-                _sa = 0.30
-                for _si in range(3):
-                    _t0, _t1 = _si / 3.0, (_si + 1) / 3.0
-                    _c0 = imgui.get_color_u32_rgba(
-                        0.0, 0.0, 0.0, _sa * (1.0 - _t0) ** 2)
-                    _c1 = imgui.get_color_u32_rgba(
-                        0.0, 0.0, 0.0, _sa * (1.0 - _t1) ** 2)
-                    draw_list.add_rect_filled_multicolor(
-                        left + gutter_w, _sy + _t0 * line_px,
-                        left + ds.content_width, _sy + _t1 * line_px,
-                        _c0, _c0, _c1, _c1)
+                _sx0, _sx1 = left + gutter_w, left + ds.content_width
+                _fn = 14
+                for _si in range(_fn):
+                    _t0, _t1 = _si / _fn, (_si + 1) / _fn
+                    _tm = (_t0 + _t1) * 0.5
+                    _bc = imgui.get_color_u32_rgba(
+                        _fsr, _fsg, _fsb, _fsa * (1.0 - _tm) ** 2)
+                    _d0, _d1 = _t0 * line_px, _t1 * line_px
+                    _o0, _o1 = _d0 * _fshear, _d1 * _fshear
+                    draw_list.add_quad_filled(
+                        _sx0 + _o0, _sy + _d0, _sx1 + _o0, _sy + _d0,
+                        _sx1 + _o1, _sy + _d1, _sx0 + _o1, _sy + _d1, _bc)
         draw_list.pop_clip_rect()
 
     if changed:

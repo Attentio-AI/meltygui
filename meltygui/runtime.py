@@ -3610,6 +3610,14 @@ class Melty:
                 max_steps=diff / 2.0,
                 depth_scale=depth_scale,
                 output_size=shadow_size,
+                light_dir=tuple(Toggles.shadow_light_dir),
+                height_scale=float(Toggles.shadow_height_scale),
+                blur_scale=float(Toggles.shadow_blur_scale),
+                blur_exponent=float(Toggles.shadow_blur_exponent),
+                blur_samples=max(1, int(Toggles.shadow_blur_samples)),
+                hit_strength=float(Toggles.shadow_hit_strength),
+                hit_falloff=float(Toggles.shadow_hit_falloff),
+                shadow_strength=float(Toggles.shadow_strength),
             )
 
             if not Toggles.draw_legacy:
@@ -3631,8 +3639,8 @@ class Melty:
                     shadow_map=shadow_raw,
                     depth_map=Melty.cache._full_mask_tex,
                     depth_scale=depth_scale,
-                    shadow_opacity=0.9,
-                    shadow_color=(0.0, 0.02, 0.05),  # Slightly blue shadow
+                    shadow_opacity=float(Toggles.shadow_opacity),
+                    shadow_color=tuple(Toggles.shadow_color),
                     shadow_size=(float(composite_shadow_size[0]),
                                  float(composite_shadow_size[1])),
                     depth_sharpness=float(Toggles.shadow_edge_sharpness),
@@ -3640,6 +3648,11 @@ class Melty:
                     glow_strength=(float(Toggles.glow_strength)
                                    if _glow_on else 0.0),
                     glow_shadow_cut=float(Toggles.glow_shadow_cut),
+                    # Specular rim on the lit edge - same light_dir as the
+                    # cast pass so highlight and shadow stay opposite.
+                    light_dir=tuple(Toggles.shadow_light_dir),
+                    specular_bevel=float(Toggles.specular_bevel),
+                    specular_roughness=float(Toggles.specular_roughness),
                 )
 
         # Debug: replace the frame with the raw low-res glow light buffer -

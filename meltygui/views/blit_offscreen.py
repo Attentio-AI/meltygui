@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import ctypes
 import random
 import traceback
 from collections import deque, defaultdict
 from copy import copy
 from dataclasses import dataclass
-from math import ceil, floor
+from math import ceil, floor, radians, tan
 from typing import Dict, List, Optional, Tuple, MutableMapping, Any
 
 from OpenGL import GL as gl
@@ -698,6 +699,39 @@ void main() {
 }
 """
 
+# add_shadow_shape() marks: arbitrary triangle-strip geometry with a rank per
+# VERTEX - the complex-shape sibling of the rect gradient above (compare
+# ribbons, future non-rect chrome). Positions arrive pre-transformed to NDC
+# within the mark's bbox viewport; rank interpolates linearly (barycentric)
+# between vertices, so a caller wanting eased grading samples its curve
+# densely (the rect's smoothstep slices already do). Same MAX/MIN rank and
+# window-occlusion gate as the rect path - only the geometry source differs.
+_SHADOW_SHAPE_VS = """
+#version 330 core
+layout(location = 0) in vec2 aPos;   // NDC within the mark's bbox viewport
+layout(location = 1) in float aRank; // rank pre-normalized to [0, 1]
+out float vRank;
+void main() {
+    vRank = aRank;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+"""
+
+_SHADOW_SHAPE_FS = """
+#version 330 core
+uniform sampler2D uWinMask;  // window-occlusion mask (_build_window_mask)
+uniform float uWinZ;         // owner window's encoded rank; 1.0 = ungated
+uniform vec2 uFBSize;        // full-mask dims, for gl_FragCoord -> mask UV
+in float vRank;
+out vec4 oColor;
+void main() {
+    if (texture(uWinMask, gl_FragCoord.xy / uFBSize).r > uWinZ + 0.00048) {
+        discard;
+    }
+    oColor = vec4(vRank, 0.0, 0.0, 1.0);
+}
+"""
+
 # add_glow() marks: a rounded-rect emitter with an inverse-square falloff
 # skirt - the same "hot core, long faint tail" profile the old draw-list
 # _blur_rect approximated with stacked rects, evaluated per-fragment from the
@@ -728,6 +762,15 @@ uniform vec2 uRectSize;      // EXPANDED quad size in glow-buffer pixels
 uniform float uCornerRadius; // corner radius of the inner rect, glow px
 uniform float uRadius;       // falloff skirt width, glow px
 uniform float uFalloff;      // inverse-square hardness k (0 = linear)
+uniform int uAreaLight;      // 1 = downward-facing area-light mode
+uniform float uAreaHold;     // fraction of uRadius held at full brightness
+uniform float uAreaSpread;   // lateral trapezoid widening, px per px of drop
+uniform float uAreaFalloff;  // falloff curve exponent past the hold point
+uniform float uAreaEdgeBlur; // fan-edge penumbra width, px per px of drop
+uniform float uAreaTanA;     // tan(tilt angle); + shears the fan screen-right
+uniform int uAreaTopEdge;    // 1 = fan hangs from the rect's TOP edge
+uniform int uAreaEdges;      // 1 = emit from the rect's left/right/bottom edges
+uniform float uExpand;       // quad expansion around the rect, glow px
 uniform int uDebugSolid;     // 1 = hard rect + 30% skirt (positioning debug)
 in vec2 vUV;
 out vec4 oColor;
@@ -739,10 +782,13 @@ float sdRoundedBox(vec2 p, vec2 b, float r) {
 
 void main() {
     vec2 pixelPos = (vUV - 0.5) * uRectSize;
-    vec2 halfSize = uRectSize * 0.5 - vec2(uRadius);
+    vec2 halfSize = uRectSize * 0.5 - vec2(uExpand);
     float r = min(uCornerRadius, min(halfSize.x, halfSize.y));
     float d = sdRoundedBox(pixelPos, halfSize, r);
-    if (d >= uRadius) {
+    // Area-light mode owns its own extent (the trapezoid), so the radial
+    // SDF cut must not apply — it truncated the fan's far corners at a
+    // hard Euclidean edge before the vertical falloff reached zero.
+    if (d >= uRadius && uAreaLight != 1) {
         discard;
     }
     // Receiver depth at this fragment: the glow buffer and the mask cover
@@ -762,6 +808,66 @@ void main() {
     float p;
     if (uDebugSolid == 1) {
         p = (d <= 0.0) ? 1.0 : 0.3;
+    } else if (uAreaLight == 1) {
+        // Downward-facing area light: light falls in a fan BELOW the source
+        // edge (vUV.y runs bottom-to-top in the framebuffer, so screen-down
+        // is -y). The source edge is the rect's TOP edge when uAreaTopEdge
+        // (the fan then washes down THROUGH the rect and past it) or its
+        // BOTTOM edge (rect interior stays fully lit, fan starts under it).
+        // Brightness holds flat for uAreaHold of the radius, then falls as
+        // smoothstep^uAreaFalloff — smooth at both ends (no hard far edge).
+        // uAreaTanA shears the whole fan sideways with drop (a tilted
+        // light); the side edges get a PENUMBRA that widens with drop
+        // (uAreaEdgeBlur px per px, symmetric about the trapezoid edge):
+        // razor-sharp at the source, progressively blurrier further down.
+        // uAreaEdges instead wraps the light around the rect's LEFT, RIGHT
+        // and BOTTOM edges: the same hold+smoothstep^exponent profile, but
+        // run on the rounded-box SDF distance (sheared by uAreaTanA as it
+        // drops below the TOP edge, so the whole skirt leans with the
+        // light) and killed above the top edge — the skirt tapers to
+        // nothing over the token's height approaching the top corners, so
+        // the top edge itself stays dark.
+        if (uAreaEdges == 1) {
+            float dropTop = halfSize.y - pixelPos.y;
+            if (dropTop <= 0.0) {
+                discard;
+            }
+            if (d <= 0.0) {
+                p = 1.0;
+            } else {
+                vec2 sheared = vec2(pixelPos.x - dropTop * uAreaTanA,
+                                    pixelPos.y);
+                float d2 = sdRoundedBox(sheared, halfSize, r);
+                float t2 = clamp(d2 / max(uRadius, 1.0), 0.0, 1.0);
+                p = pow(1.0 - smoothstep(uAreaHold, 1.0, t2),
+                        max(uAreaFalloff, 0.01));
+                p *= smoothstep(0.0, max(1.0, 2.0 * halfSize.y), dropTop);
+                if (p <= 0.0) {
+                    discard;
+                }
+            }
+            oColor = vec4(uColor.rgb * uColor.a * p, 1.0);
+            return;
+        }
+        float edgeY = (uAreaTopEdge == 1) ? halfSize.y : -halfSize.y;
+        float drop = edgeY - pixelPos.y;
+        if (uAreaTopEdge != 1 && d <= 0.0) {
+            p = 1.0;
+        } else {
+            if (drop <= 0.0) {
+                discard;
+            }
+            float tv = clamp(drop / max(uRadius, 1.0), 0.0, 1.0);
+            float vert = pow(1.0 - smoothstep(uAreaHold, 1.0, tv),
+                             max(uAreaFalloff, 0.01));
+            float lat = abs(pixelPos.x - drop * uAreaTanA)
+                        - (halfSize.x + drop * uAreaSpread);
+            float feather = max(0.5, drop * uAreaEdgeBlur);
+            p = vert * (1.0 - smoothstep(-feather, feather, lat));
+            if (p <= 0.0) {
+                discard;
+            }
+        }
     } else if (uFalloff > 0.0) {
         float flr = 1.0 / ((1.0 + uFalloff) * (1.0 + uFalloff));
         float iv = 1.0 / ((1.0 + uFalloff * t) * (1.0 + uFalloff * t));
@@ -2041,6 +2147,76 @@ class TileCacheMasked:
                 (mark, draw_state,
                  (draw_state.abs_left, draw_state.abs_top, _base_rank)))
 
+    def add_shadow_strip(
+            self, points, offset: float = 2.0, layer: int = None,
+            depth: int = None, clip: bool = True, draw_state=None,
+    ) -> None:
+        """add_shadow for a NON-RECT shape: `points` is a triangle strip of
+        screen-space (x, y) vertices (len >= 3) — e.g. a band between two
+        polylines interleaved top0, bot0, top1, bot1, … Same signed-offset
+        semantics as add_shadow: positive lifts the shape so it casts onto
+        its surroundings, all-negative carves a recess (MIN-blended,
+        owner-scoped like any inset mark), mixed signs stamp MAX-blended.
+
+        `offset` may also be a sequence with one entry PER VERTEX — each
+        vertex gets its own depth and the mark interpolates linearly between
+        them across every triangle (the strip analog of the rect's
+        per-corner 4-tuple; sample your curve densely if you want eased
+        grading). Everything else — layer/depth defaults, clip snapshotting,
+        tile-bake persistence while recording, draw_state-keyed retention on
+        raised marks — matches add_shadow exactly; corner_radius/margin
+        don't apply (the strip's own edges are the shape)."""
+        pts = [(float(px), float(py)) for (px, py) in points]
+        if len(pts) < 3:
+            return
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        x, y = min(xs), min(ys)
+        w, h = max(xs) - x, max(ys) - y
+        if w <= 0 or h <= 0:
+            return
+        if layer is None:
+            layer = Melty.active_layer
+        if depth is None:
+            depth = Melty.shadow_depth
+        if clip is True:
+            clip_xyxy = Melty.get_clip_rect()
+        elif clip:
+            clip_xyxy = tuple(clip)
+        else:
+            clip_xyxy = None
+        if clip_xyxy is not None and self._fully_clipped(x, y, w, h, clip_xyxy):
+            return
+        owner_key = self._stack[-1].key if self._stack else None
+        if isinstance(offset, (tuple, list)):
+            offs = tuple(float(o) for o in offset)
+            if len(offs) != len(pts):
+                raise ValueError(
+                    "add_shadow_strip offset must be a scalar or a sequence "
+                    "with one entry per vertex")
+        else:
+            offs = (float(offset),) * len(pts)
+        inset = all(o <= 0 for o in offs) and any(o < 0 for o in offs)
+        ranks = tuple(max(0.0, shadow_depth_at(depth + o, layer))
+                      for o in offs)
+        shape = tuple((px, py, rk) for (px, py), rk in zip(pts, ranks))
+        # Same 10-slot layout as rect marks (every consumer indexes those
+        # positionally) + the strip payload at [10]. The rect-only rank
+        # 4-tuple is filled with first/last so generic readers see something
+        # sane; the stamp code reads the per-vertex ranks from the shape.
+        mark = (x, y, w, h, (ranks[0], ranks[-1], ranks[0], ranks[-1]),
+                0.0, 0.0, clip_xyxy, owner_key, inset, shape)
+        self._shadow_rects.append(mark)
+        if draw_state is not None and not inset:
+            self._ensure_glow_state()
+            try:
+                _base_rank = float(draw_state.shadow_depth)
+            except Exception:
+                _base_rank = None
+            self._depth_frame.append(
+                (mark, draw_state,
+                 (draw_state.abs_left, draw_state.abs_top, _base_rank)))
+
     def _ensure_glow_state(self) -> None:
         """Lazily create the glow bookkeeping fields. A hotswap patches
         methods onto a live instance whose __init__ predates them — skipping
@@ -2249,6 +2425,32 @@ class TileCacheMasked:
         _dbg_no_mask = Toggles.glow_debug_no_mask
         gl.glUniform1i(self._loc_gl_uDebugSolid,
                        1 if Toggles.glow_debug_rects else 0)
+        gl.glUniform1i(self._loc_gl_uAreaLight,
+                       1 if Toggles.glow_area_light else 0)
+        gl.glUniform1f(self._loc_gl_uAreaHold,
+                       min(0.999, max(0.0, float(Toggles.glow_area_hold))))
+        gl.glUniform1f(self._loc_gl_uAreaSpread,
+                       max(0.0, float(Toggles.glow_area_spread)))
+        gl.glUniform1f(self._loc_gl_uAreaFalloff,
+                       max(0.01, float(Toggles.glow_area_falloff)))
+        gl.glUniform1f(self._loc_gl_uAreaEdgeBlur,
+                       max(0.0, float(Toggles.glow_area_edge_blur)))
+        _tan_a = tan(radians(
+            min(80.0, max(-80.0, float(Toggles.glow_area_angle)))))
+        gl.glUniform1f(self._loc_gl_uAreaTanA, _tan_a)
+        gl.glUniform1i(self._loc_gl_uAreaTopEdge,
+                       1 if Toggles.glow_area_top_edge else 0)
+        gl.glUniform1i(self._loc_gl_uAreaEdges,
+                       1 if Toggles.glow_area_edges else 0)
+        # Area mode: the tilt shear + spread + penumbra push the fan past
+        # the usual `radius` quad expansion - widen the quad so the shear
+        # never gets clipped by its own geometry. uExpand tells the shader
+        # the actual expansion so it can reconstruct the inner rect.
+        _area = bool(Toggles.glow_area_light)
+        _ex_mult = (max(1.0, 1.0 + abs(_tan_a)
+                        + float(Toggles.glow_area_spread)
+                        + float(Toggles.glow_area_edge_blur))
+                    if _area else 1.0)
         # Small rank slack above the emitter so coplanar pixels (the band's
         # own glow, sibling text at the same depth) stay lit through R16
         # rounding; ~2 rank units.
@@ -2279,8 +2481,9 @@ class TileCacheMasked:
             sw, sh = ex1 - sx, ey1 - sy
             if sw <= 0 or sh <= 0:
                 continue
+            expand = radius * _ex_mult
             x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
-                sx - radius, sy - radius, sw + 2 * radius, sh + 2 * radius,
+                sx - expand, sy - expand, sw + 2 * expand, sh + 2 * expand,
                 dp_x, dp_y, s_x, s_y, fb_h)
             ix0, iy0 = int(floor(x0 * sc_x)), int(floor(y0 * sc_y))
             ix1, iy1 = int(ceil(x1 * sc_x)), int(ceil(y1 * sc_y))
@@ -2304,11 +2507,48 @@ class TileCacheMasked:
                            max(0.0, cr * s_x * sc_x))
             gl.glUniform1f(self._loc_gl_uRadius,
                            max(1.0, radius * s_x * sc_x))
+            gl.glUniform1f(self._loc_gl_uExpand,
+                           max(1.0, expand * s_x * sc_x))
             gl.glUniform1f(self._loc_gl_uFalloff, max(0.0, falloff))
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glDisable(gl.GL_BLEND)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+    def _ensure_shape_state(self) -> None:
+        """Lazily create the strip-mark program + streaming VAO/VBO (getattr
+        pattern: a hotswap patches methods onto a live instance whose
+        __init__ predates these fields). Called with SOME vao bound (the
+        pass's dummy vao) — creation rebinds it before returning."""
+        if (getattr(self, "_prog_shadow_shape", None) is None
+                or getattr(self, "_loc_ss_uWinZ", None) is None):
+            vs = _compile(gl.GL_VERTEX_SHADER, _SHADOW_SHAPE_VS)
+            fs = _compile(gl.GL_FRAGMENT_SHADER, _SHADOW_SHAPE_FS)
+            self._prog_shadow_shape = _link(vs, fs)
+            self._loc_ss_uWinMask = gl.glGetUniformLocation(
+                self._prog_shadow_shape, "uWinMask")
+            self._loc_ss_uWinZ = gl.glGetUniformLocation(
+                self._prog_shadow_shape, "uWinZ")
+            self._loc_ss_uFBSize = gl.glGetUniformLocation(
+                self._prog_shadow_shape, "uFBSize")
+        if getattr(self, "_shape_vao", None) is None:
+            vao = gl.glGenVertexArrays(1)
+            if isinstance(vao, (list, tuple)):
+                vao = vao[0]
+            vbo = gl.glGenBuffers(1)
+            if isinstance(vbo, (list, tuple)):
+                vbo = vbo[0]
+            gl.glBindVertexArray(vao)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+            gl.glEnableVertexAttribArray(0)
+            gl.glEnableVertexAttribArray(1)
+            gl.glVertexAttribPointer(0, 2, gl.GL_FLOAT, gl.GL_FALSE, 12,
+                                     ctypes.c_void_p(0))
+            gl.glVertexAttribPointer(1, 1, gl.GL_FLOAT, gl.GL_FALSE, 12,
+                                     ctypes.c_void_p(8))
+            gl.glBindVertexArray(self._dummy_vao)
+            self._shape_vao = int(vao)
+            self._shape_vbo = int(vbo)
 
     def _stamp_shadow_marks(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
                             scissor_fb=None, win_gate=True):
@@ -2337,11 +2577,14 @@ class TileCacheMasked:
         _fbw, _fbh = self._fb_size
         gl.glUniform2f(self._loc_sg_uFBSize,
                        float(max(1, _fbw)), float(max(1, _fbh)))
-        for (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
-             inset) in shadows:
+        for s in shadows:
+            # Strip marks (add_shadow_strip) ride the same list with a
+            # vertex payload at [10]; retained 10-tuples from a pre-strip
+            # hotswap era slice cleanly to shape=None.
+            (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
+             inset) = s[:10]
+            shape = s[10] if len(s) > 10 else None
             gl.glBlendEquation(gl.GL_MIN if inset else gl.GL_MAX)
-            gl.glUniform1f(self._loc_sg_uWinZ,
-                           self._win_z_for_owner(_owner) if win_gate else 1.0)
             x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
                 sx, sy, sw, sh, dp_x, dp_y, s_x, s_y, fb_h)
             ix0, iy0 = int(floor(x0)), int(floor(y0))
@@ -2367,6 +2610,37 @@ class TileCacheMasked:
                 gl.glScissor(scx0, scy0, scw, sch)
             else:
                 gl.glDisable(gl.GL_SCISSOR_TEST)
+            if shape is not None:
+                # Strip path: vertices go up as NDC within the mark's bbox
+                # viewport with their pre-normalized rank; the shader
+                # interpolates rank linearly and applies the same window
+                # gate. No >4096 clamp - the scissor bounds fragment size
+                # and strip callers are class-band sized, not class-block
+                # sized.
+                self._ensure_shape_state()
+                verts = []
+                for (px, py, rk) in shape:
+                    fx = (px - dp_x) * s_x
+                    fy = fb_h - (py - dp_y) * s_y
+                    verts.append(2.0 * (fx - ix0) / iw - 1.0)
+                    verts.append(2.0 * (fy - iy0) / ih - 1.0)
+                    verts.append(rk / 65535.5)
+                gl.glViewport(ix0, iy0, iw, ih)
+                gl.glUseProgram(self._prog_shadow_shape)
+                gl.glUniform1i(self._loc_ss_uWinMask, 1)
+                gl.glUniform2f(self._loc_ss_uFBSize,
+                               float(max(1, _fbw)), float(max(1, _fbh)))
+                gl.glUniform1f(self._loc_ss_uWinZ,
+                               self._win_z_for_owner(_owner)
+                               if win_gate else 1.0)
+                buf = (ctypes.c_float * len(verts))(*verts)
+                gl.glBindVertexArray(self._shape_vao)
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._shape_vbo)
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, len(verts) * 4, buf,
+                                gl.GL_STREAM_DRAW)
+                gl.glDrawArrays(gl.GL_TRIANGLE_STRIP, 0, len(shape))
+                gl.glBindVertexArray(self._dummy_vao)
+                continue
             if (iw > 4096 or ih > 4096) and sc is not None:
                 # A mark the size of a whole cache block can exceed GL
                 # viewport limits. Clamp it to the scissor plus a margin
@@ -2406,6 +2680,8 @@ class TileCacheMasked:
             # scalar offset arrives as four equal corners - one shader for
             # every mark, cr=0 just means sharp corners.
             gl.glUseProgram(self._prog_shadow_grad)
+            gl.glUniform1f(self._loc_sg_uWinZ,
+                           self._win_z_for_owner(_owner) if win_gate else 1.0)
             gl.glUniform4f(self._loc_sg_uRankCorners,
                            float(d_and_l[0]) / 65535.5,
                            float(d_and_l[1]) / 65535.5,
@@ -3396,7 +3672,7 @@ class TileCacheMasked:
         # cached - the new stamp code would then set uniforms that were
         # never fetched and die. Bump the probed name as _GLOW_FS grows.
         if (getattr(self, "_prog_glow", None) is None
-                or getattr(self, "_loc_gl_uDebugSolid", None) is None):
+                or getattr(self, "_loc_gl_uAreaEdges", None) is None):
             if getattr(self, "_prog_glow", None):
                 gl.glDeleteProgram(self._prog_glow)
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
@@ -3414,6 +3690,15 @@ class TileCacheMasked:
             self._loc_gl_uRadius = gl.glGetUniformLocation(self._prog_glow, "uRadius")
             self._loc_gl_uFalloff = gl.glGetUniformLocation(self._prog_glow, "uFalloff")
             self._loc_gl_uDebugSolid = gl.glGetUniformLocation(self._prog_glow, "uDebugSolid")
+            self._loc_gl_uAreaLight = gl.glGetUniformLocation(self._prog_glow, "uAreaLight")
+            self._loc_gl_uAreaHold = gl.glGetUniformLocation(self._prog_glow, "uAreaHold")
+            self._loc_gl_uAreaSpread = gl.glGetUniformLocation(self._prog_glow, "uAreaSpread")
+            self._loc_gl_uAreaFalloff = gl.glGetUniformLocation(self._prog_glow, "uAreaFalloff")
+            self._loc_gl_uAreaEdgeBlur = gl.glGetUniformLocation(self._prog_glow, "uAreaEdgeBlur")
+            self._loc_gl_uAreaTanA = gl.glGetUniformLocation(self._prog_glow, "uAreaTanA")
+            self._loc_gl_uAreaTopEdge = gl.glGetUniformLocation(self._prog_glow, "uAreaTopEdge")
+            self._loc_gl_uExpand = gl.glGetUniformLocation(self._prog_glow, "uExpand")
+            self._loc_gl_uAreaEdges = gl.glGetUniformLocation(self._prog_glow, "uAreaEdges")
 
         if self._prog_mask_textured is None:
             vs = _compile(gl.GL_VERTEX_SHADER, _FULLSCREEN_VS)
@@ -4341,8 +4626,10 @@ class TileCacheMasked:
                             _shift = float(_eds.shadow_depth) - _anchor[2]
                     except Exception:
                         _shift = 0.0
-                    for (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
-                         _ins) in marks:
+                    for m in marks:
+                        (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
+                         _ins) = m[:10]
+                        _shape = m[10] if len(m) > 10 else None
                         if mclip is not None:
                             _c = (mclip[0] + dx, mclip[1] + dy,
                                   mclip[2] + dx, mclip[3] + dy)
@@ -4359,11 +4646,17 @@ class TileCacheMasked:
                         if _shift:
                             ranks = tuple(max(0.0, rk + _shift)
                                           for rk in ranks)
+                        # Strip payloads have position AND rank per vertex -
+                        # translate and re-anchor them the same way.
+                        if _shape is not None and (dx or dy or _shift):
+                            _shape = tuple(
+                                (vx + dx, vy + dy, max(0.0, vr + _shift))
+                                for (vx, vy, vr) in _shape)
                         # Owner is passed along so the window-occlusion gate
                         # can resolve the mark's own window at stamp time.
                         _depth_stamp.append(
                             (mx + dx, my + dy, mw, mh, ranks, cr, margin,
-                             _c, _own, False))
+                             _c, _own, False, _shape))
                 if _depth_stamp:
                     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
                                          self._full_mask_fbo)
@@ -4577,6 +4870,20 @@ def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
         cache.add_shadow(rect, offset=offset, layer=layer, depth=depth,
                          corner_radius=corner_radius, margin=margin, clip=clip,
                          draw_state=draw_state)
+
+
+def add_shadow_strip(points, offset=2.0, layer=None, depth=None, clip=True,
+                     draw_state=None):
+    """add_shadow for a NON-RECT shape: `points` is a triangle strip of
+    screen-space (x, y) vertices (a band between two polylines interleaves
+    top0, bot0, top1, bot1, …). `offset` keeps add_shadow's signed
+    semantics — positive lifts the shape so it casts, all-negative carves a
+    recess — and may be a per-vertex sequence for graded depth along the
+    shape. See TileCacheMasked.add_shadow_strip."""
+    cache = Melty.cache
+    if cache is not None and getattr(cache, "add_shadow_strip", None) is not None:
+        cache.add_shadow_strip(points, offset=offset, layer=layer,
+                               depth=depth, clip=clip, draw_state=draw_state)
 
 
 def add_glow(rect, color, intensity=1.0, radius=24.0, falloff=2.0,
