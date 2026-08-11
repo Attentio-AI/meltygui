@@ -194,7 +194,6 @@ _PREFIX_RE = re.compile(r'[A-Za-z_]\w*$')
 _PY_KEYWORDS = frozenset(keyword.kwlist)
 _AC_MAX_ROWS = 40  # cap so a huge file can't render a million-row popup
 
-
 def _completion_context(text, cursor):
     """The completion site at `cursor`: the identifier `prefix` being typed, the
     `anchor` index where it starts (== cursor when there's no prefix yet), and
@@ -5666,6 +5665,196 @@ def _describe_code_tree(code_tree):
 
 
 
+_SCOPE_HEAD_RE = re.compile(r'(?:async\s+)?(?:def|class)\s')
+
+
+def _scope_fold_ranges(text):
+    """(start, end) fold tuples for every Python scope (def / async def /
+    class) in `text` — the scope_collapse=True source for draw_text's fold
+    layer. Indentation-based rather than ast.parse on purpose: it's O(lines),
+    and it keeps working on the syntactically broken buffers every mid-edit
+    frame produces, where a parse-based scan would go stale per keystroke.
+    A scope's fold keeps its header (the def/class line; decorators stay
+    above, visible) and hides down to its last non-blank body line. Nested
+    scopes each get their own range — the fold normalizer accepts strict
+    nesting."""
+    out, stack = [], []          # stack: (indent, header_line)
+    last_code = -1               # last non-blank line seen
+    for i, ln in enumerate(text.split('\n')):
+        s = ln.strip()
+        if not s:
+            continue
+        ind = len(ln) - len(ln.lstrip())
+        while stack and ind <= stack[-1][0]:
+            _, hdr = stack.pop()
+            if last_code > hdr:
+                out.append((hdr, last_code))
+        if _SCOPE_HEAD_RE.match(s):
+            stack.append((ind, i))
+        last_code = i
+    for _, hdr in stack:
+        if last_code > hdr:
+            out.append((hdr, last_code))
+    out.sort()
+    return out
+
+
+def _fold_normalize_ranges(n_lines, ranges):
+    """Caller fold ranges → sorted, clipped (start, end) tuples. 0-based
+    INCLUSIVE buffer lines; a collapsed range keeps line `start` visible and
+    hides start+1..end. Ranges that would hide nothing (end <= start, start
+    past the buffer) are dropped. Strictly NESTED ranges are kept (scope
+    folding needs them — an inner def folds on its own while its class is
+    expanded); partial overlaps are dropped."""
+    out, ends = [], []           # ends: open enclosing ranges' end lines
+    for s, e in sorted((int(s), int(e)) for s, e in ranges):
+        e = min(e, n_lines - 1)
+        if e <= s or s >= n_lines - 1:
+            continue
+        while ends and s > ends[-1]:
+            ends.pop()
+        if ends and (e > ends[-1] or s == out[-1][0]):
+            continue             # straddles the enclosing range, or dup start
+        out.append((s, e))
+        ends.append(e)
+    return out
+
+
+def _fold_build(text, ranges, collapsed):
+    """Fold layout for draw_text's collapsible line ranges.
+
+    Returns (display_text, segments, folds, disp_to_buf):
+      display_text — `text` with every COLLAPSED range's hidden lines
+        (start+1..end) spliced out; `text` itself when nothing is collapsed.
+      segments — [(anchor_offset_in_display, hidden_str, rng)] per collapsed
+        fold. hidden_str starts with the '\\n' that followed the header line,
+        so inserting it back at the anchor reproduces `text` exactly.
+      folds — [(rng, display_line, is_collapsed, n_hidden, header_len,
+        anchor_offset, hidden_len)] for EVERY normalized range (expanded
+        folds still need badge geometry). anchor/hidden_len describe the
+        CURRENT display layout, so a caret can be shifted across a toggle.
+      disp_to_buf — buffer line per display line; None when identity.
+    """
+    lines = text.split('\n')
+    rngs = _fold_normalize_ranges(len(lines), ranges)
+    # Full, line offsets (needed for hidden extraction + expanded anchors).
+    foffs, off = [], 0
+    for l in lines:
+        foffs.append(off)
+        off += len(l) + 1
+    folds, segments = [], []
+    if not any(r in collapsed for r in rngs):
+        for s, e in rngs:
+            anchor = foffs[s] + len(lines[s])
+            hidden_len = foffs[e] + len(lines[e]) - anchor
+            folds.append(((s, e), s, False, e - s, len(lines[s]),
+                          anchor, hidden_len))
+        return text, segments, folds, None
+    disp, disp_to_buf, pend = [], [], []
+    ri, buf = 0, 0
+    while buf < len(lines):
+        disp_to_buf.append(buf)
+        disp.append(lines[buf])
+        # Ranges starting inside a collapsed fold's hidden body were jumped
+        # over - they contribute no badge and no segment while collapsed
+        # (their own collapsed state is preserved untouched for when the
+        # outer fold reopens).
+        while ri < len(rngs) and rngs[ri][0] < buf:
+            ri += 1
+        if ri < len(rngs) and rngs[ri][0] == buf:
+            s, e = rngs[ri]
+            ri += 1
+            is_col = (s, e) in collapsed
+            pend.append(((s, e), len(disp) - 1, is_col))
+            if is_col:
+                buf = e + 1
+                continue
+        buf += 1
+    display_text = '\n'.join(disp)
+    doffs, off = [], 0
+    for l in disp:
+        doffs.append(off)
+        off += len(l) + 1
+    for rng, dl, is_col in pend:
+        s, e = rng
+        anchor = doffs[dl] + len(disp[dl])
+        hidden = text[foffs[s] + len(lines[s]):foffs[e] + len(lines[e])]
+        folds.append((rng, dl, is_col, e - s, len(disp[dl]),
+                      anchor, len(hidden)))
+        if is_col:
+            segments.append((anchor, hidden, rng))
+    return display_text, segments, folds, disp_to_buf
+
+
+def _fold_reassemble(old_disp, new_disp, segments, collapsed):
+    """Splice the hidden fold segments back into the EDITED display text so
+    the changed return hands the caller the FULL buffer.
+
+    Anchors are offsets into old_disp (the pre-edit display text). The frame's
+    single edit region is located by chunked common prefix/suffix; anchors
+    after it shift by the edit's length delta, and collapsed range tuples
+    below the edit shift by its newline delta so they keep matching the
+    caller's recomputed fold_ranges next frame. An edit that overlaps a seam
+    force-expands that fold (its hidden text is still spliced back, clamped
+    to the edit region's end) — the neighborhood changed under it, so showing
+    everything beats guessing. Returns (full_text, new_collapsed_set)."""
+    lo, ln = len(old_disp), len(new_disp)
+    m = min(lo, ln)
+    # Maximal SUFFIX first, prefix capped to what's left: at a seam an
+    # insertion is ambiguous (prefix and suffix both want the boundary
+    # newline), and suffix-priority resolves it so text typed at a collapsed
+    # header's end stays in the header rather than pasting below the fold.
+    suf = 0
+    while suf < m:
+        step = min(4096, m - suf)
+        if old_disp[lo - suf - step:lo - suf] == new_disp[ln - suf - step:ln - suf]:
+            suf += step
+            continue
+        e = suf + step
+        while suf < e and old_disp[lo - suf - 1] == new_disp[ln - suf - 1]:
+            suf += 1
+        break
+    p, max_p = 0, m - suf
+    while p < max_p:
+        step = min(4096, max_p - p)
+        if old_disp[p:p + step] == new_disp[p:p + step]:
+            p += step
+            continue
+        e = p + step
+        while p < e and old_disp[p] == new_disp[p]:
+            p += 1
+        break
+    delta = ln - lo
+    dnl = (new_disp.count('\n', p, ln - suf)
+           - old_disp.count('\n', p, lo - suf))
+    new_col = set(collapsed)
+    parts, pos = [], 0
+    for a, hidden, rng in sorted(segments):
+        if a >= lo - suf:
+            # Edit ends at or before the seam - includes a pure suffix AT
+            # the anchor (typing at the collapsed header's end: lo-suf == a),
+            # which belongs to the header, so the hidden text goes after it.
+            na = a + delta
+            if dnl:
+                new_col.discard(rng)
+                new_col.add((rng[0] + dnl, rng[1] + dnl))
+        elif a < p or (a == p and delta > 0):
+            # Edit strictly after the seam (below the fold).
+            na = a
+        else:
+            # The seam itself was edited (e.g. forward-deleting the newline
+            # after a collapsed header) - force-expand so the user sees what
+            # happened; the hidden text splices back clamped to the edit.
+            na = min(max(a, p), ln - suf)
+            new_col.discard(rng)
+        na = max(na, pos)
+        parts.append(new_disp[pos:na])
+        parts.append(hidden)
+        pos = na
+    parts.append(new_disp[pos:])
+    return ''.join(parts), new_col
+
+
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
              shadow=False, max_bg_depth=0, max_bg_value=0.05,
              show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
@@ -5683,7 +5872,7 @@ def draw_text(input_value: str, height=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
-              manual_search=False,
+              manual_search=False, fold_ranges=None, scope_collapse=True,
               unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -5700,6 +5889,129 @@ def draw_text(input_value: str, height=None,
     def _pf(
             label):
         _pf_marks.append((label, time.perf_counter()))
+
+    # --- Collapsible line ranges (fold_ranges=[(s, e), ...]) -----------------
+    # Each (start, end) tuple (0-based inclusive buffer lines) is a fold: a
+    # badge at the end of line `start` toggles it, and while collapsed lines
+    # start+1..end are spliced OUT of the text the body sees - layout, caret,
+    # search and tokenize all run on the display text, so all of the linear
+    # y = origin_y + line * line_px sites need remapping. The hidden segments
+    # are spliced back IN before the changed line, so the caller always
+    # round-trips the FULL buffer. Collapse state lives on the draw_state
+    # (ds._fold_collapsed, a set of the range tuples).
+    _fold_segments, _fold_folds, _fold_d2b = [], None, None
+    _fold_full = input_value    # the FULL buffer, kept across the display
+                                # substitution below - tree-derived overlays
+                                # (washes, error markers) resolve against it
+                                # and are then remapped into display coords.
+    _fold_bl = _fold_remap_spans = None
+    # scope_collapse=True derives fold_ranges from the buffer itself: one
+    # fold per Python def/class scope (nested scopes collapse - see
+    # _scope_fold_ranges). Re-derived only when the buffer changes; an empt
+    # fold_ranges passes. Gated on syntax_highlight - plain-text buffers have
+    # no Python context.
+    if (scope_collapse and not fold_ranges and syntax_highlight
+            and not single_line and not is_search_box):
+        _sc = getattr(ds, '_scope_rng_cache', None)
+        if _sc is None or _sc[0] is not input_value:
+            _sc = (input_value, _scope_fold_ranges(input_value))
+            ds._scope_rng_cache = _sc
+        fold_ranges = _sc[1]
+    if fold_ranges and not single_line and not is_search_box:
+        if getattr(ds, '_fold_collapsed', None) is None:
+            ds._fold_collapsed = set()
+        # Badge click against LAST frame's rects: this frame's layout depends
+        # on the toggle, so it must resolve before the display text is built.
+        _fold_toggled = None
+        if left_mouse_down:
+            for _fr, _rng in (getattr(ds, '_fold_badge_rects', None) or []):
+                if (_fr[0] <= left_mouse_down.x < _fr[2]
+                        and _fr[1] <= left_mouse_down.y < _fr[3]):
+                    _fold_toggled = _rng
+                    if _rng in ds._fold_collapsed:
+                        ds._fold_collapsed.discard(_rng)
+                    else:
+                        ds._fold_collapsed.add(_rng)
+                    ds.invalidate()
+                    request_render()
+                    break
+        _fk = (tuple(tuple(r) for r in fold_ranges),
+               frozenset(ds._fold_collapsed))
+        _fc = getattr(ds, '_fold_cache', None)
+        if _fc is not None and _fc[0] is input_value and _fc[1] == _fk:
+            _fold_built = _fc[2]
+        else:
+            _fold_built = _fold_build(input_value, _fk[0], ds._fold_collapsed)
+            ds._fold_cache = (input_value, _fk, _fold_built)
+        _disp, _fold_segments, _fold_folds, _fold_d2b = _fold_built
+        # Caret keeps its glyph across a toggle: offsets up to the toggled
+        # fold's anchor are identical in both layouts, so the NEW layout's
+        # anchor/hidden-length adjust the old offset directly.
+        if _fold_toggled is not None and ds.text_cursor_pos is not None:
+            _fi = next((f for f in _fold_folds if f[0] == _fold_toggled), None)
+            if _fi is not None:
+                _a, _hl = _fi[5], _fi[6]
+                _cp = ds.text_cursor_pos
+                if _fi[2]:                       # now collapsed
+                    ds.text_cursor_pos = (_cp - _hl if _cp > _a + _hl
+                                          else min(_cp, _a))
+                elif _cp > _a:                   # now expanded
+                    ds.text_cursor_pos = _cp + _hl
+            ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+        if _fold_segments:
+            input_value = _disp
+            # Full → display coordinate bridges for the tree-derived overlays
+            # (error markers, usage washes, def tints). Those all resolve in
+            # FULL-buffer coordinates (fold_full); these helpers project the
+            # RESULTS into display coords instead of disabling the features.
+            _fold_fstarts = _line_starts(_fold_full)
+            _fold_dstarts = _line_starts(input_value)
+
+            def _fold_bl(b):
+                # 0-based buffer line -> 0-based display line. disp_to_buf is
+                # sorted, so the last visible buffer line <= b IS b itself
+                # when visible - and a hidden line's covering fold HEADER
+                # otherwise (errors on hidden lines light up the collapsed
+                # header rather than vanishing).
+                return max(bisect.bisect_right(_fold_d2b, b) - 1, 0)
+
+            def _fold_off(o):
+                # Full char offset -> disp offset; None while the offset's
+                # line is hidden (a wash inside a collapsed body draws nowhere).
+                b = bisect.bisect_right(_fold_fstarts, o) - 1
+                i = bisect.bisect_right(_fold_d2b, b) - 1
+                if i < 0 or _fold_d2b[i] != b:
+                    return None
+                return _fold_dstarts[i] + (o - _fold_fstarts[b])
+
+            def _fold_remap_spans(spans, slot):
+                # Char-offset span tuples (start, end, *rest) -> display
+                # coords, hidden spans dropped. Memoized per slot on (spans
+                # identity, fold layout identity) - both held in runtime so
+                # id reuse doesn't alias - because downstream memos (like
+                # usage-heat aggregation) key on the RESULT's id, so it must
+                # be stable frame to frame.
+                if not spans:
+                    return spans
+                _mms = getattr(ds, '_fold_span_memo', None)
+                if _mms is None:
+                    _mms = ds._fold_span_memo = {}
+                _mm = _mms.get(slot)
+                if (_mm is not None and _mm[0] is spans
+                        and _mm[1] is _fold_built):
+                    return _mm[2]
+                out = []
+                for sp in spans:
+                    s = _fold_off(sp[0])
+                    if s is None:
+                        continue
+                    e = _fold_off(sp[1])
+                    if e is None:
+                        e = s + (sp[1] - sp[0])   # span runs through the seam
+                    out.append((s, e) + tuple(sp[2:]))
+                out = tuple(out)
+                _mms[slot] = (spans, _fold_built, out)
+                return out
 
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
@@ -5730,6 +6042,15 @@ def draw_text(input_value: str, height=None,
     # unsaved disk edit above this span that changed the line count shifts
     # every site - fold that shift into the offset (0 when nothing is pending).
     _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
+
+    def _view_usage_spans(vpath):
+        """Usage spans in DISPLAY coordinates: always collected/resolved
+        against the FULL buffer (fold-independent, so the resolve caches stay
+        hot across collapse/expand), then projected through the fold remap
+        when folds are collapsed."""
+        spans = _usage_spans(ds, _fold_full, _usage_tree, _usage_off, vpath)
+        return (_fold_remap_spans(spans, 'usage')
+                if _fold_remap_spans is not None else spans)
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
@@ -5772,7 +6093,10 @@ def draw_text(input_value: str, height=None,
     if (Toggles.TextEditor.check_syntax_errors
             and Toggles.TextEditor.fast_syntax_check):
         _fs = getattr(ds, '_fast_err_state', None)
-        if _fs is not None and _fs[0] is input_value and _fs[1] is not None:
+        # Identity against the FULL buffer (_fold_full is input_value when no
+        # fold is collapsed): the fast check at the bottom always checks the
+        # full text, never the fold-spliced display text.
+        if _fs is not None and _fs[0] is _fold_full and _fs[1] is not None:
             _err_markers = _exception_errors(_fs[1])
             _fast_fresh_err = True
     # Import quick-fix bookkeeping. `_qf_fixes` maps line → candidate import
@@ -5803,7 +6127,7 @@ def draw_text(input_value: str, height=None,
     _active_fixes = import_fixes
     if Toggles.TextEditor.fast_syntax_check:
         _fi = getattr(ds, '_fast_imports_state', None)
-        if _fi is not None and _fi[0] is input_value and _fi[2] is import_fixes:
+        if _fi is not None and _fi[0] is _fold_full and _fi[2] is import_fixes:
             _active_fixes = _fi[1]
     _qf_fixes = {}
 
@@ -5821,6 +6145,18 @@ def draw_text(input_value: str, height=None,
             if _row:
                 _qf_fixes[_ln] = _row
                 _qf_names[_ln] = {n for n in (_import_bound_name(_s) for _s in _row) if n}
+    # Fold remap: markers and quick-fix rows carry 1-based FULL-buffer lines;
+    # project them onto the display. A marker on a hidden line clamps to its
+    # containing fold's line (the shadowed header shows something went wrong
+    # inside), and same-header quick-fix rows merge.
+    if _fold_bl is not None:
+        _err_markers = [(_fold_bl(l - 1) + 1, m) for l, m in _err_markers]
+        _rqf, _rqn = {}, {}
+        for _ln, _row in _qf_fixes.items():
+            _dl = _fold_bl(_ln - 1) + 1
+            _rqf.setdefault(_dl, []).extend(_row)
+            _rqn.setdefault(_dl, set()).update(_qf_names.get(_ln, ()))
+        _qf_fixes, _qf_names = _rqf, _rqn
     # Suppression (clearing _err_markers and _err_msg while keyboard editing) is
     # applied AFTER the keyboard recompute below, so it can read this frame's
     # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
@@ -5984,15 +6320,20 @@ def draw_text(input_value: str, height=None,
     # themselves are drawn in their own clip column at the end so
     # horizontally-scrolled code never slides underneath them.
     # Explicit per-line numbers (diff mode passes the real file line for each
-    # +/- line - they're non-contiguous, so no sequential offset can express
-    # them) take precedence over the jump_to.start sequential numbering.
-    # Explicit line_numbers force the gutter even for single_line buffers -
-    # global-search code rows pass their one file line this way so the number
-    # renders in the editor's own strip. jump_to.start numbering stays
-    # multi-line only (single-line inline value editors carry addresses too).
-    show_gutter = (not is_search_box
+    # +/- line — they're non-contiguous, so no sequential offset can express
+    # them) take priority over the jump_to.start sequential numbering.
+    # Folded buffers: display lines map to NON-contiguous buffer lines, so the
+    # sequential jump_to.start numbering would lie below a collapsed fold -
+    # hand the gutter the per-display-line numbers instead.
+    if _fold_d2b is not None:
+        if line_numbers is not None:
+            line_numbers = [line_numbers[b] if b < len(line_numbers) else None
+                            for b in _fold_d2b]
+        elif jump_to is not None and getattr(jump_to, 'start', None) is not None:
+            line_numbers = [jump_to.start + b + 1 for b in _fold_d2b]
+    show_gutter = (not single_line and not is_search_box
                    and (line_numbers is not None
-                        or (not single_line and jump_to is not None
+                        or (jump_to is not None
                             and getattr(jump_to, 'start', None) is not None)))
     if show_gutter and line_numbers is not None:
         line_offset = 0
@@ -6286,7 +6627,7 @@ def draw_text(input_value: str, height=None,
         # caret in the base chars → the base symbol; caret in the member chars
         # → only the dotted span contains it.
         _best = None
-        for _sp in _usage_spans(ds, text, _usage_tree, _usage_off, _vpath):
+        for _sp in _view_usage_spans(_vpath):
             _n_spans += 1
             if _sp[0] <= pos < _sp[1] and (_best is None
                                            or _sp[1] - _sp[0] < _best[1] - _best[0]):
@@ -6296,7 +6637,7 @@ def draw_text(input_value: str, height=None,
             _targets = _usage_jump_targets(
                 _su, at_def=_at_def,
                 view_path=_vpath,
-                view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
+                view_span=(_usage_off + 1, _usage_off + _fold_full.count('\n') + 1))
 
             if _targets and (len(_targets) > 1 or force_picker):
                 _items, _tags, _code = _usage_ref_items(_targets)
@@ -6345,10 +6686,9 @@ def draw_text(input_value: str, height=None,
             return False
         _l0 = _lss[line]
         _l1 = _lss[line + 1] if line + 1 < len(_lss) else len(text) + 1
-        _vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
+        _vspan = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
         _groups, _seen, _anchor, _names = {}, set(), None, {}
-        for _us, _ue, _su, _at_def in _usage_spans(ds, text, _usage_tree,
-                                                   _usage_off, _vpath):
+        for _us, _ue, _su, _at_def in _view_usage_spans(_vpath):
             if _us < _l0:
                 continue
             if _us >= _l1:
@@ -7660,8 +8000,37 @@ def draw_text(input_value: str, height=None,
 
         _k_dt = getattr(ds, "_def_tints_key", None)
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
-            ds, text, _usage_tree, _usage_off,
+            ds, _fold_full, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
+        # Fold remap: def tints resolve against the FULL buffer (keeps the
+        # last-good/anchor caches fold-independent); project the back into
+        # display coords. Blocks whose head line is visible keep their wash,
+        # with the extent clamped to the last visible line (a collapsed class
+        # still washes its header row); entries living entirely on hidden
+        # lines drop.
+        if _fold_bl is not None:
+            _rb = []
+            for _b_ln, _b_ix, _b_end, _b_tt in _dt_blocks:
+                _dl = _fold_bl(_b_ln)
+                if _fold_d2b[_dl] != _b_ln:
+                    continue
+                _dix = _fold_off(_b_ix)
+                if _dix is None:
+                    continue
+                _rb.append((_dl, _dix, _fold_bl(_b_end), _b_tt))
+            _dt_blocks = tuple(_rb)
+            _dt_spans = _fold_remap_spans(_dt_spans, 'dt')
+            _rl = []
+            for _l_ln, _l_rgb, _l_sc, _l_si, _l_ei in _dt_lines:
+                _dl = _fold_bl(_l_ln)
+                if _fold_d2b[_dl] != _l_ln:
+                    continue
+                _dsi, _dei = _fold_off(_l_si), _fold_off(_l_ei)
+                if _dsi is None:
+                    continue
+                _rl.append((_dl, _l_rgb, _l_sc, _dsi,
+                            _dei if _dei is not None else _dsi + (_l_ei - _l_si)))
+            _dt_lines = tuple(_rl)
         # Comment-text tints come from a direct scan of the buffer text - no
         # code_tree, no debounce, so a tint comment colors as it's typed
         # instead of waiting on the cst-dict round trip.
@@ -7994,12 +8363,12 @@ def draw_text(input_value: str, height=None,
     # buffer-indexed) and drawn in the gutter pass below.
     _u_vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
     _t_us = time.perf_counter()
-    _uspans = _usage_spans(ds, text, _usage_tree, _usage_off, _u_vpath)
+    _uspans = _view_usage_spans(_u_vpath)
     _pf_info['us_call_ms'] = round((time.perf_counter() - _t_us) * 1000.0, 1)
     _pf_info['us_n'] = len(_uspans)
     _usage_line_heat = {}
     if _uspans:
-        _u_vspan = (_usage_off + 1, _usage_off + text.count('\n') + 1)
+        _u_vspan = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
         # Visible band only: _uspans is sorted by start index
         # (_collect_usage_spans sorts), so bisect the on-screen character
         # range instead of walking every span in the file - the old loop
@@ -8821,6 +9190,70 @@ def draw_text(input_value: str, height=None,
         ds._lv_btn_pressed_line = None
         draw_list.pop_clip_rect()
 
+    # --- Fold badges + collapsed drop shadow ---------------------------------
+    # One badge per fold range at the end of its header line: expanded folds
+    # get a little down-chevron (click collapses), collapsed ones a small
+    # "N more lines" pill with a right-chevron (click expands) plus a shadow
+    # easing in downward over the line below - a cue that content is hidden
+    # under the header. Rects are stashed for NEXT frame's click handler at
+    # the top of the body (raw draw-list calls, same pattern as the
+    # live-view gutter buttons - a render_func per fold would be overkill).
+    ds._fold_badge_rects = []
+    if _fold_folds:
+        draw_list.push_clip_rect(left + gutter_w, rect_min_y,
+                                 left + ds.content_width, rect_max_y, True)
+        _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
+        for _rng, _dl, _fcol, _nh, _hlen, _fa, _fhl in _fold_folds:
+            _fy = origin_y + _dl * line_px
+            if _fy > rect_max_y or _fy + 2 * line_px < rect_min_y:
+                continue
+            _bx = origin_x + _hlen * char_w + char_w
+            if _fcol:
+                _lbl = f"{_nh} more line{'s' if _nh != 1 else ''}"
+                _bw = 16.0 + len(_lbl) * char_w + 8.0
+            else:
+                _lbl = None
+                _bw = 16.0
+            _fr = (_bx, _fy + 1.0, _bx + _bw, _fy + line_px - 1.0)
+            _fhov = (_fr[0] <= io.mouse_pos.x < _fr[2]
+                     and _fr[1] <= io.mouse_pos.y < _fr[3])
+            _ba = (0.16 if _fcol else 0.06) + (0.12 if _fhov else 0.0)
+            draw_list.add_rect_filled(
+                _fr[0], _fr[1], _fr[2], _fr[3],
+                imgui.get_color_u32_rgba(1.0, 1.0, 1.0, _ba), 4.0)
+            _fcc = imgui.get_color_u32_rgba(
+                0.9, 0.9, 0.9, 0.9 if _fhov else 0.55)
+            _fcx, _fcy = _fr[0] + 8.0, (_fr[1] + _fr[3]) * 0.5
+            if _fcol:
+                # right-pointing chevron: click to expand
+                draw_list.add_triangle_filled(_fcx - 2.5, _fcy - 4.0,
+                                              _fcx - 2.5, _fcy + 4.0,
+                                              _fcx + 3.5, _fcy, _fcc)
+                draw_list.add_text(_fr[0] + 16.0, _fy + _fm_y, _fcc, _lbl)
+            else:
+                # down-pointing chevron: click to collapse
+                draw_list.add_triangle_filled(_fcx - 4.0, _fcy - 2.5,
+                                              _fcx + 4.0, _fcy - 2.5,
+                                              _fcx, _fcy + 3.5, _fcc)
+            ds._fold_badge_rects.append((_fr, _rng))
+            if _fcol:
+                # Shadow easing in downward for one line under the collapsed
+                # header: three gradient rectangles give a quadratic falloff
+                # (multicolor rects only interpolate linearly).
+                _sy = _fy + line_px
+                _sa = 0.30
+                for _si in range(3):
+                    _t0, _t1 = _si / 3.0, (_si + 1) / 3.0
+                    _c0 = imgui.get_color_u32_rgba(
+                        0.0, 0.0, 0.0, _sa * (1.0 - _t0) ** 2)
+                    _c1 = imgui.get_color_u32_rgba(
+                        0.0, 0.0, 0.0, _sa * (1.0 - _t1) ** 2)
+                    draw_list.add_rect_filled_multicolor(
+                        left + gutter_w, _sy + _t0 * line_px,
+                        left + ds.content_width, _sy + _t1 * line_px,
+                        _c0, _c0, _c1, _c1)
+        draw_list.pop_clip_rect()
+
     if changed:
         text_height = (text.count('\n') + 1) * line_px + 2
     else:
@@ -9254,12 +9687,26 @@ def draw_text(input_value: str, height=None,
     # (the chain hands back the same cached object until it reparses). This holds
     # the message off for exactly the reparse gap, with no timing guess, and the
     # text-compare catches every edit including pure newline insertions.
+    # Reassemble the FULL text once for everything downstream: the fast
+    # syntax/import checks must never compile the fold-spliced display text
+    # (a collapsed def has no body - a guaranteed false syntax error), and
+    # the changed return hands the caller the full text. With no collapsed
+    # fold this is `text` unchanged, so the section below operates exactly as
+    # before.
+    if _fold_segments:
+        if changed:
+            _full_now, ds._fold_collapsed = _fold_reassemble(
+                original_input, text, _fold_segments, ds._fold_collapsed)
+        else:
+            _full_now = _fold_full
+    else:
+        _full_now = text
     _parse_pair = (error, code_tree)
     _prev_text = getattr(ds, '_err_prev_text', None)
     if _prev_text is None:
-        ds._err_prev_text = text                  # baseline on first render
-    elif text != _prev_text:
-        ds._err_prev_text = text
+        ds._err_prev_text = _full_now             # baseline on first render
+    elif _full_now != _prev_text:
+        ds._err_prev_text = _full_now
         if not getattr(ds, '_err_stale', False):
             ds._err_stale = True
             ds._err_stale_pair = _parse_pair       # this parse is now outdated
@@ -9275,9 +9722,9 @@ def draw_text(input_value: str, height=None,
                     and Toggles.TextEditor.fast_syntax_check
                     and syntax_highlight and jump_to is not None
                     and not single_line)
-        if _fast_ok and len(text) <= Toggles.TextEditor.fast_check_max_chars:
+        if _fast_ok and len(_full_now) <= Toggles.TextEditor.fast_check_max_chars:
             from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
-            ds._fast_err_state = (text, _compile_check(text))
+            ds._fast_err_state = (_full_now, _compile_check(_full_now))
             # Import-suggestion fast path (consumed by the quick-fix block up
             # top): a warm incremental scan is O(changed region) per keystroke
             # (~0.4ms). Gated on has_scan_state - a path's first scan is
@@ -9291,8 +9738,8 @@ def draw_text(input_value: str, height=None,
                     collect_import_suggestions, has_scan_state)
                 _fi_path = getattr(jump_to, 'path', None)
                 if has_scan_state(_fi_path):
-                    _fi_scan = collect_import_suggestions(text, path=_fi_path)
-                    ds._fast_imports_state = (text, _fi_scan or {}, import_fixes)
+                    _fi_scan = collect_import_suggestions(_full_now, path=_fi_path)
+                    ds._fast_imports_state = (_full_now, _fi_scan or {}, import_fixes)
                 else:
                     ds._fast_imports_state = None
             except Exception:
@@ -9316,7 +9763,7 @@ def draw_text(input_value: str, height=None,
             from src.lsd.gl_gui.view.core_conversion.new_converters import (
                 _region_compile_check)
             _r_status, _r_err, _r_span = _region_compile_check(
-                _prev_text, text, Toggles.TextEditor.fast_check_max_chars)
+                _prev_text, _full_now, Toggles.TextEditor.fast_check_max_chars)
             _held = getattr(ds, '_fast_err_state', None)
             _held_err = _held[1] if _held is not None else None
             # A held error OUTSIDE the edited span survives every outcome:
@@ -9334,13 +9781,13 @@ def draw_text(input_value: str, height=None,
                         _held_err.lineno = _ln + _dlt
                     _keep = _held_err
             if _r_status == "error":
-                ds._fast_err_state = (text, _r_err)
+                ds._fast_err_state = (_full_now, _r_err)
             elif _r_status == "ambiguous" and _held_err is not None:
                 # Same error re-type gets a fresh line mapping; a held
                 # error from ANOTHER region keeps the extraction artifact.
-                ds._fast_err_state = (text, _r_err if _inside else _keep)
+                ds._fast_err_state = (_full_now, _r_err if _inside else _keep)
             else:
-                ds._fast_err_state = (text, _keep)
+                ds._fast_err_state = (_full_now, _keep)
             # Import-suggestion fast path for over-cap buffers too: the
             # scanner's warm incremental step is O(changed region) regardless
             # of buffer size - only its full fallback (first scan, big paste,
@@ -9352,11 +9799,11 @@ def draw_text(input_value: str, height=None,
                 from src.lsd.gl_gui.view.core_conversion.code_checks import (
                     collect_import_suggestions, has_scan_state)
                 _fi_path = getattr(jump_to, 'path', None)
-                _fi_scan = (collect_import_suggestions(text, path=_fi_path,
+                _fi_scan = (collect_import_suggestions(_full_now, path=_fi_path,
                                                        incremental_only=True)
                             if has_scan_state(_fi_path) else None)
                 ds._fast_imports_state = (None if _fi_scan is None
-                                          else (text, _fi_scan, import_fixes))
+                                          else (_full_now, _fi_scan, import_fixes))
             except Exception:
                 ds._fast_imports_state = None
         else:
@@ -9408,5 +9855,9 @@ def draw_text(input_value: str, height=None,
             break
         _ptrace("editor CHANGED", name=ds.name, old_len=len(_old), new_len=len(text),
                 diff_at=_di, old=repr(_old[_di:_di + 24]), new=repr(text[_di:_di + 24]))
-        return True, text
-    return False, original_input
+        return True, _full_now
+    # Unchanged: hand back the FULL buffer, never the fold-spliced display
+    # text (original_input IS the display text while a fold is collapsed -
+    # returning it would drop every fold line if the wrapper propagates
+    # the unchanged).
+    return False, (_fold_full if _fold_segments else original_input)

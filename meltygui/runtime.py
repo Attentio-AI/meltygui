@@ -3490,17 +3490,6 @@ class Melty:
 
         Collisions.handle_collisions()
 
-        # Compare-split overlays (code editor ribbons/warnings/badges): must
-        # run AFTER the layer loop above - REGISTERED WINDOWS render via the
-        # deferred root_draw_states dispatch in that loop, and the dragged
-        # editor window's window_move handler (which updates window_pos)
-        # runs there. Any earlier call - the always-rendered root, or the
-        # top of end_frame - draws with the pre-drag position and offsets the
-        # window blit by one frame. Same territory the swoosh connectors
-        # draw in, for the same reason.
-        from src.lsd.gl_gui.view.playground.open_files import compare_overlay_sync
-        compare_overlay_sync()
-
         if Toggles.developer_mode:
             draw_notifications()
 

@@ -849,15 +849,15 @@ class Toggles:
         # alpha; Toggles.glow_intensity scales all glows globally).
         def_line_glow_intensity = 1.076
 
-        def_line_blur_radius = 304
+        def_line_blur_radius = 271
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
-        def_line_blur_alpha = 2.244
+        def_line_blur_alpha = 1.972
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 2.82
+        def_line_blur_falloff = 6.96
         # Perceived-brightness clamp on the BLURRED band's color only -
         # applied on top of the line_tint_* adjustment (which already ran
         # through bg_min/max), so the feathered glow can hold a different
@@ -1105,20 +1105,26 @@ class Toggles:
 
         # ── Compare-split ribbons (open_files._draw_compare_ribbons) ──
         # Block colors by kind. Read live per frame.
-        ribbon_insert_tint = (0.52, 0.92, 0.60)   # lines only in the copy
+        ribbon_insert_tint = (0.294, 0.675, 0.928)   # lines only in the buffer
         ribbon_delete_tint = (0.95, 0.42, 0.34)   # lines only in the reference
-        ribbon_replace_tint = (0.98, 0.76, 0.28)  # changed in place
+        ribbon_replace_tint = (0.294, 0.675, 0.928) # changed in place
         # Shared fill alpha for the block washes AND the seam band - same fill
         # so highlight → band → highlight reads as ONE continuous shape.
-        ribbon_fill_alpha = 0.18
+        ribbon_fill_alpha = 0.065
         # Boundary stroke around the whole shape (wash edges + S-curves).
-        ribbon_edge_alpha = 0.6
-        ribbon_edge_thickness = 2.0
+        ribbon_edge_alpha = 0.189
+        ribbon_edge_thickness = 0.042
         # Thin insertion line where a side has no rows (pure insert/delete).
-        ribbon_insertion_alpha = 0.85
-        ribbon_insertion_thickness = 2.5
+        ribbon_insertion_alpha = 0.237
+        ribbon_insertion_thickness = 1.046
         # Seam curve sampling (smoothstep slices).
-        ribbon_curve_steps = 12
+        ribbon_curve_steps = 16
+        # Take-arrow chips riding the swooshes (pull a block from the
+        # reference pane into the buffer): flat_buttons colored by the
+        # block's ribbon tint - hover boost and text color come from
+        # flat_button's own pipeline.
+        take_arrow_size = 20.6
+        take_arrow_alpha = 0.7
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
@@ -1269,7 +1275,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 4
     # Master strength of the glow light at composite time.
-    glow_strength = 0.522
+    glow_strength = 0.943
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),

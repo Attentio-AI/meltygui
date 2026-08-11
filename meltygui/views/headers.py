@@ -250,12 +250,12 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
         imgui.text_colored("", 0.74, 0.5, 0.5, 1.0)
 
 
-@window
+@window(tint=(0.0, 0.335, 0.772, 1.0))
 def flat_button(label, draw_state, view_id, width=None, height=None,
                 color=(0.533, 0.068, 0.5), tint_value=0.16, text_value=1.023,
                 factor=1.0, saturation=1.2, text_saturation=0.8, alpha=1.0,
                 corner_radius=6.0, text_pad=15, hover_boost=0.05,
-                hover_text_boost=1.5, max_bg_brightness=0.25,
+                hover_text_boost=2.2, max_bg_brightness=0.25,
                 event="left_mouse_clicked", text_offset_x=None,
                 style_manager=None, layout=True, draw_list=None,
                 shadow=True, **kwargs):

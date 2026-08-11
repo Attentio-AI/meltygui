@@ -265,7 +265,14 @@ def window_edge_pass(window):
             window._pending_drags.append((e, e["x"] + inc))
     totals = getattr(window, "_drag_totals", None)
     if totals:
-        for h in [h for h in totals if h not in seen_handles]:
+        # Purge ONLY our own "win_*" namespace: when a ColumnLayout host ds
+        # IS the window (code review compare split), its int handles live in
+        # this same dict - deleting them here resets the divider to the
+        # baseline every frame, so every frame re-applies the FULL total_dx
+        # and the edge flings away from the cursor.
+        for h in [h for h in totals
+                  if isinstance(h, str) and h.startswith("win_")
+                  and h not in seen_handles]:
             del totals[h]
 
     moved = _solve_collisions(window)
@@ -497,7 +504,11 @@ class ColumnLayout:
 
             totals = getattr(draw_state, "_drag_totals", None)
             if totals:
-                for h in [h for h in totals if h not in seen_handles]:
+                # Mirror of the window_edge_pass prune scoping: our handles
+                # are the int edge indices; leave the window's "frame total"
+                # baselines alone (same dict when the host ds IS the window).
+                for h in [h for h in totals
+                          if isinstance(h, int) and h not in seen_handles]:
                     del totals[h]
             if self.active_edge is not None:
                 # size-changing views already update live (see the re-solve

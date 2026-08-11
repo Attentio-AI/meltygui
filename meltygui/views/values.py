@@ -24,7 +24,8 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, ExpandMode
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, \
+    ExpandMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.notifications import display
@@ -65,7 +66,6 @@ from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_v
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
-
 
 
 @render_func(use_cache=True, show_bg=True, width=20, height=22, tile_mode=TileMode.MAX,
@@ -226,7 +226,8 @@ def _fuzzy_key_match(q, k):
 # `file` (optional) = the BASENAME of the file the hit lives in, drawn as a
 # dim suffix after the label (skipped on Files rows — there the label IS the
 # file). Display-only: label keeps the full identity/match text.
-SearchHit = namedtuple("SearchHit", "label tint activate kind match state keep_open set_state icon parts goto code_row file",
+SearchHit = namedtuple("SearchHit",
+                       "label tint activate kind match state keep_open set_state icon parts goto code_row file",
                        defaults=("", None, None, False, None, None, None, None, None, None))
 
 # The combined meta-category: every category's best hits interleaved
@@ -241,22 +242,22 @@ def _search_cats(extra_kinds=()):
     cats += [k for k in extra_kinds if k not in cats]
     return cats
 
+
 _WINDOW_CAT_TINT = (0.55, 0.9, 0.65)
 _FILE_CAT_TINT = (0.72, 0.62, 0.35)
 _TEXT_CAT_TINT = (0.38, 0.68, 0.72)
 _TOGGLE_CAT_TINT = (0.63, 0.47, 0.86)
 _ACTION_CAT_TINT = (0.92, 0.58, 0.25)
 
-
 # FontAwesome glyphs (merged into the UI fonts) shown before a search
 # row's label. A hit's own icon (e.g. an action's @defaults icon) wins.
 _CATEGORY_ICONS = {
-    "Toggles": "",    # sliders
-    "Actions": "",    # bolt
-    "Windows": "",    # window-maximize
-    "Files": "",      # file
-    "Text": "",       # align-left
-    "Classes": "",    # cube
+    "Toggles": "",  # sliders
+    "Actions": "",  # bolt
+    "Windows": "",  # window-maximize
+    "Files": "",  # file
+    "Text": "",  # align-left
+    "Classes": "",  # cube
     "Functions": "",  # code
 }
 
@@ -518,6 +519,7 @@ def _jump_to_symbol_def(obj, path):
         if open_files is not None and active[0] == str(path):
             open_files.jump_to_line = line
             request_render()
+
     threading.Thread(target=_go, daemon=True, name="search-symbol-jump").start()
 
 
@@ -527,6 +529,7 @@ def _jump_to_symbol_def(obj, path):
 # so an identity memo would re-sweep (and wipe its class-tint memo) every 5s
 # mid-typing; the content key only rebuilds when a module actually (un)loads.
 _symbol_hits_memo = (None, None)
+
 
 @search_index
 def symbol_index():
@@ -717,7 +720,6 @@ def _text_hit(row, show_path=False):
         return [(t, c, wash) for t, c in toks]
 
     code_row = None
-    hit_file = None
     if kind == "file":
         parts = [(os.path.basename(rel), None, None)]
         if show_path:
@@ -726,21 +728,16 @@ def _text_hit(row, show_path=False):
     elif kind == "symbol":
         # `text` is the RAW def line (indent kept) - draw_text maps the
         # file's tree-derived washes by column, so the code must match.
-        # Location lives on `file` (drawn dim at the row's far right); the
-        # line path renders in the editor's own gutter, not as a suffix.
-        code_row = (row["path"], line, "", text[:200], "")
+        code_row = (row["path"], line, "", text[:200], f"{loc}:{line}")
         parts = _tokens(disp[:90]) + [(f"   {loc}:{line}", COLORS["line_no"], None)]
         label = f"{disp[:90]} - {rel}:{line}"
-        hit_file = loc
     else:
-        code_row = (row["path"], line, "", text[:200], "")
+        code_row = (row["path"], line, f"{loc}:{line}: ", text[:200], "")
         parts = [(f"{loc}:{line}: ", None, None)] + _tokens(disp[:90])
         label = f"{rel}:{line}: {disp[:90]}"
-        hit_file = loc
     return SearchHit(label, tint,
                      (lambda p=row["path"], l=line: _jump_to_text_hit(p, l)),
-                     kind="Text", match=text, parts=parts, code_row=code_row,
-                     file=hit_file)
+                     kind="Text", match=text, parts=parts, code_row=code_row)
 
 
 def _kick_text_search(q):
@@ -752,7 +749,7 @@ def _kick_text_search(q):
     GlobalSearch._text_query = q
     GlobalSearch._text_gen += 1
     gen = GlobalSearch._text_gen
-    if len(q) < 3:                      # below the trigram minimum
+    if len(q) < 3:  # below the trigram minimum
         GlobalSearch.text_results = []
         return
 
@@ -885,6 +882,7 @@ def _jump_to_setting_def(setting_path):
         if open_files is not None and active[0] == str(path):
             open_files.jump_to_line = line
             request_render()
+
     threading.Thread(target=_go, daemon=True, name="search-setting-jump").start()
 
 
@@ -1321,7 +1319,7 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     if getattr(tab_state, "tab_icons", None) is None:
         tab_state.tab_icons = {}
     icons = [tab_state.tab_icons.get(t) for t in tabs]
-    
+
     indent_size = 6
     imgui.dummy(0, 5)
     spacing = 8
@@ -1403,7 +1401,7 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
             content_extra["use_cache"] = True
             tab_content_changed, value, child_ds = draw_any(input_value[key], name=f"{tab}",
                                                             disable_scroll=False, indent_size=indent_size,
-                                                             return_extras=True,
+                                                            return_extras=True,
                                                             **content_extra)
             if child_ds is not None:
                 # Membership follows multi-select: cleared when only one tab
@@ -1679,7 +1677,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     start_index = 0
     end_index = min(len(keys) - 1, max_items)
 
-
     scroll_offset = draw_state.scroll_offset
     true_left = draw_state.left - scroll_offset[0]
     true_top = draw_state.top - scroll_offset[1]
@@ -1763,7 +1760,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         else:
             key_str = str(key)
 
-
         if not show_excluded and hasattr(type(input_value), "__excluded_attrs__"):
             if not Toggles.show_excluded:
                 if key_str in type(input_value).__excluded_attrs__ and key_str not in included:
@@ -1809,7 +1805,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                 'annotation': parent_annotations.get(key, item_annotation),
                 'y_offset': y_offset,
                 'mode': mode,
-                'wrap':wrap,
+                'wrap': wrap,
                 'search_match': key_is_match,
                 'search_current': key_is_current,
             }
@@ -1946,7 +1942,6 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
                     del input_value[_i]
                     changed = True
 
-
     # When navigation just happened, scroll the current key into view.
     # draw_collection disables its own scroll, so _scroll_into_view walks up to
     # the real scroll container. (A current match inside a child is scrolled by
@@ -2014,7 +2009,7 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
         else:
             return False, input_value
 
-    return changed, input_value  
+    return changed, input_value
 
 
 def main_header(input_value, name, **kwargs):
@@ -2026,7 +2021,6 @@ def draw_property(input_value: property, draw_state, **kwargs):
     imgui.text_colored(f"Property: {input_value.fget.__name__}", 1.0, 0.5, 0.0, 1.0)
     # value = input_value.fget(input_value)
     # draw_any(value, name="Value", show_bg=True, draw_state=draw_state)
-
 
 
 @render_func(is_lens_for=(type), skip_draw=True)
@@ -2090,8 +2084,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # editor also inserts a newline, which used to be invisible when every
     # activation dismissed and cleared the box, and shows up now that toggle
     # rows keep the search visible.
-    box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False, show_bg=False,
-                    font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False, is_search_box=True,
+    box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False,
+                    show_bg=False,
+                    font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False,
+                    is_search_box=True,
                     single_line=True, return_extras=True)
     changed, new_query = box[0], box[1]
     box_ds = box[2] if len(box) > 2 else None
@@ -2231,7 +2227,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             input_value.selected = 0
             request_render()
         vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
-            - sum(1 for k, _m in keys if k == glfw.KEY_UP)
+                - sum(1 for k, _m in keys if k == glfw.KEY_UP)
         if vstep and n_rows:
             input_value.selected = (input_value.selected + vstep) % n_rows
             request_render()
@@ -2534,11 +2530,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # code_row hits render their code through the REAL editor: draw_text
         # with the file's live cst-dict parse and a jump_to line-offset shim,
         # so washes/token colors are pixel-identical to the jump target. The
-        # line number renders in the editor's own gutter (line_numbers=[...]),
-        # the file name right-aligns like every other row (hit.file - space
-        # reserved out of the editor width below); a higher-priority click
-        # sub below reclaims activation from the editor's own caret sub (the
-        # default close-button sub). parts stays as the fallback plan.
+        # raw location prefix/suffix frames it; a higher-priority click sub
+        # here reclaims activation from the editor's own caret sub (the tab
+        # close-button pattern). parts stays as a fallback plan.
         _cr = getattr(hit, "code_row", None)
         _cr_drawn = False
         if _cr is not None:
@@ -2548,10 +2542,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 dl.add_text(text_x, _ty, _row_col, _cpre)
                 text_x += imgui.calc_text_size(_cpre)[0]
             _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
-            _fw_r = ((imgui.calc_text_size(_row_file)[0] + 12.0)
-                     if _row_file else 0.0)
-            _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0)
-                      - _fw_r - text_x)
+            _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0) - text_x)
             # Offscreen row: skip the draw_text call entirely (each one-line
             # editor body costs real wrapper time - with many rows scrolled
             # out of the window band it added up) and reserve the space with
@@ -2560,11 +2551,6 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             _win_top = draw_state.abs_top
             _win_bot = _win_top + (draw_state.height or 0)
             if ry + ROW_H <= _win_top or ry >= _win_bot:
-                _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
-                _fw_r = ((imgui.calc_text_size(_row_file)[0] + 12.0)
-                         if _row_file else 0.0)
-                _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0)
-                          - _fw_r - text_x)
                 imgui.set_cursor_screen_pos((text_x, ry))
                 imgui.dummy(_cw, ROW_H)
                 continue
@@ -2581,17 +2567,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 # window composite (def-tint washes lost the flip until a
                 # hover forced new renders). If washes go stale again, this
                 # toggle is the knob.
-                # line_numbers puts the file line in the editor's own gutter
-                # (same strip a full editor draws); tint (the row's file
-                # tint) overrides the wrapper's imgui-tint state, so the bg and
-                # gutter colors resolve exactly like any other tinted
-                # draw_text call.
                 _res = draw_text(_ccode, name=f"gs_code_row_{idx}", unique=idx,
                                  show_header=False, show_bg=False, shadow=False,
                                  single_line=True, width=_cw, height=ROW_H,
                                  use_cache=True, code_dict=_cdict,
                                  jump_to=_RowSpan(_cl - 1), is_tree=False, z_offset=2,
-                                 show_jump_bar=False, line_numbers=[_cl], tint=tint,
+                                 show_jump_bar=False,
                                  selectable=False, return_extras=True)
                 if _chost is not None:
                     # Repaint when the background parse lands (washes pop in).
@@ -2788,8 +2769,6 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text=
     return changed, value
 
 
-
-
 @render_func
 def draw_draw_state(input_value, **kwargs):
     pass
@@ -2981,10 +2960,10 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             def _hotkey_recompile():
                 from src.lsd.gl_gui.notifications import notify
                 notify(PendingSave.recompile_all_ui())
+
             threading.Thread(target=_hotkey_recompile, daemon=True,
                              name="ctrl_enter_recompile").start()
             request_render()
-
 
     # Ctrl+F root fallback: the per-view Ctrl+F (core_render's searchable
     # block) only registers while the view actually RENDERS - a fully
@@ -3062,13 +3041,13 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 node = _box
                 while target is None:
                     if getattr(node, 'search_active', False):
-                        target = node          # in-header box: nothing above it
+                        target = node  # in the box: owner above it
                         break
                     p = node._parent
                     if p is node or p is None:
                         rv = getattr(node, '_raw_input_value', None)
                         if isinstance(rv, DrawState) and getattr(rv, 'search_active', False):
-                            target = rv        # floating Find window root
+                            target = rv  # floating Find window it
                         break
                     node = p
             if target is None and _chain:
@@ -3086,7 +3065,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             # Multiple find bars may stay open at once: opening a view's search
             # no longer closes whichever view's search was already open.
             target.search_active = True
-            target._search_was_active = False     # find box re-claims focus
+            target._search_was_active = False  # find box re-claims focus
             # Keep the open popover (color picker / dropdown) alive: it isn't in
             # target's ancestor closure, so a bare clear_focus(not_this=target)
             # closes it on every Ctrl+F. Popovers close on outside click /
@@ -3209,7 +3188,6 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 window_func = kwargs.pop("view_func", code_file_io)
                 window_func(window_cls, **kwargs)
 
-
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
     #
@@ -3268,7 +3246,6 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     else:
         normalized_sub_mask = numpy.uint32(Core.melty.cache._full_mask_tex or 0)
 
-
     draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
              max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
 
@@ -3315,7 +3292,6 @@ name_edits = {}
 code_export_str = "Test"
 
 
-
 # Main draw function, called by the GUI framework
 
 @live
@@ -3335,7 +3311,6 @@ def draw_melty_windows(vis):
              imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS)
 
     # style.frame_padding = (4, 2)
-
 
     imgui.set_next_window_position(0, 0)
     # Fill the entire screen
@@ -3388,7 +3363,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state):
         height = max_size
         width = int(max_size * input_value.tex_width / input_value.tex_height)
 
-    return_val = draw_texture(input_value.texture_id, initial={"width":width, "height":height},
+    return_val = draw_texture(input_value.texture_id, initial={"width": width, "height": height},
                               name=f"{draw_state.id}_inner", auto_resize=False,
                               show_header=False, use_cache=True, wrap=False, tint=(0.11, 0.29, 0.52))
 
@@ -3799,9 +3774,10 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
             Core.melty.summon_window(window_draw_state, this_window_right + 10, draw_state.abs_top)
             Core.melty.cache.invalidate_up_by_obj(input_value)
     else:
-        if button(f"{name}", saturation=1.315, z_offset=4, color=window_tint, factor=0.659, value=-0.205, text_value=1.357,
-                  width=draw_state.content_width - target_spacing, height=button_height,
-                  search_match=_search_match, search_current=_search_current)[0]:
+        if \
+        button(f"{name}", saturation=1.315, z_offset=4, color=window_tint, factor=0.659, value=-0.205, text_value=1.357,
+               width=draw_state.content_width - target_spacing, height=button_height,
+               search_match=_search_match, search_current=_search_current)[0]:
             window_draw_state.closed = True
 
     imgui.same_line()
@@ -3809,9 +3785,10 @@ def draw_managed_window(input_value, name, draw_state, mouse_down=False, selecta
     if window_tint is None or not isinstance(window_tint, tuple) or len(window_tint) < 3:
         window_tint = (2.558, 0.5, 0.5)
 
-    imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width-20, draw_state.abs_top))
+    imgui.set_cursor_screen_pos((draw_state.abs_left + draw_state.content_width - 20, draw_state.abs_top))
     target_icon = ""  # Target icon (FontAwesome Unicode)
-    if  button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=2, tint_value=target_tint_value,
+    if \
+    button(f"{target_icon}##{name}", height=button_height, color=window_tint, z_offset=2, tint_value=target_tint_value,
            factor=0.799,
            saturation=0.764, shadow=False)[0]:
         this_window_right = draw_state.abs_left + draw_state.width
@@ -3983,9 +3960,10 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
                                       col=imgui.get_color_u32_rgba(*color), rounding=4.0)
 
             if opacity > 0:
-                Core.melty.cache.mask_mark_rect(draw_state, Core.melty.max_depth - 1, draw_state.shadow_depth, left, top, width,
-                                           height,
-                                           key=f"{left}x{top}_flow")
+                Core.melty.cache.mask_mark_rect(draw_state, Core.melty.max_depth - 1, draw_state.shadow_depth, left,
+                                                top, width,
+                                                height,
+                                                key=f"{left}x{top}_flow")
             #
             # draw_list.add_line(draw_state.left, draw_state.abs_top - 2 - offset,
             #                    draw_state.left + draw_state.width,
@@ -4158,6 +4136,7 @@ def test_func():
                  "key_2": 2.421
                  }
 
+
 def _clamp_bg_value(color, max_bg_value):
     """Cap a background color's VALUE (max channel, as in HSV) at `max_bg_value`,
     keeping hue exact and BOOSTING saturation by the same factor the value was
@@ -4235,7 +4214,6 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False, max_bg_depth=None,
     max_depth_intensity = 0.652
     depth_intensity = min(depth_intensity, max_depth_intensity)
 
-
     # ── Outline color ──────────────────────────────────────────
     depth_mul = outline_depth_mul
     if not nested_bg:
@@ -4255,6 +4233,7 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False, max_bg_depth=None,
 
     return _clamp_bg_value(bg_color, max_bg_value)
 
+
 @window
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
@@ -4265,7 +4244,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     min_value = -0.272
     depth_wrap = 300
     depth_scale = 2.713
-   
+
     # [tint=(2,1,1)]
     corner_radius = rounding
     border_inset = 2.802
@@ -4402,15 +4381,15 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     return False, bg_color
 
 
-
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
              min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None)
-def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left_mouse_held=False, shadow=True, left_mouse_down=False,
-           color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None, show_button_bg=True,
+def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left_mouse_held=False, shadow=True,
+           left_mouse_down=False,
+           color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None,
+           show_button_bg=True,
            factor=1.0, tint_value=0.16, text_value=1.023, saturation=1.2, text_saturation=0.8, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15,
            max_bg_brightness=0.25):
-
     if color is not None:
         if not isinstance(color, tuple) or len(color) < 3:
             color = (2.558, 0.5, 0.5)
@@ -4433,7 +4412,8 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
         # contrast even when a vivid/near-white color is passed in.
         mixed_color = _brightness_clamp(mixed_color[0], mixed_color[1], mixed_color[2],
                                         0.0, max_bg_brightness)
-        text_color = style_manager.make_color_rgb(color[0], color[1], color[2], value=text_value + (1.5 if hovered else 0.0),
+        text_color = style_manager.make_color_rgb(color[0], color[1], color[2],
+                                                  value=text_value + (1.5 if hovered else 0.0),
                                                   factor=factor, saturation_scale=text_saturation, alpha=1.0)
     else:
         text_color = (1.0, 1.0, 1.0)
@@ -4458,7 +4438,6 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
 
     # draw_state.width = btn_size[0]
     # draw_state.height = btn_size[1]
-
 
     bx1, by1 = bx0 + width, by0 + height
     # `corner_radius` is an auto-state param: Mode / class defaults, internal
@@ -4504,7 +4483,6 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
         draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
-
 
     if left_mouse_down:
         request_render()
@@ -4552,7 +4530,7 @@ def draw_none(input_value: NoneType):
 
 
 @render_func(is_default_for=(bool), use_cache=True,
-             is_tree=False, min_width=83, shadow=False, 
+             is_tree=False, min_width=83, shadow=False,
              with_header=draw_header, temp=True)
 def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=359,
               max_height=100, min_height=20, header_same_line=True,
@@ -4562,7 +4540,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
     box_h = 21
     text_inset = 11
     cursor_start = imgui.get_cursor_pos_x()
-    
+
     if input_value:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), 1.0)
         text_color = (*Tint.checkbox_text_true(), 1.0)
@@ -4571,7 +4549,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
         text_color = (*Tint.checkbox_text(), 0.45)
         icon = f""
-    
+
     label = f"{icon} {input_value}"
     icon_w = imgui.calc_text_size(icon)[0]
     label_w = imgui.calc_text_size(label)[0]
@@ -4632,7 +4610,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
     if compact:
         # Center just the icon inside the square (which spans [left_margin, width]).
         box_w = width - left_margin
-        imgui.same_line(left_margin + (box_w - icon_w) / 2.0 + right_offset + 1 )
+        imgui.same_line(left_margin + (box_w - icon_w) / 2.0 + right_offset + 1)
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         imgui.text_colored(icon, *text_color)
     else:
@@ -4645,8 +4623,6 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
         return True, not input_value
     else:
         return False, input_value
-
-
 
 
 @render_func(is_default_for=(str), shadow=False, wrap_text=False, show_bg=False, is_tree=False, wrap=False,
@@ -4674,8 +4650,6 @@ def text(input_value: str, wrap, wrap_text=False, text_color=(1, 1, 1), draw_sta
             imgui.text_colored(str(input_value), text_color[0], text_color[1], text_color[2], 1.0)
         else:
             imgui.text(str(input_value))
-
-
 
     if font is not None:
         imgui.pop_font()
@@ -4731,8 +4705,8 @@ def draw_str(input_value: str, draw_state, editable=True, wrap=False, min_width=
                                               flags=imgui.INPUT_TEXT_ENTER_RETURNS_TRUE)
     else:
         # disable scrolling
-        changed, value = draw_text(str(input_value), name=draw_state.name +"##innder", show_bg=True,
-                                    editable=True, with_header=draw_header, width=draw_state.content_width - 10,
+        changed, value = draw_text(str(input_value), name=draw_state.name + "##innder", show_bg=True,
+                                   editable=True, with_header=draw_header, width=draw_state.content_width - 10,
                                    show_name=False, is_tree=False, temp=True)
 
     if not show_controls:
@@ -4925,7 +4899,7 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
     changed = False
     tints = source_tints or {}
     locations = source_locations or {}
-    plus_icon = "\uf067"   # FA plus -- explicit escape, see jump_to.py
+    plus_icon = "\uf067"  # FA plus -- explicit escape, see jump_to.py
     times_icon = ""  # FA times -- explicit escape, see jump_to.py
     folder_icon = "\uf07b"  # FA folder -- explicit escape, see jump_to.py
 
@@ -5107,8 +5081,9 @@ def draw_usage(input_value: UsageRef):
     return False, input_value
 
 
-@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded":False}, icon="",
-             is_tree=True, show_name=False, indent_size=8, selectable=False, use_cache=False, tint=(0.137, 0.683, 0.299, 0.708),
+@render_func(is_default_for=(Comment), shadow=False, header_same_line=True, initial={"expanded": False}, icon="",
+             is_tree=True, show_name=False, indent_size=8, selectable=False, use_cache=False,
+             tint=(0.137, 0.683, 0.299, 0.708),
              show_bg=False, with_header=draw_header, temp=False, expanded_mode=ExpandMode.MANUAL)
 def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=False, font=Font.JETBRAINS_MONO_13):
     changed, value = False, input_value
@@ -5116,7 +5091,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     imgui.dummy(0, 0)
     depth = max(0.3, Core.melty.bg_depth)
     depth_scale = 0.047
-    
+
     # [tint=(0.883, 0.712, 0.206, 0.34)]
     name_style = {
         'value': -0.420, 'saturation': 1.06,
@@ -5125,24 +5100,23 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     }
     depth_intensity = float(depth) * depth_scale
     name_style['value'] = depth_intensity * name_style['depth_factor'] + name_style['value']
-    
+
     # [tint=(0.767, 0.379, 0.379)]
     alpha = 1.02
-    
-    
+
     sat_depth_factor = 0.0
     sat_depth_offset = 0.188
     sat_shift = float(depth + sat_depth_offset) * sat_depth_factor
     name_style['saturation'] = name_style['saturation'] + sat_shift
 
     name_color = style_manager.make_color_style_value(input=name_style)
-    
+
     # A grouped multi-line comment is a '\n'-joined run of '# ' lines; strip the
     # '#'/'# ' prefix from EACH line so it displays as clean prose, not just the
     # first (str[2:] would leave a stray '#' on every continuation line).
     def _strip_hash(ln):
         return ln[2:] if ln.startswith("# ") else (ln[1:] if ln.startswith("#") else ln)
-        
+
     display = "\n".join(_strip_hash(ln) for ln in str(input_value).split("\n"))
 
     # The framework header (is_tree=True) owns the expand/collapse button.
@@ -5189,7 +5163,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     and a driven value can echo back quantized (save/parse round trip, %.3f
     drag rounding) — so when the incoming value is just an echo of our own
     edit, we resume from the cache instead of re-deriving."""
-    imgui.dummy(0,3)
+    imgui.dummy(0, 3)
     vals = list(input_value)
     has_alpha = len(vals) >= 4
     r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
@@ -5300,7 +5274,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
         # Keep `cur` verbatim unless this row was actually dragged - the
         # returned value can differ from format rounding even if untouched.
         out.append(min(max(nv, 0.0), 1.0) if ch else cur)
-        imgui.dummy(0,1)
+        imgui.dummy(0, 1)
     imgui.pop_item_width()
     r, g, b = out[0], out[1], out[2]
     if has_alpha:
@@ -5311,7 +5285,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     hex_str = (f"#{ri:02x}{gi:02x}{bi:02x}{int(round(a * 255)):02x}"
                if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
 
-    if button("", tint=(1,0,0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+    if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
         request_render()
         return True, None
     imgui.same_line()
@@ -5350,7 +5324,9 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     return False, input_value
 
 
-@render_func(is_default_for=('tint', 'help_yellow_tint', 'color', 'context_select_tint', "text_color", "gradient_color", "outline_color"), has_popup=True,
+@render_func(is_default_for=(
+'tint', 'help_yellow_tint', 'color', 'context_select_tint', "text_color", "gradient_color", "outline_color"),
+             has_popup=True,
              indent_size=2, is_tree=False, align_header=True, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
 def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, outline=False,
@@ -5368,8 +5344,9 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
         # the widget back onto the header's line.
         if not draw_state.multi_line:
             imgui.same_line(spacing=4)
-        if button("", height=21, shadow=False, z_offset=0, corner_radius=4, tint=(0,0,0, 0.1
-        ), tint_value=0.14, use_cache=True, show_bg=True, text_pad=7,  name=f"add_tuple##{unique}",
+        if button("", height=21, shadow=False, z_offset=0, corner_radius=4, tint=(0, 0, 0, 0.1
+                                                                                   ), tint_value=0.14, use_cache=True,
+                  show_bg=True, text_pad=7, name=f"add_tuple##{unique}",
                   show_button_bg=True)[0]:
             input_value = (0.0, 0.0, 0.0, 1.0)
             request_render()
@@ -5379,7 +5356,8 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
         # if not draw_state.multi_line:
         #     imgui.same_line(spacing=4)
 
-        is_color = input_value is not None and isinstance(input_value, tuple) and len(input_value) in (3, 4) and all(isinstance(c, (float, int)) for c in input_value)
+        is_color = input_value is not None and isinstance(input_value, tuple) and len(input_value) in (3, 4) and all(
+            isinstance(c, (float, int)) for c in input_value)
         if is_color:
             # A swatch trigger that opens our own colour-picker popover (replacing
             # imgui's built-in popup). Same popover pattern as the dropdown: identity
@@ -5436,8 +5414,9 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
     if _anchor_y + _pop_y + picker_h > _disp_h - 10:
         _pop_y = -(picker_h + 38)
     color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
-                                            closed=not is_open, window_pos=(0, _pop_y), info=_info,
-                                            parent_window=draw_state, width=216, height=picker_h, mode=Modes.POPOVER)
+                                                 closed=not is_open, window_pos=(0, _pop_y), info=_info,
+                                                 parent_window=draw_state, width=216, height=picker_h,
+                                                 mode=Modes.POPOVER)
     if is_open:
         if color_changed:
             if new_color is not None:
@@ -5460,7 +5439,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
         if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
             Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
             request_render()
-                
+
     # elif input_value is not None and len(input_value) > 0 and isinstance(input_value[0], (float, int)):
     #     str_value = ", ".join([str(v) for v in input_value])
     #     ch, input_str = imgui.input_text("##tuple", str_value)
@@ -5513,7 +5492,6 @@ def draw_float(input_value: float,
                min_value=-98.703,
                max_value=99.264,
                speed=0.0042):
-
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
     else:
@@ -5637,7 +5615,7 @@ def eval_function(input_value, draw_state):
 
 
 @render_func(is_default_for="LSDStudio", show_bg=True,
-             auto_resize=True, min_width=218,tint=(0.6, 0.2, 0.8),
+             auto_resize=True, min_width=218, tint=(0.6, 0.2, 0.8),
              with_header=draw_header)
 def draw_lsd_studio(input_val):
     imgui.text("An LSD Studio Instance")
@@ -5646,7 +5624,7 @@ def draw_lsd_studio(input_val):
 @render_func(is_default_for="ImGuiStyleManager", tint=(0.8, 0.7, 0), use_cache=True, with_header=None)
 def draw_style_manager(input_val):
     imgui.text("Style Manager")
-   
+
     return False, input_val
 
 
@@ -5659,6 +5637,7 @@ def draw_vis(input_val):
 @render_func(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
 def draw_app_model(input_val):
     imgui.text("An App Model Instance")
+
 
 def _format_run_error(exc):
     """One compact, UI-ready error: `Type: message`, then the deepest
@@ -5681,7 +5660,7 @@ def _format_run_error(exc):
     return text
 
 
-@render_func(is_default_for=(types.FunctionType, types.MethodType), z_offset=0, use_cache=True, 
+@render_func(is_default_for=(types.FunctionType, types.MethodType), z_offset=0, use_cache=True,
              show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
 def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=False,
@@ -5728,11 +5707,13 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             draw_state.params = param_dict
         if len(draw_state.params) > 0:
             from src.lsd.gl_gui.view.mode import Mode
-            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded":True}, use_cache=True,
+            changed, new_val = draw_collection(draw_state.params, name="Parameters", initial={"expanded": True},
+                                               use_cache=True,
                                                mode=Mode.FUNCTION_PARAMS,
-                                               show_add_delete=False, shadow=True, z_offset=1, parent_show_add_delete=False, 
+                                               show_add_delete=False, shadow=True, z_offset=1,
+                                               parent_show_add_delete=False,
                                                horizontal=False, wrap=wrap,
-                                               child_kwargs={"max_width": 397, "shadow":False,
+                                               child_kwargs={"max_width": 397, "shadow": False,
                                                              "show_bg": False, "use_cache": True, "z_offset": 0.0
                                                              }, tint=(0.34, 0.40, 0.45))
             if changed:
@@ -5809,7 +5790,6 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
         draw_state.misc["_auto_run_ver"] = auto_run
         _run()
 
-
     imgui.new_line()
     if show_run_button and button(f"Run {input_value.__name__}()##{unique}", icon=kwargs.get("icon", ""), height=35,
                                   bg_offset=0, tint=(0.499, 0.844, 0.488, 0.32), shadow=True, rounding=None)[0]:
@@ -5859,7 +5839,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
                                               and isinstance(draw_state.result, str)):
         imgui.text_colored(" Result", *(1.0, 1.0, 1.0, 0.5))
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() - 15)
-        draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False, 
+        draw_any(draw_state.result, name="Result", header_same_line=True, show_header=False,
                  show_add_delete=False)
 
     # pop_style_var(3)
@@ -5870,7 +5850,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 @render_func(is_default_for=(int), shadow=False, use_cache=False, wrap=False,
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_int(input_value: int, draw_state=None, max_height=100, min_height=20,
-             min_width=80, wrap=False, min_value=-1000.0, 
+             min_width=80, wrap=False, min_value=-1000.0,
              max_value=1000.0, speed=0.1, unique=0):
     if not wrap:
         imgui.set_next_item_width(draw_state.content_width)
@@ -5913,8 +5893,9 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
     else:
 
         names = [opt.name.replace("_", " ").capitalize() for opt in options]
-        changed, selected = draw_tab_bar([input_value], collection=options, names=names, name=f"{unique}_enum", wrap=True,
-                                          z_offset=-1, rounding=5, as_toggles=False, bg_offset=-3)
+        changed, selected = draw_tab_bar([input_value], collection=options, names=names, name=f"{unique}_enum",
+                                         wrap=True,
+                                         z_offset=-1, rounding=5, as_toggles=False, bg_offset=-3)
         if changed and selected:
             return True, selected[0]
     return False, input_value
@@ -5922,7 +5903,7 @@ def draw_enum(input_value: Enum, draw_state=None, unique=0, style_manager=None, 
 
 @render_func(is_tree=False, show_bg=True, shadow=False, use_cache=False, header_same_line=True,
              disable_scroll=True,
-             indent_size=0, show_add_delete=False, 
+             indent_size=0, show_add_delete=False,
              show_name=False, selectable=False, parent_show_add_delete=False,
              with_header=draw_header)
 def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235, tint_saturation=0.372, unique=None,
@@ -5946,16 +5927,14 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     lines render vertically between the tabs."""
     if collection is None:
         return False, input_value
-    
-    
-        
-    if excluded is None: 
+
+    if excluded is None:
         excluded = set()
     # Content-left edge, captured before the dummy/same_line/-10 shift below.
     # The wrap limit is measured from here so it lines up with content_width.
     origin_x = imgui.get_cursor_screen_pos()[0]
 
-    imgui.dummy(0,0)
+    imgui.dummy(0, 0)
     imgui.same_line()
 
     # [tint=(0.894, 0.568, 0.204, 1.0), show_tint=True]
@@ -6004,7 +5983,7 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
     for i, tab in enumerate(collection):
         raw = _tab_text(tab)
         # label_text = raw.replace("_", " ")
-        
+
         if i in excluded:
             continue
         label = f"{raw}"
@@ -6078,7 +6057,8 @@ def draw_tab_bar(input_value: list, tab_height=30, names=None, tint_value=0.235,
             else:
                 saturation = 1.0 if tinted else 0.3
                 btn_res = button(label, indent_size=0, height=btn_height, draw=True, z_offset=0.0,
-                                 alpha=0.0 if tinted else 0.0, tint_value=new_value if not tinted else 0.1, saturation=saturation,
+                                 alpha=0.0 if tinted else 0.0, tint_value=new_value if not tinted else 0.1,
+                                 saturation=saturation,
                                  name=f"tab_{i}_{unique}_deactivated", color=tab_color, factor=tab_factor,
                                  text_value=1.0 if not tinted else 0.9,
                                  shadow=False, **dnd_extra)
@@ -6189,7 +6169,6 @@ def draw_lens(lens, draw_state):
 
 @render_func(use_cache=True, show_bg=True, selectable=False)
 def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwargs):
-
     if Toggles.debug_set_anywhere:
         source_name = get_source_for("tint", input_value)
         imgui.text(f"Tint source: {source_name}")
@@ -6198,7 +6177,7 @@ def draw_tint_context(input_value: DrawState, tab_state: TabState = None, **kwar
     # pending UI value shows so the widget doesn't snap back while the
     # write→save→hotswap frames play out (anywhere_value).
     tint_changed, tint_value = draw_tuple(anywhere_value("tint", input_value), name="Tint: set anywhere", height=30,
-                                          width=40,  
+                                          width=40,
                                           show_name=False, show_header=False)
     if tint_changed:
         set_anywhere("tint", tint_value, input_value)
@@ -6310,6 +6289,8 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     # the highest-priority writable source with a SET value. The old shape
     # re-walked every source dict per PARAM (_setting_source per row, plus
     # the default_write_source cue re-counting key overlaps), which is
+
+
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
              searchable=True, show_name=False, selectable=False)
 @window(tint=(0.767, 0.671, 0.183))
@@ -6338,8 +6319,8 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     # O(params × sources × keys) through lazy bubbling parse wrappers.
     _prio = {s: _source_priority(srcs["kinds"].get(s)) for s in srcs["sources"]}
     _ordered_all = sorted(srcs["sources"], key=_prio.get)
-    active_map = {}      # param -> highest-priority setter
-    setters_map = {}     # param -> [every source setting it, priority order]
+    active_map = {}  # param -> highest-priority source
+    setters_map = {}  # param -> [every source setting it, priority order]
     for _s in _ordered_all:
         if _s not in writable:
             continue
@@ -6357,6 +6338,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     # param-independent to first order - compute at most once per render,
     # not per row (its overlap counting walks every source dict).
     _cue = []
+
     def _default_source_once():
         if not _cue:
             _cue.append(default_write_source("", target, srcs=srcs))
@@ -6372,6 +6354,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     # actives. Build once per distinct active, not per param (the per-row
     # dict of _SourceItems was N_params × N_sources object churn per render).
     _row_cache = {}
+
     def _options_for(active):
         hit = _row_cache.get(active)
         if hit is None:
@@ -6443,10 +6426,12 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     # NB: `for p in proxy` yields (param, value) PAIRS (ParamProxy's one
     # weird deviation from dict) - keys() yields plain keys.
     _param_names = tuple(p.lower() for p in proxy.keys())
+
     def _search_matcher(t, session, _names=_param_names):
         q = str(t).lower()
         if q:
             session.claim(sum(1 for n in _names if _fuzzy_key_match(q, n)))
+
     draw_state._search_matcher = _search_matcher
 
     # The view's pre-body walk (search_walk) stashed the local ordinal of the
@@ -6468,7 +6453,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
             imgui.dummy(0, 6)
             text(_glabel, name=f'grp_{_glabel}', editable=False)
         for param, value in _group.items():
-            index = index+1
+            index = index + 1
             # Highlight, don't hide: every row stays visible (like the default
             # search everywhere else), matching rows get the glow via the
             # search_match/search_current kwargs their header reads.
@@ -6539,6 +6524,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
                     if clear_anywhere(_p, target, str(src)) is not None:
                         target.invalidate()
                         draw_state.invalidate()
+
                 _row_actions = {s: _clear_at for s in setters_map.get(param, ())
                                 if srcs["kinds"].get(s) != "codec"}
                 if param in (getattr(target, "auto_params", None) or {}):
@@ -6554,7 +6540,7 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
                     draw_state.misc[sel_key] = sel
             else:
                 sel = None
-                imgui.dummy(181, 22)     # hold the dropdown slot - no reflowing it yet
+                imgui.dummy(181, 22)  # hold the dropdown space - no reflow when it appears
 
             imgui.same_line()
 
@@ -6650,7 +6636,6 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     return False, input_value
 
 
-
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False)
 def draw_config_tab(input_value, **kwargs):
     """List the inspected view function's configurable parameters and their
@@ -6674,7 +6659,7 @@ def draw_config_tab(input_value, **kwargs):
             if param_name in ds_kwargs:
                 param_value = ds_kwargs[param_name]
                 draw_text(f"{param.__class__.__name__}", name=param_name,
-                     editable=False, tint=(0.8, 0.8, 0.2))
+                          editable=False, tint=(0.8, 0.8, 0.2))
             continue
 
         if param.kind in (inspect.Parameter.VAR_POSITIONAL,
@@ -6696,6 +6681,7 @@ def draw_config_tab(input_value, **kwargs):
                      show_name=True, show_header=True,
                      show_add_delete=False, draw=True)
     return False, input_value
+
 
 #
 # # I want to use the order of the enum elements as a way of determining the source of the input.
@@ -6736,13 +6722,16 @@ def draw_config_tab(input_value, **kwargs):
 #     # catch a bunch of bugs. Don't throw but maybe do a notify()
 
 
-@render_func(use_cache=True, show_bg=False, live=False, mode=Modes.WINDOW, show_header=False, show_name=False, selectable=False)
+@render_func(use_cache=True, show_bg=False, live=False, mode=Modes.WINDOW, show_header=False, show_name=False,
+             selectable=False)
 def draw_live_tab(input_value, **kwargs):
     """List the inspected view function's configurable parameters and their
     current values (kwarg override, else signature default)."""
     imgui.text("Re-renders view frequently, bad for performance but good for debugging")
 
-    params_to_view = ["unique", ("abs_left", "left_offset"), ("abs_top", "top_offset"), "scroll_offset", ("abs_top_true", "top_offset_true"), ("width", "height"), ("content_width", "content_height"), "layer", "z_offset"]
+    params_to_view = ["unique", ("abs_left", "left_offset"), ("abs_top", "top_offset"), "scroll_offset",
+                      ("abs_top_true", "top_offset_true"), ("width", "height"), ("content_width", "content_height"),
+                      "layer", "z_offset"]
     for to_view in params_to_view:
         if isinstance(to_view, str):
             value = getattr(input_value, to_view, 'N/A')
@@ -6753,8 +6742,6 @@ def draw_live_tab(input_value, **kwargs):
 
     if isinstance(input_value._raw_input_value, (dict, list, tuple)):
         text(f"Length: {len(input_value._raw_input_value)}", name="raw_input_length", editable=False)
-
-
 
     # imgui.text_colored(f"Unique {input_value.unique}", *(0.5, 0.01, 0.6))
     # imgui.dummy(0,2)
@@ -6907,12 +6894,13 @@ def draw_eval_tab(input_value, draw_state, unique=None, enter_key_down=None,
                   show_bg=True, show_header=True,
                   show_name=True, editable=False, height=400, min_height=400,
                   wrap=True, bg_offset=-100, width=draw_state.content_width,
-              
+
                   tint=(0.0, 0.0, 0.0))
     return False, input_value
 
 
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+
 
 class ContextMenuState:
     def __init__(self):
@@ -7025,7 +7013,7 @@ class _ChildKwargsSource(dict):
     def __setitem__(self, k, v):
         ck = self._dp.get("child_kwargs")
         if not isinstance(ck, dict):
-            self._dp["child_kwargs"] = {}      # bubbling: wraps + dirties
+            self._dp["child_kwargs"] = {}  # bubbling: wraps + dirties
             ck = self._dp["child_kwargs"]
         ck[k] = v
         super().__setitem__(k, v)
@@ -7093,7 +7081,6 @@ class _LazyOverrideEntry(dict):
         entry = ovs if self._entry_key is None else ovs[self._entry_key]
         entry[k] = v  # non-internal key on the wrapped entry → notify → dirty
         super().__setitem__(k, v)  # same-frame reads (row refresh) see it too
-
 
 
 def collect_input_sources(input_value, cm_state, class_to_show=None):
@@ -7348,7 +7335,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         _my_key = (input_value._kwargs or {}).get("key")
         _ck_live = (_pds_ck._kwargs or {}).get("child_kwargs")
         _ck_live = _ck_live if isinstance(_ck_live, dict) and _ck_live else None
-        _mode_src = None      # the parent's mode source name, set below
+        _mode_src = None  # the parent's mode source name, set below
         if _ck_live is not None or isinstance(_my_key, str):
             # Ensure the PARENT's registry exists (fresh sessions have no
             # _sa_cm_state until something collects it) - memoized per frame,
@@ -7359,7 +7346,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
                       if _pcm is not None and _pcm.class_dict is not None else None)
             _pcls = (_pcm.host_key or (None, None))[1] if _pcm is not None else None
             _pcls_name = getattr(_pcls, "__name__", "?")
-            _cls_defaults = None       # first non-attr @defaults parse entry
+            _cls_defaults = None  # first non-attr @defaults parse entry
             if isinstance(_pdeco, dict):
                 for _dk, _dv in _pdeco.items():
                     if not (isinstance(_dk, str) and _dk.split("#", 1)[0] == "defaults"
@@ -7436,6 +7423,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     _dsa = _DrawStateAttrSource(input_value)
     if _dsa:
         _add_source("draw_state", _dsa, TypeCodec, kind="draw state")
+
     # ── Sources parsed off the VALUE itself ──────────────────────────────────
     # The value flowing through the view can be (or sit inside) a parse node
     # of the owning window's's bubbling tree (e.g. a nested ClassParse in
@@ -7573,7 +7561,6 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         _add_source(f"@window({fn_name})", _window_deco,
                     DecorationsCodec, location=fn_loc, kind="window decoration")
 
-
     cm_state._collect_cache = {
         "sources": sources, "tints": source_tints,
         "locations": source_locations, "kinds": source_kinds,
@@ -7584,7 +7571,7 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
 
 @render_func(use_cache=True, show_bg=False, show_header=False, show_name=False, selectable=False, disable_scroll=False,
              temp=True, searchable=True)
-def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True, unique=None, class_to_show=None,
+def draw_input_tab(input_value, cm_state: ContextMenuState, draw_state, wrap=True, unique=None, class_to_show=None,
                    enter_key_pressed=None, **kwargs):
     """The three editable sources behind this view, in dispatch order:
 
@@ -7654,7 +7641,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                                            writable_sources=tuple(writable_sources),
                                            source_kinds=source_kinds,
                                            view_draw_state=input_value, wrap=True,
-                                           width=draw_state.content_width-0,
+                                           width=draw_state.content_width - 0,
                                            priority_params=tuple(signature_param_names(input_value._view_func)),
                                            search_text=str(draw_state.search_text or ""),
                                            name=f"{input_value._view_func.__name__} inputs##matrix{unique}",
@@ -7675,7 +7662,7 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
                *caller_dict_hosts, cm_state.mode_dict):
         if _h is not None:
             _h.notify_on_change(draw_state)
-            
+
     # common = dict(mode=Modes.NEW_CODE, min_width=100, max_height=300, fill_height=False)
     #
     # view_func = getattr(input_value, "_view_func", None)
@@ -7694,9 +7681,8 @@ def draw_input_tab(input_value, cm_state:ContextMenuState, draw_state, wrap=True
     return False, input_value
 
 
-
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False, show_name=False, selectable=False)
-def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='',  **kwargs):
+def draw_class_tab(input_value, class_to_show=None, class_is_parent=False, class_name='', **kwargs):
     """Editable class source. For a primitive field this is the parent object's
     class (e.g. Lora for a Lora.rank float) -- labelled so the source is clear.
     Routes through Mode.FILE_TREE — the same cache-backed code_file_io path a
@@ -7760,7 +7746,6 @@ def _ancestor_call_line(target_ds, ancestor_ds):
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
                       search_active=False,
                       enter_key_down=None, tab_state: TabState = None, **kwargs):
-   
     context_menu_offset = input_value.context_menu_offset
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
@@ -7788,7 +7773,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             Core.melty.cache.invalidate_up(input_value._tile_id, max_depth=5)
     else:
         imgui.dummy(30, 30)
-        
 
     imgui.same_line()
     imgui.text_colored(f"{context_menu_offset}", 1, 1, 1, 0.3)
@@ -7799,7 +7783,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # view is visible), queue the view capture, hide this menu (asking to reopen
     # it afterward), then let screenshot.process_take_screenshot_flags grab the
     # view's shot a few frames later, open the shot in nemo, and reopen the menu.
-    if button(f" ", height=30, tint=(0,0,0,1.0), name=f"screenshot_window##{unique}")[0]:
+    if button(f" ", height=30, tint=(0, 0, 0, 1.0), name=f"screenshot_window##{unique}")[0]:
         from src.lsd.gl_gui.screenshot import request_view_capture
 
         def _open_in_nemo(shot_path):
@@ -7823,7 +7807,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # boot a fresh claude-d session pre-typed (NOT sent) with the shot path +
     # the view's render function (the same function the Input tab edits), and
     # open the Claude Terminals window so the new session's terminal comes up.
-    if button(f" claude", height=30, tint=(0,0,0,1.0), name=f"claude_session##{unique}")[0]:
+    if button(f" claude", height=30, tint=(0, 0, 0, 1.0), name=f"claude_session##{unique}")[0]:
         from src.lsd.gl_gui.screenshot import request_view_capture
         view_ds = input_value
         # Resolve the menu's offset-walked target so the shot + function match
@@ -7882,7 +7866,6 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         request_render()
 
     imgui.same_line()
-
 
     offset_ds = input_value
     for i in range(context_menu_offset):
@@ -7979,8 +7962,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         class_tab = f" {class_name}"
 
     # Static tint colors for the fixed Config / Info tabs; remaining tabs use the neutral grey.
-    config_tint = (0.12, 0.38, 0.772) 
-    info_tint = (0.545, 0.469, 0.012) 
+    config_tint = (0.12, 0.38, 0.772)
+    info_tint = (0.545, 0.469, 0.012)
 
     tab_names = []
     tab_tints = []
@@ -8015,7 +7998,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
     # Indices list
 
-    imgui.dummy(0,1)
+    imgui.dummy(0, 1)
     imgui.same_line()
     tab_changed, new_tabs = draw_tab_bar(tab_state.selected_tabs, names=tab_names, wrap=True, tab_height=40,
                                          tint_value=0.7,
@@ -8029,7 +8012,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     if tab_changed:
         tab_state.selected_tabs = new_tabs
 
-    imgui.dummy(0,2)
+    imgui.dummy(0, 2)
 
     # Columns stripped: render the selected tab(s) stacked at the menu's full
     # width - one all across the menu, several fill the height. No Column calls,
@@ -8076,8 +8059,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
         elif this_tab == input_tab_name:
             draw_input_tab(input_value, class_to_show=class_to_show,
-                     name=f"input_tab_{t_idx}##{unique}", wrap=False,
-                      disable_scroll=False, **size_kw)
+                           name=f"input_tab_{t_idx}##{unique}", wrap=False,
+                           disable_scroll=False, **size_kw)
 
 
         elif this_tab == class_tab:
@@ -8149,12 +8132,12 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
     return False, input_value
 
 
-
 @render_func(use_cache=True, show_bg=False, selectable=False,
              tint=(0.083, 0.10, 0.144),
              is_tree=False, show_name=True, with_header=draw_header)
 @window
-def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True, text_align="left", **kwargs):
+def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True,
+                  text_align="left", **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-o-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
@@ -8177,15 +8160,17 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         if is_open or _pf is not None:
             try:
                 _mx, _my = imgui.get_mouse_pos()
-                _clk = imgui.is_mouse_clicked(0); _dn = imgui.is_mouse_down(0)
+                _clk = imgui.is_mouse_clicked(0);
+                _dn = imgui.is_mouse_down(0)
             except Exception:
-                _mx = _my = -1.0; _clk = _dn = None
+                _mx = _my = -1.0;
+                _clk = _dn = None
             with open("/tmp/dd_debug.log", "a") as _f:
                 _f.write(f"[DD-DBG] f={Melty.frame_count} name={name!r} ds={id(draw_state)} "
-                  f"pf={id(_pf) if _pf is not None else None} is_open={is_open} "
-                  f"mouse=({_mx:.0f},{_my:.0f}) clk={_clk} down={_dn} "
-                  f"sel_path={getattr(drop_down_state, 'selected_path', ())} "
-                  f"open_frame={getattr(Melty, '_popover_open_frame', None)}\n")
+                         f"pf={id(_pf) if _pf is not None else None} is_open={is_open} "
+                         f"mouse=({_mx:.0f},{_my:.0f}) clk={_clk} down={_dn} "
+                         f"sel_path={getattr(drop_down_state, 'selected_path', ())} "
+                         f"open_frame={getattr(Melty, '_popover_open_frame', None)}\n")
 
     # Label shows the last pick (sticky across frames via drop_down_state),
     # falling back to the raw input value.
@@ -8242,10 +8227,10 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     if _ttb and getattr(input_value, "tint", None) is None:
         trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger{unique}", show_bg=False, width=trigger_w,
-                         show_button_bg=kwargs.get("show_button_bg", True),
-                         shadow=shadow, tint=trigger_tint,
-                         text_value=trigger_text_value,
-                         height=kwargs.get("trigger_height", 19), disable_scroll=True,
+                        show_button_bg=kwargs.get("show_button_bg", True),
+                        shadow=shadow, tint=trigger_tint,
+                        text_value=trigger_text_value,
+                        height=kwargs.get("trigger_height", 19), disable_scroll=True,
                         z_offset=0, text_align=trigger_align, bg_offset=bg_offset, text_pad=trigger_pad)
 
     if clicked:
@@ -8277,7 +8262,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
 
         request_render()
 
-
     # The popover is a latching window -- the first call registers it and it
     # stays alive, so we always call it and toggle visibility with `closed`
     # rather than skipping the call (skipping would leave the last-open frame
@@ -8298,7 +8282,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     changed, new_item = draw_dd_menu(collection, tint=draw_state.tint,
                                      name=f"{unique}_menu",
                                      closed=not is_open, temp=True, shadow=False,
-                                     window_pos=(0, trigger_h -_DD_ROW_H), max_height=500,
+                                     window_pos=(0, trigger_h - _DD_ROW_H), max_height=500,
                                      parent_window=draw_state, swoosh=False, disable_scroll=False,
                                      row_tints=kwargs.get("row_tints"),
                                      row_actions=kwargs.get("row_actions"),
@@ -8367,7 +8351,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                 if _DD_DBG:
                     with open("/tmp/dd_debug.log", "a") as _f:
                         _f.write(f"[DD-DBG] CLOSE via click-outside f={Melty.frame_count} name={name!r} "
-                          f"mouse=({mx:.0f},{my:.0f}) under={[id(d) for d in under]} ds={id(draw_state)}\n")
+                                 f"mouse=({mx:.0f},{my:.0f}) under={[id(d) for d in under]} ds={id(draw_state)}\n")
                 Melty.popover_focused_ds = None
                 _dd_close(drop_down_state)
                 draw_state.invalidate()
@@ -8512,9 +8496,11 @@ def _dd_fit_label(s, px):
         return ""
     if imgui.calc_text_size(s)[0] <= px:
         return s
-    while s and imgui.calc_text_size(s + "…")[0] > px:
+    while s and imgui.calc_text_size(s + "...")[0] > px:
         s = s[:-1]
-    return s + "…"
+    return s + "..."
+    
+    
 
 
 def _dd_obj_tint(obj, fallback=None):
@@ -8602,12 +8588,12 @@ def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0):
     row_top = row0_offset + row_index * _DD_ROW_H
     row_bot = row_top + _DD_ROW_H
     new_sy = sy
-    if view_h > 0 and row_bot > new_sy + view_h:    # below the viewport: must scroll down
+    if view_h > 0 and row_bot > new_sy + view_h:  # below the viewport: minimal scroll down
         new_sy = row_bot - view_h
         max_y = menu_ds._max_scroll_y
         if max_y is not None:
             new_sy = min(new_sy, max_y)
-    if row_top < new_sy:                            # above the viewport (top-aligns a tiny view)
+    if row_top < new_sy:  # above the viewport (top-centers a tiny view)
         new_sy = row_top
     new_sy = max(0.0, new_sy)
     if new_sy != sy:
@@ -8738,7 +8724,6 @@ _DD_ROW_H = 24
 _DD_CODE_LBL_MAX_W = 150.0
 
 
-
 def _dd_row_lookup(mapping, value):
     """mapping.get(value), tolerant of UNHASHABLE row values — a BRANCH row's
     value is the nested collection dict itself, which raised TypeError from
@@ -8803,8 +8788,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # keyboard/hover selection still reads on tinted rows.
     row_tint = _dd_row_lookup(row_tints, value)
     _ROW_TINT_A = 0.35
-    _ROW_TINT_V_CAP = 0.55   # max RGB component - near-white text must stay legible
-    _ROW_TINT_S_BOOST = 1.25  # saturation boost on capped tints - keeps hue vivid
+    _ROW_TINT_V_CAP = 0.55  # max RGB component - near-white text must stay legible
+    _ROW_TINT_S_BOOST = 1.25  # saturation bump on capped tints — keeps hue vivid
     if row_tint is not None:
         r, g, b = row_tint[:3]
         v = max(r, g, b)
@@ -8898,7 +8883,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             imgui.set_cursor_screen_pos((_cx, y))
             imgui.dummy(_cw, h)
         else:
-            # _cdict, _chost = _row_code_hosts(_cp)
+            _cdict, _chost = _row_code_hosts(_cp)
             imgui.set_cursor_screen_pos((_cx, y))
             try:
                 # use_cache=True: the menu re-renders every bounding-hovered
@@ -8908,7 +8893,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                 _res = draw_text(_ccode, name=f"dd_code_{key}", show_header=False,
                                  show_bg=False, shadow=True, single_line=True,
                                  width=_cw, height=h, use_cache=False, bg_offset=-2,
-                                  jump_to=_RowSpan(_cl - 1), is_search_box=True,
+                                 jump_to=_RowSpan(_cl - 1), is_search_box=True,
                                  is_tree=False, z_offset=2,
                                  show_jump_bar=False, line_numbers=[_cl],
                                  tint=row_tint, selectable=False,
@@ -8918,10 +8903,22 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                     # the ROW's own cached tile, not the menu window (the window
                     # invalidation leaves clean row tiles blit-skipped).
                     _row_ds = _res[2] if len(_res) > 2 else None
-                    # _chost.notify_on_change(_row_ds if _row_ds is not None
-                    #                         else draw_state)
+                    _chost.notify_on_change(_row_ds if _row_ds is not None
+                                            else draw_state)
             except Exception:
                 traceback.print_exc()
+            # The embedded editor's caret sub consumes clicks over the code
+            # area - reclaim them with a higher-priority sub on exactly that
+            # rect (draw_global_search's code rows use the same technique) so
+            # the click still picks the row. Label/tag/action areas keep the
+            # raw imgui click path below.
+            if draw_state.on_action("left_mouse_down",
+                                    view_id=f"dd_code_act_{key}",
+                                    rect=(_cx, y, _cx + _cw, y + h),
+                                    priority_delta=4) is not None:
+                root_state._picked_path = tuple(row_path)
+                imgui.set_cursor_screen_pos((x, y + h))
+                return value
         imgui.set_cursor_screen_pos((x, y + h))
     else:
         imgui.text_colored(str(label), *color)
@@ -8940,6 +8937,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # Dimmed tag, right-aligned (autocomplete's func/class/... label). Opaque
     # backing mask first so a long label can't run off it; the mask reuses the
     # menu fill (+active wash) so it's invisible on plain and highlighted rows.
+    tag = _dd_row_lookup(row_tags, value)
     if tag:
         tw = imgui.calc_text_size(tag).x
         tx = x + w - tw - 10
@@ -8985,9 +8983,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     return UNSET_VALUE
 
 
-
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
-             closable=True, melty_window=False, auto_resize=True, with_header=None, 
+             closable=True, melty_window=False, auto_resize=True, with_header=None,
              max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
@@ -9023,7 +9020,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         q = getattr(root_state, "search_query", "") or ""
         box = draw_text(q, name=f"dd_search{unique}", show_name=False, searchable=False,
                         single_line=True, is_search_box=True, is_tree=False,
-                        with_header=None, with_footer=None, show_bg=False, shadow=False,
+                        with_header=None, with_footer=None, show_bg=True, shadow=False,
                         request_focus=getattr(root_state, "_focus_search", 0) > 0,
                         font=Font.JETBRAINS_MONO_19,
                         tint=tint, return_extras=True)
@@ -9131,6 +9128,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   code_label_w=code_label_w)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
+    return result
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True, show_add_delete=False,
              with_header=None, disable_scroll=True, min_width=300, swoosh=False, z_offset=-3)
@@ -9194,7 +9192,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width - 10,
                             height=_DD_ROW_H, hovered=hovered, text_value=0.56 + (0.9 if active else 0.0),
                             text_saturation=1.349, shadow=False,
-                             rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
+                            rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)
     else:
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", show_button_bg=False,
@@ -9205,12 +9203,10 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
     # In keyboard-select mode the arrow keys paint the highlight; hover neither
     # moves the cursor nor paints, until the mouse moves (draw_dropdown clears it).
 
-
     # ONE highlight, framed to this row's box. Mouse mode keys off the live hover;
     # keyboard mode keys off the cursor. Using a separate source per mode (rather
     # than hover OR cursor) avoids briefly painting both the stale-cursor row and
     # the freshly-hovered row, which doubled the wash and looked inconsistent.
-
 
     # Dim kind tag, right-aligned over the row (drawn last so it sits above the
     # highlight). The name is left-aligned by the caller's text_align. A long
@@ -9464,8 +9460,6 @@ def draw_search(input_value=None, draw_state=None, unique=0):
         imgui.align_text_to_frame_padding()
         imgui.text_colored("", 0.74, 0.5, 0.5, 1.0)
 
-
-
     if not input_value.search_active:
         draw_state.closed = True
 
@@ -9505,7 +9499,7 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
 
     if view_func is None:
         new_default = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
-                                                      attrib_key=key)
+                                                           attrib_key=key)
         if new_default is None:
             new_default = draw_collection
         if view_func is None:
