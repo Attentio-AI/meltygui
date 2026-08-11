@@ -3653,6 +3653,8 @@ class Melty:
                     light_dir=tuple(Toggles.shadow_light_dir),
                     specular_bevel=float(Toggles.specular_bevel),
                     specular_roughness=float(Toggles.specular_roughness),
+                    specular_strength=float(Toggles.specular_opacity),
+                    specular_fade=float(Toggles.specular_fade),
                 )
 
         # Debug: replace the frame with the raw low-res glow light buffer -

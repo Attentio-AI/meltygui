@@ -177,6 +177,24 @@ def _solve_collisions(window):
     return moved
 
 
+def _drag_live():
+    """Mirror of the frozen-blit gate's activity test in blit_offscreen: a
+    mouse drag (any button) is in flight. Programmatic edge moves (foreign
+    width writes) fall outside it, so they still invalidate normally."""
+    from src.lsd.gl_gui.melty import Melty
+    return (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+            or imgui.is_mouse_down(2) or Melty.on_drag)
+
+
+def _defer_freeze_settle(window, draw_state):
+    """Record a freeze_resize view whose per-frame edge invalidate was
+    skipped mid-drag; window_edge_pass settles it once on release."""
+    pending = getattr(window, "_freeze_settle", None)
+    if pending is None:
+        pending = window._freeze_settle = {}
+    pending[id(draw_state)] = draw_state
+
+
 def _has_columns_ancestor(draw_state):
     """True when another columns container sits between this view and its
     window. Used to decide window-frame adoption: a row with NO columns
@@ -219,6 +237,19 @@ def window_edge_pass(window):
     if not getattr(window, "expanded", True) or not window.width or not window.height:
         return
     _ensure_window_state(window)
+
+    # freeze_resize views whose per-frame edge invalidates were skipped
+    # mid-drag (see the edge-solve loop below) settle with ONE invalidate on
+    # release - box-unchanged views have no size mismatch to trigger the
+    # normal settled resize recapture, so without it they'd blit stale
+    # forever.
+    pending_settle = getattr(window, "_freeze_settle", None)
+    if pending_settle and not _drag_live():
+        for ds in pending_settle.values():
+            if not getattr(ds, "closed", False) and not ds.size_change:
+                ds.invalidate(note=Note(reason="freeze settle", **_NOTE))
+        window._freeze_settle = {}
+        request_render()
 
     fe = getattr(window, "_frame_edges", None)
     if not fe:
@@ -301,8 +332,16 @@ def window_edge_pass(window):
             # queue per-frame tile copies at the stale size. Only cells whose
             # own size is UNCHANGED while their edges move (interior-edge
             # drags) still need the explicit invalidate or they blit stale.
+            # freeze_resize views are the exception both ways: mid-drag they
+            # WANT to blit stale (that's the freeze contract - invalidating
+            # would force a live body re-render every drag frame, while a
+            # box-unchanged view never hits the frozen size-mismatch gate),
+            # so their invalidate is deferred to the release case above.
             if not ds.size_change:
-                ds.invalidate(note=Note(reason="edge solve", **_NOTE))
+                if getattr(ds, "freeze_resize", False) and _drag_live():
+                    _defer_freeze_settle(window, ds)
+                else:
+                    ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
 def edge_under_cursor(window, cursor_x_window, cursor_y_abs):
@@ -512,9 +551,15 @@ class ColumnLayout:
                     del totals[h]
             if self.active_edge is not None:
                 # size-changing views already update live (see the re-solve
-                # gate in window_edge_pass).
+                # gate in window_edge_pass). freeze_resize hosts skip the
+                # per-frame invalidate too - mid-drag they serve the frozen
+                # tile and update once on release (window_edge_pass).
                 if not draw_state.size_change:
-                    draw_state.invalidate(note=Note(reason="edge drag", **_NOTE))
+                    if getattr(draw_state, "freeze_resize", False):
+                        _defer_freeze_settle(window, draw_state)
+                    else:
+                        draw_state.invalidate(note=Note(reason="edge drag",
+                                                        **_NOTE))
                 # request_render()
 
         # The host's VISIBLE box (live clip, screen coords) - the band's

@@ -285,12 +285,41 @@ class ShadowComposite:
         'specular_roughness': (GLType.FLOAT, 0.4),
         # Peak highlight strength added to the frame (white is).
         'specular_strength': (GLType.FLOAT, 1.0),
+        # Fade of the highlight ALONG perpendicular lit edges, in px: brightness
+        # peaks at the lit corner (where the two lit edges meet) and dies
+        # out over this distance scanning away from there along either edge.
+        # Implemented as a per-axis march to the perpendicular lit edge -
+        # the max of the two resulting distances approximates distance to the
+        # corner. 0 = uniform rim, no fade.
+        'specular_fade': (GLType.FLOAT, 300.0),
         # Minimum depth drop (in depth_scale'd units) that counts as a
         # silhouette edge - rejects same-surface rasterization noise.
         'specular_depth_eps': (GLType.FLOAT, 0.001),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
+// Distance in px from `uv` to the nearest LOWER surface marching along
+// `dir` (a unit, in pixels), up to max_d. Coarse 16-step march to bracket
+// the edge, then a short bisection so long fades don't band into visible
+// steps. Returns max_d when no edge is found in range.
+float _spec_edge_dist(vec2 uv, vec2 dir, float d0, float max_d, vec2 texel) {
+    float lo = 0.0;
+    float hi = -1.0;
+    for (int i = 1; i <= 16; i++) {
+        float t = max_d * float(i) / 16.0;
+        float d_s = texture(depth_map, uv + dir * t * texel).r * depth_scale;
+        if (d_s < d0 - specular_depth_eps) { hi = t; break; }
+        lo = t;
+    }
+    if (hi < 0.0) return max_d;
+    for (int b = 0; b < 4; b++) {
+        float mid = 0.5 * (lo + hi);
+        float d_m = texture(depth_map, uv + dir * mid * texel).r * depth_scale;
+        if (d_m < d0 - specular_depth_eps) { hi = mid; } else { lo = mid; }
+    }
+    return hi;
+}
+
 void main() {
     vec2 uv = v_texcoord;
 
@@ -359,15 +388,9 @@ void main() {
     if (specular_bevel > 0.0) {
         vec2 texel_full = 1.0 / texture_size;
         vec2 light_n = normalize(light_dir);
-        float edge_t = -1.0;
-        const int SPEC_STEPS = 8;
-        for (int i = 1; i <= SPEC_STEPS; i++) {
-            float t = specular_bevel * float(i) / float(SPEC_STEPS);
-            float d_s = texture(depth_map, uv + light_n * t * texel_full).r
-                        * depth_scale;
-            if (d_s < depth - specular_depth_eps) { edge_t = t; break; }
-        }
-        if (edge_t > 0.0) {
+        float edge_t = _spec_edge_dist(uv, light_n, depth,
+                                       specular_bevel, texel_full);
+        if (edge_t < specular_bevel) {
             // Quarter-round bevel of radius specular_bevel: at the edge
             // the normal tilts fully toward the light, flattening to
             // straight-up one bevel radius in.
@@ -381,10 +404,35 @@ void main() {
             vec3 L = normalize(vec3(light_n, 1.0));
             vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
             float rough = clamp(specular_roughness, 0.02, 1.0);
-            float shininess = 2.0 / (rough * rough);
+            float shininess = max(1.0, 0.5 / (rough * rough));
             float spec = pow(max(dot(n, H), 0.0), shininess);
             spec *= 1.0 - 0.5 * rough;
-            shadowed += vec3(spec * specular_strength);
+
+            // Fade along the edge: brightness peaks at the lit CORNER and
+            // dies out scanning away from it along either edge. The two
+            // axis marches measure the distance to the perpendicular lit
+            // edge — on the top edge dist_y is ~0 and dist_x is the
+            // distance to the left edge (and vice versa), so
+            // max(dist_x, dist_y) approximates distance to the corner.
+            // Only rim pixels (edge_t hit) pay for these marches.
+            float fade = 1.0;
+            if (specular_fade > 0.0) {
+                float dist_x = 0.0;
+                float dist_y = 0.0;
+                if (abs(light_n.x) > 1e-3) {
+                    dist_x = _spec_edge_dist(
+                        uv, vec2(sign(light_n.x), 0.0), depth,
+                        specular_fade, texel_full);
+                }
+                if (abs(light_n.y) > 1e-3) {
+                    dist_y = _spec_edge_dist(
+                        uv, vec2(0.0, sign(light_n.y)), depth,
+                        specular_fade, texel_full);
+                }
+                float corner_dist = max(dist_x, dist_y);
+                fade = 1.0 - smoothstep(0.0, specular_fade, corner_dist);
+            }
+            shadowed += vec3(spec * fade * specular_strength);
         }
     }
 
