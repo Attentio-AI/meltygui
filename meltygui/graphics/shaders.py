@@ -292,6 +292,12 @@ class ShadowComposite:
         # the max of the two resulting distances approximates distance to the
         # corner. 0 = uniform rim, no fade.
         'specular_fade': (GLType.FLOAT, 300.0),
+        # Depth falloff of the highlight: intensity decays as
+        # exp(-receiver_depth * rate), so surfaces near the floor catch
+        # the full highlight and high-stacked ones progressively lose it.
+        # Depth is in depth_scale'd units (one layer slot ~ 0.3 at the
+        # default 64/32 layer/depth ratio). 0 = depth-independent.
+        'specular_depth_falloff': (GLType.FLOAT, 0.0),
         # Minimum depth drop (in depth_scale'd units) that counts as a
         # silhouette edge - rejects same-surface rasterization noise.
         'specular_depth_eps': (GLType.FLOAT, 0.001),
@@ -431,6 +437,11 @@ void main() {
                 }
                 float corner_dist = max(dist_x, dist_y);
                 fade = 1.0 - smoothstep(0.0, specular_fade, corner_dist);
+            }
+            // Depth falloff: low surfaces (near the floor) keep the full
+            // highlight, high-stacked ones fade out exponentially.
+            if (specular_depth_falloff > 0.0) {
+                fade *= exp(-max(depth, 0.0) * specular_depth_falloff);
             }
             shadowed += vec3(spec * fade * specular_strength);
         }

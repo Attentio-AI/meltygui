@@ -1290,7 +1290,7 @@ class Toggles:
     # vector (x right, y down in UV space). Only the direction matters -
     # the shader normalizes it; travel distance comes from
     # shadow_height_scale.
-    shadow_light_dir = (-0.044, 0.128)
+    shadow_light_dir = (-0.095, 0.225)
     # How far a shadow travels per unit of caster/receiver depth gap
     # (in units): higher = deeper stacks cast longer shadows.
     shadow_height_scale = 3.716
@@ -1331,17 +1331,22 @@ class Toggles:
     # Value = bevel radius in px: the width of the highlight rim and the
     # apparent roundness of the edge. 0 disables the pass.
     # [tint=(0.85, 0.75, 0.05), show_tint=True]
-    specular_bevel = 0.637
+    specular_bevel = 2.527
     # Global surface roughness for the specular rim, (0, 1]: low = tight
     # bright crest line at the edge, high = broad dim sheen at the bevel.
-    specular_roughness = 0.199
+    specular_roughness = 0.405
     # Peak brightness of the highlight (white light added at composite).
-    specular_opacity = 0.165
+    specular_opacity = 0.291
     # Fade of the highlight ALONG the lit edges, in px: brightest at the
     # lit corner (top-left when the shadow falls down-right), dying out
     # over this distance continuing down the left edge / across the top
     # edge. 0 = uniform highlight with no fade.
-    specular_fade = 145.327
+    specular_fade = 186.289
+    # Depth falloff: specular intensity decays as exp(-depth * rate), so
+    # surfaces near the floor catch the full highlight and high-stacked
+    # windows progressively lose it. One layer slot is ~0.3 depth steps
+    # at the 64x32 layer/depth config; 0 = depth-independent.
+    specular_depth_falloff = 0.0
 
     # Glow Settings - add_glow() marks rendered as light sources in the
     # shadow composite (blit_offscreen PASS 6 stamps the low-res light
@@ -1352,7 +1357,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 1.729
+    glow_strength = 1.439
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),
@@ -1362,7 +1367,7 @@ class Toggles:
     # depth detail under the band differs subtly between those paths.
     # (Confirmed by glow_debug_log: dups=0 = one stamping, one composite
     # - the "double" is this cut, not a second glow rendering.)
-    glow_shadow_cut = -7.669
+    glow_shadow_cut = -0.291
 
     # Downward AREA-LIGHT glow mode. Off = the omnidirectional
     # inverse-square skirt. On = each glow rect reads as a downward-facing

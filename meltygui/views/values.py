@@ -2062,7 +2062,7 @@ def draw_type(input_value: type, **kwargs):
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
-             with_header=None, bg_offset=-1, auto_resize=False, temp=True)
+             with_header=None, bg_offset=4, auto_resize=False, temp=True)
 def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching hits
     from the registered search indexes (GLOBAL_SEARCH_INDEXES). Results are
@@ -2677,8 +2677,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     return False, input_value
 
 
-@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True)
-@defaults(tint=(0.15076258778572083, 0.2957677, 0.4697674512863159))
+@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True, tint=(0.355679, 0.3584364, 0.3722222, 0.40))
 class GlobalSearch:
     query = ""
     window_ds = None  # this window's own draw_state (for the show shortcut)
