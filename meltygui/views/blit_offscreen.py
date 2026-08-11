@@ -2186,7 +2186,7 @@ class TileCacheMasked:
         framebuffer size / Toggles.glow_downscale. 16F because alpha carries
         the emitter rank in full-mask units — 8 bits there would re-introduce
         the quantized-depth wobble the R16 mask migration removed."""
-        ds_f = max(1, int(getattr(Toggles, "glow_downscale", 4)))
+        ds_f = max(1, int(Toggles.glow_downscale))
         gw = max(1, int(fb_w) // ds_f)
         gh = max(1, int(fb_h) // ds_f)
         if self._glow_tex is not None and (gw, gh) == self._glow_size:
@@ -2246,9 +2246,9 @@ class TileCacheMasked:
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._full_mask_tex)
         gl.glUniform1i(self._loc_gl_uDepthMask, 0)
         gl.glUniform2f(self._loc_gl_uGlowSize, float(gw), float(gh))
-        _dbg_no_mask = getattr(Toggles, "glow_debug_no_mask", False)
+        _dbg_no_mask = Toggles.glow_debug_no_mask
         gl.glUniform1i(self._loc_gl_uDebugSolid,
-                       1 if getattr(Toggles, "glow_debug_rects", False) else 0)
+                       1 if Toggles.glow_debug_rects else 0)
         # Small rank slack above the emitter so coplanar pixels (the band's
         # own glow, sibling text at the same depth) stay lit through R16
         # rounding; ~2 rank units.
@@ -4265,7 +4265,7 @@ class TileCacheMasked:
                     return None
 
                 def _log_kill(kind, eds, hit, deferred):
-                    if not getattr(Toggles, "glow_debug_log", False):
+                    if not Toggles.glow_debug_log:
                         return
                     _pds = hit[6]
                     print(f"glow kill[{kind}]"
@@ -4490,11 +4490,10 @@ class TileCacheMasked:
                         _dup_count += 1
                 _stamp_list = list(_dedup.values())
 
-                if (getattr(Toggles, "glow_debug_log", False)
-                        and self._frame_id % 60 == 0):
+                if Toggles.glow_debug_log and self._frame_id % 60 == 0:
                     _s0 = _stamp_list[0] if _stamp_list else None
                     print(
-                        f"glow6 f{self._frame_id}: glow={getattr(Toggles, 'glow', '?')} "
+                        f"glow6 f{self._frame_id}: glow={Toggles.glow} "
                         f"frame_marks={len(self._glow_rects)} "
                         f"retained={len(_glow_retained)} "
                         f"cleared={len(self._glow_cleared)} "
@@ -4504,7 +4503,7 @@ class TileCacheMasked:
                         + (f" first: rect={tuple(round(v, 1) for v in _s0[0][:4])}"
                            f" rank={_s0[2]:.5f} floor={_s0[3]:.5f}"
                            f" inten={_s0[0][5]:.3f}" if _s0 else ""))
-                if not getattr(Toggles, "glow", False):
+                if not Toggles.glow:
                     _stamp_list = []  # retained entries stay warm
                 if _stamp_list or not self._glow_tex_empty:
                     self._stamp_glow_marks(_stamp_list, dp_x, dp_y, s_x, s_y,

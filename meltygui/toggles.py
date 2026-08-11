@@ -810,7 +810,7 @@ class Toggles:
         # usage_heat_shadow_max (sign preserved - negative recesses);
         # 0 disables.
         usage_heat_shadow_offset = 1.0
-        usage_heat_shadow_max = 8.0
+        usage_heat_shadow_max = 15.148
         # Line-number background saturation - the hsv saturation multiplier
         # Tint.line_number_bg applies to the theme color (was a hardcoded
         # 1.6; lower = greyer, dull muted strip).

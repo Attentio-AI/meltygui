@@ -361,6 +361,20 @@ class _ShowMoreRow:
         self.kind = kind
 
 
+class _LoadAllRow:
+    """Sentinel row replacing the old "+ n more" label when the active tab
+    holds more hits than max_visible shows. A real row in the on-screen list —
+    arrow keys reach it, Enter (or a click) LOADS the full result set: the
+    per-category query limit and the display cap are both lifted, so every
+    match becomes available in the view."""
+    __slots__ = ("count",)
+    kind = None
+    label = "load all"
+
+    def __init__(self, count):
+        self.count = count
+
+
 def _all_tab_items(by_kind, horizontal=False, keep_order=False):
     """(rows, groups) for the All tab — `groups` is parallel to `rows` and
     names each row's label line. Vertical: a "Top" block first (every
@@ -666,11 +680,12 @@ def _def_wash_u32(tint):
     the same Toggles.TextEditor knobs, packed ABGR at def_block_alpha — so a
     washed search row previews precisely what jump-to will show."""
     from src.lsd.gl_gui.view.core_views.text_editor import _bg_adjust
-    TE = Toggles.TextEditor
     r, g, b = _bg_adjust(tuple(tint[:3]),
-                         (TE.bg_tint_saturation, TE.bg_tint_value,
-                          TE.bg_min_brightness, TE.bg_max_brightness))
-    a = max(0.0, min(1.0, TE.def_block_alpha))
+                         (Toggles.TextEditor.bg_tint_saturation,
+                          Toggles.TextEditor.bg_tint_value,
+                          Toggles.TextEditor.bg_min_brightness,
+                          Toggles.TextEditor.bg_max_brightness))
+    a = max(0.0, min(1.0, Toggles.TextEditor.def_block_alpha))
     return ((int(a * 255) << 24) | (int(b * 255) << 16)
             | (int(g * 255) << 8) | int(r * 255))
 
@@ -1230,6 +1245,7 @@ def _dismiss_global_search():
     GlobalSearch.query = ""
     GlobalSearch._last_query = None
     GlobalSearch.selected = 0
+    GlobalSearch.show_all = False
     GlobalSearch.editing = None
     GlobalSearch._edit_focus = False
     Core.melty.clear_focus()
@@ -2085,6 +2101,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     q = (input_value.query or "").strip().lower()
     if q != input_value._last_query:
         input_value._last_query = q
+        input_value.show_all = False  # a new query starts back at the top view
         # Empty box: show the most-selected hits over time instead of nothing.
         input_value.results = (global_search_results(q, store) if len(q) >= 2
                                else _recent_hits(store))
@@ -2143,11 +2160,37 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         return grouped, True
 
     items, fallback = _items_for(active)
-    # The horizontal All tab is capped PER COLUMN (in _all_tab_items), so the
-    # flat max_visible cap must not prematurely truncate its trailing columns.
-    n_vis = (len(items) if (horiz and active == ALL_CATEGORY)
-             else min(len(items), max_visible))
-    input_value.selected = (input_value.selected % n_vis) if n_vis else 0
+
+    def _vis(items):
+        """(vis_rows, n_vis, n_over) for the active tab. The horizontal All
+        tab is capped PER COLUMN (in _all_tab_items), so the flat max_visible
+        cap must not also truncate its trailing columns; show_all ("load all"
+        picked) lifts the cap everywhere. A truncated tab gets a trailing
+        _LoadAllRow sentinel standing in for the hidden tail."""
+        if input_value.show_all or (horiz and active == ALL_CATEGORY):
+            n = len(items)
+        else:
+            n = min(len(items), max_visible)
+        over = len(items) - n
+        rows = list(items[:n])
+        if over > 0:
+            rows.append(_LoadAllRow(over))
+        return rows, n, over
+
+    vis_items, n_vis, n_over = _vis(items)
+    n_rows = len(vis_items)
+    input_value.selected = (input_value.selected % n_rows) if n_rows else 0
+
+    def _load_all():
+        """Activate the _LoadAllRow: recompute the results with the
+        per-category limit lifted AND drop the display cap, this query only
+        (a new query resets to the capped view). The highlight stays where it
+        is, so it lands on the first newly revealed row."""
+        input_value.show_all = True
+        input_value.results = (global_search_results(q, store, limit=10 ** 9)
+                               if len(q) >= 2
+                               else _recent_hits(store, limit=10 ** 9))
+        request_render()
 
     # While the box holds text focus: Tab / Shift+Tab pick the category (the
     # editor's tab-indent is search-box-gated so the keys are free; arrows
@@ -2183,21 +2226,23 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             active = cats[(ci + step) % len(cats)]
             input_value.active_kind = active
             items, fallback = _items_for(active)
-            n_vis = (len(items) if (horiz and active == ALL_CATEGORY)
-                     else min(len(items), max_visible))
+            vis_items, n_vis, n_over = _vis(items)
+            n_rows = len(vis_items)
             input_value.selected = 0
             request_render()
         vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
             - sum(1 for k, _m in keys if k == glfw.KEY_UP)
-        if vstep and n_vis:
-            input_value.selected = (input_value.selected + vstep) % n_vis
+        if vstep and n_rows:
+            input_value.selected = (input_value.selected + vstep) % n_rows
             request_render()
         _enter_mods = [m for k, m in keys
                        if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
-        if n_vis and _enter_mods:
-            _hit = items[input_value.selected]
+        if n_rows and _enter_mods:
+            _hit = vis_items[input_value.selected]
             _goto = getattr(_hit, "goto", None)
-            if isinstance(_hit, _ShowMoreRow):
+            if isinstance(_hit, _LoadAllRow):
+                _load_all()
+            elif isinstance(_hit, _ShowMoreRow):
                 # A "show more" sentinel: Enter selects its kind's tab
                 # (same as clicking its chip) and stays open.
                 input_value.active_kind = _hit.kind
@@ -2228,7 +2273,6 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     ICON_COL = 22.0
     CHIP_H, CHIP_GAP, CHIP_PAD = 22.0, 6.0, 8.0
     CHIP_ROW_GAP = 6.0
-    MORE_H = 18.0
     # Only the ACTIVE chip gets a background - the rest are plain coloured
     # text, like the tab bars elsewhere. Hover brightens the text instead of
     # showing a bg, so an idle chip never gets one.
@@ -2305,7 +2349,6 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # One dummy reports the full content height so everything draws over it.
     # (Live widgets are real imgui items placed by screen position, so the
     # cursor is parked back here once the rows are done.)
-    n_over = len(items) - n_vis
     # Group label lines: the All tab always groups ("Top", then one label per
     # category with its next few hits - or one column per category in
     # horizontal mode); the fallback view groups by borrowed kind.
@@ -2346,15 +2389,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     else:
         _ly = rows_top
         _g = None
-        for i in range(n_vis):
-            if row_groups and row_groups[i] != _g:
+        for i in range(n_rows):
+            # A trailing _LoadAllRow (index n_vis) never opens a group label.
+            if row_groups and i < n_vis and row_groups[i] != _g:
                 _g = row_groups[i]
                 label_draws.append((x0, _ly, _g))
                 _ly += GROUP_H
             row_layout.append((x0, _ly, w))
             _ly += ROW_H + ROW_GAP
         content_bottom = _ly
-    content_h = (content_bottom - y0) + (MORE_H if n_over > 0 else 0)
+    content_h = content_bottom - y0
     # Height auto-fit: whenever the CONTENTS change (new query, async text
     # hits landing, a category switch), size the window to fit them. The
     # height is written directly - the wrapper's measured item_rect can't
@@ -2368,6 +2412,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     if fit_sig != input_value._fit_sig:
         input_value._fit_sig = fit_sig
         new_h = int((y0 - draw_state._abs_top()) + content_h + 10.0)
+        # A loaded-all list can hold hundreds of rows - cap the auto-fit at
+        # most of the display and let the window scroll through the rest.
+        disp_h = imgui.get_io().display_size.y
+        if disp_h > 0:
+            new_h = min(new_h, int(disp_h * 0.8))
         if draw_state.height is None or abs(draw_state.height - new_h) > 1:
             draw_state.height = new_h
             draw_state._source["height"] = "global search content auto-fit"
@@ -2417,11 +2466,26 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                     _mix(_category_tint(_g), 0.55, sat=text_saturation), _g)
         if small_font is not None:
             imgui.pop_font()
-    for idx, hit in enumerate(items[:n_vis]):
+    for idx, hit in enumerate(vis_items):
         bx, ry, bw = row_layout[idx]
         sel = (idx == input_value.selected)
         hov = hover_ok and bx <= mx <= bx + bw and ry <= my <= ry + ROW_H
         hot = sel or hov
+        if isinstance(hit, _LoadAllRow):
+            # The truncation sentinel: a selectable row where the "+ n more"
+            # label used to sit; activating it loads the whole results set.
+            dl.add_text(bx + ICON_COL + 8, ry + (ROW_H - line_h) / 2.0,
+                        imgui.get_color_u32_rgba(*((0.9, 0.9, 0.9) if hot
+                                                   else (0.55, 0.55, 0.55)), 1.0),
+                        f"+ {hit.count} more — load all")
+            if sel:
+                dl.add_rect(bx + ICON_COL, ry, bx + bw, ry + ROW_H, sel_color,
+                            rounding=4.0, thickness=sel_thickness)
+            if (click is not None and bx <= click[0] <= bx + bw
+                    and ry <= click[1] <= ry + ROW_H):
+                input_value.selected = idx
+                _load_all()
+            continue
         if isinstance(hit, _ShowMoreRow):
             # The category's "show more" row: bare tinted text at row size but
             # no background/icon - just like any row (outline on
@@ -2488,37 +2552,54 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                      if _row_file else 0.0)
             _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0)
                       - _fw_r - text_x)
+            # Offscreen row: skip the draw_text call entirely (each one-line
+            # editor body costs real wrapper time - with many rows scrolled
+            # out of the window band it added up) and reserve the space with
+            # a dummy so layout/measure stay identical. _cr_drawn=True keeps
+            # the `parts` fallback from double-drawing the row.
+            _win_top = draw_state.abs_top
+            _win_bot = _win_top + (draw_state.height or 0)
+            if ry + ROW_H <= _win_top or ry >= _win_bot:
+                _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
+                _fw_r = ((imgui.calc_text_size(_row_file)[0] + 12.0)
+                         if _row_file else 0.0)
+                _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0)
+                          - _fw_r - text_x)
+                imgui.set_cursor_screen_pos((text_x, ry))
+                imgui.dummy(_cw, ROW_H)
+                continue
             _cdict, _chost = _row_code_hosts(_cp)
             imgui.set_cursor_screen_pos((text_x, ry))
             try:
-                # use_cache=False on purpose: GlobalSearch lives on the
-                # always_on_top layer (188), past the layer-64 masking cliff —
-                # up there the blit mask's maxamp depths tie and a per-row
-                # tile z-fights the window's own composite (the def-tint
-                # washes lost the flip, and hover forced live renders).
-                # Uncached rows draw live into whatever frame the window
-                # renders, so the WINDOW tile captures the full composite and
-                # no row-tile depth ever competes at the clamp. ~15 one-line
-                # bodies, only on frames the window repaints out.
+                # use_cache=True: a row body re-rendering EVERY window repaint
+                # became the dominant cost with many rows - cached row tiles
+                # blit-skip when clean and only re-render on a direct input
+                # change. CAVEAT (watch for it): rows were use_cache=False
+                # for a reason - GlobalSearch lives on an always_on_top
+                # stack (188), past the layer-64 masking cliff, where a
+                # per-row tile's quantized alpha can tie and z-fight the
+                # window composite (def-tint washes lost the flip until a
+                # hover forced new renders). If washes go stale again, this
+                # toggle is the knob.
                 # line_numbers puts the file line in the editor's own gutter
-                # (same strip the tab window draws); bg_offset=-2 keeps the
-                # row's editor bg a couple of gradient steps darker than a
-                # normally nested view so the rows recede into the window.
-                # tint (the row's file tint) rides the wrapper's imgui_tint
-                # push, so the bg and token colors resolve exactly like any
-                # other tinted draw_text call.
+                # (same strip a full editor draws); tint (the row's file
+                # tint) overrides the wrapper's imgui-tint state, so the bg and
+                # gutter colors resolve exactly like any other tinted
+                # draw_text call.
                 _res = draw_text(_ccode, name=f"gs_code_row_{idx}", unique=idx,
                                  show_header=False, show_bg=False, shadow=False,
                                  single_line=True, width=_cw, height=ROW_H,
-                                 use_cache=False, code_dict=_cdict, 
+                                 use_cache=True, code_dict=_cdict,
                                  jump_to=_RowSpan(_cl - 1), is_tree=False, z_offset=2,
                                  show_jump_bar=False, line_numbers=[_cl], tint=tint,
                                  selectable=False, return_extras=True)
                 if _chost is not None:
                     # Repaint when the background parse lands (washes pop in).
-                    # The WINDOW ds, not the row's: rows are uncached, so even
-                    # a window-tile invalidation makes them re-render.
-                    _chost.notify_on_change(draw_state)
+                    # The ROW's ds now so rows use cached tiles - a window
+                    # invalidation alone leaves clean row tiles blit-skipped.
+                    _row_ds = _res[2] if len(_res) > 2 else None
+                    _chost.notify_on_change(_row_ds if _row_ds is not None
+                                            else draw_state)
                 _cr_drawn = True
             except Exception:
                 traceback.print_exc()
@@ -2609,9 +2690,6 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             _activate_hit(hit, store)
             if not hit.keep_open:
                 _dismiss_global_search()
-    if n_over > 0:
-        dl.add_text(x0 + 8, content_bottom + 2.0,
-                    imgui.get_color_u32_rgba(0.55, 0.55, 0.55, 1.0), f"+ {n_over} more")
     # Value widgets moved the cursor; put it back where the dummy left it so
     # the enclosing layout is unaffected.
     imgui.set_cursor_screen_pos(after_rows)
@@ -2630,6 +2708,7 @@ class GlobalSearch:
     _text_query = None  # last query handed to _kick_text_search
     _text_gen = 0  # generation counter that debounces/cancels text search
     selected = 0  # index (in on-screen order) of the arrow-key highlight
+    show_all = False  # "load all" picked: query + display caps lifted until the query changes
     _fit_sig = None  # last contents signature the height was auto-fit to
     active_kind = ALL_CATEGORY  # the category whose rows show (Left/Right cycles)
     editing = None  # label of the row whose value widget owns the keyboard
@@ -8653,6 +8732,10 @@ def _dd_handle_keys(collection, root_state, search="", text_focused=False):
 
 _DD_MENU_W = 170
 _DD_ROW_H = 24
+# Limits on the scope-label column of code-preview rows (usage-jump picker):
+# the main code column clamps here, and longer labels ellipsize, so the
+# code keeps most of the row's width.
+_DD_CODE_LBL_MAX_W = 150.0
 
 
 
@@ -8678,7 +8761,7 @@ def _dd_noop_set(*_a, **_k):
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, left_pad=10,
-                 text_toward_bg=0.0):
+                 text_toward_bg=0.0, row_code=None, code_label_w=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -8771,23 +8854,92 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         # of the original chroma leaves per-item tints recognizable.
         color = tuple(min(1.0, c * 0.4 + 0.6) for c in color[:3])
     color = *(color[:3]), 1.0
-    imgui.text_colored(str(label), *color)
 
-    # Dim '(param, param2)' suffix right after a callable's signature (autocomplete
-    # rows): same tint as the label but reduced alpha, so it's subtle on
-    # plain, tinted and active rows alike. imgui text (not raw dl.add_text) so
-    # the row's measured width includes it and auto-resize fits the popup.
-    sfx = _dd_row_lookup(row_suffixes, value)
-    if sfx:
-        imgui.same_line(spacing=0)
-        imgui.text_colored(sfx, color[0], color[1], color[2], 0.45)
+    tag = _dd_row_lookup(row_tags, value)
+    code_row = _dd_row_lookup(row_code, value)
+    if code_row is not None:
+        # GlobalSearch-mirrored code row (the quick-jump popup): the row
+        # label as a dim prefix, then the ACTUAL code line rendered through the
+        # real editor - draw_text with the file's live cst-dict parse and a
+        # jump_to line-offset shim, so token colors and definition washes are
+        # pixel-identical to the jump window; the file line shown in the
+        # editor's own gutter (line_numbers=[...]) and the editor's text
+        # right-aligns like every other row (width reserved below). Same
+        # embed recipe as draw_global_search's code_row block, including
+        # use_cache=False (the layer-band masking note there).
+        _cp, _cl, _ccode = code_row
+        _ty = y + (h - line_h) * 0.5
+        # rstrip: dedup keys carry invisible trailing spaces (see
+        # _usage_ref_key) - never a visible counter. Ellipsize past the
+        # label cap so a deep scope name can't eat the code column.
+        _lbl = str(label).rstrip()
+        if imgui.calc_text_size(_lbl)[0] > _DD_CODE_LBL_MAX_W:
+            while _lbl and imgui.calc_text_size(_lbl + "…")[0] > _DD_CODE_LBL_MAX_W:
+                _lbl = _lbl[:-1]
+            _lbl += "…"
+        dl.add_text(x + left_pad, _ty,
+                    imgui.get_color_u32_rgba(color[0], color[1], color[2], 0.9),
+                    _lbl)
+        # Shared column (widest label in the menu, capped, precomputed by
+        # draw_dd_menu) so every row's editor starts at the same x - with the
+        # static 5-digit gutter inside draw_text, code aligns line to line.
+        _lw = (code_label_w if code_label_w is not None
+               else min(imgui.calc_text_size(_lbl)[0], _DD_CODE_LBL_MAX_W))
+        _cx = x + left_pad + _lw + 14.0
+        _tw_r = (imgui.calc_text_size(tag)[0] + 22.0) if tag else 10.0
+        _cw = max(60.0, x + w - _tw_r - _cx)
+        # Offscreen rows (scrolled past the menu's visible band): skip the
+        # draw_text embed - the one-line editor body takes real wrapper
+        # time, and a tall menu lays out every row each frame - and reserve
+        # the space with a dummy so layout/scroll stay constant.
+        _wt = draw_state._abs_top()
+        _wb = _wt + (draw_state.height or 0)
+        if y + h <= _wt or y >= _wb:
+            imgui.set_cursor_screen_pos((_cx, y))
+            imgui.dummy(_cw, h)
+        else:
+            # _cdict, _chost = _row_code_hosts(_cp)
+            imgui.set_cursor_screen_pos((_cx, y))
+            try:
+                # use_cache=True: the menu re-renders every bounding-hovered
+                # frame, and an uncached editor body per row makes big pickers
+                # crawl - cached editor tiles blit-skip when clean. Same
+                # masking-cliff caveat as the GlobalSearch code rows.
+                _res = draw_text(_ccode, name=f"dd_code_{key}", show_header=False,
+                                 show_bg=False, shadow=True, single_line=True,
+                                 width=_cw, height=h, use_cache=False, bg_offset=-2,
+                                  jump_to=_RowSpan(_cl - 1), is_search_box=True,
+                                 is_tree=False, z_offset=2,
+                                 show_jump_bar=False, line_numbers=[_cl],
+                                 tint=row_tint, selectable=False,
+                                 return_extras=True)
+                if _chost is not None:
+                    # Repaint when the background parse lands (washes pop in) but
+                    # the ROW's own cached tile, not the menu window (the window
+                    # invalidation leaves clean row tiles blit-skipped).
+                    _row_ds = _res[2] if len(_res) > 2 else None
+                    # _chost.notify_on_change(_row_ds if _row_ds is not None
+                    #                         else draw_state)
+            except Exception:
+                traceback.print_exc()
+        imgui.set_cursor_screen_pos((x, y + h))
+    else:
+        imgui.text_colored(str(label), *color)
 
-    imgui.set_cursor_screen_pos((x, y + h))
+        # Dim '(param, param2)' suffix right after the callable's name (autocomplete
+        # rows): same hue as the label at reduced alpha, so it stays subtle on
+        # plain, tinted and active rows alike. imgui text (not raw dl.add_text) so
+        # the row's measured width includes it and auto-resizes with the popup.
+        sfx = _dd_row_lookup(row_suffixes, value)
+        if sfx:
+            imgui.same_line(spacing=0)
+            imgui.text_colored(sfx, color[0], color[1], color[2], 0.45)
+
+        imgui.set_cursor_screen_pos((x, y + h))
 
     # Dimmed tag, right-aligned (autocomplete's func/class/... label). Opaque
     # backing mask first so a long label can't run off it; the mask reuses the
     # menu fill (+active wash) so it's invisible on plain and highlighted rows.
-    tag = _dd_row_lookup(row_tags, value)
     if tag:
         tw = imgui.calc_text_size(tag).x
         tx = x + w - tw - 10
@@ -8833,13 +8985,14 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     return UNSET_VALUE
 
 
+
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=True, with_header=None, 
              max_height=420, min_width=300, swoosh=False, min_height=33)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
-                 full_render=False, **kwargs):
+                 full_render=False, row_code=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -8870,7 +9023,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
         q = getattr(root_state, "search_query", "") or ""
         box = draw_text(q, name=f"dd_search{unique}", show_name=False, searchable=False,
                         single_line=True, is_search_box=True, is_tree=False,
-                        with_header=None, with_footer=None, show_bg=True, shadow=False,
+                        with_header=None, with_footer=None, show_bg=False, shadow=False,
                         request_focus=getattr(root_state, "_focus_search", 0) > 0,
                         font=Font.JETBRAINS_MONO_19,
                         tint=tint, return_extras=True)
@@ -8950,6 +9103,17 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     # big list - are drawn inline by _dd_leaf_row with raw imgui, avoiding avoid
     # per-row wrapper overhead that made big menus crawl while interacting.
     result = (False, input_value)
+    # Shared label column for code rows: every row's code preview starts at
+    # the same x (the widest label, capped - a long scope name does not eat
+    # the code's width), so the embedded editors are up line to line -
+    # per-row label widths made each row's code start jagged.
+    code_label_w = None
+    if row_code:
+        _ws = [imgui.calc_text_size(str(_l).rstrip())[0]
+               for (_k, _v, _l, _b) in rows
+               if not _b and _dd_row_lookup(row_code, _v) is not None]
+        if _ws:
+            code_label_w = min(max(_ws), _DD_CODE_LBL_MAX_W)
     for idx, row in enumerate(rows):
         key, value, label, is_branch = row
         if is_branch:
@@ -8962,10 +9126,11 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   row_tags=row_tags, row_tints=row_tints,
                                   row_suffixes=row_suffixes,
                                   row_actions=row_actions,
-                                  text_toward_bg=text_toward_bg)
+                                  text_toward_bg=text_toward_bg,
+                                  row_code=row_code,
+                                  code_label_w=code_label_w)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
-    return result
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, temp=True, show_add_delete=False,
              with_header=None, disable_scroll=True, min_width=300, swoosh=False, z_offset=-3)

@@ -585,8 +585,9 @@ def _wheel_lines(visible_px, line_px):
     """Lines to scroll per wheel tick, from the global Toggles scroll settings — the
     same pixel model core_render uses (`scroll_speed` px, capped to a fraction of the
     visible height so small views don't overshoot), converted to lines."""
-    s = Toggles.ScrollSettings
-    px = min(s.scroll_speed, s.max_increment_fraction * max(1.0, visible_px))
+    px = min(Toggles.ScrollSettings.scroll_speed,
+             Toggles.ScrollSettings.max_increment_fraction
+             * max(1.0, visible_px))
     return max(1, int(round(px / max(1.0, line_px))))
 
 
@@ -694,9 +695,10 @@ def draw_terminal_screen(input_value: Terminal, draw_state, view_state: Terminal
         # grid stays frozen at the minimum - line wrapping stops re-flowing - and the
         # clip is pushed before the draw call crops any overflow instead of rewrapping
         # to an unusably narrow grid.
-        ts = Toggles.TerminalSettings
-        avail_w = max(right - left - 2 * pad, ts.min_width)
-        avail_h = max(bottom - top - 2 * pad, ts.min_height)
+        avail_w = max(right - left - 2 * pad,
+                      Toggles.TerminalSettings.min_width)
+        avail_h = max(bottom - top - 2 * pad,
+                      Toggles.TerminalSettings.min_height)
         cols = max(2, int(avail_w / char_w))
         rows = max(2, int(avail_h / line_px))
 

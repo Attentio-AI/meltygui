@@ -421,7 +421,7 @@ def _snippet_triggers():
     list of them."""
     global _SNIP_FLAT
     from src.lsd.gl_gui.toggles import Toggles
-    m = getattr(Toggles.TextEditor, "AC_SNIPPETS", None) or {}
+    m = Toggles.TextEditor.AC_SNIPPETS or {}
     key = (id(m), len(m))
     if _SNIP_FLAT[0] != key:
         import dataclasses
@@ -2562,25 +2562,56 @@ def _uj_file_tint(p):
 
 
 def _usage_ref_items(targets, prefix=""):
-    """({label: UsageRef}, {UsageRef: tag}) rows for the usage-jump picker: the
-    label is the user's enclosing scope (optionally prefixed with the symbol
-    name for merged multi-symbol lists), the dim right-aligned tag its
-    file:line. Duplicate scope labels get a numeric suffix (dict keys feed
+    """({label: UsageRef}, {UsageRef: tag}, {UsageRef: (path, line, code)})
+    rows for the usage-jump picker: the label is the user's enclosing scope
+    (optionally prefixed with the symbol name for merged multi-symbol lists),
+    the dim right-aligned tag its file (GlobalSearch layout: the line number
+    renders in the code row's own gutter, so the tag drops the :line — it
+    keeps it only for rows with no code preview). The third map feeds
+    draw_dd_menu's `row_code` — the ACTUAL code line at each site, rendered
+    GlobalSearch-style through the real editor. Line text comes from
+    PendingSave.current_file_text (pending truth — the same coordinates the
+    refs and the jump use), read once per FILE per picker-open, never per
+    frame. Duplicate scope labels get a numeric suffix (dict keys feed
     draw_dd_menu, so they must be unique)."""
-    items, tags = {}, {}
+    from pathlib import Path as _P
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    items, tags, code = {}, {}, {}
+    file_lines = {}   # str(p) -> splitlines() of the pending text
     for ref in targets:
         scope = (getattr(ref, 'scope', '') or getattr(ref, 'module_name', '')
                  or '<module>')
         scope = _shorten_dotted(scope)
         base = f"{prefix}{scope}"
-        label, n = base, 2
+        # Dedup by INVISIBLEING spaces, not a visible " (n)" counter -
+        # dict keys feed draw_dd_menu so they must be unique, but the counter
+        # read as noise next to the code previews. The row renderer rstrips
+        # for display; trailing spaces render as nothing either way.
+        label = base
         while label in items:
-            label = f"{base} ({n})"
-            n += 1
+            label += " "
         items[label] = ref
         p = getattr(ref, 'path', None)
-        tags[ref] = f"{p.name}:{ref.line}" if p is not None else f":{ref.line}"
-    return items, tags
+        ln = getattr(ref, 'line', None)
+        line_text = None
+        if p is not None and ln:
+            key = str(p)
+            lines = file_lines.get(key)
+            if lines is None:
+                try:
+                    t = PendingSave.current_file_text(_P(key))
+                except Exception:
+                    t = None
+                lines = t.split('\n') if isinstance(t, str) else []
+                file_lines[key] = lines
+            if 0 < ln <= len(lines):
+                line_text = lines[ln - 1].strip()
+        if line_text:
+            code[ref] = (str(p), ln, line_text)
+            tags[ref] = p.name
+        else:
+            tags[ref] = f"{p.name}:{ref.line}" if p is not None else f":{ref.line}"
+    return items, tags, code
 
 
 # --- Definition tints: block wash behind tinted class/def bodies + a matching
@@ -3690,9 +3721,9 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
     # == ProfileMode.ON` washes as a blend of those tints) - so a value keeps
     # its color trail as it flows through code. Iterated so a local defined
     # from an already-propagated local fades one step further per hop.
-    from src.lsd.gl_gui.toggles import Toggles as _Tg
-    fade = _Tg.TextEditor.def_propagation_fade
-    if _Tg.TextEditor.def_tint_propagation:
+    from src.lsd.gl_gui.toggles import Toggles
+    fade = Toggles.TextEditor.def_propagation_fade
+    if Toggles.TextEditor.def_tint_propagation:
         for _pass in range(4):
             changed = False
             for su in untinted_locals:
@@ -3809,7 +3840,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
         m2 = re.match(r"(?:async\s+)?(def|class)\s", s)
         if m2:
             _scopes.append((ind, m2.group(1)))
-    mix_on = _Tg.TextEditor.def_tint_propagation
+    mix_on = Toggles.TextEditor.def_tint_propagation
     for bi, lt in enumerate(lines):
         m = _asn_re.match(lt)
         if m is None:
@@ -5645,7 +5676,7 @@ def draw_text(input_value: str, height=None,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False,
-              single_line=False, is_search_box=False,
+              single_line=False, is_search_box=False, focusable=True,
               draw_state=None, request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.149, font=Font.FONTAWESOME_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
@@ -5965,8 +5996,12 @@ def draw_text(input_value: str, height=None,
                             and getattr(jump_to, 'start', None) is not None)))
     if show_gutter and line_numbers is not None:
         line_offset = 0
-        last_line_no = max((n for n in line_numbers if n is not None), default=1)
-        gutter_digits = max(len(str(last_line_no)), 2)
+        # Fixed strip, sized for 5-digit lines: explicit line_numbers rows
+        # render side by side (usage-picker / global-search code previews,
+        # diff lines), and a per-row digit count made every row's code start
+        # at a different column — line 980 got a 3-char strip, 6719 a 4-char
+        # strip. One fixed strip lines the code up row to row.
+        gutter_digits = 5
         gutter_w = gutter_digits * char_w + 12.0
     elif show_gutter:
         line_offset = jump_to.start
@@ -5984,7 +6019,7 @@ def draw_text(input_value: str, height=None,
     # persists across frames (rebuilt by each overlay pass), so the width is
     # stable - it only appears at all for buffers that have live markers.
     _lv_btn_w = (15.0 if (show_gutter
-                          and getattr(Toggles.TextEditor, "enable_live_view", True)
+                          and Toggles.TextEditor.enable_live_view
                           and getattr(ds, "_lv_gutter_markers", None))
                  else 0.0)
     gutter_w += _lv_btn_w
@@ -6264,9 +6299,10 @@ def draw_text(input_value: str, height=None,
                 view_span=(_usage_off + 1, _usage_off + text.count('\n') + 1))
 
             if _targets and (len(_targets) > 1 or force_picker):
-                _items, _tags = _usage_ref_items(_targets)
+                _items, _tags, _code = _usage_ref_items(_targets)
                 ds._uj_items = _items
                 ds._uj_tags = _tags
+                ds._uj_code = _code
                 # ref -> symbol spelling, so a pick puts the caret ON the
                 # token (see _goto_usage_ref).
                 ds._uj_names = {t: getattr(_su, 'name', None)
@@ -6336,15 +6372,17 @@ def draw_text(input_value: str, height=None,
         # ONE flat level - nested {symbol: {scope: ref}} submenus were fudly
         # (extra click, submenu-window latching) - each row is
         # "symbol  scope" with the symbol capped at 2 dots.
-        _items, _tags = {}, {}
+        _items, _tags, _code = {}, {}, {}
         for _sym, _refs in _groups.items():
             _pref = (f"{_shorten_dotted(_sym)}   "
                      if len(_groups) > 1 else "")
-            _sub, _sub_tags = _usage_ref_items(_refs, prefix=_pref)
+            _sub, _sub_tags, _sub_code = _usage_ref_items(_refs, prefix=_pref)
             _items.update(_sub)
             _tags.update(_sub_tags)
+            _code.update(_sub_code)
         ds._uj_items = _items
         ds._uj_tags = _tags
+        ds._uj_code = _code
         ds._uj_names = _names
         ds._uj_anchor = _anchor           # fallback if the gutter hides
         ds._uj_anchor_gutter = line       # picker docks beside the heat box
@@ -9070,6 +9108,7 @@ def draw_text(input_value: str, height=None,
         window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
         row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None), mode=None,
         row_tints=_uj_row_tints,
+        row_code=(getattr(ds, '_uj_code', None) if _uj_show else None),
         parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13),
         return_extras=True)
 

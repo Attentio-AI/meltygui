@@ -378,7 +378,6 @@ def draw_titlebar(window):
 
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.toggles import Toggles
-    melty_toggles = Toggles.Melty
 
     io = imgui.get_io()
     dl = imgui.get_overlay_draw_list()
@@ -401,8 +400,8 @@ def draw_titlebar(window):
             break
 
     # --- edge/corner resize (skip while maximized) -------------------------
-    border = float(getattr(melty_toggles, "resize_border", 6))
-    corner = float(getattr(melty_toggles, "resize_corner", 18))
+    border = float(Toggles.Melty.resize_border)
+    corner = float(Toggles.Melty.resize_corner)
     edge = None
     if not maximized and over_button is None:
         edge = _edge_at(mx, my, disp_w, disp_h, border, corner)
@@ -436,7 +435,7 @@ def draw_titlebar(window):
     # nothing else claimed it. Clean clicks are untouched (dragged fires
     # only past the handler's drag threshold). Double-click = maximize,
     # same lowest-priority rule.
-    strip_h = float(getattr(melty_toggles, "drag_strip_height", 50))
+    strip_h = float(Toggles.Melty.drag_strip_height)
     if my <= strip_h and mx < bar_left and edge is None:
         Melty.event_handler.register_hovered(
             _STRIP_ID, ["left_mouse_dragged", "left_mouse_double_clicked"],

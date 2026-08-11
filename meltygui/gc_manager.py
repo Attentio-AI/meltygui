@@ -41,20 +41,19 @@ def tick():
     is nothing to do: two attribute reads and a couple of comparisons."""
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.toggles import Toggles
-    cfg = Toggles.GC
-    if not cfg.manage:
+    if not Toggles.GC.manage:
         if _state["applied"]:
             gc.set_threshold(700, 10, 10)   # stock CPython defaults
             _state["applied"] = False
         return
     if not _state["applied"]:
-        gc.set_threshold(700, 10, int(cfg.gen2_threshold))
+        gc.set_threshold(700, 10, int(Toggles.GC.gen2_threshold))
         _state["applied"] = True
     now = time.monotonic()
-    if now - _state["boot_t"] < cfg.boot_delay_s:
+    if now - _state["boot_t"] < Toggles.GC.boot_delay_s:
         return
     last_input = getattr(Melty, "_last_input_time", 0.0)
-    if now - last_input < cfg.idle_seconds:
+    if now - last_input < Toggles.GC.idle_seconds:
         return
     if not _state["frozen"]:
         with lag_span("gc: boot collect+freeze", 0.0):
@@ -64,7 +63,7 @@ def tick():
         _state["last_collect"] = now
         notify(f"gc: froze {gc.get_freeze_count()} objects out of gen2 scans",
                tint=(0.4, 0.9, 0.4), tag="lag")
-    elif now - _state["last_collect"] >= cfg.idle_collect_s:
+    elif now - _state["last_collect"] >= Toggles.GC.idle_collect_s:
         with lag_span("gc: idle collect", 0.0):
             gc.collect()
         _state["last_collect"] = now

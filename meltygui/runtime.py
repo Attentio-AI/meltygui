@@ -1444,8 +1444,7 @@ class Melty:
         """Read Toggles.UIScale into cls.ui_scale and return it. Pure resolve
         — no atlas work — so boot can size the first atlas correctly before
         any frame exists (see FontManager construction in LSDStudio)."""
-        ui = Toggles.UIScale
-        if ui.auto_scale:
+        if Toggles.UIScale.auto_scale:
             scale = cls._auto_ui_scale
             # Re-probe periodically: dragging the OS window to another monitor
             # should retune shortly after, without a glfw walk every frame.
@@ -1453,7 +1452,7 @@ class Melty:
                 scale = detect_auto_scale(cls.glfw_window)
                 cls._auto_ui_scale = scale
         else:
-            scale = ui.scale
+            scale = Toggles.UIScale.scale
         cls.ui_scale = clamp_ui_scale(scale)
         return cls.ui_scale
 

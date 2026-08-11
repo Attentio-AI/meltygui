@@ -1335,11 +1335,10 @@ def _chain_in_debounce_ms(input_value=None):
     default. Buffers at or under Toggles.TextEditor.small_file_max_chars take
     the shorter small_file_debounce_ms — a few-ms parse doesn't need the long
     coalescing window the big-buffer default exists for."""
-    te = Toggles.TextEditor
-    cap = getattr(te, "small_file_max_chars", 0)
+    cap = Toggles.TextEditor.small_file_max_chars
     if cap and isinstance(input_value, str) and len(input_value) <= cap:
-        return getattr(te, "small_file_debounce_ms", _CHAIN_IN_DEBOUNCE_MS)
-    return getattr(te, "parse_debounce_ms", _CHAIN_IN_DEBOUNCE_MS)
+        return Toggles.TextEditor.small_file_debounce_ms
+    return Toggles.TextEditor.parse_debounce_ms
 
 
 class ModesState:

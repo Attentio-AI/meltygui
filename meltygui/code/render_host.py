@@ -239,10 +239,9 @@ class RenderHost(_DeepAttrMixin, dict):
         code-host cache (NOT evicted) — reopening the view re-registers it via
         notify_on_change → register. Toggle-gated; runs once per frame from end_frame."""
         from src.lsd.gl_gui.toggles import Toggles
-        cfg = Toggles.HostLifecycle
-        if not cfg.deregister_idle:
+        if not Toggles.HostLifecycle.deregister_idle:
             return
-        k = int(cfg.idle_frames)
+        k = int(Toggles.HostLifecycle.idle_frames)
         now = Melty.frame_count
         hosts = list(Melty.render_hosts.values())
 

@@ -2621,13 +2621,13 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # the position-offset fast path and evict it when the view shifts off it.
     prev = src = src_key = None
     stale_seed = False
-    _su_t = Toggles.TextEditor.SymbolUsages
-    if not accurate and _su_t.incremental_symbol_index and not heal:
+    if (not accurate and not heal
+            and Toggles.TextEditor.SymbolUsages.incremental_symbol_index):
         # stale_gen_incremental: a prev whose generation lapsed (another file
         # changed / cross-session restore) still contains a valid expensive
         # half for THIS file; reuse it instead of re-recomputing and mark the
         # result (see `heal` above) so it trues up at the next gen bump.
-        any_gen = _su_t.stale_gen_incremental
+        any_gen = Toggles.TextEditor.SymbolUsages.stale_gen_incremental
         if cached is not None and cached[0][2] is False \
                 and (cached[0][3] == gen or any_gen):
             src, src_key = cached, key
@@ -2730,11 +2730,10 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     _li = getattr(Melty, "_last_input_time", 0.0)
     # Small files recompute in a few ms, so they take the short debounce and
     # stay near-live while typing; big ones keep the long coalescing window.
-    _te = Toggles.TextEditor
-    _cap = getattr(_te, "small_file_max_chars", 0)
+    _cap = Toggles.TextEditor.small_file_max_chars
     _small = bool(_cap) and isinstance(text, str) and len(text) <= _cap
-    _quiet_s = (getattr(_te, "small_file_debounce_ms", 500) if _small
-                else getattr(_te, "parse_debounce_ms", 500)) / 1000.0
+    _quiet_s = (Toggles.TextEditor.small_file_debounce_ms if _small
+                else Toggles.TextEditor.parse_debounce_ms) / 1000.0
     if _li and _quiet_s > 0 and _time.monotonic() - _li < _quiet_s:
         _ptrace_rl(("usage-typing-hold", key),
                    "usage recompute deferred (typing) — holding last-good",
