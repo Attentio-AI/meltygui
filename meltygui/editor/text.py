@@ -2550,6 +2550,138 @@ def _shorten_dotted(s):
     return s if len(parts) <= 3 else '.' + '.'.join(parts[-3:])
 
 
+# --- Ctrl+B usage-graph consistency check ------------------------------------
+# The fresh single-line recheck (usage_recompute) recomputes exactly what the
+# background graph should already hold for the caret's line. Any disagreement
+# IS the stuck-stale-graph bug observed at the moment it's reproduced - so
+# every Ctrl+B recheck diffs the two and dumps a full forensic block here.
+_USAGE_MISMATCH_LOG = "/tmp/usage_graph_mismatch.log"
+
+
+def _tree_usages_on_line(tree, file_line):
+    """{display name: SymbolUsage} for every symbol in the tree's nested
+    __symbol_usages__ maps with a site on file-absolute `file_line` — the
+    EXISTING graph's view of that line, unfiltered (no callers requirement).
+    Local-variable entries (key contains \\x1f) are skipped: a single-line
+    recheck can't see a local whose binding sits outside the line, so they'd
+    be permanent false positives — and they have no cross-file callers to go
+    stale anyway."""
+    out = {}
+    seen = set()
+
+    def walk(node, depth=0):
+        if not isinstance(node, dict) or depth > 64 or id(node) in seen:
+            return
+        seen.add(id(node))
+        su_map = node.get("__symbol_usages__")
+        if isinstance(su_map, dict):
+            for key, su in su_map.items():
+                if isinstance(key, str) and "\x1f" in key:
+                    continue
+                for site in getattr(su, 'sites', None) or ():
+                    if site[0] == file_line:
+                        out[getattr(su, 'name', key) or key] = su
+                        break
+        for k, v in node.items():
+            if k not in ("__cst__", "__symbol_usages__"):
+                walk(v, depth + 1)
+
+    walk(tree)
+    return out
+
+
+def _usage_ref_tup(r):
+    """UsageRef -> a comparable/printable (path, line, column) tuple."""
+    if r is None:
+        return None
+    return (str(getattr(r, 'path', None)), getattr(r, 'line', None),
+            getattr(r, 'column', None))
+
+
+def _diff_usage_maps(old, new, file_line):
+    """Human-readable difference lines between the existing graph's symbols
+    on `file_line` (`old`) and the freshly recomputed ones (`new`); [] =
+    consistent. Compares membership, the line's sites, the definition, and
+    the caller sets."""
+    diffs = []
+    for nm in sorted(old.keys() - new.keys()):
+        diffs.append(f"MISSING in fresh: {nm!r} — tree has it, recheck did not resolve it")
+    for nm in sorted(new.keys() - old.keys()):
+        diffs.append(f"MISSING in tree: {nm!r} — recheck resolved it, graph lacks it")
+    for nm in sorted(old.keys() & new.keys()):
+        o, n = old[nm], new[nm]
+        os_ = sorted(tuple(s) for s in (getattr(o, 'sites', None) or ())
+                     if s[0] == file_line)
+        ns_ = sorted(tuple(s) for s in (getattr(n, 'sites', None) or ())
+                     if s[0] == file_line)
+        if os_ != ns_:
+            diffs.append(f"SITES differ for {nm!r}: tree={os_} fresh={ns_}")
+        od = _usage_ref_tup(getattr(o, 'definition', None))
+        nd = _usage_ref_tup(getattr(n, 'definition', None))
+        if od != nd:
+            diffs.append(f"DEFINITION differs for {nm!r}: tree={od} fresh={nd}")
+        oc = sorted(_usage_ref_tup(c) for c in getattr(o, 'callers', None) or ())
+        nc = sorted(_usage_ref_tup(c) for c in getattr(n, 'callers', None) or ())
+        if oc != nc:
+            only_o = [c for c in oc if c not in set(nc)]
+            only_n = [c for c in nc if c not in set(oc)]
+            diffs.append(f"CALLERS differ for {nm!r} "
+                         f"(tree={len(oc)} fresh={len(nc)}): "
+                         f"only-tree={only_o[:20]} only-fresh={only_n[:20]}")
+    return diffs
+
+
+def _dump_symbol_usage(su, cap=40):
+    """Multi-line forensic dump of one SymbolUsage — everything the graph
+    knows: all sites, the definition, and (capped) callers."""
+    if su is None:
+        return "      <absent>"
+    lines = [f"      sites={sorted(tuple(s) for s in (getattr(su, 'sites', None) or ()))}",
+             f"      definition={_usage_ref_tup(getattr(su, 'definition', None))}"]
+    callers = [_usage_ref_tup(c) for c in getattr(su, 'callers', None) or ()]
+    lines.append(f"      callers ({len(callers)}):")
+    for c in sorted(callers)[:cap]:
+        lines.append(f"        {c}")
+    if len(callers) > cap:
+        lines.append(f"        ... {len(callers) - cap} more")
+    return "\n".join(lines)
+
+
+def _log_usage_mismatch(vpath, file_line, diffs, old, new, ctx):
+    """PROMINENT mismatch report: append a self-contained forensic block to
+    _USAGE_MISMATCH_LOG (context + verdicts + full old/new dumps of every
+    symbol involved — debuggable from the log alone) and bang a red banner
+    on stdout pointing at it. Never raises — the check must not break the
+    jump it rides on."""
+    try:
+        import datetime
+        names = sorted(set(old) | set(new))
+        block = ["=" * 78,
+                 f"USAGE GRAPH MISMATCH  {datetime.datetime.now().isoformat(timespec='seconds')}",
+                 f"  file={vpath}  line={file_line}",
+                 "  " + "  ".join(f"{k}={v}" for k, v in ctx.items()),
+                 "  --- differences " + "-" * 40]
+        block += [f"  {d}" for d in diffs]
+        block.append("  --- full state (tree = existing graph, fresh = recheck) " + "-" * 10)
+        for nm in names:
+            block.append(f"    {nm!r}:")
+            block.append("    tree:")
+            block.append(_dump_symbol_usage(old.get(nm)))
+            block.append("    fresh:")
+            block.append(_dump_symbol_usage(new.get(nm)))
+        block.append("")
+        with open(_USAGE_MISMATCH_LOG, "a") as f:
+            f.write("\n".join(block) + "\n")
+        print(f"\033[1;97;41m[usage-mismatch] {getattr(vpath, 'name', vpath)}"
+              f":{file_line} — {len(diffs)} difference(s) between the usage "
+              f"graph and the fresh recheck — full dump in "
+              f"{_USAGE_MISMATCH_LOG}\033[0m")
+        _uj_log(f"MISMATCH line={file_line} diffs={len(diffs)} "
+                f"-> {_USAGE_MISMATCH_LOG}")
+    except Exception:
+        pass
+
+
 def _uj_file_tint(p):
     """The file's FileMeta tint for a picker row (same source the editor tabs
     use), or None."""
@@ -6674,13 +6806,164 @@ def draw_text(input_value: str, height=None,
         _open_usage_ref(ref, token=token,
                         editor_window=_enclosing_editor_window(ds))
 
+    def _present_usage_targets(_us, _su, _targets, force_picker):
+        """Land a resolved usage jump: one counterpart opens straight in
+        IntelliJ style; several (or `force_picker`) open the usage-jump
+        picker under the symbol at buffer index `_us`. Always True."""
+        if len(_targets) > 1 or force_picker:
+            _items, _tags, _code = _usage_ref_items(_targets)
+            ds._uj_items = _items
+            ds._uj_tags = _tags
+            ds._uj_code = _code
+            # ref -> symbol spelling, so a picker lands the caret ON the
+            # symbol (see _goto_usage_ref).
+            ds._uj_names = {t: getattr(_su, 'name', None)
+                            for t in _targets}
+            ds._uj_anchor = _us   # picker hangs under the symbol
+            ds._uj_anchor_gutter = None
+            ds._uj_index = 0
+            ds._uj_open = True
+            ds._uj_open_frame = Melty.frame_count
+            uj_state._kbd_mode = True
+            uj_state.cursor_path = (next(iter(_items)),)
+            uj_state.open_path = ()
+            # The picker window is LATCHED - its scroll_offset survives
+            # a close, so a reopen would pop up mid-list with the row-0
+            # cursor scrolled offscreen. Snap it down to the top.
+            from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
+            _dd_scroll_cursor_into_view(
+                Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
+            request_render()
+            return True
+        _goto_usage_ref(_targets[0],
+                        token=getattr(_su, 'name', None))
+        return True
+
+    def _usage_recheck(pos):
+        """The tree has no jump targets at `pos` — double-check against FRESH
+        data before Ctrl+B flashes red, since the background usage graph can
+        hold a symbol in a stale no-callers state. Recomputes usage data for
+        just the caret's line (full cross-file caller walk), SYNCHRONOUSLY on
+        the UI thread — deliberately, to get a feel for the real cost (timed
+        into /tmp/uj_debug.log and stdout). Returns a display-coordinate span
+        (start, end, SymbolUsage, at_def) for the symbol under the caret, or
+        None when the fresh data agrees there's nothing to jump to."""
+        _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        if _vpath is None:
+            return None
+        # Caret's display line -> full buffer line (folds splice the display
+        # text) -> 1-based file line via the view's offset.
+        _dl = text.count('\n', 0, pos)
+        _fl = (_fold_d2b[_dl] if _fold_d2b is not None
+               and _dl < len(_fold_d2b) else _dl)
+        _file_line = _usage_off + _fl + 1
+        _t0 = time.monotonic()
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import usage_data_for_line
+        _su_map = usage_data_for_line(str(_vpath), _file_line)
+        _ms = (time.monotonic() - _t0) * 1000
+        _uj_log(f"recheck {ds.name!r} line={_file_line} "
+                f"took {_ms:.1f}ms symbols={len(_su_map)}")
+        print(f"[usage-recheck] {getattr(_vpath, 'name', _vpath)}:{_file_line} "
+              f"took {_ms:.1f}ms ({len(_su_map)} symbols)")
+        # Safety check: the fresh result should AGREE with what the graph
+        # already holds for this line - a difference is a stuck-stale-graph
+        # bug caught in the act, so diff them and dump a forensic block
+        # (_USAGE_MISMATCH_LOG) with everything needed to debug it later.
+        # Guarded: the check must never fail the jump it rides on.
+        try:
+            _old_map = _tree_usages_on_line(_usage_tree, _file_line)
+            _new_map = {getattr(_s, 'name', _k) or _k: _s
+                        for _k, _s in _su_map.items()
+                        if not (isinstance(_k, str) and "\x1f" in _k)
+                        and any(s[0] == _file_line
+                                for s in (getattr(_s, 'sites', None) or ()))}
+            _diffs = _diff_usage_maps(_old_map, _new_map, _file_line)
+            if _diffs:
+                from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                    usage_graph_source)
+                from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+                _log_usage_mismatch(
+                    _vpath, _file_line, _diffs, _old_map, _new_map,
+                    ctx=dict(frame=Melty.frame_count,
+                             editor=repr(ds.name),
+                             recheck_ms=f"{_ms:.1f}",
+                             usage_off=_usage_off,
+                             view_start=getattr(jump_to, 'start', None),
+                             view_lines=_fold_full.count('\n') + 1,
+                             graph_source=usage_graph_source(
+                                 str(_vpath), _file_line, _file_line + 1),
+                             pending_gen=PendingSave.pending_gen_for(_vpath),
+                             tree_syms_on_line=len(_old_map),
+                             fresh_syms_on_line=len(_new_map)))
+        except Exception as _ce:
+            _uj_log(f"recheck consistency check RAISED "
+                    f"{type(_ce).__name__}: {_ce}")
+        if not _su_map:
+            return None
+        # Same per-site resolution as _collect_usage_spans, narrowed to the
+        # caret's line: full-buffer coordinates first, fold remap after.
+        import os
+        try:
+            _vreal = os.path.realpath(str(_vpath))
+        except OSError:
+            _vreal = None
+        _spans = []
+        for _key, _su in _su_map.items():
+            _name = getattr(_su, 'name', _key) or _key
+            _d = getattr(_su, 'definition', None)
+            _dp = getattr(_d, 'path', None) if _d is not None else None
+            try:
+                _def_here = (_dp is not None and _vreal is not None
+                             and os.path.realpath(str(_dp)) == _vreal)
+            except OSError:
+                _def_here = False
+            _is_local = isinstance(_key, str) and "\x1f" in _key
+            for (_ln, _col) in getattr(_su, 'sites', None) or ():
+                if _ln != _file_line:
+                    continue
+                _sp = _site_span(_fold_full, _ln, _col, _name, _usage_off)
+                if _sp is None:
+                    continue
+                _at_def = (_def_here and _ln == getattr(_d, 'line', None)
+                           and (_col == getattr(_d, 'column', None)
+                                if _is_local else True))
+                _spans.append((_sp[0], _sp[1], _su, _at_def))
+        if _fold_remap_spans is not None:
+            _spans = _fold_remap_spans(tuple(_spans), 'uj_recheck')
+        # Narrowest span containing pos wins (same rule as _try_usage_jump).
+        _best = None
+        for _sp in _spans:
+            if _sp[0] <= pos < _sp[1] and (_best is None
+                                           or _sp[1] - _sp[0] < _best[1] - _best[0]):
+                _best = _sp
+        return _best
+
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
         straight in IntelliJ; several open the usage-jump picker under the
         symbol. `force_picker` opens the picker even for a SINGLE counterpart
-        instead of jumping straight. True if the jump or picker happened (a
-        span with zero targets returns False)."""
+        instead of jumping straight. When the tree yields no targets at `pos`
+        (no span, or a span whose symbol shows no users), a synchronous
+        single-line recheck (_usage_recheck) gets one more chance before
+        False is returned and the caller flashes red. With
+        Toggles.TextEditor.SymbolUsages.ctrl_b_always_recheck the recheck
+        runs FIRST on every press and its fresh result wins; the background
+        graph is only the fallback when it resolves nothing under the
+        caret."""
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        _view_span = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
+        _rechecked = False
+        if Toggles.TextEditor.SymbolUsages.ctrl_b_always_recheck:
+            _rechecked = True
+            _fresh = _usage_recheck(pos)
+            if _fresh is not None:
+                _us, _ue, _su, _at_def = _fresh
+                _targets = _usage_jump_targets(_su, at_def=_at_def,
+                                               view_path=_vpath,
+                                               view_span=_view_span)
+                if _targets:
+                    return _present_usage_targets(_us, _su, _targets,
+                                                  force_picker)
         _n_spans = 0
         # NARROWEST span containing pos wins, not the first: a dotted member
         # span (`GlobalStyle.get_global_constant`, anchored at the start of
@@ -6697,43 +6980,26 @@ def draw_text(input_value: str, height=None,
                 _best = _sp
         if _best is not None:
             _us, _ue, _su, _at_def = _best
-            _targets = _usage_jump_targets(
-                _su, at_def=_at_def,
-                view_path=_vpath,
-                view_span=(_usage_off + 1, _usage_off + _fold_full.count('\n') + 1))
-
-            if _targets and (len(_targets) > 1 or force_picker):
-                _items, _tags, _code = _usage_ref_items(_targets)
-                ds._uj_items = _items
-                ds._uj_tags = _tags
-                ds._uj_code = _code
-                # ref -> symbol spelling, so a pick puts the caret ON the
-                # token (see _goto_usage_ref).
-                ds._uj_names = {t: getattr(_su, 'name', None)
-                                for t in _targets}
-                ds._uj_anchor = _us   # picker hangs under the symbol
-                ds._uj_anchor_gutter = None
-                ds._uj_index = 0
-                ds._uj_open = True
-                ds._uj_open_frame = Melty.frame_count
-                uj_state._kbd_mode = True
-                uj_state.cursor_path = (next(iter(_items)),)
-                uj_state.open_path = ()
-                # The picker window is LATCHED - its scroll_offset survives
-                # a close, so a reopen would come up mid-list with the row-0
-                # symbol scrolled off view. Snap it back to the top.
-                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
-                _dd_scroll_cursor_into_view(
-                    Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
-                request_render()
-                return True
+            _targets = _usage_jump_targets(_su, at_def=_at_def,
+                                           view_path=_vpath,
+                                           view_span=_view_span)
             if _targets:
-                _goto_usage_ref(_targets[0],
-                                token=getattr(_su, 'name', None))
-                return True
-            return False
-        _uj_log(f"try_jump MISS pos={pos} spans_scanned={_n_spans} "
-                f"vpath={getattr(_vpath, 'name', _vpath)}")
+                return _present_usage_targets(_us, _su, _targets, force_picker)
+            _uj_log(f"try_jump zero targets pos={pos} "
+                    f"sym={getattr(_su, 'name', None)!r} — rechecking")
+        else:
+            _uj_log(f"try_jump MISS pos={pos} spans_scanned={_n_spans} "
+                    f"vpath={getattr(_vpath, 'name', _vpath)} — rechecking")
+        if not _rechecked:
+            _fresh = _usage_recheck(pos)
+            if _fresh is not None:
+                _us, _ue, _su, _at_def = _fresh
+                _targets = _usage_jump_targets(_su, at_def=_at_def,
+                                               view_path=_vpath,
+                                               view_span=_view_span)
+                if _targets:
+                    return _present_usage_targets(_us, _su, _targets,
+                                                  force_picker)
         return False
 
     def _line_usage_picker(line):
@@ -8013,6 +8279,29 @@ def draw_text(input_value: str, height=None,
         cursor_top_abs = (origin_y + (_origin_sy - ds.scroll_offset[1])
                           + cursor_line * line_px)
         _scroll_into_view(ds, cursor_top_abs, cursor_top_abs + line_px)
+
+    # --- Bring-to-front on caret/selection edits ---
+    # Moving the caret or changing the selection in an editor whose window
+    # sits behind another raises that window - the keyboard counterpart of
+    # click-to-raise (which only fires on clicks). Gated on this editor
+    # being text focus so programmatic caret writes into an unfocused
+    # editor (external jumps, session restores) don't steal z-order, and on
+    # the owning root window not already being front so plain typing in
+    # the front editor won't queue a move every keystroke.
+    _sel_now = (ds.text_selection_start, ds.text_selection_end)
+    if ((ds.text_cursor_pos != ds.text_prev_cursor_pos
+            or _sel_now != getattr(ds, '_prev_sel_state', _sel_now))
+            and Melty.text_focused_ds is ds):
+        _root, _n = ds, 0
+        while (_root._tile_id not in Melty.registered_windows
+               and _root.parent_window is not None
+               and _root.parent_window is not _root and _n < 64):
+            _root = _root.parent_window
+            _n += 1
+        if (_root._tile_id in Melty.registered_windows
+                and next(reversed(Melty.registered_windows), None) != _root._tile_id):
+            Melty.move_window_to_front(ds)
+    ds._prev_sel_state = _sel_now
 
     ds.text_prev_cursor_pos = ds.text_cursor_pos
 
@@ -9420,6 +9709,36 @@ def draw_text(input_value: str, height=None,
                     clear_file_stores(str(_p))
                 ds.invalidate()
                 request_render()
+
+        # --- Usage-graph source (debug badge, left of the live badge) ------
+        # Where this span's symbol-usage graph came from: "fresh" (full
+        # recompute this session), "disk" (pickle warm-start), "sys" (adopted
+        # across a restart-in-place) - plus "+Ni" for N incremental passes on
+        # that base. Reads the provenance map libcst_conversion maintains at
+        # each store; "none" = no tracked span covers this view yet.
+        if (Toggles.TextEditor.SymbolUsages.show_usage_graph_source
+                and getattr(jump_to, 'path', None) is not None):
+            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                usage_graph_source)
+            _ug_start = (getattr(jump_to, 'start', 0) or 0) + 1
+            _ug_txt = usage_graph_source(
+                str(jump_to.path), _ug_start,
+                _ug_start + _fold_full.count('\n'))
+            _ug_dot = {"fresh": (0.25, 0.85, 0.35, 0.95),
+                       "disk": (0.9, 0.65, 0.15, 0.9),
+                       "sys": (0.35, 0.6, 0.9, 0.9)}.get(
+                (_ug_txt or "").split("+")[0], (0.5, 0.5, 0.5, 0.6))
+            _ug_txt = _ug_txt or "none"
+            _ug_x1 = _li_x1 - _li_w - 6.0
+            _ug_w = len(_ug_txt) * 7.5 + 20.0
+            draw_list.add_rect_filled(
+                _ug_x1 - _ug_w, _li_y0, _ug_x1, _li_y0 + 17.0,
+                imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 0.6), 8.5)
+            draw_list.add_circle_filled(_ug_x1 - _ug_w + 9.0, _li_y0 + 8.5, 3.5,
+                                        imgui.get_color_u32_rgba(*_ug_dot))
+            draw_list.add_text(_ug_x1 - _ug_w + 16.0, _li_y0 + 1.5,
+                               imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85),
+                               _ug_txt)
 
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its

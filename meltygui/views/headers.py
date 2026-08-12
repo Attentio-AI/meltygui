@@ -327,7 +327,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     # for press-reactive controls (tab switches) that should feel immediate.
     return draw_state.on_action(event, view_id=view_id,
                                 rect=(x, y, x + w, y + h),
-                                priority_delta=2) is not None
+                                priority_delta=4) is not None
 
 
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",

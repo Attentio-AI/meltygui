@@ -990,12 +990,14 @@ def _load_symbol_store() -> dict:
     store = getattr(sys, "_symbol_index_store", None)
     if isinstance(store, dict):
         store.setdefault("hashes", {})  # adopt; backfill the hash dict if older
+        store["origin"] = "sys"  # this process life got the spans from sys
         _ptrace("store: adopted live symbol store (restart-in-place)",
                 spans=len(store.get("spans", ())), gen=store.get("gen"))
         return store  # restart-in-place: adopt those dicts
     spans, gen, mtimes, hashes = {}, 0, {}, {}
     if not _disk_cache_enabled():  # cache off: skip warm-start, stay cold
-        store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
+        store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes,
+                 "origin": "disk"}
         sys._symbol_index_store = store
         return store
     with _pspan("store: warm-start load") as _sp:
@@ -1011,7 +1013,8 @@ def _load_symbol_store() -> dict:
         except Exception as e:
             _sp.add(failed=type(e).__name__)  # missing/corrupt/stale-format → cold
         _sp.add(spans=len(spans), gen=gen)
-    store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes}
+    store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes,
+             "origin": "disk"}
     sys._symbol_index_store = store
     return store
 
@@ -1070,6 +1073,7 @@ def _prune_symbol_store():
         _symbol_usage_cache.pop(k, None)
         _span_text.pop(k, None)
         _span_hashes.pop(k, None)
+        _usage_graph_source.pop(k, None)
     for path in [p for p in _mtime_snapshot if cur_mtime.get(p, 0) is None]:
         _mtime_snapshot.pop(path, None)
 
@@ -1120,6 +1124,59 @@ _mtime_snapshot: dict = _symbol_store["mtimes"]  # resolved_path -> mtime at las
 # here - Lukas allowed it for THIS cache given the recompute cost; it's only on
 # a MISS, never to detect a hit.
 _span_hashes: dict = _symbol_store["hashes"]  # (resolved_path, start, end) -> 16-byte content hash
+
+# --- Usage-graph provenance (debug display) ------
+# span key -> (base, incr_count): where that span's usage data came from.
+# base ∈ "fresh" (full recompute this session) / "disk" (pickle warm-start) /
+# "sys" (adopted from a restart-in-place); incr_count = how many incremental
+# passes have refreshed it since its base was established. The editor's
+# usage-source badge (draw_text top-right) reads it via usage_graph_source().
+# sys-adopted (never pickled): a restart-in-place keeps real tags; a fresh
+# process tags everything restored off the pickle "disk"; entries the map
+# doesn't cover (computed before this tracking existed) fall back to the
+# store's origin.
+_usage_graph_source: dict = getattr(sys, "_symbol_usage_source", None)
+if _usage_graph_source is None:
+    _usage_graph_source = {}
+    sys._symbol_usage_source = _usage_graph_source
+for _k in _symbol_usage_cache:
+    _usage_graph_source.setdefault(_k, (_symbol_store.get("origin", "disk"), 0))
+
+
+def usage_graph_source(file_path, start_line: int, end_line: int):
+    """Formatted provenance label for the usage graph covering
+    [start_line, end_line] of `file_path` — e.g. "disk", "fresh", "sys+4i"
+    (base plus how many incremental passes refreshed it) — or None when no
+    tracked span overlaps. Exact span key first, then the best-overlapping
+    same-file span (the key's line range drifts off the view's as edits
+    shift it)."""
+    resolved = _resolve_memo.get(file_path)
+    if resolved is None:
+        try:
+            resolved = _Path(file_path).resolve()
+        except (OSError, ValueError):
+            return None
+        if len(_resolve_memo) > 512:
+            _resolve_memo.clear()
+        _resolve_memo[file_path] = resolved
+    e = _usage_graph_source.get((resolved, start_line, end_line))
+    if e is None:
+        best_ov = 0
+        for (p, s, en), v in _usage_graph_source.items():
+            if p != resolved:
+                continue
+            ov = min(end_line, en) - max(start_line, s)
+            if ov > best_ov:
+                best_ov, e = ov, v
+    if e is None:
+        return None
+    base, n = e
+    return base if not n else f"{base}+{n}i"
+
+
+# file_path str -> resolved Path, for the per-frame badge lookup (Path.resolve
+# is a syscall; never repeat it per frame). Bounded, harmless to lose.
+_resolve_memo: dict = globals().get("_resolve_memo") or {}
 
 
 def _content_hash(text: str) -> bytes:
@@ -2393,6 +2450,30 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     return out
 
 
+def usage_data_for_line(file_path: str, line: int) -> dict:
+    """SYNCHRONOUS fresh usage lookup for one file line — the Ctrl+B
+    "no users? double-check" probe. The background index can hold a symbol in
+    a stale no-callers state; before the editor flashes the red
+    nothing-to-jump-to emphasis it calls this to recompute usage data for
+    just the caret's line via the jedi-free refs index (full cross-file
+    caller walk over the loaded-module map, same pipeline as the background
+    pass). Runs on the CALLER'S thread — deliberately, including the render
+    thread, so the real cost is measurable at the call site. Returns a fresh
+    {symbol: SymbolUsage}; {} when the file isn't a loaded src module, the
+    buffer doesn't parse, or the line holds no resolvable symbols. The result
+    is NOT written into the span cache or the tree — it's a verification
+    probe for the jump decision, not a heal of the stale graph (that fix is
+    separate)."""
+    try:
+        resolved = _Path(file_path).resolve()
+    except (OSError, ValueError):
+        return {}
+    raw = _symbol_refs_index(str(resolved), line, line)
+    if raw is _PARSE_FAILED or not raw:
+        return {}
+    return _rebuild_symbol_usages(raw)
+
+
 def _distribute_by_name(gp, flat: dict, _matched=None) -> None:
     """Attach each symbol's usage to the GeneralParse node that DIRECTLY contains
     it (its immediate parent), recursing into nested GeneralParse children. A
@@ -2694,6 +2775,11 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
                         _shift_last_mat[resolved] = _time.monotonic()
                         if chash is None:
                             chash = _content_hash(text)
+                        # Position-only remap: provenance passes along unchanged
+                        # (the data is the seed's, just shifted).
+                        if src_key != key:
+                            _usage_graph_source[key] = _usage_graph_source.get(
+                                src_key, (_symbol_store.get("origin", "disk"), 0))
                         _store_usages(key, sig, offset, text, chash=chash,
                                       evict=src_key if src_key != key else None)
                         if stale_seed:
@@ -2789,6 +2875,15 @@ def _compute_symbol_usages(resolved, start, end, pending_gen=0, fast_only=False)
     # The view moved to `key`; the old sibling we reused is now dead weight.
     if chash is None:
         chash = _content_hash(text)
+    # Provenance stamp for the usage-source badge: a full pass (cold / heal /
+    # jedi) resets the base to "fresh"; an incremental reuse keeps the seed's
+    # base and bumps its refresh count.
+    if prev is None:
+        _usage_graph_source[key] = ("fresh", 0)
+    else:
+        _b, _n = _usage_graph_source.get(
+            src_key, (_symbol_store.get("origin", "disk"), 0))
+        _usage_graph_source[key] = (_b, _n + 1)
     _store_usages(key, sig, usages, text, chash=chash,
                   evict=src_key if (src_key is not None and src_key != key) else None)
     # Marker lifecycle: a result built on a stale-gen seed owes a full pass
@@ -3020,6 +3115,7 @@ def _store_usages(key, sig, usages, text, chash=None, evict=None) -> None:
         _span_text.pop(evict, None)
         _span_hashes.pop(evict, None)
         _stale_seeded_spans.discard(evict)
+        _usage_graph_source.pop(evict, None)
 
 
 def invalidate_usage_cache(path: _Path | str | None = None,
@@ -3045,6 +3141,7 @@ def invalidate_usage_cache(path: _Path | str | None = None,
             _span_text.clear()
             _span_hashes.clear()
             _stale_seeded_spans.clear()
+            _usage_graph_source.clear()
     else:
         resolved = _Path(path).resolve()
         _xref_cache.pop(resolved, None)
@@ -3058,6 +3155,8 @@ def invalidate_usage_cache(path: _Path | str | None = None,
                 _span_hashes.pop(k, None)
             for k in [k for k in _stale_seeded_spans if k[0] == resolved]:
                 _stale_seeded_spans.discard(k)
+            for k in [k for k in _usage_graph_source if k[0] == resolved]:
+                _usage_graph_source.pop(k, None)
 
 
 def _get_cross_file_usages(

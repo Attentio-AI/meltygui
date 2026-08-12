@@ -249,9 +249,9 @@ class Tint:
         active_hsv = style_manager.hsv
 
         hue_delta = 0.00
-        # Live knob - see Toggles.TextEditor.gutter_saturation.
+        # Custom knobs - see Toggles.TextEditor.gutter_saturation, gutter_value.
         saturation_factor = Toggles.TextEditor.gutter_saturation
-        value_factor = 0.35
+        value_factor = Toggles.TextEditor.gutter_value
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
@@ -598,6 +598,22 @@ class Toggles:
             # the graph if ever needed.
             local_symbol_usages = True
 
+            # Debug badge in the editor's top-right (left of the live-scope
+            # indicator) showing where the view's usage graph came from:
+            # "fresh" (full recompute this session) / "disk" (pickle
+            # warm-start) / "sys" (adopted across a restart in-place), or
+            # "Ni" for N incremental passes on that base.
+            show_usage_graph_source = True
+
+            # Ctrl+B always consults FRESH data: run the synchronous
+            # single-line usage recheck (usage_data_for_line - full
+            # cross-file caller walk, on the UI thread, timed to log +
+            # /tmp/uj_debug.log) on EVERY Ctrl+B press and prefer its
+            # result, falling back to the background graph only when the
+            # recheck resolves nothing under the caret. Off = the recheck
+            # runs only as the no-targets fallback before the red flash.
+            ctrl_b_always_recheck = True
+
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
         # with the trigger. The key is one trigger string or a TUPLE of
@@ -811,10 +827,23 @@ class Toggles:
         # 0 disables.
         usage_heat_shadow_offset = 1.0
         usage_heat_shadow_max = 15.148
-        # Line-number background saturation - the hsv saturation multiplier
-        # Tint.line_number_bg applies to the theme color (was a hardcoded
-        # 1.6; lower = greyer, dull muted strip).
-        gutter_saturation = 0.162
+        # Gutter background saturation/value — the hsv multipliers
+        # Tint.line_number_bg applies to the theme color (saturation was a
+        # hardcoded 1.6, value a hardcoded 0.35; lower saturation = greyer,
+        # calmer strip; lower value = darker strip).
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        gutter_saturation = 1.046
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        gutter_value = 0.325
+
+        # Code editor body background — draw_code_editor forwards these into
+        # its draw_text panes as the show_bg saturation multiplier and the
+        # max_bg_value brightness cap (draw_text's decorator defaults are
+        # saturation=0.9 / max_bg_value=0.05).
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        editor_saturation = 1.056
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        editor_value = 0.05
 
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
@@ -1122,19 +1151,19 @@ class Toggles:
         ribbon_replace_tint = (0.294, 0.675, 0.928) # changed in place
         # Shared fill alpha for the block washes AND the seam band - same fill
         # so highlight → band → highlight reads as ONE continuous shape.
-        ribbon_fill_alpha = 0.065
+        ribbon_fill_alpha = 0.089
         # Boundary stroke around the whole shape (wash edges + S-curves).
-        ribbon_edge_alpha = 0.103
-        ribbon_edge_thickness = 2.00
+        ribbon_edge_alpha = 0.00
+        ribbon_edge_thickness = 0.00
         # Thin insertion line where a side has no rows (pure insert/delete).
-        ribbon_insertion_alpha = 0.237
-        ribbon_insertion_thickness = 1.046
+        ribbon_insertion_alpha = 0.358
+        ribbon_insertion_thickness = 2.00
         # Seam curve sampling (smoothstep slices).
-        ribbon_curve_steps = 19
+        ribbon_curve_steps = 10
         # Signed depth offset for the shadow cast behind the whole swoosh
         # (washes + seam band, add_shadow semantics: positive lifts it off
         # the editor surface, negative carves a hole). 0 disables.
-        ribbon_shadow_offset = 9.476
+        ribbon_shadow_offset = 3.058
         # Take-arrow chips riding the swooshes (pull a block from the
         # reference pane into the buffer): flat_buttons colored by the
         # block's ribbon tint - hover boost and text color come from
@@ -1290,7 +1319,7 @@ class Toggles:
     # vector (x right, y down in UV space). Only the direction matters -
     # the shader normalizes it; travel distance comes from
     # shadow_height_scale.
-    shadow_light_dir = (-0.095, 0.225)
+    shadow_light_dir = (-0.196, 0.265)
     # How far a shadow travels per unit of caster/receiver depth gap
     # (in units): higher = deeper stacks cast longer shadows.
     shadow_height_scale = 3.716
@@ -1331,13 +1360,13 @@ class Toggles:
     # Value = bevel radius in px: the width of the highlight rim and the
     # apparent roundness of the edge. 0 disables the pass.
     # [tint=(0.85, 0.75, 0.05), show_tint=True]
-    specular_bevel = 3.592
+    specular_bevel = 1.178
 
     # Global surface roughness for the specular rim, (0, 1]: low = tight
     # bright crest line at the edge, high = broad dim sheen at the bevel.
-    specular_roughness = 0.137
+    specular_roughness = 0.094
     # Peak brightness of the highlight (white light added at composite).
-    specular_opacity = 0.242
+    specular_opacity = 0.213
     # Fade of the highlight ALONG the lit edges, in px: brightest at the
     # lit corner (top-left when the shadow falls down-right), dying out
     # over this distance scanning down the left edge / across the top
@@ -1500,6 +1529,17 @@ class Actions:
     @staticmethod
     def new_render_func(name="draw_other"):
         pass
+
+    @staticmethod
+    def claude_terminal():
+        """Open a gnome-terminal window running `claude-d` (Claude Code in a
+        studio-discoverable tmux session — see ~/bin/claude-d). The script owns
+        the session lifetime; closing the window kills it."""
+        import subprocess
+        # Full paths + close_fds=False -> posix_spawn, not fork (forking this
+        # process stalls the render thread).
+        subprocess.Popen(["/usr/bin/gnome-terminal", "--",
+                          "/home/lukas/bin/claude-d"], close_fds=False)
 
 
 @window

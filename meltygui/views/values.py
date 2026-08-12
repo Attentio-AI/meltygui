@@ -2675,9 +2675,15 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # the enclosing layout is unaffected.
     imgui.set_cursor_screen_pos(after_rows)
     return False, input_value
-
-
-@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True, tint=(0.355679, 0.3584364, 0.3722222, 0.40))
+    
+@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True, tint=(0.1517593, 0.169, 0.1833333, 1.00),
+        # Replaces (not merges with) WINDOW_RESIZABLE's initial, so width/height
+        # ride along. Closed=True: a brand-new draw_state (fresh load, or the
+        # registry entry didn't survive the last save) had closed=False,
+        # which popped the search open at (0,0) on load startup - the box should
+        # only ever appear when summoned (Ctrl+Shift+F / dock).
+        name="GlobalSearch",
+        initial={"width": 400, "height": 320, "closed": True})
 class GlobalSearch:
     query = ""
     window_ds = None  # this window's own draw_state (for the show shortcut)
@@ -2909,9 +2915,15 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 GlobalSearch.window_ds.invalidate()
         else:
             gs = Core.melty.open_window("GlobalSearch")
-            if gs is not None:
-                # Summon the box to just above the cursor so it shows up where
-                # you're looking and is ready to type into.
+            # "Never used" = no size yet (never rendered) OR window_pos still
+            # at the (0, 0) default. a draw_state that didn't survive a past
+            # session reloads at the top-left default, and opening it there is
+            # never what anyone wants. Summon those to the cursor; a window the
+            # user has actually positioned (nonzero window_pos, persisted)
+            # reopens in place. open_window alone un-hides and raises it.
+            _wp = gs.window_pos if gs is not None else None
+            if gs is not None and (not gs.width or not _wp
+                                   or tuple(_wp) == (0, 0)):
                 mx, my = imgui.get_mouse_pos()
                 Core.melty.summon_window(gs, mx, my - 65)
             GlobalSearch._focus_requested = True
@@ -6262,34 +6274,6 @@ class _SourceItem(str):
 
 _ACTIVE_SRC_TINT = (0.9, 0.8, 0.2)
 
-
-@render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
-             searchable=True, show_name=False, selectable=False)
-@window(tint=(0.767, 0.671, 0.183))
-def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **kwargs):
-    """One row per view param: a source dropdown for LOOKING at the different
-    input sources, plus the value stored at the selected source — editable
-    when that source is writable, an inline + when it doesn't set the param
-    there yet. The dropdown defaults to the source actively driving the
-    param (yellow row/trigger); switching it never deletes or moves
-    anything, it just changes which source you're viewing/editing.
-    Selection lives on THIS tab's draw_state (misc) — pure view state."""
-    from src.lsd.gl_gui.view.core_views.anywhere import (_ABOVE_DRAW_STATE,
-                                                         _unset_value)
-    target = input_value
-    # locate_all_params: the view's own params PLUS the header's
-    # (with_header function inputs - icon, show_name, name_color, etc),
-    # deduped, view params first. Same read/write semantics.
-    proxy = target.locate_all_params
-    srcs = _sources_for(target)
-    writable = set(srcs["writable"])
-
-    # ONE pass over the registry per render - the active source is simply
-    # the highest-priority writable source with a SET value. The old shape
-    # re-walked every source dict per PARAM (_setting_source per row, plus
-    # the default_write_source cue re-counting key overlaps), which is
-
-
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
              searchable=True, show_name=False, selectable=False)
 @window(tint=(0.767, 0.671, 0.183))
@@ -8020,7 +8004,13 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     full_w = draw_state.content_width
     clip = draw_state.abs_clip_rect
     top_y = imgui.get_cursor_screen_pos()[1]
-    tab_h = max(60.0, (clip[3] - top_y) / n_sel - 6) if clip is not None else None
+    # First-load auto-fit (same pattern as draw_global_search's height
+    # auto-fit): until the menu has been fitted once, hand the tab bodies NO
+    # height so they render at their natural extent - the usual tab_h derives
+    # from the current window clip rect which is circular while we're still
+    # choosing the window height.
+    fitting = not getattr(draw_state, "_ctx_fit_done", False)
+    tab_h = max(60.0, (clip[3] - top_y) / n_sel - 6) if (clip is not None and not fitting) else None
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
         size_kw = {"width": full_w}
@@ -8076,6 +8066,63 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     imgui.text(f"{input_value._raw_input_value.__class__.__name__}")
 
     imgui.dummy(0, 30)
+
+    # First-load fit, two phases. Phase 0: set the default width - width
+    # drives wrap, so a height measure is only honest once the content has
+    # rendered AT that width; invalidate unconditionally (use_cache would
+    # otherwise replay the tile and skip phase 1). Phase 1: the tab bodies
+    # just rendered at no height, so the cursor bottom IS the content
+    # extent. Write the size immediately - the wrapper's measured item_rect
+    # can't shrink a fixed-width window - cap at most of the display, and fit
+    # ONCE per menu draw_state: the ds persists across open/close, so reopens
+    # and tab switches keep the user's size.
+    if fitting:
+        if getattr(draw_state, "_ctx_fit_phase", 0) == 0:
+            draw_state._ctx_fit_phase = 1
+            if (draw_state.width or 0) < 520:
+                draw_state.width = 520
+                draw_state._source["width"] = "context menu first-load default width"
+            draw_state.invalidate()
+            request_render()
+        else:
+            content_bottom = imgui.get_cursor_screen_pos()[1]
+            new_h = max(100, int(content_bottom - draw_state._abs_top() + 10))
+            disp_h = imgui.get_io().display_size.y
+            if disp_h > 0:
+                new_h = min(new_h, int(disp_h * 0.8))
+            if draw_state.height is None or abs(draw_state.height - new_h) > 1:
+                draw_state.height = new_h
+                draw_state._source["height"] = "context menu first-load auto-fit"
+                draw_state.invalidate()
+                request_render()
+            draw_state._ctx_fit_done = True
+
+    # Never open the menu partially off-display. While the window offset is
+    # still the fresh default reset (0,0) - core_render does that on every
+    # right-click open - shift window_pos (the additive offset in the pinned
+    # branch of _abs_left/_abs_top) so the whole window fits inside the
+    # display. A user drag writes window_pos and ends this clamping; blit
+    # placement follows abs pos anyway, so no invalidate is needed for a move.
+    wp = draw_state.window_pos or (0, 0)
+    if not fitting and tuple(wp) == (0, 0):
+        disp = imgui.get_io().display_size
+        x0, y0 = draw_state._abs_left(), draw_state._abs_top()
+        w = draw_state.width or draw_state.content_width or 0
+        h = draw_state.height or 0
+        dx = dy = 0.0
+        if disp.x > 0:
+            if x0 + w > disp.x:
+                dx = disp.x - (x0 + w)
+            if x0 + dx < 0:
+                dx = -x0
+        if disp.y > 0:
+            if y0 + h > disp.y:
+                dy = disp.y - (y0 + h)
+            if y0 + dy < 0:
+                dy = -y0
+        if abs(dx) > 0.5 or abs(dy) > 0.5:
+            draw_state.window_pos = (wp[0] + dx, wp[1] + dy)
+            request_render()
     return False, input_value
 
 
