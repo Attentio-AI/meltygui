@@ -146,7 +146,7 @@ def _ensure_publisher():
 # ── Windows ───────────────────────────────────────────────────────────────────
 
 @window
-@render_func(tint=(0.08, 0.08, 0.08), auto_resize=True)
+@render_func(tint=(0.487, 0.562, 0.6), auto_resize=True)
 def live_view_values(input_value=None, draw_state=None, **kwargs):
     global _window_ds
     _window_ds = draw_state
@@ -164,7 +164,7 @@ def live_view_values(input_value=None, draw_state=None, **kwargs):
 
 
 @window
-@render_func(tint=(0.11, 0.118, 0.128), auto_resize=True)
+@render_func(tint=(0.295, 0.463, 0.672), auto_resize=True)
 def live_view_code(input_value=None, draw_state=None, **kwargs):
     # The toy source through the unified editor route. Ctrl+Enter hotswaps;
     # the publisher's next tick republishes through the new code.
@@ -223,18 +223,18 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
     # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=2.7015, spin=0.796, tilt=0.043, z_dim=3]
     k = q.roll(shifts=shift, dims=1) + -0.6 * torch.randn(heads, seq, dim)
     for l_idx in range(layers):
-    
+
         # [tint=(0.122, 0.0, 0.8), dim_names=['head', 'key', 'feature']]
         k_l = k.roll(shifts=l_idx * shift, dims=1)
-        
+
         # Hello! Testing git diff
-        # [tint=(0.066, 0.045, 0.189), cam_brightness=0.08, cam_contrast=0.752,
-        # spin=3.828, tilt=0.019, cam_zoom=1.7142]
+        # [tint=(0.066, 0.045, 0.189), cam_brightness=0.17, cam_contrast=0.584,
+        # spin=4.30, tilt=-0.157, cam_zoom=2.1575]
         scores = q @ k_l.transpose(-2, -1) / (dim ** 0.5 * temp)
-    
+
         # [tint=(1.0, 0.0, 0.0, 1.0), show_tint=True]
         some_val = 1
-        
+
         # [tint=(0.60, 0, 0), cam_brightness=0.52, cam_contrast=0.392, dim_names=['head', 'query', 'key'], cam_zoom=1.355, spin=1.86, tilt=0.123]
         attn = torch.softmax(scores, dim=-1)
         # Non-tensor loop example: accumulates as a plain list, one per layer.

@@ -408,7 +408,7 @@ class Swoosh:
 @window(tint=(0.54, 0.374, 0.042))
 class Toggles:
 
-    @defaults(tint=(0.789, 0.719, 0.649))
+    @defaults(tint=(0.834, 0.869, 0.878))
     class TextEditor:
 
         enable_spell_check = False
@@ -841,9 +841,9 @@ class Toggles:
         # max_bg_value brightness cap (draw_text's decorator defaults are
         # saturation=0.9 / max_bg_value=0.05).
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        editor_saturation = 1.056
+        editor_saturation = 0.394
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        editor_value = 0.05
+        editor_value = 0.051
 
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
@@ -1360,13 +1360,13 @@ class Toggles:
     # Value = bevel radius in px: the width of the highlight rim and the
     # apparent roundness of the edge. 0 disables the pass.
     # [tint=(0.85, 0.75, 0.05), show_tint=True]
-    specular_bevel = 1.178
+    specular_bevel = 1.243
 
     # Global surface roughness for the specular rim, (0, 1]: low = tight
     # bright crest line at the edge, high = broad dim sheen at the bevel.
     specular_roughness = 0.094
     # Peak brightness of the highlight (white light added at composite).
-    specular_opacity = 0.213
+    specular_opacity = 0.286
     # Fade of the highlight ALONG the lit edges, in px: brightest at the
     # lit corner (top-left when the shadow falls down-right), dying out
     # over this distance scanning down the left edge / across the top

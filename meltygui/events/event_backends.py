@@ -240,6 +240,11 @@ class ImGuiBackend:
         glfw.KEY_S: "s",
         glfw.KEY_Z: "z",
         glfw.KEY_SLASH: "slash",
+        # -/= - draw_text's scope-fold shortcuts (Ctrl[+Shift]+Minus/Equal)
+        # subscribe to these; Ctrl+Equal doubles as "Ctrl+Plus" (plus IS
+        # shift+equal, so the shifted variant arrives as ctrl_shift_equal).
+        glfw.KEY_MINUS: "minus",
+        glfw.KEY_EQUAL: "equal",
         # Arrows - navigation undo/redo (Ctrl+Shift+Left/Right) subscribes to
         # these; the text editor keeps reading its arrows from frame_key_events.
         glfw.KEY_LEFT: "left_arrow",

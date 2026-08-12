@@ -1620,6 +1620,14 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
     saves don't bump mtime, so a cached entry would be stale (it's one file per
     compute, so re-parsing it is cheap).
 
+    Files with QUEUED (unsaved) edits are handled internally: deferred saves
+    never touch mtime, so the cache sig folds the file's pending edit
+    generation in, and a miss with a nonzero gen scans the pending overlay
+    (PendingSave.current_file_text) instead of disk — references then carry
+    the same PENDING coordinates the editors display. The gen probe is a dict
+    get; the overlay text is built only on a miss (the content-hash ban stays
+    respected).
+
     `tree` / `imports` / `raw_refs` let the caller hand over an already-parsed
     ast, its resolved imports, and its raw `_collect_refs` output for THIS file,
     avoiding a redundant ast.parse + two full-tree walks — _symbol_refs_index
@@ -1633,23 +1641,29 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
             mtime = path.stat().st_mtime
         except OSError:
             return []
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        sig = (mtime, PendingSave.pending_gen_for(path))
         cached = _index_refs_cache.get(path)
-        if cached is None or cached[0] != mtime:
+        if cached is None or cached[0] != sig:
             # About to re-parse (30-170ms of GIL-bound CPU): defer to any
             # frames the render thread is mid-drawing first. Cache hits skip
             # this - they're dict lookups. Single choke point for each
             # caller (warmer sweep, watch batch, span re-search).
             _park_while_frame()
-        if cached is not None and cached[0] == mtime:
+        if cached is not None and cached[0] == sig:
             return cached[1]
         _index_refs_reparses += 1
+        if sig[1]:
+            # Queued edits: scan the pending overlay, not stale disk. None
+            # (read-only) falls through to the plain disk read below.
+            text = PendingSave.current_file_text(path)
     _t_refs0 = _time.monotonic()
     od = getattr(module, "__dict__", None)
     refs = []
     if od is not None:
         try:
             if tree is None:
-                tree = ast.parse(text if use_text else path.read_text())
+                tree = ast.parse(text if text is not None else path.read_text())
             if imports is None:
                 imports = _imported_name_objects(tree)
 
@@ -1689,7 +1703,7 @@ def _file_index_refs(path, module, text=None, tree=None, imports=None,
         except Exception:
             refs = []
     if not use_text:
-        _index_refs_cache[path] = (mtime, refs)
+        _index_refs_cache[path] = (sig, refs)
     _dt_refs = (_time.monotonic() - _t_refs0) * 1000.0
     if _dt_refs >= 20.0:  # individual slow file - worth a (rate-limited) trace
         _ptrace_rl(("file-refs", path), f"file refs re-parse {_dt_refs:.0f}ms",
@@ -2468,7 +2482,14 @@ def usage_data_for_line(file_path: str, line: int) -> dict:
         resolved = _Path(file_path).resolve()
     except (OSError, ValueError):
         return {}
-    raw = _symbol_refs_index(str(resolved), line, line)
+    # PENDING text, not disk: the editor displays the in-memory pending file
+    # (deferred saves), so the recheck must resolve against the same text -
+    # the same context _compute_symbol_usages uses. None (read error) lets
+    # _symbol_refs_index fall back to its own read. Other files in the
+    # cross-file caller scan are disk-aware inside _file_symbol_refs.
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    raw = _symbol_refs_index(str(resolved), line, line,
+                             text=PendingSave.current_file_text(resolved))
     if raw is _PARSE_FAILED or not raw:
         return {}
     return _rebuild_symbol_usages(raw)
@@ -9211,9 +9232,12 @@ def build_index_cache() -> tuple:
             # A REAL content change happens when the mtime moved past the
             # persisted snapshot: a refs rebuild after reboot re-parses every
             # file (ids are fresh) but must not lapse restored span results.
-            if entry is not None and _mtime_snapshot.get(path) != entry[0]:
+            # entry[0] is (mtime, cache_gen) - only the MTIME half counts
+            # here: streaming edits already sig the edited file's own spans,
+            # and bumping the generation per queued keystroke would suck.
+            if entry is not None and _mtime_snapshot.get(path) != entry[0][0]:
                 real_changes += 1
-                _mtime_snapshot[path] = entry[0]
+                _mtime_snapshot[path] = entry[0][0]
             # GIL yield after each ACTUAL re-parse: this is CPU-bound pure
             # Python (ast.parse + ref walk, 5-10ms/file) that cannot move to
             # the jedi subprocess pool (it works against live objects), so
@@ -9336,9 +9360,9 @@ def _process_watch_events():
         _file_index_refs(rp, mod)
         entry = _index_refs_cache.get(rp)
         if (entry is not prev and entry is not None
-                and _mtime_snapshot.get(rp) != entry[0]):
+                and _mtime_snapshot.get(rp) != entry[0][0]):  # mtime half of (mtime, pgen)
             changed += 1
-            _mtime_snapshot[rp] = entry[0]
+            _mtime_snapshot[rp] = entry[0][0]
     _ptrace(f"watch batch re-index done in {(_time.monotonic() - _t_watch0) * 1000:.0f}ms",
             paths=len(paths), changed=changed)
     if changed:

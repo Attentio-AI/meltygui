@@ -75,7 +75,11 @@ def file_watch_debug(draw_state=None):
         out = []
         entry = refs_cache.get(p)
         if entry is not None:
-            fresh = entry[0] == _mtime(p)
+            # entry[0] is (mtime, pending_gen); disk-freshness is the mtime
+            # half. A pre-hotswap twin module can still hold old-format bare
+            # float entries - treat those as the mtime too.
+            _sig = entry[0]
+            fresh = (_sig[0] if isinstance(_sig, tuple) else _sig) == _mtime(p)
             out.append(f"refs {len(entry[1])}" if fresh else "refs STALE")
         elif p in snap:
             out.append("refs evicted")     # counted by the warmer, but cold

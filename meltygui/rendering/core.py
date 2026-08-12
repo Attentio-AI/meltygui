@@ -467,7 +467,7 @@ def _selection_for_search(owner_ds):
         return None
     return sel
 
-
+# [tint=(0.373, 0.672, 0.373), show_tint=True]
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     if not callable(func):

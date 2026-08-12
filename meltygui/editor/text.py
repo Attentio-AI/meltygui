@@ -5803,22 +5803,96 @@ def _describe_code_tree(code_tree):
 # here silently clobbered it and broken `_blank_foreign_scopes` (m.group(1)
 # → IndexError). This one matches STRIPPED lines and needs no groups.
 _FOLD_SCOPE_HEAD_RE = re.compile(r'(?:async\s+)?(?:def|class)\s')
+_FOLD_IMPORT_RE = re.compile(r'(?:import|from)\s')
 
 
 def _scope_fold_ranges(text):
-    """(start, end) fold tuples for every Python scope (def / async def /
-    class) in `text` — the scope_collapse=True source for draw_text's fold
-    layer. Indentation-based rather than ast.parse on purpose: it's O(lines),
-    and it keeps working on the syntactically broken buffers every mid-edit
-    frame produces, where a parse-based scan would go stale per keystroke.
-    A scope's fold keeps its header (the def/class line; decorators stay
-    above, visible) and hides down to its last non-blank body line. Nested
-    scopes each get their own range — the fold normalizer accepts strict
-    nesting."""
-    out, stack = [], []          # stack: (indent, header_line)
+    """(ranges, default_collapsed) fold sources for `text` — the
+    scope_collapse=True feed for draw_text's fold layer. Line/indentation
+    based rather than ast.parse on purpose: it's O(lines), and it keeps
+    working on the syntactically broken buffers every mid-edit frame
+    produces, where a parse-based scan would go stale per keystroke.
+
+    Four sources:
+      scopes — every def / async def / class keeps its header (decorators
+        stay above, visible) and hides down to its last non-blank body line;
+        nested scopes each get their own range (the normalizer accepts
+        strict nesting).
+      multiline strings — docstrings / GLSL blocks. The fold keeps BOTH
+        delimiter lines visible ((open, close-1) hides only the interior) so
+        the collapsed display text still tokenizes as a TERMINATED string —
+        hiding the closer would paint the rest of the file string-colored.
+      comment runs — >=2 consecutive same-indent full-line '#' comments.
+      top import block — first module-level import down to the last import
+        before other module-level code (blank lines, comments and paren /
+        backslash continuations stay inside). Also returned in
+        default_collapsed: imports start folded on a fresh editor."""
+    lines = text.split('\n')
+    out = []
+    # Pass 1 - multiline strings. Their interior (and closing) lines go in
+    # str_interior so the scope/comment/import scan below treats them as
+    # opaque: indent-0 GLSL inside a def must not pop the def's scope, and a
+    # "def " inside a string must not open a phantom one.
+    str_interior = set()
+    str_open = None              # (open_line, delim) while inside a string
+    for i, ln in enumerate(lines):
+        if str_open is None and ln.lstrip().startswith('#'):
+            continue             # '# use """ freely' must not open a string
+        pos = 0
+        while True:
+            if str_open is None:
+                d1 = ln.find('"""', pos)
+                d2 = ln.find("'''", pos)
+                cands = [(p, d) for p, d in ((d1, '"""'), (d2, "'''"))
+                         if p != -1]
+                if not cands:
+                    break
+                p, delim = min(cands)
+                str_open = (i, delim)
+                pos = p + 3
+            else:
+                p = ln.find(str_open[1], pos)
+                if p == -1:
+                    str_interior.add(i)
+                    break
+                s0 = str_open[0]
+                if i != s0:
+                    str_interior.add(i)
+                    if i - 1 > s0:
+                        out.append((s0, i - 1))
+                str_open = None
+                pos = p + 3
+    # Pass 2 - scopes, comment runs, top import block.
+    stack = []                   # (indent, header_line)
     last_code = -1               # last non-blank line seen
-    for i, ln in enumerate(text.split('\n')):
+    run_start = run_ind = None   # current same-indent comment run
+
+    def _close_run(end):
+        if run_start is not None and end > run_start:
+            out.append((run_start, end))
+
+    imp_first = imp_last = None
+    imp_done = imp_cont = False
+    imp_depth = 0
+    for i, ln in enumerate(lines):
         s = ln.strip()
+        if i in str_interior:
+            _close_run(i - 1)
+            run_start = run_ind = None
+            if s:
+                last_code = i
+            continue
+        is_comment = s.startswith('#')
+        if is_comment:
+            ind = len(ln) - len(ln.lstrip())
+            if run_start is None:
+                run_start, run_ind = i, ind
+            elif ind != run_ind:
+                _close_run(i - 1)
+                run_start, run_ind = i, ind
+        else:
+            _close_run(i - 1)
+            run_start = run_ind = None
         if not s:
             continue
         ind = len(ln) - len(ln.lstrip())
@@ -5826,14 +5900,32 @@ def _scope_fold_ranges(text):
             _, hdr = stack.pop()
             if last_code > hdr:
                 out.append((hdr, last_code))
+        if not imp_done and not is_comment:
+            if imp_cont:
+                imp_last = i
+                imp_depth += ln.count('(') - ln.count(')')
+                imp_cont = imp_depth > 0 or s.endswith('\\')
+            elif ind == 0 and _FOLD_IMPORT_RE.match(s):
+                if imp_first is None:
+                    imp_first = i
+                imp_last = i
+                imp_depth = ln.count('(') - ln.count(')')
+                imp_cont = imp_depth > 0 or s.endswith('\\')
+            elif imp_first is not None and ind == 0:
+                imp_done = True   # first non-import module-level statement
         if _FOLD_SCOPE_HEAD_RE.match(s):
             stack.append((ind, i))
         last_code = i
+    _close_run(len(lines) - 1)
     for _, hdr in stack:
         if last_code > hdr:
             out.append((hdr, last_code))
+    default_col = []
+    if imp_first is not None and imp_last is not None and imp_last > imp_first:
+        out.append((imp_first, imp_last))
+        default_col.append((imp_first, imp_last))
     out.sort()
-    return out
+    return out, default_col
 
 
 def _fold_normalize_ranges(n_lines, ranges):
@@ -6041,6 +6133,8 @@ def draw_text(input_value: str, height=None,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 
               ctrl_b_down=False,
+              ctrl_minus_down=False, ctrl_equal_down=False,
+              ctrl_shift_minus_down=False, ctrl_shift_equal_down=False,
               single_line=False, is_search_box=False, focusable=True,
               draw_state=None, request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.149, font=Font.FONTAWESOME_MONO_19, jump_to=None,
@@ -6089,16 +6183,19 @@ def draw_text(input_value: str, height=None,
     # _scope_fold_ranges). Re-derived only when the buffer changes; an empt
     # fold_ranges passes. Gated on syntax_highlight - plain-text buffers have
     # no Python context.
+    _fold_default_col = None
     if (scope_collapse and not fold_ranges and syntax_highlight
             and not single_line and not is_search_box):
         _sc = getattr(ds, '_scope_rng_cache', None)
         if _sc is None or _sc[0] is not input_value:
             _sc = (input_value, _scope_fold_ranges(input_value))
             ds._scope_rng_cache = _sc
-        fold_ranges = _sc[1]
+        fold_ranges, _fold_default_col = _sc[1]
     if fold_ranges and not single_line and not is_search_box:
         if getattr(ds, '_fold_collapsed', None) is None:
-            ds._fold_collapsed = set()
+            # First fold frame for this editor: the top import block starts
+            # collapsed (the only default_collapsed source right now).
+            ds._fold_collapsed = set(_fold_default_col or ())
         # Badge click against LAST frame's rects: this frame's layout depends
         # on the toggle, so it must resolve before the display text is built.
         _fold_toggled = None
@@ -6114,6 +6211,73 @@ def draw_text(input_value: str, height=None,
                     ds.invalidate()
                     request_render()
                     break
+        # Keyboard folding - Ctrl+Minus/Equal collapse/expand the scope at
+        # the caret, Ctrl+Shift+Minus/Equal every root scope. The keys are
+        # hover-routed like any other param but gated on text focus (same
+        # rationale as Ctrl+B: only the focused editor may act on its caret).
+        # Resolved here, before the display build, for the same reason as the
+        # badge above - this frame's layout depends on the toggle.
+        _fold_kb_all, _cp_full, _fstarts = False, None, None
+        if ((ctrl_minus_down or ctrl_equal_down or ctrl_shift_minus_down
+             or ctrl_shift_equal_down)
+                and (Melty.text_focused_ds is ds
+                     or (Melty.text_focused_ds is not None
+                         and getattr(Melty.text_focused_ds, '_tile_id', None)
+                         == ds._tile_id))):
+            _rngs = _fold_normalize_ranges(input_value.count('\n') + 1,
+                                           fold_ranges)
+            _fstarts = _line_starts(input_value)
+            # The caret lives in DISPLAY coords - last frame's layout maps it
+            # back to full-buffer coords (identity when nothing is collapsed).
+            _cp = min(ds.text_cursor_pos or 0, len(input_value))
+            _pc = getattr(ds, '_fold_cache', None)
+            if (_pc is not None and _pc[0] is input_value
+                    and _pc[2][3] is not None):
+                _pdisp, _pd2b = _pc[2][0], _pc[2][3]
+                _cp = min(_cp, len(_pdisp))
+                _col = _cp - (_pdisp.rfind('\n', 0, _cp) + 1)
+                _dl = _pdisp.count('\n', 0, _cp)
+                _cline = _pd2b[min(_dl, len(_pd2b) - 1)]
+                _cp_full = _fstarts[_cline] + _col
+            else:
+                _cline = input_value.count('\n', 0, _cp)
+                _cp_full = _cp
+            if ctrl_shift_minus_down or ctrl_shift_equal_down:
+                # Root scopes = enclosing ranges not nested in another
+                # (sorted -> strict nesting only - a range starting past the
+                # open enclosing end is a new root).
+                _roots, _open_end = [], -1
+                for _r in _rngs:
+                    if _r[0] > _open_end:
+                        _roots.append(_r)
+                        _open_end = _r[1]
+                if ctrl_shift_minus_down:
+                    ds._fold_collapsed.update(_roots)
+                else:
+                    ds._fold_collapsed.difference_update(_roots)
+                _fold_kb_all = True
+                ds.invalidate()
+                request_render()
+            else:
+                _at = [r for r in _rngs if r[0] <= _cline <= r[1]]
+                _rng = None
+                if ctrl_minus_down:
+                    # Innermost not-yet-collapsed scope at the caret.
+                    _rng = next((r for r in reversed(_at)
+                                 if r not in ds._fold_collapsed), None)
+                    if _rng is not None:
+                        ds._fold_collapsed.add(_rng)
+                else:
+                    # Outermost collapsed scope at the caret - the VISIBLE
+                    # one (an inner collapsed fold is hidden by its outer).
+                    _rng = next((r for r in _at
+                                 if r in ds._fold_collapsed), None)
+                    if _rng is not None:
+                        ds._fold_collapsed.discard(_rng)
+                if _rng is not None:
+                    _fold_toggled = _rng
+                    ds.invalidate()
+                    request_render()
         _fk = (tuple(tuple(r) for r in fold_ranges),
                frozenset(ds._fold_collapsed))
         _fc = getattr(ds, '_fold_cache', None)
@@ -6136,6 +6300,25 @@ def draw_text(input_value: str, height=None,
                                           else min(_cp, _a))
                 elif _cp > _a:                   # now expanded
                     ds.text_cursor_pos = _cp + _hl
+            ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+        elif _fold_kb_all and ds.text_cursor_pos is not None:
+            # Collapse/expand-all can move MANY folds at once, so the single-
+            # toggle anchor shift above doesn't apply - project the caret's
+            # full-char offset into the NEW layout instead. A caret inside a
+            # now-hidden line clamps to its covering fold header's end.
+            if _fold_d2b is None:
+                ds.text_cursor_pos = _cp_full
+            else:
+                _dstarts = _line_starts(_disp)
+                _b = bisect.bisect_right(_fstarts, _cp_full) - 1
+                _i = max(bisect.bisect_right(_fold_d2b, _b) - 1, 0)
+                if _fold_d2b[_i] == _b:
+                    ds.text_cursor_pos = (_dstarts[_i]
+                                          + (_cp_full - _fstarts[_b]))
+                else:
+                    ds.text_cursor_pos = (_dstarts[_i + 1] - 1
+                                          if _i + 1 < len(_dstarts)
+                                          else len(_disp))
             ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
         if _fold_segments:
             input_value = _disp

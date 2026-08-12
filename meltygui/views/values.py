@@ -111,7 +111,7 @@ def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
 
-@render_func(is_default_for=(type), tint=(0.93, 0.56, 0.23, 0.308), use_cache=True,
+@render_func(is_default_for=(type), tint=(0.928, 0.836, 0.655, 0.308), use_cache=True,
              header_single_line=True, show_name=True, temp=True, is_tree=False, shadow=False,
              show_bg=True, with_header=draw_header)
 def draw_type_name(input_value, **kwargs):
@@ -1511,7 +1511,7 @@ def draw_symbol_usage(input_value):
              use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
-             wrap=False, with_header=draw_header, indent_size=3, searchable=True,
+             wrap=False, with_header=draw_header, indent_size=3, searchable=True, tint=(0.711, 0.644, 0.51, 1.0),
              child_kwargs=None)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
@@ -2676,7 +2676,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     imgui.set_cursor_screen_pos(after_rows)
     return False, input_value
     
-@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True, tint=(0.1517593, 0.169, 0.1833333, 1.00),
+@window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True, tint=(0.35, 0.388, 0.422, 1.00),
         # Replaces (not merges with) WINDOW_RESIZABLE's initial, so width/height
         # ride along. Closed=True: a brand-new draw_state (fresh load, or the
         # registry entry didn't survive the last save) had closed=False,
