@@ -123,8 +123,8 @@ def draw_type_name(input_value, **kwargs):
             imgui.text(f"{input_value.__name__}")
     except Exception as e:
         imgui.text(f"Error displaying type: {e}")
-
-
+        
+        
 
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
     """The (index, lowercased key string) pairs draw_collection renders and

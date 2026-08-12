@@ -18,8 +18,28 @@ from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
 
 
 MODULE_SRC = textwrap.dedent("""\
+    import imgui
+    import json
+
+
+    def window(**kw):            # exec stub — the lint matches decorators
+        def wrap(fn):            # by NAME, so behavior here is irrelevant
+            return fn
+        return wrap
+
+
+    def render_func(**kw):
+        def wrap(fn):
+            return fn
+        return wrap
+
+
     def helper(a, b=1):
         return a + b
+
+
+    def typed_helper(name: str, count: int = 0, ratio: float = 1.0):
+        return name * count
 
 
     class Point:
@@ -30,6 +50,16 @@ MODULE_SRC = textwrap.dedent("""\
     @property
     def decorated(a, b, c):
         return a
+
+
+    @window(tint=(0.0, 0.335, 0.772, 1.0))
+    def windowed_button(label, draw_state, view_id, width=None, **kwargs):
+        return label
+
+
+    @render_func(use_cache=True)
+    def draw_thing(input_value=None, draw_state=None, speed=1.0):
+        return input_value
 """)
 
 
@@ -78,6 +108,157 @@ def test_span_call_clean_and_class(module_file):
     lint = _span_lint("def caller():\n    Point(1)\n", module_file)
     assert any("missing required argument" in msg and "'y'" in msg
                for _ln, msg in lint), lint
+
+
+def test_span_call_window_decorator_is_transparent(module_file):
+    # @window only registers and returns the def unchanged - the real
+    # signature applies, so a bare call flags its missing required args
+    # (the flat_button() case) while a full positional call stays silent.
+    lint = _span_lint("def caller(draw_state=None):\n"
+                      "    windowed_button()\n", module_file)
+    assert any("missing required argument" in msg and "'label'" in msg
+               and "'view_id'" in msg for _ln, msg in lint), lint
+    assert _span_lint("def caller(draw_state=None):\n"
+                      "    windowed_button('x##1', draw_state, 'btn',\n"
+                      "                    width=20, extra=1)\n",
+                      module_file) == []
+
+
+def test_span_call_render_func_wrapper_convention(module_file):
+    # @render_func replaces the def with wrapper(input_value=None, **kwargs):
+    # >1 positional is a guaranteed TypeError; any kwargs (wrapper-level
+    # included) and missing "required" params are silent (modes/defaults fill
+    # them), so only the positional shape reports.
+    lint = _span_lint("def caller():\n    draw_thing('a', 'b')\n", module_file)
+    assert any("takes 1 positional argument but 2 were given" in msg
+               for _ln, msg in lint), lint
+    assert _span_lint("def caller():\n"
+                      "    draw_thing('a', mode=None, name='x', speed=2.0)\n"
+                      "    draw_thing()\n", module_file) == []
+
+
+def test_span_dotted_call_through_module_alias(module_file):
+    # The module's own `import json` resolves the base; the chain uses the
+    # LIVE signature, so json.dumps() flags its missing required arg while a
+    # valid call stays silent.
+    lint = _span_lint("def caller():\n    json.dumps()\n", module_file)
+    assert any("dumps() missing required argument" in msg and "'obj'" in msg
+               for _ln, msg in lint), lint
+    assert _span_lint("def caller():\n    json.dumps({'a': 1}, indent=2)\n",
+                      module_file) == []
+    # A base the buffer itself binds must never match the module's import.
+    assert _span_lint("def caller(json):\n    json.dumps()\n",
+                      module_file) == []
+
+
+def test_signature_table_keeps_last_good_on_broken_pending(module_file,
+                                                           monkeypatch):
+    # Mid-keystroke the file's pending text is unparseable; the table must
+    # serve the last good parse instead of blanking every marker (the
+    # flash-then-vanish bug).
+    span = "def caller():\n    helper(1, 2, 3)\n"
+    assert _span_lint(span, module_file)          # seed a good table
+    monkeypatch.setattr(PendingSave, "pending_gen_for",
+                        classmethod(lambda cls, p: 2))
+    monkeypatch.setattr(PendingSave, "current_file_text",
+                        classmethod(lambda cls, p: "def broken(:\n"))
+    # Age the table entry below the freshness floor so the broken text is
+    # actually re-read (the floor would otherwise serve the good table anyway).
+    for k, hit in list(code_checks._file_sig_cache.items()):
+        code_checks._file_sig_cache[k] = (hit[0], hit[1], hit[2], hit[3] - 5)
+    lint = _span_lint(span, module_file)
+    assert any("takes 2 positional arguments but 3 were given" in msg
+               for _ln, msg in lint), lint
+
+
+def test_incremental_region_relint_sees_sibling_defs(module_file):
+    # The incremental whole-file lint re-lints ONLY the edited top-level
+    # block: a sibling def (helper/flat_button) is neither in the region's
+    # scopes nor live-resolvable, so without the pending-table fallback the
+    # finding silently vanished on the first keystroke after the seed pass
+    # (the live-studio flat_button case).
+    full = module_file.read_text() + textwrap.dedent("""\
+
+
+        def big_caller():
+            x = 1
+            return x
+    """)
+    module_file.write_text(full)
+    _clear_caches()
+    code_checks._inc_lint_state.clear()
+    code_checks.check_source_incremental(full, path=str(module_file))  # seed
+    edited = full.replace("x = 1", "x = 1\n    helper(1, 2, 3)")
+    lint = code_checks.check_source_incremental(edited, path=str(module_file))
+    assert any("takes 2 positional arguments but 3 were given" in msg
+               for _ln, msg in lint), lint
+    # And through the module's own import, same region blindness
+    edited2 = edited.replace("return x", "json.dumps()\n    return x")
+    lint2 = code_checks.check_source_incremental(edited2, path=str(module_file))
+    assert any("dumps() missing required argument" in msg
+               for _ln, msg in lint2), lint2
+    code_checks._inc_lint_state.clear()
+
+
+def test_star_splat_of_literal_tuple_counts(module_file):
+    # f(*(0, 0)) has a knowable positional count; a splatted NAME is
+    # unknowable (none) as before.
+    lint = _span_lint("def caller():\n    helper(*(1, 2, 3))\n", module_file)
+    assert any("takes 2 positional arguments but 3 were given" in msg
+               for _ln, msg in lint), lint
+    assert _span_lint("def caller():\n    helper(*(1, 2))\n",
+                      module_file) == []
+    assert _span_lint("def caller(xs):\n    helper(*xs)\n",
+                      module_file) == []
+
+
+def test_doc_signature_alias_name(module_file):
+    # pyimgui aliases share the canonical signature's doc line
+    # (set_cursor_position's doc reads "set_cursor_pos(local_pos)") - the
+    # doc parser accepts the alias and reports under the caller's spelling.
+    import imgui
+    spec = code_checks._spec_from_doc("set_cursor_position",
+                                      imgui.set_cursor_position.__doc__)
+    assert spec is not None and spec.named == ["local_pos"], spec
+    lint = _span_lint("def caller():\n    imgui.set_cursor_position(0, 0)\n",
+                      module_file)
+    assert any("set_cursor_position() takes 1 positional argument "
+               "but 2 were given" in msg for _ln, msg in lint), lint
+    lint2 = _span_lint("def caller():\n    imgui.same_line(1.0, -1.0, 3)\n",
+                       module_file)
+    assert any("takes 2 positional arguments but 3 were given" in msg
+               for _ln, msg in lint2), lint2
+
+
+def test_literal_type_mismatch(module_file):
+    # Declared types from doc C types (imgui) and source annotations; only
+    # LITERAL args are judged - and literals with required params flag even
+    # though Python would coerce (same_line(False) is probably a bug).
+    lint = _span_lint("def caller():\n    imgui.same_line(False)\n",
+                      module_file)
+    assert any("same_line() expected float for 'position', got bool" in msg
+               for _ln, msg in lint), lint
+    assert _span_lint("def caller(x):\n"
+                      "    imgui.same_line(0)\n"       # int → float fine
+                      "    imgui.same_line(0.5)\n"
+                      "    imgui.same_line(x)\n",      # x never judged
+                      module_file) == []
+    lint2 = _span_lint("def caller():\n    typed_helper(0)\n", module_file)
+    assert any("expected str for 'name', got int" in msg
+               for _ln, msg in lint2), lint2
+    lint3 = _span_lint("def caller():\n    typed_helper('x', count=True)\n",
+                       module_file)
+    assert any("expected int for 'count', got bool" in msg
+               for _ln, msg in lint3), lint3
+    assert _span_lint("def caller():\n"
+                      "    typed_helper('x', count=2, ratio=3)\n"
+                      "    typed_helper('x', count=2.0)\n"    # integral float
+                      "    typed_helper('x', count=None)\n",  # None: silent
+                      module_file) == []
+    lint4 = _span_lint("def caller():\n    typed_helper('x', count=2.5)\n",
+                       module_file)
+    assert any("expected int for 'count', got float" in msg
+               for _ln, msg in lint4), lint4
 
 
 def test_span_call_decorated_def_stays_silent(module_file):

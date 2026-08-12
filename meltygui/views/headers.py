@@ -130,12 +130,11 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
         Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
         request_render()
     # initial use
-
+    
 
     # Match count + prev/next navigation. The count and current index are
     # populated by the searchable view's body (e.g. the text editor); the
     # arrows step the active match and ask the body to scroll it into view.
-
 
     imgui.same_line()
     from src.lsd.gl_gui.view.core_views.new_core_view import button
@@ -346,7 +345,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         if _font_handle is not None:
             imgui.push_font(_font_handle)
             _font_pushed = True
-            
+          
+
     # Depth drives name brightness
     depth_scale       = 0.06
     depth_offset      = -30.0
@@ -392,6 +392,20 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         'alpha': 0.071, 'max_value': 1.601,
         'depth_factor': 0.332
     }
+    
+
+    # imgui.same_line(False) # does not work
+    # imgui.set_cursor_position(0,0) # does not work
+    
+    # imgui.set_cursor_pos((0,0))
+    # def set_cursor(tuple_in):
+    #     pass
+        
+    # set_cursor((0,0)) # fine
+    # set_cursor(0,0) # This one works
+    # set_cursor(*(0,0)) # does not work
+    
+    
     arrow_style['value'] = depth_intensity * arrow_style['depth_factor'] + arrow_style['value']
     arrow_style['saturation'] = arrow_style['saturation'] + sat_shift
     arrow_color = style_manager.make_color_style_value(input=arrow_style)

@@ -998,7 +998,7 @@ def _summarize(value):
 
 _needs_render = threading.Event()
 frames_left = 0
-
+# [tint=(0.191, 0.328, 0.191), show_tint=True]
 def request_render(for_frames:int | None=None):
     # Can be called from ANY thread - including worker threads (PTY readers, or
     # claude-session poller) that start at import, before glfw.init() and the main
@@ -1041,4 +1041,3 @@ def request_render(for_frames:int | None=None):
         glfw.post_empty_event()
     except Exception:
         pass    # glfw torn down mid-event (shutdown/restart) - nothing to wake
-

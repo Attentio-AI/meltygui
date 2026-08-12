@@ -1039,7 +1039,7 @@ def _draw_terminal_window(term, ds, name):
 # thread invalidate()s the window on PTY output; the render below invalidate()s whe
 # focused (for the blinking cursor + input responsiveness). Idle/unfocused terminals
 # cost nothing.
-@window(tint=(0.68, 0.798, 0.9), bg_offset=-1, disable_scroll=True, input_value=terminal_instance)
+@window(tint=(0.04, 0.044, 0.05), bg_offset=-1, disable_scroll=True, input_value=terminal_instance)
 @render_func(is_default_for=Terminal)
 def draw_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")

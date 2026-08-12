@@ -1500,6 +1500,7 @@ class TileCacheMasked:
                                                 include_windows=include_windows))
         return all_keys
 
+    # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate_up(self, k: str, max_depth=4, force=False, frame_delta=0, note=None, skip_self=False,
                       stop_at_filled: bool = False, bypass_clip=False, include_windows: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
@@ -1595,7 +1596,7 @@ class TileCacheMasked:
             DictConversion.compute_hash(draw_state, exclude=draw_state.__excluded_attrs__, include_hidden=False),
             input_val_hash,
         )
-
+    # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate_parent(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
                           stop_at_filled: bool = False) -> None:
         draw_state = self.key_to_draw_state.get(k, None)
@@ -1605,6 +1606,7 @@ class TileCacheMasked:
         self.invalidate(parent._tile_id, force=force, do_store=do_store, frame_delta=frame_delta, note=note,
                         stop_at_filled=stop_at_filled)
 
+    # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate(self, k: str, force=False, do_store=True, frame_delta=0, note=None,
                    stop_at_filled: bool = False) -> None:
 
@@ -1678,7 +1680,7 @@ class TileCacheMasked:
                         InvalidateTracker.invalidations[k] = note
                     if stop_at_filled and self._tile_fully_filled(pt):
                         break
-
+    # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate_all(self) -> None:
         for t in self._tiles.values():
             if t is not None:
@@ -1687,7 +1689,8 @@ class TileCacheMasked:
                 t.force_invalidate = True
                 # self.force_invalid.append(t)
         request_render()
-
+    
+    # [tint=(0.72, 0.11, 0.11), show_tint=True]
     def invalidate_scrolled_in(self, draw_state, on_change: bool = False) -> None:
         """Query the BVH for views currently overlapping the given scroll
         view's clip rect and invalidate any whose tile isn't fully filled at

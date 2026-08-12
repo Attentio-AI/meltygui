@@ -6143,6 +6143,7 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
+              code_diff_mode=False,
               fold_shadow_angle=90.0,
               fold_shadow_color=(0.0, 0.0, 0.0, 0.3),
               fold_shadow_saturation=1.0,
@@ -6184,7 +6185,13 @@ def draw_text(input_value: str, height=None,
     # fold_ranges passes. Gated on syntax_highlight - plain-text buffers have
     # no Python context.
     _fold_default_col = None
+    # code_diff_mode (compare split): the usual per-scope collapse zones are
+    # OFF; the caller passes fold_ranges for the unchanged gaps BETWEEN
+    # change blocks instead (open_file._diff_gap_folds), so collapse-all
+    # skims the diff. The flag here suppresses the scope fallback - without
+    # it an empty gap list (whole file changed) would re-enable scope folds.
     if (scope_collapse and not fold_ranges and syntax_highlight
+            and not code_diff_mode
             and not single_line and not is_search_box):
         _sc = getattr(ds, '_scope_rng_cache', None)
         if _sc is None or _sc[0] is not input_value:
@@ -9199,6 +9206,12 @@ def draw_text(input_value: str, height=None,
     ds._diff_line_px = line_px
     ds._diff_origin_x_off = origin_x - ds.abs_left
     ds._diff_char_w = char_w
+    # Fold layout bridge: display line -> buffer line (None = identity, no
+    # collapsed fold). The ribbon pass projects change buffer-line blocks
+    # through this so a change hidden in a collapsed fold snaps its
+    # swoosh to the collapse (header) line instead of a linear-extrapolated
+    # position inside it.
+    ds._diff_d2b = _fold_d2b
     # Pane corner relative to the enclosing WINDOW, and the visible text band
     # relative to the pane. The end_frame overlay derives everything from
     # window abs_left/abs_top + these: the window property's memo key

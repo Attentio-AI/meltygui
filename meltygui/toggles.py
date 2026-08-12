@@ -490,6 +490,23 @@ class Toggles:
         # [tint=(0.256, 0.189, 0.244, 1.0), show_tint=True]
         enable_lint = True
 
+        # Call-signature checks for SPAN buffers (a function/class edited on
+        # its own): bare-name calls resolve through the enclosing module's
+        # PENDING text (code_checks._signature_table), so a signature edited
+        # in another view flags wrong call sites before any recompile. Off =
+        # span buffers report missing imports only (the old behavior).
+        # [tint=(0.256, 0.189, 0.244, 1.0), show_tint=True]
+        lint_span_calls = True
+
+        # Literal-argument TYPE checks in the call lint: a LITERAL argument
+        # (False, 3, "x") against a DECLARED param type (a doc C type like
+        # `float position`, or a float/int/str/bool annotation) — catches
+        # imgui.same_line(False). Stricter than Python's coercions on
+        # purpose: numeric params reject bool literals. Expressions, names
+        # and None literals are never judged.
+        # [tint=(0.256, 0.189, 0.244, 1.0), show_tint=True]
+        lint_literal_types = True
+
         # Master switch for the import-suggestions scan (the Alt+Enter
         # quick-fix channel) in the chain_in / relint passes and the editor's
         # per-keystroke fast path - for isolating pipeline features while
@@ -1170,6 +1187,11 @@ class Toggles:
         # flat_button's own pipeline.
         take_arrow_size = 20.6
         take_arrow_alpha = 1.0
+        # in_diff_mode gap folding (open_files._diff_gap_folds): unchanged
+        # context lines kept visible on each side of a change block; the
+        # rest of the gap folds away, so collapse-all skims the changes
+        # without scrolling.
+        diff_fold_context = 2
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
@@ -1416,7 +1438,8 @@ class Toggles:
 
     # Downward AREA-LIGHT glow mode. Off = the omnidirectional
     # inverse-square skirt. On = each glow rect reads as a downward-facing
-    # area light: no light above or beside the rect, a lit trapezoid below
+    # area l
+    # ight: no light above or beside the source, a lit trapezoid below
     # it that widens by glow_area_spread px per px of drop, brightness held
     # flat for the first glow_area_hold fraction of the falloff radius and
     # then cut off with a sharp smoothstep - a much harder transition than

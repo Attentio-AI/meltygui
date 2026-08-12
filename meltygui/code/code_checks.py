@@ -102,9 +102,29 @@ class _Scope:
         (self.import_binds if is_import else self.other_binds).add(name)
 
 
+# Project decorator conventions, matched BY NAME (bare or called). This is a
+# project-specific lint, so the names are checked without resolving them:
+#   * transparent - returns the function UNCHANGED (window_decoration.window
+#     only registers), so the def's own signature is the calling convention.
+#   * wrapper - @render_func replaces the function with core_render's
+#     `wrapper(input_shape=None, **kwargs)`: at most ONE positional, any
+#     kwarg accepted (modes/defaults/comment-args may fill that arguments,
+#     but only the positional shape is knowable).
+_TRANSPARENT_DECORATORS = frozenset({"window"})
+_WRAPPER_DECORATORS = frozenset({"render_func"})
+
+
+def _decorator_name(dec):
+    """The bare name a decorator is spelled with (`@window` / `@window(...)`),
+    or None for anything dotted/complex."""
+    f = dec.func if isinstance(dec, ast.Call) else dec
+    return f.id if isinstance(f, ast.Name) else None
+
+
 def _decorator_flavor(decorator_list):
     """'plain' / 'static' / 'class' when the signature is still trustworthy,
-    None when a decorator could have changed it (anything but the two builtins)."""
+    None when a decorator could have changed it. Besides the two builtins,
+    transparent project decorators (@window) keep the def's real signature."""
     if not decorator_list:
         return "plain"
     if len(decorator_list) == 1 and isinstance(decorator_list[0], ast.Name):
@@ -112,6 +132,9 @@ def _decorator_flavor(decorator_list):
             return "static"
         if decorator_list[0].id == "classmethod":
             return "class"
+    if all(_decorator_name(d) in _TRANSPARENT_DECORATORS
+           for d in decorator_list):
+        return "plain"
     return None
 
 
@@ -464,6 +487,8 @@ class _Spec:
         self.kw_required = set()
         self.has_var_pos = False
         self.has_var_kw = False
+        self.types = {}             # name -> 'float'|'int'|'str'|'bool', only
+                                    # where known (doc C type / annotation)
 
 
 def _spec_from_arguments(a, skip_first=0):
@@ -483,6 +508,10 @@ def _spec_from_arguments(a, skip_first=0):
     spec.required |= spec.kw_required
     spec.has_var_pos = a.vararg is not None
     spec.has_var_kw = a.kwarg is not None
+    for arg in list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs):
+        ann = arg.annotation
+        if isinstance(ann, ast.Name) and ann.id in _CHECKED_TYPES:
+            spec.types[arg.arg] = ann.id
     return spec
 
 
@@ -490,6 +519,11 @@ def _spec_from_signature(sig):
     P = inspect.Parameter
     spec = _Spec()
     for p in sig.parameters.values():
+        ann = p.annotation
+        if isinstance(ann, type) and ann.__name__ in _CHECKED_TYPES:
+            spec.types[p.name] = ann.__name__
+        elif isinstance(ann, str) and ann in _CHECKED_TYPES:
+            spec.types[p.name] = ann
         if p.kind in (P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD):
             spec.named.append(p.name)
             if p.kind == P.POSITIONAL_ONLY:
@@ -532,7 +566,14 @@ def _spec_from_doc(fname, doc):
         return None
     lines = doc.strip().split("\n")
     line = lines[0].strip()
-    if not line.startswith(fname + "("):
+    # The doc line may sign itself with an ALIAS TARGET's name - pyimgui's
+    # set_cursor_position shares set_cursor_pos's doc ("set_cursor_pos(
+    # local_position)") - so accept any identifier-headed signature line and use
+    # ITS name for the overload scan; `fname` stays the alias's spelling for
+    # messages. Prose first lines fail the identifier/paren test here or the
+    # strict per-piece validation below.
+    docname = line.partition("(")[0].strip()
+    if not docname.isidentifier() or not line.startswith(docname + "("):
         return None
     # Polymorphic callables document each overload on its own line - bare
     # ("slice(stop)" / "slice(start, stop[, step])") or directive-marked the way
@@ -543,12 +584,12 @@ def _spec_from_doc(fname, doc):
         for marker in (".. function::", ".. method::"):
             if more.startswith(marker):
                 more = more[len(marker):].strip()
-        if more.startswith(fname + "("):
+        if more.startswith(docname + "("):
             return None
     # Take exactly the BALANCED paren group after the name - torch-style lines
     # carry a return annotation after it ("sort(input, ...) -> (Tensor,
     # LongTensor)") that must not leak into the spec.
-    head = line[len(fname):]
+    head = line[len(docname):]
     inner = tail = None
     depth = 0
     for i, ch in enumerate(head):
@@ -588,6 +629,12 @@ def _spec_from_doc(fname, doc):
         pname = tokens[-1] if tokens else ""
         if not pname.isidentifier():
             return None
+        if len(tokens) >= 2:
+            # C type prefix ("float position") - convert the ones the literal
+            # type check knows; unknown types simply aren't checked.
+            t = _DOC_TYPE_MAP.get(tokens[-2].lstrip("*"))
+            if t is not None:
+                spec.types[pname] = t
         has_default = "=" in piece
         if kwonly:
             spec.kwonly.append(pname)
@@ -610,10 +657,22 @@ def _match_spec(fname, spec, call):
     """One mismatch message, or None. Mirrors CPython's binding rules but
     checks only what the call makes knowable: *args in the call hides
     positional counts, ** hides keyword coverage."""
-    star_args = any(isinstance(x, ast.Starred) for x in call.args)
+    # A *splat normally makes the positional count unknowable - EXCEPT a
+    # literal tuple/list (`f(*(0, 0))`), whose count is right there.
+    star_args = False
+    npos = 0
+    for x in call.args:
+        if isinstance(x, ast.Starred):
+            v = x.value
+            if (isinstance(v, (ast.Tuple, ast.List))
+                    and not any(isinstance(e, ast.Starred) for e in v.elts)):
+                npos += len(v.elts)
+            else:
+                star_args = True
+        else:
+            npos += 1
     kw_expand = any(k.arg is None for k in call.keywords)
     kw_names = [k.arg for k in call.keywords if k.arg is not None]
-    npos = len(call.args)
 
     if not spec.has_var_kw:
         allowed = set(spec.named[spec.n_posonly:]) | set(spec.kwonly)
@@ -643,6 +702,92 @@ def _match_spec(fname, spec, call):
             listed = ", ".join(f"'{m}'" for m in missing)
             plural = "s" if len(missing) != 1 else ""
             return f"{fname}() missing required argument{plural}: {listed}"
+    return _literal_type_mismatch(fname, spec, call)
+
+
+# Declared param types the literal check knows, and the literal types each
+# accepts. Deliberately narrower than Python's coercion rules: bool→float is
+# LEGAL at runtime (bool is an int) but `same_line(False)` is a bug every
+# time it's written, so numeric params reject bool literals. None literals
+# are never checked (Optional params are indistinguishable statically).
+_CHECKED_TYPES = frozenset({"float", "int", "str", "bool"})
+_TYPE_ACCEPTS = {
+    "float": ("float", "int"),
+    "int": ("int",),
+    "str": ("str",),
+    "bool": ("bool",),
+}
+# Doc C-type spellings → the checked type they mean; anything else unchecked.
+_DOC_TYPE_MAP = {
+    "float": "float", "double": "float",
+    "int": "int", "long": "int", "short": "int", "unsigned": "int",
+    "size_t": "int", "Py_ssize_t": "int",
+    "bool": "bool", "bint": "bool",
+    "str": "str", "string": "str",
+}
+
+
+def _literal_arg_type(node):
+    """'bool'/'int'/'float'/'str' when the argument is that LITERAL (unary
+    +/- kept for numbers), else None — expressions, names, calls and None
+    literals are never type-checked."""
+    if isinstance(node, ast.Constant):
+        v = node.value
+        if v is True or v is False:
+            return "bool"           # before int - bool subclasses int
+        if isinstance(v, float):
+            return "float"
+        if isinstance(v, int):
+            return "int"
+        if isinstance(v, str):
+            return "str"
+        return None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        t = _literal_arg_type(node.operand)
+        return t if t in ("int", "float") else None
+    return None
+
+
+def _literal_type_mismatch(fname, spec, call):
+    """A wrong-TYPE message for a LITERAL argument against a DECLARED param
+    type (doc C type or float/int/str/bool annotation), or None. Runs last in
+    _match_spec, so the call already binds; only (declared, literal) pairs
+    the tables above know are judged — everything else is silence."""
+    if not spec.types:
+        return None
+    try:
+        from src.lsd.gl_gui.toggles import Toggles
+        if not Toggles.TextEditor.lint_literal_types:
+            return None
+    except Exception:
+        pass
+    flat = []                       # positional args incl. any splats
+    for x in call.args:
+        if isinstance(x, ast.Starred):
+            flat.extend(x.value.elts)   # unknowable splats bailed earlier
+        else:
+            flat.append(x)
+    pairs = list(zip(spec.named, flat))
+    pairs += [(k.arg, k.value) for k in call.keywords
+              if k.arg is not None and k.arg in spec.types]
+    for pname, node in pairs:
+        want = spec.types.get(pname)
+        if want is None:
+            continue
+        got = _literal_arg_type(node)
+        if got is None or got in _TYPE_ACCEPTS[want]:
+            continue
+        if want == "int" and got == "float":
+            # An INTEGRAL float literal (drag_int(min_value=0.0)) coerces
+            # losslessly and is common working code - only a fractional
+            # literal (2.5) is provably wrong.
+            try:
+                v = ast.literal_eval(node)
+            except Exception:
+                continue
+            if isinstance(v, float) and v.is_integer():
+                continue
+        return f"{fname}() expected {want} for '{pname}', got {got}"
     return None
 
 
@@ -770,7 +915,11 @@ def _live_spec(obj, fname):
         return _spec_from_signature(inspect.signature(obj))
     except (ValueError, TypeError):
         # C/Cython callable hiding its signature - pyimgui embeds it in the
-        # docstring's first line instead.
+        # docstring's first line instead. Real function objects only: a
+        # callable INSTANCE hiding its signature (PyOpenGL's glDrawBuffers
+        # wrapper) documents C args that parse into the wrong arity.
+        if not isinstance(obj, (types.BuiltinFunctionType, types.MethodType)):
+            return None
         return _spec_from_doc(fname, getattr(obj, "__doc__", None))
 
 
@@ -1084,12 +1233,60 @@ def _class_call_spec(node, cls_scope):
     return _SIG_UNKNOWN
 
 
+def _wrapper_spec_for(decorator_list):
+    """The calling-convention spec for a render-wrapper-decorated def, or None
+    (unknowable). Applies when every decorator is a known project convention
+    and at least one is a wrapper (@render_func): the live callable is
+    core_render's `wrapper(input_value=None, **kwargs)`, so the ONLY checkable
+    claims are the positional shape (at most one) and an input_value
+    positional/keyword collision — required params may be filled by modes,
+    decorator defaults, comment args or annotation maps, and wrapper-level
+    kwargs (mode, name, ...) are always legal."""
+    names = [_decorator_name(d) for d in decorator_list]
+    known = _TRANSPARENT_DECORATORS | _WRAPPER_DECORATORS
+    if (not names or not all(n in known for n in names)
+            or not any(n in _WRAPPER_DECORATORS for n in names)):
+        return None
+    spec = _Spec()
+    spec.named = ["input_value"]
+    spec.has_var_kw = True
+    return spec
+
+
+def _module_scope_defs(tree):
+    """{name: FunctionDef | None} for every function def the module's own
+    scope executes — descending module-level if/try/with/for blocks but never
+    def/class bodies (mirrors _module_scope_imports). A name defined twice
+    maps to None (which def wins is unknowable)."""
+    defs = {}
+
+    def walk(stmts):
+        for st in stmts:
+            if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defs[st.name] = None if st.name in defs else st
+                continue
+            if isinstance(st, ast.ClassDef):
+                continue
+            for field in ("body", "orelse", "finalbody"):
+                sub = getattr(st, field, None)
+                if sub:
+                    walk(sub)
+            for h in getattr(st, "handlers", None) or ():
+                walk(h.body)
+
+    walk(tree.body)
+    return defs
+
+
 def _module_scope_imports(tree):
-    """{alias: (module, original_name)} for every absolute `from m import x`
-    the module's own scope executes — descending module-level if/try/with/for
-    blocks but never def/class bodies (those bind other scopes). Relative
-    imports and `import m` are skipped (not hop-resolvable by name)."""
+    """(from_imports, module_aliases) the module's own scope executes —
+    descending module-level if/try/with/for blocks but never def/class bodies
+    (those bind other scopes). from_imports is {alias: (module, name)} for
+    absolute `from m import x`; module_aliases is {alias: module_name} for
+    `import m` / `import m.n as p` (dotted-call bases: `imgui.dummy(...)`).
+    Relative imports are skipped (not hop-resolvable by name)."""
     imports = {}
+    modules = {}
 
     def walk(stmts):
         for st in stmts:
@@ -1102,6 +1299,15 @@ def _module_scope_imports(tree):
                         if al.name != "*":
                             imports[al.asname or al.name] = (st.module, al.name)
                 continue
+            if isinstance(st, ast.Import):
+                for al in st.names:
+                    if al.asname:
+                        modules[al.asname] = al.name
+                    else:
+                        # `import a.b` binds `a`; the chain walk steps to `b`.
+                        top = al.name.partition(".")[0]
+                        modules[top] = top
+                continue
             for field in ("body", "orelse", "finalbody"):
                 sub = getattr(st, field, None)
                 if sub:
@@ -1110,7 +1316,7 @@ def _module_scope_imports(tree):
                 walk(h.body)
 
     walk(tree.body)
-    return imports
+    return imports, modules
 
 
 @lag_traced("signature-table parse", 30)
@@ -1145,12 +1351,14 @@ def _signature_table(path):
         rp = _P(path).resolve()
         key = str(rp)
         gen = PendingSave.pending_gen_for(rp)
-        if _fresh(_file_sig_cache.get(key)):
-            return _file_sig_cache[key][2]
+        hit = _file_sig_cache.get(key)
+        if _fresh(hit):
+            return hit[2]
         text = PendingSave.current_file_text(rp)
     except Exception:
-        if _fresh(_file_sig_cache.get(key)):
-            return _file_sig_cache[key][2]
+        hit = _file_sig_cache.get(key)
+        if _fresh(hit):
+            return hit[2]
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 text = f.read()
@@ -1163,20 +1371,36 @@ def _signature_table(path):
             col = _Collector()
             col.run(tree)
             specs = {}
-            for name, (node, flavor) in col.module.defs.items():
+            # Walked directly (not col.module.defs - the collector drops every
+            # decorated def) so @command/@render_func defs get their convention
+            # specs; rebound names still fall to unknowable via `ambiguous`.
+            for name, node in _module_scope_defs(tree).items():
+                if node is None or name in col.module.ambiguous:
+                    specs[name] = _SIG_UNKNOWN
+                    continue
+                flavor = _decorator_flavor(node.decorator_list)
                 spec = (_spec_from_arguments(node.args)
-                        if flavor in ("plain", "static") else None)
+                        if flavor in ("plain", "static")
+                        else _wrapper_spec_for(node.decorator_list))
                 specs[name] = spec if spec is not None else _SIG_UNKNOWN
             for name, (node, cls_scope) in col.module.classes.items():
                 specs[name] = _class_call_spec(node, cls_scope)
-            imports = _module_scope_imports(tree)
-            for alias in list(imports):
-                # A name the module-level defs/rebinds isn't the import's target.
-                if alias in specs or alias in col.module.ambiguous:
-                    del imports[alias]
-            table = {"specs": specs, "imports": imports}
+            imports, modules = _module_scope_imports(tree)
+            for d in (imports, modules):
+                for alias in list(d):
+                    # A name the module also defs/rebinds isn't the import target.
+                    if alias in specs or alias in col.module.ambiguous:
+                        del d[alias]
+            table = {"specs": specs, "imports": imports, "modules": modules}
         except (SyntaxError, ValueError, RecursionError, TypeError):
             table = None
+    if table is None and hit is not None and hit[2] is not None:
+        # Known-good: the pending text is unparseable exactly while the cursor is
+        # MID-KEYSTROKE in some span of this file - a None here would blank
+        # every signature marker built from the previous good parse (the
+        # flash-then-vanish bug) so the stale table serves until a clean
+        # parse replaces it. Signatures rarely change in the broken window.
+        table = hit[2]
     _file_sig_cache[key] = (st.st_mtime_ns, gen, table, now)
     return table
 
@@ -1234,6 +1458,60 @@ def _object_spec(obj, fname):
     return _live_spec(obj, fname)
 
 
+def _span_spec_for_live(obj, fname):
+    """Spec for a LIVE object reached from span mode, or None. Stricter than
+    the whole-file live pass: only real function objects are trusted.
+    Classes lie (ast.Constant's signature claims required params its
+    constructor doesn't enforce) and callable INSTANCES lie (PyOpenGL's
+    glDrawBuffers wrapper hides its signature and its doc line parses into
+    the wrong arity) — both produce false alarms, so they stay silent."""
+    if isinstance(obj, type) or not isinstance(
+            obj, (types.FunctionType, types.BuiltinFunctionType)):
+        return None
+    return _object_spec(obj, fname)
+
+
+def _check_dotted_call_span(call, func, scope, path):
+    """Span-mode signature check for a dotted call (`imgui.dummy(...)`,
+    `mod.helper(...)`): the base name resolves through the module file's
+    import bindings (its own text, so a base the buffer shadows never
+    matches), then the chain walks LIVE modules only — the same modules-only
+    rule as _walk_chain, minus the missing-attr report (out of scope for the
+    span pass). Anything unresolvable → silence."""
+    base, attrs = _unwind_chain(func)
+    if base is None or _resolves(scope, base.id):
+        return None
+    table = _signature_table(path) if path else None
+    if table is None:
+        return None
+    obj = _MISS
+    modname = table["modules"].get(base.id)
+    if modname is not None:
+        mod = sys.modules.get(modname)
+        obj = mod if mod is not None else _MISS
+    else:
+        imp = table["imports"].get(base.id)
+        if imp is not None:
+            mod = sys.modules.get(imp[0])
+            try:
+                obj = vars(mod).get(imp[1], _MISS) if mod is not None else _MISS
+            except TypeError:
+                obj = _MISS
+    if obj is _MISS:
+        return None
+    for attr, _node in attrs:
+        if not isinstance(obj, types.ModuleType):
+            return None             # never walk through functions/classes
+        obj = inspect.getattr_static(obj, attr, _MISS)
+        if obj is _MISS:
+            return None
+    if not callable(obj):
+        return None
+    fname = attrs[-1][0]
+    spec = _span_spec_for_live(obj, fname)
+    return _match_spec(fname, spec, call) if spec is not None else None
+
+
 def _check_call_span(call, scope, path, file_binds):
     """Signature check for SPAN buffers (only_missing_imports mode), where the
     live-ctx pass can't run (the buffer binds none of its module's names). A
@@ -1245,6 +1523,8 @@ def _check_call_span(call, scope, path, file_binds):
     when m's file has unsaved edits), and builtins only when the module's
     text provably doesn't shadow the name. Anything else → silence."""
     func = call.func
+    if isinstance(func, ast.Attribute):
+        return _check_dotted_call_span(call, func, scope, path)
     if not isinstance(func, ast.Name):
         return None
     name = func.id
@@ -1267,7 +1547,7 @@ def _check_call_span(call, scope, path, file_binds):
             obj = _MISS
         if obj is _MISS or not callable(obj):
             return None
-        spec = _object_spec(obj, name)
+        spec = _span_spec_for_live(obj, name)
         return _match_spec(name, spec, call) if spec is not None else None
     if file_binds is not None and name not in file_binds:
         obj = getattr(builtins, name, _MISS)
@@ -1742,6 +2022,13 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
         reports.sort()
         return reports[:max_reports]
 
+    # Same toggle as the span pass - the pending-table fallback below is the
+    # same feature surfaced in whole-file/region mode.
+    try:
+        from src.lsd.gl_gui.toggles import Toggles
+        _table_calls = Toggles.TextEditor.lint_span_calls
+    except Exception:
+        _table_calls = True
     for call, scope, guarded in col.calls:
         msg = _check_call_static(call, scope)
         if msg is None and not guarded:
@@ -1749,6 +2036,17 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
                 msg = _check_call_live(ctx, call, scope)
             except Exception:
                 msg = None          # live introspection should never break the lint
+        if (msg is None and not guarded and _table_calls
+                and path and not col.star_import):
+            # Pending-table fallback: the INCREMENTAL whole-file path lints
+            # one edited top-level block in isolation, where a sibling def
+            # (flat_button) is neither in the buffer's scopes nor live-
+            # resolvable; the module file's pending text alone knows it.
+            # file_binds=None: full mode's live pass already covered builtins.
+            try:
+                msg = _check_call_span(call, scope, path, None)
+            except Exception:
+                msg = None
         if msg is not None:
             report(call.lineno, msg)
 
