@@ -518,6 +518,48 @@ recompile = recompile_fn
 _BUILTIN_NAMES = set(dir(builtins))
 
 
+def _backfill_declared_imports(ns, filename) -> bool:
+    """Exec into `ns` every module-scope import the file's CURRENT text
+    (pending-inclusive) declares whose bound name is missing there. True when
+    anything was added.
+
+    Heals a STALE MODULE TWIN: the same file lives in sys.modules under two
+    identities (src./non-src — see the dual-identity memory), and a twin
+    imported before an import line was added to the file never re-runs it.
+    Re-exec'ing a span in that twin's globals then NameErrors on the newer
+    name at its decorator/default line (`@defaults(...)` was the hunt).
+    Import statements only, missing names only — same live-heal the
+    auto-import quick-fix applies."""
+    import ast
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        text = PendingSave.current_file_text(Path(filename))
+        if text is None:
+            with open(filename, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        tree = ast.parse(text)
+    except Exception:
+        return False
+    added = False
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        bound = [a.asname or (a.name.partition(".")[0]
+                              if isinstance(node, ast.Import) else a.name)
+                 for a in node.names if a.name != "*"]
+        if not bound or all(b in ns for b in bound):
+            continue
+        seg = ast.get_source_segment(text, node)
+        if not seg:
+            continue
+        try:
+            exec(compile(textwrap.dedent(seg), str(filename), "exec"), ns)
+            added = True
+        except Exception:
+            continue                # a failing import should never break recompile
+    return added
+
+
 def _validate_global_names(code, namespace: dict) -> None:
     """Check LOAD_GLOBAL names against namespace + builtins before hotswap."""
     for instr in dis.get_instructions(code):
@@ -588,16 +630,30 @@ def _recompile(func: types.FunctionType, source: str,
         wrapper_source += f"\n    return {unwrapped.__name__}\n"
 
         code = compile(wrapper_source, filename, "exec")
+    else:
+        code = compile(dedented, filename, "exec")
+
+    def _exec_new():
         # annotation scope: a default arg / annotation that CALLS a render func
         # must return its carrier, not render on this (non-GL) thread.
         with Melty.annotation_scope():
             exec(code, namespace)
-            new_func = namespace["_closure_wrapper"](**closure_vals)
-    else:
-        code = compile(dedented, filename, "exec")
-        with Melty.annotation_scope():
-            exec(code, namespace)
-        new_func = namespace.get(unwrapped.__name__)
+            if has_closure:
+                return namespace["_closure_wrapper"](**closure_vals)
+        return namespace.get(unwrapped.__name__)
+
+    try:
+        new_func = _exec_new()
+    except NameError:
+        # A stale module twin's globals may miss an import the file's editor
+        # text declares (the re-run decorator/default is what trips it) -
+        # backfill the REAL module namespace and retry once, so the hotswapped
+        # body resolves the imports at runtime too.
+        if not _backfill_declared_imports(unwrapped.__globals__, filename):
+            raise
+        for k, v in unwrapped.__globals__.items():
+            namespace.setdefault(k, v)
+        new_func = _exec_new()
 
     if new_func is None:
         print_stack_trace()

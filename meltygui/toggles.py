@@ -355,7 +355,7 @@ class Swoosh:
 
 
     # [tint=(0.739, 0.111, 0.111, 1.0), show_tint=True]
-    ribbon_alpha = 0.10         # fill opacity of the band (below the fade area)
+    ribbon_alpha = 0.37         # fill opacity of the band (below the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
                                 # exceeds fade_size x fade_size; alpha then scales
                                 # inversely with area (constant total ink, 0 = off)
@@ -387,13 +387,15 @@ class Swoosh:
     # Distance is measured to each rect (0 when the mouse is inside it). Applies
     # to both the line and ribbon styles.
     # Drag-focus opacity (alternative to the proximity fade below): hold EVERY
-    # connector at mouse_falloff_floor and light one to full opacity only when
-    # it is in play - its child window is being dragged/resized, the parent
-    # window it hangs off is, or the parent view (not the window itself) is
-    # focused. Dragging a PARENT window lights every connector hanging off it;
-    # dragging a CHILD window lights only that parent's own connector. False
-    # keeps the original behavior: distance fade + hover override.
+    # connector at rest_alpha and light one to drag_alpha only when it is in
+    # play - its child window is being dragged/resized, the parent window it
+    # hangs off is, or the parent view (or the window itself) is hovered.
+    # Dragging a PARENT window lights every connector hanging off it; dragging
+    # a CHILD window lights only that window's own connector. False = the
+    # original behavior: distance fade + hover override.
     drag_focus = True
+    drag_alpha = 0.6           # connector opacity while lit (dragging / parent hovered)
+    rest_alpha = 0.29          # opacity of every other connector at rest (0 = invisible)
 
     mouse_falloff = False               # enable the distance-based opacity fade
     mouse_falloff_dist_parent = 49.576   # px: parent-end falloff distance (lower =
@@ -1168,25 +1170,54 @@ class Toggles:
         ribbon_replace_tint = (0.294, 0.675, 0.928) # changed in place
         # Shared fill alpha for the block washes AND the seam band - same fill
         # so highlight → band → highlight reads as ONE continuous shape.
-        ribbon_fill_alpha = 0.089
+        ribbon_fill_alpha = 0.03
         # Boundary stroke around the whole shape (wash edges + S-curves).
         ribbon_edge_alpha = 0.00
         ribbon_edge_thickness = 0.00
         # Thin insertion line where a side has no rows (pure insert/delete).
-        ribbon_insertion_alpha = 0.358
+        ribbon_insertion_alpha = 0.242
         ribbon_insertion_thickness = 2.00
         # Seam curve sampling (smoothstep slices).
-        ribbon_curve_steps = 10
+        ribbon_curve_steps = 40
         # Signed depth offset for the shadow cast behind the whole swoosh
         # (washes + seam band, add_shadow semantics: positive lifts it off
         # the editor surface, negative carves a hole). 0 disables.
-        ribbon_shadow_offset = 3.058
+        ribbon_shadow_offset = 3.078
         # Take-arrow chips riding the swooshes (pull a block from the
         # reference pane into the buffer): flat_buttons colored by the
         # block's ribbon tint - hover boost and text color come from
         # flat_button's own pipeline.
         take_arrow_size = 20.6
         take_arrow_alpha = 1.0
+        # ── Editor tab bar (open_files.draw_code_editor) ──
+        # Styling knobs for the file tabs, read live per frame. The ACTIVE
+        # tab draws a tinted bg + text; INACTIVE tabs are label-only, so
+        # only their text knobs apply.
+        #
+        # The bg pair feeds flat_button's theme-mix pipeline (value /
+        # saturation_scale of make_color_rgb).
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_active_bg_brightness = 0.14
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        tab_active_bg_saturation = 9.213
+        # Hard cap the active-tab bg is clamped to AFTER the hsv transform —
+        # raise it along with tab_active_bg_brightness or the brightness
+        # knob tops out here.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tab_active_bg_max_brightness = 0.14
+        # The text pairs are FULL-RANGE hsv multipliers applied directly to
+        # each tab's tint (open_files._tab_text_color → flat_button
+        # text_color): brightness scales hsv value (0 = black, 1 = the
+        # tint's own value, higher pushes toward full-bright), saturation
+        # scales hsv saturation (0 = greyscale, 1 = the tint's own).
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_active_text_brightness = 1.023
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        tab_active_text_saturation = 0.8
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_inactive_text_brightness = 0.321
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        tab_inactive_text_saturation = 0.081
         # in_diff_mode gap folding (open_files._diff_gap_folds): unchanged
         # context lines kept visible on each side of a change block; the
         # rest of the gap folds away, so collapse-all skims the changes
@@ -1424,7 +1455,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 1.439
+    glow_strength = 0.976
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),

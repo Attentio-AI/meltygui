@@ -1,3 +1,4 @@
+import colorsys
 import os
 import sys
 import types
@@ -257,7 +258,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 hover_text_boost=2.2, max_bg_brightness=0.25,
                 event="left_mouse_clicked", text_offset_x=None,
                 style_manager=None, layout=True, draw_list=None,
-                shadow=True, **kwargs):
+                shadow=True, text_color=None, **kwargs):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
     rect + centered label straight to the draw list, hover from the live
@@ -302,10 +303,21 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         dl.add_rect_filled(x, y, x + w, y + h,
                            imgui.get_color_u32_rgba(bg[0], bg[1], bg[2], alpha),
                            rounding=Melty.px(corner_radius))
-    tc = style_manager.make_color_rgb(
-        color[0], color[1], color[2],
-        value=text_value + (hover_text_boost if hovered else 0.0),
-        factor=factor, saturation_scale=text_saturation, alpha=1.0)
+    # text_color: use this exact rgb for the label instead of the theme-mix
+    # pipeline below — that pipeline only lets text_value/text_saturation
+    # touch `factor` worth of the final color (the rest is the raw `color`),
+    # so callers needing FULL-range text control (the editor tabs' hsv
+    # knobs) pre-compute the color and pass it here. Hover still brightens.
+    if text_color is not None:
+        th, tsat, tv = colorsys.rgb_to_hsv(*text_color[:3])
+        if hovered:
+            tv = min(1.0, tv + 0.25)
+        tc = colorsys.hsv_to_rgb(th, tsat, tv)
+    else:
+        tc = style_manager.make_color_rgb(
+            color[0], color[1], color[2],
+            value=text_value + (hover_text_boost if hovered else 0.0),
+            factor=factor, saturation_scale=text_saturation, alpha=1.0)
     # text_offset_x: left-align the label at a fixed inset instead of
     # centering — for buttons whose left edge hosts another element (the
     # editor tabs' tint swatch) that centered text would overlap.

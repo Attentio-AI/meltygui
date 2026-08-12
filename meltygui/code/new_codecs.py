@@ -663,6 +663,7 @@ class ModeCodec(TypeCodec):
 
 
 @register_codec(for_type=types.FunctionType)
+
 class FunctionCodec(TypeCodec):
     name = "Python Function"
     # The render function's own source (def + body): green.

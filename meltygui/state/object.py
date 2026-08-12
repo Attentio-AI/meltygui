@@ -23,7 +23,7 @@ from src.lsd.gl_gui.view.core_views.decoration.invalidation_decoration import li
 _SEGMENT_RE = re.compile(
     r'(?:[^.\[]+|\[[^\]]*\])+')  # matches a segment like: attr, attr[0], attr["a.b"][1], [0], ...
 _BRACKET_RE = re.compile(r'\[([^\]]*)\]')  # extracts inner text of each [...] in a segment
-
+# [tint=(0.022, 0.103, 0.356), show_tint=True]
 @exclude(["tint", "hash", "id", "name", "prev_mouse_y", "prev_mouse_x", "pending_invalidate"])
 @deep_refresh("tint")
 @live
@@ -1792,4 +1792,3 @@ class DictConversion(metaclass=FieldMeta):
             # Direct update
             else:
                 current_dict[key] = new_value
-

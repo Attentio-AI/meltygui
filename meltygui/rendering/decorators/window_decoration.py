@@ -11,7 +11,7 @@ def set_window_registrar(register_fn):
         register_fn(cls, kwargs)
     _pending.clear()
 
-
+#[tint=(0.0, 0.541, 0.85)]
 def window(cls=None, **kwargs):
     def wrap(cls):
         if _register is None:

@@ -1165,9 +1165,9 @@ _REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | {
 # Global fallback for `draw_text(token_views=...)`: when a caller passes no
 # token_views, the editor uses this DEFAULT SET of callback widgets. A per-call
 # token_views always wins; set this to None to disable widgets everywhere.
-# The real value is assigned just below draw_icon_selector (it references that
-# renderer, which is defined later in the file) - keep this forward-declaration so
-# anything importing the module before then sees the value.
+# The real default is assigned below the token renderers (it references them,
+# and they are defined later in the file) - keep this forward-declaration so
+# anything importing the name before then sees a value.
 DEFAULT_TOKEN_VIEWS = None
 
 
@@ -1176,7 +1176,7 @@ DEFAULT_TOKEN_VIEWS = None
 # widget instead of / on top of the code. Two kinds of key, dispatched by type:
 #
 #   token_views = {
-#       "icon":      {"renderer": draw_icon_selector,   "char_width": 4},
+#       "icon":      {"renderer": draw_icon_selector_plain, "char_width": 4},
 #       Conditional: {"renderer": draw_floating_window, "char_width": None},
 #   }
 #
@@ -1207,7 +1207,8 @@ DEFAULT_TOKEN_VIEWS = None
 #    it's a non-inline OVERLAY drawing callback (floats over/by the code, doesn't
 #    edit text): `renderer(x, y, w, h, draw_state=, char_w=, line_px=, node=, span=)`.
 #
-# `draw_icon_selector` (below) is the reference inline renderer: an icon picker.
+# `draw_icon_selector_plain` (below) is the reference inline widget: an editable
+# glyph chip that opens a searchable picker popover.
 
 # The full Font Awesome set: {icon-name: glyph} read from the bundled font's cmap
 # (see fa_icons.py - generated, do not hand-edit). The dropdown lists the NAMES
@@ -1218,33 +1219,194 @@ ICON_COLLECTION = FA_ICONS
 GENERIC_ICON = "\uf005"  # star - the placeholder Ctrl+I inserts; pick the real one from the dropdown
 
 
-@render_func(use_cache=True, show_bg=True, shadow=True, tint=(0.77,0.66,0.20,1.00), z_offset=2, bg_offset=4, with_header=None, disable_scroll=True,
-             show_name=False, selectable=False, max_height=30)
-def draw_icon_selector(input_value, draw_state=None,
-                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
-                       **kwargs):
-    """Inline Font Awesome icon picker — the reference token_views inline renderer.
+def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
+                             tint=None, text_tint=None, editor_ds=None, **kwargs):
+    """Inline Font Awesome icon picker without the @render_func wrapper — the
+    glyph is drawn straight into the editor tile as a chip (see
+    draw_number_token_plain for why plain: the ~90µs wrapper per widget per
+    frame dominates with many inline widgets). Same renderer contract:
+    `(glyph) -> (changed, new_glyph)`; a changed return splices the picked
+    glyph in for this source char.
 
-    Shaped like every other renderer: `(input_value) -> (changed, icon_str)`. It
-    draws an inline dropdown (core_view's `draw_dropdown`) whose trigger shows the
-    current glyph; picking a different glyph returns (True, new_glyph). Wire it via
-    `token_views={"icon": {"renderer": draw_icon_selector, "char_width": N}}` and
-    draw_text splices the chosen glyph back into the source on change.
+    Replaces the old wrapped draw_icon_selector, which routed through
+    draw_dropdown: that registered a nested @window trigger PER ICON TOKEN
+    (windows outlived their render-order-named call sites — the nested-window
+    leak) and ellipsis-trimmed the glyph against the trigger's own text pad
+    (the "..." cell). Here the trigger is just a centered add_text.
 
-    The left_mouse_* params are declared but never read: declaring them subscribes
-    this view to those events, so a press that starts on the widget resolves to IT
-    (topmost subscriber, blocking) and the InputHandler latches the whole drag
-    here — the surrounding editor never sees the gesture, so it won't move the
-    caret or grow a selection. imgui drives the actual widget from raw input."""
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_dropdown
+    The picker is a LATCHED draw_dd_menu popover parented to the EDITOR —
+    the same latch pattern as draw_color3_token_plain's color picker: called
+    every frame this widget renders with `closed=` toggled; open state lives
+    on editor_ds (_icon_open_name) with Melty.popover_focused_ds pointing at
+    the menu window, so outside clicks and the nav-key wake ride the standard
+    popover machinery. draw_text closes the menu if this widget stops
+    rendering while open (scrolled/edited away), so the window can never
+    outlive its call site. Caret suppression for presses on the chip comes
+    from ds._plain_tv_rects (owns_mouse), like the other plain widgets."""
+    from src.lsd.gl_gui.view.core_views.new_core_view import (
+        draw_dd_menu, _dd_handle_keys, _dd_close)
+    from src.lsd.gl_gui.view.core_conversion.cache_tree import UNSET_VALUE
     cur = input_value if isinstance(input_value, str) else ""
-    # Always include the current glyph so the dropdown can display/round-trip it
+    x, y = imgui.get_cursor_screen_pos()
+    w = max(1.0, width)
+    h = max(1.0, height)
+    _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=0)
+    dl = imgui.get_window_draw_list()
+    if text_tint is not None:
+        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2],
+                                         text_tint[3] if len(text_tint) > 3 else 1.0)
+    else:
+        color = COLORS['icon']
+    # FA glyphs aren't monospaced - center the glyph's real width in the chip.
+    _gw = imgui.calc_text_size(cur)[0] if cur else 0.0
+    dl.add_text(x + (w - _gw) * 0.5, y, color, cur)
+    io = imgui.get_io()
+    hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
+    if hovered:
+        dl.add_rect(x, y, x + w, y + h,
+                    imgui.get_color_u32_rgba(1, 1, 1, 0.25), 5.0)
+    clicked = hovered and imgui.is_mouse_clicked(0)
+    if editor_ds is None:
+        return False, cur
+
+    menus = getattr(editor_ds, '_icon_menus', None)
+    if menus is None:
+        menus = editor_ds._icon_menus = {}
+    root = getattr(editor_ds, '_icon_dd_root', None)
+    if root is None:
+        root = editor_ds._icon_dd_root = DropDownState()
+    menu_ds = menus.get(name)
+    open_prev = getattr(editor_ds, '_icon_open_name', None) == name
+    still_open = menu_ds is not None and Melty.popover_focused_ds is menu_ds
+    if clicked:
+        want_open = not open_prev
+    elif open_prev and not still_open:
+        want_open = False   # dismissed externally (scroll away, other popover)
+    else:
+        want_open = open_prev
+    if want_open and any(k == glfw.KEY_ESCAPE for k, _ in Melty.frame_key_events):
+        want_open = False
+
+    # Always include the current glyph so the menu can display/round-trip it
     # even if it isn't one of the defaults.
     coll = ICON_COLLECTION if (not cur or cur in FA_GLYPH_SET) else {cur: cur, **ICON_COLLECTION}
-    name = f"{getattr(draw_state, 'name', 'icon')}_dropdown"
-    changed, picked = draw_dropdown(cur, collection=coll, name=name+"drop_down", show_header=False, text_align="center",
-                                    width=max(21, draw_state.width), max_height=22, tint=draw_state.tint)
-    return (True, picked) if (changed and isinstance(picked, str)) else (False, cur)
+
+    if want_open and not open_prev:
+        # First open: empty query, let the search box grab text focus for a few
+        # frames (the opening click's clear_focus can race the box), and land
+        # the highlight on the current glyph's row.
+        root.search_query = ""
+        root.search = ""
+        root._focus_search = 8
+        root._kbd_mode = True
+        root._had_focus = False
+        root._last_mouse = None
+        _sel = next((k for k, v in coll.items() if v == cur), None)
+        root.cursor_path = (_sel,) if _sel is not None else ()
+        root.open_path = ()
+        root.selected_path = root.cursor_path
+        # Snap the menu's scroll to the highlighted row once the window exists
+        # (its draw_state lags the first open by a frame) - countdown, not a
+        # per-frame check, so wheel scrolling doesn't take over.
+        root._snap_frames = 3
+        Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+        request_render()
+
+    if want_open:
+        # A mouse move switches back to mouse mode so the highlight follows the
+        # pointer again (until the next arrow key locks keyboard mode).
+        _mp = imgui.get_mouse_pos()
+        _lm = getattr(root, "_last_mouse", None)
+        if _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5):
+            root._kbd_mode = False
+        root._last_mouse = (_mp[0], _mp[1])
+
+    # Latched menu window - called every frame this widget renders with
+    # `closed=` toggled so it persists when the (cached) editor body is
+    # skipped. window_pos is relative to the imgui cursor at call time - set
+    # it on the chip's top-left so (0, h) anchors just under the glyph.
+    imgui.set_cursor_screen_pos((x, y))
+    changed, picked, menu_ds = draw_dd_menu(
+        coll, name=f"{name}_icon_menu", closed=not want_open, temp=True,
+        swoosh=False, window_pos=(0, h), max_height=500, tint=tint,
+        parent_window=editor_ds, disable_scroll=False, text_align="left",
+        root_state=root, path_prefix=(), return_extras=True)
+    menus[name] = menu_ds
+
+    def _close_pick():
+        Melty.popover_focused_ds = None
+        _dd_close(root)
+        editor_ds._icon_open_name = None
+        Melty.cache.invalidate_up(editor_ds._tile_id, max_depth=10, force=True)
+        request_render()
+
+    if want_open:
+        editor_ds._icon_open_name = name
+        editor_ds._icon_seen = (name, Melty.frame_count)
+        Melty.popover_focused_ds = menu_ds
+        if changed and isinstance(picked, str):
+            _close_pick()
+            return True, picked
+
+        # Arrows / Enter only while the menu's search box owns the keyboard,
+        # so they don't also drive whatever editor was focused before.
+        box_tile = getattr(root, "_search_box_tile", None)
+        text_focused = (Melty.text_focused_ds is not None and box_tile is not None
+                        and getattr(Melty.text_focused_ds, "_tile_id", None) == box_tile)
+        _nav_hit = False
+        if text_focused:
+            _nav_hit = any(k in (glfw.KEY_UP, glfw.KEY_DOWN, glfw.KEY_ENTER,
+                                 glfw.KEY_KP_ENTER)
+                           for k, _ in Melty.frame_key_events)
+            kpick = _dd_handle_keys(coll, root,
+                                    search=getattr(root, "search", "") or "",
+                                    text_focused=True)
+            if kpick is not UNSET_VALUE and isinstance(kpick, str):
+                _close_pick()
+                return True, kpick
+
+        # Keep the keyboard-cursor row visible: on the open snap (countdown -
+        # the menu window's draw lags the first frame) and key nav hits.
+        # _dd_handle_keys doesn't scroll by itself (the AC popup calls
+        # _dd_scroll_cursor_into_view too); rows sit below the search box, so
+        # its measured height is the row-0 offset.
+        _snap = getattr(root, "_snap_frames", 0)
+        if (_snap > 0 or _nav_hit) and menu_ds is not None:
+            from src.lsd.gl_gui.view.core_views.new_core_view import (
+                _dd_rows_at, _dd_scroll_cursor_into_view, _dd_as_tuple)
+            if _snap > 0:
+                root._snap_frames = _snap - 1
+            _cp = _dd_as_tuple(root.cursor_path)
+            if _cp:
+                _rkeys = [r[0] for r in
+                          _dd_rows_at(coll, (), getattr(root, "search", "") or "")]
+                if _cp[-1] in _rkeys:
+                    _box = (Melty.cache.key_to_draw_state.get(box_tile)
+                            if box_tile is not None else None)
+                    _off = (_box.height + 6) if (_box is not None
+                                                 and _box.height) else 30
+                    _dd_scroll_cursor_into_view(menu_ds, _rkeys.index(_cp[-1]),
+                                                row0_offset=_off)
+
+        # Focus settle (bounded): while the box hasn't confirmed focus and the
+        # retry budget lasts, re-run its renderer so request_text() again -
+        # same recipe as draw_dropdown's settle block.
+        if getattr(root, "_focus_search", 0) > 0:
+            if box_tile is not None:
+                Melty.cache.invalidate_up(box_tile, force=True)
+            Melty.cache.invalidate_up(editor_ds._tile_id, max_depth=10, force=True)
+            request_render()
+    else:
+        if getattr(editor_ds, '_icon_open_name', None) == name:
+            editor_ds._icon_open_name = None
+            _dd_close(root)
+        if menu_ds is not None and Melty.popover_focused_ds is menu_ds:
+            Melty.popover_focused_ds = None
+        if open_prev or clicked:
+            request_render()
+    return False, cur
+
+draw_icon_selector_plain._plain_tv = True
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, z_offset=3, tint=(0.911, 0.305, 0.0),
@@ -1327,7 +1489,7 @@ def draw_number_token(input_value, draw_state=None, text_tint=None,
     there the literal edits like any other text.
     left_mouse_* are declared (never read) to win the event latch over the editor —
     a drag that starts on the widget latches here, so the editor doesn't grow a
-    text selection while a value is being dragged. See draw_icon_selector."""
+    text selection while a value is being dragged."""
     from src.lsd.gl_gui.utils.custom_views import (push_style_var, pop_style_var,
                                                    push_style_color, pop_style_color)
     s = input_value if isinstance(input_value, str) else str(input_value)
@@ -1581,7 +1743,7 @@ def draw_color3_token(input_value, draw_state=None,
     reformatted tuple back — changed channels become float literals, untouched
     channels keep their original text — so the token re-merges.
     Draws nothing if the tuple doesn't parse (the text is still there).
-    left_mouse_* declared (never read) for the event latch — see draw_icon_selector."""
+    left_mouse_* declared (never read) for the event latch — see draw_number_token."""
     from src.lsd.gl_gui.view.mode import Mode
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
     s = input_value if isinstance(input_value, str) else str(input_value)
@@ -1784,8 +1946,11 @@ DEFAULT_TOKEN_VIEWS = {
     # tint: the widget's bg wash, passed as a call kwarg at the draw_text call
     # sites - decorator-level for the provenance color and no longer reaches
     # render kwargs.
-    "icon": {"renderer": draw_icon_selector, "char_width": 3,
-             "tint": (0.77, 0.66, 0.20, 1.00)},
+    # icon uses the PLAIN renderer too - the older wrapped renderer registered a
+    # nested dropdown @window per icon token (leak) and "..."-trimmed the
+    # glyph; owns_mouse suppresses caret placement for chip presses.
+    "icon": {"renderer": draw_icon_selector_plain, "char_width": 3,
+             "owns_mouse": True, "tint": (0.77, 0.66, 0.20, 1.00)},
     # bool/number use custom PLAIN (wrapper-less) renderers: with many inline
     # widgets on screen the ~90µs @render_func wrapper per widget per frame
     # dominated; these draw straight into the editor tile with raw imgui.
@@ -1866,7 +2031,7 @@ def _lv_line_map(parse_source, buffer_text):
 
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None, buffer_text=None,
-                          cursor_line=None, cursor_col=None):
+                          cursor_line=None, cursor_col=None, fold_line_map=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
@@ -1896,6 +2061,22 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
             line_map = _lv_line_map(_src, buffer_text)
             ds._lv_lmap_src, ds._lv_lmap_buf = _src, buffer_text
             ds._lv_lmap = line_map
+    if fold_line_map is not None:
+        # Folds collapsed: the diff bridge above ran against the FULL buffer
+        # (buffer_text=_fold_full at the call site) - it can only describe ONE
+        # contiguous change, and the collapsed folds against the display text
+        # read as one single changed region swallowing every visible line
+        # between them (markers there mapped to None and vanished). Compose
+        # the exact buffer→display fold projection on top instead; it's a
+        # fresh closure over the current fold layout, so only the fold-free
+        # bridge is cached.
+        _bridge = line_map
+        if _bridge is None:
+            line_map = fold_line_map
+        else:
+            def line_map(line, _b=_bridge, _f=fold_line_map):
+                bl = _b(line)
+                return None if bl is None else _f(bl)
     seen = set()
 
     # Viewport prune bounds in buffer-line space (+±1 line slack): a node's
@@ -5823,10 +6004,14 @@ def _scope_fold_ranges(text):
         the collapsed display text still tokenizes as a TERMINATED string —
         hiding the closer would paint the rest of the file string-colored.
       comment runs — >=2 consecutive same-indent full-line '#' comments.
+        Runs that parse as a melty override comment ('# [tint=..., ...]')
+        also join default_collapsed: param comments start folded.
       top import block — first module-level import down to the last import
         before other module-level code (blank lines, comments and paren /
         backslash continuations stay inside). Also returned in
         default_collapsed: imports start folded on a fresh editor."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import \
+        _parse_override_comment
     lines = text.split('\n')
     out = []
     # Pass 1 - multiline strings. Their interior (and closing) lines go in
@@ -5866,10 +6051,19 @@ def _scope_fold_ranges(text):
     stack = []                   # (indent, header_line)
     last_code = -1               # last non-blank line seen
     run_start = run_ind = None   # current same-indent comment run
+    default_col = []
 
     def _close_run(end):
         if run_start is not None and end > run_start:
             out.append((run_start, end))
+            # Melty override comment runs start folded. Parse-checked (not
+            # the loose _OVERRIDE_COMMENT_RE) so a prose comment that merely
+            # contains 'x=' doesn't auto-collapse; a mixed prose-then-override
+            # run fails the joined parse and stays open (its visible header
+            # would be the prose line, which wears no tint).
+            if _parse_override_comment(
+                    '\n'.join(l.strip() for l in lines[run_start:end + 1])):
+                default_col.append((run_start, end))
 
     imp_first = imp_last = None
     imp_done = imp_cont = False
@@ -5920,7 +6114,6 @@ def _scope_fold_ranges(text):
     for _, hdr in stack:
         if last_code > hdr:
             out.append((hdr, last_code))
-    default_col = []
     if imp_first is not None and imp_last is not None and imp_last > imp_first:
         out.append((imp_first, imp_last))
         default_col.append((imp_first, imp_last))
@@ -6144,9 +6337,6 @@ def draw_text(input_value: str, height=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               code_diff_mode=False,
-              fold_shadow_angle=90.0,
-              fold_shadow_color=(0.0, 0.0, 0.0, 0.3),
-              fold_shadow_saturation=1.0,
               unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -6265,6 +6455,12 @@ def draw_text(input_value: str, height=None,
                     if _r[0] > _open_end:
                         _roots.append(_r)
                         _open_end = _r[1]
+                # Default-collapsed ranges (the top import block) keep their
+                # state - collapse/expand-all leaves them alone; they only
+                # toggle via their own buttons or the caret-scoped shortcuts.
+                if _fold_default_col:
+                    _skip = set(_fold_default_col)
+                    _roots = [r for r in _roots if r not in _skip]
                 if ctrl_shift_minus_down:
                     ds._fold_collapsed.update(_roots)
                 else:
@@ -7385,7 +7581,14 @@ def draw_text(input_value: str, height=None,
     # with no jump targets falls through to the normal click path, so plain
     # gutter clicks still place the caret at line start.
     if (left_mouse_down and gutter_w
-            and left + _lv_btn_w <= left_mouse_down.x < left + gutter_w):
+            and left + _lv_btn_w <= left_mouse_down.x < left + gutter_w
+            and not any(_br[0] <= left_mouse_down.x < _br[2]
+                        and _br[1] <= left_mouse_down.y < _br[3]
+                        for _br, _ in (getattr(ds, '_fold_badge_rects', None)
+                                       or []))):
+        # (fold-arrow presses are excluded above - the toggle handler at the
+        # top of the body owns those; without this a click on the arrow of a
+        # heat-carrying header ALSO opens the usage picker)
         _uh_line = int((left_mouse_down.y - origin_y) // line_px)
         if _line_usage_picker(_uh_line):
             left_mouse_down = None
@@ -8689,8 +8892,26 @@ def draw_text(input_value: str, height=None,
             _dt_lines = tuple(_rl)
         # Comment-text tints come from a direct scan of the buffer text - no
         # code_tree, no debounce, so a tint comment colors as it's typed
-        # instead of waiting on the cst-dict round trip.
-        _dt_comments = _comment_tints(ds, text)
+        # instead of waiting on the cst-dict round trip. Scans over the
+        # FULL buffer (keeps the cache fold-independent, and a multi-line
+        # override truncated at a fold seam wouldn't parse), then projected
+        # into display coords: a collapsed run's visible header line keeps
+        # its paint, clamped to that line so the color can't run past the
+        # seam onto whatever follows the fold badge.
+        _dt_comments = _comment_tints(ds, _fold_full)
+        if _fold_bl is not None and _dt_comments:
+            _rc = []
+            for _c_si, _c_ei, _c_rgb in _dt_comments:
+                _dsi = _fold_off(_c_si)
+                if _dsi is None:
+                    continue
+                _dei = _fold_off(_c_ei)
+                if _dei is None:      # tail hidden - clamp to the header end
+                    _dei = text.find('\n', _dsi)
+                    if _dei == -1:
+                        _dei = len(text)
+                _rc.append((_dsi, _dei, _c_rgb))
+            _dt_comments = tuple(_rc)
         _pf_info['dt_call_ms'] = round((time.perf_counter() - _t_dt) * 1000.0, 1)
         _pf_info['dt_miss'] = _k_dt is not getattr(ds, "_def_tints_key", None)
         _pf_info['dt_n'] = (len(_dt_blocks), len(_dt_lines), len(_dt_spans))
@@ -9545,9 +9766,19 @@ def draw_text(input_value: str, height=None,
                         _tv_idx += 1
                         _save_cur = imgui.get_cursor_screen_pos()
                         imgui.set_cursor_screen_pos((_ix, y))
+                        # Plain (wrapper-less) renderers get the editor's
+                        # draw_state and, with owns_mouse, a caret-suppression
+                        # rect; the same plumbing the whole-token path has.
+                        _extra = ({'tint': _view["tint"]}
+                                  if _view.get("tint") is not None else {})
+                        if getattr(_view["renderer"], "_plain_tv", False):
+                            _extra['editor_ds'] = ds
+                            if _view.get("owns_mouse"):
+                                ds._plain_tv_rects.append(
+                                    (_ix, y, _ix + _cw * char_w, y + line_px))
                         try:
                             _res = _view["renderer"](_ch, width=_cw * char_w, height=line_px, name=_name,
-                                                     **({'tint': _view["tint"]} if _view.get("tint") is not None else {}))
+                                                     **_extra)
                         except Exception:
                             _res = None
                         imgui.set_cursor_screen_pos(_save_cur)
@@ -9661,11 +9892,29 @@ def draw_text(input_value: str, height=None,
         if Melty.text_focused_ds is ds:
             _cl0, _cc0 = _index_to_line_col(text, ds.text_cursor_pos)
             _cur_line, _cur_col = _cl0 + 1, _cc0 - _tv_shift
+        # Folds collapsed? pass the FULL buffer to the parse→buffer diff
+        # bridge (the display text has one deletion per collapsed fold, and
+        # the single-region diff maps everything between the first and last
+        # fold to None - live-view markers on visible lines vanished) and
+        # map buffer→display exactly via the fold layout.
+        _tv_fold_lm = None
+        _tv_buf = text
+        if _fold_bl is not None:
+            _tv_buf = _fold_full
+
+            def _tv_fold_lm(line, _d2b=_fold_d2b):
+                # 1-indexed full-buffer line → 1-indexed display line;
+                # None while hidden inside a collapsed region.
+                b = line - 1
+                i = bisect.bisect_right(_d2b, b) - 1
+                if i < 0 or _d2b[i] != b:
+                    return None
+                return i + 1
         _draw_cst_token_views(_tv_tree, token_views, origin_x + _tv_shift * char_w,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to,
-                              buffer_text=text, cursor_line=_cur_line,
-                              cursor_col=_cur_col)
+                              buffer_text=_tv_buf, cursor_line=_cur_line,
+                              cursor_col=_cur_col, fold_line_map=_tv_fold_lm)
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------
@@ -9740,6 +9989,13 @@ def draw_text(input_value: str, height=None,
     # the numbers stay fixed while code scrolls horizontally under them. Numbers
     # ride origin_y, so they scroll vertically in lockstep with their lines. The
     # cursor's line is brightened for emphasis.
+    # Fold headers swap the line number for the fold chevron (both states) -
+    # lookup: display line -> (range, collapsed?). Badge rects reset HERE,
+    # before subsequent passes that append to them (gutter chevrons below, collapsed
+    # "N lines" labels in the folding pass above the body).
+    ds._fold_badge_rects = []
+    _fold_hdr = ({f[1]: (f[0], f[2]) for f in _fold_folds}
+                 if _fold_folds else {})
     if show_gutter and gutter_w > 0:
         gutter_bg = (*Tint.line_number_bg()[:3], 1.0)  # dark tinted gray
         num_color = imgui.get_color_u32_rgba(*Tint.line_number_tint()[:3], 1.0)
@@ -9805,20 +10061,62 @@ def draw_text(input_value: str, height=None,
                                                    0.55 * _lt[2])
                 else:
                     _hb = _usage_wash_color(heat)
+                _hx0, _hx1 = nx - 3.0, left + gutter_w - 3.0
+                _hy0, _hy1 = ly + 1, ly + line_px - 1
+                if line_idx in _fold_hdr:
+                    # Fold header: no number for the box, and the fold
+                    # arrow shares the cell - shrink to a half-size strip
+                    # (right-aligned, vertically centered) so the arrow gets
+                    # breathing room to its left.
+                    _hx0 = (_hx0 + _hx1) * 0.5
+                    _hy0 = ly + line_px * 0.25
+                    _hy1 = ly + line_px * 0.75
                 if _uh_sh:
                     # Heat-scaled lift: the box's depth is the usage count
                     # times the per-usage offset, magnitude-capped so a
                     # hub line doesn't cast across the whole strip.
                     _uh_off = _uh_sh * heat
                     _uh_off = max(-_uh_sh_max, min(_uh_sh_max, _uh_off))
-                    add_shadow((nx - 3.0, ly + 1,
-                                (left + gutter_w - 3.0) - (nx - 3.0),
-                                line_px - 2),
+                    add_shadow((_hx0, _hy0, _hx1 - _hx0, _hy1 - _hy0),
                                offset=_uh_off, corner_radius=3.0,
                                clip=_gut_clip, draw_state=ds)
-                draw_list.add_rect_filled(nx - 3.0, ly + 1, left + gutter_w - 3.0,
-                                          ly + line_px - 1, _hb, 3.0)
-            draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
+                draw_list.add_rect_filled(_hx0, _hy0, _hx1, _hy1, _hb, 3.0)
+            _fh = _fold_hdr.get(line_idx)
+            if _fh is not None:
+                # Fold header line: chevron in place of the number; the
+                # toggle handler at the top of the body reads these on
+                # next frame.
+                _rng_g, _col_g = _fh
+                if heat:
+                    # Heat chip exists (right half of the cell): arrow sits
+                    # left of it with breathing room, and the hit region stops
+                    # at the chip so clicking it still opens the usage box
+                    # instead of toggling the fold.
+                    _chip_l = ((nx - 3.0) + (left + gutter_w - 3.0)) * 0.5
+                    _gcx = max(_chip_l - 8.0, left + _lv_btn_w + 5.0)
+                    _gr = (left + _lv_btn_w, ly, _chip_l - 2.0, ly + line_px)
+                else:
+                    # No chip: right-align the arrow with the line numbers.
+                    _gcx = left + gutter_w - 6.0 - char_w
+                    _gr = (left + _lv_btn_w, ly, left + gutter_w, ly + line_px)
+                _ghov = (_gr[0] <= io.mouse_pos.x < _gr[2]
+                         and _gr[1] <= io.mouse_pos.y < _gr[3])
+                _gcc = imgui.get_color_u32_rgba(
+                    0.9, 0.9, 0.9, 0.55 if _ghov else 0.31)
+                _gcy = ly + line_px * 0.5
+                if _col_g:
+                    # right-pointing chevron: click to expand
+                    draw_list.add_triangle_filled(_gcx - 2.5, _gcy - 4.0,
+                                                  _gcx - 2.5, _gcy + 4.0,
+                                                  _gcx + 3.5, _gcy, _gcc)
+                else:
+                    # down-pointing chevron: click to collapse
+                    draw_list.add_triangle_filled(_gcx - 4.0, _gcy - 2.5,
+                                                  _gcx + 4.0, _gcy - 2.5,
+                                                  _gcx, _gcy + 3.5, _gcc)
+                ds._fold_badge_rects.append((_gr, _rng_g))
+            else:
+                draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
             _mlist = _lv_marks.get(line_idx)
             if _mlist:
                 _open = any(getattr(m, "_lv_open", False) for m in _mlist)
@@ -9871,85 +10169,57 @@ def draw_text(input_value: str, height=None,
         ds._lv_btn_pressed_line = None
         draw_list.pop_clip_rect()
 
-    # --- Fold headers + collapsed edge light ----------------------------------
-    # One badge per fold range at the end of its header line - bare icons,
-    # no bounding box: expanded folds get a faint down-chevron (click
-    # collapses), collapsed ones a right-chevron + "N more lines" label
-    # (click expands). Under a collapsed header, a LIGHT emanates from the
-    # header's bottom edge downward for one line - a sheared beam of stacked
-    # parallelogram bands (quadratic ease), tinted by fold_shadow_color with
-    # its HSV saturation scaled by fold_shadow_saturation, and leaned from
-    # fold_shadow_angle (degrees: 90 = straight down, <90 leans right,
-    # >90 leans left). Rects are stashed for NEXT frame's toggle handler at
-    # the top of the body (raw draw-list widgets, same pattern as the
-    # live-view gutter buttons — a render_func per fold would be overkill).
-    ds._fold_badge_rects = []
+    # --- Fold labels ---------------------------------------------------------
+    # The fold chevrons live in the GUTTER (in place of the header's line
+    # number - see the gutter pass above); here a collapsed fold keeps its
+    # "N lines" label at the end of the header (also a click target), and a
+    # gutterless editor falls back to end-of-line chevrons so folds stay
+    # reachable. Rects are stashed for NEXT frame's toggle handler at the
+    # top of the body (raw draw-list widgets, same tech as the live-view
+    # gutter markers - a render_func per fold would be overkill); the list
+    # was created above during gutter pass.
     if _fold_folds:
         draw_list.push_clip_rect(left + gutter_w, rect_min_y,
                                  left + ds.content_width, rect_max_y, True)
         _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
-        # Light color: saturation knob applied in HSV, alpha channel is the
-        # light's strength at the edge.
-        _fsr, _fsg, _fsb = fold_shadow_color[:3]
-        _fsa = fold_shadow_color[3] if len(fold_shadow_color) > 3 else 0.3
-        if fold_shadow_saturation != 1.0:
-            import colorsys
-            _fh, _fs, _fv = colorsys.rgb_to_hsv(_fsr, _fsg, _fsb)
-            _fsr, _fsg, _fsb = colorsys.hsv_to_rgb(
-                _fh, max(0.0, min(1.0, _fs * fold_shadow_saturation)), _fv)
-        # Shear per pixel of depth from the light angle, clamped away from
-        # horizontal so a live-edited angle can't blow out the geometry.
-        _frad = math.radians(max(15.0, min(165.0, fold_shadow_angle)))
-        _fshear = math.cos(_frad) / math.sin(_frad)
+        _need_chev = gutter_w <= 0.0    # no gutter: chevrons fall back here
         for _rng, _dl, _fcol, _nh, _hlen, _fa, _fhl in _fold_folds:
             _fy = origin_y + _dl * line_px
             if _fy > rect_max_y or _fy + 2 * line_px < rect_min_y:
                 continue
             _bx = origin_x + _hlen * char_w + char_w
+
             if _fcol:
-                _lbl = f"{_nh} more line{'s' if _nh != 1 else ''}"
-                _bw = 16.0 + len(_lbl) * char_w + 8.0
-            else:
+                # [tint=(0.656, 0.044, 0.615), show_tint=True]
+                _lbl = f"{_nh} lines"
+                _bw = (16.0 if _need_chev else 4.0) + len(_lbl) * char_w + 8.0
+            elif _need_chev:
                 _lbl = None
                 _bw = 16.0
+            else:
+                continue    # expanded + no chevron: nothing on the line
             _fr = (_bx, _fy + 1.0, _bx + _bw, _fy + line_px - 1.0)
             _fhov = (_fr[0] <= io.mouse_pos.x < _fr[2]
                      and _fr[1] <= io.mouse_pos.y < _fr[3])
+
             _fcc = imgui.get_color_u32_rgba(
-                0.9, 0.9, 0.9, 0.9 if _fhov else 0.55)
+                0.9, 0.9, 0.9, 0.4 if _fhov else 0.31)
             _fcx, _fcy = _fr[0] + 8.0, (_fr[1] + _fr[3]) * 0.5
+            if _need_chev:
+                if _fcol:
+                    # right-pointing chevron: click to expand
+                    draw_list.add_triangle_filled(_fcx - 2.5, _fcy - 4.0,
+                                                  _fcx - 2.5, _fcy + 4.0,
+                                                  _fcx + 3.5, _fcy, _fcc)
+                else:
+                    # down-pointing chevron: click to collapse
+                    draw_list.add_triangle_filled(_fcx - 4.0, _fcy - 2.5,
+                                                  _fcx + 4.0, _fcy - 2.5,
+                                                  _fcx, _fcy + 3.5, _fcc)
             if _fcol:
-                # right-pointing chevron: click to expand
-                draw_list.add_triangle_filled(_fcx - 2.5, _fcy - 4.0,
-                                              _fcx - 2.5, _fcy + 4.0,
-                                              _fcx + 3.5, _fcy, _fcc)
-                draw_list.add_text(_fr[0] + 16.0, _fy + _fm_y, _fcc, _lbl)
-            else:
-                # down-pointing chevron: click to collapse
-                draw_list.add_triangle_filled(_fcx - 4.0, _fcy - 2.5,
-                                              _fcx + 4.0, _fcy - 2.5,
-                                              _fcx, _fcy + 3.5, _fcc)
+                draw_list.add_text(_fr[0] + (16.0 if _need_chev else 4.0),
+                                   _fy + _fm_y, _fcc, _lbl)
             ds._fold_badge_rects.append((_fr, _rng))
-            if _fcol and _fsa > 0.0:
-                # Edge light: 14 parallelogram bands descending one line from
-                # the header's bottom edge, alpha easing out quadratically
-                # (evaluated at band centers - steps stay under ~0.05 alpha).
-                # Each band's x-offset follows the beam angle, so the whole
-                # sheet leans as one and its ends cut on the diagonal - no
-                # box outline anywhere.
-                _sy = _fy + line_px
-                _sx0, _sx1 = left + gutter_w, left + ds.content_width
-                _fn = 14
-                for _si in range(_fn):
-                    _t0, _t1 = _si / _fn, (_si + 1) / _fn
-                    _tm = (_t0 + _t1) * 0.5
-                    _bc = imgui.get_color_u32_rgba(
-                        _fsr, _fsg, _fsb, _fsa * (1.0 - _tm) ** 2)
-                    _d0, _d1 = _t0 * line_px, _t1 * line_px
-                    _o0, _o1 = _d0 * _fshear, _d1 * _fshear
-                    draw_list.add_quad_filled(
-                        _sx0 + _o0, _sy + _d0, _sx1 + _o0, _sy + _d0,
-                        _sx1 + _o1, _sy + _d1, _sx0 + _o1, _sy + _d1, _bc)
         draw_list.pop_clip_rect()
 
     if changed:
@@ -10052,6 +10322,29 @@ def draw_text(input_value: str, height=None,
             draw_list.add_text(_ug_x1 - _ug_w + 16.0, _li_y0 + 1.5,
                                imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85),
                                _ug_txt)
+
+    # Icon-picker orphan close: the picker popover is latched by its icon
+    # picker's body (draw_icon_selector_plain) - if that widget stopped
+    # rendering this frame (token scrolled out, edited away, sort-order name
+    # shifted) the menu popover would keep its last closed=False stamp forever
+    # and float on as a ghost. The editor owns the latch state, so close it
+    # here whenever the open widget wasn't seen this frame.
+    _io_name = getattr(ds, '_icon_open_name', None)
+    if _io_name is not None:
+        _io_seen = getattr(ds, '_icon_seen', None)
+        if not (_io_seen and _io_seen[0] == _io_name
+                and _io_seen[1] == Melty.frame_count):
+            _io_menu = (getattr(ds, '_icon_menus', None) or {}).get(_io_name)
+            if _io_menu is not None:
+                _io_menu.closed = True
+                if Melty.popover_focused_ds is _io_menu:
+                    Melty.popover_focused_ds = None
+            _io_root = getattr(ds, '_icon_dd_root', None)
+            if _io_root is not None:
+                from src.lsd.gl_gui.view.core_views.new_core_view import _dd_close
+                _dd_close(_io_root)   # collapse paths / release the box's text focus
+            ds._icon_open_name = None
+            request_render()
 
     # --- Code-suggest popup (dropdown menu anchored to the caret) ---
     # Rendered after the body (and after the monospace font is popped, so its

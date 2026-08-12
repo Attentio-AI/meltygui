@@ -1612,6 +1612,14 @@ class Melty:
                 request_render()
         else:
             for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
+                # A bare held MODIFIER (340-347: shift/ctrl/alt/super) is not
+                # input the editor needs to catch - no edge, no text - but the
+                # level check fired every frame one was down, so a shift-middle
+                # camera-click force-redrew the focused editor's whole sibling
+                # once per frame (120 → 40fps). A modifier+key combo still
+                # invalidates via the non-modifier key itself.
+                if glfw.KEY_LEFT_SHIFT <= k <= glfw.KEY_RIGHT_SUPER:
+                    continue
                 if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
                     if focused is not None:
                         # Editor-anchored: invalidate_up on the FOCUSED view
@@ -2142,10 +2150,10 @@ class Melty:
     def _swoosh_drag_focus(draw_state, offset_ds, dragging_tiles, hovered):
         """Drag-focus opacity decision for one connector (Swoosh.drag_focus).
 
-        Returns True for full opacity, False for the floor — the same two
-        values `hover` already means to _draw_swoosh, so the distance fade is
-        bypassed entirely and the default is the floor. A connector lights up
-        when:
+        Returns True for Swoosh.drag_alpha, False for Swoosh.rest_alpha — the
+        same two values `hover` already means to _draw_swoosh, so the distance
+        fade is bypassed entirely and the default is the rest alpha. A
+        connector lights up when:
           * its CHILD window is the one being dragged/resized (that window's
             connector only), or
           * any window ENCLOSING the parent view is being dragged — dragging a
@@ -2314,6 +2322,8 @@ class Melty:
             ref = fade * fade
             if area > ref:
                 fade_f = ref / area
+                
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
         alpha = Swoosh.ribbon_alpha * fade_f * mouse_fade
         # Gradient: `sides` runs parent (i=0) -> child (i=segments), so the
         # fill (and the boundary strokes below) lerp from the parent color to
@@ -2397,8 +2407,8 @@ class Melty:
         Swoosh.ribbon toggle. `hover` is the nested-window hover override:
         None means no nested window is hovered anywhere (keep the default
         opacity behavior); True means THIS connector's window is the hovered
-        one (full opacity); False means some OTHER window is hovered (drop to
-        Swoosh.mouse_falloff_floor). Under Swoosh.drag_focus the caller
+        one (Swoosh.drag_alpha); False means some OTHER window is hovered
+        (drop to Swoosh.rest_alpha). Under Swoosh.drag_focus the caller
         resolves the same True/False from the live drag gesture instead of
         hover alone (see _swoosh_drag_focus), so it is never None there and
         the proximity fade never runs. Tunables live on Swoosh.*."""
@@ -2431,11 +2441,11 @@ class Melty:
         # local to the selected mode, so a ribbon that falls through to the line on
         # overlapping views keeps the live fade.
         if hover is not None:
-            # A nested window is hovered: its own connector reads at full
-            # opacity and every other connector drops to the falloff floor,
-            # in BOTH modes - hover names one window, so distance no longer
-            # gets a vote.
-            mouse_fade = 1.0 if hover else Swoosh.mouse_falloff_floor
+            # A nested window is hovered/dragged: its own connector reads at
+            # Swoosh.drag_alpha and every other connector drops to
+            # Swoosh.rest_alpha, in either order - hover names one connector, so
+            # distance no longer gets a vote.
+            mouse_fade = Swoosh.drag_alpha if hover else Swoosh.rest_alpha
             if mouse_fade <= 0.0:
                 return
         elif mode is SwooshMode.RIBBON:

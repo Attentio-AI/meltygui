@@ -1897,6 +1897,17 @@ def check_source_incremental(text, path=None, only_missing_imports=False):
         if binds is None:                     # state predates the binds field
             binds = st["binds"] = _buffer_bound_names(old)
         binds |= _buffer_bound_names(region)
+        # `from x import *` binds names _buffer_bound_names can't see (it
+        # skips `*` on purpose) - a region using a star-imported name
+        # (TrainingStatus in lsd_train.py) would report "not defined" even
+        # though the full-buffer pass stays silent (star_import kills its
+        # name pass). _module_text_binds expands star sources through their
+        # LIVE module's exports; None (unreadable / unresolvable) degrades
+        # to the plain binds check.
+        try:
+            _mod_binds = _module_text_binds(path) if path else None
+        except Exception:
+            _mod_binds = None
         try:
             for ln, msg in check_source(region, path=path,
                                         only_missing_imports=only_missing_imports):
@@ -1905,7 +1916,8 @@ def check_source_incremental(text, path=None, only_missing_imports=False):
                 # finding shapes (signature/attr) pass through untouched.
                 if msg.startswith("name '"):
                     _nm = msg[6:msg.find("'", 6)]
-                    if _nm in binds:
+                    if _nm in binds or (_mod_binds is not None
+                                        and _nm in _mod_binds):
                         continue
                 kept.append((ln + start, msg))
         except Exception:

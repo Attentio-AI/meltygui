@@ -1512,8 +1512,7 @@ def draw_symbol_usage(input_value):
              use_cache=True,
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
-             wrap=False, with_header=draw_header, indent_size=3, searchable=True, tint=(0.711, 0.644, 0.51, 1.0),
-             child_kwargs=None)
+             wrap=False, with_header=draw_header, indent_size=3, searchable=True, child_kwargs=None)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
                     mode=None, keys=None, get_attr=None, set_attr=None, show_excluded=False,
                     child_kwargs=None, show_bg=False, show_search=False, align_header=False, wrap=False,
@@ -8861,13 +8860,6 @@ def _dd_row_lookup(mapping, value):
         return None
 
 
-def _dd_noop_set(*_a, **_k):
-    """No-op set_attr for the draw_collection rendering a dropdown level: the rows
-    list is rebuilt each frame, so draw_collection must NOT write a picked value
-    back into it — the pick is surfaced via return_item instead."""
-    return None
-
-
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, left_pad=10,
@@ -9204,27 +9196,36 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                       cursor_path=cursor_path,
                       open_path=open_path, full_render=full_render)
 
-    if full_render:
-        # Render the level's rows through draw_collection so it scrolls +
-        # virtualizes (off-screen culling) for free - the manual loop below
-        # rendered EVERY row each frame, which crawled for the 967-icon list. A
-        # leaf click / sub-menu pick bubbles back as the changed item via
-        # return_item; the no-op set_attr keeps draw_collection from writing that
-        # value back into `rows`.
-        changed, picked = draw_collection(
-            rows, name=f"dd_rows_{unique}", show_search=False, show_bg=True
-            ,
-            with_header=None, mode=None, return_item=True, set_attr=_dd_noop_set,
-            item_spacing_y=0, use_cache=True,
-            child_kwargs={"view_func": dd_menu_row, **row_kwargs})
-        return (True, picked) if changed else (False, input_value)
-
-    # Old method: manually iterate and render EVERY row each frame (no scroll /
-    # virtualization). Branch rows still go through the dd_menu_row render_func
-    # (they own a nested submenu + a real draw_state); leaf rows - the bulk of a
-    # big list - are drawn inline by _dd_leaf_row with raw imgui, avoiding avoid
-    # per-row wrapper overhead that made big menus crawl while interacting.
+    # Manual row loop (the dd_collection full_render path is gone - its
+    # per-row render_func tiles cost more than they saved; virtualization is
+    # done directly below instead). Branch rows still go through the
+    # dd_menu_row render_func (they own a nested submenu + a real draw_state);
+    # leaf rows - the bulk of a big list - are drawn inline by _dd_leaf_row
+    # with raw imgui, skipping the per-row wrapper overhead that made long
+    # menus crawl while interacting.
     result = (False, input_value)
+
+    # Viewport culling for big flat menus (the 967-icon picker): rows are a
+    # fixed _DD_ROW_H pitch, so a leaf row scrolled outside the window band
+    # skips its draw entirely and reserves the space with a dummy. The width
+    # is the cached widest label width so the auto_resize width doesn't
+    # jitter with the visible set (the cache recomputes once per search
+    # change, not per frame). Branch rows are never culled: a parent stamps
+    # `closed` on their submenu window each run (see the leak note in
+    # _dd_set_cursor). Gated on a known height - the first frame draws
+    # everything once - and on row count so small menus keep the simple path.
+    _cull_top = _cull_bot = None
+    if root_state is not None and len(rows) >= 40 and draw_state.height:
+        _wt = draw_state._abs_top()
+        _cull_top, _cull_bot = _wt, _wt + draw_state.height
+        _wkey = (len(rows), search)
+        if getattr(root_state, "_row_w_key", None) != _wkey:
+            _mw = 0.0
+            for (_k, _v, _lbl, _b) in rows:
+                _sfx = _dd_row_lookup(row_suffixes, _v) if row_suffixes else None
+                _mw = max(_mw, imgui.calc_text_size(str(_lbl) + (_sfx or ""))[0])
+            root_state._row_w_key = _wkey
+            root_state._row_w = _mw + 24.0
     # Shared label column for code rows: every row's code preview starts at
     # the same x (the widest label, capped - a long scope name does not eat
     # the code's width), so the embedded editors are up line to line -
@@ -9243,6 +9244,15 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
             if changed:
                 result = (True, picked)
         else:
+            if _cull_top is not None:
+                _cx0, _cy0 = imgui.get_cursor_screen_pos()
+                if _cy0 + _DD_ROW_H <= _cull_top or _cy0 >= _cull_bot:
+                    # Offscreen leaf: reserve its draw rect (width from the
+                    # cached widest label so measure/auto-resize stay stable)
+                    # and pin the cursor a row down, like a hidden row does.
+                    imgui.dummy(getattr(root_state, "_row_w", 1.0), _DD_ROW_H)
+                    imgui.set_cursor_screen_pos((_cx0, _cy0 + _DD_ROW_H))
+                    continue
             picked = _dd_leaf_row(key, value, label, draw_state, root_state,
                                   tuple(path_prefix), cursor_path, tint=tint,
                                   row_tags=row_tags, row_tints=row_tints,
@@ -9260,9 +9270,9 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
 def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
                 root_state=None, tint=None, row_tags=None, row_tints=None,
                 cursor_path=(), open_path=(), full_render=True, **kwargs):
-    """A single menu row. `input_value` is the row TUPLE (key, value, label,
-    is_branch) — draw_collection hands each level's rows in one at a time (so it
-    can scroll / virtualize the level for free). `cursor_path` / `open_path` are
+    """A single BRANCH menu row (leaves go through the raw _dd_leaf_row).
+    `input_value` is the row TUPLE (key, value, label, is_branch) handed in by
+    draw_dd_menu's manual loop. `cursor_path` / `open_path` are
     passed IN (not read from root_state) so they're cache-key inputs: a row is a
     use_cache=True tile, so its keyboard highlight / open chevron only repaint when
     an input changes. Leaves are a button returning the VALUE on click; branch rows
