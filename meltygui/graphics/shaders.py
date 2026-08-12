@@ -286,12 +286,26 @@ class ShadowComposite:
         # Peak highlight strength added to the frame (white is).
         'specular_strength': (GLType.FLOAT, 1.0),
         # Fade of the highlight ALONG perpendicular lit edges, in px: brightness
-        # peaks at the lit corner (where the two lit edges meet) and dies
-        # out over this distance scanning away from there along either edge.
-        # Implemented as a per-axis march to the perpendicular lit edge -
-        # the max of the two resulting distances approximates distance to the
-        # corner. 0 = uniform rim, no fade.
+        # peaks at the owning window's lit corner (where the two lit edges
+        # meet) and runs out over this distance scanning away from it. The
+        # corner comes from CPU-side window geometry (win_mask/win_rects),
+        # interpolated analytically per fragment - perfectly smooth and it
+        # moves with the window. 0 = uniform rim.
         'specular_fade': (GLType.FLOAT, 300.0),
+        # Adapts that fade length to the owning window's own size: per axis
+        # the fade runs over min(specular_fade, rel * edge_length). Big
+        # windows keep the fixed specular_fade look; small windows fade
+        # out within their own edge instead of holding a uniform bright
+        # rim. 0 disables the adaptation (pure fixed-f fade).
+        'specular_fade_rel': (GLType.FLOAT, 0.6),
+        # Window-occlusion mask (blit_offscreen._build_window_mask): R16,
+        # each dispatched window's rounded rect stamped back-to-front at
+        # rank (i+1)/1024. The specular pass decodes the rank at a
+        # fragment to find its owning window...
+        'win_mask': (GLType.SAMPLER2D, None),
+        # ...and texelFetches that window's fb-space rect (x0, y0, x1, y1)
+        # from this 256x1 RGBA32F table, filled in the same z order.
+        'win_rects': (GLType.SAMPLER2D, None),
         # Depth falloff of the highlight: intensity decays as
         # exp(-receiver_depth * rate), so surfaces near the floor catch
         # the full highlight and high-stacked ones progressively lose it.
@@ -301,6 +315,14 @@ class ShadowComposite:
         # Minimum depth drop (in depth_scale'd units) that counts as a
         # silhouette edge - rejects same-surface rasterization noise.
         'specular_depth_eps': (GLType.FLOAT, 0.001),
+        # Per-px slope allowance added to that threshold as the march gets
+        # farther: a sample only reads as an edge when it sits more than
+        # eps + tol*distance below the start. Marks interpolate rank
+        # across their quad (per-corner values), so a single background
+        # can slope smoothly - this keeps a tilted surface from reading
+        # as a phantom edge (only the short bevel march remains, so the
+        # allowance rarely exceeds eps in practice).
+        'specular_slope_tol': (GLType.FLOAT, 0.0002),
         'texture_size': (GLType.VEC2, None),
     }
     fragment_code = """
@@ -314,14 +336,23 @@ float _spec_edge_dist(vec2 uv, vec2 dir, float d0, float max_d, vec2 texel) {
     for (int i = 1; i <= 16; i++) {
         float t = max_d * float(i) / 16.0;
         float d_s = texture(depth_map, uv + dir * t * texel).r * depth_scale;
-        if (d_s < d0 - specular_depth_eps) { hi = t; break; }
+        // Slope-relative threshold: marks interpolate depth across their
+        // quad, so a surface can tilt — only a DROP steeper than the
+        // per-px allowance counts as a silhouette edge.
+        if (d_s < d0 - specular_depth_eps - specular_slope_tol * t) {
+            hi = t; break;
+        }
         lo = t;
     }
     if (hi < 0.0) return max_d;
     for (int b = 0; b < 4; b++) {
         float mid = 0.5 * (lo + hi);
         float d_m = texture(depth_map, uv + dir * mid * texel).r * depth_scale;
-        if (d_m < d0 - specular_depth_eps) { hi = mid; } else { lo = mid; }
+        if (d_m < d0 - specular_depth_eps - specular_slope_tol * mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
     }
     return hi;
 }
@@ -414,29 +445,43 @@ void main() {
             float spec = pow(max(dot(n, H), 0.0), shininess);
             spec *= 1.0 - 0.5 * rough;
 
-            // Fade along the edge: brightness peaks at the lit CORNER and
-            // dies out scanning away from it along either edge. The two
-            // axis marches measure the distance to the perpendicular lit
-            // edge — on the top edge dist_y is ~0 and dist_x is the
-            // distance to the left edge (and vice versa), so
-            // max(dist_x, dist_y) approximates distance to the corner.
-            // Only rim pixels (edge_t hit) pay for these marches.
+            // Fade along the edge: brightness peaks at the owning
+            // window's LIT corner and dies out scanning away from it
+            // along either edge. The corner comes from CPU-side window
+            // geometry: the win_mask rank at this fragment identifies the
+            // topmost window, win_rects holds its fb-space rect, and the
+            // fade is an analytic distance field from the rect's corner
+            // toward +light_dir. No depth-mask walks — the field is
+            // perfectly smooth and translates with the window, so it
+            // cannot dash, stair-step, or wobble as views move. Fragments
+            // no window owns (floor-level marks) keep fade = 1.
             float fade = 1.0;
             if (specular_fade > 0.0) {
-                float dist_x = 0.0;
-                float dist_y = 0.0;
-                if (abs(light_n.x) > 1e-3) {
-                    dist_x = _spec_edge_dist(
-                        uv, vec2(sign(light_n.x), 0.0), depth,
-                        specular_fade, texel_full);
+                float zn = texture(win_mask, uv).r;
+                if (zn > 0.0) {
+                    int idx = clamp(int(round(zn * 1024.0)) - 1, 0, 255);
+                    vec4 r = texelFetch(win_rects, ivec2(idx, 0), 0);
+                    vec2 frag_px = uv / texel_full;
+                    vec2 corner = vec2(
+                        light_n.x > 0.0 ? r.z : r.x,
+                        light_n.y > 0.0 ? r.w : r.y);
+                    vec2 d = abs(frag_px - corner);
+                    vec2 ext = max(r.zw - r.xy, vec2(1.0));
+                    float u_max = 0.0;
+                    if (abs(light_n.x) > 1e-3) {
+                        float fl = (specular_fade_rel > 0.0)
+                            ? min(specular_fade, specular_fade_rel * ext.x)
+                            : specular_fade;
+                        u_max = max(u_max, d.x / max(fl, 1.0));
+                    }
+                    if (abs(light_n.y) > 1e-3) {
+                        float fl = (specular_fade_rel > 0.0)
+                            ? min(specular_fade, specular_fade_rel * ext.y)
+                            : specular_fade;
+                        u_max = max(u_max, d.y / max(fl, 1.0));
+                    }
+                    fade = 1.0 - smoothstep(0.0, 1.0, u_max);
                 }
-                if (abs(light_n.y) > 1e-3) {
-                    dist_y = _spec_edge_dist(
-                        uv, vec2(0.0, sign(light_n.y)), depth,
-                        specular_fade, texel_full);
-                }
-                float corner_dist = max(dist_x, dist_y);
-                fade = 1.0 - smoothstep(0.0, specular_fade, corner_dist);
             }
             // Depth falloff: low surfaces (near the floor) keep the full
             // highlight, high-stacked ones fade out exponentially.

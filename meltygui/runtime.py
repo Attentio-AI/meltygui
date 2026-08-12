@@ -3655,8 +3655,15 @@ class Melty:
                     specular_roughness=float(Toggles.specular_roughness),
                     specular_strength=float(Toggles.specular_opacity),
                     specular_fade=float(Toggles.specular_fade),
+                    specular_fade_rel=float(Toggles.specular_fade_rel),
+                    # Window-to-window lookup for the fade origin: rank mask
+                    # + rect table built in _build_window_mask. Texture 0
+                    # (before the first mask build) samples as 0 → fade 1.
+                    win_mask=Melty.cache._win_mask_tex or 0,
+                    win_rects=Melty.cache._win_rects_tex or 0,
                     specular_depth_falloff=float(
                         Toggles.specular_depth_falloff),
+                    specular_slope_tol=float(Toggles.specular_slope_tol),
                 )
 
         # Debug: replace the frame with the raw low-res glow light buffer -

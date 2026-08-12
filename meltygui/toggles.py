@@ -945,7 +945,7 @@ class Toggles:
         # shader's final sRGB encode: 1.0 = pure sRGB encode (brightest,
         # colorimetrically "correct"); 2.2 = raw linear out (darkest). Read
         # live per frame by draw_voxels.
-        gamma = 2.1
+        gamma = 2.2
 
     @defaults(tint=(0.545, 0.451, 0.248))
     class UIScale:
@@ -1331,22 +1331,38 @@ class Toggles:
     # Value = bevel radius in px: the width of the highlight rim and the
     # apparent roundness of the edge. 0 disables the pass.
     # [tint=(0.85, 0.75, 0.05), show_tint=True]
-    specular_bevel = 2.527
+    specular_bevel = 3.592
+
     # Global surface roughness for the specular rim, (0, 1]: low = tight
     # bright crest line at the edge, high = broad dim sheen at the bevel.
-    specular_roughness = 0.405
+    specular_roughness = 0.137
     # Peak brightness of the highlight (white light added at composite).
-    specular_opacity = 0.291
+    specular_opacity = 0.242
     # Fade of the highlight ALONG the lit edges, in px: brightest at the
     # lit corner (top-left when the shadow falls down-right), dying out
-    # over this distance continuing down the left edge / across the top
-    # edge. 0 = uniform highlight with no fade.
-    specular_fade = 186.289
+    # over this distance scanning down the left edge / across the top
+    # edge. Distances come from edge walks (smooth-min over silhouette edge
+    # tests on an absolute sample grid), so the gradient is smooth - no
+    # dashes or stair steps. 0 = uniform rim, no fade.
+    specular_fade = 3280.821
+    # Size-relative cap on the fade: per axis the fade length becomes
+    # min(specular_fade, rel * edge_extent), the extent being the soft
+    # forward+backward distances. Large windows keep the fixed
+    # specular_fade look; small widgets fade out within their own edge
+    # instead of holding a uniform bright rim. 0 = pure fixed fade.
+    specular_fade_rel = 0
+
     # Depth falloff: specular intensity decays as exp(-depth * rate), so
     # surfaces near the floor catch the full highlight and high-stacked
     # windows progressively lose it. One layer slot is ~0.3 depth steps
     # at the 64x32 layer/depth config; 0 = depth-independent.
     specular_depth_falloff = 0.0
+    # Slope tolerance for the bevel edge march, in depth units per px: a
+    # sample only counts as a silhouette edge when it drops more than
+    # eps + slope*distance below the start depth. Backgrounds interpolate
+    # depth across their quad, so without this a tilted surface can read
+    # as a phantom edge.
+    specular_slope_tol = 0.003
 
     # Glow Settings - add_glow() marks rendered as light sources in the
     # shadow composite (blit_offscreen PASS 6 stamps the low-res light

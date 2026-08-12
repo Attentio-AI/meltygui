@@ -59,6 +59,15 @@ MAX_TILE_DIM = 8000
 # TILE_BUCKET = 1 reverts the whole scheme to exact tile sizes.
 TILE_BUCKET = 32
 
+# freeze_resize tile blits: width (logical px; melty GL-scaled at use) of
+# the strip hidden along the content's right/bottom edges mid-drag - the last
+# live render baked the scrollbar gutter (right; hence wider) and bg edge
+# there, and those pixels would read like a drag seam when the view is
+# served frozen. The strips are only NOT DRAWN (the live bg shows through);
+# no texels are cleared, so 0 simply draws everything, baked gutter included.
+FREEZE_TRIM_RIGHT = 20
+FREEZE_TRIM_BOTTOM = 5
+
 
 def _bucket(v: int) -> int:
     return min(MAX_TILE_DIM, ((int(v) + TILE_BUCKET - 1) // TILE_BUCKET) * TILE_BUCKET)
@@ -148,10 +157,6 @@ class Tile:
     # instead of misaligned stale pixels.
     content_scroll: Optional[Tuple[int, int]] = None
     content_bg: bool = False
-    # last_clean_frame value at which the logical-edge scrollbar/outline
-    # strips were last cleared (see _scrub_view_edges). A fresh capture bumps
-    # last_clean_frame past this, re-arming the clear until the next freeze.
-    edge_scrub_frame: int = -1
 
 
 @dataclass
@@ -1131,6 +1136,10 @@ class TileCacheMasked:
         self._win_mask_fbo: Optional[int] = None
         self._win_mask_size = (0, 0)
         self._win_z_by_ds = {}
+        # 256x1 R32F table of the same windows' fb-space rects, one
+        # column per mask rank - the specular fade's per-window geometry
+        # (see the upload at the end of _build_window_mask).
+        self._win_rects_tex: Optional[int] = None
 
         # Subtree mask for pixel copying - fresh geometry only
         self._sub_mask_tex: Optional[int] = None
@@ -2716,6 +2725,14 @@ class TileCacheMasked:
                 self._win_mask_tex, False, fb_w, fb_h)
             self._win_mask_size = (fb_w, fb_h)
         self._win_z_by_ds = {}
+        # Per-window fb-space rects, indexed by the same z rank as mask
+        # stamps ((i+1)/1024): the specular pass in ShadowComposite decodes
+        # the mask rank at a fragment back to an index and texelFetches the
+        # owning window's rect from this 256x1 RGBA32F texture to compute
+        # its fade analytically from the window's lit corner - pre-supplied
+        # geometry, not depth buffer walks (which either run per-pixel or
+        # wobble as views move, depending on sample anchoring).
+        _spec_rects = []
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._win_mask_fbo)
         gl.glViewport(0, 0, fb_w, fb_h)
         gl.glDisable(gl.GL_SCISSOR_TEST)
@@ -2742,6 +2759,8 @@ class TileCacheMasked:
             self._win_z_by_ds[id(wds)] = zn
             x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(
                 wl, wt, ww, wh, dp_x, dp_y, s_x, s_y, fb_h)
+            if len(_spec_rects) < 256:
+                _spec_rects.append((x0, y0, x1, y1))
             ix0, iy0 = int(floor(x0)), int(floor(y0))
             iw = max(0, int(ceil(x1)) - ix0)
             ih = max(0, int(ceil(y1)) - iy0)
@@ -2755,6 +2774,29 @@ class TileCacheMasked:
                                           or 0.0)))
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
         gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+
+        # Upload the rect table (4KB, whole 256-slot row every frame so
+        # stale slots from last frame's larger window count are zeroed).
+        if getattr(self, "_win_rects_tex", None) is None:
+            self._win_rects_tex = gl.glGenTextures(1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self._win_rects_tex)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER,
+                               gl.GL_NEAREST)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER,
+                               gl.GL_NEAREST)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S,
+                               gl.GL_CLAMP_TO_EDGE)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T,
+                               gl.GL_CLAMP_TO_EDGE)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA32F, 256, 1, 0,
+                            gl.GL_RGBA, gl.GL_FLOAT, None)
+        flat = [0.0] * (256 * 4)
+        for i, (rx0, ry0, rx1, ry1) in enumerate(_spec_rects):
+            flat[i * 4:i * 4 + 4] = (rx0, ry0, rx1, ry1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._win_rects_tex)
+        gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, 256, 1,
+                           gl.GL_RGBA, gl.GL_FLOAT,
+                           (ctypes.c_float * len(flat))(*flat))
 
     def _pixels_preserved(self, eds):
         """True when the retained emitter `eds`'s pixels are authoritative
@@ -3107,47 +3149,63 @@ class TileCacheMasked:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
                 style_manager.set_imgui_tint(*_sv_tint)
 
-    def _scrub_view_edges(self, t: Tile) -> None:
-        """freeze_resize tiles, on entering a frozen drag: the last live
-        render baked the view's scrollbar gutter and bg outline at the
-        LOGICAL (t.size) right/bottom edges — for no-shrink tiles that edge
-        can sit strictly inside the resident texture (content_size is the
-        high-water extent), so the content-edge trim in the frozen blit
-        never reaches it and it reads as a stamped seam mid-image. Clear a
-        thin strip at the logical edges to transparent; the frozen blit
-        paints the real background (draw_freeze_bg) underneath, so the
-        strips read as seamless bg. One-shot per capture era (keyed on
-        last_clean_frame). The texels are destroyed, so the tile is also
-        invalidated — the settled view re-renders once even when the drag
-        releases back at the exact captured size."""
-        if getattr(t, "edge_scrub_frame", -1) == t.last_clean_frame:
-            return
+    def _frozen_content_pieces(self, t: Tile, draw_size):
+        """freeze_resize tiles, mid frozen drag: the last live render baked
+        the view's scrollbar gutter and bg edge at the LOGICAL (t.size)
+        right/bottom edges — for no-shrink tiles that edge can sit strictly
+        inside the resident content (content_size is the high-water
+        extent), so the content-edge trim in the frozen blit never reaches
+        it and it reads as a stamped seam mid-image. Return the drawn
+        content as tile-local (y-down) sub-rects that SKIP those strips —
+        a draw-time hole the live draw_freeze_bg shows through — instead
+        of clearing texels: every texel stays resident, so nothing has to
+        re-render when the drag releases at the captured size, and a
+        re-capture can never bake a cleared line back into the tile. Each
+        rect carries the imgui corner flags for whichever of the full
+        content's outer corners it owns, so rounding stays on the outside
+        edges only."""
+        dw, dh = draw_size
         w, h = snap_int(t.size[0]), snap_int(t.size[1])
-        # Right strip is wider: the scrollbar gutter lives there.
-        trim_r = snap_int(Melty.px(20))
-        trim_b = snap_int(Melty.px(5))
-        if w <= trim_r or h <= trim_b:
-            return
-        aw, ah = _tile_alloc(t)
-        bands = [
-            (w - trim_r, ah - h, trim_r, h),  # right strip, full view height
-            (0, ah - h, w, trim_b),  # bottom strip, full view width
-        ]
-        st = _GLState()
-        try:
-            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, t.fbo)
-            gl.glEnable(gl.GL_SCISSOR_TEST)
-            gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
-            gl.glClearColor(0, 0, 0, 0.0)
-            for x, y, bw, bh in bands:
-                gl.glScissor(int(x), int(y), int(bw), int(bh))
-                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-            _clear_mask_regions(t.mask_tex, bands)
-        finally:
-            st.restore()
-        t.edge_scrub_frame = t.last_clean_frame
-        t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id)
-        t.dirty = True
+        cs = getattr(t, "content_size", None) or t.size
+        cw, ch = snap_int(cs[0]), snap_int(cs[1])
+        trim_r = snap_int(Melty.px(FREEZE_TRIM_RIGHT))
+        trim_b = snap_int(Melty.px(FREEZE_TRIM_BOTTOM))
+        # A strip is interior (has a hole) only when preserved content
+        # extends past the logical edge; at cw == w the strip IS the
+        # content edge and the outer draw_size trim already removed it.
+        hole_r = cw > w and w > trim_r
+        hole_b = ch > h and h > trim_b
+        if not hole_r and not hole_b:
+            rects = [(0, 0, dw, dh)]
+        else:
+            yb = (h - trim_b) if hole_b else min(h, dh)
+            # Rows above the bottom strip, skipping the vertical gutter.
+            if hole_r:
+                rects = [(0, 0, w - trim_r, yb), (w, 0, dw, yb)]
+            else:
+                rects = [(0, 0, dw, yb)]
+            if hole_b:
+                # The strip, itself: only content right of the hole.
+                rects.append((w, yb, dw, h))
+            # Preserved rows below the logical bottom edge.
+            if dh > h:
+                rects.append((0, h, dw, dh))
+        out = []
+        for x0, y0, x1, y1 in rects:
+            x1, y1 = min(x1, dw), min(y1, dh)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            flags = 0
+            if x0 == 0 and y0 == 0:
+                flags |= imgui.DRAW_ROUND_CORNERS_TOP_LEFT
+            if x1 == dw and y0 == 0:
+                flags |= imgui.DRAW_ROUND_CORNERS_TOP_RIGHT
+            if x0 == 0 and y1 == dh:
+                flags |= imgui.DRAW_ROUND_CORNERS_BOTTOM_LEFT
+            if x1 == dw and y1 == dh:
+                flags |= imgui.DRAW_ROUND_CORNERS_BOTTOM_RIGHT
+            out.append((x0, y0, x1, y1, flags))
+        return out
 
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
@@ -3330,8 +3388,10 @@ class TileCacheMasked:
                     # (During a shrink the strip is outside the live clip
                     # anyway, so the trim only ever hides the baked edge.)
                     # Horizontal trim is wider: the scrollbar gutter lives there.
-                    draw_size = (max(1, draw_size[0] - snap_int(Melty.px(20))),
-                                 max(1, draw_size[1] - snap_int(Melty.px(5))))
+                    draw_size = (max(1, draw_size[0]
+                                     - snap_int(Melty.px(FREEZE_TRIM_RIGHT))),
+                                 max(1, draw_size[1]
+                                     - snap_int(Melty.px(FREEZE_TRIM_BOTTOM))))
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
                 # Top-anchored subrect of the (possibly bucket-padded)
                 # texture: content spans u [0, dw/aw], v [1 - dh/ah, 1].
@@ -3341,10 +3401,6 @@ class TileCacheMasked:
 
                 dl = imgui.get_window_draw_list()
                 if frozen:
-                    # Drop the scrollbar/outline pixels baked at the logical
-                    # (t.size) edges - inside the tile texture, where the
-                    # content-edge trim above can't reach them.
-                    self._scrub_view_edges(t)
                     # Paint the background live over the full live rect
                     # (under the frozen image) - outline-less for freeze
                     # views, so nothing baked in the tile interferes with it.
@@ -3352,14 +3408,31 @@ class TileCacheMasked:
                                         size[0], size[1], live=False)
                     dl.push_clip_rect(a[0], a[1],
                                       a[0] + size[0], a[1] + size[1], True)
-                dl.add_image_rounded(t.tex,
-                                     a=a,
-                                     b=b,
-                                     uv_a=uv_a,
-                                     uv_b=uv_b,
-                                     rounding=getattr(draw_state, "corner_radius", 6))
-                if frozen:
+                    # Draw the image as sub-rects to skip the
+                    # scrollbar/outline strips baked at the logical (t.size)
+                    # edges - inside the resident content, where the
+                    # content-edge trim above can't reach them. The live bg
+                    # shows through the gaps; no texels are destroyed (see
+                    # _frozen_content_pieces).
+                    rounding = getattr(draw_state, "corner_radius", 6)
+                    for x0, y0, x1, y1, flags in self._frozen_content_pieces(
+                            t, draw_size):
+                        dl.add_image_rounded(
+                            t.tex,
+                            a=(a[0] + x0, a[1] + y0),
+                            b=(a[0] + x1, a[1] + y1),
+                            uv_a=(x0 / taw, 1.0 - y0 / tah),
+                            uv_b=(x1 / taw, 1.0 - y1 / tah),
+                            rounding=rounding if flags else 0.0,
+                            flags=flags)
                     dl.pop_clip_rect()
+                else:
+                    dl.add_image_rounded(t.tex,
+                                         a=a,
+                                         b=b,
+                                         uv_a=uv_a,
+                                         uv_b=uv_b,
+                                         rounding=getattr(draw_state, "corner_radius", 6))
 
                 # Drag-n-drop home slot: when this cached tile contains the
                 # dragged item's slot, its pixels there can be stale (the
