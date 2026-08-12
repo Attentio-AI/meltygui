@@ -2544,12 +2544,14 @@ def code_hosts_for(ref):
         # Whole-FILE refs get the full static name/signature lint (code_dict):
         # the buffer is self-contained, so an unresolved name really is a
         # NameError. A span ref (function/class/CallSite) sees none of its
-        # module's defs, so it gets the MISSING-IMPORT-ONLY pass instead
-        # (lint_span): with the enclosing module's path as lint_path, the
-        # module's current text can suppress every name the module actually
-        # defines, and only names an import would fix are reported - but only
-        # when that module is live in sys.modules (otherwise nothing
-        # suppresses, so no lint at all).
+        # module's imports, so it gets the SPAN pass instead (lint_span): with
+        # the defining module's file as lint base, the module's current text
+        # binds suppress every name the module actually binds, so names an
+        # import would bind are reported - but only when that module is live in
+        # sys.modules (otherwise nothing suppresses, so no lint at all) - and
+        # call signatures check against the module file's PENDING text
+        # (code_checks._check_call_span), so a signature edit in another view
+        # flags wrong call sites before any recompile.
         lint_path, lint_span = None, False
         if isinstance(ref, Path) and ref.suffix == ".py":
             lint_path = str(ref)

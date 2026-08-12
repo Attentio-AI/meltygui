@@ -143,8 +143,7 @@ def _ensure_publisher():
                      name=_THREAD_NAME, daemon=True).start()
 
 
-# ── Windows ───────────────────────────────────────────────────────────────────
-
+# ── Windows ──────────────────────────────────────────────────────────────────
 @window
 @render_func(tint=(0.487, 0.562, 0.6), auto_resize=True)
 def live_view_values(input_value=None, draw_state=None, **kwargs):

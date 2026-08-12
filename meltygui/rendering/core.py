@@ -552,7 +552,7 @@ def render_func(*args, **o_kwargs):
             # decorator (e.g. `alpha: as_float(min_value=15.0)`), not actually
             # rendering - at startup (global annotation_mode) or inside a
             # recompile's exec (thread-local annotation_scope). Hand the
-            # positional value and the call-time kwargs to annotation_track,
+            # positional value and 1the call's kwargs to annotation_track,
             # which returns a carrier the metain data into Melty's
             # default kwargs. Never falls through to a real render.
             return annotation_track(input_value, wrapper=wrapper, call_kwargs=kwargs)
@@ -2825,7 +2825,17 @@ def render_func(*args, **o_kwargs):
                         # Remember the current match's node so Ctrl+Enter in the
                         # find UI can fake a mouse-down on it (or its current
                         # child) to "click" the selected result.
+                        _prev_search_node = Melty.search_current_node
                         Melty.search_current_node = _current_node
+                        # The node the selection LEFT must re-render too: the
+                        # text editor re-collapses its search-expanded view in
+                        # its body, which a cached node would never run.
+                        if (_prev_search_node is not None
+                                and _prev_search_node is not _current_node
+                                and _prev_search_node is not draw_state
+                                and _prev_search_node._tile_id is not None):
+                            Melty.cache.invalidate_up(_prev_search_node._tile_id,
+                                                      force=True, max_depth=12)
                         # Force the current match's view (and ancestors) to
                         # re-render so an off-screen row scrolls into view - only
                         # on a real full-search frame, never on a passive recount.

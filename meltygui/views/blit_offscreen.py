@@ -2103,7 +2103,8 @@ class TileCacheMasked:
             return
         if layer is None:
             layer = Melty.active_layer
-        if depth is None:
+        depth_defaulted = depth is None
+        if depth_defaulted:
             depth = Melty.shadow_depth
         if clip is True:
             clip_xyxy = Melty.get_clip_rect()
@@ -2147,14 +2148,61 @@ class TileCacheMasked:
             # (another window raised above, this one lowered) re-stamps
             # them via the live-vs-recorded shadow_depth delta - without
             # it, retained marks kept casting at their old high ranks and
-            # MAX-punched through windows now floating lower.
-            try:
-                _base_rank = float(draw_state.shadow_depth)
-            except Exception:
-                _base_rank = None
+            # MAX-punched through windows now floating above. The emitter's
+            # own ds only re-stamps depth_and_layer when its wrapper runs,
+            # which never happens while an ancestor blit-serves - exactly
+            # the frames a z reorder leaves everything cache-served. The
+            # ROOT window's ds IS re-stamped every frame (the layer delta),
+            # so the anchor also records the root's rank: when the
+            # emitter's own delta reads 0 (stale stamp), the root's
+            # live-vs-recorded delta supplies the shift instead.
             self._depth_frame.append(
                 (mark, draw_state,
-                 (draw_state.abs_left, draw_state.abs_top, _base_rank)))
+                 self._retain_anchor(draw_state, depth_defaulted)))
+
+    def _retain_anchor(self, draw_state, depth_defaulted):
+        """(abs_left, abs_top, emitter_rank, root_rank, depth_defaulted)
+        recorded at emit time for retained shadow/glow marks — the baseline
+        the PASS 6 re-stamp shifts live ranks against. Rank reads are
+        guarded: a transient depth_and_layer failure just disables the
+        shift for that mark (None entries)."""
+        try:
+            _base_rank = float(draw_state.shadow_depth)
+        except Exception:
+            _base_rank = None
+        _root_rank = None
+        try:
+            _root = self._glow_root_ds(draw_state)
+            if _root is not None:
+                _root_rank = float(_root.shadow_depth)
+        except Exception:
+            _root_rank = None
+        return (draw_state.abs_left, draw_state.abs_top,
+                _base_rank, _root_rank, bool(depth_defaulted))
+
+    def _anchor_rank_shift(self, eds, root_ds, anchor):
+        """Live-vs-recorded rank delta for a retained mark. Prefers the
+        emitter's own shadow_depth delta (correct whenever its wrapper ran
+        this frame — covers intra-window z_offset changes too). When that
+        reads 0 the emitter's stamp may simply be stale (ancestor
+        blit-served, wrapper never entered), so fall back to the ROOT
+        window's delta — live every frame — but only for marks whose depth
+        was DEFAULTED at emit time: an explicitly passed depth is the
+        caller pinning absolute placement, keep the legacy behavior there.
+        Guarded for hotswap-era short anchors (3-tuples predate root_rank)
+        and transient shadow_depth failures."""
+        try:
+            if len(anchor) < 3 or anchor[2] is None:
+                return 0.0
+            _eds_delta = float(eds.shadow_depth) - anchor[2]
+            if _eds_delta:
+                return _eds_delta
+            if (len(anchor) > 4 and anchor[4]
+                    and anchor[3] is not None and root_ds is not None):
+                return float(root_ds.shadow_depth) - anchor[3]
+        except Exception:
+            pass
+        return 0.0
 
     def add_shadow_strip(
             self, points, offset: float = 2.0, layer: int = None,
@@ -2186,7 +2234,8 @@ class TileCacheMasked:
             return
         if layer is None:
             layer = Melty.active_layer
-        if depth is None:
+        depth_defaulted = depth is None
+        if depth_defaulted:
             depth = Melty.shadow_depth
         if clip is True:
             clip_xyxy = Melty.get_clip_rect()
@@ -2218,13 +2267,9 @@ class TileCacheMasked:
         self._shadow_rects.append(mark)
         if draw_state is not None and not inset:
             self._ensure_glow_state()
-            try:
-                _base_rank = float(draw_state.shadow_depth)
-            except Exception:
-                _base_rank = None
             self._depth_frame.append(
                 (mark, draw_state,
-                 (draw_state.abs_left, draw_state.abs_top, _base_rank)))
+                 self._retain_anchor(draw_state, depth_defaulted)))
 
     def _ensure_glow_state(self) -> None:
         """Lazily create the glow bookkeeping fields. A hotswap patches
@@ -2336,7 +2381,8 @@ class TileCacheMasked:
             return
         if layer is None:
             layer = Melty.active_layer
-        if depth is None:
+        depth_defaulted = depth is None
+        if depth_defaulted:
             depth = Melty.shadow_depth
         if clip is True:
             clip_xyxy = Melty.get_clip_rect()
@@ -2357,7 +2403,7 @@ class TileCacheMasked:
         # marks (no draw_state to read live).
         anchor = (0.0, 0.0)
         if draw_state is not None:
-            anchor = (draw_state.abs_left, draw_state.abs_top)
+            anchor = self._retain_anchor(draw_state, depth_defaulted)
         abs_rank = max(0.0, shadow_depth_at(depth + offset, layer))
         rgb = (float(color[0]), float(color[1]), float(color[2]))
         mark = (x, y, w, h, rgb, float(intensity),
@@ -4691,14 +4737,10 @@ class TileCacheMasked:
                     # Live rank shift (see the above comment in
                     # add_shadow): re-anchor absolute mark ranks on the
                     # emitter's CURRENT surface rank so z reorders since
-                    # record re-gauge them. Guarded for hotswap-era 2-tuple
-                    # anchors and transient shadow_depth failures.
-                    _shift = 0.0
-                    try:
-                        if len(_anchor) > 2 and _anchor[2] is not None:
-                            _shift = float(_eds.shadow_depth) - _anchor[2]
-                    except Exception:
-                        _shift = 0.0
+                    # record re-gate them; falls back to the ROOT window's
+                    # delta when the emitter's own stamp is stale (ancestor
+                    # blit-served, emitter never entered this frame).
+                    _shift = self._anchor_rank_shift(_eds, _root_ds, _anchor)
                     for m in marks:
                         (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
                          _ins) = m[:10]
@@ -4752,18 +4794,31 @@ class TileCacheMasked:
                 _g_hi_off = float(getattr(
                     Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
 
-                def _resolve_glow(m, delta, eds, root_ds):
+                def _resolve_glow(m, delta, eds, root_ds, anchor=None):
                     # Band anchors are the view shadow_depth properties -
                     # the exact scalar ranks those views' mask rects stamp
                     # (view_and_layer ( shadow_depth_at), so the band
                     # is always in the emitter's own layer. Emitter anchor:
                     # the emitting view's surface + the mark's relative
-                    # offset; floor anchor: the root window's surface.
+                    # offset; floor anchor: the root window's surface. The
+                    # emitter's "live" shadow_depth is only live when its
+                    # wrapper ran this frame - resolve it through the
+                    # absolute anchor comment (record rank + live shift) so
+                    # a z reorder while everything blit-serves still moves
+                    # the band via the root window's delta.
                     _anchor_rank = None
                     if eds is not None:
                         try:
-                            _anchor_rank = (float(eds.shadow_depth)
-                                            + m[6] * _g_step)
+                            if (anchor is not None and len(anchor) > 2
+                                    and anchor[2] is not None):
+                                _anchor_rank = (
+                                    anchor[2]
+                                    + self._anchor_rank_shift(
+                                        eds, root_ds, anchor)
+                                    + m[6] * _g_step)
+                            else:
+                                _anchor_rank = (float(eds.shadow_depth)
+                                                + m[6] * _g_step)
                         except Exception:
                             _anchor_rank = None
                     if _anchor_rank is None:
@@ -4832,7 +4887,8 @@ class TileCacheMasked:
                             continue
                     for m in marks:
                         _stamp_list.append(
-                            _resolve_glow(m, _delta, _eds, _root_ds))
+                            _resolve_glow(m, _delta, _eds, _root_ds,
+                                          _anchor))
                 # Per-surface dedupe: identical origin rects (same pos,
                 # size, color after the live-position delta) collapse to
                 # ONE emission at the strongest intensity. The old

@@ -819,14 +819,14 @@ class Toggles:
         def_symbol_shadow_offset = 3.7
         # Line-number shadows: negative = recessed below the editor surface
         # (the body casts into the gutter along its edge); 0 disables.
-        gutter_shadow_offset = 0.193
+        gutter_shadow_offset = 0.157
         # Compositor shadow under the gutter usage-heat boxes: each use
         # counted on the line adds this much lift, so hotter lines float
         # higher off the gutter background. The magnitude is capped at
         # usage_heat_shadow_max (sign preserved - negative recesses);
         # 0 disables.
-        usage_heat_shadow_offset = 1.0
-        usage_heat_shadow_max = 15.148
+        usage_heat_shadow_offset = 0.362
+        usage_heat_shadow_max = 1.092
         # Gutter background saturation/value — the hsv multipliers
         # Tint.line_number_bg applies to the theme color (saturation was a
         # hardcoded 1.6, value a hardcoded 0.35; lower saturation = greyer,
@@ -1299,9 +1299,9 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.762
+    brightness = 0.602
     # [tint=(0.458, 0.474, 0.5)]
-    contrast = 2.518
+    contrast = 2.071
 
     debug_z_depth = False
     filters = True
@@ -1348,7 +1348,7 @@ class Toggles:
     shadow_hit_falloff = 69.627
     # Max fraction of light a deep stack of casters can block inside
     # ShadowCast (the light-transmission model's ceiling).
-    shadow_strength = 0.699
+    shadow_strength = 0.683
     # Composite-time darkening: how far shadowed pixels mix toward
     # shadow_color (scales the ShadowCast intensity at the final blend).
     shadow_opacity = 0.684

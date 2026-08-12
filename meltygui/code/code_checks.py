@@ -20,6 +20,11 @@ mistakes those let through:
     module attribute (`imgui.dummy()`), resolved through the running process's
     module for `path`. C/Cython callables that hide their signature from
     inspect fall back to the embedsignature doc line ("dummy(width, height)").
+    When the callee's DEFINING file has unsaved edits, the expected signature
+    comes from that file's pending text instead of the live object (which
+    reflects the last compile) — see the pending-truth signature section.
+    Span buffers (only_missing_imports) run the same call check through the
+    enclosing module's pending text (_check_call_span).
   * a missing attribute on a live MODULE (`imgui.dummyy`) — chains only ever
     walk through module objects, never arbitrary instances
 
@@ -786,7 +791,7 @@ def _check_call_live(ctx, call, scope):
             fname = attrs[-1][0]
     if obj is _MISS or not callable(obj):
         return None
-    spec = _live_spec(obj, fname)
+    spec = _object_spec(obj, fname)
     return _match_spec(fname, spec, call) if spec is not None else None
 
 
@@ -1042,6 +1047,234 @@ def _binds_unchanged(old_text, new_text):
         start -= 1
     head = b[start].lstrip() if 0 <= start < nb else ""
     return head.startswith(("def ", "async def ", "class ", "@"))
+
+
+# ── pending-truth signature source ───────────────────────────────────────────
+#
+# The live object's inspect.signature reflects the last COMPILE, and disk only
+# updates at shutdown (PendingSave defers all writes) - so between an edit and
+# its recompile both lie about a function's parameters. The file's CURRENT
+# text (disk + every queued unsaved edit, via PendingSave.current_file_text)
+# is truth reliable, exactly the way Ctrl+B's find usages and the jedi passes
+# already read it. _signature_table parses that text for call specs; callers
+# prefer it over live introspection whenever the defining file has pending
+# edits.
+
+_file_sig_cache = {}   # str(realpath) -> (mtime_ns, pending_gen, table, mono_ts)
+
+# Sentinel spec: the name IS bound at module scope but its signature is
+# unknowable (decorated def, rebound name, inherited __init__) - suppresses
+# both the check and any live-object fallback (err on silence).
+_SIG_UNKNOWN = object()
+
+
+def _class_call_spec(node, cls_scope):
+    """The spec calling class `node` checks against — mirrors the buffer-static
+    rule in _check_call_static: a plain __init__ decides; a bare class with no
+    bases/keywords and no __init__/__new__ takes no args; anything else is
+    unknowable."""
+    init = cls_scope.defs.get("__init__")
+    if init is not None and init[1] == "plain":
+        spec = _spec_from_arguments(init[0].args, skip_first=1)
+        return spec if spec is not None else _SIG_UNKNOWN
+    if (init is None and not node.bases and not node.keywords
+            and "__init__" not in cls_scope.binds
+            and "__new__" not in cls_scope.binds):
+        return _Spec()              # no-arg constructor
+    return _SIG_UNKNOWN
+
+
+def _module_scope_imports(tree):
+    """{alias: (module, original_name)} for every absolute `from m import x`
+    the module's own scope executes — descending module-level if/try/with/for
+    blocks but never def/class bodies (those bind other scopes). Relative
+    imports and `import m` are skipped (not hop-resolvable by name)."""
+    imports = {}
+
+    def walk(stmts):
+        for st in stmts:
+            if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+                continue
+            if isinstance(st, ast.ImportFrom):
+                if st.module and not st.level:
+                    for al in st.names:
+                        if al.name != "*":
+                            imports[al.asname or al.name] = (st.module, al.name)
+                continue
+            for field in ("body", "orelse", "finalbody"):
+                sub = getattr(st, field, None)
+                if sub:
+                    walk(sub)
+            for h in getattr(st, "handlers", None) or ():
+                walk(h.body)
+
+    walk(tree.body)
+    return imports
+
+
+@lag_traced("signature-table parse", 30)
+def _signature_table(path):
+    """Call specs the file's CURRENT text (pending-save inclusive) defines at
+    module scope, or None (unreadable/unparseable — callers err on silence).
+
+    {"specs": {name: _Spec | _SIG_UNKNOWN} for module-level defs/classes,
+     "imports": {alias: (module, name)} for its `from m import x` bindings}
+
+    Trust rules match the buffer-static pass: decorated defs, rebound names
+    and non-trivial classes map to _SIG_UNKNOWN (bound, but never checked).
+    Cached on (mtime_ns, pending_gen) with the same freshness floor as
+    _file_binds_cache — an O(file) parse, throttled, worker-side only."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    now = time.monotonic()
+
+    def _fresh(hit):
+        return hit is not None and (
+            (hit[0] == st.st_mtime_ns and hit[1] == gen)
+            or now - hit[3] < _FILE_BINDS_MIN_INTERVAL_S)
+
+    gen = 0
+    text = None
+    key = str(path)
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from pathlib import Path as _P
+        rp = _P(path).resolve()
+        key = str(rp)
+        gen = PendingSave.pending_gen_for(rp)
+        if _fresh(_file_sig_cache.get(key)):
+            return _file_sig_cache[key][2]
+        text = PendingSave.current_file_text(rp)
+    except Exception:
+        if _fresh(_file_sig_cache.get(key)):
+            return _file_sig_cache[key][2]
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            text = None
+    table = None
+    if text is not None:
+        try:
+            tree = ast.parse(text)
+            col = _Collector()
+            col.run(tree)
+            specs = {}
+            for name, (node, flavor) in col.module.defs.items():
+                spec = (_spec_from_arguments(node.args)
+                        if flavor in ("plain", "static") else None)
+                specs[name] = spec if spec is not None else _SIG_UNKNOWN
+            for name, (node, cls_scope) in col.module.classes.items():
+                specs[name] = _class_call_spec(node, cls_scope)
+            imports = _module_scope_imports(tree)
+            for alias in list(imports):
+                # A name the module-level defs/rebinds isn't the import's target.
+                if alias in specs or alias in col.module.ambiguous:
+                    del imports[alias]
+            table = {"specs": specs, "imports": imports}
+        except (SyntaxError, ValueError, RecursionError, TypeError):
+            table = None
+    _file_sig_cache[key] = (st.st_mtime_ns, gen, table, now)
+    return table
+
+
+def _pending_spec_for(obj):
+    """(handled, spec) — the spec for `obj` from its defining file's PENDING
+    text. handled=True means the pending source answered authoritatively
+    (spec may be None = deliberately unknowable → silence); handled=False
+    means no pending edits / not locatable → use live introspection."""
+    if isinstance(obj, type):
+        mod = sys.modules.get(getattr(obj, "__module__", None) or "")
+        file = getattr(mod, "__file__", None)
+        qual = getattr(obj, "__qualname__", None)
+    else:
+        fn = obj
+        for _ in range(8):          # unwrap decorators to the def's real code
+            inner = getattr(fn, "__wrapped__", None)
+            if inner is None:
+                break
+            fn = inner
+        code = getattr(fn, "__code__", None)
+        if code is None:
+            return False, None
+        file = code.co_filename
+        qual = getattr(fn, "__qualname__", None)
+    if (not file or not qual or "." in qual):
+        return False, None          # only module-level names are in the table
+    try:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        from pathlib import Path as _P
+        rp = _P(file).resolve()
+        if PendingSave.pending_gen_for(rp) <= 0:
+            return False, None      # no unsaved edits - live/disk agree
+    except Exception:
+        return False, None
+    table = _signature_table(str(rp))
+    if table is None:
+        return False, None
+    spec = table["specs"].get(qual, _MISS)
+    if spec is _MISS:
+        return False, None          # def moved/renamed - fall back to live
+    return True, (None if spec is _SIG_UNKNOWN else spec)
+
+
+def _object_spec(obj, fname):
+    """The spec a call to `obj` checks against: the pending text of its
+    defining file when that file has unsaved edits (the live signature goes
+    stale between an edit and its recompile), else live introspection."""
+    try:
+        handled, spec = _pending_spec_for(obj)
+    except Exception:
+        handled, spec = False, None
+    if handled:
+        return spec
+    return _live_spec(obj, fname)
+
+
+def _check_call_span(call, scope, path, file_binds):
+    """Signature check for SPAN buffers (only_missing_imports mode), where the
+    live-ctx pass can't run (the buffer binds none of its module's names). A
+    bare-name call the buffer itself doesn't bind resolves through the
+    enclosing module's CURRENT text (_signature_table — pending-save
+    inclusive, so a signature edited in another view flags wrong call sites
+    before any recompile): a module-level def/class directly, a
+    `from m import name` via the live module (upgraded to m's pending text
+    when m's file has unsaved edits), and builtins only when the module's
+    text provably doesn't shadow the name. Anything else → silence."""
+    func = call.func
+    if not isinstance(func, ast.Name):
+        return None
+    name = func.id
+    if _resolves(scope, name):
+        return None                 # the buffer's own binding, static pass owns it
+    table = _signature_table(path) if path else None
+    if table is None:
+        return None
+    spec = table["specs"].get(name, _MISS)
+    if spec is _SIG_UNKNOWN:
+        return None
+    if spec is not _MISS:
+        return _match_spec(name, spec, call)
+    imp = table["imports"].get(name)
+    if imp is not None:
+        mod = sys.modules.get(imp[0])
+        try:
+            obj = vars(mod).get(imp[1], _MISS) if mod is not None else _MISS
+        except TypeError:
+            obj = _MISS
+        if obj is _MISS or not callable(obj):
+            return None
+        spec = _object_spec(obj, name)
+        return _match_spec(name, spec, call) if spec is not None else None
+    if file_binds is not None and name not in file_binds:
+        obj = getattr(builtins, name, _MISS)
+        if obj is not _MISS and callable(obj):
+            spec = _live_spec(obj, name)
+            return _match_spec(name, spec, call) if spec is not None else None
+    return None
 
 
 def _buffer_bound_names(text):
@@ -1415,8 +1648,11 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
     `path` = the enclosing module's file, the live-module namespace suppresses
     everything the module actually binds; what's left is only reported when an
     import statement would fix it (the missing-import classification below) —
-    a bare typo stays silent, as do the call-signature / attr passes (their
-    builtin fallback can't see module-level shadowing from inside a span)."""
+    a bare typo stays silent. Call-signature checks DO run in span mode
+    (Toggles.TextEditor.lint_span_calls), resolved through the module file's
+    pending text (_check_call_span) rather than the live ctx; the attr pass
+    stays off (its module-walk needs import-bound names the span never
+    sees)."""
     try:
         tree = ast.parse(text)
     except IndentationError:
@@ -1483,6 +1719,26 @@ def check_source(text, path=None, max_reports=40, only_missing_imports=False):
                 report(lineno, f"name '{name}' is not defined")
 
     if only_missing_imports:
+        # Span buffers get the call-signature pass too, resolved through the
+        # module file's PENDING text instead of the live namespace (which needs
+        # import-bound names the span never sees) - see _check_call_span.
+        try:
+            from src.lsd.gl_gui.toggles import Toggles
+            _span_calls = Toggles.TextEditor.lint_span_calls
+        except Exception:
+            _span_calls = True
+        if _span_calls and not col.star_import:
+            for call, scope, guarded in col.calls:
+                if guarded:
+                    continue
+                msg = _check_call_static(call, scope)
+                if msg is None:
+                    try:
+                        msg = _check_call_span(call, scope, path, file_binds)
+                    except Exception:
+                        msg = None  # resolution must never break the lint
+                if msg is not None:
+                    report(call.lineno, msg)
         reports.sort()
         return reports[:max_reports]
 

@@ -6196,6 +6196,11 @@ def draw_text(input_value: str, height=None,
             # First fold frame for this editor: the top import block starts
             # collapsed (the only default_collapsed source right now).
             ds._fold_collapsed = set(_fold_default_col or ())
+        if getattr(ds, '_fold_search_exp', None) is None:
+            # Folds auto-expanded to reveal the current search match, pending
+            # re-collapse when the selection moves on (see the search-driven
+            # return block below).
+            ds._fold_search_exp = set()
         # Badge click against LAST frame's rects: this frame's layout depends
         # on the toggle, so it must resolve before the display text is built.
         _fold_toggled = None
@@ -6208,6 +6213,8 @@ def draw_text(input_value: str, height=None,
                         ds._fold_collapsed.discard(_rng)
                     else:
                         ds._fold_collapsed.add(_rng)
+                    # A manual toggle overrides any pending search-restore.
+                    ds._fold_search_exp.discard(_rng)
                     ds.invalidate()
                     request_render()
                     break
@@ -6255,6 +6262,7 @@ def draw_text(input_value: str, height=None,
                     ds._fold_collapsed.update(_roots)
                 else:
                     ds._fold_collapsed.difference_update(_roots)
+                ds._fold_search_exp.difference_update(_roots)
                 _fold_kb_all = True
                 ds.invalidate()
                 request_render()
@@ -6276,8 +6284,78 @@ def draw_text(input_value: str, height=None,
                         ds._fold_collapsed.discard(_rng)
                 if _rng is not None:
                     _fold_toggled = _rng
+                    ds._fold_search_exp.discard(_rng)
                     ds.invalidate()
                     request_render()
+        # --- Search-driven temporary expansion ---------------------------
+        # While the find UI cycles matches, the fold(s) hiding the CURRENT
+        # match auto-expand and re-collapse when the selection moves on
+        # (pending set: ds._fold_search_exp). The expansion COMMITS - the
+        # pending set is dropped, folds stay open - when the search ends or
+        # the editor itself takes text focus (the search UI takes it).
+        # Edge-keyed on (term, current-match) so a manual re-collapse of
+        # an auto-expanded fold isn't fought the very next frame. Matches
+        # are found in the FULL buffer (input_value here, pre-splice); the
+        # search section below shares _search_match_cache and projects them
+        # into display coords on fold/scroll.
+        _sq = str(search_text or (ds.search_text if ds.search_active else ""))
+        if _sq and Melty.text_focused_ds is not ds:
+            _scur = getattr(ds, '_search_active_local', None)
+            _sk = (_sq, _scur)
+            if getattr(ds, '_fold_search_seen', None) != _sk:
+                ds._fold_search_seen = _sk
+                _sli = None
+                if _scur is not None:
+                    _smc = getattr(ds, '_search_match_cache', None)
+                    if (_smc is None or _smc[0] is not input_value
+                            or _smc[1] != _sq):
+                        _smc = (input_value, _sq,
+                                _find_matches(input_value, _sq))
+                        ds._search_match_cache = _smc
+                    if _scur < len(_smc[2]):
+                        _sli = input_value.count('\n', 0, _smc[2][_scur][0])
+                _fold_sch = False
+                if _sli is not None:
+                    for _r in [r for r in ds._fold_collapsed
+                               if r[0] < _sli <= r[1]]:
+                        ds._fold_collapsed.discard(_r)
+                        ds._fold_search_exp.add(_r)
+                        _fold_sch = True
+                # Folds expanded for an EARLIER match restore once the
+                # current match leaves them (moves on, or left this editor).
+                for _r in [r for r in ds._fold_search_exp
+                           if _sli is None or not (r[0] < _sli <= r[1])]:
+                    ds._fold_search_exp.discard(_r)
+                    ds._fold_collapsed.add(_r)
+                    _fold_sch = True
+                if _fold_sch:
+                    # MANY folds could move at once - reuse the collapse/
+                    # expand-all caret projection: map the caret to full
+                    # coords via LAST frame's layout here, project into the
+                    # new layout after the build.
+                    _fstarts = _line_starts(input_value)
+                    _cp = min(ds.text_cursor_pos or 0, len(input_value))
+                    _pc = getattr(ds, '_fold_cache', None)
+                    if (_pc is not None and _pc[0] is input_value
+                            and _pc[2][3] is not None):
+                        _pdisp, _pd2b = _pc[2][0], _pc[2][3]
+                        _cp = min(_cp, len(_pdisp))
+                        _col = _cp - (_pdisp.rfind('\n', 0, _cp) + 1)
+                        _dl = _pdisp.count('\n', 0, _cp)
+                        _cp_full = (_fstarts[_pd2b[min(_dl, len(_pd2b) - 1)]]
+                                    + _col)
+                    else:
+                        _cp_full = _cp
+                    _fold_kb_all = True
+                    ds.invalidate()
+                    request_render()
+        elif (ds._fold_search_exp
+              or getattr(ds, '_fold_search_seen', None) is not None):
+            # Search over, or focus moved into this editor: commit - the
+            # auto-expanded folds stay open. Seen-key resets too, so a
+            # reopened search with the same term immediately re-runs the expand.
+            ds._fold_search_exp.clear()
+            ds._fold_search_seen = None
         _fk = (tuple(tuple(r) for r in fold_ranges),
                frozenset(ds._fold_collapsed))
         _fc = getattr(ds, '_fold_cache', None)
@@ -7448,6 +7526,18 @@ def draw_text(input_value: str, height=None,
         shift = io.key_shift
         ctrl = io.key_ctrl
 
+        # The caret can outlive the buffer it was placed in: a jump consume
+        # (Ctrl+B) or a persisted draw_state stamps text_cursor_pos against
+        # one text, and the content is then cut shorter underneath it
+        # (buffer reload / merge adopt / external change). Every handler below
+        # indexes text[cursor], so clamp ONCE here instead of per-site.
+        if (ds.text_cursor_pos or 0) > len(text):
+            ds.text_cursor_pos = len(text)
+        if (getattr(ds, 'text_selection_start', 0) or 0) > len(text):
+            ds.text_selection_start = len(text)
+        if (getattr(ds, 'text_selection_end', 0) or 0) > len(text):
+            ds.text_selection_end = len(text)
+
         # --- Code-suggestion popup: navigation & accept ---
         # Real editors don't suggest in the find box or inline single-line
         # value fields, so gate that out. (ac_state was set up at the top.)
@@ -8348,7 +8438,31 @@ def draw_text(input_value: str, height=None,
     # combines into one global set, and scroll to the global-current match
     # when it lands in this view.
     search_term = search_text or (ds.search_text if ds.search_active else "")
-    search_matches = _find_matches(text, search_term)
+    # Match against the FULL buffer, not the fold display text: results
+    # inside collapsed folds must be found and counted, and the fold section
+    # already auto-expanded when it hides the CURRENT match. Cached
+    # by (text identity, term) - shared with the fold section's lookup.
+    _smc = getattr(ds, '_search_match_cache', None)
+    if (_smc is not None and _smc[0] is _fold_full
+            and _smc[1] == str(search_term)):
+        search_matches = _smc[2]
+    else:
+        search_matches = _find_matches(_fold_full, search_term)
+        ds._search_match_cache = (_fold_full, str(search_term), search_matches)
+    # Display-coord projection for highlight/scroll; a match still hidden
+    # inside a collapsed fold projects to None and it isn't drawn.
+    if _fold_segments and search_matches:
+        _sm_disp = []
+        for _sm_s, _sm_e in search_matches:
+            _p0 = _fold_off(_sm_s)
+            if _p0 is None:
+                _sm_disp.append(None)
+            else:
+                _p1 = _fold_off(_sm_e)
+                _sm_disp.append((_p0, _p1 if _p1 is not None
+                                 else _p0 + (_sm_e - _sm_s)))
+    else:
+        _sm_disp = search_matches
 
     # Which local match (if any) is the global-current one is decided by a
     # search owner's pre-body tree walk (search_walk), not by claiming here:
@@ -8383,14 +8497,14 @@ def draw_text(input_value: str, height=None,
     # (is_search_box) must never self-count, so it clears any matcher - its text
     # IS the query, so a matcher inside would always self-match (phantom +1).
     if not is_search_box:
-        _match_text = text
+        _match_text = _fold_full   # count hidden-in-fold matches too
         ds._search_matcher = (
             lambda term, sess, _t=_match_text: sess.claim(len(_find_matches(_t, term))))
     else:
         ds._search_matcher = None
 
-    if should_scroll:
-        ms, me = search_matches[current_local]
+    if should_scroll and _sm_disp[current_local] is not None:
+        ms, me = _sm_disp[current_local]
         line, _col = _index_to_line_col(text, ms)
         # Vertical: scroll the editor (or its scroll parent) so the match
         # is fully on screen. Pass the line's full vertical band [top, bottom] in
@@ -8958,8 +9072,11 @@ def draw_text(input_value: str, height=None,
     # The current match radiates a circular gradient glow with its rect cut out
     # so the matched text stays visible; the rest get a thin border. Look is
     # tunable via Toggles.SearchSettings (see search_glow.draw_search_highlight).
-    if search_matches:
-        for m_idx, (ms, me) in enumerate(search_matches):
+    if _sm_disp:
+        for m_idx, _sm_m in enumerate(_sm_disp):
+            if _sm_m is None:
+                continue     # hidden inside a collapsed fold
+            ms, me = _sm_m
             m_line, _ = _index_to_line_col(text, ms)
             # A match may span lines (multi-line search terms): collect one
             # rect per covered line, like the selection wash above. Segments

@@ -125,6 +125,7 @@ def draw_type_name(input_value, **kwargs):
         imgui.text(f"Error displaying type: {e}")
 
 
+
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
     """The (index, lowercased key string) pairs draw_collection renders and
     searches, in key order — the basis for both counting key matches and
@@ -6274,6 +6275,213 @@ class _SourceItem(str):
 
 _ACTIVE_SRC_TINT = (0.9, 0.8, 0.2)
 
+# Per-key override kwargs carried by the collection dict itself (core_render's
+# __getitem__ path): the info tab's 'header' group starts collapsed -
+# 'initial' only applies on the child's first frames, so the chevron click
+# works normally. The dunder key never renders (underscore-skipped).
+_INFO_GROUP_OVERRIDES = {"__header__": {"initial": {"expanded": False}}}
+
+
+class _InfoRow:
+    """One info-tab row: a param name plus the shared per-render tab context
+    (stamped onto `.ctx` by draw_info_tab each render). Exists so the tab's
+    rows go through draw_collection — the collection owns iteration, row
+    clipping, key search and scroll-to-match; this object type-routes each
+    row to draw_info_param."""
+    __slots__ = ("param", "group", "ctx")
+
+    def __init__(self, param):
+        self.param = param
+        self.group = None
+        self.ctx = None
+
+    def __repr__(self):
+        return f"_InfoRow({self.param!r})"
+
+
+@render_func(use_cache=False, show_bg=False, show_header=False, show_name=False,
+             selectable=False, is_default_for=_InfoRow)
+def draw_info_param(input_value, **kwargs):
+    """One info-tab row: a source dropdown for LOOKING at the different input
+    sources, plus the value stored AT the selected source — editable when
+    that source is writable, an inline + when it doesn't set the param there
+    yet, read-only text otherwise. Shared per-render state (source registry,
+    active map, dropdown option cache) arrives via _InfoRow.ctx; selection
+    lives on the TAB's draw_state (misc) — pure view state."""
+    from src.lsd.gl_gui.view.core_views.anywhere import _ABOVE_DRAW_STATE
+    row = input_value
+    ctx = row.ctx
+    if ctx is None or row.group is None:
+        # Cold hit before the tab stamped this row's context (shouldn't
+        # happen - rows only render from inside the tab body).
+        return False, input_value
+    param = row.param
+    target = ctx.target
+    # Key match/current flags come from draw_collection (it matched our name);
+    # forwarded to the value widget so the header carries the match, same as
+    # the non-collection rows did.
+    _search_kw = {"search_match": kwargs.get("search_match", False),
+                  "search_current": kwargs.get("search_current", False)}
+
+    if ctx.parses_ready:
+        # The ACTIVE source: the highest-priority setter (precomputed in
+        # ctx.active_map, one registry pass) - unless a diverged auto_param
+        # outranks it at runtime (the ds replaces every setter not in
+        # _ABOVE_DRAW_STATE; the ds row only registers whitelisted
+        # attrs, so detect the divergence directly. A bare `param in
+        # target.__dict__` would be wrong: DrawState.__init__ sets its
+        # own param on every param).
+        setting = ctx.active_map.get(param)
+        ds_has = param in (getattr(target, "auto_params", None) or {})
+        if ds_has and (setting is None
+                       or ctx.prio[setting][0] not in _ABOVE_DRAW_STATE):
+            active = "draw_state"
+        else:
+            active = setting
+        ctx.active_cache[param] = active
+        known = True
+    else:
+        # ACTIVE-SOURCE CACHE DISABLED (perf A/B): never serve cached
+        # picks - loading rows draw no dropdown until sources are live.
+        # Re-enable by restoring: known = param in ctx.active_cache;
+        # active = ctx.active_cache.get(param)
+        known = False
+        active = None
+
+    if known:
+        # Dropdown of ALL sources in SourcePriority order, active one
+        # tinted + row-ted - memoized per current active source
+        # (ctx.options_for), not rebuilt per param.
+        options, _row_tints = ctx.options_for(active)
+
+        # Selection is per-tab view state; default = the active source.
+        sel_key = f"src_sel::{param}"
+        sel = ctx.tab_ds.misc.get(sel_key)
+        if sel not in options:
+            if active is not None:
+                sel = active
+            elif ctx.parses_ready:
+                sel = ctx.default_source_once()
+            else:
+                sel = "draw_state"
+
+        # Subtle trigger: no button bg/shadow, short, narrow - it's a
+        # provenance label with a dropdown, not a primary action.
+        # Per-row trash INSIDE the dropdown row clears this param at THAT
+        # source without closing the list, so several sources can be
+        # cleared in one operation. Only rows that actually SET the param
+        # get one (ctx.setters_map, plus the ds when an auto_param diverged);
+        # codec rows are excluded - clear_anywhere can't reverse the
+        # codec's per-file/render_kwargs fanout yet.
+        def _clear_at(src, _p=param):
+            from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
+            if clear_anywhere(_p, target, str(src)) is not None:
+                target.invalidate()
+                ctx.tab_ds.invalidate()
+
+        _row_actions = {s: _clear_at for s in ctx.setters_map.get(param, ())
+                        if ctx.srcs["kinds"].get(s) != "codec"}
+        if param in (getattr(target, "auto_params", None) or {}):
+            _row_actions["draw_state"] = _clear_at
+        pick_changed, new_pick = draw_dropdown(
+            options.get(sel, sel), collection=options, width=181, z_offset=0,
+            shadow=False, show_button_bg=False, trigger_height=22, show_bg=False,
+            text_pad=3, row_tints=_row_tints, row_actions=_row_actions,
+            text_toward_bg=ctx.text_toward_bg,
+            name=f"src_{param}_dd", show_header=False)
+        if pick_changed and new_pick:
+            sel = str(new_pick)
+            ctx.tab_ds.misc[sel_key] = sel
+    else:
+        sel = None
+        imgui.dummy(181, 22)  # hold the dropdown slot so no reflow when it appears
+
+    imgui.same_line()
+
+    any_changed = False
+    if not ctx.parses_ready:
+        # Sources still loading: stored-at-source reads would hit
+        # placeholders - bind the widget to the RESOLVED value and route
+        # edits through the automatic pick until the sources are real.
+        item_return = draw_any(row.group.get(param), name=param,
+                               show_bg=False, show_header=True, **_search_kw)
+        item_changed, out_val = item_return[0], item_return[1]
+        if item_changed:
+            row.group[param] = out_val
+            any_changed = True
+    else:
+        # The value AT the selected source (not the resolved value) - that's
+        # what looking at a source means. draw_state reads the direct attr.
+        sdict = ctx.srcs["sources"].get(sel)
+        stored = sdict.get(param) if isinstance(sdict, dict) else None
+        if sel == "draw_state" and stored is None:
+            stored = (getattr(target, "auto_params", None) or {}).get(
+                param, target.__dict__.get(param))
+        sel_writable = sel in ctx.writable or sel == "draw_state"
+
+        # In-flight display cache (_sa_pending - the same one anywhere_value
+        # serves): a slow-source write, and EVERY write while a drag is underway
+        # (deferred), hasn't reached the source dict yet - a raw stored read
+        # snaps the slider back to the stale value next frame ("stuck").
+        # Serve the pending UI value while the trip is in flight, but only
+        # when this row's selected source is the one the write targeted.
+        # The tab's proxy refresh runs anywhere_value per param, which
+        # retires it once the stored value moves off its at-set baseline.
+        _pending = getattr(target, "_sa_pending", None)
+        if _pending and param in _pending:
+            _lastsrc = getattr(target, "_sa_last_source", None) or {}
+            if _lastsrc.get(param, sel) == sel:
+                stored = _pending[param][0]
+
+        if stored is None:
+            if sel_writable:
+                # Selected source doesn't set the param yet: + stamps a value
+                # into it (creating the entry); next frame the widget takes
+                # over. draw_button is the most-compatible in-line button
+                # (draw_float's shape) - same header chrome as widget rows.
+                clicked, _ = draw_button("+", name=f"+##add_{param}",
+                                         label="+", display_name=param,
+                                         show_name=True, show_bg=False,
+                                         wrap=True, min_width=24, **_search_kw)
+                if clicked:
+                    # Resolved value when there is one; a None (header params
+                    # nothing sets) stamps the DECLARED signature default -
+                    # stamping None would create an entry that still reads
+                    # as None ("the + does nothing" feel).
+                    stamp = row.group.get(param)
+                    if stamp is None:
+                        from src.lsd.gl_gui.view.core_views.anywhere import (
+                            signature_default_for)
+                        stamp = signature_default_for(param, target)
+                    set_anywhere(param, stamp, target, allow_any=True,
+                                 ds_fallback=True, source=sel)
+                    any_changed = True
+            else:
+                text(f"{param}: not set here", name=f"ro_{param}",
+                     editable=False, **_search_kw)
+        elif sel_writable:
+            item_return = draw_any(stored, name=param,
+                                   show_bg=False, show_header=True, **_search_kw)
+            item_changed, out_val = item_return[0], item_return[1]
+            if item_changed:
+                set_anywhere(param, out_val, target, allow_any=True,
+                             ds_fallback=True, source=sel)
+                any_changed = True
+        else:
+            text(f"{param}: {stored}", name=f"ro_{param}", editable=False,
+                 **_search_kw)
+
+    if any_changed:
+        target.invalidate()
+        # The rows themselves live under the (cached) tab: re-render so the
+        # active tint and stored values reflect the write this frame
+        # (parse-dict writes are synchronous; the hosts' notify triggers the
+        # later save/hotswap).
+        ctx.tab_ds.invalidate()
+        request_render()
+    return False, input_value
+
+
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
              searchable=True, show_name=False, selectable=False)
 @window(tint=(0.767, 0.671, 0.183))
@@ -6284,14 +6492,70 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     there yet. The dropdown defaults to the source actively driving the
     param (yellow row/trigger); switching it never deletes or moves
     anything, it just changes which source you're viewing/editing.
-    Selection lives on THIS tab's draw_state (misc) — pure view state."""
-    from src.lsd.gl_gui.view.core_views.anywhere import (_ABOVE_DRAW_STATE,
-                                                         _unset_value)
+    Selection lives on THIS tab's draw_state (misc) — pure view state.
+
+    The source machinery is debug-gated: by default the tab renders just the
+    grouped param values (cheap — no registry parses) and the Debug button
+    switches to the dropdown rows. The header group starts collapsed in
+    both modes."""
+    from src.lsd.gl_gui.view.core_views.anywhere import _unset_value
     target = input_value
     # locate_all_params: the view's own params PLUS the header's
     # (with_header function inputs - icon, show_name, name_color, etc),
     # deduped, view params first. Same read/write semantics.
     proxy = target.locate_all_params
+
+    # ── Search - the rows render through draw_collection, so it owns key
+    # matching: count claims (its _search_matcher over the row keys = the
+    # param names), the match/current glow kwargs, and scroll-to-match.
+    # Just resolve what to FORWARD: a term/SearchTerm passed in search_text
+    # (the menu's search box / an ancestor session), else this tab's OWN
+    # find-bar session - the search_text kwarg is NEVER injected from an
+    # ancestor session, so a self-hosted Ctrl+F never arrives through it.
+    draw_state._search_matcher = None  # pre-collection matcher (stale after hotswap)
+    _term = search_text or (draw_state.search_text if draw_state.search_active else "")
+    if isinstance(_term, SearchTerm):
+        child_search = _term
+    elif _term and draw_state.search_active and draw_state._search_session is not None:
+        # The session (a SearchTerm) carries term + current/scroll_to state.
+        child_search = draw_state._search_session
+    else:
+        child_search = ""
+
+    # ── Debug gate - the source registry is EXPENSIVE (_sources_for spawns
+    # render-func/class/call-site parses, and the codeCM guard below
+    # pulses re-renders until they land). Skip ALL of it until asked: by
+    # default the tab is just the grouped values (edits route through
+    # ParamProxy.__setitem__ → set_anywhere on the driving source); the
+    # Debug button fills in the per-param source dropdowns. The pick is
+    # per-tab view state, same slot as src_sel.
+    debug = bool(draw_state.misc.get("info_sources"))
+    clicked, _ = draw_button("Debug", name="dbg_btn", show_name=False,
+                             label="Hide sources" if debug else "Debug",
+                             min_width=110)
+    if clicked:
+        debug = not debug
+        draw_state.misc["info_sources"] = debug
+        draw_state.invalidate()
+        request_render()
+
+    if not debug:
+        # Same grouped shape as the debug mirror, but with the live
+        # ParamProxy groups themselves. A fresh outer dict, so the proxy
+        # never carries the __overrides__ entry (GroupedParamProxy.refresh
+        # would break on a non-proxy value).
+        outer = {}
+        for _gkey in ("params", "header"):
+            _group = proxy.get(_gkey)
+            if _group:
+                outer[_gkey] = _group
+        outer["__overrides__"] = _INFO_GROUP_OVERRIDES
+        draw_collection(outer, name="rows", use_cache=False, show_bg=False,
+                        show_header=False, shadow=False, selectable=False,
+                        item_spacing_y=2, child_kwargs={"show_system": True},
+                        search_text=child_search)
+        return False, input_value
+
     srcs = _sources_for(target)
     writable = set(srcs["writable"])
 
@@ -6385,237 +6649,52 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
         _active_cache = {}
         target._sa_active_src = _active_cache
 
-    # ── Search - the DEFAULT search path. Term resolution mirrors
-    # draw_search: a injected str/SearchTerm in search_text (the menu's
-    # search box / an ancestor session), or this tab's OWN find-bar term -
-    # the search_text kwarg is only injected from an ancestor session, so a
-    # self-triggered Ctrl+F never arrives through it and must be read off
-    # draw_state.search_text directly.
-    _term = search_text or (draw_state.search_text if draw_state.search_active else "")
-    if isinstance(_term, SearchTerm):
-        _session = _term
-    elif draw_state.search_active and draw_state._search_session is not None:
-        _session = draw_state._search_session
-    else:
-        _session = None
-    term = str(_term).lower() if _term else ""
+    # Everything a row needs to draw its dropdown + stored-value widget,
+    # computed ONCE per tab render and shared by every row via _InfoRow.ctx.
+    ctx = types.SimpleNamespace(
+        target=target, tab_ds=draw_state, srcs=srcs, writable=writable,
+        prio=_prio, active_map=active_map, setters_map=setters_map,
+        options_for=_options_for, default_source_once=_default_source_once,
+        text_toward_bg=_text_toward_bg, parses_ready=parses_ready,
+        active_cache=_active_cache)
 
-    # Param NAMES are matched by THIS view - one result slot per matching
-    # row, in draw order. Rows without a value widget (the cue rows, "not set
-    # here") have no child matcher of their own, so without this claim they
-    # are invisible to the search count/highlight/nav. Child editors still
-    # claim their content matches separately (no double count: names here,
-    # content there).
-    # NB: `for p in proxy` yields (param, value) PAIRS (ParamProxy's one
-    # weird deviation from dict) - keys() yields plain keys.
-    _param_names = tuple(p.lower() for p in proxy.keys())
-
-    def _search_matcher(t, session, _names=_param_names):
-        q = str(t).lower()
-        if q:
-            session.claim(sum(1 for n in _names if _fuzzy_key_match(q, n)))
-
-    draw_state._search_matcher = _search_matcher
-
-    # The view's pre-body walk (search_walk) stashed the local ordinal of the
-    # global-current match on us when one of our names holds it.
-    _current_local = draw_state._search_active_local if term else None
-    _match_ord = 0
-    _current_row_y = None
-
-    any_changed = False
-    index = 0
-    # Grouped proxy: the view's own params, then the header's, each its
-    # own nested live dict (GroupedParamProxy). A dim divider separates the
-    # header section; rows are identical either side of it.
-    for _glabel, _group in ((None, proxy.get('params')),
-                            ('header', proxy.get('header'))):
+    # Mirror the grouped proxy ({'params': {...}, 'header': {...}}) with
+    # stable _InfoRow leaves: one row object per param, kept across frames
+    # so the child draw_states maintain their identity, rebuilt in proxy order
+    # (in place; group dicts' identity is stable too) and pruned as params
+    # vanish.
+    rows_store = getattr(draw_state, "_info_rows", None)
+    if rows_store is None:
+        rows_store = {}
+        draw_state._info_rows = rows_store
+    for _gkey in ("params", "header"):
+        _group = proxy.get(_gkey)
         if not _group:
+            rows_store.pop(_gkey, None)
             continue
-        if _glabel:
-            imgui.dummy(0, 6)
-            text(_glabel, name=f'grp_{_glabel}', editable=False)
-        for param, value in _group.items():
-            index = index + 1
-            # Highlight, don't hide: every row stays visible (like the default
-            # search everywhere else), matching rows get the glow via the
-            # search_match/search_current kwargs their header reads.
-            is_match = bool(term) and _fuzzy_key_match(term, param.lower())
-            is_current = (is_match and _current_local is not None
-                          and _match_ord == _current_local)
-            if is_match:
-                _match_ord += 1
-            if is_current:
-                _current_row_y = imgui.get_cursor_screen_pos()[1]
-            _search_kw = {"search_match": is_match, "search_current": is_current}
-            if parses_ready:
-                # The ACTIVE source: the highest-priority setter (precomputed in
-                # active_map, one registry pass) - unless a diverged auto_param
-                # outranks it at runtime (the ds beats every setter not in
-                # _ABOVE_DRAW_STATE; the ds row only registers whitelisted
-                # attrs, so read the dict directly. A bare `x in
-                # target.__dict__` would be wrong: DrawState.__init__ stamps its
-                # own fields on every instance).
-                setting = active_map.get(param)
-                ds_has = param in (getattr(target, "auto_params", None) or {})
-                if ds_has and (setting is None
-                               or _prio[setting][0] not in _ABOVE_DRAW_STATE):
-                    active = "draw_state"
-                else:
-                    active = setting
-                _active_cache[param] = active
-                known = True
-            else:
-                # ACTIVE-SOURCE CACHE DISABLED (for A/B): never serve cached
-                # picks - loading rows draw no dropdown until sources are live.
-                # Re-enable by restoring: known = param in _active_cache;
-                # active = _active_cache.get(param)
-                known = False
-                active = None
+        rows = rows_store.setdefault(_gkey, {})
+        _params = list(_group.keys())
+        if list(rows.keys()) != _params:
+            _prev = dict(rows)
+            rows.clear()
+            for _p in _params:
+                rows[_p] = _prev.get(_p) or _InfoRow(_p)
+        for _row in rows.values():
+            _row.group = _group
+            _row.ctx = ctx
 
-            # Names only need to be distinct among SIBLINGS - core_render's
-            # push_state scopes them per parent view, so no unique threading.
-            row_uid = param
-
-            if known:
-                # Dropdown of ALL sources in SourcePriority order, active one
-                # tinted + row-wrapped - memoized per distinct active source
-                # (_options_for above), not rebuilt per param.
-                options, _row_tints = _options_for(active)
-
-                # Selection is per-tabview state; default = the active source.
-                sel_key = f"src_sel::{param}"
-                sel = draw_state.misc.get(sel_key)
-                if sel not in options:
-                    if active is not None:
-                        sel = active
-                    elif parses_ready:
-                        sel = _default_source_once()
-                    else:
-                        sel = "draw_state"
-
-                # Subtle trigger: no button bg/shadow, short, narrow - it's a
-                # provenance label with a popover, not a primary control.
-                # Per-row trash INSIDE the popover: clear the param at THAT
-                # source without closing the list, so several sources can be
-                # cleared in one visit. Only rows that actually SET the param
-                # get one (setters_map, plus the ds when an auto_param diverged);
-                # codec rows are excluded - clear_anywhere can't reverse the
-                # codec's per-file/render_kwargs fan-out yet.
-                def _clear_at(src, _p=param):
-                    from src.lsd.gl_gui.view.core_views.anywhere import clear_anywhere
-                    if clear_anywhere(_p, target, str(src)) is not None:
-                        target.invalidate()
-                        draw_state.invalidate()
-
-                _row_actions = {s: _clear_at for s in setters_map.get(param, ())
-                                if srcs["kinds"].get(s) != "codec"}
-                if param in (getattr(target, "auto_params", None) or {}):
-                    _row_actions["draw_state"] = _clear_at
-                pick_changed, new_pick = draw_dropdown(
-                    options.get(sel, sel), collection=options, width=181, z_offset=0,
-                    shadow=False, show_button_bg=False, trigger_height=22, show_bg=False,
-                    text_pad=3, row_tints=_row_tints, row_actions=_row_actions,
-                    text_toward_bg=_text_toward_bg,
-                    name=f"src_{row_uid}_dd{index}", show_header=False)
-                if pick_changed and new_pick:
-                    sel = str(new_pick)
-                    draw_state.misc[sel_key] = sel
-            else:
-                sel = None
-                imgui.dummy(181, 22)  # hold the dropdown space - no reflow when it appears
-
-            imgui.same_line()
-
-            if not parses_ready:
-                # Sources still loading: stored-at-source reads would hit
-                # placeholders - bind the widget to the RESOLVED value and route
-                # edits through the automatic pick when the sources are real.
-                item_return = draw_any(value, name=param,
-                                       show_bg=False, show_header=True, **_search_kw)
-                item_changed, out_val = item_return[0], item_return[1]
-                if item_changed:
-                    _group[param] = out_val
-                    any_changed = True
-                imgui.dummy(0, 2)
-                continue
-
-            # The value AT the selected source (not the resolved value) - that's
-            # what looking at a dropdown shows. draw_state reads the live attr.
-            sdict = srcs["sources"].get(sel)
-            stored = sdict.get(param) if isinstance(sdict, dict) else None
-            if sel == "draw_state" and stored is None:
-                stored = (getattr(target, "auto_params", None) or {}).get(
-                    param, target.__dict__.get(param))
-            sel_writable = sel in writable or sel == "draw_state"
-
-            # In-flight display cache (_sa_pending - the same one anywhere_value
-            # serves): a slow-source write, and EVERY write while a drag is held
-            # (deferred), hasn't reached the source host yet - a raw stored read
-            # snaps the slider back to the stale value next frame ("stuck").
-            # Serve the pending UI value while the trip is in progress, but only
-            # when this row's selected source is the one the write targeted.
-            # proxy.items() above runs anywhere_value per param, which retires
-            # entries once the live value moves beyond their at-set baseline.
-            _pending = getattr(target, "_sa_pending", None)
-            if _pending and param in _pending:
-                _lastsrc = getattr(target, "_sa_last_source", None) or {}
-                if _lastsrc.get(param, sel) == sel:
-                    stored = _pending[param][0]
-
-            if stored is None:
-                if sel_writable:
-                    # Selected source doesn't set the param yet: + stamps a value
-                    # into it (creating the entry); next frame the widget takes
-                    # over. draw_button is the header's value-row button
-                    # (draw_float's +) - same header chrome as widget rows.
-                    clicked, _ = draw_button("+", name=f"+##add_{row_uid}",
-                                             label="+", display_name=param,
-                                             show_name=True, show_bg=False,
-
-                                             wrap=True, min_width=24, **_search_kw)
-                    if clicked:
-                        # Resolved value when there is one; a None (header params
-                        # nothing sets) stamps the DECLARED signature default -
-                        # stamp with None would create an entry that still reads
-                        # as unset (the "+ does nothing" feel).
-                        stamp = value
-                        if stamp is None:
-                            from src.lsd.gl_gui.view.core_views.anywhere import (
-                                signature_default_for)
-                            stamp = signature_default_for(param, target)
-                        set_anywhere(param, stamp, target, allow_any=True,
-                                     ds_fallback=True, source=sel)
-                        any_changed = True
-                else:
-                    text(f"{param}: not set here", name=f"ro_{row_uid}",
-                         editable=False, **_search_kw)
-            elif sel_writable:
-                item_return = draw_any(stored, name=param,
-                                       show_bg=False, show_header=True, **_search_kw)
-                item_changed, out_val = item_return[0], item_return[1]
-                if item_changed:
-                    set_anywhere(param, out_val, target, allow_any=True,
-                                 ds_fallback=True, source=sel)
-                    any_changed = True
-            else:
-                text(f"{param}: {stored}", name=f"ro_{row_uid}", editable=False,
-                     **_search_kw)
-            imgui.dummy(0, 2)
-
-        # Scroll the current search match into view - only on real full-search
-        # frames (term change not Enter/arrow nav), same gate as draw_collection.
-        if (_current_row_y is not None and _session is not None
-                and getattr(_session, "scroll_to", False)):
-            _scroll_into_view(draw_state, _current_row_y, _current_row_y + 24)
-
-    if any_changed:
-        target.invalidate()
-        # The rows themselves are cached: re-render so the active tint and
-        # stored values reflect the write this frame (parse/dict writes are
-        # synchronous; the hosts' notify covers the later reload/hotswap).
-        draw_state.invalidate()
-        request_render()
+    # ONE draw_collection over the whole grouped dict - leaf groups render as
+    # nested tabs (the point of the grouped shape), leaf rows type-route to
+    # draw_info_param and own their writes (always returning changed=False,
+    # so nothing gets written back into the mirror). use_cache=False: the
+    # tab's own cache is the only gate, as before. Named apart from the
+    # edit-mode "rows" so each mode owns its own draw_state subtree.
+    rows_store["__overrides__"] = _INFO_GROUP_OVERRIDES  # header starts collapsed
+    draw_collection(rows_store, name="src_rows", use_cache=False,
+                    show_bg=False, show_header=False, shadow=False,
+                    selectable=False, item_spacing_y=2,
+                    child_kwargs={"show_system": True},
+                    search_text=child_search)
     return False, input_value
 
 
