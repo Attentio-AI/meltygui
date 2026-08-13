@@ -182,6 +182,7 @@ def column_max_height(column_parent):
     return column_parent.clip_size[1] - columns_top + 10
 
 
+
 def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
                            bar_width=SCROLL_BAR_WIDTH_DEFAULT,
                            bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT):
@@ -5076,7 +5077,7 @@ _RF_KWARG_EXCLUDE = frozenset({
     "current_mode", "auto_apply", "convert_in", "convert_out", "pending",
     "type_collection", "drives", "view_func",
 })
-
+  
 _rf_kwarg_names_cache = None
 
 @window

@@ -441,7 +441,6 @@ def _snippet_triggers():
         _SNIP_FLAT = (key, flat, max((len(t) for t in flat), default=0))
     return _SNIP_FLAT[1]
 
-
 def _snippet_context(ds, text, cursor, changed):
     """The armed snippet-trigger site at `cursor`, or None. Arms on the edit
     that leaves a trigger ending exactly at the caret; stays armed — the
@@ -660,7 +659,7 @@ def _defining_keyword_before(text, anchor):
 _IMPORT_LINE_RE = re.compile(r'\s*(from|import)\s')
 
 
-def _import_line_context(text, anchor):
+def _import_line_context(text, anchor): 
     """True when `anchor` sits on an import-statement line. Bare identifiers
     there are module names / import targets — names the static scope pool can't
     know — so the caller routes them to jedi (which completes import statements
@@ -669,7 +668,6 @@ def _import_line_context(text, anchor):
     scope pool, which is merely unhelpful, not wrong."""
     ls = _get_line_start(text, anchor)
     return _IMPORT_LINE_RE.match(text, ls, anchor) is not None
-
 
 def _ac_lex_state(ds, text):
     """The editor's incremental (line_offsets, line_open) lexer state for `text`,
@@ -1927,7 +1925,6 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
 
 draw_color3_token_plain._plain_tv = True
 
-
 # The default callback-widget set: when draw_text is called with no token_views,
 # Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns,
 # True/False become double-click-to-toggle words, numeric literals become drag
@@ -2411,6 +2408,11 @@ def _resolve_anchor_lines(line_map, base_text, text):
 
 
 def _resolve_usage_spans(raw, anchors, base_text, text):
+
+
+
+
+
     """Project a raw [(start, end, su, at_def)] set (base-text coords) onto the
     current buffer via its anchors. Columns transfer verbatim — a resolved
     line's content is identical by construction."""
@@ -2713,6 +2715,7 @@ def _focus_in_context_menu_over(editor_ds, max_steps=64):
 
 
 def _uj_log(msg):
+
     """Usage-jump debug trail (event-driven, not per-frame): every Ctrl+B
     press, gutter click, span-scan outcome, and pick lands here with the
     frame count. `tail -f /tmp/uj_debug.log` while reproducing."""
@@ -6180,6 +6183,78 @@ def _scope_fold_ranges(text):
     return out, default_col, key_of
 
 
+def _fold_carry(old_text, new_text, scan_result, collapsed_keys):
+    """Carry a held _scope_fold_ranges result across one edit without
+    rescanning: shift the range tuples through the edit's single covering
+    splice (fold KEYS are line-independent and never move). Returns the
+    shifted (ranges, default_col, key_of) — or None when the carry can't be
+    trusted and the caller must run the real scan.
+
+    - _text_splice is PREFIX-greedy, so a newline inserted in front of a
+      blank-line run is attributed to the line BELOW the run — which can be
+      a fold header. A pure insertion whose char position sits at/before the
+      start of its attributed line therefore TRANSLATES a fold starting on
+      that line (its header moved down) instead of stretching over it —
+      stretching there swallowed the header into the hidden body (the
+      caret-jumps-into-collapsed-fold mangle; _fold_reassemble resolves the
+      same ambiguity suffix-first, and the two must agree).
+    - Verification: every COLLAPSED fold's carried header line must still
+      look like its key (def/class name for scopes, '#' for comment runs,
+      the exact opening line for strings, an import for the block). Any
+      mismatch — a seam edit, an ambiguity this shift rule doesn't model —
+      returns None: correctness is the scan's job; the carry only skips it
+      when provably safe. Expanded folds aren't checked (a wrong range there
+      hides nothing; the trailing rescan corrects it)."""
+    ranges, dcol, key_of = scan_result
+    spl = _text_splice(old_text, new_text)
+    if spl is not None and spl[3]:
+        p, oe, _d, dl, el, oel = spl
+        ins_at_line_start = False
+        if p == oe:                     # pure insertion
+            ols = _line_starts(old_text)
+            ins_at_line_start = el < len(ols) and p <= ols[el]
+
+        def shift(r):
+            if r[1] < el:
+                return r
+            if r[0] > oel or (ins_at_line_start and r[0] >= el):
+                return (r[0] + dl, r[1] + dl)
+            return (r[0], max(r[0], r[1] + dl))
+
+        key_of = {shift(r): k for r, k in key_of.items()}
+        ranges = [shift(r) for r in ranges]
+        dcol = [shift(r) for r in dcol]
+    if collapsed_keys:
+        nls = _line_starts(new_text)
+        range_of = {k: r for r, k in key_of.items()}
+        for k in collapsed_keys:
+            r = range_of.get(k)
+            if r is None:
+                continue
+            if not (0 <= r[0] < len(nls) and r[0] < r[1]):
+                return None
+            ls = nls[r[0]]
+            le = nls[r[0] + 1] - 1 if r[0] + 1 < len(nls) else len(new_text)
+            hline = new_text[ls:le].strip()
+            kind = k[0]
+            if kind == 'scope':
+                m = _FOLD_SCOPE_NAME_RE.match(hline)
+                name = next((s for s in reversed(k[1:])
+                             if isinstance(s, str)), None)
+                if m is None or (name is not None and m.group(1) != name):
+                    return None
+            elif kind == 'comment':
+                if not hline.startswith('#'):
+                    return None
+            elif kind == 'imports':
+                if not _FOLD_IMPORT_RE.match(hline):
+                    return None
+            elif kind == 'str':
+                if hline != k[1]:
+                    return None
+    return ranges, dcol, key_of
+
+
 def _fold_normalize_ranges(n_lines, ranges):
     """Caller fold ranges → sorted, clipped (start, end) tuples. 0-based
     INCLUSIVE buffer lines; a collapsed range keeps line `start` visible and
@@ -6315,7 +6390,16 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     force_expanded = set()
     parts, pos = [], 0
     for a, hidden, rng in sorted(segments):
-        if a >= lo - suf:
+        # A pure insertion exactly at the anchor whose text STARTS with a
+        # newline (typing at the collapsed header's end, or at the start of
+        # the line below the badge - the same display text either way) is a
+        # new LINE at the boundary, not header content: it lands BELOW the
+        # collapsed fold (the below-fold branch), never as the fold's first
+        # visible line. Typed characters at the header's end (no leading
+        # newline) still belong to the header via the first branch.
+        nl_at_anchor = (delta > 0 and p == a and p == lo - suf
+                       and new_disp.startswith('\n', p))
+        if a >= lo - suf and not nl_at_anchor:
             # Edit ends at or before the seam - includes a pure suffix AT
             # the anchor (typing at the collapsed header's end: lo-suf == a),
             # which belongs to the header, so the hidden text goes after it.
@@ -6327,12 +6411,28 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
             # Edit strictly after the seam (below the fold).
             na = a
         else:
-            # The seam itself was edited (e.g. forward-deleting the newline
-            # after a collapsed header) - force-expand so the user sees what
-            # happened; the hidden text splices back clamped to the edit.
-            na = min(max(a, p), ln - suf)
-            new_col.discard(rng)
-            force_expanded.add(rng)
+            deleted = old_disp[p:lo - suf]
+            if (ln - suf == p and p == a and deleted.strip() == ''
+                    and (new_disp.startswith('\n', p)
+                         or p == len(new_disp))):
+                # Pure whitespace deletion pinned to the anchor with a
+                # newline still terminating the header there: the user
+                # deleted BLANK LINE(S) from the run below the badge -
+                # suffix-priority attributes any delete from that run to
+                # its first newline (the anchor), but nothing joined onto the
+                # header, so the lines died below the fold. Splice the body
+                # back in place to keep the fold; force-expanding here
+                # popped the fold (and the caret) open on every blank-line
+                # delete below a collapsed def.
+                na = a
+            else:
+                # The seam itself was edited (e.g. forward-deleting the
+                # newline after a collapsed header, joining content onto it)
+                # - force-expand so the user sees what changed; the hidden
+                # text splices back clamped to the edit.
+                na = min(max(a, p), ln - suf)
+                new_col.discard(rng)
+                force_expanded.add(rng)
         na = max(na, pos)
         parts.append(new_disp[pos:na])
         parts.append(hidden)
@@ -6472,29 +6572,18 @@ def draw_text(input_value: str, height=None,
         _sc_hit = _sc_ok and _sc[0] is input_value
         if not _sc_hit and _sc_ok and _typing_hot():
             # Typing burst: the O(file) rescan (~22ms on a large buffer) is
-            # the editor's biggest per-keystroke cost - skip it and shift the
-            # held ranges across the edit via the single covering splice
-            # (same idiom as the wash cache). Keys are line-independent, so
-            # only the range tuples shift; ranges above the edit
-            # stretch by its newline delta, ranges below it translate.
-            _rng, _dcol, _kof = _sc[1]
-            _spl = _text_splice(_sc[0], input_value)
-            if _spl is not None and _spl[3]:
-                _sp_dl, _sp_el, _sp_oel = _spl[3], _spl[4], _spl[5]
-
-                def _fold_shift(r):
-                    if r[1] < _sp_el:
-                        return r
-                    if r[0] > _sp_oel:
-                        return (r[0] + _sp_dl, r[1] + _sp_dl)
-                    return (r[0], max(r[0], r[1] + _sp_dl))
-
-                _kof = {_fold_shift(r): k for r, k in _kof.items()}
-                _rng = [_fold_shift(r) for r in _rng]
-                _dcol = [_fold_shift(r) for r in _dcol]
-            _sc = (input_value, (_rng, _dcol, _kof), _FOLD_SEED_VER, True)
-            ds._scope_rng_cache = _sc
-        elif not _sc_hit or (_sc[3] and not _typing_hot()):
+            # this editor's primary per-keystroke cost - skip it and carry
+            # the held ranges across the edit (see _fold_carry). A None
+            # return (collapsed-fold header verification failed) falls
+            # through to the real scan below: never serve ranges that point
+            # onto the wrong lines.
+            _carried = _fold_carry(_sc[0], input_value, _sc[1],
+                                   getattr(ds, '_fold_keys', None))
+            if _carried is not None:
+                _sc = (input_value, _carried, _FOLD_SEED_VER, True)
+                ds._scope_rng_cache = _sc
+                _sc_hit = True
+        if not _sc_hit or (_sc[3] and not _typing_hot()):
             _sc = (input_value, _scope_fold_ranges(input_value),
                    _FOLD_SEED_VER, False)
             ds._scope_rng_cache = _sc
@@ -6584,6 +6673,7 @@ def draw_text(input_value: str, height=None,
         # Resolved here, before the display build, for the same reason as the
         # badge above - this frame's layout depends on the toggle.
         _fold_kb_all, _cp_full, _fstarts = False, None, None
+        _fold_old_dline = None      # caret's display line BEFORE the toggle
         if ((ctrl_minus_down or ctrl_equal_down or ctrl_shift_minus_down
              or ctrl_shift_equal_down)
                 and (Melty.text_focused_ds is ds
@@ -6605,9 +6695,11 @@ def draw_text(input_value: str, height=None,
                 _dl = _pdisp.count('\n', 0, _cp)
                 _cline = _pd2b[min(_dl, len(_pd2b) - 1)]
                 _cp_full = _fstarts[_cline] + _col
+                _fold_old_dline = _dl
             else:
                 _cline = input_value.count('\n', 0, _cp)
                 _cp_full = _cp
+                _fold_old_dline = _cline    # no layout last frame
             if ctrl_shift_minus_down or ctrl_shift_equal_down:
                 # Root scopes = enclosing ranges not nested in another
                 # (sorted -> strict nesting only - a range starting past the
@@ -6712,8 +6804,10 @@ def draw_text(input_value: str, height=None,
                         _dl = _pdisp.count('\n', 0, _cp)
                         _cp_full = (_fstarts[_pd2b[min(_dl, len(_pd2b) - 1)]]
                                     + _col)
+                        _fold_old_dline = _dl
                     else:
                         _cp_full = _cp
+                        _fold_old_dline = input_value.count('\n', 0, _cp)
                     _fold_kb_all = True
                     ds.invalidate()
                     request_render()
@@ -6774,6 +6868,20 @@ def draw_text(input_value: str, height=None,
                                           if _i + 1 < len(_dstarts)
                                           else len(_disp))
             ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+            # Anchor the VIEW to the caret: collapse/expand-all reflows the
+            # whole layout, so a kept scroll offset lands somewhere random.
+            # Stash (new display line, old display line, pre-expand scroll):
+            # the scroll write itself happens after line_px is known - and
+            # RE-PEATS for a few frames, because ds.invalidate() above
+            # resets the measured content height and the wrapper's scroll
+            # limit (core_render max_scroll_y) wipes a one-shot write to 0
+            # (collapse) or drags it back to the stale pre-expand max
+            # (expand) before the new height lands.
+            if _fold_old_dline is not None:
+                _new_dl = (bisect.bisect_right(
+                    _line_starts(_disp), ds.text_cursor_pos) - 1)
+                ds._fold_scroll_anchor = (_new_dl, _fold_old_dline,
+                                          ds.scroll_offset[1], 8)
         if _fold_segments:
             input_value = _disp
             # Full → display coordinate bridges for the tree-derived overlays
@@ -7067,6 +7175,33 @@ def draw_text(input_value: str, height=None,
     text = input_value
     io = imgui.get_io()
     line_px = imgui.get_text_line_height() * line_height
+    # Collapse/expand toggle view anchoring (see the fold section): hold the
+    # caret's line at its pre-toggle scroll position by asserting the absolute
+    # target scroll - old scroll shifted by the caret's display-line delta -
+    # each frame until the re-measured content height settles (the wrapper's
+    # max_scroll_y clamp reads 0/stale height for a frame or two after the
+    # toggle's invalidate and would wipe a single line).
+    _fsa = getattr(ds, '_fold_scroll_anchor', None)
+    _fold_scroll_shift = 0.0
+    if _fsa is not None:
+        _t_line, _o_line, _o_sy, _fsa_left = _fsa
+        if getattr(ds, 'scroll_visible', False):
+            _target = max(0.0, _o_sy + (_t_line - _o_line) * line_px)
+            _mx = getattr(ds, '_max_scroll_y', None)
+            if _mx is not None and not ds.invalid_content_height:
+                _target = min(_target, _mx)   # live max only - stale would cap
+            # The editor already positioned this frame's content cursor with
+            # the PRE-write scroll, so a bare write only shows NEXT frame -
+            # the toggle frame flashed the un-adjusted view. origin_y below
+            # subtracts this shift so the very first frame paints anchored.
+            _fold_scroll_shift = _target - ds.scroll_offset[1]
+            ds.scroll_offset = (ds.scroll_offset[0], _target)
+        _fsa_left -= 1
+        if _fsa_left <= 0 or not getattr(ds, 'scroll_visible', False):
+            ds._fold_scroll_anchor = None
+        else:
+            ds._fold_scroll_anchor = (_t_line, _o_line, _o_sy, _fsa_left)
+            request_render()   # the hold needs the follow-up frames
     # Viewport tokenization: tokenize ONLY the clipped line range each frame
     # (see the `_line_open` / `_window_tokens` machinery above), so the per-frame
     # syntax cost is O(visible) instead of O(buffer). `_window()` returns
@@ -7210,7 +7345,11 @@ def draw_text(input_value: str, height=None,
         ds.scroll_offset = (sx, sy - horizontal_scroll_drag.dy)
 
     origin_x = left + gutter_w + gutter_margin - ds.text_h_scroll
-    origin_y = top
+    # _fold_scroll_shift: same-frame compensation for the fold-anchor scroll
+    # write above (larger scroll = content up = smaller origin), so the
+    # collapse/expand next frame paints at the anchored position instead of
+    # flashing the stale one.
+    origin_y = top - _fold_scroll_shift
     # Scroll value origin_y was captured against. Anything later in THIS body
     # run that rewrites ds.scroll_offset (a usage jump centering its target)
     # leaves origin_y stale by exactly the delta - consumers that run after
@@ -8186,6 +8325,21 @@ def draw_text(input_value: str, height=None,
             ds.text_cursor_blink_time = time.time()
             _fired.discard(glfw.KEY_TAB)
 
+        def _bracket_ctx(p):
+            """(text, pos) for the bracket-cue queries below
+            (_open_bracket_indent / _unclosed_opener): the FULL buffer with
+            `p` mapped through the collapsed fold segments. On the display
+            text a collapsed def whose signature spans lines ends its
+            visible header in an unclosed '(' — the ')' lives in the hidden
+            body — so every Enter/Tab below it read a phantom continuation
+            cue and indented to the signature column. Falls back to the
+            display text once this frame has already edited it (the segment
+            anchors would be stale)."""
+            if not _fold_segments or text is not original_input:
+                return text, p
+            return _fold_full, p + sum(len(_h) for _a, _h, _r in _fold_segments
+                                       if _a < p)
+
         # --- Tab / Shift+Tab ---
         # Never in a search box: indent is irrelevant there, and the global
         # search window uses Tab/Shift+Tab to switch result highlighted.
@@ -8198,7 +8352,7 @@ def draw_text(input_value: str, height=None,
             # it - e.g. a stray `show_name=False,` snaps under the `@renderable(`.
             _ls = _get_line_start(text, ds.text_cursor_pos)
             _cur = _get_indent(text, _ls)
-            _target = _open_bracket_indent(text, _ls)
+            _target = _open_bracket_indent(*_bracket_ctx(_ls))
             _align = (_target is not None and not _has_selection(ds)
                       and not text[_ls:ds.text_cursor_pos].strip()
                       and ((_cur < _target) if not shift else (_cur > _target)))
@@ -8240,11 +8394,12 @@ def draw_text(input_value: str, height=None,
                 # balanced line keeps its own indentation.
                 eol = text.find('\n', ds.text_cursor_pos)
                 pos = eol if eol != -1 else len(text)
-                indent = _open_bracket_indent(text, pos)
+                _bt, _bp = _bracket_ctx(pos)
+                indent = _open_bracket_indent(_bt, _bp)
                 if indent is None:
-                    opener = _unclosed_opener(text, _get_line_start(text, pos))
-                    indent = _get_indent(text, opener) if opener is not None \
-                        else _get_indent(text, pos)
+                    opener = _unclosed_opener(_bt, _get_line_start(_bt, _bp))
+                    indent = _get_indent(_bt, opener) if opener is not None \
+                        else _get_indent(_bt, _bp)
                 text = text[:pos] + '\n' + ' ' * indent + text[pos:]
                 ds.text_cursor_pos = pos + 1 + indent
                 ds.text_selection_start = ds.text_cursor_pos
@@ -8262,11 +8417,12 @@ def draw_text(input_value: str, height=None,
                 # this line, dedent back to the statement's opening-line indent
                 # (e.g. after `...)` in a multi-line decorator → back to col 0).
                 # Otherwise keep the current line's indentation.
-                indent = _open_bracket_indent(text, pos)
+                _bt, _bp = _bracket_ctx(pos)
+                indent = _open_bracket_indent(_bt, _bp)
                 if indent is None:
-                    opener = _unclosed_opener(text, _get_line_start(text, pos))
-                    indent = _get_indent(text, opener) if opener is not None \
-                        else _get_indent(text, pos)
+                    opener = _unclosed_opener(_bt, _get_line_start(_bt, _bp))
+                    indent = _get_indent(_bt, opener) if opener is not None \
+                        else _get_indent(_bt, _bp)
                 # The remainder of the current line moves down to the new line. Strip
                 # ITS leading spaces (only up to the line's end - never the next
                 # line's indent) so they don't stack on top of the indent we insert.
