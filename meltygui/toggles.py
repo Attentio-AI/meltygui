@@ -1211,13 +1211,17 @@ class Toggles:
         # tint's own value, higher pushes toward full-bright), saturation
         # scales hsv saturation (0 = greyscale, 1 = the tint's own).
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        tab_active_text_brightness = 1.023
+        tab_active_text_brightness = 1.335
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        tab_active_text_saturation = 0.8
+        tab_active_text_saturation = 0.314
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        tab_inactive_text_brightness = 0.321
+        tab_inactive_text_brightness = 0.269
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        tab_inactive_text_saturation = 0.081
+        tab_inactive_text_saturation = 0.602
+        # Floor on the inactive-tab label's hsv value AFTER the brightness
+        # scale — dark tints stay legible instead of scaling toward black.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_inactive_text_min_brightness = 0.149
         # in_diff_mode gap folding (open_files._diff_gap_folds): unchanged
         # context lines kept visible on each side of a change block; the
         # rest of the gap folds away, so collapse-all skims the changes

@@ -225,7 +225,7 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
 
         # [tint=(0.122, 0.0, 0.8), dim_names=['head', 'key', 'feature']]
         k_l = k.roll(shifts=l_idx * shift, dims=1)
-
+        
         # Hello! Testing git diff
         # [tint=(0.066, 0.045, 0.189), cam_brightness=0.17, cam_contrast=0.584,
         # spin=4.30, tilt=-0.157, cam_zoom=2.1575]

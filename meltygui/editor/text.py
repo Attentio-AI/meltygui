@@ -42,6 +42,7 @@ COLORS = {
     'bool': _hex('#cc7832'),  # True/False - own key so color highlighting can target them
     'operator_word': _hex('#cc7832'),  # Operator.Word (and, or, not, in, is)
     'builtin_pseudo': _hex('#94558d'),  # Name.Builtin.Pseudo (self, cls)
+    'def_name': _hex('#56a8f5'),  # Name.Function (declaration) - IntelliJ Dark blue
     'decorator': _hex('#bbb529'),  # Name.Decorator
     'string': _hex('#6a8759'),  # String
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
@@ -4569,6 +4570,7 @@ def _tokenize_raw(text):
     Raw pass — see tokenize() below for the unary-sign merge."""
     i = 0
     n = len(text)
+    after_def = False   # last meaningful token was `def` - next word is a fn name
 
     while i < n:
         # --- Comments ---
@@ -4666,8 +4668,11 @@ def _tokenize_raw(text):
                 yield word, 'keyword'
             elif word in BUILTIN_PSEUDO:
                 yield word, 'builtin_pseudo'
+            elif after_def:
+                yield word, 'def_name'
             else:
                 yield word, 'default'
+            after_def = word == 'def'
             i = end
 
         # --- Numbers ---
@@ -4694,6 +4699,8 @@ def _tokenize_raw(text):
         # A bare PUA glyph (an icon not inside a string literal) lands here too -
         # colour it as an icon rather than default.
         else:
+            if text[i] not in ' \t':
+                after_def = False
             yield text[i], 'icon' if _is_icon_char(text[i]) else 'default'
             i += 1
 
