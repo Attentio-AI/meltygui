@@ -223,26 +223,6 @@ class TileMode(Enum):
     NONE = 'none'
     NO_MASK = 'no_mask'
 
-#
-# self.text_cursor_pos = 0
-# self.text_selection_start = 0
-# self.text_selection_end = 0
-# self.text_is_focused = False
-# self.text_cursor_blink_time = 0.0
-# self.text_double_click_time = 0.0
-# self.text_last_click_pos = -1
-# self.text_click_count = 0
-# self.text_h_scroll = 0.0
-# self.text_prev_cursor_pos = 0
-#
-# # Find-in-text search state. text_search_count/current are populated by
-# # draw_text each frame and consumed by the header's find UI (count +
-# # nav arrows). The underscore fields are private bookkeeping.
-# self.text_search_current = 0
-# self.text_search_count = 0
-# self._text_search_last_term = None
-# self._text_search_scroll_to = False
-
 
 # Search state persists across reloads: search_text, search_active, and
 # text_search_current are saved so the find box reopens with the last query and

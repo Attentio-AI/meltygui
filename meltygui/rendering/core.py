@@ -115,6 +115,7 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
 
     return value
 
+
 # Width of the overlay scrollbar grab. Views override per-call with the
 # scroll_bar_width kwarg (declare it as a signature param to change a view's
 # default, e.g. draw_text).

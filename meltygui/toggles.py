@@ -415,6 +415,11 @@ class Toggles:
 
         enable_spell_check = False
         text_focus_stack_trace = False
+        # TEMP: dump a def-tint coordinate trace in /tmp/lsd_tint_flicker.log
+        # while hunting the one-frame wash misplacement on edits - logs each
+        # traced line's drawn wash column vs the indent the live text claims,
+        # and the mismatch frame names which side (editor vs draw map) lied.
+        tint_flicker_trace = False
         # Scope-derived code folds (_scope_fold_ranges): off = editors derive
         # no per-def/class fold ranges (no chevrons, no default-collapsed
         # scopes; explicit fold_ranges from callers still work). The O(buffer)

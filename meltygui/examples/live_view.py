@@ -100,6 +100,9 @@ _window_ds = None  # the values window's draw_state, captured at render time
 # objects if its name blocks _ensure_publisher from starting a fresh one.
 _RUN_TOKEN = object()
 
+def some_new_func():
+    some_val = 1
+    print("heello")
 
 def _current_token():
     import sys
@@ -191,7 +194,6 @@ def fit_line(n=45, noise=9):
         verdict = "shallow"
     return slope, intercept, verdict
 
-
 @window
 @render_func(auto_resize=True)
 def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
@@ -212,24 +214,25 @@ def live_view_snapshot(input_value=None, draw_state=None, **kwargs):
 # collect into a list. Each site's `# [dim_names=...]` comment names the
 # per-iteration value's OWN dims; the leading loop name is prepended when the
 # value window renders, so `attn` below reads (l_idx, head, query, key).
-
-def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
+def attention_lab(heads=28, seq=48, dim=32, temp=0.35, shift=3, layers=17):
     import torch
-    torch.manual_seed(35)
-    some_int = 0
-    # [tint=(0.00, 0.20, 0.50), cam_brightness=0.34, cam_contrast=0.46, cam_zoom=2.7015, spin=-0.692, tilt=0.651]
+
+    torch.manual_seed(527)
+    some_int = 101
+    # [tint=(0.00, 0.20, 0.50), cam_brightness=0.42, cam_contrast=0.282, cam_zoom=2.1464, spin=-0.436, tilt=0.595]
     q = torch.randn(heads, seq, dim)
-    # [tint=(0.611, 0.292, 0.451), cam_brightness=0.142, cam_contrast=0.888, cam_zoom=2.7015, spin=0.796, tilt=0.043, z_dim=3]
+    # [tint=(0.611, 0.292, 0.451), cam_brightness=0.17, cam_contrast=1.016, cam_zoom=3.4001, spin=0.124, tilt=0.667, z_dim=3]
     k = q.roll(shifts=shift, dims=1) + -0.6 * torch.randn(heads, seq, dim)
     for l_idx in range(layers):
 
-        # [tint=(0.122, 0.0, 0.8), dim_names=['head', 'key', 'feature']]
+        # [tint=(0.122, 0.00, 0.80), dim_names=['head', 'key', 'feature'], cam_zoom=2.7014, spin=0.38, tilt=0.779, cam_brightness=0.142, cam_contrast=1.048]
         k_l = k.roll(shifts=l_idx * shift, dims=1)
-        
+
         # Hello! Testing git diff
-        # [tint=(0.066, 0.045, 0.189), cam_brightness=0.17, cam_contrast=0.584,
-        # spin=4.30, tilt=-0.157, cam_zoom=2.1575]
+        # [tint=(0.066, 0.045, 0.189), cam_brightness=0.31, cam_contrast=0.202,
+        # spin=4.172, tilt=1.067, cam_zoom=1.7142]
         scores = q @ k_l.transpose(-2, -1) / (dim ** 0.5 * temp)
+
 
         # [tint=(1.0, 0.0, 0.0, 1.0), show_tint=True]
         some_val = 1
@@ -251,5 +254,3 @@ def attention_lab(heads=20, seq=48, dim=32, temp=0.35, shift=3, layers=17):
 def live_view_tensors(input_value=None, draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_views.live_view_views import draw_function_live
     draw_function_live(attention_lab, name="attention_lab runner", icon=None, display_name=None)
-    
-    

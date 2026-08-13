@@ -39,6 +39,7 @@ COLORS = {
     'keyword': _hex('#cc7832'),  # Keyword
     'keyword_const': _hex('#cc7832'),  # Keyword.Constant (None)
     'bool': _hex('#cc7832'),  # True/False - own key so color highlighting can target them
+    'def': _hex('#cc7832'),  # bare `def` keyword - own key so token_views can target defs
     'operator_word': _hex('#cc7832'),  # Operator.Word (and, or, not, in, is)
     'builtin_pseudo': _hex('#94558d'),  # Name.Builtin.Pseudo (self, cls)
     'def_name': _hex('#56a8f5'),  # Name.Function (declaration) - IntelliJ Dark blue
@@ -987,7 +988,7 @@ def _param_name(s):
         return s.split(":", 1)[0].strip().lstrip("*")
     parts = s.split()                  # C-style 'type name' (or a bare name)
     return (parts[-1] if parts else s).lstrip("*")
-
+    
 
 def _param_type(s):
     """The type annotation from a jedi param string, or '' if none. Mirror of
@@ -1925,6 +1926,429 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
 
 draw_color3_token_plain._plain_tv = True
 
+
+def _fnrun_extract_def(file_path, def_line, def_name):
+    """(dedented source, 0-based pending start line) of the
+    `def <def_name>` block at (pending) file line `def_line`, or None. Reads
+    PendingSave.current_file_text — the in-memory truth — so a just-typed
+    function runs without a disk write. A small ±line scan tolerates
+    pending/disk drift; the block ends at the first non-empty line back at
+    (or left of) the def's own indent."""
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    text = PendingSave.current_file_text(str(file_path))
+    if text is None:
+        return None
+    lines = text.split('\n')
+    pat = re.compile(rf'^(\s*)(?:async\s+)?def\s+{re.escape(def_name)}\b')
+    hit = None
+    for probe in range(0, 6):
+        for cand in (def_line - 1 + probe, def_line - 1 - probe):
+            if 0 <= cand < len(lines):
+                m = pat.match(lines[cand])
+                if m:
+                    hit = (cand, len(m.group(1)))
+                    break
+        if hit is not None:
+            break
+    if hit is None:
+        return None
+    start, indent = hit
+    end = start + 1
+    while end < len(lines):
+        ln = lines[end]
+        if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+            break
+        end += 1
+    return ("\n".join(l[indent:] if len(l) >= indent else l
+                      for l in lines[start:end]), start)
+
+
+def _fnrun_resolve(file_path, def_line, def_name=None):
+    """The live function named `def_name` defined in `file_path` — resolved by
+    NAME over the file's live modules (module + class vars), with `def_line`
+    only breaking ties between same-named defs (methods of different classes).
+
+    Deliberately NOT chain_converters._enclosing_function: that resolver keys
+    its cache on disk mtime — studio edits are PendingSave-deferred, so a
+    recompile_all() hotswap changes the module without touching disk and a
+    pre-hotswap miss stayed cached — and it matches by co_firstlineno (DISK
+    coords) against our pending-buffer line, so any line drift plus the old
+    name guard read as "couldn't resolve". Clicks are rare; a fresh walk per
+    click needs no cache.
+
+    Functions not reachable from module vars — NESTED defs, or a brand-new
+    def that hasn't been hotswapped yet — fall back to exec'ing the def's
+    PENDING source block in a COPY of the module's namespace: module globals
+    resolve, the module itself is never polluted, and a closure over enclosing
+    locals surfaces as a NameError on the run (quick-testing semantics)."""
+    if not file_path or not def_name:
+        return None
+    import inspect
+    import types
+    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+        _modules_for_file, _resolved)
+    try:
+        target = _resolved(str(file_path))
+    except (OSError, ValueError):
+        return None
+    modules = _modules_for_file(target)
+    cands = []
+
+    def consider(fn):
+        inner = inspect.unwrap(fn)
+        code = getattr(inner, "__code__", None)
+        if code is None or getattr(inner, "__name__", None) != def_name:
+            return
+        if getattr(inner, "__fnrun_exec__", False):
+            # A previously parked exec-fallback twin (see below) - never a
+            # resolution target: skipping it makes every click re-exec the
+            # LATEST pending source instead of replaying the parked code.
+            return
+        try:
+            same = _resolved(code.co_filename) == target
+        except (OSError, ValueError):
+            same = code.co_filename == str(target)
+        if same and inner not in cands:
+            cands.append(inner)
+
+    def walk(scope):
+        for val in list(vars(scope).values()):
+            if isinstance(val, types.FunctionType):
+                consider(val)
+            elif isinstance(val, (staticmethod, classmethod)):
+                f = getattr(val, "__func__", None)
+                if isinstance(f, types.FunctionType):
+                    consider(f)
+            elif isinstance(val, type):
+                walk(val)
+
+    for module in modules:
+        walk(module)
+    if cands:
+        # A single name match runs regardless of line; several (same-named
+        # methods) pick the nearest co_firstlineno - stable under
+        # pending/disk drift, but enough to separate distinct classes.
+        fn = min(cands, key=lambda f: abs(f.__code__.co_firstlineno
+                                          - (def_line or 0)))
+        # A just-added top-of-file import may not be executed yet (span
+        # recompiles don't re-exec the module head) - heal the function's
+        # namespace from the pending source so the run finds it. Missing
+        # imports win; live state is never clobbered.
+        _fnrun_ensure_imports(fn.__globals__, file_path)
+        return fn
+
+    got = _fnrun_extract_def(file_path, def_line, def_name)
+    if got is None or not modules:
+        return None
+    src, start0 = got
+    defs = _fnrun_pending_defs(file_path)
+    # Restore file scope, lazily: the namespace starts as a copy of the live
+    # module's vars, and any name the run hits that ISN'T there (another
+    # just-typed function, a pending class) execs just its own block from the
+    # pending source on first use - never the whole file's side effects.
+    ns = _FnRunNamespace(dict(vars(modules[0])), file_path, defs)
+    # The copy holds only imports the LIVE module executed - a def typed
+    # alongside a new import needs that import exec'd here too.
+    _fnrun_ensure_imports(ns, file_path)
+    try:
+        # Pad the (dedented) block down to its real pending line so the
+        # compiled code is COORDINATE-TRUE: instrumented_twin re-reads the
+        # block's source from the file/pending text at co_firstlineno - a
+        # block compiled at line 1 pointed it at the top-of-file imports and
+        # it silently fell back to an un-instrumented run (no live view).
+        exec(compile("\n" * start0 + src, str(file_path), 'exec'), ns)
+    except Exception:
+        return None
+    fn = ns.get(def_name)
+    if not callable(fn):
+        return None
+    # _build_twin copies fn.__globals__ into a PLAIN dict (losing the lazy
+    # __missing__), so the twin's run body must find its file-scope names
+    # already bound: touch every direct reference that lives in the pending
+    # top level. Transitive callees need nothing - a materialized name
+    # keeps THIS namespace as its __globals__, lazy resolution chain.
+    _fnrun_materialize_refs(ns, src)
+    fn.__fnrun_exec__ = True
+    if def_name in defs:
+        # TOP-LEVEL defs: park the exec'd fn on the module under a private
+        # key so live_view's default resolver (_enclosing_function's
+        # module-level walk - it reads VALUES, keys don't matter) can find
+        # the store owner the run publishes to; the coordinate-true
+        # firstlineno makes it win nearest-def for exactly-t own body
+        # lines. Re-parked (same key) each resolve, and the resolver's
+        # mtime-keyed cache are purged so the run finds the NEW object -
+        # pending edits never bump the mtime. Nested defs stay ephemeral: a
+        # module-level entry whose firstlineno sits INSIDE the outer
+        # function would steal the outer def's own name resolution.
+        from src.lsd.gl_gui.view.core_conversion import (
+            chain_converters as _cc)
+        modules[0].__dict__[f"_fnrun_live_{def_name}"] = fn
+        for k in [k for k in _cc._ENCLOSING_FN_CACHE
+                  if k[0] == str(target)]:
+            del _cc._ENCLOSING_FN_CACHE[k]
+    return fn
+
+
+def _fnrun_materialize_refs(ns, src):
+    """Bind, in `ns`, every pending top-level def/class the given source
+    DIRECTLY references (ast Name loads) — via the namespace's own lazy
+    __missing__. Needed only because consumers snapshot the namespace into a
+    plain dict (live_instrument's twin globals)."""
+    import ast
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return
+    for n in ast.walk(tree):
+        if (isinstance(n, ast.Name) and n.id in ns._fnrun_defs
+                and n.id not in ns):
+            try:
+                ns[n.id]
+            except Exception:
+                pass
+
+
+def _fnrun_pending_defs(file_path):
+    """{name: top-level FunctionDef/AsyncFunctionDef/ClassDef ast node} of the
+    file's PENDING source — the lookup table _FnRunNamespace resolves missing
+    names from. Later definitions of a name win, matching file execution."""
+    import ast
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    text = PendingSave.current_file_text(str(file_path))
+    if not text:
+        return {}
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return {}
+    return {node.name: node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.ClassDef))}
+
+
+class _FnRunNamespace(dict):
+    """Globals for the exec-fallback run: a copy of the live module's vars
+    whose MISSING names resolve lazily from the file's PENDING source. CPython
+    routes LOAD_GLOBAL through __missing__ for dict-subclass globals, so the
+    running function lands here exactly where it would have raised NameError;
+    the first use of another top-level def/class execs just that block — in
+    THIS same namespace, so its own callees and decorators chain the same way
+    — giving a pending function the full file scope without executing the
+    whole file's module-level side effects. Resolved names cache by the exec's
+    own binding; anything not in the file's top level raises KeyError →
+    the normal NameError on the run."""
+
+    def __init__(self, base, file_path, defs):
+        super().__init__(base)
+        self._fnrun_file = str(file_path)
+        self._fnrun_defs = defs
+        self._fnrun_loading = set()
+
+    def __missing__(self, key):
+        import ast
+        node = self._fnrun_defs.get(key)
+        if node is None or key in self._fnrun_loading:
+            raise KeyError(key)
+        self._fnrun_loading.add(key)
+        try:
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         self._fnrun_file, 'exec'), self)
+        finally:
+            self._fnrun_loading.discard(key)
+        if key not in self:
+            raise KeyError(key)
+        return self[key]
+
+
+def _fnrun_ensure_imports(ns, file_path):
+    """Execute the file's TOP-LEVEL import statements — read from the PENDING
+    source, the same truth the def extraction uses — into `ns`, so a run sees
+    every import the file declares even when the live module never executed
+    it (a just-typed import before recompile, or a span recompile that
+    doesn't re-exec the module head). Non-destructive: a statement whose
+    bound names are all already present is skipped, so nothing live is
+    rebound; each statement execs individually and best-effort (one broken
+    import never blocks the run). Relative imports resolve via the
+    __package__/__name__ already in `ns` (it is, or copies, a real module
+    namespace)."""
+    import ast
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    text = PendingSave.current_file_text(str(file_path))
+    if not text:
+        return
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return
+    for node in tree.body:
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        names = [a.asname or a.name.split('.')[0] for a in node.names]
+        if '*' not in names and all(n in ns for n in names):
+            continue
+        try:
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         str(file_path), 'exec'), ns)
+        except Exception:
+            pass
+
+
+def _fnrun_run(fn, instrumented=False):
+    """Run `fn` the way draw_function's Run button does: kwargs from the
+    signature's defaults, with Melty.global_attrs filling params that have
+    none. Blocking, on the render thread (draw_function's default), and the
+    same error reporting — colored traceback to the console, the formatted
+    message back to the caller. Returns (ok, error_text).
+
+    `instrumented=True` routes the call through live_instrument's
+    run_instrumented — the live_view_forward twin path: same return value and
+    exceptions, but every assignment publishes a snapshot to `fn`'s live_view
+    store, so the editor's snapshot overlay anchors the captured values right
+    on the code. Sources the twin can't transform (closures/generators/the
+    exec'd nested-def fallback) run un-instrumented, by run_instrumented's
+    own fallback."""
+    import inspect
+    import sys
+    params = {}
+    try:
+        for pname, param in inspect.signature(fn).parameters.items():
+            if pname == 'kwargs':
+                continue
+            if param.default is not inspect.Parameter.empty:
+                params[pname] = param.default
+            elif pname in Melty.global_attrs:
+                params[pname] = Melty.global_attrs[pname]
+    except (TypeError, ValueError):
+        params = {}
+    try:
+        if instrumented:
+            from src.lsd.gl_gui.view.core_conversion.live_instrument import (
+                run_instrumented)
+            run_instrumented(fn, **params)
+        else:
+            fn(**params)
+        return True, None
+    except Exception as e:
+        from src.lsd.gl_gui.view.core_views.new_core_view import _format_run_error
+        from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
+        print(f"Error calling function '{fn.__name__}': {e}")
+        print_colored_traceback(*sys.exc_info())
+        return False, _format_run_error(e)
+
+
+def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
+                            tint=None, text_tint=None, editor_ds=None,
+                            file_path=None, def_line=None, def_name=None,
+                            **kwargs):
+    """Inline run buttons for a function definition — ACCESSORY whole-token
+    renderer for 'def' tokens: the keyword text draws normally (shifted right
+    by the lead cells) and this widget gets only the lead area to its LEFT.
+    Two flat_buttons split it: PLAY runs the LIVE function like
+    draw_function's Run button (_fnrun_run: params from signature defaults +
+    Melty.global_attrs); the EYE runs the INSTRUMENTED twin instead
+    (run_instrumented — live_view_forward's path), so every assignment
+    publishes a snapshot and its marker anchors right in this editor via the
+    snapshot overlay. Errors print the colored traceback and surface on the
+    button that ran (red; hover shows the message beside it); success flashes
+    that button, fading over ~45 frames.
+
+    Plain (wrapper-less) like the other token widgets. The click routes
+    through flat_button's on_action claim on the EDITOR draw_state — the
+    fast-dock model, so blit-cache event delivery holds — and owns_mouse
+    registers the lead rect in _plain_tv_rects so a press here never moves
+    the caret. Status is keyed by (file, def name), not the render-order
+    `name` (that shifts as widgets scroll into view) and not the line
+    (that shifts on edits)."""
+    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    x, y = imgui.get_cursor_screen_pos()
+    if editor_ds is None:
+        return False, input_value
+
+    statuses = getattr(editor_ds, '_fnrun_status', None)
+    if statuses is None:
+        statuses = editor_ds._fnrun_status = {}
+    skey = (str(file_path), def_name)
+    status = statuses.get(skey)
+
+    # Hover-edge invalidation: flat_button's hover styling only shows when the
+    # (cached) editor tile repaints, so paint the tile exactly on the edges.
+    io = imgui.get_io()
+    hovered = (x <= io.mouse_pos.x < x + width
+               and y <= io.mouse_pos.y < y + height)
+    hov_reg = getattr(editor_ds, '_fnrun_hover', None)
+    if hov_reg is None:
+        hov_reg = editor_ds._fnrun_hover = {}
+    if hov_reg.get(skey) != hovered:
+        hov_reg[skey] = hovered
+        editor_ds.invalidate()
+
+    _c_run = (0.499, 0.844, 0.488)         # draw_function's run-button green
+    _c_live = (0.40, 0.53, 0.78)           # draw_function_live's lab color
+    if status is not None:
+        _smode = status[2] if len(status) > 2 else 'run'
+        if status[0] == 'err':
+            if _smode == 'live':
+                _c_live = (0.85, 0.30, 0.24)
+            else:
+                _c_run = (0.85, 0.30, 0.24)
+        else:
+            # Success flash on the button that ran: brighten, fade back, then
+            # clear - the invalidate + request_render pump while fading
+            # mirrors draw_function's result_fade.
+            age = Melty.frame_count - status[1]
+            k = max(0.0, 1.0 - age / 45.0)
+            if k <= 0.0:
+                statuses.pop(skey, None)
+            else:
+                if _smode == 'live':
+                    _c_live = tuple(min(1.0, c + 0.5 * k) for c in _c_live)
+                else:
+                    _c_run = tuple(min(1.0, c + 0.5 * k) for c in _c_run)
+                editor_ds.invalidate()
+                request_render()
+
+    # Two buttons split the lead area: plain run (play), then the
+    # INSTRUMENTED run (eye) - live_view_forward's twin path via
+    # run_instrumented, so every assignment's snapshot marker lands right in
+    # THIS editor through the snapshot overlay.
+    _gap = 3.0
+    _bw = max(6.0, (width - 4.0 - _gap) * 0.5)
+    _bh = max(6.0, height - 4.0)
+    _by = y + (height - _bh) * 0.5
+    imgui.set_cursor_screen_pos((x, _by))
+    clicked = flat_button(f"##{name}", editor_ds, f"fnrun::{name}",
+                          width=_bw, height=_bh, color=_c_run,
+                          corner_radius=4.0, shadow=True)
+    imgui.set_cursor_screen_pos((x + _bw + _gap, _by))
+    live_clicked = flat_button(f"##{name}lv", editor_ds,
+                               f"fnrunlv::{name}",
+                               width=_bw, height=_bh, color=_c_live,
+                               corner_radius=4.0, shadow=True)
+
+    if hovered and status is not None and status[0] == 'err' and status[1]:
+        # Error readout beside the button - draw-list text, hover-only (the
+        # hover-edge invalidation above repaints it in and out).
+        dl = imgui.get_window_draw_list()
+        dl.add_text(x + width + 6.0, y - height,
+                    imgui.get_color_u32_rgba(1.0, 0.45, 0.40, 1.0), status[1])
+
+    if clicked or live_clicked:
+        _mode = 'live' if live_clicked else 'run'
+        fn = _fnrun_resolve(file_path, def_line, def_name)
+        if fn is None:
+            statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
+                                     f"found in live modules or source", _mode)
+        else:
+            ok, err = _fnrun_run(fn, instrumented=live_clicked)
+            statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
+                              else ('err', err, _mode))
+        editor_ds.invalidate()
+        request_render()
+    return False, input_value
+
+
+draw_run_fn_token_plain._plain_tv = True
+
 # The default callback-widget set: when draw_text is called with no token_views,
 # Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns,
 # True/False become double-click-to-toggle words, numeric literals become drag
@@ -1957,6 +2381,12 @@ DEFAULT_TOKEN_VIEWS = {
                "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
     "color3": {"renderer": draw_color3_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
+    # Function definitions: two buttons ride to the LEFT of the `def`
+    # span (accessory, like color3's swatch); the def text itself draws
+    # and interacts normally. Play runs the live function like draw_function;
+    # the eye runs the instrumented twin (live_view_forward's path).
+    "def": {"renderer": draw_run_fn_token_plain, "char_width": 1, "whole_token": True,
+            "owns_mouse": True, "lead_cells": 6},
 }
 
 # live_view() call sites get an anchor marker + nested value window (the first
@@ -2475,6 +2905,95 @@ def _resolve_def_tints(raw, anchors, base_text, text):
             continue
         nlt.append((nl, rgb, sc, _reidx(si, ln, nl), _reidx(ei, ln, nl)))
     return (tuple(nb), tuple(nsp), tuple(nlt), name_tints)
+
+
+def _display_splice_shift(sp, text_now, blocks=(), line_tints=(), spans=(),
+                          comments=()):
+    """One-frame arithmetic remap of already-display-projected overlay coords
+    across THIS body run's edit splice (frame-start display text -> edited
+    display text). Needed only while a fold is collapsed: there the tint/wash
+    resolve targets the frame-start FULL buffer (the fold display remap is
+    built on the frame-start layout, so a post-edit resolve target would be
+    remapped wrongly anyway), which leaves every wash lagging the glyphs by
+    exactly the current edit for one frame — the "off by the last typed/
+    deleted character" flicker. Entries starting inside the edited region
+    drop for the frame; the real content-anchored resolve re-finds them on
+    the next frame's buffer. Head lines are re-derived from the corrected
+    index (a stored-line shift guess would misplace entries on a split
+    line); block END lines have no index, so they take the line guess."""
+    p, oe, d, dl, el, oel = sp
+    starts = _line_starts(text_now)
+
+    def _ix(i):
+        if i >= oe:
+            return i + d
+        if i < p:       # strictly before: i == p means a deletion (p < oe)
+            return i    # starts on removed content and must drop with it -
+        return None     # pure insertion at i (oe == p) shifts via i >= oe
+
+    def _ln_of(i):
+        return bisect.bisect_right(starts, i) - 1
+
+    def _ln_guess(ln):
+        return ln + dl if ln > oel else (ln if ln < el else ln + max(dl, 0))
+
+    nb = []
+    for (bl, idx, bend, tt) in blocks:
+        ni = _ix(idx)
+        if ni is None:
+            continue
+        nb.append((_ln_of(ni), ni, _ln_guess(bend), tt))
+    nlt = []
+    for (ln, rgb, sc, si, ei) in line_tints:
+        nsi = _ix(si)
+        if nsi is None:
+            continue
+        nei = _ix(ei)
+        nlt.append((_ln_of(nsi), rgb, sc, nsi,
+                    nei if nei is not None else nsi + (ei - si)))
+    nsp = []
+    for sp_ in spans:
+        ns = _ix(sp_[0])
+        if ns is None:
+            continue
+        nsp.append((ns, ns + (sp_[1] - sp_[0])) + tuple(sp_[2:]))
+    nc = []
+    for (si, ei, rgb) in comments:
+        ns = _ix(si)
+        if ns is None:
+            continue
+        ne = _ix(ei)
+        nc.append((ns, ne if ne is not None else ns + (ei - si), rgb))
+    return tuple(nb), tuple(nlt), tuple(nsp), tuple(nc)
+
+
+def _display_edit_splice(old, new):
+    """Splice tuple (p, oe, d, dl, el, oel) for _display_splice_shift, from
+    the frame-start display text to this body run's edited display text:
+    common-prefix end `p`, old-text splice end `oe`, char delta `d`, line
+    delta `dl`, and the old text's splice start/end lines `el`/`oel`. Block
+    slice compares (C speed) with a char-loop only inside the boundary block,
+    so the O(buffer) scan stays cheap; runs on edit frames only."""
+    n = min(len(old), len(new))
+    blk = 4096
+    p = 0
+    while p < n and old[p:p + blk] == new[p:p + blk]:
+        p += blk
+    while p < n and old[p] == new[p]:
+        p += 1
+    p = min(p, n)
+    lim = n - p
+    s = 0
+    while (s + blk <= lim
+           and old[len(old) - s - blk:len(old) - s]
+           == new[len(new) - s - blk:len(new) - s]):
+        s += blk
+    while s < lim and old[len(old) - 1 - s] == new[len(new) - 1 - s]:
+        s += 1
+    oe = len(old) - s
+    return (p, oe, len(new) - len(old),
+            new.count('\n') - old.count('\n'),
+            old.count('\n', 0, p), old.count('\n', 0, oe))
 
 
 def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
@@ -4667,7 +5186,9 @@ def _tokenize_raw(text):
             elif word in OPERATOR_WORDS:
                 yield word, 'operator_word'
             elif word in KEYWORDS:
-                yield word, 'keyword'
+                # `def` keeps keyword coloring but has its own key (like
+                # 'bool') so highlight_views can target function definitions.
+                yield word, 'def' if word == 'def' else 'keyword'
             elif word in BUILTIN_PSEUDO:
                 yield word, 'builtin_pseudo'
             elif after_def:
@@ -6972,9 +7493,23 @@ def draw_text(input_value: str, height=None,
         against the FULL buffer (fold-independent, so the resolve caches stay
         hot across collapse/expand), then projected through the fold remap
         when folds are collapsed."""
-        spans = _usage_spans(ds, _fold_full, _usage_tree, _usage_off, vpath)
-        return (_fold_remap_spans(spans, 'usage')
-                if _fold_remap_spans is not None else spans)
+        # Late-bound resolve target: with no collapsed fold the display
+        # text IS the full buffer, and `text` is the one the glyph pass
+        # will draw THIS frame - edits earlier in this body run re-write
+        # it - while _fold_full is the frame-start buffer. Resolving
+        # against _fold_full put every wash below an inserted newline one
+        # line off for exactly the edit frame (the snap-back flicker).
+        spans = _usage_spans(ds, _fold_full if _fold_segments else text,
+                             _usage_tree, _usage_off, vpath)
+        if _fold_remap_spans is not None:
+            spans = _fold_remap_spans(spans, 'usage')
+            if _disp_sp is not None:
+                # A frame with a fold collapsed: the resolve + remap above
+                # are frame-start; shift across this run's splice so the
+                # washes track the glyphs (see _display_splice_shift).
+                _, _, spans, _ = _display_splice_shift(_disp_sp, text,
+                                                       spans=spans)
+        return spans
     # Per-editor state for the code-suggestions popup. Lives here (not gated on
     # focus) because the popup's menu window is latched and must be drawn EVERY
     # frame with closed_state toggled, even when the editor is unfocused.
@@ -7163,6 +7698,13 @@ def draw_text(input_value: str, height=None,
     char_w = imgui.calc_text_size("0").x
     changed = False
     original_input = input_value
+    # Edit splice for THIS body run's display text (frame-start -> edited),
+    # initialized after key handling ("text is final now"); None on non-edit
+    # frames and while no fold is collapsed. Feeds _display_splice_shift so
+    # fold-remapped washes track the glyphs on the edit frame. Pre-edit
+    # _viewed_spans calls inside key handlers leave it as None on purpose:
+    # they measure against the not-yet-edited buffer.
+    _disp_sp = None
 
     # No line limit: the editor shows the WHOLE span. Off-screen lines are
     # already viewport-culled in every draw loop below (rect_min_y/rect_max_y)
@@ -8940,6 +9482,15 @@ def draw_text(input_value: str, height=None,
     ds.text_selection_start = max(0, min(ds.text_selection_start, len(text)))
     ds.text_selection_end = max(0, min(ds.text_selection_end, len(text)))
 
+    # Display edit splice (fold-collapsed edit frames only): with a collapsed
+    # fold, tint/usage resolves against the frame-start FULL buffer and the
+    # fold remap is built on the frame-start layout, so their output lags this
+    # body run's edit by exactly the typed/deleted characters for one frame.
+    # Diff the frame-start display text against the edited one so the washes
+    # can be arithmetically shifted by the splice below.
+    if _fold_segments and text is not original_input:
+        _disp_sp = _display_edit_splice(original_input, text)
+
     # Visual-column map over the render region (text is final now). `_colx(idx)`
     # gives the line-relative visual x (px) of a source index, honouring all
     # token-view widths; with no views it's just the plain character column.
@@ -9188,8 +9739,18 @@ def draw_text(input_value: str, height=None,
 
 
         _k_dt = getattr(ds, "_def_tints_key", None)
+        # Resolve target: the buffer whose glyph positions will draw THIS frame.
+        # With no collapsed folds that is `text` - which key handling above
+        # may have just edited - not _fold_full (frame-start buffer). The
+        # anchor resolve re-finds displaced lines by name per call, but
+        # locks onto the target it's handed; without it the pre-edit buffer
+        # drew every wash/glow below an inserted newline one line off for
+        # exactly the first frame (the snap-back flicker). With a collapsed
+        # fold the display remap below is built on the frame-start layout,
+        # so _fold_full stays the consistent (one-frame-stale) target.
+        _dt_full = _fold_full if _fold_segments else text
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
-            ds, _fold_full, _usage_tree, _usage_off,
+            ds, _dt_full, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None)
         # Fold remap: def tints resolve against the FULL buffer (keeps the
         # last-good/anchor caches fold-independent); project the back into
@@ -9238,7 +9799,7 @@ def draw_text(input_value: str, height=None,
         # into display coords: a collapsed run's visible header line keeps
         # its paint, clamped to that line so the color can't run past the
         # seam onto whatever follows the fold badge.
-        _dt_comments = _comment_tints(ds, _fold_full)
+        _dt_comments = _comment_tints(ds, _dt_full)
         if _fold_bl is not None and _dt_comments:
             _rc = []
             for _c_si, _c_ei, _c_rgb in _dt_comments:
@@ -9252,6 +9813,15 @@ def draw_text(input_value: str, height=None,
                         _dei = len(text)
                 _rc.append((_dsi, _dei, _c_rgb))
             _dt_comments = tuple(_rc)
+        if _disp_sp is not None:
+            # Edit frame with a fold collapsed: everything above (resolve +
+            # fold remap) is frame-start; shift all four overlay families
+            # across this frame's edit splice so the washes/glows track the
+            # glyphs instead of lagging by the typed/deleted characters
+            # (see _display_splice_shift).
+            _dt_blocks, _dt_lines, _dt_spans, _dt_comments = (
+                _display_splice_shift(_disp_sp, text, _dt_blocks, _dt_lines,
+                                      _dt_spans, _dt_comments))
         _pf_info['dt_call_ms'] = round((time.perf_counter() - _t_dt) * 1000.0, 1)
         _pf_info['dt_miss'] = _k_dt is not getattr(ds, "_def_tints_key", None)
         _pf_info['dt_n'] = (len(_dt_blocks), len(_dt_lines), len(_dt_spans))
@@ -9360,6 +9930,42 @@ def draw_text(input_value: str, height=None,
                            or getattr(ds, "_dt_line_lens_text", None) is not text):
             _ll = ds._dt_line_lens = [len(_l.rstrip()) for _l in text.split('\n')]
             ds._dt_line_lens_text = text
+        if Toggles.TextEditor.tint_flicker_trace:
+            # TEMP flicker hunt: dump, for the lines around the caret, the
+            # columns each wash will DRAW at vs the indent/token the curre
+            # `text` actually has there - the frame where they disagree
+            # names which cache (anchor point vs column map) is stale.
+            try:
+                _tft_cl, _tft_cc = _index_to_line_col(text, ds.text_cursor_pos)
+                _tft_lines = text.split('\n')
+                _tft = [f"f={Melty.frame_count} ed={text is not original_input} "
+                        f"d={len(text) - len(original_input)} "
+                        f"cur=({_tft_cl},{_tft_cc}) "
+                        f"vcols={_get_vcols() is not None} "
+                        f"n=({len(_dt_blocks)},{len(_dt_lines)},{len(_dt_spans)})"]
+                for _l_line, _l_rgb, _l_sc, _l_s, _l_e in _dt_lines:
+                    if abs(_l_line - _tft_cl) <= 2:
+                        _got = _colx(_l_s) / char_w
+                        _lt = (_tft_lines[_l_line]
+                               if 0 <= _l_line < len(_tft_lines) else '')
+                        _exp = len(_lt) - len(_lt.lstrip())
+                        _tft.append(
+                            f"  LT ln={_l_line} col={_got:.1f} indent={_exp}"
+                            + (' <== MISMATCH' if abs(_got - _exp) > 0.5 else ''))
+                for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
+                    _sl, _sc0 = _index_to_line_col(text, _s_start)
+                    if abs(_sl - _tft_cl) <= 2:
+                        _tft.append(f"  SP ln={_sl} col={_sc0} "
+                                    f"x={_colx(_s_start) / char_w:.1f} "
+                                    f"tok={text[_s_start:_s_end]!r}")
+                for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
+                    if abs(_b_line - _tft_cl) <= 3:
+                        _tft.append(f"  BK ln={_b_line} "
+                                    f"x={_colx(_b_idx) / char_w:.1f} end={_b_end}")
+                with open('/tmp/lsd_tint_flicker.log', 'a') as _tfh:
+                    _tfh.write('\n'.join(_tft) + '\n')
+            except Exception:
+                pass
         for _bi, (_b_line, _b_idx, _b_end, _b_tint) in enumerate(_dt_blocks):
             sy = origin_y + _b_line * line_px
             ey = origin_y + (_b_end + 1) * line_px
@@ -9621,6 +10227,23 @@ def draw_text(input_value: str, height=None,
     _uspans = _view_usage_spans(_u_vpath)
     _pf_info['us_call_ms'] = round((time.perf_counter() - _t_us) * 1000.0, 1)
     _pf_info['us_n'] = len(_uspans)
+    if Toggles.TextEditor.tint_flicker_trace and _uspans:
+        # TEMP flicker hunt (see the def-tint trace above): usage washes near
+        # the caret - a misplaced span prints a garbled tok.
+        try:
+            _uft_cl, _ = _index_to_line_col(text, ds.text_cursor_pos)
+            _uft = []
+            for _us, _ue, _su, _at in _uspans:
+                _ul, _uc = _index_to_line_col(text, _us)
+                if abs(_ul - _uft_cl) <= 2:
+                    _uft.append(f"  US ln={_ul} col={_uc} "
+                                f"x={_colx(_us) / char_w:.1f} "
+                                f"tok={text[_us:_ue]!r}")
+            if _uft:
+                with open('/tmp/lsd_tint_flicker.log', 'a') as _ufh:
+                    _ufh.write('\n'.join(_uft) + '\n')
+        except Exception:
+            pass
     _usage_line_heat = {}
     if _uspans and Toggles.TextEditor.usage_heat_gutter:
         _u_vspan = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
@@ -10045,6 +10668,25 @@ def draw_text(input_value: str, height=None,
                                       or _view.get("tint"))
                 elif _view.get("tint") is not None:
                     _extra.setdefault('tint', _view["tint"])
+                if color_key == 'def':
+                    # Run-button context: the function this `def` heads -
+                    # resolved by absolute file line (display line from y,
+                    # projected through the fold layout to a buffer line,
+                    # plus _usage_off maps buffer → file, exactly as the
+                    # live-code overlays start with) plus the def's name
+                    # read straight off the source at the token.
+                    _dl = int((y - origin_y) / line_px + 0.5)
+                    _bl = (_fold_d2b[_dl]
+                           if _fold_d2b is not None and 0 <= _dl < len(_fold_d2b)
+                           else _dl)
+                    _fn_root = code_dict if code_dict is not None else code_tree
+                    _fp = (getattr(_fn_root, 'file_path', None)
+                           or getattr(getattr(_fn_root, 'address', None), 'path', None)
+                           or getattr(jump_to, 'path', None))
+                    _dm = re.match(r'def\s+(\w+)', text[src_i:src_i + 200])
+                    _extra['file_path'] = str(_fp) if _fp else None
+                    _extra['def_line'] = _usage_off + _bl + 1
+                    _extra['def_name'] = _dm.group(1) if _dm else None
                 # Plain (wrapper-less) renderers need the editor's draw_state:
                 # they have no tile of their own, so gesture liveness requires
                 # invalidating the EDITOR tile (see draw_number_token_plain).
