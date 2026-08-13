@@ -471,6 +471,30 @@ class TypeCodec(Codec):
                     except OSError:
                         pass
                 return pending
+        # Launch-baseline overlay (whole-file loads): PENDING is the studio's
+        # copy. A file that drifted on disk since the studio last knew it
+        # (ExternalChanges.original - seeded from core_project.py'
+        # launch preload via the first-time code_cache pop) opens as that
+        # LAST-KNOWN text, not the new disk content: external changes are
+        # never auto-pulled into pending; they stay visible through the git
+        # file_system proxy / compare until manually merged. The baseline
+        # fingerprint arms the save conflict guard, so saving this buffer
+        # refuses against the newer disk and routes through the merge
+        # surface. Span loads skip it - the baseline's line numbering can't
+        # be trusted for a post-drift span address; self-writes skip it
+        # - the disk already IS the studio's own text.
+        if source_text is None and address.start is None \
+                and not FileWatch.is_self_write(address.path):
+            from src.lsd.gl_gui.view.core_views.external_changes import \
+                ExternalChanges
+            try:
+                _res = str(address.path.resolve())
+            except OSError:
+                _res = None
+            base = ExternalChanges.originals.get(_res) if _res else None
+            if isinstance(base, str) and base:
+                address._span_fp = _span_fingerprint(base.split("\n"))
+                return base
         text, newline = _source_and_newline(address, source_text)
         lines = text.split(newline)
         span_lines = lines[address.start:address.end]

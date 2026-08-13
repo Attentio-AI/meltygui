@@ -1546,6 +1546,31 @@ def _resolved(path_str):
     return got
 
 
+# str(path) -> (mtime, monotonic checked). The stat below runs per visible
+# FunctionDef per frame via the live-view overlay's _scope_function (~12% of
+# draw_text in profiling); a short TTL keeps the mtime-keyed invalidation in
+# _ENCLOSING_FN_CACHE while collapsing the per-frame stat storm. An edit is
+# picked up within the TTL, same effect as a debounced reparse.
+_MTIME_TTL_CACHE = {}
+_MTIME_TTL_S = 0.25
+
+
+def _stat_mtime_ttl(target):
+    now = time.monotonic()
+    key = str(target)
+    got = _MTIME_TTL_CACHE.get(key)
+    if got is not None and now - got[1] < _MTIME_TTL_S:
+        return got[0]
+    try:
+        mtime = target.stat().st_mtime
+    except OSError:
+        mtime = None
+    if len(_MTIME_TTL_CACHE) > 4096:
+        _MTIME_TTL_CACHE.clear()
+    _MTIME_TTL_CACHE[key] = (mtime, now)
+    return mtime
+
+
 def _enclosing_function(filename, lineno):
     """The live function object whose `def` encloses (filename, lineno) — the
     nearest def at or above the line, walking module + class scopes. Lets the
@@ -1555,10 +1580,7 @@ def _enclosing_function(filename, lineno):
         target = _resolved(str(filename))
     except (OSError, ValueError):
         return None
-    try:
-        mtime = target.stat().st_mtime
-    except OSError:
-        mtime = None
+    mtime = _stat_mtime_ttl(target)
     cache_key = (str(target), lineno, mtime)
     if cache_key in _ENCLOSING_FN_CACHE:
         return _ENCLOSING_FN_CACHE[cache_key]

@@ -415,6 +415,14 @@ class Toggles:
 
         enable_spell_check = False
         text_focus_stack_trace = False
+        # Scope-derived code folds (_scope_fold_ranges): off = editors derive
+        # no per-def/class fold ranges (no chevrons, no default-collapsed
+        # scopes; explicit fold_ranges from callers still work). The O(buffer)
+        # scan (~22ms on a large buffer) is debounced off the keystroke path
+        # (input-quiet rescan on splice - the collapse state is stored as
+        # line-independent fold KEYS) but this switch skips the layer entirely.
+        # Read live.
+        scope_fold_ranges = True
         # Master switch for the live-view pipeline: off = the editor draws no
         # live-view/snapshot markers (and drops the gutter toggle column), and
         # opening a context menu no longer collects - the menu-open stack
@@ -839,6 +847,12 @@ class Toggles:
         # Line-number shadows: negative = recessed below the editor surface
         # (the body casts into the gutter along its edge); 0 disables.
         gutter_shadow_offset = 0.157
+        # Master switch for the gutter usage-heat buttons: the per-line
+        # summed-usage boxes behind the line numbers AND their click-to-open
+        # usage picker. Off also skips the per-frame heat aggregation pass
+        # (gutter clicks fall through to caret placement). Read live.
+        # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
+        usage_heat_gutter = True
         # Compositor shadow under the gutter usage-heat boxes: each use
         # counted on the line adds this much lift, so hotter lines float
         # higher off the gutter background. The magnitude is capped at
@@ -1246,6 +1260,22 @@ class Toggles:
         # re-registered within this many frames (safety net for closes abs_closed
         # misses). Also the birth grace before a new host can be swept.
         idle_frames = 120
+        # Trailing debounce (ms) on consumer-notify invalidations while the
+        # host's value is being actively edited (typing). Each second editor
+        # window over the same file is a consumer of the shared code_host -
+        # without this it re-renders (and re-runs its background chain) on
+        # every keystroke's finished reconvert. The notify is deferred and
+        # re-armed per edit; it fires once, this long after the last local
+        # edit. Notifies with no recent local edit (external file reload,
+        # initial load) pass through live. 0 disables.
+        consumer_notify_debounce_ms = 2000
+        # Skip ALL RenderHost draws (the draw_main host loop) for this long
+        # after each keypress while a draw_text editor is focused - the same
+        # deferral the loop already applies during click/drag/scroll. Host
+        # draws and deferrable background work (reconverts, saves) that
+        # otherwise leak into typing frames; they catch up on a self-armed
+        # wake once the window expires. 0 disables.
+        host_typing_debounce_ms = 500
 
     @defaults(tint=(0.181, 0.119, 0.294))
     class InputHandlerToggles:
@@ -1371,15 +1401,21 @@ class Toggles:
     # ShadowComposite's joint blend upsample onto the frame). Read once
     # per frame.
     shadow_downscale = 3
+    # Per-view cap for add_shadow/add_glow marks: a view (draw_state)
+    # can emit at most this many marks of each kind per frame; extra
+    # emissions are dropped and the budget recycles next frame. Backstop
+    # against a view leaking unbounded marks into the retained stores
+    # (every retained mark re-stamps every finalize).
+    shadow_cap = 100
     shadow_edge_sharpness = 0.021
     # Light direction the shadows are cast AWAY from, as a screen-space
     # vector (x right, y down in UV space). Only the direction matters -
     # the shader normalizes it; travel distance comes from
     # shadow_height_scale.
-    shadow_light_dir = (-0.209, 0.534)
+    shadow_light_dir = (-0.196, 0.265)
     # How far a shadow travels per unit of caster/receiver depth gap
     # (in units): higher = deeper stacks cast longer shadows.
-    shadow_height_scale = 2.691
+    shadow_height_scale = 3.716
     # Penumbra widening per unit of depth gap: bigger = softer, more
     # diffuse shadows from tall casters.
     shadow_blur_scale = 0.255

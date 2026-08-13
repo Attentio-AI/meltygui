@@ -169,6 +169,22 @@ def _solve_collisions(window):
     for edge, target in pending:
         flat.sort(key=lambda e: e["x"])
         k = next((i for i, e in enumerate(flat) if e is edge), None)
+        # TEMP edge-debug: snapshot the flat population per applied drag.
+        # 'F' marks the window's frame edges, '*' the dragged edge - if the
+        # contact push never reaches an F on the left, adoption is broken
+        # (the row's far edge isn't the frame edge object).
+        try:
+            with open("/tmp/lsd_edge_debug.log", "a") as _f:
+                snap = " ".join(
+                    f"{'*' if e is edge else ''}"
+                    f"{'F' if id(e) in frame_ids else ''}{e['x']:.0f}"
+                    for e in flat)
+                _f.write(f"drag k={k} target={target:.0f} "
+                         f"win={getattr(window, 'name', window.id)} "
+                         f"rows={list(window._edge_views.keys())} "
+                         f"flat=[{snap}]\n")
+        except Exception:
+            pass
         if k is None or target == edge["x"]:
             continue
         walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
@@ -193,6 +209,22 @@ def _defer_freeze_settle(window, draw_state):
     if pending is None:
         pending = window._freeze_settle = {}
     pending[id(draw_state)] = draw_state
+
+
+def release_row(draw_state):
+    """Drop this host's registered edge row. Hosts that sometimes render
+    WITHOUT columns (the code editor leaving a compare split) must call this
+    on their column-less frames: window_edge_pass only evicts rows whose ds
+    is CLOSED, and a host whose ds IS its window never closes while open —
+    the stale row keeps feeding edge_under_cursor and the frame-edge solve,
+    so right-drag resizes latch an invisible stale divider and the window
+    width freezes. ColumnLayout re-registers on construction, so releasing
+    before building columns later in the same frame is safe."""
+    window = draw_state.parent_window or draw_state
+    views = getattr(window, "_edge_views", None)
+    if views is not None:
+        views.pop(("row", draw_state.id), None)
+    draw_state._column_container = False
 
 
 def _has_columns_ancestor(draw_state):
@@ -307,6 +339,16 @@ def window_edge_pass(window):
             del totals[h]
 
     moved = _solve_collisions(window)
+
+    # TEMP edge-debug: rebase positions (only while something moved).
+    if moved:
+        try:
+            with open("/tmp/lsd_edge_debug.log", "a") as _f:
+                _f.write(f"  post-solve left={left['x']:.1f} "
+                         f"right={right['x']:.1f} width={window.width} "
+                         f"pos={window.window_pos}\n")
+        except Exception:
+            pass
 
     # Line the WINDOW up with its frame edges: the same rule cells use.
     d_left = left["x"]
@@ -463,6 +505,22 @@ class ColumnLayout:
             frame_edges = getattr(window, "_frame_edges", None)
             if frame_edges:
                 left_edge, right_edge = frame_edges
+        # For edge-debug: log the adoption outcome whenever it changes.
+        _adopt = (left_edge is not None
+                  and left_edge is (getattr(window, "_frame_edges", None) or [None])[0],
+                  _has_columns_ancestor(draw_state),
+                  getattr(window, "_frame_edges", None) is not None,
+                  window is draw_state)
+        if getattr(draw_state, "_edge_debug_adopt", None) != _adopt:
+            draw_state._edge_debug_adopt = _adopt
+            try:
+                with open("/tmp/lsd_edge_debug.log", "a") as _f:
+                    _f.write(f"ctor n_cols={n_cols} adopted_frame={_adopt[0]} "
+                             f"cols_ancestor={_adopt[1]} have_fe={_adopt[2]} "
+                             f"ds_is_window={_adopt[3]} "
+                             f"win={getattr(window, 'name', window.id)}\n")
+            except Exception:
+                pass
 
         stored = column_edges if isinstance(column_edges, list) else []
         ok = (len(stored) == n_lines and
@@ -682,11 +740,17 @@ class ColumnLayout:
         ds._edge_lines_height = new_h
         ds._band_radius = (max(self._cell_radius.values())
                            if self._cell_radius else 6.0)
-        if prev_h is None or abs(new_h - prev_h) > 1.0:
-            # The band stopped at last frame's height; catch up next frame.
-            # When the height settle has changed the view's box, blit's
-            # size_change path live-renders it and the edge-Tile invalidate_up
-            # recaptures on settle - no extra invalidate needed.
+        if prev_h is None:
+            # FIRST measure only: the band rounding and grab zones drew with
+            # defaults this frame; catch up once. A HEIGHT CHANGE never
+            # invalidates here - the band's pixels come from the row's clip
+            # (or draw_state.height in the no-clip fallback), not from the
+            # measured height, and the measured height only feeds shadow
+            # rects (grab zones, edge_under_cursor bands) that read the fresh
+            # stamp on the next body run without a repaint. The old height-delta
+            # settle force-climbed every ancestor tile on any >1px height
+            # wiggle (typing in an editor cell), recomposing unrelated columns
+            # up the ancestor chain.
             if not ds.size_change:
                 ds.invalidate(note=Note(reason="row band settle", **_NOTE))
             request_render()

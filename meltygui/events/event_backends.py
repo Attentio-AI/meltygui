@@ -22,6 +22,13 @@ import glfw
 
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 
+# Bare modifiers never count as "typing" for Melody._keys_down / typing_hold.
+_MODIFIER_KEYS = {glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT,
+                  glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL,
+                  glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT,
+                  glfw.KEY_LEFT_SUPER, glfw.KEY_RIGHT_SUPER,
+                  glfw.KEY_CAPS_LOCK, glfw.KEY_NUM_LOCK}
+
 try:
     from pynput import mouse, keyboard
     from pynput.keyboard import Key, KeyCode
@@ -432,10 +439,25 @@ class GlfwQueueBackend:
                 # Ordered record for the text editor (preserves typed order, and
                 # repeats so a held key still inserts/navigates).
                 Melty.frame_key_events.append((key, mods))
+                # Key-only recency stamp (mouse doesn't touch this) - read by
+                # RenderHost.typing_hold to defer host draws while typing.
+                Melty._last_key_time = time.monotonic()
                 if action == glfw.PRESS:
+                    # Held-key set for typing_hold: repeats don't arrive
+                    # reliably (Wayland gaps, OS repeat delay), so the hold
+                    # rides on this press until RELEASE. Bare modifiers stay out
+                    # - holding Ctrl while focused isn't typing and would
+                    # starve host draws indefinitely.
+                    if key not in _MODIFIER_KEYS:
+                        Melty._keys_down.add(key)
                     self.handler.feed_down(name, x, y)
                 request_render()
             elif action == glfw.RELEASE:
+                Melty._keys_down.discard(key)
+                # The typing-debounce tail starts at release, not the last
+                # press - a long hold shouldn't end with an already-expired
+                # window.
+                Melty._last_key_time = time.monotonic()
                 self.handler.feed_up(name, x, y)
                 request_render()
         except Exception:

@@ -2874,8 +2874,7 @@ dropdown_demo_data = {
 }
 
 drop_down_selection = None
-
-
+# hey there
 @render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
              show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
@@ -3269,13 +3268,16 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
     # is a stateful wrapper that draws into its own window. Snapshot the values - a
     # host may register/remove during render (re-entrant mutation). Skipped entirely
-    # while any mouse button is held (click or drag) or a view is being scrolled
-    # (Melty.on_scroll - which lingers a few frames past the last wheel event,
-    # bridging the gaps in a trackpad's event stream) - host draws are deferrable
-    # work that would otherwise eat into drag/scroll frames; they catch up after.
+    # while any mouse button is held (click + drag), a view is being scrolled
+    # (Melty.on_scroll — already lingers a few frames past the last wheel event,
+    # bridging the gaps in a trackpad's event stream), and the user is typing in a
+    # focused draw_text (RenderHost.typing_hold - keypress debounce, self-registered
+    # catch-up wake) - host draws are deferrable work that would otherwise eat
+    # into drag/scroll/typing frames; they catch up after.
+    from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
     any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
                       or imgui.is_mouse_down(2))
-    if not any_mouse_held and not Melty.on_scroll:
+    if not any_mouse_held and not Melty.on_scroll and not RenderHost.typing_hold():
         for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
             # Event-driven pump: an entirely hidden cache host skips its draw
             # polling (draw_needed - edit flags / upstream identity change /
@@ -9177,6 +9179,22 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     open_path = _dd_as_tuple(getattr(root_state, "open_path", ()))
     cursor_path = _dd_as_tuple(getattr(root_state, "cursor_path", ()))
 
+    # Stale-submenu sweep (root level only - the registry is keyed by full row
+    # path, so one sweep covers every depth): a branch row stamps its submenu
+    # `closed` only when the row body runs, and an active search can filter
+    # the row itself out of `rows` while its submenu is open - the submenu
+    # window then floats on with nothing left to close it. dd_menu_row
+    # registers its submenu draw_state in root_state._dd_submenu_ds; the
+    # root body re-runs on every query/open_path change, so close anything
+    # here that's no longer in the open path. The row re-registers/reopens it
+    # if it ever comes back on-path.
+    if not path_prefix and root_state is not None:
+        for _sp, _sds in list(getattr(root_state, "_dd_submenu_ds", {}).items()):
+            if (_sds is not None and open_path[:len(_sp)] != _sp
+                    and not getattr(_sds, "closed", True)):
+                _sds.closed = True
+                request_render()
+
     ancestor_matched = bool(search) and any(search in str(k).lower() for k in path_prefix)
     rows = _dd_visible_entries(input_value, "" if ancestor_matched else search)
     # if not rows and search:
@@ -9368,12 +9386,23 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         # Always call the sub-menu (so off-path ones stay registered but hidden
         # via closed=True, never leaving a stale painted frame); only the on-path
         # branch actually draws. Pinned to the right of this row with window_pos.
-        changed, picked = draw_dd_menu(value, name=f"{label}_submenu", tint=tint,
+        changed, picked, _sub_ds = draw_dd_menu(value, name=f"{label}_submenu", tint=tint,
                                        closed=not sub_open, temp=True, use_cache=False,
                                        window_pos=(draw_state.width, -_DD_ROW_H), show_add_delete=False,
                                        parent_window=draw_state, disable_scroll=False,
                                        full_render=full_render, row_tints=row_tints,
-                                       root_state=root_state, path_prefix=row_path)
+                                       root_state=root_state, path_prefix=row_path,
+                                       return_extras=True)
+        # Register the submenu window on the shared root state so the ROOT
+        # menu body can sweep it close even when THIS row stops rendering -
+        # a search query can filter the row itself out of this level while its
+        # submenu is stamped open, and a row that doesn't render can never
+        # restamp `closed` (the nested-window leak, one level down).
+        if root_state is not None and _sub_ds is not None:
+            _reg = getattr(root_state, "_dd_submenu_ds", None)
+            if _reg is None:
+                _reg = root_state._dd_submenu_ds = {}
+            _reg[row_path] = _sub_ds
         if changed:
             return True, picked
     elif clicked:

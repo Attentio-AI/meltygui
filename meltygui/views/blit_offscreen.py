@@ -1183,6 +1183,10 @@ class TileCacheMasked:
         # id(ds) set: emitters whose bodies ran this frame (clear_glows) -
         # their retained entries drop before this frame's emissions re-add.
         self._glow_cleared: set = set()
+        # (id(ds), kind) -> marks emitted this frame, kind 'shadow'|'glow'.
+        # Enforces the Toggles.shadow_cap per-view budget - see
+        # _emit_cap_hit. Cleared every frame with the mark lists.
+        self._emit_counts: Dict[tuple, int] = {}
         # Low-res additive light buffer (RGBA16F): rgb = accumulated glow
         # light, a = MAX-blended emitter rank (full-mask depth) so the
         # emitter can occlude glow under windows floating above the emitter.
@@ -2034,6 +2038,8 @@ class TileCacheMasked:
             self._glow_cleared.clear()
         if getattr(self, "_depth_frame", None) is not None:
             self._depth_frame.clear()
+        if getattr(self, "_emit_counts", None) is not None:
+            self._emit_counts.clear()
         self._rect_seq = 0
 
     def mask_mark_rect(
@@ -2051,6 +2057,30 @@ class TileCacheMasked:
 
         self._mask_rects.append(
             _Rect(draw_state, layer, depth_and_layer, x, y, w, h, key, self._rect_seq, corner_radius, blend_max=False))
+
+    def _emit_cap_hit(self, draw_state, kind: str) -> bool:
+        """Per-view budget for shadow/glow marks (Toggles.shadow_cap): one
+        draw_state may emit at most cap marks of each kind per frame; past
+        it the mark is dropped. Without this, a view whose body emits per
+        content item (draw_text per block/symbol) can leak unbounded marks
+        into the retained stores, and every retained mark re-stamps every
+        finalize. Counts reset each frame (and on clear_glows for that
+        view, so a second same-frame body run gets a fresh budget) — the
+        budget recycles, next frame's first cap marks win. Ownerless
+        one-shot marks (no draw_state) are exempt: they die with the
+        frame. Lazily creates the counter dict so a hotswap onto an
+        instance whose __init__ predates it just starts empty."""
+        if draw_state is None:
+            return False
+        counts = getattr(self, "_emit_counts", None)
+        if counts is None:
+            counts = self._emit_counts = {}
+        key = (id(draw_state), kind)
+        n = counts.get(key, 0)
+        if n >= Toggles.shadow_cap:
+            return True
+        counts[key] = n + 1
+        return False
 
     def add_shadow(
             self, rect: Tuple[float, float, float, float], offset: float = 2.0,
@@ -2116,6 +2146,8 @@ class TileCacheMasked:
         else:
             clip_xyxy = None
         if clip_xyxy is not None and self._fully_clipped(x, y, w, h, clip_xyxy):
+            return
+        if self._emit_cap_hit(draw_state, "shadow"):
             return
         owner_key = self._stack[-1].key if self._stack else None
         if isinstance(offset, (tuple, list)):
@@ -2248,6 +2280,8 @@ class TileCacheMasked:
             clip_xyxy = None
         if clip_xyxy is not None and self._fully_clipped(x, y, w, h, clip_xyxy):
             return
+        if self._emit_cap_hit(draw_state, "shadow"):
+            return
         owner_key = self._stack[-1].key if self._stack else None
         if isinstance(offset, (tuple, list)):
             offs = tuple(float(o) for o in offset)
@@ -2347,6 +2381,12 @@ class TileCacheMasked:
         if self._depth_frame:
             self._depth_frame[:] = [e for e in self._depth_frame
                                     if e[1] is not draw_state]
+        # The dropped emissions hand their cap budget back too - the last
+        # body run gets the same Toggles.shadow_cap headroom the first had.
+        counts = getattr(self, "_emit_counts", None)
+        if counts is not None:
+            counts.pop((id(draw_state), "shadow"), None)
+            counts.pop((id(draw_state), "glow"), None)
 
     def add_glow(
             self, rect: Tuple[float, float, float, float],
@@ -2396,6 +2436,8 @@ class TileCacheMasked:
         if clip_xyxy is not None and self._fully_clipped(
                 x - radius, y - radius, w + 2 * radius, h + 2 * radius,
                 clip_xyxy):
+            return
+        if self._emit_cap_hit(draw_state, "glow"):
             return
         # Ranks are NOT frozen here - PASS 6 anchors the glow on the LIVE
         # `shadow_depth` of the emitting view and its root window (the same
@@ -4977,6 +5019,8 @@ class TileCacheMasked:
                 self._glow_cleared.clear()
             if getattr(self, "_depth_frame", None) is not None:
                 self._depth_frame.clear()
+            if getattr(self, "_emit_counts", None) is not None:
+                self._emit_counts.clear()
             self._enq_mask_keys.clear()
             self._enq_copy_keys.clear()
             self._cancelled_keys.clear()

@@ -856,7 +856,6 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     origin_y = y - (_sl - 1) * line_px
     origin_x = x - getattr(span, "start_col", 0) * char_w
     _src = getattr(root, "source", "") or ""
-    source_lines = _src.split("\n")
     # Viewport cull bounds: the store can have a marker per binding in the
     # def (frame snapshots publish the whole scope), and the walk visits the
     # scope regardless of scroll - every off-screen marker skipped here is a
@@ -876,11 +875,15 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # and rescan every stamp every frame. Raw-written like the other editor
     # memo caches (_anc_scroll_cache): @live's __setattr__ would run a
     # value != original_value compare on full value-carrying tuples.
+    # The tuple also carries the module source's line split: splitting the
+    # WHOLE file per FunctionDef per frame is ~2/3 of draw_text in profiling
+    # - same invalidation (source object identity), so it rides the memo.
     _memo_ent = draw_state.__dict__.get("_lv_snap_memo")
-    if _memo_ent is None or _memo_ent[0] is not _src:
-        _memo_ent = (_src, {})
+    if _memo_ent is None or _memo_ent[0] is not _src or len(_memo_ent) < 3:
+        _memo_ent = (_src, {}, _src.split("\n"))
         object.__setattr__(draw_state, "_lv_snap_memo", _memo_ent)
     _snap_memo = _memo_ent[1]
+    source_lines = _memo_ent[2]
     # Exit-line washes: where the last instrumented run CAME OUT.
     # __live_return_line__ (stamped by live_view.twin_ret / the body-capture
     # profile hook) washes green; __live_error_line__ ((line, msg, text),

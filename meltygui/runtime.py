@@ -801,6 +801,17 @@ class Melty:
     # the cst→dict index's cooperative loop yield to back off when the user interacts.
     _last_input_time = 0.0
 
+    # time.monotonic() of the last key event only (PRESS/REPEAT/RELEASE, set in
+    # event_backends). Narrower than _last_input_time (which mouse activity also
+    # stamps) - drives RenderHost.typing_hold's skip-hosts-while-typing debounce.
+    _last_key_time = 0.0
+    # GLFW keycodes currently being held (non-modifier; PRESS adds,
+    # RELEASE removes). A HELD key doesn't reliably re-stamp _last_key_time
+    # (Wayland repeat rate, the OS repeat delay), so typing_hold treats a
+    # non-empty set as active typing regardless of the stamp, reconciling
+    # polling glfw.get_key for missed releases.
+    _keys_down = set()
+
     texture_manager = TextureManager()
     returned_values = {}
     pending_return_values = {}

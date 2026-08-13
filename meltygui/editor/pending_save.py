@@ -46,6 +46,52 @@ def _diff_lines_with_numbers(diff, base):
     return content_lines, numbers
 
 
+# draw_pending_saves' per-entry rendered-diff cache: address →
+# (id(original), id(pending), (pending text, blocks), diff_str, numbers).
+# Keyed on object identities (content-free) - the diff/render recomputes
+# once per actual edit: typing edges splice incrementally off the previous
+# blocks instead of re-matching the whole entry.
+_pending_diff_memo = {}
+
+
+def _render_diff_blocks(old_l, new_l, blocks, base, n=3):
+    """(content_lines, numbers) for draw_text(is_diff=True) straight from
+    change blocks — unified-diff-shaped output without re-running the
+    matcher: blocks whose ±n context windows touch group into one hunk;
+    each block renders its '-' old lines then '+' new lines, with ' '
+    context between and around. Numbers are true file lines (base = the
+    address's 0-based start): '+'/context take the new side, '-' the old —
+    the same convention as _diff_lines_with_numbers."""
+    content, numbers = [], []
+    if not blocks:
+        return content, numbers
+    groups, cur = [], [blocks[0]]
+    for blk in blocks[1:]:
+        if blk[0] - cur[-1][1] <= 2 * n:
+            cur.append(blk)
+        else:
+            groups.append(cur)
+            cur = [blk]
+    groups.append(cur)
+    for group in groups:
+        for k in range(max(0, group[0][0] - n), group[0][0]):
+            content.append(" " + new_l[k] + "\n")
+            numbers.append(base + k + 1)
+        for gi, (n0, n1, b0, b1, _t) in enumerate(group):
+            for k in range(b0, b1):
+                content.append("-" + old_l[k] + "\n")
+                numbers.append(base + k + 1)
+            for k in range(n0, n1):
+                content.append("+" + new_l[k] + "\n")
+                numbers.append(base + k + 1)
+            stop = (group[gi + 1][0] if gi + 1 < len(group)
+                    else min(len(new_l), n1 + n))
+            for k in range(n1, stop):
+                content.append(" " + new_l[k] + "\n")
+                numbers.append(base + k + 1)
+    return content, numbers
+
+
 def three_way_merge(base, mine, theirs):
     """Line-level 3-way merge. Returns the merged text, or None when the two
     sides' edits overlap — a direct conflict that needs a human.
@@ -1193,7 +1239,7 @@ class PendingSave:
         return summary
 
 
-@window(disable_scroll=False, z_offset=0, tint=(0.24240741, 0.3666667, 0.34181485))
+@window(disable_scroll=False, z_offset=0, tint=(0.34, 0.644, 0.583))
 @render_func()
 def draw_pending_saves():
     pass
@@ -1219,31 +1265,43 @@ def draw_pending_saves():
         RenderFuncs.draw_text("\n".join(PendingSave.merge_results), show_name=True,
                               name="external merge results")
 
+    # Drop memo entries whose queue entry is gone (applied/re reverted).
+    for _k in list(_pending_diff_memo):
+        if _k not in PendingSave.pending_saves:
+            _pending_diff_memo.pop(_k, None)
     for address, (codec, kwargs) in list(PendingSave.pending_saves.items()):
         if address in PendingSave.originals:
             original_data = PendingSave.originals[address]
-            # generate code diff using external library (DO NOT USE CODEC) code.diff does not exist.
-            # code_diff = codec.diff(address=address, **kwargs) ### WRONG
             new_data = kwargs.get("data")
             old_data = original_data
-            new_lines = str(new_data).splitlines(keepends=True)
-            old_lines = str(old_data).splitlines(keepends=True)
-            if new_lines == old_lines:
-                continue
-
-            diff = difflib.unified_diff(
-                fromfile=str(address.path), tofile=str(address.path),
-                a=old_lines, b=new_lines, n=3,
-            )
-            # Strip the unified-diff scaffolding (--- / +++ headers, @@ hunk
-            # ranges, "\ No newline" markers) down to the +/- and context lines,
-            # and compute each line's TRUE file number. The diff runs over the
-            # snippet (the slice of the file starting at address.start), so the @@
-            # numbers are snippet-relative - shifting by address.start lands them
-            # on the file's real lines. draw_text(is_diff=True) colors the +/-
-            # lines; line_numbers feeds the gutter.
-            content_lines, line_numbers = _diff_lines_with_numbers(diff, address.start or 0)
-            diff_str = "".join(content_lines)
+            # Identity-memoized diff (content-free keys - all texts are
+            # fresh objects on change): recompute only on real edges. A
+            # typing edge (same original, new pending text) splices through
+            # the incremental differ off the previous blocks; anything else
+            # runs the full matcher once. The +/-/context text and the
+            # and line numbers (base = address.start) render straight from
+            # the blocks - no unified_diff pass.
+            m = _pending_diff_memo.get(address)
+            if m is None or m[0] != id(old_data) or m[1] != id(new_data):
+                from src.lsd.gl_gui.view.playground.open_files import (
+                    _diff_blocks, _incremental_diff_blocks)
+                old_s, new_s = str(old_data), str(new_data)
+                blocks = None
+                if m is not None and m[0] == id(old_data) and m[2] is not None:
+                    prev_new, prev_blocks = m[2]
+                    blocks = _incremental_diff_blocks(old_s, prev_new, new_s,
+                                                      prev_blocks)
+                if blocks is None:
+                    blocks = _diff_blocks(old_s, new_s)
+                content_lines, line_numbers = _render_diff_blocks(
+                    old_s.split("\n"), new_s.split("\n"), blocks,
+                    address.start or 0)
+                m = (id(old_data), id(new_data), (new_s, blocks),
+                     "".join(content_lines), line_numbers)
+                _pending_diff_memo[address] = m
+            diff_str, line_numbers = m[3], m[4]
+            if not diff_str:
+                continue               # no-op edit (pending == original)
 
             file_name = address.path.name
             line_range = (f"({address.start}:{address.end})"

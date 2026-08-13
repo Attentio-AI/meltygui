@@ -1559,8 +1559,8 @@ def _check_call_span(call, scope, path, file_binds):
 
 def _buffer_bound_names(text):
     """Every name the buffer text plausibly BINDS — local vars, params,
-    def/class names, loop/with targets, import statements — in SIX regex
-    passes total (findall, C-speed), never per-name. Approximate on purpose,
+    def/class names, loop/with targets, import statements — in a handful of
+    regex passes (findall, C-speed), never per-name. Approximate on purpose,
     erring toward "bound" (a bound name is merely never suggested — silence
     beats noise). Used where the buffer's parse can't be trusted (mid-edit
     syntax errors)."""
@@ -1569,14 +1569,25 @@ def _buffer_bound_names(text):
     bound.update(re.findall(r"(?m)^\s*(?:def|class)\s+(\w+)", text))
     bound.update(re.findall(r"(?m)^\s*(\w+)\s*(?:=[^=]|,|\)|=$)", text))
     bound.update(re.findall(r"\b(?:as|for)\s+(\w+)", text))
+    # Tuple targets: every name between `for` and `in` is a binding
+    # (`for chev, step, vid in ...` - the pass above only got `chev`), and
+    # likewise every name on the left of an unpack assignment (`a, b = ...`).
+    # `(` is excluded from the assignment class so a call's kwargs
+    # (`foo(bar, baz=1)`) are never read as targets.
+    for targets in re.findall(r"\bfor\s+([\w\s,()\[\]*]+?)\s+in\b", text):
+        bound.update(re.findall(r"\w+", targets))
+    for targets in re.findall(r"(?m)^\s*([\w\s,\[\]*]+?)\s*=[^=]", text):
+        bound.update(re.findall(r"\w+", targets))
     for params in re.findall(r"(?m)^\s*(?:def\s+\w+|lambda)\s*\(([^)]*)", text):
         bound.update(re.findall(r"\w+", params))
     # Import bindings at ANY indent - a function-local `from m import name`
     # covers `name` for the whole buffer's scope, so it must never be
-    # re-suggested (aliases are already caught by the as/for` above;
-    # parenthesized continuation lines by the `name,` assignment pass).
-    for names in re.findall(r"(?m)^\s*from\s+[.\w]+\s+import\s+\(?([^#\n)]*)",
-                            text):
+    # re-suggested. The parenthesized form is captured ACROSS lines ([^)]
+    # matches newlines), so EVERY name of a multi-line
+    # `from m import (a,\n b, c)` binds, not just the first per line.
+    for names in re.findall(
+            r"(?m)^\s*from\s+[.\w]+\s+import\s+(\([^)]*\)?|[^#\n]*)", text):
+        names = names.strip("()")
         for part in names.split(","):
             toks = part.split()
             if toks and toks[0] != "*":

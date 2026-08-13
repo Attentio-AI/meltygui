@@ -1911,11 +1911,11 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
             request_render()
         code_state.recompile_result = result
 
-
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
+#tstst
 @render_func(use_cache=True, selectable=False, with_header=draw_header, searchable=False, disable_scroll=True)
 def code_file_io(input_value, code_state: CodeState, codec=None, view_func=RenderFuncs.draw_text, auto_load=True,
                  auto_load_edits=False, min_height=20, shadow=False, show_add_delete=False, show_bg=False,
@@ -2193,6 +2193,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 draw_state.invalidate_up(max_depth=6)
                 request_render()
             if _show:
+                
                 _memo = draw_state.misc.get("_pending_diff_memo")
                 _dkey = (id(_p_base[1]), id(_p_data))
                 if _memo is None or _memo[0] != _dkey:

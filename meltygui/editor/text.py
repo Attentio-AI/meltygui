@@ -34,7 +34,6 @@ def _hex(h):
     # ImGui uses ABGR packing for color u32
     return (a << 24) | (b << 16) | (g << 8) | r
 
-
 COLORS = {
     'default': _hex('#a9b7c6'),  # Token (from Darcula)
     'keyword': _hex('#cc7832'),  # Keyword
@@ -65,6 +64,7 @@ OPERATOR_WORDS = {'and', 'or', 'not', 'in', 'is'}
 BUILTIN_PSEUDO = {'self', 'cls'}
 
 WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
+
 
 # --- Code-suggestion (autocomplete) --------------------------------------------
 # Drives the dropdown popup (draw_dd_menu) anchored at the caret. IDE trigger
@@ -109,7 +109,6 @@ def _strip_comments(text):
     # \1 keeps a matched string alternate; for a bare match the group didn't
     # participate and sub() substitutes empty; all C-speed, no per-match lambda.
     return _SCAN_COMMENT_RE.sub(r'\1', text)
-
 
 _SCOPE_HEAD_RE = re.compile(r'^(\s*)(def|class)\s+([A-Za-z_]\w*)')
 
@@ -486,7 +485,6 @@ def _snippet_context(ds, text, cursor, changed):
     ds._ac_snip_site = site
     return start, pfx, trigs[t]
 
-
 def _punct_run(s):
     """True when `s` is nothing but punctuation — the only characters the
     snippet overtype dedupe may drop (brackets/closers), never content."""
@@ -588,7 +586,6 @@ def _ac_pick_insert(ds, pick, following="", preceding="", replaced="",
                 break
     stops = [min(s, len(ins)) for s in stops]
     return ins, stops[0], stops[1:]
-
 
 # Internal completion `kind` → short display tag shown dim on the right of each
 # row. "name" (a bare buffer identifier we couldn't classify) maps to "" so no
@@ -806,6 +803,10 @@ def _ac_live_context(ds, text, address):
     ds._ac_live_ctx = (ns, func)
     ds._ac_live_ctx_key = key
     return ns, func
+
+
+
+
 
 
 # jedi completion `.type` → our kind mapping.
@@ -1119,7 +1120,6 @@ def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcol
         dl.add_text(base_x + off, hy, col, s)
     dl.pop_clip_rect()
 
-
 # GLFW key to character mappings (unshifted, shifted)
 _KEY_CHAR_MAP = {
     glfw.KEY_SPACE: (' ', ' '),
@@ -1162,7 +1162,6 @@ _REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | {
     glfw.KEY_HOME, glfw.KEY_END,
 }
 
-
 # Global fallback for `draw_text(token_views=...)`: when a caller passes no
 # token_views, the editor uses this DEFAULT SET of callback widgets. A per-call
 # token_views always wins; set this to None to disable widgets everywhere.
@@ -1170,7 +1169,6 @@ _REPEATABLE_KEYS = set(_KEY_CHAR_MAP) | {
 # and they are defined later in the file) - keep this forward-declaration so
 # anything importing the name before then sees a value.
 DEFAULT_TOKEN_VIEWS = None
-
 
 # --- Token views: draw widgets in place of (or above) tokenized code ----------
 # `draw_text(..., token_views=...)` maps a token kind to a renderer that draws a
@@ -1219,6 +1217,7 @@ from src.lsd.gl_gui.view.core_views.fa_icons import FA_ICONS, FA_GLYPH_SET
 ICON_COLLECTION = FA_ICONS
 GENERIC_ICON = "\uf005"  # star - the placeholder Ctrl+I inserts; pick the real one from the dropdown
 
+                  
 
 def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
                              tint=None, text_tint=None, editor_ds=None, **kwargs):
@@ -1408,7 +1407,7 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
     return False, cur
 
 draw_icon_selector_plain._plain_tv = True
-
+                
 
 @render_func(use_cache=True, show_bg=True, shadow=True, with_header=None, z_offset=3, tint=(0.911, 0.305, 0.0),
              show_name=False, selectable=False, bg_offset=0)
@@ -1723,8 +1722,8 @@ def _fmt_color_channel(v):
     anyway; untouched channels keep their original text — ints stay ints)."""
     s = f"{max(0.0, min(1.0, v)):.3f}".rstrip('0')
     return s + '0' if s.endswith('.') else s
-
-
+       
+        
 @render_func(use_cache=True, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, z_offset=3, tint=(0.85, 0.45, 0.05))
 def draw_color3_token(input_value, draw_state=None,
@@ -1804,7 +1803,6 @@ def draw_color3_token(input_value, draw_state=None,
             Melty.popover_focused_ds = None
             request_render()
     return False, s
-
 
 def draw_color3_token_plain(input_value, width=20, height=20, name=None,
                             editor_ds=None, **kwargs):
@@ -1901,7 +1899,7 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
         # just close the popover and leave the color alone.
         want_open = False
         color_changed = False
-
+    
     if want_open:
         if not open_prev:
             Melty._popover_open_frame = Melty.frame_count  # grace the opening frame
@@ -3217,6 +3215,7 @@ def _pending_total_gen():
     _def_tints memo key so a tint-comment edit in one file refreshes washes
     in editors viewing OTHER files. Read per frame; the dict is tiny."""
     try:
+            
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
         return sum(PendingSave._pending_gen.values())
     except Exception:
@@ -3559,7 +3558,6 @@ def _pending_line_delta(path, before_line):
 _XFILE_NAME_TINTS = {}
 _TINT_OWNER_DEF_RE = re.compile(r"\s*(?:async\s+)?(?:class|def)\s+([A-Za-z_]\w*)")
 _TINT_OWNER_ASSIGN_RE = re.compile(r"\s*([A-Za-z_]\w*)\s*[:=](?!=)")
-
 
 def _file_name_tints(path):
     """{name: rgb} for every definition in `path` carrying an explicit tint.
@@ -5992,12 +5990,27 @@ def _describe_code_tree(code_tree):
 # here silently clobbered it and broken `_blank_foreign_scopes` (m.group(1)
 # → IndexError). This one matches STRIPPED lines and needs no groups.
 _FOLD_SCOPE_HEAD_RE = re.compile(r'(?:async\s+)?(?:def|class)\s')
+_FOLD_SCOPE_NAME_RE = re.compile(r'(?:async\s+)?(?:def|class)\s+(\w+)')
 _FOLD_IMPORT_RE = re.compile(r'(?:import|from)\s')
 
 
+# Bump when _scope_fold_ranges()` default_collapsed SOURCES change so
+# already-seeded (session-lived) editors only the new defaults in once.
+# v2: multiline comment runs joined imports as default-collapsed.
+# v3: string scanner fixed (quoted triple-quotes no longer suppress
+#     comment-run detection below them), so re-union the recovered runs.
+# v4: multiline strings (docstrings / GLSL blocks) joined default_collapsed.
+_FOLD_SEED_VER = 4
+
+
 def _scope_fold_ranges(text):
-    """(ranges, default_collapsed) fold sources for `text` — the
-    scope_collapse=True feed for draw_text's fold layer. Line/indentation
+    """(ranges, default_collapsed, key_of) fold sources for `text` — the
+    scope_collapse=True feed for draw_text's fold layer. key_of maps each
+    range tuple to a line-independent identity (scope qualname path,
+    comment/string first-line text, the import-block constant): collapse
+    state persists as these keys (ds._fold_keys), never as line numbers, so
+    edits that shift lines can't orphan a collapsed fold and the scan itself
+    may be debounced off the keystroke path. Line/indentation
     based rather than ast.parse on purpose: it's O(lines), and it keeps
     working on the syntactically broken buffers every mid-edit frame
     produces, where a parse-based scan would go stale per keystroke.
@@ -6011,67 +6024,104 @@ def _scope_fold_ranges(text):
         delimiter lines visible ((open, close-1) hides only the interior) so
         the collapsed display text still tokenizes as a TERMINATED string —
         hiding the closer would paint the rest of the file string-colored.
+        These join default_collapsed like comment runs: folded on load,
+        re-folded by collapse-all, left alone by expand-all.
       comment runs — >=2 consecutive same-indent full-line '#' comments.
-        Runs that parse as a melty override comment ('# [tint=..., ...]')
-        also join default_collapsed: param comments start folded.
+        All runs join default_collapsed: multiline comments start folded;
+        collapse-all re-folds them but expand-all leaves them collapsed.
       top import block — first module-level import down to the last import
         before other module-level code (blank lines, comments and paren /
         backslash continuations stay inside). Also returned in
         default_collapsed: imports start folded on a fresh editor."""
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import \
-        _parse_override_comment
     lines = text.split('\n')
     out = []
+    default_col = []
+    key_of = {}          # (start, end) -> stable fold identity
+    _kcount = {}
+
+    def _emit(s0, e0, key, default=False):
+        # Duplicate identities (two runs opening with the same comment line,
+        # a redefined def) disambiguate by emission index - unique for a
+        # given text; only inserting an identical sibling range re-numbers.
+        out.append((s0, e0))
+        n = _kcount.get(key, 0)
+        _kcount[key] = n + 1
+        key_of[(s0, e0)] = key if n == 0 else key + (n,)
+        if default:
+            default_col.append((s0, e0))
+
     # Pass 1 - multiline strings. Their interior (and closing) lines go in
     # str_interior so the scope/comment/import scan below treats them as
     # opaque: indent-0 GLSL inside a def must not pop the def's scope, and a
     # "def " inside a string must not open a phantom one.
     str_interior = set()
     str_open = None              # (open_line, delim) while inside a string
+    # Char-level state machine, NOT find('\"\"\"'): a triple-quote inside an
+    # ordinary string literal (`ln.find('\"\"\"', pos)`) or after a trailing
+    # inline comment must not open a phantom multiline string - a raw find
+    # scanner marks everything below such a line as string interior, which
+    # then suppresses scope/comment detection for the rest of the file.
     for i, ln in enumerate(lines):
-        if str_open is None and ln.lstrip().startswith('#'):
-            continue             # '# use """ freely' must not open a string
-        pos = 0
+        j, L = 0, len(ln)
         while True:
-            if str_open is None:
-                d1 = ln.find('"""', pos)
-                d2 = ln.find("'''", pos)
-                cands = [(p, d) for p, d in ((d1, '"""'), (d2, "'''"))
-                         if p != -1]
-                if not cands:
-                    break
-                p, delim = min(cands)
-                str_open = (i, delim)
-                pos = p + 3
-            else:
-                p = ln.find(str_open[1], pos)
-                if p == -1:
-                    str_interior.add(i)
-                    break
-                s0 = str_open[0]
+            if str_open is not None:
+                s0, delim = str_open
+                closed = -1
+                while j < L:
+                    if ln[j] == '\\':
+                        j += 2
+                        continue
+                    if ln.startswith(delim, j):
+                        closed = j
+                        break
+                    j += 1
+                if closed == -1:
+                    if i != s0:
+                        str_interior.add(i)
+                    break            # whole line is string interior
                 if i != s0:
                     str_interior.add(i)
                     if i - 1 > s0:
-                        out.append((s0, i - 1))
+                        _emit(s0, i - 1, ('str', lines[s0].strip()),
+                              default=True)
                 str_open = None
-                pos = p + 3
+                j = closed + 3
+                continue
+            if j >= L:
+                break
+            c = ln[j]
+            if c == '#':
+                break                # comment - rest of the line is inert
+            if c in '\'"':
+                if ln.startswith(c * 3, j):
+                    str_open = (i, c * 3)
+                    j += 3
+                    continue
+                # Single-quoted string: opaque to the closing quote (or line
+                # end, a broken buffer) so a '\"\"\"' INSIDE it stays inert.
+                j += 1
+                while j < L:
+                    if ln[j] == '\\':
+                        j += 2
+                        continue
+                    if ln[j] == c:
+                        j += 1
+                        break
+                    j += 1
+                continue
+            j += 1
     # Pass 2 - scopes, comment runs, top import block.
     stack = []                   # (indent, header_line)
     last_code = -1               # last non-blank line seen
     run_start = run_ind = None   # current same-indent comment run
-    default_col = []
 
     def _close_run(end):
         if run_start is not None and end > run_start:
-            out.append((run_start, end))
-            # Melty override comment runs start folded. Parse-checked (not
-            # the loose _OVERRIDE_COMMENT_RE) so a prose comment that merely
-            # contains 'x=' doesn't auto-collapse; a mixed prose-then-override
-            # run fails the joined parse and stays open (its visible header
-            # would be the prose line, which wears no tint).
-            if _parse_override_comment(
-                    '\n'.join(l.strip() for l in lines[run_start:end + 1])):
-                default_col.append((run_start, end))
+            # A multiline comment run is folded and is skipped by
+            # expand/collapse-all (same treatment as the top import block);
+            # runs toggle via their own badge or the caret-scoped shortcuts.
+            _emit(run_start, end, ('comment', lines[run_start].strip()),
+                  default=True)
 
     imp_first = imp_last = None
     imp_done = imp_cont = False
@@ -6099,9 +6149,9 @@ def _scope_fold_ranges(text):
             continue
         ind = len(ln) - len(ln.lstrip())
         while stack and ind <= stack[-1][0]:
-            _, hdr = stack.pop()
+            _, hdr, _spath = stack.pop()
             if last_code > hdr:
-                out.append((hdr, last_code))
+                _emit(hdr, last_code, ('scope',) + _spath)
         if not imp_done and not is_comment:
             if imp_cont:
                 imp_last = i
@@ -6116,17 +6166,18 @@ def _scope_fold_ranges(text):
             elif imp_first is not None and ind == 0:
                 imp_done = True   # first non-import module-level statement
         if _FOLD_SCOPE_HEAD_RE.match(s):
-            stack.append((ind, i))
+            _snm = _FOLD_SCOPE_NAME_RE.match(s)
+            stack.append((ind, i, (stack[-1][2] if stack else ())
+                          + ((_snm.group(1) if _snm else '?'),)))
         last_code = i
     _close_run(len(lines) - 1)
-    for _, hdr in stack:
+    for _, hdr, _spath in stack:
         if last_code > hdr:
-            out.append((hdr, last_code))
+            _emit(hdr, last_code, ('scope',) + _spath)
     if imp_first is not None and imp_last is not None and imp_last > imp_first:
-        out.append((imp_first, imp_last))
-        default_col.append((imp_first, imp_last))
+        _emit(imp_first, imp_last, ('imports',), default=True)
     out.sort()
-    return out, default_col
+    return out, default_col, key_of
 
 
 def _fold_normalize_ranges(n_lines, ranges):
@@ -6227,7 +6278,10 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     caller's recomputed fold_ranges next frame. An edit that overlaps a seam
     force-expands that fold (its hidden text is still spliced back, clamped
     to the edit region's end) — the neighborhood changed under it, so showing
-    everything beats guessing. Returns (full_text, new_collapsed_set)."""
+    everything beats guessing. Returns (full_text, new_collapsed_set,
+    force_expanded) — force_expanded holds the ORIGINAL range tuples of
+    seam-expanded folds so the caller can drop their fold KEYS (the durable
+    collapse state; see the projection block in the draw_text body)."""
     lo, ln = len(old_disp), len(new_disp)
     m = min(lo, ln)
     # Maximal SUFFIX first, prefix capped to what's left: at a seam an
@@ -6258,6 +6312,7 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     dnl = (new_disp.count('\n', p, ln - suf)
            - old_disp.count('\n', p, lo - suf))
     new_col = set(collapsed)
+    force_expanded = set()
     parts, pos = [], 0
     for a, hidden, rng in sorted(segments):
         if a >= lo - suf:
@@ -6277,12 +6332,13 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
             # happened; the hidden text splices back clamped to the edit.
             na = min(max(a, p), ln - suf)
             new_col.discard(rng)
+            force_expanded.add(rng)
         na = max(na, pos)
         parts.append(new_disp[pos:na])
         parts.append(hidden)
         pos = na
     parts.append(new_disp[pos:])
-    return ''.join(parts), new_col
+    return ''.join(parts), new_col, force_expanded
 
 
 def fold_project_jump(ds, text, pos, li):
@@ -6306,12 +6362,20 @@ def fold_project_jump(ds, text, pos, li):
         # jump's - rather than guess a mapping, expand everything. With no
         # collapsed fold, full coords ARE display coords.
         col.clear()
+        if getattr(ds, '_fold_keys', None) is not None:
+            ds._fold_keys = set()   # keys are the durable truth - sync them
         ds.invalidate()
         return pos, li
     ranges = _fc[1][0]
     hiding = [r for r in col if r[0] < li <= r[1]]
     for r in hiding:
         col.discard(r)
+    # External mutation: the body's harvest won't run until its next frame,
+    # and its top-of-frame key->range projection would otherwise re-collapse
+    # what this jump just expanded - drop the expanded folds' keys too.
+    _kf = getattr(ds, '_fold_key_of', None)
+    if hiding and _kf and getattr(ds, '_fold_keys', None) is not None:
+        ds._fold_keys -= {_kf[r] for r in hiding if r in _kf}
     built = _fold_build(text, ranges, col)
     if hiding:
         ds._fold_cache = (text, (ranges, frozenset(col)), built)
@@ -6345,6 +6409,7 @@ def draw_text(input_value: str, height=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               code_diff_mode=False, fold_all_collapsed=None,
+              scroll_bar_width=8.0, scroll_bar_brightness=5.9,
               unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -6388,19 +6453,96 @@ def draw_text(input_value: str, height=None,
     # change blocks instead (open_file._diff_gap_folds), so collapse-all
     # skims the diff. The flag here suppresses the scope fallback - without
     # it an empty gap list (whole file changed) would re-enable scope folds.
+    # In-function import, same cycle-avoidance as the main Toggles import
+    # further down (which harmlessly re-binds the same name).
+    from src.lsd.gl_gui.toggles import Toggles
+    _fold_key_of = None
     if (scope_collapse and not fold_ranges and syntax_highlight
+            and Toggles.TextEditor.scope_fold_ranges
             and not code_diff_mode
             and not single_line and not is_search_box):
         _sc = getattr(ds, '_scope_rng_cache', None)
-        if _sc is None or _sc[0] is not input_value:
-            _sc = (input_value, _scope_fold_ranges(input_value))
+        # Keyed on text identity AND _FOLD_SEED_VER: a hotswap that changed
+        # the default_collapsed sources must not serve a pre-swap scan to
+        # the versioned reseed below. Cache: (text, scan_result, ver,
+        # provisional) - provisional entries were splice-carried, not
+        # scanned, and are replaced by a real scan once input quiets.
+        _sc_ok = (_sc is not None and len(_sc) >= 4
+                  and _sc[2] == _FOLD_SEED_VER)
+        _sc_hit = _sc_ok and _sc[0] is input_value
+        if not _sc_hit and _sc_ok and _typing_hot():
+            # Typing burst: the O(file) rescan (~22ms on a large buffer) is
+            # the editor's biggest per-keystroke cost - skip it and shift the
+            # held ranges across the edit via the single covering splice
+            # (same idiom as the wash cache). Keys are line-independent, so
+            # only the range tuples shift; ranges above the edit
+            # stretch by its newline delta, ranges below it translate.
+            _rng, _dcol, _kof = _sc[1]
+            _spl = _text_splice(_sc[0], input_value)
+            if _spl is not None and _spl[3]:
+                _sp_dl, _sp_el, _sp_oel = _spl[3], _spl[4], _spl[5]
+
+                def _fold_shift(r):
+                    if r[1] < _sp_el:
+                        return r
+                    if r[0] > _sp_oel:
+                        return (r[0] + _sp_dl, r[1] + _sp_dl)
+                    return (r[0], max(r[0], r[1] + _sp_dl))
+
+                _kof = {_fold_shift(r): k for r, k in _kof.items()}
+                _rng = [_fold_shift(r) for r in _rng]
+                _dcol = [_fold_shift(r) for r in _dcol]
+            _sc = (input_value, (_rng, _dcol, _kof), _FOLD_SEED_VER, True)
             ds._scope_rng_cache = _sc
-        fold_ranges, _fold_default_col = _sc[1]
+        elif not _sc_hit or (_sc[3] and not _typing_hot()):
+            _sc = (input_value, _scope_fold_ranges(input_value),
+                   _FOLD_SEED_VER, False)
+            ds._scope_rng_cache = _sc
+        if _sc[3]:
+            request_render()   # provisional: the trailing rescan needs a frame
+        fold_ranges, _fold_default_col, _fold_key_of = _sc[1]
     if fold_ranges and not single_line and not is_search_box:
+        if _fold_key_of is not None:
+            # Collapse state is stored as line-independent KEYS (ds._fold_keys
+            # / _fold_search_exp_keys); the range-tuple sets every editor
+            # below mutates are a per-frame PROJECTION through this frame's
+            # key->range map, harvested back to keys right before the build.
+            # Tuples never need shifting on edits - a key re-projects onto
+            # wherever the fold is now; a key whose fold vanished simply
+            # projects to nothing until it reappears. Map stashed on the
+            # draw_state for the external writers (fold_project_jump).
+            _fold_range_of = {k: r for r, k in _fold_key_of.items()}
+            ds._fold_key_of = _fold_key_of
+            if (getattr(ds, '_fold_keys', None) is None
+                    and getattr(ds, '_fold_collapsed', None) is not None):
+                # Legacy tuple-based state (pre-key session): adopt once.
+                ds._fold_keys = {_fold_key_of[r] for r in ds._fold_collapsed
+                                 if r in _fold_key_of}
+            if getattr(ds, '_fold_keys', None) is not None:
+                ds._fold_collapsed = {_fold_range_of[k] for k in ds._fold_keys
+                                      if k in _fold_range_of}
+            if getattr(ds, '_fold_search_exp_keys', None) is not None:
+                ds._fold_search_exp = {
+                    _fold_range_of[k] for k in ds._fold_search_exp_keys
+                    if k in _fold_range_of}
+        # Default-collapsed seeding is VERSIONED: the seed normally fires once
+        # per FILE (draw_states are session-lived, surviving hotswap and file
+        # close&open), so when the default_collapsed SOURCES change (bump
+        # _FOLD_SEED_VER) already-seeded editors union the new defaults in
+        # once instead of never seeing them. Union, not replace - the user's
+        # own collapsed scopes stay collapsed. The stamp only advances on a
+        # frame where the default scan actually ran (_fold_default_col computed)
+        # so a diff-mode edit can't swallow the one-shot union.
         if getattr(ds, '_fold_collapsed', None) is None:
-            # First fold frame for this editor: the top import block starts
-            # collapsed (the only default_collapsed source right now).
             ds._fold_collapsed = set(_fold_default_col or ())
+            ds._fold_seed_ver = _FOLD_SEED_VER
+        elif (_fold_default_col is not None
+              and getattr(ds, '_fold_seed_ver', 0) != _FOLD_SEED_VER):
+            ds._fold_seed_ver = _FOLD_SEED_VER
+            _new = set(_fold_default_col) - ds._fold_collapsed
+            if _new:
+                ds._fold_collapsed |= _new
+                ds.invalidate()
         # fold_all_collapsed: ONE expanded/collapsed state owned by the
         # CALLER (the code editor's diff collapse mode shares it across all
         # views/panes). On seed - or whenever the caller's value changes -
@@ -6475,17 +6617,20 @@ def draw_text(input_value: str, height=None,
                     if _r[0] > _open_end:
                         _roots.append(_r)
                         _open_end = _r[1]
-                # Default-collapsed ranges (the top import block) keep their
-                # state - collapse/expand-all leaves them alone; they only
-                # toggle via their own buttons or the caret-scoped shortcuts.
-                if _fold_default_col:
-                    _skip = set(_fold_default_col)
-                    _roots = [r for r in _roots if r not in _skip]
+                # Default-collapsed ranges (top import block, comment runs)
+                # are ASYMMETRIC: collapse-all folds them along with the
+                # roots (nested comment runs included, so they're still
+                # folded if their root is later expanded), but expand-all
+                # leaves them untouched - they only expand via their own
+                # badge or the caret-scoped shortcuts.
+                _skip = set(_fold_default_col or ())
                 if ctrl_shift_minus_down:
-                    ds._fold_collapsed.update(_roots)
+                    _targets = set(_roots) | _skip
+                    ds._fold_collapsed.update(_targets)
                 else:
-                    ds._fold_collapsed.difference_update(_roots)
-                ds._fold_search_exp.difference_update(_roots)
+                    _targets = [r for r in _roots if r not in _skip]
+                    ds._fold_collapsed.difference_update(_targets)
+                ds._fold_search_exp.difference_update(_targets)
                 _fold_kb_all = True
                 ds.invalidate()
                 request_render()
@@ -6579,6 +6724,14 @@ def draw_text(input_value: str, height=None,
             # reopened search with the same term immediately re-runs the expand.
             ds._fold_search_exp.clear()
             ds._fold_search_seen = None
+        if _fold_key_of is not None:
+            # Harvest: every mutation above worked on the projected tuples;
+            # convert back so the KEYS stay the single durable truth.
+            ds._fold_keys = {_fold_key_of[r] for r in ds._fold_collapsed
+                             if r in _fold_key_of}
+            ds._fold_search_exp_keys = {
+                _fold_key_of[r] for r in ds._fold_search_exp
+                if r in _fold_key_of}
         _fk = (tuple(tuple(r) for r in fold_ranges),
                frozenset(ds._fold_collapsed))
         _fc = getattr(ds, '_fold_cache', None)
@@ -7601,6 +7754,7 @@ def draw_text(input_value: str, height=None,
     # with no jump targets falls through to the normal click path, so plain
     # gutter clicks still place the caret at line start.
     if (left_mouse_down and gutter_w
+            and Toggles.TextEditor.usage_heat_gutter
             and left + _lv_btn_w <= left_mouse_down.x < left + gutter_w
             and not any(_br[0] <= left_mouse_down.x < _br[2]
                         and _br[1] <= left_mouse_down.y < _br[3]
@@ -8888,28 +9042,38 @@ def draw_text(input_value: str, height=None,
         # still washes its header row); entries living entirely on hidden
         # lines drop.
         if _fold_bl is not None:
-            _rb = []
-            for _b_ln, _b_ix, _b_end, _b_tt in _dt_blocks:
-                _dl = _fold_bl(_b_ln)
-                if _fold_d2b[_dl] != _b_ln:
-                    continue
-                _dix = _fold_off(_b_ix)
-                if _dix is None:
-                    continue
-                _rb.append((_dl, _dix, _fold_bl(_b_end), _b_tt))
-            _dt_blocks = tuple(_rb)
+            # Memoized like _fold_remap_spans (inputs + fold are held by
+            # reference so id reuse can't alias): the remap itself is cheap,
+            # but downstream memos (_b_lvls, _scope_surface) key on the
+            # OUTPUT lists' identity, so they must be stable frame to frame.
+            _dtm = getattr(ds, '_fold_dt_memo', None)
+            if (_dtm is not None and _dtm[0] is _dt_blocks
+                    and _dtm[1] is _dt_lines and _dtm[2] is _fold_built):
+                _dt_blocks, _dt_lines = _dtm[3], _dtm[4]
+            else:
+                _rb = []
+                for _b_ln, _b_ix, _b_end, _b_tt in _dt_blocks:
+                    _dl = _fold_bl(_b_ln)
+                    if _fold_d2b[_dl] != _b_ln:
+                        continue
+                    _dix = _fold_off(_b_ix)
+                    if _dix is None:
+                        continue
+                    _rb.append((_dl, _dix, _fold_bl(_b_end), _b_tt))
+                _rl = []
+                for _l_ln, _l_rgb, _l_sc, _l_si, _l_ei in _dt_lines:
+                    _dl = _fold_bl(_l_ln)
+                    if _fold_d2b[_dl] != _l_ln:
+                        continue
+                    _dsi, _dei = _fold_off(_l_si), _fold_off(_l_ei)
+                    if _dsi is None:
+                        continue
+                    _rl.append((_dl, _l_rgb, _l_sc, _dsi,
+                                _dei if _dei is not None else _dsi + (_l_ei - _l_si)))
+                ds._fold_dt_memo = (_dt_blocks, _dt_lines, _fold_built,
+                                    tuple(_rb), tuple(_rl))
+                _dt_blocks, _dt_lines = ds._fold_dt_memo[3], ds._fold_dt_memo[4]
             _dt_spans = _fold_remap_spans(_dt_spans, 'dt')
-            _rl = []
-            for _l_ln, _l_rgb, _l_sc, _l_si, _l_ei in _dt_lines:
-                _dl = _fold_bl(_l_ln)
-                if _fold_d2b[_dl] != _l_ln:
-                    continue
-                _dsi, _dei = _fold_off(_l_si), _fold_off(_l_ei)
-                if _dsi is None:
-                    continue
-                _rl.append((_dl, _l_rgb, _l_sc, _dsi,
-                            _dei if _dei is not None else _dsi + (_l_ei - _l_si)))
-            _dt_lines = tuple(_rl)
         # Comment-text tints come from a direct scan of the buffer text - no
         # code_tree, no debounce, so a tint comment colors as it's typed
         # instead of waiting on the cst-dict round trip. Scans over the
@@ -8981,18 +9145,39 @@ def draw_text(input_value: str, height=None,
         # base (stuck flush to the enclosing scope - no shadow at the top
         # edge), bottom corners one step up, easing down (the peel).
         _b_list = list(_dt_blocks) if _dt_block_sh else []
-        _b_lvls = []
-        for _l0, _i0, _e0, _t0 in _b_list:
-            _b_lvls.append(sum(
-                1 for _l1, _i1, _e1, _t1 in _b_list
-                if (_l1 <= _l0 and _e0 <= _e1
-                    and (_l1, _e1) != (_l0, _e0))))
+        # O(blocks²), so memoized by the block tuple's identity (the ref in
+        # the memo guards id change) - recomputing every frame was a real
+        # render-thread cost on buffers with hundreds of defs.
+        _blm = getattr(ds, '_dt_blvl_memo', None)
+        if (_blm is not None and _blm[0] is _dt_blocks
+                and _blm[1] == bool(_dt_block_sh)):
+            _b_lvls = _blm[2]
+        else:
+            _b_lvls = []
+            for _l0, _i0, _e0, _t0 in _b_list:
+                _b_lvls.append(sum(
+                    1 for _l1, _i1, _e1, _t1 in _b_list
+                    if (_l1 <= _l0 and _e0 <= _e1
+                        and (_l1, _e1) != (_l0, _e0))))
+            ds._dt_blvl_memo = (_dt_blocks, bool(_dt_block_sh), _b_lvls)
+
+        # Per-line result cache for _scope_surface: each call scans every
+        # block, and the wash/symbol-shadow passes call it per visible def
+        # line per frame, it depends only on (block list, offset knob).
+        _ssm = getattr(ds, '_dt_surf_memo', None)
+        if (_ssm is None or _ssm[0] is not _dt_blocks
+                or _ssm[1] != _dt_block_sh):
+            _ssm = ds._dt_surf_memo = (_dt_blocks, _dt_block_sh, {})
+        _surf_cache = _ssm[2]
 
         def _scope_surface(line):
             # Depth of the enclosing-t's surface at `line`: the innermost
             # containing block's base + its peel, interpolated with the same
             # smoothstep the gradient shader applies, so chips ride a
             # constant lift above the surface beneath them.
+            best = _surf_cache.get(line)
+            if best is not None:
+                return best
             best, best_lvl = 0.0, -1
             for _sbi, (_l0, _i0, _e0, _t0) in enumerate(_b_list):
                 if _l0 <= line <= _e0 and _b_lvls[_sbi] > best_lvl:
@@ -9000,6 +9185,7 @@ def draw_text(input_value: str, height=None,
                     t = (line - _l0) / max(1, _e0 - _l0)
                     t = t * t * (3.0 - 2.0 * t)
                     best = _dt_block_sh * (_b_lvls[_sbi] + t)
+            _surf_cache[line] = best
             return best
 
         def _ol_rgb(c, b=None):
@@ -9280,7 +9466,7 @@ def draw_text(input_value: str, height=None,
     _pf_info['us_call_ms'] = round((time.perf_counter() - _t_us) * 1000.0, 1)
     _pf_info['us_n'] = len(_uspans)
     _usage_line_heat = {}
-    if _uspans:
+    if _uspans and Toggles.TextEditor.usage_heat_gutter:
         _u_vspan = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
         # Visible band only: _uspans is sorted by start index
         # (_collect_usage_spans sorts), so bisect the on-screen character
@@ -9481,7 +9667,6 @@ def draw_text(input_value: str, height=None,
             if dy1 < rect_min_y or dy0 > rect_max_y:
                 continue
             draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, imgui.get_color_u32_rgba(*bg))
-
     _pf("body:err_diff")
     # Syntax-highlighted text - only the visible window is tokenized (see
     # `_window`), so this is O(visible) not O(buffer). The loop starts at the
@@ -10184,6 +10369,8 @@ def draw_text(input_value: str, height=None,
                         set_marker_open(m, not _open)
                     ds.invalidate()
                     request_render()
+                    
+                
         # An unconsumed press stash dies with the pass - a press on a line
         # whose marker disappeared must not fire on a later frame's layout.
         ds._lv_btn_pressed_line = None
@@ -10737,8 +10924,15 @@ def draw_text(input_value: str, height=None,
     # before.
     if _fold_segments:
         if changed:
-            _full_now, ds._fold_collapsed = _fold_reassemble(
+            _full_now, ds._fold_collapsed, _fold_dropped = _fold_reassemble(
                 original_input, text, _fold_segments, ds._fold_collapsed)
+            # A seam-edited fold force-expanded: its KEY must drop too, or
+            # the key->range projection next frame will re-collapse it.
+            # (The dnl-shifted tuples change nothing - keys are line-only.)
+            if (_fold_dropped and _fold_key_of is not None
+                    and getattr(ds, '_fold_keys', None) is not None):
+                ds._fold_keys -= {_fold_key_of[r] for r in _fold_dropped
+                                  if r in _fold_key_of}
         else:
             _full_now = _fold_full
     else:

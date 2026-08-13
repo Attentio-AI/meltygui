@@ -115,10 +115,20 @@ def _run_convert_chain(value=None, chain=None, **extra_kwargs):
 
     return value
 
-# Horizontal space content_width always gives up on scrollableable views, so
-# content doesn't render underneath the bar. Sized to cover the track plus its
-# right-edge margin in draw_overlay_scrollbar.
-SCROLLBAR_RESERVE = 10.0
+# Width of the overlay scrollbar grab. Views override per-call with the
+# scroll_bar_width kwarg (declare it as a signature param to change a view's
+# default, e.g. draw_text).
+SCROLL_BAR_WIDTH_DEFAULT = 4.0
+
+# Multiplier on the bar's alpha (idle and hovered, clamped to 1.0). Views
+# override per-call with the scroll_bar_brightness kwarg, same as
+# scroll_bar_width.
+SCROLL_BAR_BRIGHTNESS_DEFAULT = 1.0
+
+# Track margins around the bar in draw_overlay_scrollbar. The horizontal space
+# content region gives up to scroll-capable children - so content doesn't render
+# underneath the bar - is scroll_bar_width + this.
+SCROLLBAR_MARGIN = 6.0
 
 
 def column_boundary(content_width, n_cols, offsets, c):
@@ -172,7 +182,9 @@ def column_max_height(column_parent):
     return column_parent.clip_size[1] - columns_top + 10
 
 
-def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
+def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
+                           bar_width=SCROLL_BAR_WIDTH_DEFAULT,
+                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT):
     """Draw an interactive vertical scrollbar onto the overlay draw list.
 
     Hover and drag are routed through ``draw_state.on_action`` against the
@@ -197,7 +209,6 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
     bar_offset = -1.0
 
     # Track geometry, glued to the right edge of the viewport.
-    bar_width = 4.0
     margin = 2.0
     track_x2 = view_left + view_width - margin + bar_offset
     track_x1 = track_x2 - bar_width + bar_offset
@@ -257,7 +268,7 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height):
 
     # Paint to the overlay list so the bar floats above clipped content.
     tint = draw_state.current_tint
-    grab_alpha = 0.9 if (hovered or active) else 0.5
+    grab_alpha = min(1.0, (0.9 if (hovered or active) else 0.5) * bar_brightness)
     if tint is not None:
         col_grab = imgui.get_color_u32_rgba(*tint[:3], grab_alpha)
     else:
@@ -1817,6 +1828,11 @@ def render_func(*args, **o_kwargs):
                     draw_state.expanded = True
                     size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
                     size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
+                    # True if this resize-drag drives an INTERIOR column edge
+                    # (set in the width block below). Hoisted so the sticky-x
+                    # re-anchor further down can see it even when passed_width
+                    # short-circuits the width block.
+                    queued = False
                     if passed_height is None:
                         draw_state.height = snap_int(max(size_h, draw_state.min_height))
                         draw_state._source["height"] = "initial window size"
@@ -1844,7 +1860,6 @@ def render_func(*args, **o_kwargs):
                         # the window flies off screen. Reading edge["x"] live each
                         # frame survives the rebase. _resize_target_edge_x0 holds
                         # the previous total_dx so the per-frame delta is exact.
-                        queued = False
                         if handle_drag is corner_drag:
                             if not closable:
                                 draw_state.invalidate()
@@ -1855,6 +1870,28 @@ def render_func(*args, **o_kwargs):
                                     draw_state._resize_target_edge = _columns.edge_under_cursor(
                                         draw_state, sx, sy)
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
+                                    # TEMP edge debugging: what the right-drag latched.
+                                    try:
+                                        _fe_dbg = getattr(draw_state, "_frame_edges", None)
+                                        _tgt = draw_state._resize_target_edge
+                                        with open("/tmp/lsd_edge_debug.log", "a") as _f:
+                                            _rows = {
+                                                k: [round(e["x"], 1) for e in el]
+                                                for k, (ds_, el) in
+                                                getattr(draw_state, "_edge_views", {}).items()}
+                                            _f.write(
+                                                f"LATCH sx={sx:.1f} sy={sy:.1f} "
+                                                f"abs_left={draw_state.abs_left:.1f} "
+                                                f"abs_top={draw_state.abs_top:.1f} "
+                                                f"h={draw_state.height} "
+                                                f"drag_xy=({handle_drag.x:.1f},{handle_drag.y:.1f}) "
+                                                f"total=({handle_drag.total_dx:.1f},{handle_drag.total_dy:.1f}) "
+                                                f"edge={_tgt['x'] if _tgt else None} "
+                                                f"is_fe1={_tgt is (_fe_dbg[1] if _fe_dbg else None)} "
+                                                f"rows={_rows} "
+                                                f"win={getattr(draw_state, 'name', draw_state.id)}\n")
+                                    except Exception:
+                                        pass
                                 edge = draw_state._resize_target_edge
                                 fe = getattr(draw_state, "_frame_edges", None)
                                 # Interior divider only - the frame's own right
@@ -1927,7 +1964,14 @@ def render_func(*args, **o_kwargs):
                     # horizontally and the displacement unwinds as the window
                     # shrinks back. Left/None anchors don't re-derive x each
                     # frame; right/center anchors revert on their own.
-                    if (Toggles.WindowSettings.sticky_drag
+                    # NOT while the right-drag holds an interior column edge
+                    # (`queued`): a divider right into the LEFT frame edge
+                    # makes window_edge_pass slide window_pos and grow width
+                    # (slide+grow contact) - re-anchoring x here undoes the
+                    # slide each frame while the width growth sticks, so the
+                    # window ratchets wider without ever moving and the
+                    # divider stops tracking the cursor.
+                    if (Toggles.WindowSettings.sticky_drag and not queued
                             and (draw_state.anchor_pos is None
                                  or draw_state.anchor_pos in LEFT_ANCHORS)):
                         draw_state.window_pos = (draw_state._initial_window_pos_resize[0],
@@ -2407,7 +2451,9 @@ def render_func(*args, **o_kwargs):
                               and (not draw_state.auto_resize
                                    or kwargs.get("max_height", None) is not None))
                 if can_scroll:
-                    draw_state.content_width = max(0, draw_state.content_width - SCROLLBAR_RESERVE)
+                    _sb_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
+                                   + SCROLLBAR_MARGIN)
+                    draw_state.content_width = max(0, draw_state.content_width - _sb_reserve)
                     draw_state._source["content_width"] += " - scrollbar"
 
             if draw_state.expanded:
@@ -4042,6 +4088,7 @@ def render_func(*args, **o_kwargs):
                                     try:
                                         lines1 = str(draw_state._original_load_data).splitlines(keepends=True)
                                         lines2 = str(external_value).splitlines(keepends=True)
+                                        print("+!!!!!!!!!!!!!!!!!!!!!!! SLOW")
                                         diff = "".join(difflib.unified_diff(
                                             lines1, lines2,
                                             fromfile="original.py", tofile="modified.py"))
@@ -4588,7 +4635,7 @@ def render_func(*args, **o_kwargs):
         # single frames during scroll. Only a view whose height is externally
         # bounded (a window/closable, a passed or fill height, or a clamping
         # max_height) can actually overflow and thus needs its own scrollbar.
-        # (SCROLLBAR_RESERVE is subtracted from content_width unconditionally
+        # (The scrollbar reserve is subtracted from content_width unconditionally
         # for scroll-capable views in the renderer - scroll_visible only
         # controls whether the bar is drawn, never the width.)
         _max_h = kwargs.get("max_height", None)
@@ -4723,7 +4770,10 @@ def render_func(*args, **o_kwargs):
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
             if not draw_state.closed:
-                draw_overlay_scrollbar(draw_state, max_scroll_y, draw_state.height - draw_state.footer_height)
+                draw_overlay_scrollbar(draw_state, max_scroll_y, draw_state.height - draw_state.footer_height,
+                                       bar_width=kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT),
+                                       bar_brightness=kwargs.get("scroll_bar_brightness",
+                                                                 SCROLL_BAR_BRIGHTNESS_DEFAULT))
 
         do_scroll = needs_scroll
         scroll_offset = draw_state.scroll_offset if do_scroll else (0, 0)
@@ -4740,10 +4790,11 @@ def render_func(*args, **o_kwargs):
 
         if do_scroll:
             header_height = draw_state.header_height
-            # Reserve room at the right edge for the overlay scrollbar (its grab
-            # spans 8px in from the edge - see draw_overlay_scrollbar) so the
-            # content wraps/clips against the bar instead of rendering under it.
-            scrollbar_reserve = 10
+            # Reserve space at the right edge for the overlay scrollbar (grab
+            # area + margins - see draw_overlay_scrollbar) so the content
+            # wraps/clips before the bar instead of going under it.
+            scrollbar_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
+                                 + SCROLLBAR_MARGIN)
             Melty.push_clip((draw_state.abs_left, draw_state.abs_top + header_height,
                              draw_state.abs_left + draw_state.width - scrollbar_reserve,
                              draw_state.abs_top + header_height + draw_state.height + 2))

@@ -30,6 +30,8 @@ bubbling.py) so a deep change to the held tree marks the host without a manual t
 """
 
 import sys
+import threading
+import time
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.notifications import notify
@@ -69,6 +71,12 @@ class RenderHost(_DeepAttrMixin, dict):
     # Log every change the proxy triggers (dict-dirty + outbound edits) with a caller
     # trail - for diagnosing spurious saves. `RenderHost.debug_changes = False` silences.
     debug_changes = False
+
+    # Class-level fallbacks for the consumer-notify debounce fields, so host
+    # instances born before a hotswap of this class still resolve them.
+    _local_edit_time = 0.0
+    _pending_notify_name = None
+    _notify_timer = None
 
     def __init__(self, io_function=None, *args, input_value=None, child_kwargs=None,
                  settings_renderer=None, name=None, hidden=False, window=True, standalone=True,
@@ -114,6 +122,10 @@ class RenderHost(_DeepAttrMixin, dict):
         # - otherwise the newest event (the local edit) wins. See _internal_view_func.
         self._input_change_frame = 0    # frame the resolved INPUT (source) last changed
         self._local_edit_frame = 0      # frame the held value was last LOCALLY edited
+        self._local_edit_time = 0.0     # wall clock of the last local edit - drives the
+                                        # consumer-notify debounce (typing_hold)
+        self._pending_notify_name = None  # deferred _notify_consumers note name
+        self._notify_timer = None         # armed flush timer for the deferred notify
         self._last_return = None
         self._registered = False
         # Draw_states that READ this host's value from OUTSIDE its own draw loop (e.g.
@@ -183,6 +195,60 @@ class RenderHost(_DeepAttrMixin, dict):
         Melty.render_hosts.pop(id(self), None)
         self._registered = False
         return self
+
+    # One outstanding catch-up timer for the typing hold (class-wide - the hold
+    # gates ALL hosts at once in draw_main's loop).
+    _typing_wake_timer = None
+
+    @classmethod
+    def typing_hold(cls):
+        """True while host draws should be deferred because the user is typing:
+        a draw_text editor holds focus AND a key was pressed within the debounce
+        window. The draw_main host loop checks this next to its click/drag/
+        scroll skip — host draws (reconverts, saves) are deferrable work that
+        would otherwise eat into typing frames. Arms a one-shot wake for the
+        window's expiry so the skipped draws catch up even when no further
+        input produces a frame; a newer keypress simply re-enters the hold on
+        that wake's frame and chains the next one."""
+        from src.lsd.gl_gui.toggles import Toggles
+        window = Toggles.HostLifecycle.host_typing_debounce_ms / 1000.0
+        if window <= 0 or Melty.text_focused_ds is None:
+            return False
+        # A physically HELD key counts as pressed regardless of the stamp -
+        # repeats don't reliably re-stamp it (Wayland repeat gaps exceed the OS
+        # repeat delay), so the hold would otherwise expire mid-press. Reconcile
+        # against glfw.get_key first: a RELEASE that went elsewhere (focus
+        # stolen mid-hold) would strand the key in the set and starve host
+        # draws forever.
+        held = bool(Melty._keys_down)
+        if held and Melty.glfw_window is not None:
+            import glfw
+            for k in list(Melty._keys_down):
+                try:
+                    if glfw.get_key(Melty.glfw_window, k) != glfw.PRESS:
+                        Melty._keys_down.discard(k)
+                except Exception:
+                    Melty._keys_down.discard(k)
+            held = bool(Melty._keys_down)
+        remaining = Melty._last_key_time + window - time.monotonic()
+        if not held and remaining <= 0:
+            return False
+        # Catch-up wake: for a debounce tail, at its expiry; while a key is
+        # held past the stamp window, a full window out - RELEASE re-stamps
+        # and forces a frame anyway, the hold is just the safety net.
+        timer = cls._typing_wake_timer
+        if timer is None or not timer.is_alive():
+            timer = threading.Timer(remaining if remaining > 0 else window,
+                                    cls._typing_wake)
+            timer.daemon = True
+            cls._typing_wake_timer = timer
+            timer.start()
+        return True
+
+    @classmethod
+    def _typing_wake(cls):
+        cls._typing_wake_timer = None
+        request_render()
 
     @classmethod
     def all(cls):
@@ -318,6 +384,7 @@ class RenderHost(_DeepAttrMixin, dict):
     def _mark_changed(self):
         self._external_change = True
         self._local_edit_frame = Melty.frame_count   # stamp: a LOCAL edit happened NOW
+        self._local_edit_time = time.monotonic()     # re-arms the consumer-notify debounce
         # Debug timeline: who dirtied this host (a symbol-attach bubbling into the
         # held gp would show up here as _distribute_by_name / _post_symbol_attach).
         _ptrace_rl(("host-dirty", self.name), f"host DIRTY {self.name} <- {self._caller_trail(frames=5)}",
@@ -609,10 +676,57 @@ class RenderHost(_DeepAttrMixin, dict):
         request_render()
 
     def _notify_consumers(self, name="RenderHost value changed"):
-        """Invalidate external consumer subtrees (notify_on_change): they read this
-        host's value/error from OUTSIDE its own draw loop, so nothing else re-runs
-        them. Climb their ancestors (invalidate_up) since the consumer is usually a
-        nested cached view that won't re-run unless its parents do."""
+        """Invalidate external consumer subtrees (notify_on_change) — DEBOUNCED
+        against active typing. While the held value is being locally edited
+        (a keystroke stream — each edit stamps _local_edit_time), every finished
+        background reconvert would pulse here and invalidate EVERY consumer,
+        including a second editor window over the same file, per keystroke —
+        large-file re-renders that stall typing. Instead the notify is deferred
+        (trailing, re-armed per edit) and fires ONCE, a quiet interval after the
+        last local edit. Notifies with no recent local edit (external reload,
+        initial load) pass through immediately. The typing editor itself doesn't
+        need the pulse — its keystrokes render through the focused editor
+        directly."""
+        from src.lsd.gl_gui.toggles import Toggles
+        window = Toggles.HostLifecycle.consumer_notify_debounce_ms / 1000.0
+        remaining = self._local_edit_time + window - time.monotonic()
+        if remaining > 0:
+            self._pending_notify_name = name
+            self._arm_notify_timer(remaining)
+            return
+        self._notify_consumers_now(name)
+
+    def _arm_notify_timer(self, delay):
+        prev = self._notify_timer
+        if prev is not None:
+            prev.cancel()
+        t = threading.Timer(delay, self._flush_pending_notify)
+        t.daemon = True
+        self._notify_timer = t
+        t.start()
+
+    def _flush_pending_notify(self):
+        """Timer body: fire the deferred consumer notify — unless another local
+        edit landed while waiting, in which case re-arm for the remainder (the
+        trailing-debounce re-arm for edits that produced no new pulse)."""
+        self._notify_timer = None
+        name = self._pending_notify_name
+        if name is None:
+            return
+        from src.lsd.gl_gui.toggles import Toggles
+        window = Toggles.HostLifecycle.consumer_notify_debounce_ms / 1000.0
+        remaining = self._local_edit_time + window - time.monotonic()
+        if remaining > 0:
+            self._arm_notify_timer(remaining)
+            return
+        self._pending_notify_name = None
+        self._notify_consumers_now(f"{name} (debounced)")
+
+    def _notify_consumers_now(self, name):
+        """The actual invalidation fan-out: they read this host's value/error from
+        OUTSIDE its own draw loop, so nothing else re-runs them. Climb their
+        ancestors (invalidate_up) since the consumer is usually a nested cached
+        view that won't re-run unless its parents do."""
         # Snapshot: this can run on a background worker (via _materialize) while
         # the render thread rebuilds _consumers in notify_on_change / the sweep -
         # a live dict would raise "changed size during iteration".
