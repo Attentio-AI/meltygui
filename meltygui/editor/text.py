@@ -1207,7 +1207,7 @@ DEFAULT_TOKEN_VIEWS = None
 #    (Conditional/Loop/...); positioned by the node's `.span`. With `char_width=None`
 #    it's a non-inline OVERLAY drawing callback (floats over/by the code, doesn't
 #    edit text): `renderer(x, y, w, h, draw_state=, char_w=, line_px=, node=, span=)`.
-#
+# 
 # `draw_icon_selector_plain` (below) is the reference inline widget: an editable
 # glyph chip that opens a searchable picker popover.
 
@@ -1287,7 +1287,7 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
         want_open = open_prev
     if want_open and any(k == glfw.KEY_ESCAPE for k, _ in Melty.frame_key_events):
         want_open = False
-
+        
     # Always include the current glyph so the menu can display/round-trip it
     # even if it isn't one of the defaults.
     coll = ICON_COLLECTION if (not cur or cur in FA_GLYPH_SET) else {cur: cur, **ICON_COLLECTION}
@@ -1474,8 +1474,9 @@ def _parse_number_token(s):
 def draw_number_token(input_value, draw_state=None, text_tint=None,
                       left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
                       **kwargs):
-    """Inline drag widget for a numeric literal — whole-token token_views renderer
-    
+    """Inline drag widget for a numeric literal — whole-token token_views renderer                             
+                             
+                             
     for 'number' tokens. Ints get drag_int, floats drag_float (unbounded: min=max=0);
     the dragged value is formatted back preserving the literal's shape (base,
     e-notation, decimal places) and spliced into the source like a keystroke.
@@ -6343,7 +6344,7 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
-              code_diff_mode=False,
+              code_diff_mode=False, fold_all_collapsed=None,
               unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -6400,6 +6401,18 @@ def draw_text(input_value: str, height=None,
             # First fold frame for this editor: the top import block starts
             # collapsed (the only default_collapsed source right now).
             ds._fold_collapsed = set(_fold_default_col or ())
+        # fold_all_collapsed: ONE expanded/collapsed state owned by the
+        # CALLER (the code editor's diff collapse mode shares it across all
+        # views/panes). On seed - or whenever the caller's value changes -
+        # collapse EVERY range or none; between changes, individual badge/
+        # keyboard toggles work as usual.
+        if (fold_all_collapsed is not None
+                and getattr(ds, '_fold_all_seen', None) != fold_all_collapsed):
+            ds._fold_all_seen = fold_all_collapsed
+            ds._fold_collapsed = (set(_fold_normalize_ranges(
+                input_value.count('\n') + 1, fold_ranges))
+                if fold_all_collapsed else set())
+            ds.invalidate()
         if getattr(ds, '_fold_search_exp', None) is None:
             # Folds auto-expanded to reveal the current search match, pending
             # re-collapse when the selection moves on (see the search-driven
@@ -9440,16 +9453,16 @@ def draw_text(input_value: str, height=None,
     # swoosh to the collapse (header) line instead of a linear-extrapolated
     # position inside it.
     ds._diff_d2b = _fold_d2b
-    # Pane corner relative to the enclosing WINDOW, and the visible text band
-    # relative to the pane. The end_frame overlay derives everything from
-    # window abs_left/abs_top + these: the window property's memo key
-    # includes its own window_pos, so a mid-frame drag update recomputes everything
-    # - while a split ds's memo key holds only its OWN fields and serves a
-    # pre-drag value stamped earlier in the frame (the one-frame trail).
-    _w = ds.parent_window
-    ds._diff_pane_off = ((ds.abs_left - _w.abs_left, ds.abs_top - _w.abs_top)
-                         if _w is not None and _w is not ds else None)
-    ds._diff_clip_off = (rect_min_y - ds.abs_top, rect_max_y - ds.abs_top)
+    # The text band clip (top inset, BOTTOM inset) relative to the pane
+    # box - insets are height-stable, so the ribbon pass can project the
+    # band onto the pane's LIVE height. Stashing the BOTTOM EDGE offset
+    # froze it at the stash-time height: a freeze_resize pane mid
+    # resize-drag serves its blit without re-running this body, and the
+    # ribbons clamped to the pre-drag bottom until release. (The pane
+    # corner itself is tracked live via ds._abs_left()/_abs_top() - see
+    # _pane_pos in open_files.py.)
+    ds._diff_clip_off = (rect_min_y - ds.abs_top,
+                         (ds.abs_top + (ds.height or 0)) - rect_max_y)
 
     # Diff washes: in is_diff mode each line's leading marker (the +/- left over
     # from the unified diff, with the ---/+++/@@ headers already stripped by the
@@ -10223,9 +10236,10 @@ def draw_text(input_value: str, height=None,
                     draw_list.add_triangle_filled(_fcx - 4.0, _fcy - 2.5,
                                                   _fcx + 4.0, _fcy - 2.5,
                                                   _fcx, _fcy + 3.5, _fcc)
-            if _fcol:
-                draw_list.add_text(_fr[0] + (16.0 if _need_chev else 4.0),
-                                   _fy + _fm_y, _fcc, _lbl)
+            # Add this if you want a display of the number of collapsed lines
+            # if _fcol:
+            # #     draw_list.add_text(_fr[0] + (16.0 if _need_chev else 4.
+            #                        _fy + _fm_y, _fcc, _lbl)
             ds._fold_badge_rects.append((_fr, _rng))
         draw_list.pop_clip_rect()
 

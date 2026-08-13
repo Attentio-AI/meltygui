@@ -3993,8 +3993,7 @@ def toggle_offscreen():
 
 
 import imgui
-
-
+# new comment
 def draw_vertical_scrollbar(content_height: float,
                             view_height: float,
                             view_width: float,

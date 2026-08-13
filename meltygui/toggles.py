@@ -1376,10 +1376,10 @@ class Toggles:
     # vector (x right, y down in UV space). Only the direction matters -
     # the shader normalizes it; travel distance comes from
     # shadow_height_scale.
-    shadow_light_dir = (-0.196, 0.265)
+    shadow_light_dir = (-0.209, 0.534)
     # How far a shadow travels per unit of caster/receiver depth gap
     # (in units): higher = deeper stacks cast longer shadows.
-    shadow_height_scale = 3.716
+    shadow_height_scale = 2.691
     # Penumbra widening per unit of depth gap: bigger = softer, more
     # diffuse shadows from tall casters.
     shadow_blur_scale = 0.255
