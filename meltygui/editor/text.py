@@ -2035,6 +2035,26 @@ def _fnrun_resolve(file_path, def_line, def_name=None):
         # namespace from the pending source so the run finds it. Missing
         # imports win; live state is never clobbered.
         _fnrun_ensure_imports(fn.__globals__, file_path)
+        # ONE owner per def: a parked exec twin from earlier runs (before
+        # this def went live) sits in module vars at the SAME firstlineno -
+        # the overlay's _enclosing_function can tie-break to it (or serve it
+        # from its mtime-keyed cache, which pending edits never bump) while
+        # the run publishes to the live fn and markers read the store, and
+        # fill another gap "first run worked, later ones didn't". Evict the
+        # twin and purge the resolver cache so both sides converge on the
+        # live function.
+        from src.lsd.gl_gui.view.core_conversion import (
+            chain_converters as _cc)
+        _evicted = False
+        for module in modules:
+            if module.__dict__.pop(f"_fnrun_live_{def_name}",
+                                   None) is not None:
+                _evicted = True
+        if _evicted or any(k[0] == str(target)
+                           for k in _cc._ENCLOSING_FN_CACHE):
+            for k in [k for k in _cc._ENCLOSING_FN_CACHE
+                      if k[0] == str(target)]:
+                del _cc._ENCLOSING_FN_CACHE[k]
         return fn
 
     got = _fnrun_extract_def(file_path, def_line, def_name)
@@ -2342,6 +2362,24 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             ok, err = _fnrun_run(fn, instrumented=live_clicked)
             statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
                               else ('err', err, _mode))
+            if live_clicked:
+                # Deliver the run's fresh data to every live view:
+                # - The publishes went to a store that the markers hadn't
+                #   registered watchers on yet (live-fallback runs publish to
+                #   a fresh function per click), so live_view's @ nested
+                #   window updates never fired - force-invalidate every open
+                #   value window's subtree so its nested views repaint.
+                # - Values only flow INTO the window through its marker's
+                #   draw_any, and off-viewport markers are culled - latch a
+                #   few FULL_overlay passes so below-the-fold markers render
+                #   once and forward the new values to their windows.
+                editor_ds._lv_full_overlay_until = Melty.frame_count + 3
+                for _mds in (getattr(editor_ds, '_lv_marker_ds', None)
+                             or {}).values():
+                    _w = getattr(_mds, '_lv_window_ds', None)
+                    if _w is not None and not _w.closed:
+                        Melty.cache.invalidate_up(_w._tile_id, force=True,
+                                                  max_depth=8)
         editor_ds.invalidate()
         request_render()
     return False, input_value
@@ -2514,7 +2552,12 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     # whose span endpoints don't map (mid-edit region) are processed normally.
     _clip = getattr(ds, 'abs_clip_rect', None)
     _vis_lo = _vis_hi = None
-    if _clip is not None and line_px > 0:
+    if (_clip is not None and line_px > 0
+            and getattr(ds, '_lv_full_overlay_until', 0) <= Melty.frame_count):
+        # _lv_full_overlay_until (stamped by the def-widget's instrumented
+        # run): a few FULL passes with the prune off, so below-the-fold
+        # widgets render once and write the fresh values into their
+        # latched value buffers.
         _vis_lo = (_clip[1] - origin_y) / line_px
         _vis_hi = (_clip[3] - origin_y) / line_px + 2
 

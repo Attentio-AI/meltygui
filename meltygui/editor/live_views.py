@@ -79,6 +79,49 @@ def _display_key(key):
     return key
 
 
+def _split_line_key(seg):
+    """(label, line) for a `line:N#name` segment, (None, None) otherwise."""
+    seg = str(seg)
+    if not seg.startswith("line:"):
+        return None, None
+    head, _, label = seg.partition("#")
+    try:
+        return label, int(head[5:])
+    except ValueError:
+        return label, 0
+
+
+def _stable_key_name(key_path, all_keys=None):
+    """Identity form of a store key path for VIEW NAMES — the LINE NUMBER is
+    STRIPPED: `line:12#r` reads as `r`. The name is hashed into the render
+    unique ID, so a raw line-keyed name gives the same code line a NEW view
+    identity every time a rerun/edit re-stamps its line — leaking the old
+    marker/window draw_states and colliding IDs across runs. The label IS the
+    code line's stable id; repeat sites of the same label stay sibling-
+    distinct via their ordinal among same-label keys in `all_keys` (the
+    store's key set), ranked by stamped line — the ORDER survives the line
+    shifts the raw numbers don't. Bare `line:N` keys rank under the empty
+    label the same way."""
+    parts = []
+    for i, seg in enumerate(key_path):
+        label, line = _split_line_key(seg)
+        if label is None:
+            parts.append(str(seg))
+            continue
+        ordinal = 0
+        if all_keys is not None:
+            lines = []
+            for k in all_keys:
+                if len(k) > i:
+                    lb, ln = _split_line_key(k[i])
+                    if lb == label and ln is not None:
+                        lines.append(ln)
+            if line in lines:
+                ordinal = sorted(lines).index(line)
+        parts.append(label if ordinal == 0 else f"{label}~{ordinal}")
+    return "/".join(parts)
+
+
 def _stacked_list_value(value, ds):
     """Display-side stacking: a LIST of ≥2 same-shape tensors/ndarrays
     renders as ONE stacked tensor (leading dim = list index) — covering a
@@ -284,7 +327,12 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # the store lookup also keeps site_for_line (span parse + linemap, per
     # node per frame) off every out-of-view live_view node.
     clip = getattr(draw_state, "abs_clip_rect", None)
-    if clip is not None and (y + line_px < clip[1] or y > clip[3]):
+    _off_view = clip is not None and (y + line_px < clip[1] or y > clip[3])
+    if (_off_view and getattr(draw_state, "_lv_full_overlay_until", 0)
+            <= Core.melty.frame_count):
+        # _lv_full_overlay_until: post-instrumented-run forward pass - an
+        # off-viewport marker with an OPEN window still renders once (at a
+        # FROZEN anchor, below) so the last value flows into the window.
         return
     filename = (getattr(root, "file_path", None)
                 or getattr(getattr(root, "address", None), "path", None)
@@ -315,13 +363,28 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                      and span.start_col <= cursor_col
                      < span.start_col + token_cells)
     snap = live_values_for(store_obj)
-    _mname = f"lvm::{_store_name(store_obj)}::{'/'.join(key_path)}"
-    if _marker_idle_skip(draw_state, _mname, x - pad, y - pad,
-                         token_cells * char_w + 2 * pad, line_px + 2 * pad,
-                         key_path in snap, cursor_inside, store_obj, key_path,
-                         (_sl or span.start_line) - 1, True):
+    _mname = (f"lvm::{_store_name(store_obj)}"
+              f"::{_stable_key_name(key_path, snap)}")
+    _frozen_pos = None
+    if _off_view:
+        # Forward pass for a culled marker: only proceed when the window is
+        # open, and draw at the marker's LAST stamped position - anchoring
+        # the pinned window at the true off-screen anchor parked it at
+        # _pinned_base_y's editor-bottom clamp ("the window disappeared").
+        _mreg = getattr(draw_state, "_lv_marker_ds", None)
+        _mds = _mreg.get(_mname) if _mreg else None
+        _w = getattr(_mds, "_lv_window_ds", None) if _mds else None
+        if _mds is None or _w is None or _w.closed:
+            return
+        _frozen_pos = (_mds.abs_left, _mds.abs_top)
+    if _frozen_pos is None and _marker_idle_skip(
+            draw_state, _mname, x - pad, y - pad,
+            token_cells * char_w + 2 * pad, line_px + 2 * pad,
+            key_path in snap, cursor_inside, store_obj, key_path,
+            (_sl or span.start_line) - 1, True):
         return
-    imgui.set_cursor_screen_pos((x - pad, y - pad))
+    imgui.set_cursor_screen_pos(_frozen_pos if _frozen_pos is not None
+                                else (x - pad, y - pad))
     draw_live_view_marker("/".join(map(str, key_path)),
                           value=snap.get(key_path),
                           captured=key_path in snap,
@@ -709,10 +772,14 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # in - the first_only call above only flips the box green.
         watch(store_obj, key_path, ds)
         from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-        # Named by the cst dict's own stable identity - never draw_state ids.
+        # Named by the code line's STABLE name - the marker's own name (raw,
+        # line number stripped), never the full line-keyed path and never
+        # draw_state.line: the name hashes into the unique ID, so a line
+        # number here re-identified the window every time a rerun/edit
+        # re-stamped the site's line.
         win_kwargs = dict(
             name=f"{'/'.join(map(_display_key, key_path))}"
-                 f"##lv::{_store_name(store_obj)}::{'/'.join(key_path)}",
+                 f"##lv::{ds.name}",
             mode=Modes.LIVE_WINDOW, closed=not (open_now or preview_show),
             with_header=draw_header, disable_scroll=True, return_extras=True,
             # Anchor like a context menu: pinned to the marker, so the window
@@ -741,7 +808,24 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             pos = _right_of_window_pos(ds.parent_window, x, marker_y=y)
             if pos is not None:
                 win_kwargs["window_pos"] = pos
+        else:
+            # REUSE the tracked window draw_state: draw_any routes by VALUE
+            # type and folds the render func into the unique, so a value
+            # whose type changed between runs (None→tensor, int→str...) would
+            # otherwise mint a fresh same-named ds - position/size/open
+            # state gone, the old window orphaned in root_draw_states as a
+            # duplicate-ID phantom. Pinning the ds keeps the window's
+            # identity; the wrapper restamps _view_func per call, so the
+            # body still re-routes by the value type.
+            win_kwargs["draw_state"] = win_ds
         _c, _v, win_ds = draw_any(value, **(win_kwargs | comment_args))
+        # Showstop: if the framework still handed back a different ds
+        # (a path that ignores the pinned draw_state), close the replaced
+        # one on the spot so it can never orphan.
+        _prev_win = getattr(ds, "_lv_window_ds", None)
+        if (_prev_win is not None and _prev_win is not win_ds
+                and not _prev_win.closed):
+            _prev_win.closed = True
         ds._lv_window_ds = win_ds
         # The menu usually opens on the WINDOW - stamp the site context there
         # too (the _parent chain isn't guaranteed to pass through this marker
@@ -972,7 +1056,15 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # rebuilds the index - same identity signal as _snap_memo).
     _ik = (len(_snap_vals), line_offset)
     _ie = draw_state.__dict__.get("_lv_key_index")
-    if _ie is None or _ie[0] is not _src or _ie[1] != _ik:
+    # The function is part of the identity; a def view's exec-fn runs
+    # publish to a FRESH function object per run, so a stale index would
+    # iterate the PREVIOUS run's key paths against the new values - every
+    # lookup None, rendered as captured markers (the phantom "second set"),
+    # whose None-routed windows then collide with the real ones. Weakref so
+    # the index never pins a replaced run's function (id() of a dead object
+    # could recycle).
+    if (_ie is None or _ie[0] is not _src or _ie[1] != _ik
+            or len(_ie) < 5 or _ie[4]() is not fn):
         # Append + ONE sort (C-speed): the first version insort-ed each key
         # (list.insert, O(n) memmove → O(n²) per rebuild), and a publish
         # storm - a stack-trace snapshot landing thousands of keys with
@@ -1014,10 +1106,13 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 _rl = _snapped
             _pairs.append((_rl, key_path))
         _pairs.sort(key=lambda p: p[0])
-        _ie = (_src, _ik, [p[0] for p in _pairs], [p[1] for p in _pairs])
+        _ie = (_src, _ik, [p[0] for p in _pairs], [p[1] for p in _pairs],
+               weakref.ref(fn))
         object.__setattr__(draw_state, "_lv_key_index", _ie)
     _ilines, _ikeys = _ie[2], _ie[3]
-    if _clip is not None:
+    if (_clip is not None
+            and getattr(draw_state, "_lv_full_overlay_until", 0)
+            <= Core.melty.frame_count):
         _blo = int((_clip[1] - origin_y) / line_px) - 64
         _bhi = int((_clip[3] - origin_y) / line_px) + 65
         _i0 = bisect.bisect_left(_ilines, _blo)
@@ -1025,6 +1120,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _cand = _ikeys[_i0:_i1]
         _soc[1] = len(_ikeys) - len(_cand)
     else:
+        # Post-run forward pass: every key reaches the loop - the per-key
+        # cull below still drops off-viewport keys unless their marker has
+        # an open window (rendered at the frozen anchor, which forwards the
+        # fresh value into the window in draw_any).
         _cand = _ikeys
 
     for key_path in _cand:
@@ -1048,9 +1147,30 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         if _ml is None:
             continue        # anchor inside the mid-edit region - skip a frame
         _my = origin_y + (_ml - 1) * line_px
+        _frozen_pos = None
         if _clip is not None and (_my + line_px < _clip[1] or _my > _clip[3]):
-            _soc[1] += 1
-            continue        # off-viewport - don't render a marker for it
+            # Post-run forward pass (_lv_full_overlay_until): an off-viewport
+            # key whose marker has an OPEN value window still renders once -
+            # at the marker's LAST stamped position, NOT its true off-screen
+            # spot. The window is pinned to the marker, and anchoring at the
+            # real far-below coords parked it at __pinned_base_y's editor-
+            # bottom clamp (the "window disappeared" report). Freezing the
+            # anchor keeps the window where the user sees it while the fresh
+            # value flows in. Everything else stays culled.
+            _mds = None
+            if (getattr(draw_state, "_lv_full_overlay_until", 0)
+                    > Core.melty.frame_count):
+                _mreg = getattr(draw_state, "_lv_marker_ds", None)
+                _mds = _mreg.get(f"lvs::{fn.__qualname__}"
+                                 f"::{_stable_key_name(key_path, _snap_vals)}"
+                                 ) if _mreg else None
+                _w = getattr(_mds, "_lv_window_ds", None) if _mds else None
+                if _w is None or _w.closed:
+                    _mds = None
+            if _mds is None:
+                _soc[1] += 1
+                continue    # off-viewport - don't render a marker for it
+            _frozen_pos = (_mds.abs_left, _mds.abs_top)
         if end_col is None:
             # No span (line:N keys) — box the LABELED SYMBOL on the line when
             # the store's label names one (frame-snapshot params and twin
@@ -1093,20 +1213,25 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _cl, _cc = kwargs.get("cursor_line"), kwargs.get("cursor_col")
         cursor_inside = (_cl == _ml and _cc is not None
                          and start_col <= _cc < end_col)
-        _snm = f"lvs::{fn.__qualname__}::{'/'.join(key_path)}"
+        _snm = (f"lvs::{fn.__qualname__}"
+                f"::{_stable_key_name(key_path, _snap_vals)}")
         _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
                 and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
-        if _marker_idle_skip(draw_state, _snm,
-                             origin_x + start_col * char_w - pad, _my - pad,
-                             max(1, end_col - start_col) * char_w + 2 * pad,
-                             line_px + 2 * pad, True, cursor_inside,
-                             fn, key_path, _ml - 1, _sao):
+        if _frozen_pos is None and _marker_idle_skip(
+                draw_state, _snm,
+                origin_x + start_col * char_w - pad, _my - pad,
+                max(1, end_col - start_col) * char_w + 2 * pad,
+                line_px + 2 * pad, True, cursor_inside,
+                fn, key_path, _ml - 1, _sao):
             _soc[2] += 1
             continue
         _soc[3] += 1
+        # Frozen-anchor path: the marker draws at its previous position so
+        # its pinned window doesn't chase into true off-screen coords.
         imgui.set_cursor_screen_pos(
-            (origin_x + start_col * char_w - pad, _my - pad))
+            _frozen_pos if _frozen_pos is not None
+            else (origin_x + start_col * char_w - pad, _my - pad))
         # Auto-open the VOLUMES (3-D tensors → orbiting voxel windows) only
         # when live_auto_open_volumes is enabled - off by default: with loop
         # accumulation stacking per-layer tensors into volumes, a run would
