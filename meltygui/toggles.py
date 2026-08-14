@@ -847,7 +847,7 @@ class Toggles:
         # per-occurrence symbol washes. Symbols sit above blocks so the widget
         # chip casts onto its enclosing block wash; negative values recess
         # instead; 0 disables.
-        def_block_shadow_offset = 2.0
+        def_block_shadow_offset = 0.05
         def_symbol_shadow_offset = 3.7
         # Line-number shadows: negative = recessed below the editor surface
         # (the body casts into the gutter along its edge); 0 disables.
@@ -1184,24 +1184,24 @@ class Toggles:
 
         # ── Compare-split ribbons (open_files._draw_compare_ribbons) ──
         # Block colors by kind. Read live per frame.
-        ribbon_insert_tint = (0.294, 0.675, 0.928)   # lines only in the buffer
-        ribbon_delete_tint = (0.95, 0.42, 0.34)   # lines only in the reference
+        ribbon_insert_tint = (0.315, 0.928, 0.294)   # lines only in the buffer
+        ribbon_delete_tint = (0.737, 0.76, 0.767)   # lines only in the reference
         ribbon_replace_tint = (0.294, 0.675, 0.928) # changed in place
         # Shared fill alpha for the block washes AND the seam band - same fill
         # so highlight → band → highlight reads as ONE continuous shape.
-        ribbon_fill_alpha = 0.03
+        ribbon_fill_alpha = 0.10
         # Boundary stroke around the whole shape (wash edges + S-curves).
         ribbon_edge_alpha = 0.00
-        ribbon_edge_thickness = 0.00
+        ribbon_edge_thickness = -0.35
         # Thin insertion line where a side has no rows (pure insert/delete).
         ribbon_insertion_alpha = 0.242
-        ribbon_insertion_thickness = 2.00
+        ribbon_insertion_thickness = 3
         # Seam curve sampling (smoothstep slices).
         ribbon_curve_steps = 40
         # Signed depth offset for the shadow cast behind the whole swoosh
         # (washes + seam band, add_shadow semantics: positive lifts it off
         # the editor surface, negative carves a hole). 0 disables.
-        ribbon_shadow_offset = 3.078
+        ribbon_shadow_offset = 0.397
         # Take-arrow chips riding the swooshes (pull a block from the
         # reference pane into the buffer): flat_buttons colored by the
         # block's ribbon tint - hover boost and text color come from

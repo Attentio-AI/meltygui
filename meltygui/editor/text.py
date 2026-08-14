@@ -1519,9 +1519,9 @@ def draw_number_token(input_value, draw_state=None, text_tint=None,
         push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)          # number blue
         # Never leave the drag frame on imgui's global theme color (white):
         # same dark editor-look fill the tinted branch uses, from number blue.
-        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.41 * 0.22, 0.59 * 0.22, 0.73 * 0.22)
-        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.41 * 0.32, 0.59 * 0.32, 0.73 * 0.32)
-        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.41 * 0.42, 0.59 * 0.42, 0.73 * 0.42)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.41 * 0.14, 0.59 * 0.14, 0.73 * 0.14)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.41 * 0.22, 0.59 * 0.22, 0.73 * 0.22)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.41 * 0.30, 0.59 * 0.30, 0.73 * 0.30)
         _n_colors = 4
     def _pop_styles():
         pop_style_color(_n_colors)
@@ -1557,7 +1557,8 @@ def draw_number_token(input_value, draw_state=None, text_tint=None,
     return False, s
 
 
-def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None):
+def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None,
+                 shadow_offset=1.0):
     """Background box for a PLAIN inline token widget (no @render_func): the
     same draw_bg call the wrapper's show_bg path makes (bypass=True skips its
     wrapper), with the call-site tint pushed on the style manager the way
@@ -1570,7 +1571,8 @@ def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None):
     aren't draw_states the compositor can see). clip=True snapshots the
     editor's live clip rect, so partially scrolled widgets clip correctly."""
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
-    add_shadow((x, y, w, h), corner_radius=5.0)
+    if shadow_offset is not None:
+        add_shadow((x, y, w, h), offset=shadow_offset, corner_radius=5.0)
     sm = Melty.global_attrs['style_manager']
     prev = sm.get_tint()
     if tint is not None and len(tint) >= 3:
@@ -1619,7 +1621,7 @@ draw_bool_token_plain._plain_tv = True
 
 def draw_number_token_plain(input_value, width=20, height=20, name=None,
                             tint=None, text_tint=None, editor_ds=None,
-                            max_bg_value=0.25, **kwargs):
+                            max_bg_value=0.15, **kwargs):
     """draw_number_token without the @render_func wrapper — see that docstring
     for the interaction design (drag-only, caret via the editor's _tv_click
     path). What the wrapper used to provide is done inline:
@@ -1647,32 +1649,68 @@ def draw_number_token_plain(input_value, width=20, height=20, name=None,
         return False, s
     w = max(1.0, width)
     h = max(1.0, height)
-    # Legibility guard (same idea as button's max_bg_brightness): the depth
-    # ramp + bleed can push the chip's fill bright in deeply nested views,
-    # washing out the light digits - cap the painted value.
-    _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=-1, max_bg_value=max_bg_value)
+    # Chrome (shadow + chip bg + drag-frame fill) only while the pointer is
+    # on the chip or a drag is in flight; at rest the number reads as plain
+    # text. Mid-drag the pointer can leave the rect, so the widget that was
+    # active on the LAST body run (stashed in editor_ds) keeps its chrome.
+    io = imgui.get_io()
+    hovered = (x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h)
+    show_chrome = hovered or (
+        editor_ds is not None
+        and getattr(editor_ds, '_tv_active_key', None) == name)
+    # Hover-edge invalidation (same pattern as _fnrun_hover): the chrome only
+    # draws when the cached editor tile repaints, so flip it on the edges.
+    if editor_ds is not None:
+        _hov_reg = getattr(editor_ds, '_tv_hover', None)
+        if _hov_reg is None:
+            _hov_reg = editor_ds._tv_hover = {}
+        if _hov_reg.get(name) != show_chrome:
+            _hov_reg[name] = show_chrome
+            editor_ds.invalidate()
+            request_render()
+    if show_chrome:
+        # Legibility guard (same pattern as button's max_bg_brightness): the
+        # depth ramp + bleed can push the chip's fill bright in deeply nested
+        # views, washing out the light digits - cap the painted value.
+        # Tinted-comment chips are part of the comment's surface, not raised
+        # above it - no shadow there.
+        _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=-1,
+                     max_bg_value=max_bg_value,
+                     shadow_offset=None if text_tint is not None else 1.0)
 
     push_style_var(imgui.STYLE_FRAME_PADDING, (0, 0))
-    if text_tint is not None:
+    if not show_chrome:
+        # Text only; the drag frame paints nothing at rest.
+        if text_tint is not None:
+            _ta = text_tint[3] if len(text_tint) > 3 else 1.0
+            push_style_color(imgui.COLOR_TEXT, text_tint[0], text_tint[1],
+                             text_tint[2], _ta)
+        else:
+            push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)  # number blue
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0, 0, 0, 0)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0, 0, 0, 0)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0, 0, 0, 0)
+        _n_colors = 4
+    elif text_tint is not None:
         # The 4th text_tint component is the fade-out (see presentation dim
         # on colored comment widgets) - the drag-frame fill honors it too,
         # or it would paint over the dimmed chip at full opacity.
         _ta = text_tint[3] if len(text_tint) > 3 else 1.0
         push_style_color(imgui.COLOR_TEXT, text_tint[0], text_tint[1], text_tint[2], _ta)
         push_style_color(imgui.COLOR_FRAME_BACKGROUND,
-                         text_tint[0] * 0.22, text_tint[1] * 0.22, text_tint[2] * 0.22, _ta)
+                         text_tint[0] * 0.14, text_tint[1] * 0.14, text_tint[2] * 0.14, _ta)
         push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED,
-                         text_tint[0] * 0.32, text_tint[1] * 0.32, text_tint[2] * 0.32, _ta)
+                         text_tint[0] * 0.22, text_tint[1] * 0.22, text_tint[2] * 0.22, _ta)
         push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE,
-                         text_tint[0] * 0.42, text_tint[1] * 0.42, text_tint[2] * 0.42, _ta)
+                         text_tint[0] * 0.30, text_tint[1] * 0.30, text_tint[2] * 0.30, _ta)
         _n_colors = 4
     else:
         push_style_color(imgui.COLOR_TEXT, 0.41, 0.59, 0.73)          # number chip
         # Never leave the dragged frame on imgui's default theme color (bright):
         # same dark editor-look fill the tinted branch uses, from number blue.
-        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.41 * 0.22, 0.59 * 0.22, 0.73 * 0.22)
-        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.41 * 0.32, 0.59 * 0.32, 0.73 * 0.32)
-        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.41 * 0.42, 0.59 * 0.42, 0.73 * 0.42)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND, 0.41 * 0.14, 0.59 * 0.14, 0.73 * 0.14)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_HOVERED, 0.41 * 0.22, 0.59 * 0.22, 0.73 * 0.22)
+        push_style_color(imgui.COLOR_FRAME_BACKGROUND_ACTIVE, 0.41 * 0.30, 0.59 * 0.30, 0.73 * 0.30)
         _n_colors = 4
 
     imgui.push_id(name or "num_tv")
@@ -1708,6 +1746,13 @@ def draw_number_token_plain(input_value, width=20, height=20, name=None,
         if editor_ds is not None:
             Melty.cache.invalidate_up(editor_ds._tile_id, max_depth=10, force=True)
         request_render()
+    # Chrome liveness for the show_chrome check above: track which widget
+    # holds the drag so its chrome survives the pointer sliding off the chip.
+    if editor_ds is not None:
+        if active:
+            editor_ds._tv_active_key = name
+        elif getattr(editor_ds, '_tv_active_key', None) == name:
+            editor_ds._tv_active_key = None
     if changed and new != val:
         return True, fmt_back(new)
     return False, s
@@ -2378,18 +2423,18 @@ def _fnrun_run(fn, instrumented=False, params=None):
     own fallback."""
     import inspect
     import sys
-    # if params is None:
-    #     params = {}
-    #     try:
-    #         for pname, param in inspect.signature(fn).parameters.items():
-    #             if pname == 'kwargs':
-    #                 continue
-    #             if param.default is not inspect.Parameter.empty:
-    #                 params[pname] = param.default
-    #             elif pname in Melty.global_attrs:
-    #                 params[pname] = Melty.global_attrs[pname]
-    #     except (TypeError, ValueError):
-    #         params = {}
+    if params is None:
+        params = {}
+        try:
+            for pname, param in inspect.signature(fn).parameters.items():
+                if pname == 'kwargs':
+                    continue
+                if param.default is not inspect.Parameter.empty:
+                    params[pname] = param.default
+                elif pname in Melty.global_attrs:
+                    params[pname] = Melty.global_attrs[pname]
+        except (TypeError, ValueError):
+            params = {}
     try:
         if instrumented:
             from src.lsd.gl_gui.view.core_conversion.live_instrument import (
@@ -2517,12 +2562,12 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                                f"fnrunlv::{name}",
                                width=_bw, height=_bh, color=_c_live,
                                corner_radius=4.0, shadow=True)
-    # imgui.set_cursor_screen_pos((x + 2 * (_bw + _gap), _by))
-    # params_clicked = flat_button(f"\uf1de##{name}pp", editor_ds,
-    #                              f"fnrunpp::{name}",
-    #                              width=_bw, height=_bh,
-    #                              color=(0.55, 0.58, 0.66),
-    #                              corner_radius=4.0, shadow=True)
+    imgui.set_cursor_screen_pos((x + 2 * (_bw + _gap), _by))
+    params_clicked = flat_button(f"\uf1de##{name}pp", editor_ds,
+                                 f"fnrunpp::{name}",
+                                 width=_bw, height=_bh,
+                                 color=(0.55, 0.58, 0.66),
+                                 corner_radius=4.0, shadow=True)
 
     # ── Params panel: the def's `parameters` sub-dict from the cst tree
     # (already injected into draw_text - no cost), rendered with draw_any as
@@ -2531,60 +2576,66 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     # signature via the editor's token-edit channel (_fnrun_splices), so it
     # saves/undoes like a keystroke, and the node is updated in-place so
     # the next run picks the change up immediately.
-    # _pp_open_prev = getattr(editor_ds, '_fnrun_params_open', None) == skey
-    # _pp_want = (not _pp_open_prev) if params_clicked else _pp_open_prev
-    # _pp_wins = getattr(editor_ds, '_fnrun_params_wins', None)
-    # if _pp_wins is None:
-    #     _pp_wins = editor_ds._fnrun_params_wins = {}
-    # _pw = _pp_wins.get(skey)
-    # _params_node = None
-    # if _pp_want or params_clicked or (_pw is not None and not _pw.closed):
-    #     # Lazy node resolution - only on the toggle click, if the panel
-    #     # is opened, or for the one frame stamp; closed-panel frames do
-    #     # nothing (the resolve walk is file-scale work, not frame-scale).
-    #     _def_node = _fnrun_def_node_for(editor_ds, skey, code_root,
-    #                                     def_name, def_buf_line, tv_text)
-    #     _params_node = (_def_node.get('parameters')
-    #                     if isinstance(_def_node, dict) else None)
-    # if _params_node is None:
-    #     _pp_want = False
-    # if _params_node is not None and (
-    #         _pp_want or (_pw is not None and not _pw.closed)):
-    #     from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-    #     from src.lsd.gl_gui.view.mode import Mode
-    #     _prev_vals = dict(_params_node) if _params_node else {}
-    #     imgui.set_cursor_screen_pos((x, y))
-    #     _pch, _pnv, _pw = draw_any(
-    #         _params_node, name=f"{def_name} params##fnpp::{def_name}",
-    #         mode=Mode.WINDOW, closed=not _pp_want,
-    #         parent_window=editor_ds, return_extras=True,
-    #         window_pos=(0, height + 6), width=300)
-    #     _pp_wins[skey] = _pw
-    #     if _pw.closed and _pp_open_prev and not params_clicked:
-    #         _pp_want = False        # X-closed
-    #     if _pch and isinstance(_pnv, dict) and tv_text is not None:
-    #         for _pk, _pv in _pnv.items():
-    #             if not isinstance(_pk, str) or _pk.startswith('__'):
-    #                 continue
-    #             _old = _prev_vals.get(_pk, _pv)
-    #             try:
-    #                 _same = _pv is _old or _pv == _old
-    #             except Exception:
-    #                 _same = _pv is _old
-    #             if _same:
-    #                 continue
-    #             _sp = _fnrun_sig_default_span(tv_text, def_disp_line or 0,
-    #                                           _pk)
-    #             if _sp is None:
-    #                 continue
-    #             editor_ds.__dict__.setdefault('_fnrun_splices', []).append(
-    #                 (_sp[0], _sp[1] - _sp[0], _fnrun_param_src(_pv)))
-    #             _params_node[_pk] = _pv
-    #         editor_ds.invalidate()
-    #         request_render()
-    # editor_ds._fnrun_params_open = skey if _pp_want else (
-    #     None if _pp_open_prev else
-    #     getattr(editor_ds, '_fnrun_params_open', None))
+    _pp_open_prev = getattr(editor_ds, '_fnrun_params_open', None) == skey
+    _pp_want = (not _pp_open_prev) if params_clicked else _pp_open_prev
+    _pp_wins = getattr(editor_ds, '_fnrun_params_wins', None)
+    if _pp_wins is None:
+        _pp_wins = editor_ds._fnrun_params_wins = {}
+    _pw = _pp_wins.get(skey)
+    _params_node = None
+    if _pp_want or params_clicked or (_pw is not None and not _pw.closed):
+        # Lazy node resolution - only for the toggle click, while the panel
+        # is open, or for the one closing click; closed-panel frames pay
+        # nothing (the resolve walk is click-scale cheap, not frame-scale).
+        _def_node = _fnrun_def_node_for(editor_ds, skey, code_root,
+                                        def_name, def_buf_line, tv_text)
+        _params_node = (_def_node.get('parameters')
+                        if isinstance(_def_node, dict) else None)
+    if _params_node is None:
+        _pp_want = False
+    if _params_node is not None and (
+            _pp_want or (_pw is not None and not _pw.closed)):
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+        from src.lsd.gl_gui.view.mode import Mode
+        _prev_vals = dict(_params_node) if _params_node else {}
+        imgui.set_cursor_screen_pos((x, y))
+        # window_pos only on FIRST spawn - passing it every call re-pins the
+        # panel under the button and eats the user's drags (the live-value
+        # windows follow the same set-once rule).
+        _pp_kwargs = {}
+        if _pw is None:
+            _pp_kwargs["window_pos"] = (0, height + 6)
+        _pch, _pnv, _pw = draw_any(
+            _params_node, name=f"{def_name} params##fnpp::{def_name}",
+            mode=Mode.WINDOW, closed=not _pp_want,
+            parent_window=editor_ds, return_extras=True,
+            width=300, **_pp_kwargs)
+        _pp_wins[skey] = _pw
+        if _pw.closed and _pp_open_prev and not params_clicked:
+            _pp_want = False        # auto-closed
+        if _pch and isinstance(_pnv, dict) and tv_text is not None:
+            for _pk, _pv in _pnv.items():
+                if not isinstance(_pk, str) or _pk.startswith('__'):
+                    continue
+                _old = _prev_vals.get(_pk, _pv)
+                try:
+                    _same = _pv is _old or _pv == _old
+                except Exception:
+                    _same = _pv is _old
+                if _same:
+                    continue
+                _sp = _fnrun_sig_default_span(tv_text, def_disp_line or 0,
+                                              _pk)
+                if _sp is None:
+                    continue
+                editor_ds.__dict__.setdefault('_fnrun_splices', []).append(
+                    (_sp[0], _sp[1] - _sp[0], _fnrun_param_src(_pv)))
+                _params_node[_pk] = _pv
+            editor_ds.invalidate()
+            request_render()
+    editor_ds._fnrun_params_open = skey if _pp_want else (
+        None if _pp_open_prev else
+        getattr(editor_ds, '_fnrun_params_open', None))
 
     if hovered and status is not None and status[0] == 'err' and status[1]:
         # Error readout beside the button - draw-list text, hover-only (the
@@ -2600,21 +2651,24 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
                                      f"found in live modules or source", _mode)
         else:
-            # ok, err = _fnrun_run(fn, instrumented=live_clicked,
-            #                      params=_fnrun_params_from_node(
-            #                          _fnrun_def_node_for(
-            #                              editor_ds, skey, code_root,
-            #                              def_name, def_buf_line, tv_text)))
-            # statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
-            #                   else ('err', err, _mode))
+            ok, err = _fnrun_run(fn, instrumented=live_clicked,
+                                 params=_fnrun_params_from_node(
+                                     _fnrun_def_node_for(
+                                         editor_ds, skey, code_root,
+                                         def_name, def_buf_line, tv_text)))
+            statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
+                              else ('err', err, _mode))
             if live_clicked:
                 # The publishes went to a store object the markers hadn't
                 # registered watchers on yet (exec-fallback runs publish to
-                # the live function on click), so live_view's per-publish
-                # window cascade never fired - force-invalidate every open
-                # value-window's subtree so its nested views update.
-                # (Off-viewport markers stay culled: their windows update
-                # when the marker next renders.)
+                # a fresh function per click), so live_view's per-publish
+                # window cascade never fired — force-invalidate every open
+                # value window's subtree so its nested views repaint, and
+                # latch a few FULL-overlay passes so below-the-fold markers
+                # update once (at a frozen anchor - the markers must not
+                # chase the true on-screen coords) and forward the fresh
+                # values into their latched windows.
+                editor_ds._lv_full_overlay_until = Melty.frame_count + 3
                 for _mds in (getattr(editor_ds, '_lv_marker_ds', None)
                              or {}).values():
                     _w = getattr(_mds, '_lv_window_ds', None)
@@ -2624,8 +2678,6 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         editor_ds.invalidate()
         request_render()
     return False, input_value
-
-
 
 draw_run_fn_token_plain._plain_tv = True
 
@@ -2796,7 +2848,12 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     # whose span endpoints don't map (mid-edit region) are processed normally.
     _clip = getattr(ds, 'abs_clip_rect', None)
     _vis_lo = _vis_hi = None
-    if _clip is not None and line_px > 0:
+    if (_clip is not None and line_px > 0
+            and getattr(ds, '_lv_full_overlay_until', 0) <= Melty.frame_count):
+        # _lv_full_overlay_until (stamped by the def-widget's instrumented
+        # run): a few FULL passes with the prune off, so below-the-fold
+        # widgets render once and write the fresh values into their
+        # latched value buffers.
         _vis_lo = (_clip[1] - origin_y) / line_px
         _vis_hi = (_clip[3] - origin_y) / line_px + 2
 
@@ -10924,10 +10981,10 @@ def draw_text(input_value: str, height=None,
                     # walked the whole parse per def token per frame. The
                     # widget resolves lazily (on click / while its panel is
                     # open), memoized against the buffer text identity.
-                    # _extra['code_root'] = _fn_root
-                    # _extra['def_buf_line'] = _bl + 1
-                    # _extra['tv_src'] = text
-                    # _extra['def_disp_line'] = _dl
+                    _extra['code_root'] = _fn_root
+                    _extra['def_buf_line'] = _bl + 1
+                    _extra['tv_text'] = text
+                    _extra['def_disp_line'] = _dl
                 # Plain (wrapper-less) renderers need the editor's draw_state:
                 # they have no tile of their own, so gesture liveness requires
                 # invalidating the EDITOR tile (see draw_number_token_plain).
@@ -11061,20 +11118,20 @@ def draw_text(input_value: str, height=None,
     # parenthesis - applied bottom-up so earlier splices never shift later
     # ones, through the same text path as token-widget edits, so they
     # save/undo like keystrokes.
-    # _pp_splices = ds.__dict__.pop('_fnrun_splices', None)
-    # if _pp_splices:
-    #     for _ps, _pl, _pv in sorted(_pp_splices, reverse=True):
-    #         _ptrace("editor params-splice", name=ds.name, at=_ps,
-    #                 old=repr(text[_ps:_ps + _pl][:24]), new=repr(_pv[:24]))
-    #         text = text[:_ps] + _pv + text[_ps + _pl:]
-    #         _d = len(_pv) - _pl
-    #         if _d:
-    #             for _attr in ('text_cursor_pos', 'text_selection_start',
-    #                           'text_selection_end'):
-    #                 _v = getattr(ds, _attr)
-    #                 if _v >= _ps + _pl:
-    #                     setattr(ds, _attr, _v + _d)
-    #     changed = True
+    _pp_splices = ds.__dict__.pop('_fnrun_splices', None)
+    if _pp_splices:
+        for _ps, _pl, _pv in sorted(_pp_splices, reverse=True):
+            _ptrace("editor params-splice", name=ds.name, at=_ps,
+                    old=repr(text[_ps:_ps + _pl][:24]), new=repr(_pv[:24]))
+            text = text[:_ps] + _pv + text[_ps + _pl:]
+            _d = len(_pv) - _pl
+            if _d:
+                for _attr in ('text_cursor_pos', 'text_selection_start',
+                              'text_selection_end'):
+                    _v = getattr(ds, _attr)
+                    if _v >= _ps + _pl:
+                        setattr(ds, _attr, _v + _d)
+        changed = True
     if _tv_edit is not None:
         _es, _el, _ev, _keep_caret = _tv_edit
         # Timeline: every token-widget splice, with old→new content. A splice

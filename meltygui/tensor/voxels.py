@@ -79,6 +79,93 @@ vec2 rayBox(vec3 ro, vec3 rd, vec3 bounds) {
     return vec2(max(max(lo.x, lo.y), lo.z), min(min(hi.x, hi.y), hi.z));
 }
 
+// ── shared transfer function: raw volume sample at texcoord p →
+// (v: remapped LUT coordinate, m: opacity drive). The old viewer's value
+// pipeline verbatim — contrast about mid-grey, then brightness, on the
+// GREYSCALE value; `centered` maps signed data so raw 0 sits at the LUT
+// middle (pair with a diverging LUT) and opacity keys on MAGNITUDE, so
+// negatives render as strongly as positives. Takes the sampler to read
+// through: `volume` (the user's nearest/linear toggle) for the color march,
+// `volume_lin` (always linear — same texture, its own sampler object) for
+// every shading read, where smooth beats blocky regardless of the toggle.
+vec2 remapValue(sampler3D vol, vec3 p) {
+    float v = texture(vol, p).r;
+    if (centered) { v = v * 0.5 + 0.5; }   // signed [-1,1] -> [0,1]
+    v = (v - 0.5) * contrast + 0.5;
+    float m;
+    if (centered) {
+        v = 0.5 + (v - 0.5) * brightness;
+        v = clamp(v, 0.0, 1.0);
+        m = abs(v - 0.5) * 2.0;
+    } else {
+        v *= brightness;
+        v = clamp(v, 0.0, 1.0);
+        m = v;
+    }
+    return vec2(v, m);
+}
+
+// The old viewer's opacity ramp: values at/above the gate (1 - threshold)
+// are FULLY opaque — a hard isosurface — and below it opacity falls off as
+// (m/gate)^4, scaled by density and the volume_scale-NORMALIZED segment
+// length, so optical depth is a function of the FRACTION of the volume
+// traversed, not the world path length — a 4096-voxel axis viewed end-on
+// accumulates the same opacity as an 8-voxel one.
+float alphaFor(float m, float seg_n) {
+    float gate = 1.0 - clamp(threshold, 0.0, 0.999);
+    if (m >= gate) return 1.0;
+    return clamp(pow(m / gate, 4.0) * density * seg_n * 50.0, 0.0, 1.0);
+}
+
+// Transmittance from a world point toward the light: a COARSE fixed-count
+// march of the SAME transfer function (shadows are low-frequency — fat
+// steps read clean where the primary ray needs thousands), multiplying out
+// per-step opacity. The result is graded the way the render is: haze dims
+// the light, the opaque core blocks it. `steps` sets the quality tier
+// (the plane's cast shadow affords more than per-sample self-shading) and
+// `max_dist` optionally caps the march to NEAR-FIELD occluders — for
+// self-shading, what's right next to a sample is most of its shadow.
+// Always reads through volume_lin: shading wants smooth fields.
+float lightVisibility(vec3 p, int steps, float max_dist) {
+    vec3 ld = normalize(light_pos - p);
+    vec2 span = rayBox(p, ld, volume_scale);
+    float t0 = max(span.x, 0.0);
+    float t1 = min(min(span.y, length(light_pos - p)), max_dist);
+    if (t0 >= t1) return 1.0;
+    float ss = (t1 - t0) / float(steps);
+    float seg_n = ss * length(ld / volume_scale);
+    float T = 1.0;
+    float t = t0 + ss * 0.5;
+    for (int i = 0; i < steps; i++) {
+        vec3 q = (p + ld * t) / volume_scale * 0.5 + 0.5;
+        T *= 1.0 - alphaFor(remapValue(volume_lin, q).y, seg_n);
+        if (T < 0.02) break;   // fully shadowed — stop early
+        t += ss;
+    }
+    return T;
+}
+
+// Gradient normal at texcoord p (central differences, one voxel apart),
+// mapped to WORLD space (anisotropic boxes bend gradients), plus a shading
+// weight (w) that fades to 0 where the gradient is too weak to trust —
+// uniform haze keeps its flat unshaded look instead of picking up noise.
+vec4 volumeNormal(vec3 p) {
+    // 1.75-voxel stencil: with the linear sampler this is a genuine lowpass
+    // on the normal field, so hard binary edges (a 0/1 mask's staircase)
+    // shade as smooth ramps instead of per-voxel facets.
+    vec3 e = 1.75 / vec3(textureSize(volume_lin, 0));
+    vec3 g = vec3(
+        texture(volume_lin, p + vec3(e.x, 0, 0)).r - texture(volume_lin, p - vec3(e.x, 0, 0)).r,
+        texture(volume_lin, p + vec3(0, e.y, 0)).r - texture(volume_lin, p - vec3(0, e.y, 0)).r,
+        texture(volume_lin, p + vec3(0, 0, e.z)).r - texture(volume_lin, p - vec3(0, 0, e.z)).r);
+    if (centered) { g *= sign(texture(volume_lin, p).r); }   // shade |v|'s surface
+    vec3 gw = g / volume_scale;              // texcoord gradient → world
+    float len = length(gw);
+    // The normal points from dense toward empty — that's MINUS the gradient.
+    return vec4(len > 1e-6 ? -gw / len : vec3(0.0, 0.0, 1.0),
+                clamp(length(g) * 6.0, 0.0, 1.0));
+}
+
 void main() {
     // Z-up orbit camera built straight from injected uniforms — tilt, spin,
     // zoom, pan and ortho arrive as plain Python kwargs, no matrices anywhere.
@@ -104,26 +191,25 @@ void main() {
     // have rd == fwd, so view_cos == 1 and this is a no-op there.
     float view_cos = dot(rd, fwd);
 
-    // ── ground plane: the box rests on z = -volume_scale.z. One-sided
-    // (backface-culled analytically): a hit only counts for rays striking
-    // the TOP face — origin above the plane, direction pointing down — so
-    // from underneath the floor simply isn't there and the volume renders
-    // alone. A radial fade bounds it, so there's no hard horizon line.
+    // ── shadow catcher: the plane the box rests on (z = -volume_scale.z)
+    // is itself INVISIBLE — its only contribution is the shadow the volume
+    // casts onto it, composited as a darkening with alpha = blocked light.
+    // One-sided (backface-culled analytically): a hit only counts for rays
+    // striking the TOP face — from underneath there's no shadow at all.
     float plane_t = -1.0;
     float plane_a = 0.0;
-    // The floor is the enclosing view's BACKGROUND color (plane_tint,
-    // display-referred sRGB → decoded to linear like the LUT samples),
-    // lifted a step so it separates from the background it blends over —
-    // an exact match would vanish entirely.
-    vec3 plane_c = pow(plane_tint, vec3(2.2)) * 1.9 + vec3(0.015);
-    if (draw_plane && rd.z < -1e-6 && ro.z > -volume_scale.z) {
+    vec3 plane_c = vec3(0.0);   // a shadow only darkens — pure black
+    if (draw_plane && draw_shading && rd.z < -1e-6 && ro.z > -volume_scale.z) {
         plane_t = (-volume_scale.z - ro.z) / rd.z;
-        vec2 pp = (ro + rd * plane_t).xy;
+        vec3 pw = ro + rd * plane_t;
+        // Blocked light via the same transmittance march as the rest of the
+        // shading, lifted by the ambient floor (ambient_light raises this
+        // shadow like every other). The exponential radial fade bounds the
+        // catcher so the darkening dies off instead of cutting.
         float ext = max(volume_scale.x, volume_scale.y);
-        // Exponential falloff from the box footprint outward: full under
-        // the box, then a long soft tail — no smoothstep end, no horizon.
-        float r = max(length(pp) - ext * 1.1, 0.0);
-        plane_a = 0.55 * exp(-1.5 * r / ext);
+        float r = max(length(pw.xy) - ext * 1.1, 0.0);
+        float shadow = (1.0 - ambient_light) * (1.0 - lightVisibility(pw, 24, 1e8));
+        plane_a = clamp(shadow * shadow_opacity, 0.0, 1.0) * exp(-1.5 * r / ext);
     }
 
     // volume_scale: box extents per axis, voxel-count-proportional — so each
@@ -157,51 +243,47 @@ void main() {
         // tensors.
         float seg = min(step_size, hit.y - t);
         vec3 p = (ro + rd * (t + seg * 0.5)) / volume_scale * 0.5 + 0.5;
-        float v = texture(volume, p).r;
-        if (centered) { v = v * 0.5 + 0.5; }   // signed [-1,1] -> [0,1]
-        // The old viewer's value pipeline, verbatim: contrast about
-        // mid-grey, then brightness, on the GREYSCALE value — the LUT lookup
-        // and the opacity gate both consume the remapped value. `lut` is a
-        // 1-D texture the LUT host baked from a flat [r,g,b,...] float list
-        // (the old jet() is now just the "jet" entry).
-        v = (v - 0.5) * contrast + 0.5;
-        float m;   // opacity drive: the value, or its magnitude when centered
-        if (centered) {
-            // signed data: raw 0 sits at the LUT middle (pair with a
-            // diverging LUT like seismic/coolwarm), brightness gains about
-            // the center, and opacity keys on MAGNITUDE so negatives render
-            // as strongly as positives.
-            v = 0.5 + (v - 0.5) * brightness;
-            v = clamp(v, 0.0, 1.0);
-            m = abs(v - 0.5) * 2.0;
-        } else {
-            v *= brightness;
-            v = clamp(v, 0.0, 1.0);
-            m = v;
-        }
-        // The old viewer's transfer function: values at/above the gate
-        // (1 - threshold) are FULLY opaque — a hard isosurface — and below
-        // it opacity falls off as (m/gate)^4, scaled by density and the
-        // marched segment length (seg = step_size except the partial tail).
-        // The segment is measured in volume_scale-NORMALIZED units (the old
-        // viewer marched its fixed [-1,1] model box), so optical depth is a
-        // function of the FRACTION of the volume traversed, not the world
-        // path length — a 4096-voxel axis viewed end-on accumulates the same
-        // opacity as an 8-voxel one, instead of drowning side views in fog.
+        // Value pipeline + opacity ramp live in remapValue/alphaFor (shared
+        // with the shadow march). `lut` is a 1-D texture the LUT host baked
+        // from a flat [r,g,b,...] float list.
+        vec2 vm = remapValue(volume, p);
         float seg_n = seg * length(rd / volume_scale);
-        float gate = 1.0 - clamp(threshold, 0.0, 0.999);
-        float a;
-        if (m >= gate) {
-            a = 1.0;
-        } else {
-            a = clamp(pow(m / gate, 4.0) * density * seg_n * view_cos * 50.0, 0.0, 1.0);
-        }
+        float a = alphaFor(vm.y, seg_n * view_cos);
         if (a > 0.0) {
             // Composite in LINEAR light: the LUT tables are display-referred
             // sRGB, so decode each sample before accumulating (encode once at
             // the end). Blending in sRGB space skews mixes toward the more
             // saturated component — the old harsh/garish translucency.
-            vec3 c = pow(texture(lut, v).rgb, vec3(2.2));
+            vec3 c = pow(texture(lut, vm.x).rgb, vec3(2.2));
+            if (draw_shading) {
+                // Gradient-normal Lambert, weighted by gradient strength so
+                // flat haze keeps its unshaded look; self_shading adds a
+                // FAST near-field transmittance march toward the light —
+                // 6 fat linear-filtered steps capped close to the sample,
+                // since nearby occluders are most of a sample's shadow.
+                // Both the normal taps and the march are skipped where they
+                // can't show: sub-1% alpha samples, and (for the march)
+                // gradient weight ≈ 0 — the mix would erase it anyway.
+                float shade = 1.0;
+                if (a > 0.01) {
+                    vec4 nw = volumeNormal(p);
+                    if (nw.w > 0.01) {
+                        vec3 wp = ro + rd * (t + seg * 0.5);
+                        // Half-Lambert wrap: (n·l/2 + 1/2)² instead of the
+                        // hard max(n·l, 0). Faces pointing away from the
+                        // light dim gently rather than clamping to the
+                        // ambient floor — on binary data the hard clamp
+                        // turned every off-facing step facet into the same
+                        // flat dark block.
+                        float ndl = dot(nw.xyz, normalize(light_pos - wp)) * 0.5 + 0.5;
+                        float vis = self_shading ? lightVisibility(wp, 6, 0.7) : 1.0;
+                        shade = mix(1.0, ambient_light
+                                    + (1.0 - ambient_light) * ndl * ndl * vis,
+                                    nw.w * shading_strength);
+                    }
+                }
+                c *= pow(light_tint, vec3(2.2)) * light_brightness * shade;
+            }
             acc.rgb += (1.0 - acc.a) * a * c;
             acc.a   += (1.0 - acc.a) * a;
         }
@@ -217,7 +299,14 @@ void main() {
     // gamma 1.0 = pure sRGB encode (brightest, colorimetrically "correct"),
     // 2.2 = raw linear out (darkest). The default sits between — the encode
     // alone reads too bright/washed against the studio's dark UI.
-    FragColor = vec4(pow(acc.rgb, vec3(gamma / 2.2)), acc.a);
+    // Dither ±half an 8-bit quantum (interleaved gradient noise, Jimenez):
+    // the RGBA8 target snaps smooth dark gradients — the plane's exponential
+    // falloff especially, post-gamma — into visible contour bands; sub-LSB
+    // noise makes adjacent quanta average out instead. Alpha too: the fade
+    // is largely an ALPHA ramp composited over the UI.
+    float dither = (fract(52.9829189 * fract(
+        dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
+    FragColor = vec4(pow(acc.rgb, vec3(gamma / 2.2)) + dither, acc.a + dither);
 }
 """
 
@@ -227,12 +316,39 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                aspect=1.0, brightness=1.0, contrast=1.0, density=1.0, gamma=1.6,
                threshold=0.1, step_size=0.0015, max_steps=4096, centered=False,
-               volume=None, lut=None, draw_plane=True,
-               plane_tint=(0.1, 0.1, 0.1),
-               volume_scale=(1.0, 1.0, 1.0), **kwargs):
-    # Program bound, uniforms set - the body is just the draw call.
+               volume=None, volume_lin=None, lut=None,
+               draw_plane=True, shadow_opacity=1.0,
+               draw_shading=True, self_shading=True,
+               light_pos=(90.0, -90.0, 200.0), light_tint=(1.0, 1.0, 1.0),
+               light_brightness=1.622, ambient_light=0.3, shading_strength=0.7,
+               volume_scale=(1.0, 1.0, 1.0), program=None, **kwargs):
+    # Program bound, uniforms set. volume_lin is the SAME texture as volume
+    # on its own unit; a GL sampler object forces LINEAR filtering on that
+    # unit so the shading reads a smooth field, while the core march keeps
+    # the user's nearest/linear choice (filtering is texture-object state -
+    # a bound sampler object is the rare GL mechanism that overrides it
+    # per unit).
+    def create():
+        s = int(gl.glGenSamplers(1))
+        gl.glSamplerParameteri(s, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glSamplerParameteri(s, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        for w in (gl.GL_TEXTURE_WRAP_S, gl.GL_TEXTURE_WRAP_T,
+                  gl.GL_TEXTURE_WRAP_R):
+            gl.glSamplerParameteri(s, w, gl.GL_CLAMP_TO_EDGE)  # = texture3d's
+        return s
+    sampler = gl_state.get("volume_lin_sampler", create,
+                           lambda v: gl.glDeleteSamplers(1, [int(v)]))
+    unit = -1
+    loc = gl.glGetUniformLocation(program, "volume_lin")
+    if loc >= 0:
+        buf = np.zeros(1, np.int32)
+        gl.glGetUniformiv(program, loc, buf)
+        unit = int(buf[0])
+        gl.glBindSampler(unit, sampler)
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+    if unit >= 0:
+        gl.glBindSampler(unit, 0)   # sampler bindings outlive the draw call
 
 
 # ── label billboards: text quads IN the 3d scene ───────────────────────────
@@ -1265,9 +1381,22 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # gate → more opaque)
                 density=0.7, threshold=0.297, centered=False,
                 nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
-                # ── ground plane the box rests on (one-sided: invisible
-                # from below) ──
-                draw_plane=True,
+                # ── shadow catcher: the invisible plane the box rests on -
+                # it renders nothing but the volume's cast shadow (one-sided:
+                # no shadow from below). shadow_opacity scales how dark the
+                # caught shadow composites. ──
+                draw_plane=True, shadow_opacity=1.0,
+                # ── lighting: draw_shading lights the floor (per-s., the
+                # raymarched cast shadow) and the volume (gradient-normal
+                # Lambert); self_shading adds the per-sample transmittance
+                # march inside the volume - the expensive tier. ambient_light
+                # is the shadow floor: how much light survives everywhere.
+                # shading_strength scales how much the volume's cast normal
+                # may darken its LUT color (0 = shading off, plane still
+                # catches). ──
+                draw_shading=True, self_shading=True,
+                light_pos=(50.0, -50.0, 200.0), light_tint=(1.0, 1.0, 1.0),
+                light_brightness=1.622, ambient_light=0.3, shading_strength=0.7,
                 # ── axis mapping: dims by index OR NAME. The first three dims
                 # by default; None still means "derive" (last three → z/y/x)
                 # for anything that clears one. ──
@@ -1561,7 +1690,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         # int() of a UI-dragged float never matches the uniform's inferred
         # GLSL type (the loop bound must stay an int).
-        voxel_pass(gl_state, volume=tex, lut=lut_tex, aspect=width / height,
+        voxel_pass(gl_state, volume=tex, volume_lin=tex, lut=lut_tex,
+                   aspect=width / height,
                    volume_scale=volume_scale, step_size=step_size,
                    max_steps=int(max_steps), density=density,
                    threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
@@ -1569,12 +1699,14 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                    brightness=cam_brightness, contrast=cam_contrast,
                    gamma=float(Toggles.Voxels.gamma), centered=centered,
                    draw_plane=bool(draw_plane),
-                   # The floor picks up the ENCLOSING view's background
-                   # color, so it sits on the same palette as the window
-                   # it renders in.
-                   plane_tint=tuple(float(c) for c in (
-                       Melty.bg_color_stack[-1][:3]
-                       if Melty.bg_color_stack else (0.1, 0.1, 0.1))))
+                   shadow_opacity=float(shadow_opacity),
+                   draw_shading=bool(draw_shading),
+                   self_shading=bool(self_shading),
+                   light_pos=tuple(float(c) for c in light_pos),
+                   light_tint=tuple(float(c) for c in light_tint),
+                   light_brightness=float(light_brightness),
+                   ambient_light=float(ambient_light),
+                   shading_strength=float(shading_strength))
         if axis_edges and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
