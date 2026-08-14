@@ -1225,6 +1225,19 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 if _fw is None or _fw.closed:
                     _fmds = None
             if _fmds is None:
+                # TEMP diag: an off-viewport key skipped DURING an active
+                # full pass means its open window didn't reflect the run's
+                # value - name why (no marker ds for the expected key, or
+                # its window closed/missing).
+                if (getattr(draw_state, "_lv_full_overlay_until", 0)
+                        > Core.melty.frame_count):
+                    from src.lsd.gl_gui.perf_trace import trace as _ptr
+                    _mreg2 = getattr(draw_state, "_lv_marker_ds", None) or {}
+                    _mk2 = (f"lvs::{fn.__qualname__}::"
+                            f"{_skey_names.get(key_path) or _stable_key_name(key_path)}")
+                    _ptr("lv full-pass skip", key=_mk2,
+                         have_marker=_mk2 in _mreg2,
+                         reg_keys=len(_mreg2))
                 _soc[1] += 1
                 continue    # off-viewport - don't draw a marker for it
             _frozen_pos = (_fmds.abs_left, _fmds.abs_top)

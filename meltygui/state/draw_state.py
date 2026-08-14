@@ -113,6 +113,11 @@ class TextEditorState(DictConversion):
         # render (visibility IS this bool); persisted, so a fresh session
         # re-opens the panels that were open.
         self.params_windows_open = {}
+        # {def_name: True} - whether that function's param panel re-runs
+        # Run Visualize automatically on every param edit. The panel's
+        # Auto Execute checkbox reads/writes this directly (the
+        # params_windows_open pattern); persisted with the editor state.
+        self.params_auto_execute = {}
 
 
 @no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)

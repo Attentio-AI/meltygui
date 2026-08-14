@@ -263,7 +263,7 @@ class PendingSave:
 
     @classmethod
     @lag_traced("queue_save", 30)
-    def queue_save(cls, address, codec, **kwargs):
+    def queue_save(cls, address, codec, wake=True, **kwargs):
         prev = cls.pending_saves.get(address)
         cls.pending_saves[address] = codec, kwargs
         cls._pending_gen[address.path] += 1
@@ -295,7 +295,13 @@ class PendingSave:
         # pull the new edit from this cache (code_file_io's cross-view-sync branch).
         # Reuses FileWatch's per-path watcher set + dispatch; the editing view that
         # produced the entry is guarded there (its own buffer already matches).
-        if prev is None or prev[1].get("data") != kwargs.get("data"):
+        # `wake=False` is the focused-editor exception: the typing editor's
+        # per-keystroke auto-save should not re-render every sibling view of the
+        # file on each keystroke (save_file passes it if the text focus sits
+        # inside the saving view's own subtree). Programmatic edits - param
+        # panels, lenses, live preview comment edits - keep the wake, which is
+        # what lands their edit in the visible editor promptly.
+        if wake and (prev is None or prev[1].get("data") != kwargs.get("data")):
             cls._wake_file_watchers(address.path)
 
         # The merge/conflict window watches this edge too: a fresh pending edit
@@ -324,13 +330,33 @@ class PendingSave:
     def _wake_file_watchers(cls, path):
         if path is None:
             return
-        from src.lsd.gl_gui.melty import FileWatch
+        from src.lsd.gl_gui.melty import FileWatch, Melty
+        from src.lsd.gl_gui.view.invalidation_tracker import Note
         try:
             resolved = str(path.resolve())
         except OSError:
             return
-        for ds in list(FileWatch.path_to_draw_states.get(resolved, ())):
+        watchers = list(FileWatch.path_to_draw_states.get(resolved, ()))
+        try:
+            from src.lsd.gl_gui.perf_trace import trace as _ptrace
+            _ptrace(f"wake_file_watchers n={len(watchers)} "
+                    f"[{', '.join(getattr(d, 'name', '?') or '?' for d in watchers)}]",
+                    file=resolved.rsplit('/', 1)[-1])
+        except Exception:
+            pass
+        for ds in watchers:
             FileWatch.dispatch_event_for(ds)
+            # dispatch only flags ds._external_change - that bypasses the VALUE
+            # cache, but only once the body runs, and a blit-cached editor tile
+            # replays its texture without even running the body. Dirty the tile
+            # too (force + depth, same shape as the host's notify) so
+            # code_file_io actually re-executes and pulls the queued edit.
+            tid = getattr(ds, "_tile_id", None)
+            if tid is not None:
+                Melty.cache.invalidate_up(
+                    tid, force=True, max_depth=8,
+                    note=Note(name="queue_save wake", tint=(1, 0.8, 0.2),
+                              draw_state=ds))
 
     @classmethod
     def current_file_text(cls, path):

@@ -10,10 +10,11 @@ import imgui
 
 from src.lsd.gl_gui.model.core_model.draw_state import (DropDownState,
                                                         TextEditorState)
+from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, add_glow, clear_glows
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.core_render import render_func, SCROLLBAR_MARGIN
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight_multi
 from src.lsd.gl_gui.melty import Melty, SearchTerm
@@ -1613,7 +1614,6 @@ def draw_bool_token_plain(input_value, width=20, height=20, name=None,
             and imgui.is_mouse_double_clicked(0)):
         return True, ("False" if word == "True" else "True")
     return False, input_value
-
 # Marks a renderer as wrapper-less for draw_text: the call site passes these
 # the editor's draw_state (editor_ds) so they can keep the EDITOR tile live
 # during a gesture - a plain widget has no tile of its own to invalidate.
@@ -2009,10 +2009,105 @@ def _fnrun_extract_def(file_path, def_line, def_name):
                       for l in lines[start:end]), start)
 
 
-def _fnrun_resolve(file_path, def_line, def_name=None):
+# (resolved file, def name) -> (src_key, fn): the last pending-def compile,
+# reused when only literal parameter DEFAULTS changed - see _fnrun_src_key.
+_FNRUN_COMPILE_CACHE = {}
+
+
+def _fnrun_src_key(src, start0):
+    """Reuse key for a pending-def compile: the def's source with every
+    LITERAL default expression masked out, plus its pending start line.
+    Equal keys ⇒ the previously compiled function is safe to reuse:
+      - masked (literal) defaults are exactly the values the run passes as
+        explicit kwargs (_fnrun_params_from_node), so the stale compiled
+        default never evaluates;
+      - a CodeLine/expression default is NOT masked (ast.literal_eval fails)
+        — the run omits those so the COMPILED default evaluates, so an edit
+        there must recompile;
+      - param renames/adds, annotation or body edits change the key text;
+      - start0 pins the coordinate-true padding — the instrumented twin
+        re-reads source at co_firstlineno, so a def that moved lines needs a
+        fresh compile.
+    None ⇒ unparseable signature, caller always compiles."""
+    import ast
+    po = src.find('(')
+    if po < 0:
+        return None
+    n = len(src)
+    i = po + 1
+    depth = 1
+    quote = None
+    seg_start = i
+    segs = []
+    while i < n and depth > 0:
+        c = src[i]
+        if quote:
+            if c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in '\'"':
+            quote = c
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth == 0:
+                segs.append(src[seg_start:i])
+                break
+        elif c == ',' and depth == 1:
+            segs.append(src[seg_start:i])
+            seg_start = i + 1
+        i += 1
+    if depth:
+        return None
+    masked = []
+    for seg in segs:
+        # First top-level '=' splits name (+annotation) from the default-
+        # scan at depth 0 so '=' inside a bracketed annotation never splits.
+        d = 0
+        q = None
+        eq = -1
+        for j, c in enumerate(seg):
+            if q:
+                if c == '\\':
+                    continue
+                if c == q:
+                    q = None
+            elif c in '\'"':
+                q = c
+            elif c in '([{':
+                d += 1
+            elif c in ')]}':
+                d -= 1
+            elif c == '=' and d == 0 and seg[j:j + 2] != '==':
+                eq = j
+                break
+        if eq < 0:
+            masked.append(seg.strip())
+            continue
+        head, default = seg[:eq].strip(), seg[eq + 1:].strip()
+        try:
+            ast.literal_eval(default)
+            masked.append(f"{head}=<LIT>")
+        except Exception:
+            masked.append(f"{head}={default}")
+    return (src[:po], tuple(masked), src[i:], start0)
+
+
+def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
     """The live function named `def_name` defined in `file_path` — resolved by
     NAME over the file's live modules (module + class vars), with `def_line`
     only breaking ties between same-named defs (methods of different classes).
+
+    `prefer_pending=True` flips the order: exec-compile the def's LATEST
+    pending source FIRST (the same fallback path below), so a just-made edit
+    — a params-panel default spliced into the signature moments ago — runs
+    immediately instead of waiting out the background reparse/live-apply
+    that would eventually refresh the live function. The live-module walk
+    becomes the fallback (unparseable pending text, def not found). The
+    panel's Run / Run Visualize buttons pass it.
 
     Deliberately NOT chain_converters._enclosing_function: that resolver keys
     its cache on disk mtime — studio edits are PendingSave-deferred, so a
@@ -2038,6 +2133,84 @@ def _fnrun_resolve(file_path, def_line, def_name=None):
     except (OSError, ValueError):
         return None
     modules = _modules_for_file(target)
+
+    def _exec_pending():
+        """Compile + exec the def's block from the PENDING file text (the
+        in-memory truth) in a lazy copy of the module namespace. Returns the
+        exec'd function, or None when extraction/compile fails."""
+        got = _fnrun_extract_def(file_path, def_line, def_name)
+        if got is None or not modules:
+            return None
+        src, start0 = got
+        # Fast path: only literal parameter defaults changed since the last
+        # compile of this def → reuse the compiled code. The run passes
+        # the panel's values as explicit kwargs, so the stale compiled
+        # defaults never evaluate; body/signature/expression-default edits
+        # (and line moves) change the key and recompile.
+        _ck = (str(target), def_name)
+        _key = _fnrun_src_key(src, start0)
+        _hit = _FNRUN_COMPILE_CACHE.get(_ck)
+        if _key is not None and _hit is not None and _hit[0] == _key:
+            return _hit[1]
+        defs = _fnrun_pending_defs(file_path)
+
+        # The file scope, lazily: the namespace starts as a copy of the live
+        # module's vars, and any name the run hits that ISN'T there (another
+        # just-typed function, a pending class) execs just its own block from
+        # the pending source on first use - never the whole file's side
+        # effects.
+        ns = _FnRunNamespace(dict(vars(modules[0])), file_path, defs)
+        # The namespace holds only imports that LIVE when executed - a def typed
+        # alongside a new import needs that import exec'd here now.
+        _fnrun_ensure_imports(ns, file_path)
+        try:
+            # Pad the (dedented) block down to its real pending line so the
+            # resulting code is COORDINATE-TRUE: instrumented_twin re-reads
+            # the def's source from the file/pending text at co_firstlineno -
+            # a block compiled at line 1 pointed it at the top-of-file
+            # imports and it silently fell back to an un-instrumented run
+            # (no live view).
+            exec(compile("\n" * start0 + src, str(file_path), 'exec'), ns)
+        except Exception:
+            return None
+        fn = ns.get(def_name)
+        if not callable(fn):
+            return None
+        # _build_twin copies fn.__globals__ into a PLAIN dict (losing the
+        # lazy __missing__), so the twin's own body must find its file-scope
+        # names already bound: touch every direct reference that lives in the
+        # pending top level. Transitive callees see nothing - a memoized
+        # helper keeps THIS namespace as its __globals__, leaving resolution
+        # intact.
+        _fnrun_materialize_refs(ns, src)
+        fn.__fnrun_exec__ = True
+        if def_name in defs:
+            # TOP-LEVEL defs: park the exec'd fn on the module under a
+            # private key so live_view's overlay resolver
+            # (_enclosing_function's module-vars walk - it reads VALUES, keys
+            # don't matter) can find the same object the run publishes to;
+            # the coordinate-true firstlineno lets it win nearest-def for
+            # exactly its own body lines. Re-parked (same key) each resolve,
+            # and the resolver's mtime-keyed cache is purged so the overlay
+            # sees the NEW object - pending edits never bump the mtime.
+            # Nested defs are ephemeral: a module-level entry whose
+            # firstlineno sits INSIDE the outer function would steal the
+            # outer def's own marker resolution.
+            from src.lsd.gl_gui.view.core_conversion import (
+                chain_converters as _cc)
+            modules[0].__dict__[f"_fnrun_live_{def_name}"] = fn
+            for k in [k for k in _cc._ENCLOSING_FN_CACHE
+                      if k[0] == str(target)]:
+                del _cc._ENCLOSING_FN_CACHE[k]
+        if _key is not None:
+            _FNRUN_COMPILE_CACHE[_ck] = (_key, fn)
+        return fn
+
+    if prefer_pending:
+        fn = _exec_pending()
+        if fn is not None:
+            return fn
+
     cands = []
 
     def consider(fn):
@@ -2103,56 +2276,7 @@ def _fnrun_resolve(file_path, def_line, def_name=None):
                 del _cc._ENCLOSING_FN_CACHE[k]
         return fn
 
-    got = _fnrun_extract_def(file_path, def_line, def_name)
-    if got is None or not modules:
-        return None
-    src, start0 = got
-    defs = _fnrun_pending_defs(file_path)
-    # Restore file scope, lazily: the namespace starts as a copy of the live
-    # module's vars, and any name the run hits that ISN'T there (another
-    # just-typed function, a pending class) execs just its own block from the
-    # pending source on first use - never the whole file's side effects.
-    ns = _FnRunNamespace(dict(vars(modules[0])), file_path, defs)
-    # The copy holds only imports the LIVE module executed - a def typed
-    # alongside a new import needs that import exec'd here too.
-    _fnrun_ensure_imports(ns, file_path)
-    try:
-        # Pad the (dedented) block down to its real pending line so the
-        # compiled code is COORDINATE-TRUE: instrumented_twin re-reads the
-        # block's source from the file/pending text at co_firstlineno - a
-        # block compiled at line 1 pointed it at the top-of-file imports and
-        # it silently fell back to an un-instrumented run (no live view).
-        exec(compile("\n" * start0 + src, str(file_path), 'exec'), ns)
-    except Exception:
-        return None
-    fn = ns.get(def_name)
-    if not callable(fn):
-        return None
-    # _build_twin copies fn.__globals__ into a PLAIN dict (losing the lazy
-    # __missing__), so the twin's run body must find its file-scope names
-    # already bound: touch every direct reference that lives in the pending
-    # top level. Transitive callees need nothing - a materialized name
-    # keeps THIS namespace as its __globals__, lazy resolution chain.
-    _fnrun_materialize_refs(ns, src)
-    fn.__fnrun_exec__ = True
-    if def_name in defs:
-        # TOP-LEVEL defs: park the exec'd fn on the module under a private
-        # key so live_view's default resolver (_enclosing_function's
-        # module-level walk - it reads VALUES, keys don't matter) can find
-        # the store owner the run publishes to; the coordinate-true
-        # firstlineno makes it win nearest-def for exactly-t own body
-        # lines. Re-parked (same key) each resolve, and the resolver's
-        # mtime-keyed cache are purged so the run finds the NEW object -
-        # pending edits never bump the mtime. Nested defs stay ephemeral: a
-        # module-level entry whose firstlineno sits INSIDE the outer
-        # function would steal the outer def's own name resolution.
-        from src.lsd.gl_gui.view.core_conversion import (
-            chain_converters as _cc)
-        modules[0].__dict__[f"_fnrun_live_{def_name}"] = fn
-        for k in [k for k in _cc._ENCLOSING_FN_CACHE
-                  if k[0] == str(target)]:
-            del _cc._ENCLOSING_FN_CACHE[k]
-    return fn
+    return _exec_pending()
 
 
 def _fnrun_materialize_refs(ns, src):
@@ -2485,13 +2609,21 @@ def _fnrun_after_live_run(editor_ds):
         _w = getattr(_mds, '_lv_window_ds', None)
         if _w is not None and not _w.closed:
             Melty.cache.invalidate_up(_w._tile_id, force=True, max_depth=8)
+    # The latch only matters if the editor BODY actually runs while it is
+    # live - the full overlay pass is part of the editor render, and until
+    # the Auto Execute splice deferred nothing else guaranteed a render (a
+    # run on a clean editor could let the latch expire silently - the
+    # "types freeze once their code scrolls off screen" report). Drive it.
+    editor_ds.invalidate()
+    request_render()
 
 
 @render_func(show_bg=False, shadow=False, with_header=None, show_name=False,
              use_cache=False, selectable=False, is_tree=False)
 def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
                             fnrun_file=None, fnrun_line=None,
-                            fnrun_name=None, editor_ds=None, **kwargs):
+                            fnrun_name=None, editor_ds=None,
+                            auto_execute=False, editor_state=None, **kwargs):
     """Body of the def-widget's params window: a Run + instrumented-run row
     above the parameters dict. Both resolve + run the def exactly like the
     widget's inline play/eye buttons, using the panel's CURRENT (possibly
@@ -2502,25 +2634,53 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
     logic untouched."""
     from src.lsd.gl_gui.view.core_views.headers import flat_button
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
-    run = flat_button(f"Run {fnrun_name}()##fnpprun{unique}", draw_state,
+    run = flat_button(f" Run##fnpprun{unique}", draw_state,
                       f"fnpprun::{unique}", height=28,
                       color=(0.499, 0.844, 0.488), corner_radius=5.0,
-                      shadow=False)
+                      shadow=True)
     imgui.same_line(spacing=6)
-    live = flat_button(f"##fnpplive{unique}", draw_state,
-                       f"fnpplive::{unique}", width=36, height=28,
-                       color=(0.40, 0.53, 0.78), corner_radius=5.0,
-                       shadow=False)
+    live = flat_button(f" Run Visualize##fnpplive{unique}", draw_state,
+                       f"fnpplive::{unique}", height=28, color=(0.13, 0.55, 0.13),
+                        corner_radius=5.0, 
+                       shadow=True)
+    imgui.same_line(spacing=6)
+    # Auto Execute: while on, any param edit below triggers Run Visualize
+    # with the fresh values. The persisted per-def bool
+    # (ScriptEditorState.params_auto_execute - the params_windows's
+    # pattern) is read DIRECTLY every frame, like the visibility bool: the
+    # `auto_execute` kwarg was captured when the def widget's body last ran
+    # inside the editor's blit-cached tile, so it goes stale the moment the
+    # checkbox writes the dict - the kwarg is only the no-state fallback.
+    if editor_state is not None and fnrun_name:
+        auto_execute = bool(editor_state.params_auto_execute.get(fnrun_name))
+    _ae_ch, _ae_val = RenderFuncs.draw_bool(bool(auto_execute), name=f"Auto Execute##fnppae{unique}")
+    if _ae_ch:
+        auto_execute = _ae_val
+        if editor_state is not None and fnrun_name:
+            editor_state.params_auto_execute[fnrun_name] = _ae_val
+        draw_state.invalidate()
+        request_render()
     # Ctrl+Enter over the panel = the instrument button. Registered BLOCKING
+    
     # with a priority above draw_main's root actions (draw_function_token's
     # pattern), so the main recompile-all flow never runs while the mouse
     # is over this window; the panel shell is use_cache=False, so the
     # subscription re-registers every time the window renders.
     if draw_state.on_action("ctrl_enter_down", priority_delta=1024):
         live = True
+    # Params render BEFORE the run block (buttons already laid out above),
+    # so an auto-executed run - and any click-triggered one - compiles
+    # against the panel's just-edited node.
+    _ch, _val = draw_any(input_value, name="parameters", child_kwargs={"syntax_highlight":False}, show_add_delete=False)
+    if _ch and auto_execute:
+        live = True
     if (run or live) and fnrun_file and fnrun_name:
         _mode = 'live' if live else 'run'
-        fn = _fnrun_resolve(fnrun_file, fnrun_line, fnrun_name)
+        # prefer_pending: compile the LATEST pending source (a change just
+        # spliced from this very panel included) instead of running the stale
+        # live function while the background reparse/live-apply catches up.
+        fn = _fnrun_resolve(fnrun_file, fnrun_line, fnrun_name,
+                            prefer_pending=True)
         if fn is None:
             _st = ('err', f"couldn't resolve '{fnrun_name}' — not found in "
                           f"live modules or source", _mode)
@@ -2540,7 +2700,19 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
             editor_ds.invalidate()
         draw_state.invalidate()
         request_render()
-    return draw_any(input_value, name="parameters", show_add_delete=False)
+    # A panel edit is observed HERE, inside the deferred window render - but
+    # the splice that puts it into the source happens in the def widget's
+    # body (draw_run_fn_token_plain's _edit branch), which lives inside the
+    # editor's blit-cached tile and only re-runs if something dirties it.
+    # Nothing else does: this panel is its own root window, so the edit never
+    # touches the editor's tiles. Invalidate the editor so the widget re-runs
+    # next frame, sees the latched changed, and splices the new default.
+    if _ch and editor_ds is not None:
+        # TEMP DEBUG (paired with "fnrun widget panel-ret").
+        _ptrace("fnrun panel edit", def_name=fnrun_name)
+        editor_ds.invalidate()
+        request_render()
+    return _ch, _val
 
 
 def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
@@ -2683,7 +2855,6 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
         from src.lsd.gl_gui.view.mode import Mode
-        _prev_vals = dict(_params_node) if _params_node else {}
         imgui.set_cursor_screen_pos((x, y))
         # window_pos only on FIRST spawn - passing it every call re-pins the
         # panel under the button and eats the user's drags (the live-value
@@ -2692,36 +2863,181 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         _pp_kwargs = {}
         if _pw is None:
             _pp_kwargs["window_pos"] = (0, height + 6)
+        # DISPLAYED node latch: the background reparse (small-file average
+        # ~119ms) rebuilds the tree MID-TYPING, so restamping the fresh
+        # `_params_node` per run showed half-typed defaults in the panel
+        # instead of the panel-sync debounce below - the reparse was a
+        # second, undebounced channel into the panel. Hold the last shown
+        # node and hand THAT to the panel; the swap to the current node
+        # happens only in the debounce-expiry branch below.
+        _shown_map = getattr(editor_ds, '_fnrun_shown_nodes', None)
+        if _shown_map is None:
+            _shown_map = editor_ds._fnrun_shown_nodes = {}
+        _shown = _shown_map.get(skey)
+        if _shown is None:
+            _shown = _shown_map[skey] = _params_node
         _pch, _pnv, _pw = draw_fnrun_params_panel(
-            _params_node, name=f"{def_name} params##fnpp::{def_name}",
+            _shown, name=f"{def_name} params##fnpp::{def_name}",
             mode=Mode.WINDOW, closed=not _pp_want,
             parent_window=editor_ds, return_extras=True, swoosh=False,
             fnrun_file=file_path, fnrun_line=def_line, fnrun_name=def_name,
-            editor_ds=editor_ds, **_pp_kwargs)
+            editor_ds=editor_ds,
+            auto_execute=bool(editor_state.params_auto_execute.get(def_name))
+            if editor_state is not None else False,
+            editor_state=editor_state, **_pp_kwargs)
         _pp_wins[skey] = _pw
         if _pw.closed and _pp_want and not params_clicked:
             _pp_vis[def_name] = False   # X-closed inline (same-frame close)
             _pp_want = False
-        if _pch and isinstance(_pnv, dict) and tv_text is not None:
-            for _pk, _pv in _pnv.items():
+        # TEMP diag: which link of the panel→splice hop fires (remove with
+        # the other fnrun diag once the value window round-trip is solid).
+        _ptrace("fnrun widget panel-ret", def_name=def_name, pch=bool(_pch),
+                pnv=type(_pnv).__name__, tv=tv_text is not None)
+
+        def _apply_splices(_vals):
+            """Diff each param's RENDERED SOURCE against the signature TEXT —
+            never against a value snapshot: the panel renders deferred and
+            mutates the node in place between our runs, so by the time the
+            changed latch reaches us the node already holds the new value
+            and old-vs-new compares equal (the never-splices bug). The text
+            is the truth this widget writes; unedited params round-trip
+            byte-identically through _fnrun_param_src (CodeLine IS source;
+            values keep their __cst__ formatting), so only a real edit
+            produces a differing expression."""
+            for _pk, _pv in _vals.items():
                 if not isinstance(_pk, str) or _pk.startswith('__'):
-                    continue
-                _old = _prev_vals.get(_pk, _pv)
-                try:
-                    _same = _pv is _old or _pv == _old
-                except Exception:
-                    _same = _pv is _old
-                if _same:
                     continue
                 _sp = _fnrun_sig_default_span(tv_text, def_disp_line or 0,
                                               _pk)
                 if _sp is None:
                     continue
+                _new_src = _fnrun_param_src(_pv)
+                if tv_text[_sp[0]:_sp[1]] == _new_src:
+                    continue
+                _ptrace("fnrun widget diff", key=_pk, span=_sp,
+                        new=repr(_new_src)[:32])
                 editor_ds.__dict__.setdefault('_fnrun_splices', []).append(
-                    (_sp[0], _sp[1] - _sp[0], _fnrun_param_src(_pv)))
+                    (_sp[0], _sp[1] - _sp[0], _new_src))
                 _params_node[_pk] = _pv
             editor_ds.invalidate()
             request_render()
+
+        _ae_on = (bool(editor_state.params_auto_execute.get(def_name))
+                  if editor_state is not None else False)
+        _hold_map = getattr(editor_ds, '_fnrun_splice_hold', None)
+        if _hold_map is None:
+            _hold_map = editor_ds._fnrun_splice_hold = {}
+        if _pch and isinstance(_pnv, dict) and tv_text is not None:
+            if _ae_on:
+                # AUTO EXECUTE: the edit already RAN (the panel triggers the
+                # cached compiled result with explicit params per edit) - the
+                # text write-back is deferred to a TRAILING edge, re-armed
+                # per edit, so a drag doesn't fire splice → dirty=True →
+                # save → reparse per tick. The panel node holds the values;
+                # the hold-expiry branch below splices them once, quiet-side.
+                from src.lsd.gl_gui.toggles import Toggles
+                _hd = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
+                _hold_map[skey] = time.monotonic() + _hd
+                import threading as _thr
+                _pt = getattr(editor_ds, '_fnrun_hold_timer', None)
+                if _pt is not None:
+                    _pt.cancel()
+                _t = _thr.Timer(max(_hd, 0.01), request_render)
+                _t.daemon = True
+                editor_ds._fnrun_hold_timer = _t
+                _t.start()
+            else:
+                _apply_splices(_pnv)
+        elif (_hold_map.get(skey) is not None and tv_text is not None
+              and isinstance(_pnv, dict)):
+            # Deferred auto-execute write-back: one splice only at the
+            # trailing edge (or immediately once Auto Execute is toggled
+            # off - the hold must never strand panel values out of the code).
+            if time.monotonic() >= _hold_map[skey] or not _ae_on:
+                _hold_map[skey] = None
+                _apply_splices(_pnv)
+            else:
+                editor_ds.invalidate()   # timer wakes the expiry frame
+        elif isinstance(_params_node, dict) and tv_text is not None:
+            # TEXT → PANEL sync (the reverse of the splice above): a
+            # signature edit done in the editor shows in the open panel
+            # immediately instead of waiting out the debounced background
+            # reparse. Same diff primitive again - each param's text
+            # slice vs the node's rendered source - with the changed
+            # expression parsed through the central converter. RAW writes
+            # (dict.__setitem__, no bubbling): this is a deferred sync of a
+            # tree the reparse will overwrite anyway, and a bubbled write
+            # would run the code host → chain_out per keystroke (the echo
+            # storm). Gated on text identity so it runs once per buffer
+            # change, not per frame; a mid-typing unparseable expression
+            # just skips until it parses. Guarded by `elif not _pch`: on a
+            # panel-edit frame the splice above is the truth flowing the
+            # other way.
+            _sync_memo = getattr(editor_ds, '_fnrun_sig_sync', None)
+            if _sync_memo is None:
+                _sync_memo = editor_ds._fnrun_sig_sync = {}
+            # TRAILING DEBOUNCE, re-armed per keystroke: entry is
+            # [tv_text_seen, deadline]; deadline None = already synced. A
+            # fresh buffer arms the window (a one-shot timer wakes the
+            # event-driven render loop at expiry — the widget itself only
+            # runs on frames), and the sync below fires once, quiet-side.
+            from src.lsd.gl_gui.toggles import Toggles
+            _dbc = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
+            _ent = _sync_memo.get(skey)
+            _due = False
+            if _ent is None or _ent[0] is not tv_text:
+                _sync_memo[skey] = [tv_text, time.monotonic() + _dbc]
+                if _dbc <= 0:
+                    _due = True
+                else:
+                    import threading as _thr
+                    _pt = getattr(editor_ds, '_fnrun_sync_timer', None)
+                    if _pt is not None:
+                        _pt.cancel()
+                    _t = _thr.Timer(_dbc, request_render)
+                    _t.daemon = True
+                    editor_ds._fnrun_sync_timer = _t
+                    _t.start()
+            elif _ent[1] is not None:
+                if time.monotonic() >= _ent[1]:
+                    _ent[1] = None
+                    _due = True
+                else:
+                    # Inside the quiet window: the timer above produces the
+                    # expiry frame; keep this tile un-cached until then so
+                    # the widget actually re-runs on it.
+                    editor_ds.invalidate()
+            if _due:
+                _synced = False
+                for _pk in list(_params_node.keys()):
+                    if not isinstance(_pk, str) or _pk.startswith('__'):
+                        continue
+                    _sp = _fnrun_sig_default_span(tv_text,
+                                                  def_disp_line or 0, _pk)
+                    if _sp is None:
+                        continue
+                    _txt = tv_text[_sp[0]:_sp[1]]
+                    if _txt == _fnrun_param_src(_params_node[_pk]):
+                        continue
+                    try:
+                        import libcst as _cst_mod
+                        from src.lsd.gl_gui.view.core_conversion.\
+                            libcst_conversion import _cst_to_python_or_raw
+                        _val = _cst_to_python_or_raw(
+                            _cst_mod.parse_expression(_txt))
+                    except Exception:
+                        continue        # mid-typing fragment - try later
+                    dict.__setitem__(_params_node, _pk, _val)
+                    _synced = True
+                # Expiry is ALSO the only place the displayed-node cach
+                # advances to the current (usually post-reparse) node - the
+                # panel shows new values exactly once, quiet-side.
+                if ((_synced or _shown is not _params_node)
+                        and _pw is not None and _pw._tile_id is not None):
+                    Melty.cache.invalidate_up(_pw._tile_id, force=True,
+                                              max_depth=8)
+                    request_render()
+                _shown_map[skey] = _params_node
     if hovered and status is not None and status[0] == 'err' and status[1]:
         # Error readout beside the button - draw-list text, hover-only (the
         # hover-edge invalidation above repaints it in and out).
@@ -7486,7 +7802,7 @@ def draw_text(input_value: str, height=None,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               code_diff_mode=False, fold_all_collapsed=None,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
-              unique=0):
+              autocomplete=True, unique=0):
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -9078,8 +9394,13 @@ def draw_text(input_value: str, height=None,
         # Exception: a single-line box that has its own `completion_source`
         # (the context-aware Eval REPL) can autocomplete -- it drives candidates
         # off the live scope cache instead of the parsed code_tree.
+        # `autocomplete=False` opts a field out entirely (text-code fields -
+        # e.g. the params panel's string boxes render prose, not code) - an
+        # explicit completion_source always wins, same as the single_line
+        # exception (the Eval REPL asks for candidates on purpose).
         ac_enabled = (not is_search_box
-                      and (not single_line or completion_source is not None))
+                      and (not single_line or completion_source is not None)
+                      and (autocomplete or completion_source is not None))
         if not ac_enabled:
             ds._ac_open = False
         # These run BEFORE the normal Arrow/Enter/Tab handlers and eat their
@@ -10181,6 +10502,11 @@ def draw_text(input_value: str, height=None,
     # never appears over it (the bar is drawn above, before the body).
     rect_min_y = draw_state.abs_clip_rect[1] + bar_height
     rect_max_x = left + draw_state.content_width
+    # content_width reserves up scroll_bar_width + margin for the scroll bar.
+    # While a click-drag is in flight the wrapper clip removes that reserve,
+    # so widen the body clip to match and let glyphs run under the bar.
+    if Melty.on_drag:
+        rect_max_x += scroll_bar_width + SCROLLBAR_MARGIN
     rect_max_y = draw_state.abs_clip_rect[3]
 
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)

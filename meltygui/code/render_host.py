@@ -955,5 +955,16 @@ def render_host_view(input_value, external_change=False, draw=False, draw_state=
     # lands on the upstream proxy, which goes dirty and saves one frame later.
     if edited and isinstance(host.input_value, RenderHost):
         host.input_value._set_held(out)
+        # A PROGRAMMATIC edit just serialized (chain_out from a param panel /
+        # lens / live-view window - typing never takes this branch: keystrokes
+        # enter the str host directly and don't chain_out). The code editor
+        # over this file is also consumer of this dict host (notify_on_change,
+        # draw_text_from_code_cache), but the regular consumer notify is
+        # trailing-debounced ~2s against typing and re-armed by the
+        # _mark_changed - under quick successive edits it starves and the
+        # editor keeps showing the pre-edit cache. Notify NOW: one fan-out per
+        # completed edit round, the editors re-run and read the fresh held
+        # string.
+        host._notify_consumers_now("programmatic edit write-back")
 
     return edited, out

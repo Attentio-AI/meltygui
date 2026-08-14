@@ -132,6 +132,27 @@ from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
 
+def _focus_inside_ds(ds):
+    """True when the current text focus sits inside `ds`'s subtree — i.e. the
+    save being queued originates from the editor the user is typing in. Walks
+    up from Melty.text_focused_ds via _parent (self-loop root) then
+    parent_window hops, same shape as _preferred_source_for's ancestor walk."""
+    if ds is None:
+        return False
+    node, hops = Melty.text_focused_ds, 0
+    while node is not None and hops < 32:
+        if node is ds:
+            return True
+        parent = getattr(node, "_parent", None)
+        nxt = parent if parent is not None and parent is not node else None
+        if nxt is None:
+            pw = getattr(node, "parent_window", None)
+            nxt = pw if pw is not None and pw is not node else None
+        node = nxt
+        hops += 1
+    return False
+
+
 def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None, force=False):
     """Write the edited value back through the resolved codec (span splice for
     code, whole-file for images, etc.). Returns the codec's result — a
@@ -140,7 +161,17 @@ def save_file(address, code_str, codec=None, ensure_import=None, parent_ds=None,
     current_time = datetime.now().strftime("%H:%M:%S")
     file_name = address.path.name if address.path is not None else "unknown"
     notify(f"Saved {file_name} from {parent_ds.name}", tint=(0.5, 1.0, 0.5))
-    PendingSave.queue_save(address=address, codec=codec, data=code_str, ensure_import=ensure_import, force=force)
+    # wake=False only for the typing editor's own per-keystroke auto-save
+    # (focus inside this wrapper's subtree) - waking every visible editor of
+    # the file per keystroke is the storm the wake was once disabled for. A
+    # programmatic save through this same runner (a side-panel/lens edit
+    # flowing out of the same cache host) keeps the wake so the visible
+    # editor's draw_text is invalidated promptly.
+    _wake = not _focus_inside_ds(parent_ds)
+    _ptrace(f"save_file wake={_wake} parent_ds={getattr(parent_ds, 'name', None)}",
+            file=file_name)
+    PendingSave.queue_save(address=address, codec=codec, data=code_str, ensure_import=ensure_import, force=force,
+                           wake=_wake)
     return True
     # return codec.save(address=address, data=code_str, ensure_import=ensure_import, force=force)
 

@@ -3277,8 +3277,19 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
     any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
                       or imgui.is_mouse_down(2))
-    if not any_mouse_held and not Melty.on_scroll and not RenderHost.typing_hold():
+    # The typing hold defers only HIDDEN CACHE hosts (the-named evictable
+    # pairs - their reconverts/saves are the GIL-heavy work that eats typing
+    # frames). VISIBLE hosts keep drawing through it: the live-lab loop types
+    # into a params-panel field while each keystroke's run publishes fresh
+    # tensors to the voxel/value windows - holding those froze the
+    # visualization for the whole typing burst (they replayed stale blits and
+    # only caught up at the 500ms debounce edge).
+    typing_held = RenderHost.typing_hold()
+    if not any_mouse_held and not Melty.on_scroll:
         for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
+            if (typing_held and getattr(host, "evictable", False)
+                    and host.name.startswith("##")):
+                continue
             # Event-driven pump: an entirely hidden cache host skips its draw
             # polling (draw_needed - edit flags / upstream identity change /
             # tile invalidation / slow heartbeat). An open code tab has
@@ -4719,7 +4730,11 @@ def draw_str(input_value: str, draw_state, editable=True, wrap=False, min_width=
         # disable scrolling
         changed, value = draw_text(str(input_value), name=draw_state.name + "##innder", show_bg=True,
                                    editable=True, with_header=draw_header, width=draw_state.content_width - 10,
-                                   show_name=False, is_tree=False, temp=True)
+                                   show_name=False, is_tree=False, temp=True,
+                                   # A VALUE field holds prose/data, not code -
+                                   # the auto-suggestion popup is noise here
+                                   # (params-panel input boxes especially).
+                                   autocomplete=False)
 
     if not show_controls:
         imgui.pop_style_var(1)
@@ -6552,7 +6567,9 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
         outer["__overrides__"] = _INFO_GROUP_OVERRIDES
         draw_collection(outer, name="rows", use_cache=False, show_bg=False,
                         show_header=False, shadow=False, selectable=False,
-                        item_spacing_y=2, child_kwargs={"show_system": True},
+                        item_spacing_y=2, child_kwargs={"show_system": True,
+                                                        "initial":{"expanded":False}
+                                                        },
                         search_text=child_search)
         return False, input_value
 

@@ -80,7 +80,32 @@ def collect_after_run(label="run"):
     iterating — observed as ~a full activation generation leaked per Run.
     Post-freeze the pass only walks objects allocated since boot-freeze
     (same price the idle collect pays), scheduled at the one moment it is
-    guaranteed profitable; the lag column keeps the cost visible."""
+    guaranteed profitable; the lag column keeps the cost visible.
+
+    RATE-LIMITED (Toggles.GC.post_run_min_s): Auto Execute fires a run per
+    param-drag tick, and a full collect per tick was a continuous ~120ms
+    stall. Runs inside the spacing window coalesce onto a trailing one-shot
+    timer that calls back here once the burst rests — so the LAST run's
+    garbage still retires promptly (that's the VRAM that matters), while a
+    burst pays at most one collect per window."""
+    from src.lsd.gl_gui.toggles import Toggles
+    import threading
+    min_s = float(Toggles.GC.post_run_min_s or 0.0)
+    now = time.monotonic()
+    since = now - _state.get("last_post_run", 0.0)
+    if min_s > 0.0 and since < min_s:
+        # Too soon - arm/replace the trailing timer timer. The timer re-enters
+        # this function; by then either the window has passed (collect) or
+        # newer runs re-armed a fresh timer (coalesce again).
+        prev = _state.get("post_run_timer")
+        if prev is not None:
+            prev.cancel()
+        t = threading.Timer(min_s - since, collect_after_run, args=(label,))
+        t.daemon = True
+        _state["post_run_timer"] = t
+        t.start()
+        return
+    _state["last_post_run"] = now
     with lag_span(f"gc: post-{label} collect", 0.0):
         gc.collect()
         try:

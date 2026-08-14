@@ -167,6 +167,42 @@ class WindowChange(Change):
         request_render()
 
 
+class CompareChange(Change):
+    """A Compare-With selection step in a code-editor window. `old`/`new`
+    are the PERSISTED compare tokens ('' none, 'HEAD', 'local', 'latest',
+    or a commit id) — the moving 'latest' token replays as 'latest', not a
+    frozen hash. No draw_state: replay posts a model command
+    (OpenFiles.compare_request) that the target editor instance's body
+    adopts next frame (externals never write draw_states directly)."""
+
+    def __init__(self, instance, old_token, new_token, t=0.0, group_id=0,
+                 frame=0):
+        super().__init__(None, old_token, new_token, t=t, group_id=group_id,
+                         frame=frame)
+        self.instance = instance
+
+    @property
+    def display_name(self):
+        return f"compare {(self.new or 'none')[:12]}"
+
+    def apply(self, undo):
+        root = getattr(Core.melty.vis, "root", None)
+        open_files = getattr(root, "open_files", None)
+        if open_files is None:
+            return
+        open_files.compare_request = (self.instance,
+                                      self.old if undo else self.new)
+        from src.lsd.gl_gui.view.playground.open_files import editor_window_ds
+        win = editor_window_ds(self.instance)
+        if win is not None:
+            win.closed = False
+            Core.melty.move_window_to_front(win)
+            if Core.melty.cache is not None and win._tile_id is not None:
+                Core.melty.cache.invalidate_up(win._tile_id, force=True,
+                                               max_depth=4)
+        request_render()
+
+
 @window(view_func=RenderFuncs.draw_undo_manager, live=True)
 class UndoManager:
     # draw_state -> ordered list of Changes recorded for that node. Safe to key
@@ -394,6 +430,16 @@ class NavUndo:
         cls.stack.push(NavChange(old_loc, new_loc, t=time.time(),
                                  group_id=cls.stack.new_group_id(),
                                  frame=Core.melty.frame_count))
+
+    @classmethod
+    def record_compare(cls, instance, old_token, new_token):
+        """Push a Compare-With selection step (editor dropdown / clear ×)."""
+        if not cls._recordable() or old_token == new_token:
+            return
+        cls.stack.push(CompareChange(instance, old_token, new_token,
+                                     t=time.time(),
+                                     group_id=cls.stack.new_group_id(),
+                                     frame=Core.melty.frame_count))
 
     @classmethod
     def record_window(cls, window_ds, closed_before, closed_after):

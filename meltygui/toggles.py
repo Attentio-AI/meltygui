@@ -538,7 +538,7 @@ class Toggles:
         # GIL-held parse convoying the render thread. 0 = no debounce (every
         # keystroke reparses - pathological on big buffers). First parses are
         # exempt. Read live.
-        parse_debounce_ms = 833
+        parse_debounce_ms = 32
 
         # Alternative debounce (ms) for SMALL buffers: under
         # small_file_max_chars a full cst→dict parse + symbol pass costs a few
@@ -554,6 +554,14 @@ class Toggles:
         # disables the small-file path entirely (everything uses
         # parse_debounce_ms). Read live.
         small_file_max_chars = 16 * 1024
+
+        # Trailing debounce (ms) on the def-widget's TEXT → params-panel
+        # sync: typing a new default in the signature updates the open panel
+        # only after this quiet interval, so a half-typed value ("5" on the
+        # way to "50") never lands mid-keystroke — which matters with Auto
+        # Execute on, where the synced value triggers a run. Re-armed per
+        # keystroke. 0 = sync immediately. Read live.
+        fnrun_text_sync_debounce_ms = 606
 
         # Incremental cst→dict conversion: when a previous good parse exists,
         # re-convert only the changed top-level statements and splice them
@@ -914,7 +922,7 @@ class Toggles:
         def_line_glow = True
         # Intensity of the emitted light for line bands (on top of the band
         # alpha; Toggles.glow_intensity scales all glows globally).
-        def_line_glow_intensity = 0.298
+        def_line_glow_intensity = 0.495
         # Emit light from each PER-OCCURRENCE chip (the per-token wash
         # rects) instead of / in addition to the line band - the glow then
         # highlights the individual token background's edges. Pair with
@@ -926,9 +934,9 @@ class Toggles:
         # Falloff skirt radius for token-chip light, px. Deliberately its
         # own knob - token halos want a far shorter throw than the
         # line-band def_line_blur_radius.
-        def_symbol_glow_radius = 0.00
+        def_symbol_glow_radius = 0.045
 
-        def_line_blur_radius = 271
+        def_line_blur_radius = 126
         # Alpha multiplier for the blurred band only - feathering spreads
         # the color thin, so the blur usually wants MORE alpha than the
         # hard rect's def_line_alpha. 1.0 = same as the hard band.
@@ -1286,7 +1294,7 @@ class Toggles:
         # draws and deferrable background work (reconverts, saves) that
         # otherwise leak into typing frames; they catch up on a self-armed
         # wake once the window expires. 0 disables.
-        host_typing_debounce_ms = 500
+        host_typing_debounce_ms = 25
 
     @defaults(tint=(0.181, 0.119, 0.294))
     class InputHandlerToggles:
@@ -1330,6 +1338,18 @@ class Toggles:
         idle_seconds = 15.0
         # Minimum spacing between idle collects.
         idle_collect_s = 120.0
+        # Minimum spacing between post-run collects (collect_after_run -
+        # the live lab's per-run VRAM retirement). Auto Execute runs the
+        # previewed function per mouse-drag tick; collecting after every
+        # one was a ~120ms stall per frame, and even every few seconds the
+        # accumulating garbage made each pass a ~400ms GIL stall. Within this
+        # window runs coalesce onto a trailing one-shot collect that fires
+        # once the burst rests, so the LAST run's garbage (the VRAM that
+        # matters) always retires - at most one full pass per window. VRAM
+        # from all generations inside the window stays pinned until then;
+        # lower this if iterating on models that fill the card. 0 = collect
+        # after every run.
+        post_run_min_s = 120.0
         # Never freeze/collect before the app has been up this long (caches
         # still filling - freezing mid-load would pin a half-built graph).
         boot_delay_s = 30.0
@@ -1360,7 +1380,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     show_filled_tiles = False
@@ -1385,7 +1405,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = False   # TEMP: on while debugging redundant symbol computes / convert_outlines
+    symbol_perf_log = False   # TEMP: on while debugging param-edit → editor wakeups
     attrib_churn_log = False
     debug_threads = False
 
@@ -1397,9 +1417,9 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.602
+    brightness = 0.609
     # [tint=(0.458, 0.474, 0.5)]
-    contrast = 2.071
+    contrast = 2.132
 
     debug_z_depth = False
     filters = True
@@ -1429,7 +1449,7 @@ class Toggles:
     shadow_height_scale = 3.716
     # Penumbra widening per unit of depth gap: bigger = softer, more
     # diffuse shadows from tall casters.
-    shadow_blur_scale = 0.255
+    shadow_blur_scale = 0.209
     # Contact-hardening: curve of penumbra growth along the shadow's
     # LENGTH - 0 at the caster's silhouette edge, 1 at the shadow tip
     # (the shader measures the edge distance by bisecting along
@@ -1438,7 +1458,7 @@ class Toggles:
     # the contact edge (long shadows that go soft fast), 1 = linear
     # growth, > 1 stays crisp for most of the run and softens only the
     # tip. 0 = legacy uniform blur along the whole shadow.
-    shadow_blur_exponent = -0.384
+    shadow_blur_exponent = -0.312
     # Blur samples in ShadowCast's penumbra ring (x3 radii per sample).
     # More = finer/less grainy penumbra, linearly more fragment work at
     # the shadow edge.
@@ -1506,7 +1526,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 0.976
+    glow_strength = 0.967
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),
@@ -1533,7 +1553,7 @@ class Toggles:
     glow_area_hold = -1.119
     # Lateral widening of the lit trapezoid, in px per px of drop below
     # the rect (tan of the light cone's half-angle; 0 = straight down).
-    glow_area_spread = 0.851
+    glow_area_spread = 0.647
     # Falloff curve exponent past the hold point: brightness falls as
     # smoothstep^exponent, smooth at BOTH ends so there is no hard edge at
     # the far extent. 1 = plain smoothstep; higher = the light dies faster

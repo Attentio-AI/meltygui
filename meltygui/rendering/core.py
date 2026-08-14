@@ -4894,6 +4894,10 @@ def render_func(*args, **o_kwargs):
             # wraps/clips before the bar instead of going under it.
             scrollbar_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
                                  + SCROLLBAR_MARGIN)
+            # While a click-drag is in progress, drop the reserve so content
+            # isn't clipped at the right edge mid-gesture.
+            if Melty.on_drag:
+                scrollbar_reserve = 0
             Melty.push_clip((draw_state.abs_left, draw_state.abs_top + header_height,
                              draw_state.abs_left + draw_state.width - scrollbar_reserve,
                              draw_state.abs_top + header_height + draw_state.height + 2))
