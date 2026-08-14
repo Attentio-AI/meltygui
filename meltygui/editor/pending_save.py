@@ -295,8 +295,8 @@ class PendingSave:
         # pull the new edit from this cache (code_file_io's cross-view-sync branch).
         # Reuses FileWatch's per-path watcher set + dispatch; the editing view that
         # produced the entry is guarded there (its own buffer already matches).
-        # if prev is None or prev[1].get("data") != kwargs.get("data"):
-        #     cls._wake_file_watchers(address.path)
+        if prev is None or prev[1].get("data") != kwargs.get("data"):
+            cls._wake_file_watchers(address.path)
 
         # The merge/conflict window watches this edge too: a fresh pending edit
         # may now have tracked external drift. wake() no-ops while that

@@ -223,6 +223,9 @@ class Mode(Enum):
                     # their content's measured height on first render (the
                     # _height_from_content path in core_render), so live-view
                     # value windows open wrapped to their contents.
+                    # max_height caps only that first-render adopt; the
+                    # user's resize handle isn't bound by it.
+                    "max_height": 800,
                     "initial": {"window_pos": (100, 500), "width": 400}},
             recursive=False
         )

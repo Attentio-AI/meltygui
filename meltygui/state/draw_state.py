@@ -101,6 +101,20 @@ class TabState(DictConversion):
         self.tab_icons = {}
 
 
+class TextEditorState(DictConversion):
+    """Per-editor persisted UI state for draw_text (injected via
+    `text_editor_state: TextEditorState = None` — the TabState pattern:
+    created into draw_state.misc and serialized with it)."""
+
+    def __init__(self):
+        super().__init__()
+        # {def_name: bool} - whether that function's parameter window is
+        # visible. The def widget reads/writes this bool DIRECTLY each
+        # render (visibility IS this bool); persisted, so a fresh session
+        # re-opens the panels that were open.
+        self.params_windows_open = {}
+
+
 @no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)
 class DropDownState(DictConversion):
     def __init__(self):
@@ -1848,7 +1862,11 @@ class DrawState(DictConversion):
         return (self.abs_left, self.abs_top + self.header_height, self.abs_left + self.width, self.abs_top + self.height - self.footer_height)
 
     def get_header_rect(self):
-        return ( self.abs_left, self.abs_top, self.abs_left + self.width, self.abs_top + self.header_height)
+        # header_width is the measured width of the drawn header, so the drag
+        # handle covers only the label band; 0 (no header drawn / not yet
+        # measured) falls back to the full view width.
+        right = self.abs_left + (self.header_width if self.header_width else self.width)
+        return (self.abs_left, self.abs_top, right, self.abs_top + self.header_height)
 
     # Transient per-draw_state UI state that should travel with a value undo, so
     # undoing a text edit also restores the caret/selection/scroll to where they

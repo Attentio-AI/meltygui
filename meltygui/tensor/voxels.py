@@ -126,23 +126,37 @@ float alphaFor(float m, float seg_n) {
 // `max_dist` optionally caps the march to NEAR-FIELD occluders — for
 // self-shading, what's right next to a sample is most of its shadow.
 // Always reads through volume_lin: shading wants smooth fields.
-float lightVisibility(vec3 p, int steps, float max_dist) {
-    vec3 ld = normalize(light_pos - p);
+// The Info variant also reports WHERE occlusion happened: (T, t_occ) with
+// t_occ the distance along the light ray at which transmittance first
+// dropped below 0.5 — the occluder height that drives the ground-space
+// penumbra radius. Rays that never occlude report the mid-chord of their
+// box span instead, so pixels just OUTSIDE the umbra blur with the same
+// radius as their shadowed neighbors (the penumbra widens on BOTH sides
+// of the hard edge); rays that miss the box entirely report 0.
+vec2 lightVisibilityInfo(vec3 p, vec3 lp, int steps, float max_dist) {
+    vec3 ld = normalize(lp - p);
     vec2 span = rayBox(p, ld, volume_scale);
     float t0 = max(span.x, 0.0);
-    float t1 = min(min(span.y, length(light_pos - p)), max_dist);
-    if (t0 >= t1) return 1.0;
+    float t1 = min(min(span.y, length(lp - p)), max_dist);
+    if (t0 >= t1) return vec2(1.0, 0.0);
     float ss = (t1 - t0) / float(steps);
     float seg_n = ss * length(ld / volume_scale);
     float T = 1.0;
+    float t_occ = 0.0;
     float t = t0 + ss * 0.5;
     for (int i = 0; i < steps; i++) {
         vec3 q = (p + ld * t) / volume_scale * 0.5 + 0.5;
         T *= 1.0 - alphaFor(remapValue(volume_lin, q).y, seg_n);
+        if (t_occ == 0.0 && T < 0.5) { t_occ = t; }
         if (T < 0.02) break;   // fully shadowed — stop early
         t += ss;
     }
-    return T;
+    if (t_occ == 0.0) { t_occ = 0.5 * (t0 + t1); }
+    return vec2(T, t_occ);
+}
+
+float lightVisibility(vec3 p, vec3 lp, int steps, float max_dist) {
+    return lightVisibilityInfo(p, lp, steps, max_dist).x;
 }
 
 // Gradient normal at texcoord p (central differences, one voxel apart),
@@ -198,9 +212,17 @@ void main() {
     // striking the TOP face — from underneath there's no shadow at all.
     float plane_t = -1.0;
     float plane_a = 0.0;
-    vec3 plane_c = vec3(0.0);   // a shadow only darkens — pure black
-    if (draw_plane && draw_shading && rd.z < -1e-6 && ro.z > -volume_scale.z) {
-        plane_t = (-volume_scale.z - ro.z) / rd.z;
+    // The caught shadow darkens toward the UI's compositor shadow color
+    // (Toggles.shadow_color rides in as shadow_tint) — the same slight
+    // blue the rest of the studio's shadows carry, instead of pure black.
+    vec3 plane_c = shadow_tint;
+    // plane_side mirrors the catcher to the box's OTHER face when the view
+    // is upside-down (+1 = floor at -z, -1 = at +z; latched between drags
+    // on the Python side). The conditions are the normal ones written in
+    // z' = z * plane_side; the catcher's light is mirrored to match below.
+    if (draw_plane && draw_shading && rd.z * plane_side < -1e-6
+            && ro.z * plane_side > -volume_scale.z) {
+        plane_t = (-volume_scale.z * plane_side - ro.z) / rd.z;
         vec3 pw = ro + rd * plane_t;
         // Blocked light via the same transmittance march as the rest of the
         // shading, lifted by the ambient floor (ambient_light raises this
@@ -208,7 +230,31 @@ void main() {
         // catcher so the darkening dies off instead of cutting.
         float ext = max(volume_scale.x, volume_scale.y);
         float r = max(length(pw.xy) - ext * 1.1, 0.0);
-        float shadow = (1.0 - ambient_light) * (1.0 - lightVisibility(pw, 24, 1e8));
+        // Center march gathers (visibility, occluder distance); the blur
+        // then happens in FLOOR coordinates — 4 extra visibility taps on a
+        // ring around the hit point, radius = shadow_softness × occluder
+        // distance (higher occluders throw softer shadows), averaged with
+        // the center. Skipped when the center ray misses the box (t_occ 0
+        // — open floor, nothing to soften).
+        // The catcher's marches use a PLANE-LOCAL light: light_pos with its
+        // z mirrored to the plane's side. The real light stays fixed in
+        // world space (the volume's shading uses it untouched) — this
+        // mirror only makes the flipped floor catch the same silhouette
+        // the bottom floor would, instead of a ceiling catching nothing.
+        vec3 pl_light = vec3(light_pos.xy, light_pos.z * plane_side);
+        vec2 vi = lightVisibilityInfo(pw, pl_light, 24, 1e8);
+        float vis = vi.x;
+        float blur_r = shadow_softness * vi.y;
+        if (blur_r > 1e-4) {
+            float acc_v = vis;
+            for (int k = 0; k < 4; k++) {
+                float ang = float(k) * 1.5707963 + 0.7853982;
+                vec3 op = pw + vec3(cos(ang), sin(ang), 0.0) * blur_r;
+                acc_v += lightVisibility(op, pl_light, 10, 1e8);
+            }
+            vis = acc_v / 5.0;
+        }
+        float shadow = (1.0 - ambient_light) * (1.0 - vis);
         plane_a = clamp(shadow * shadow_opacity, 0.0, 1.0) * exp(-1.5 * r / ext);
     }
 
@@ -276,7 +322,8 @@ void main() {
                         // turned every off-facing step facet into the same
                         // flat dark block.
                         float ndl = dot(nw.xyz, normalize(light_pos - wp)) * 0.5 + 0.5;
-                        float vis = self_shading ? lightVisibility(wp, 6, 0.7) : 1.0;
+                        float vis = self_shading
+                                  ? lightVisibility(wp, light_pos, 6, 0.7) : 1.0;
                         shade = mix(1.0, ambient_light
                                     + (1.0 - ambient_light) * ndl * ndl * vis,
                                     nw.w * shading_strength);
@@ -317,7 +364,8 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                aspect=1.0, brightness=1.0, contrast=1.0, density=1.0, gamma=1.6,
                threshold=0.1, step_size=0.0015, max_steps=4096, centered=False,
                volume=None, volume_lin=None, lut=None,
-               draw_plane=True, shadow_opacity=1.0,
+               draw_plane=True, shadow_opacity=1.0, shadow_softness=0.15,
+               shadow_tint=(0.0, 0.02, 0.05), plane_side=1.0,
                draw_shading=True, self_shading=True,
                light_pos=(90.0, -90.0, 200.0), light_tint=(1.0, 1.0, 1.0),
                light_brightness=1.622, ambient_light=0.3, shading_strength=0.7,
@@ -1384,8 +1432,10 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # ── shadow catcher: the invisible plane the box rests on -
                 # it renders nothing but the volume's cast shadow (one-sided:
                 # no shadow from below). shadow_opacity scales how dark the
-                # caught shadow composites. ──
-                draw_plane=True, shadow_opacity=1.0,
+                # caught shadow composites; shadow_softness scales the
+                # screen-space penumbra blur (radius grows with occluder
+                # height) - 0 = hard edge, bigger = wider penumbra. ──
+                draw_plane=True, shadow_opacity=1.0, shadow_softness=0.15,
                 # ── lighting: draw_shading lights the floor (per-s., the
                 # raymarched cast shadow) and the volume (gradient-normal
                 # Lambert); self_shading adds the per-sample transmittance
@@ -1642,6 +1692,17 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             draw_state.locate_pan_y = 0.0
             draw_state.locate_pan_z = 0.0
 
+    # ── plane side latch: when the view is upside-down the target plane
+    # belongs on the box's OTHER face (the floor light stays fixed in world
+    # space; only the catcher's marches see a mirrored box so the flipped
+    # floor still catches a shadow). Same idea as _orbit_spin_sign: the side
+    # only re-reads orientation while NO drag is active - mid-drag the floor
+    # holds put, and the flip lands when you let go.
+    if middle_mouse_drag is None:
+        draw_state._plane_side = -1.0 if math.cos(tilt) < 0.0 else 1.0
+    plane_side = getattr(draw_state, "_plane_side", None) or (
+        -1.0 if math.cos(tilt) < 0.0 else 1.0)
+
     # Filtering is sampler state on the texture, view-owned, applied per frame.
     filt = gl.GL_NEAREST if nearest else gl.GL_LINEAR
     gl.glBindTexture(tex.target, tex.texture_id)
@@ -1688,25 +1749,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glClearColor(0.0, 0.0, 0.0, 0.0)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        # int() of a UI-dragged float never matches the uniform's inferred
-        # GLSL type (the loop bound must stay an int).
-        voxel_pass(gl_state, volume=tex, volume_lin=tex, lut=lut_tex,
-                   aspect=width / height,
-                   volume_scale=volume_scale, step_size=step_size,
-                   max_steps=int(max_steps), density=density,
-                   threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
-                   pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
-                   brightness=cam_brightness, contrast=cam_contrast,
-                   gamma=float(Toggles.Voxels.gamma), centered=centered,
-                   draw_plane=bool(draw_plane),
-                   shadow_opacity=float(shadow_opacity),
-                   draw_shading=bool(draw_shading),
-                   self_shading=bool(self_shading),
-                   light_pos=tuple(float(c) for c in light_pos),
-                   light_tint=tuple(float(c) for c in light_tint),
-                   light_brightness=float(light_brightness),
-                   ambient_light=float(ambient_light),
-                   shading_strength=float(shading_strength))
+        # Labels FIRST, so the volume pass composites OVER them - the floor
+        # shadow (and the floor itself) darkens the labels beneath it
+        # instead of the labels floating on top of the shadow.
         if axis_edges and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -
@@ -1727,6 +1772,41 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                     import traceback
                     print(f"label billboards disabled: {e}")
                     traceback.print_exc()
+        # The volume shader outputs PREMULTIPLIED alpha (the shader
+        # composites with (1-a) weights), so it layers over the labels with
+        # ONE / ONE_MINUS_SRC_ALPHA - over label-free (transparent) pixels
+        # this is bit-identical to the old unblended write.
+        _blend_was = bool(gl.glIsEnabled(gl.GL_BLEND))
+        gl.glEnable(gl.GL_BLEND)
+        gl.glBlendEquation(gl.GL_FUNC_ADD)
+        gl.glBlendFuncSeparate(gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA,
+                               gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
+        # int() so a UI-dragged float never flips the uniform's inferred
+        # GLSL type (the loop bound must be an int).
+        voxel_pass(gl_state, volume=tex, volume_lin=tex, lut=lut_tex,
+                   aspect=width / height,
+                   volume_scale=volume_scale, step_size=step_size,
+                   max_steps=int(max_steps), density=density,
+                   threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
+                   pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
+                   brightness=cam_brightness, contrast=cam_contrast,
+                   gamma=float(Toggles.Voxels.gamma), centered=centered,
+                   draw_plane=bool(draw_plane),
+                   shadow_opacity=float(shadow_opacity),
+                   shadow_softness=float(shadow_softness),
+                   # The studio-wide compositor shadow color: the floor
+                   # shadow matches whatever the UI's shadows are tinted.
+                   shadow_tint=tuple(float(c) for c in Toggles.shadow_color),
+                   draw_shading=bool(draw_shading),
+                   self_shading=bool(self_shading),
+                   plane_side=float(plane_side),
+                   light_pos=tuple(float(c) for c in light_pos),
+                   light_tint=tuple(float(c) for c in light_tint),
+                   light_brightness=float(light_brightness),
+                   ambient_light=float(ambient_light),
+                   shading_strength=float(shading_strength))
+        if not _blend_was:
+            gl.glDisable(gl.GL_BLEND)
     if depth_was_on:
         gl.glEnable(gl.GL_DEPTH_TEST)
 

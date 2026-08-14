@@ -256,19 +256,25 @@ _SPAWN_EST_HEIGHT = 380.0
 _SPAWN_EST_WIDTH = 400.0
 
 
-def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
-                         win_w=None, gap=10.0):
+def _left_of_window_pos(anchor_left, marker_x, marker_y=None, win_h=None,
+                        win_w=None, gap=50.0, screen_margin=10.0):
     """Parent-relative window_pos that opens a spawned live-value window just
-    to the RIGHT of the editor's enclosing window, vertically level with the
-    marker — instead of on top of the code the marker sits in.
+    to the LEFT of the draw text, vertically level with the marker — instead
+    of on top of the code the marker sits in.
+
+    `anchor_left` is the absolute x of the draw text's left edge (the editor
+    draw_state's abs_left — NOT the enclosing window's edge, which can sit
+    far left of the text in multi-pane layouts). The value window's RIGHT
+    edge sits `gap` left of it, so its left edge needs `win_w` (the live
+    width on reopen, the LIVE_WINDOW initial width on first spawn).
 
     window_pos is relative to the spawned window's parent (the same editor
     window), and a marker renders at the cursor (abs_left == marker_x when
     window_pos is 0), so the parent-origin x offset is exactly marker_x:
-    subtract it from the window's absolute right edge to land there. Keeping
-    window_pos parent-relative means the value window then tracks the editor
-    window as it moves. Returns None when there's no enclosing window to
-    anchor to (caller falls back to the default on-cursor placement).
+    subtract it from the target absolute left edge to land there. Keeping
+    window_pos parent-relative means the value window then tracks the
+    editor window as it moves. Returns None when there's nothing to anchor
+    to (caller falls back to the default on-cursor placement).
 
     `marker_y` enables the display-bottom clamp: a marker near the screen
     bottom would otherwise spawn its window mostly below the display (the
@@ -279,23 +285,22 @@ def _right_of_window_pos(parent_win, marker_x, marker_y=None, win_h=None,
     spawn) fits above the display bottom, floored so the top never leaves
     the screen.
 
-    The x offset gets the same treatment against the display's RIGHT edge:
-    an editor window flush against it would spawn the value window entirely
-    off-screen. `win_w` is the live width on reopen; first spawn uses the
-    LIVE_WINDOW initial width. Floored so the left edge stays on screen —
-    when the display can't fit both, keeping the left edge visible wins."""
-    if parent_win is None:
+    The x offset gets the same treatment against the display's LEFT edge:
+    a draw text flush against it would spawn the value window entirely
+    off-screen. Floored so the left edge stays on screen — when the display
+    can't fit both, keeping the left edge visible wins."""
+    if anchor_left is None:
         return None
     disp = Core.melty.display_size
-    x_off = parent_win.abs_left + parent_win.width + gap - marker_x
+    est_w = win_w or _SPAWN_EST_WIDTH
+    x_off = anchor_left - gap - est_w - marker_x
     if disp:
-        est_w = win_w or _SPAWN_EST_WIDTH
-        x_off = min(x_off, disp[0] - gap - est_w - marker_x)
-        x_off = max(x_off, -marker_x)          # keep the left edge on screen
+        x_off = min(x_off, disp[0] - screen_margin - est_w - marker_x)
+        x_off = max(x_off, screen_margin - marker_x)  # left edge on screen
     y_off = 0.0
     if marker_y is not None and disp:
         est = win_h or _SPAWN_EST_HEIGHT
-        y_off = min(0.0, disp[1] - gap - est - marker_y)
+        y_off = min(0.0, disp[1] - screen_margin - est - marker_y)
         y_off = max(y_off, -marker_y)          # keep the title bar on screen
     return (x_off, y_off)
 
@@ -556,6 +561,10 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         if reg is None:
             reg = editor_ds._lv_marker_ds = {}
         reg[ds.name] = ds
+        # Backlink for set_marker_open (the gutter pass only has the marker
+        # ds): the value window anchors to the draw TEXT's left edge, which
+        # only the editor ds knows.
+        ds._lv_editor_ds = editor_ds
     # First only only: a gray box whose code then runs gets invalidated
     # on the key's FIRST value, flips green (and auto-opens below, when this
     # marker auto-opens) — one editor re-render per new key, nothing per
@@ -793,12 +802,12 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         open_now = not open_now
         ds._lv_open = open_now
         if open_now and win_ds is not None:
-            # Reopening: snap the window back to the right of the editor
+            # Reopening: snap the window back to the LEFT of the editor
             # window (it may have been dragged onto the code). The window's
             # real size is known here, so the display clamps are exact.
-            pos = _right_of_window_pos(ds.parent_window, x, marker_y=y,
-                                       win_h=win_ds.height,
-                                       win_w=win_ds.width)
+            pos = _left_of_window_pos(
+                editor_ds.abs_left if editor_ds is not None else None,
+                x, marker_y=y, win_h=win_ds.height, win_w=win_ds.width)
             if pos is not None:
                 win_ds.window_pos = pos
         ds.invalidate()
@@ -842,14 +851,16 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             # up from nested windows) and creates the binding there if the
             # comment hasn't set the param yet.
             preferred_source="code comment")
-        # First creation: place the window to the RIGHT of the editor's
+        # First creation: anchor the window to the LEFT of the editor's
         # window, always on top of the code, lifted clear of the editor
         # bottom (estimated height - the real one doesn't exist yet).
         # window_pos persists on the spawned window's draw_state
         # (parent-relative, so it tracks the editor window) - set once; user
         # drags it preserved after.
         if win_ds is None:
-            pos = _right_of_window_pos(ds.parent_window, x, marker_y=y)
+            pos = _left_of_window_pos(
+                editor_ds.abs_left if editor_ds is not None else None,
+                x, marker_y=y)
             if pos is not None:
                 win_kwargs["window_pos"] = pos
         else:
@@ -908,7 +919,7 @@ def set_marker_open(marker_ds, open_):
     """Gutter-button entry point: latch a marker's value window open/closed
     from OUTSIDE the marker body (raw draw-list button, no render_func).
     Mirrors the double-click toggle: flipping open snaps an existing window
-    back to the right of the editor window (it may have been dragged onto
+    back to the left of the editor window (it may have been dragged onto
     the code). The marker ds is invalidated so its body re-runs and
     creates/hides the window on the next editor render; the CALLER must
     invalidate the editor tile itself (the marker only renders inside the
@@ -926,11 +937,12 @@ def set_marker_open(marker_ds, open_):
         # without this reset it reads the previous close as a fresh X click
         # and cancels the reopen on the spot.
         win_ds.closed = False
-        pos = _right_of_window_pos(marker_ds.parent_window,
-                                   marker_ds.abs_left,
-                                   marker_y=marker_ds.abs_top,
-                                   win_h=win_ds.height,
-                                   win_w=win_ds.width)
+        _ed = getattr(marker_ds, "_lv_editor_ds", None)
+        pos = _left_of_window_pos(_ed.abs_left if _ed is not None else None,
+                                  marker_ds.abs_left,
+                                  marker_y=marker_ds.abs_top,
+                                  win_h=win_ds.height,
+                                  win_w=win_ds.width)
         if pos is not None:
             win_ds.window_pos = pos
     marker_ds.invalidate()

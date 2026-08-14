@@ -410,7 +410,7 @@ class Swoosh:
 @window(tint=(0.54, 0.374, 0.042))
 class Toggles:
 
-    @defaults(tint=(0.834, 0.869, 0.878))
+    @defaults(tint=(0.236, 0.26, 0.267))
     class TextEditor:
 
         enable_spell_check = False
@@ -1198,6 +1198,12 @@ class Toggles:
         ribbon_insertion_thickness = 3
         # Seam curve sampling (smoothstep slices).
         ribbon_curve_steps = 40
+        # AA feather for the seam band's S-curve edges: the band fills with
+        # aliased triangles (per-triangle AA reads as seams), so its two
+        # boundary curves are stroked with an antialiased polyline in the
+        # FILL_COLOR at this thickness - same trick as Swoosh.aa_width in
+        # Melty._draw_ribbon. 0 disables.
+        ribbon_aa_width = 1.0
         # Signed depth offset for the shadow cast behind the whole swoosh
         # (washes + seam band, add_shadow semantics: positive lifts it off
         # the editor surface, negative carves a hole). 0 disables.
@@ -1295,14 +1301,14 @@ class Toggles:
     @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:
         keep_for_frames = 100
-        enable = True
+        enable = False
         draw_rect = True
 
         # [tint=(0.85, 0.45, 0.05), show_tint=True]
         invalidate_stack_trace = False
 
         # [tint=(0.028, 0.561, 0.115), show_tint=True]
-        invalidate_request_render = True
+        invalidate_request_render = False
 
         attrib_change_stack_trace = False
 
@@ -1354,7 +1360,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
     show_fps = True
 
     show_filled_tiles = False

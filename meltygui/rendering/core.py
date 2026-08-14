@@ -1754,11 +1754,12 @@ def render_func(*args, **o_kwargs):
             else:
                 draw_state.window_pos = (0, 0)
 
-            # The right-drag (corner_drag) is shared by BOTH the resize block
-            # here and the window-move block further down: plain right-drag
-            # resizes, ctrl+right-drag moves. Initialised to None so the move
-            # block can always read it (auto-resize windows have no resize
-            # handle, so corner_drag stays None for them).
+            # The right-drag (corner_drag) drives the resize block below: a
+            # plain right-drag drags the BOTTOM-RIGHT corner, ctrl+right-drag
+            # drags the TOP-LEFT corner instead. Initialised to None so the
+            # window-move press block further down can still check whether a
+            # right-drag resize is in flight (auto-resize windows have no
+            # resize handle, so corner_drag stays None for them).
             corner_drag = None
             if not auto_resize and (passed_width is None or passed_height is None):
                 # Resolved through the module each call so columns.py hotswaps
@@ -1770,11 +1771,11 @@ def render_func(*args, **o_kwargs):
                                                    rect=corner_rect, priority_delta=1)
 
                 corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
-                # Plain right-drag resizes; with ctrl held the right-drag is a
-                # window-move instead (handled in the move block below), so don't
-                # drive resize from it. corner_drag.ctrl is reset per frame, so
-                # tapping ctrl mid-drag flips the mode live and seamlessly.
-                if handle_drag is None and corner_drag is not None and not corner_drag.ctrl:
+                # A right-drag always resizes; ctrl only selects WHICH corner
+                # (read per frame in the drag block below - tapping ctrl
+                # mid-drag flips corners live, with a baseline rebase there
+                # to the handoff seamless).
+                if handle_drag is None and corner_drag is not None:
                     handle_drag = corner_drag
 
                 # Press-anchored resize baselines (same reasoning as the
@@ -1803,6 +1804,7 @@ def render_func(*args, **o_kwargs):
                     # (old_baseline + new_total, and total_dx - stale_x0).
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
+                    draw_state._resize_from_top_left = None
                     if handle_drag is None and draw_state.window_pos is not None:
                         draw_state._initial_window_size = (draw_state.width, draw_state.height)
                         draw_state._initial_window_pos_resize = (draw_state.window_pos[0],
@@ -1816,41 +1818,116 @@ def render_func(*args, **o_kwargs):
                         draw_state._initial_window_pos_resize = None
 
                 if handle_drag and not auto_resize:
+                    # Which corner this drag is currently dragging, read from
+                    # .ctrl per frame: plain right-drag (and the corner
+                    # handle) drags the BOTTOM-RIGHT corner, ctrl+right-drag
+                    # drags the TOP-LEFT corner - left column edge + window
+                    # top, same collision rules. Tapping ctrl mid-drag flips
+                    # the corner live: both modes state size/pos as
+                    # baseline ± total_d, so on a flip the baseline is
+                    # rebased around the CURRENT size/pos/total and the two
+                    # formulas hand off with zero jump; the column edge is
+                    # re-latched for the new side against the CURRENT cursor
+                    # (the gesture-start latch below uses the press point).
+                    ctrl_now = bool(handle_drag is corner_drag
+                                    and getattr(handle_drag, "ctrl", False))
+                    from_top_left = getattr(draw_state, "_resize_from_top_left", None)
+                    if from_top_left is None:
+                        from_top_left = ctrl_now
+                        draw_state._resize_from_top_left = ctrl_now
+                    elif ctrl_now != from_top_left:
+                        from_top_left = ctrl_now
+                        draw_state._resize_from_top_left = ctrl_now
+                        if from_top_left:
+                            # size = init + total from here on; pos follows
+                            # bottom-fixed = init_pos + (init_size - size).
+                            # At the flip instant size==current and the pos
+                            # term must equal current pos, so init_pos backs
+                            # out the total accumulated so far.
+                            draw_state._initial_window_size = (
+                                draw_state.width + handle_drag.total_dx,
+                                draw_state.height + handle_drag.total_dy)
+                            draw_state._initial_window_pos_resize = (
+                                draw_state.window_pos[0] - handle_drag.total_dx,
+                                draw_state.window_pos[1] - handle_drag.total_dy)
+                        else:
+                            # size = init - total; the sticky re-anchors pin
+                            # pos = init_pos, so init_pos is simply where the
+                            # window sits right now.
+                            draw_state._initial_window_size = (
+                                draw_state.width - handle_drag.total_dx,
+                                draw_state.height - handle_drag.total_dy)
+                            draw_state._initial_window_pos_resize = (
+                                draw_state.window_pos[0], draw_state.window_pos[1])
+                        # Re-latch the width edge for the new side at the
+                        # CURRENT cursor (the drag-start point may sit in a
+                        # different column by now); x0 = total so the
+                        # incremental queue restarts from zero.
+                        try:
+                            draw_state._resize_target_edge = _columns.edge_under_cursor(
+                                draw_state, handle_drag.x - draw_state.abs_left,
+                                handle_drag.y, left=from_top_left)
+                        except Exception:
+                            draw_state._resize_target_edge = None
+                        draw_state._resize_target_edge_x0 = handle_drag.total_dx
                     if draw_state._initial_window_size is None:
                         # Rebase the size baseline by the drag delta so far so
-                        # size = baseline + total_d is continuous if resize
-                        # (re)activates mid-drag - e.g. by releasing ctrl,
-                        # which had switched the right-drag to a window-move. At
-                        # a normal drag start total_d≈0, so this is a no-op.
-                        draw_state._initial_window_size = (draw_state.width - handle_drag.total_dx,
-                                                           draw_state.height - handle_drag.total_dy)
+                        # size = init + total_d is continuous when resize
+                        # (re)activates mid-drag (press and first drag frame
+                        # compressed together after a stall). At a fresh drag
+                        # start total_d≈0, so this is a no-op.
+                        if from_top_left:
+                            draw_state._initial_window_size = (draw_state.width + handle_drag.total_dx,
+                                                               draw_state.height + handle_drag.total_dy)
+                        else:
+                            draw_state._initial_window_size = (draw_state.width - handle_drag.total_dx,
+                                                               draw_state.height - handle_drag.total_dy)
                     if draw_state._initial_window_pos_resize is None:
                         draw_state._initial_window_pos_resize = (draw_state.window_pos[0], draw_state.window_pos[1])
 
                     draw_state.expanded = True
-                    size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
-                    size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
-                    # True if this resize-drag drives an INTERIOR column edge
-                    # (set in the width block below). Hoisted so the sticky-x
-                    # re-anchor further down can see it even when passed_width
-                    # short-circuits the width block.
+                    if from_top_left:
+                        size_w = draw_state._initial_window_size[0] - handle_drag.total_dx
+                        size_h = draw_state._initial_window_size[1] - handle_drag.total_dy
+                    else:
+                        size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
+                        size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
+                    # True while this right-drag drives a column edge through
+                    # the shared collision solver (set in the width block
+                    # below). Hoisted so the sticky-x re-anchor further down
+                    # can see it even when passed_width short-circuits the
+                    # width block.
                     queued = False
                     if passed_height is None:
-                        draw_state.height = snap_int(max(size_h, draw_state.min_height))
+                        new_h = snap_int(max(size_h, draw_state.min_height))
+                        draw_state.height = new_h
                         draw_state._source["height"] = "initial window size"
+                        if from_top_left:
+                            # TOP edge follows the height: the bottom stays
+                            # fixed, so the window slides down by exactly what
+                            # the height gave up (min_height clamp included so
+                            # once the height floors, the top stops with it).
+                            draw_state.window_pos = (
+                                draw_state.window_pos[0],
+                                draw_state._initial_window_pos_resize[1]
+                                + (draw_state._initial_window_size[1] - new_h))
 
                     if passed_width is None:
-                        # A plain right-drag (corner_drag) retargets the drag to
-                        # the COLUMN edge under the cursor. The bottom-right
-                        # corner handle (left-drag) always resizes the window
-                        # itself. The edge is latched live at drag start; an
-                        # INTERIOR edge is queued onto the window's pending drags
-                        # and solved by window_edge_pass (below, same frame). The
-                        # window's OWN right frame edge - the last column's right
-                        # edge, or a column-less window - takes the unchanged
-                        # resize path so min_width and immediacy are handled
-                        # exactly. Any error / columns hiccup falls back to a
-                        # plain width resize.
+                        # A right-drag (corner_drag) retargets the width from a
+                        # COLUMN edge latched once on drag starts: plain drag
+                        # uses the edge to the cursor's RIGHT, ctrl (top-left
+                        # mode) the edge to its LEFT. The bottom-right edge
+                        # HANDLE (left-drag) always resizes the window frame
+                        # directly. The latched edge - typically the window's
+                        # own frame edge - is queued onto the window's
+                        # pending drags and solved by window_edge_pass (below,
+                        # same frame), so dragging past the pile pushes the
+                        # far frame edge and slides the window exactly like an
+                        # interior divider push. The third tuple slot marks
+                        # the edge cursor-driven, exempting it from the
+                        # frame-edge walls that guard the foreign-width
+                        # invariant  in _solve_collisions. Defensive: any
+                        # columns hiccup bverts to a plain width resize.
                         #
                         # The queue is INCREMENTAL (edge["x"] + this frame's dx),
                         # exactly like ColumnLayout's own edge handles, NOT an
@@ -1870,7 +1947,7 @@ def render_func(*args, **o_kwargs):
                                     sx = (handle_drag.x - handle_drag.total_dx) - draw_state.abs_left
                                     sy = handle_drag.y - handle_drag.total_dy
                                     draw_state._resize_target_edge = _columns.edge_under_cursor(
-                                        draw_state, sx, sy)
+                                        draw_state, sx, sy, left=from_top_left)
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
                                     # TEMP edge debugging: what the right-drag latched.
                                     try:
@@ -1895,23 +1972,33 @@ def render_func(*args, **o_kwargs):
                                     except Exception:
                                         pass
                                 edge = draw_state._resize_target_edge
-                                fe = getattr(draw_state, "_frame_edges", None)
-                                # Interior divider only - the frame's own right
-                                # edge falls through to the direct resize below.
-                                if edge is not None and not (fe and edge is fe[1]):
+                                if edge is not None:
                                     inc = handle_drag.total_dx - draw_state._resize_target_edge_x0
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
                                     if inc:
                                         _columns._ensure_window_state(draw_state)
                                         draw_state._pending_drags.append(
-                                            (edge, edge["x"] + inc))
+                                            (edge, edge["x"] + inc, True))
                                     queued = True
                             except Exception:
                                 queued = False
                         if not queued:
-                            draw_state.width = snap_int(max(size_w, draw_state.min_width))
+                            new_w = snap_int(max(size_w, draw_state.min_width))
+                            draw_state.width = new_w
+                            if from_top_left:
+                                # Direct LEFT-edge fallback (no edge exists in
+                                # this window): the right edge stays fixed, so
+                                # the window slides right by exactly what the
+                                # width gave up (min_width clamp included).
+                                draw_state.window_pos = (
+                                    draw_state._initial_window_pos_resize[0]
+                                    + (draw_state._initial_window_size[0] - new_w),
+                                    draw_state.window_pos[1])
 
-                    if draw_state.anchor_pos is not None:
+                    # Anchor-managed resize positioning is stated in
+                    # bottom-right corner semantics; top-left mode derives its
+                    # own position from the fixed bottom-right corner above.
+                    if draw_state.anchor_pos is not None and not from_top_left:
                         anchor_pos = draw_state.anchor_pos
                         if anchor_pos == Anchor.TOP_LEFT:
                             pass
@@ -1956,7 +2043,9 @@ def render_func(*args, **o_kwargs):
                     # anchors that don't already re-derive y from the start pos
                     # each frame (None / TOP_*); bottom/center anchors revert on
                     # their own. Preserves the (layout-managed) x.
-                    if (Toggles.WindowSettings.sticky_drag
+                    # Skipped in top-left mode: there the y IS the drag, and
+                    # bottom-fixed from the baseline each frame above.
+                    if (Toggles.WindowSettings.sticky_drag and not from_top_left
                             and (draw_state.anchor_pos is None
                                  or draw_state.anchor_pos in TOP_ANCHORS)):
                         draw_state.window_pos = (draw_state.window_pos[0],
@@ -1973,11 +2062,28 @@ def render_func(*args, **o_kwargs):
                     # slide each frame while the width growth sticks, so the
                     # window ratchets wider without ever moving and the
                     # divider stops tracking the cursor.
+                    # (Also skipped in top-left mode: x is either edge-solve
+                    # owned or derived right-fixed from the baseline above.)
                     if (Toggles.WindowSettings.sticky_drag and not queued
+                            and not from_top_left
                             and (draw_state.anchor_pos is None
                                  or draw_state.anchor_pos in LEFT_ANCHORS)):
                         draw_state.window_pos = (draw_state._initial_window_pos_resize[0],
                                                  draw_state.window_pos[1])
+
+                    # Top-left mode twin of the bottom clamp below: keep the
+                    # window's TOP on the display while growing upward. When
+                    # the top would rise past the display top, pin it at 0 and
+                    # cap the height there - the bottom stays put. The
+                    # position is re-derived from the baseline every frame, so
+                    # the clamp never accumulates and releases on drag-back.
+                    if from_top_left:
+                        abs_top_tl = draw_state._abs_top()
+                        if abs_top_tl < 0:
+                            if passed_height is None:
+                                draw_state.height = snap_int(draw_state.height + abs_top_tl)
+                            draw_state.window_pos = (draw_state.window_pos[0],
+                                                     snap_int(draw_state.window_pos[1] - abs_top_tl))
 
                     # Keep the window's bottom on the display while resizing.
                     # When the new bottom would extend past the bottom of the
@@ -2025,6 +2131,7 @@ def render_func(*args, **o_kwargs):
                     draw_state._initial_window_pos_resize = None
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
+                    draw_state._resize_from_top_left = None
 
             # Click-away focus clearing: non_blocking + high priority sees every
             # left press over this window without taking it from interactive
@@ -2076,15 +2183,15 @@ def render_func(*args, **o_kwargs):
                         # Latching at the press makes pos = press_pos + total_d
                         # catch up in sync. Skip while a drag is already
                         # driving, so a stray left press during an active
-                        # ctrl-right move can't rebase it mid-flight.
+                        # right-drag resize can't latch a stale move baseline.
                         if on_drag is None and corner_drag is None:
                             draw_state._initial_window_pos = (draw_state.window_pos[0],
                                                               draw_state.window_pos[1])
                         else:
                             # Press with a drag already delivering this frame -
                             # low-fps combination of release+press+drag, or a
-                            # stray left press during an active ctrl-right
-                            # move. Drop any stale baseline so the drag
+                            # stray left press during an active right-drag
+                            # resize. Drop any stale baseline so the drag
                             # branch's rebase re-latches for the CURRENT
                             # gesture instead of leaping from the old one's.
                             draw_state._initial_window_pos = None
@@ -2096,29 +2203,19 @@ def render_func(*args, **o_kwargs):
                     # here lost the press to any child that subscribed to it, which
                     # is exactly the inconsistency this replaces.
 
-                    # ctrl+right-drag moves a window, exactly like a left-drag.
-                    # The right-drag is captured in the resize system above as
-                    # corner_drag; here we use it as a move whenever ctrl is
-                    # held. Reading .ctrl per frame means a single right-drag can
-                    # flip between resize (ctrl up) and move (ctrl down) live.
+                    # (ctrl+right-drag used to move the window here; it now
+                    # drags the top-right corner in the resize block above, so
+                    # window moves are left-drag only.)
                     move_drag = on_drag
-                    via_ctrl_right = False
-                    if move_drag is None and corner_drag is not None and corner_drag.ctrl:
-                        move_drag = corner_drag
-                        via_ctrl_right = True
 
                     if move_drag and not imgui_active:
                         if draw_state._initial_window_pos is None:
-                            # First frame of a move drag. Raise on grab for
-                            # parity with the left-drag move (which raises on its
-                            # left press via raise_press above). Rebase the baseline
-                            # by the drag
-                            # delta so far so pos = baseline + total_d is
-                            # correct when the move (re-)activates mid-drag -
-                            # e.g. the moment ctrl is pressed during a resize.
-                            # At a normal drag start total_d=0 so it's a no-op.
-                            if via_ctrl_right:
-                                Melty.move_window_to_front(draw_state)
+                            # First frame of this move segment. Rebase the
+                            # baseline by the drag delta so far so pos =
+                            # baseline + total_d is continuous when the move
+                            # (re)activates mid-drag - e.g. resuming after an
+                            # imgui interruption. At a normal drag start
+                            # total_d≈0 so it's a no-op.
                             draw_state._initial_window_pos = (draw_state.window_pos[0] - move_drag.total_dx,
                                                               draw_state.window_pos[1] - move_drag.total_dy)
 

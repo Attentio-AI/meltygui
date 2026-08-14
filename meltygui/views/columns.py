@@ -166,7 +166,14 @@ def _solve_collisions(window):
     # ever moves 1:1 with the cursor.
     frame_ids = {id(e) for e in (getattr(window, "_frame_edges", None) or [])}
     moved = False
-    for edge, target in pending:
+    for item in pending:
+        # Optional third slot marks a CURSOR-DRIVEN drag (the right-drag
+        # corner resize queues frame edges around it): those move 1:1 with the
+        # cursor, so the foreign-width feedback loop the walls guard against
+        # can't occur - a cursor drag on one frame edge is allowed to push
+        # the other (slide the window), just like an interior divider.
+        edge, target = item[0], item[1]
+        cursor_driven = len(item) > 2 and bool(item[2])
         flat.sort(key=lambda e: e["x"])
         k = next((i for i, e in enumerate(flat) if e is edge), None)
         # TEMP edge-debug: snapshot the flat population per applied drag.
@@ -187,7 +194,10 @@ def _solve_collisions(window):
             pass
         if k is None or target == edge["x"]:
             continue
-        walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
+        if cursor_driven:
+            walls = frozenset()
+        else:
+            walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
         _drag_edge(flat, k, target, walls=walls)
         moved = True
     return moved
@@ -386,17 +396,19 @@ def window_edge_pass(window):
                     ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
-def edge_under_cursor(window, cursor_x_window, cursor_y_abs):
+def edge_under_cursor(window, cursor_x_window, cursor_y_abs, left=False):
     """The column edge a right-drag resize should move, given the drag-start
     cursor (``cursor_x_window`` in window coords — offset from window.abs_left
     — and ``cursor_y_abs`` in absolute screen coords).
 
     Returns the nearest edge dict strictly to the RIGHT of the cursor among
     the rows whose visible band vertically contains the cursor — i.e. the
-    right edge of the INNERMOST column under the cursor. Every window
-    registers its own frame edges (``window.id`` entry, full-window span), so
-    a window with NO columns — or a drag in the last column — lands on the
-    window's right frame edge and width resizes exactly as a plain resize.
+    right edge of the INNERMOST column under the cursor. With ``left=True``
+    (the ctrl+right-drag top-left corner resize) it's the nearest edge
+    strictly to the LEFT instead. Every window registers its own frame edges
+    (``window.id`` entry, full-window span), so a window with NO columns — or
+    a drag in the outermost column — lands on the window's frame edge on
+    that side and the frame resizes exactly as a plain resize.
     Returns None only if no edges exist yet."""
     _ensure_window_state(window)
     best, best_x = None, None
@@ -411,12 +423,15 @@ def edge_under_cursor(window, cursor_x_window, cursor_y_abs):
         if not (top - 1 <= cursor_y_abs <= bottom + 1):
             continue
         for e in edge_list:
-            if e["x"] > cursor_x_window + 0.5 and (best_x is None or e["x"] < best_x):
+            if left:
+                if e["x"] < cursor_x_window - 0.5 and (best_x is None or e["x"] > best_x):
+                    best, best_x = e, e["x"]
+            elif e["x"] > cursor_x_window + 0.5 and (best_x is None or e["x"] < best_x):
                 best, best_x = e, e["x"]
     if best is None:
         fe = getattr(window, "_frame_edges", None)
         if fe:
-            best = fe[1]
+            best = fe[0] if left else fe[1]
     return best
 
 

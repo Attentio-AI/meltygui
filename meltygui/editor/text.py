@@ -8,7 +8,8 @@ import time
 import glfw
 import imgui
 
-from src.lsd.gl_gui.model.core_model.draw_state import DropDownState
+from src.lsd.gl_gui.model.core_model.draw_state import (DropDownState,
+                                                        TextEditorState)
 from src.lsd.gl_gui.toggles import Tint
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import CodeLine
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, add_glow, clear_glows
@@ -2472,11 +2473,82 @@ def _fnrun_def_node_for(editor_ds, skey, code_root, def_name, buf_line,
     return node
 
 
+def _fnrun_after_live_run(editor_ds):
+    """Post-instrumented-run delivery, shared by the inline eye and the
+    params panel's eye: force-invalidate every open value window's subtree
+    (the publishes went to a store object the markers hadn't registered
+    watchers on yet, so live_view's per-publish cascade never fired) and
+    latch a few FULL overlay passes so below-the-fold markers render once
+    (at a frozen anchor) and forward the fresh values into their windows."""
+    editor_ds._lv_full_overlay_until = Melty.frame_count + 3
+    for _mds in (getattr(editor_ds, '_lv_marker_ds', None) or {}).values():
+        _w = getattr(_mds, '_lv_window_ds', None)
+        if _w is not None and not _w.closed:
+            Melty.cache.invalidate_up(_w._tile_id, force=True, max_depth=8)
+
+
+@render_func(show_bg=False, shadow=False, with_header=None, show_name=False,
+             use_cache=False, selectable=False, is_tree=False)
+def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
+                            fnrun_file=None, fnrun_line=None,
+                            fnrun_name=None, editor_ds=None, **kwargs):
+    """Body of the def-widget's params window: a Run + instrumented-run row
+    above the parameters dict. Both resolve + run the def exactly like the
+    widget's inline play/eye buttons, using the panel's CURRENT (possibly
+    just-edited) values; status lands in the editor's _fnrun_status, so the
+    inline buttons show the same flash/error, and the eye triggers the same
+    post-run live-view delivery. The parameters dict renders through its
+    normal type routing; (changed, value) propagate to the widget's splice
+    logic untouched."""
+    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    run = flat_button(f"Run {fnrun_name}()##fnpprun{unique}", draw_state,
+                      f"fnpprun::{unique}", height=28,
+                      color=(0.499, 0.844, 0.488), corner_radius=5.0,
+                      shadow=False)
+    imgui.same_line(spacing=6)
+    live = flat_button(f"##fnpplive{unique}", draw_state,
+                       f"fnpplive::{unique}", width=36, height=28,
+                       color=(0.40, 0.53, 0.78), corner_radius=5.0,
+                       shadow=False)
+    # Ctrl+Enter over the panel = the instrument button. Registered BLOCKING
+    # with a priority above draw_main's root actions (draw_function_token's
+    # pattern), so the main recompile-all flow never runs while the mouse
+    # is over this window; the panel shell is use_cache=False, so the
+    # subscription re-registers every time the window renders.
+    if draw_state.on_action("ctrl_enter_down", priority_delta=1024):
+        live = True
+    if (run or live) and fnrun_file and fnrun_name:
+        _mode = 'live' if live else 'run'
+        fn = _fnrun_resolve(fnrun_file, fnrun_line, fnrun_name)
+        if fn is None:
+            _st = ('err', f"couldn't resolve '{fnrun_name}' — not found in "
+                          f"live modules or source", _mode)
+        else:
+            ok, err = _fnrun_run(fn, instrumented=live,
+                                 params=_fnrun_params_from_node(
+                                     {'parameters': input_value}))
+            _st = (('ok', Melty.frame_count, _mode) if ok
+                   else ('err', err, _mode))
+            if live and editor_ds is not None:
+                _fnrun_after_live_run(editor_ds)
+        if editor_ds is not None:
+            _sts = getattr(editor_ds, '_fnrun_status', None)
+            if _sts is None:
+                _sts = editor_ds._fnrun_status = {}
+            _sts[(str(fnrun_file), fnrun_name)] = _st
+            editor_ds.invalidate()
+        draw_state.invalidate()
+        request_render()
+    return draw_any(input_value, name="parameters", show_add_delete=False)
+
+
 def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                             tint=None, text_tint=None, editor_ds=None,
                             file_path=None, def_line=None, def_name=None,
                             code_root=None, def_buf_line=None,
                             tv_text=None, def_disp_line=None,
+                            editor_state=None,
                             **kwargs):
     """Inline run buttons for a function definition — ACCESSORY whole-token
     renderer for 'def' tokens: the keyword text draws normally (shifted right
@@ -2576,12 +2648,25 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     # signature via the editor's token-edit channel (_fnrun_splices), so it
     # saves/undoes like a keystroke, and the node is updated in-place so
     # the next run picks the change up immediately.
-    _pp_open_prev = getattr(editor_ds, '_fnrun_params_open', None) == skey
-    _pp_want = (not _pp_open_prev) if params_clicked else _pp_open_prev
+    # Visibility IS a persisted bool: TextEditorState.params_windows_open
+    # (the TabState pattern - kept in draw_text's draw_state.misc and
+    # serialized with it). Read directly every frame - no open-prev latch;
+    # the toggle click and the header X just write the bool.
+    _pp_vis = (editor_state.params_windows_open
+               if editor_state is not None else {})
+    if params_clicked:
+        _pp_vis[def_name] = not _pp_vis.get(def_name, False)
     _pp_wins = getattr(editor_ds, '_fnrun_params_wins', None)
     if _pp_wins is None:
         _pp_wins = editor_ds._fnrun_params_wins = {}
     _pw = _pp_wins.get(skey)
+    # Header-X lands during the DEFERRED closing frame (after our stamp
+    # closing frame) - the persistent window ds carries closed=True now;
+    # mirror it into the visibility bool before reading it.
+    if (_pw is not None and _pw.closed and not params_clicked
+            and _pp_vis.get(def_name)):
+        _pp_vis[def_name] = False
+    _pp_want = bool(_pp_vis.get(def_name))
     _params_node = None
     if _pp_want or params_clicked or (_pw is not None and not _pw.closed):
         # Lazy node resolution - only for the toggle click, while the panel
@@ -2592,27 +2677,31 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         _params_node = (_def_node.get('parameters')
                         if isinstance(_def_node, dict) else None)
     if _params_node is None:
+        if _pp_want:
+            _pp_vis[def_name] = False
         _pp_want = False
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
-        from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
         from src.lsd.gl_gui.view.mode import Mode
         _prev_vals = dict(_params_node) if _params_node else {}
         imgui.set_cursor_screen_pos((x, y))
         # window_pos only on FIRST spawn - passing it every call re-pins the
         # panel under the button and eats the user's drags (the live-value
-        # windows follow the same set-once rule).
+        # windows follow the same set-once rule). No width: the window
+        # wraps/resizes normally. swoosh=False - no connector ribbon.
         _pp_kwargs = {}
         if _pw is None:
             _pp_kwargs["window_pos"] = (0, height + 6)
-        _pch, _pnv, _pw = draw_any(
+        _pch, _pnv, _pw = draw_fnrun_params_panel(
             _params_node, name=f"{def_name} params##fnpp::{def_name}",
             mode=Mode.WINDOW, closed=not _pp_want,
-            parent_window=editor_ds, return_extras=True,
-            width=300, **_pp_kwargs)
+            parent_window=editor_ds, return_extras=True, swoosh=False,
+            fnrun_file=file_path, fnrun_line=def_line, fnrun_name=def_name,
+            editor_ds=editor_ds, **_pp_kwargs)
         _pp_wins[skey] = _pw
-        if _pw.closed and _pp_open_prev and not params_clicked:
-            _pp_want = False        # auto-closed
+        if _pw.closed and _pp_want and not params_clicked:
+            _pp_vis[def_name] = False   # X-closed inline (same-frame close)
+            _pp_want = False
         if _pch and isinstance(_pnv, dict) and tv_text is not None:
             for _pk, _pv in _pnv.items():
                 if not isinstance(_pk, str) or _pk.startswith('__'):
@@ -2633,10 +2722,6 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                 _params_node[_pk] = _pv
             editor_ds.invalidate()
             request_render()
-    editor_ds._fnrun_params_open = skey if _pp_want else (
-        None if _pp_open_prev else
-        getattr(editor_ds, '_fnrun_params_open', None))
-
     if hovered and status is not None and status[0] == 'err' and status[1]:
         # Error readout beside the button - draw-list text, hover-only (the
         # hover-edge invalidation above repaints it in and out).
@@ -2659,22 +2744,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
                               else ('err', err, _mode))
             if live_clicked:
-                # The publishes went to a store object the markers hadn't
-                # registered watchers on yet (exec-fallback runs publish to
-                # a fresh function per click), so live_view's per-publish
-                # window cascade never fired — force-invalidate every open
-                # value window's subtree so its nested views repaint, and
-                # latch a few FULL-overlay passes so below-the-fold markers
-                # update once (at a frozen anchor - the markers must not
-                # chase the true on-screen coords) and forward the fresh
-                # values into their latched windows.
-                editor_ds._lv_full_overlay_until = Melty.frame_count + 3
-                for _mds in (getattr(editor_ds, '_lv_marker_ds', None)
-                             or {}).values():
-                    _w = getattr(_mds, '_lv_window_ds', None)
-                    if _w is not None and not _w.closed:
-                        Melty.cache.invalidate_up(_w._tile_id, force=True,
-                                                  max_depth=8)
+                _fnrun_after_live_run(editor_ds)
         editor_ds.invalidate()
         request_render()
     return False, input_value
@@ -7115,6 +7185,51 @@ def _fold_carry(old_text, new_text, scan_result, collapsed_keys):
     return ranges, dcol, key_of
 
 
+def _string_neutral_ranges(ds, text, ranges):
+    """Diff-gap fold ranges arrive lexer-blind (open_files._diff_gap_folds):
+    a range can hide one delimiter of a multiline string without the other,
+    so the collapsed display text tokenizes with an unterminated (or
+    spuriously opened) string and everything below the fold paints
+    string-colored. Scope folds are safe by construction (they keep both
+    delimiter lines visible — see _scope_fold_ranges); this clamps caller
+    ranges to the same guarantee: shrink each range from the bottom until
+    the string state entering its hidden lines equals the state at the
+    first line kept visible below it, so splicing the hidden lines out
+    cannot change the lexer state on any visible line. The per-line state
+    is the same `line_open` the viewport tokenizer runs on, maintained
+    incrementally for the FULL buffer on ds._flo_* (the ds._lo_* copy
+    tracks the DISPLAY text, so it can't serve here).
+
+    A range that straddles a delimiter is SPLIT, not just truncated — the
+    remainder below the revealed delimiter line re-folds under its own
+    header, so a docstring near the top of a big unchanged gap costs one
+    visible line, not the whole rest of the gap."""
+    if getattr(ds, '_flo_text', None) is not text:
+        ds._flo_offs, ds._flo_open = _update_line_open(
+            getattr(ds, '_flo_text', None), getattr(ds, '_flo_offs', None),
+            getattr(ds, '_flo_open', None), text)
+        ds._flo_text = text
+    lo = ds._flo_open
+    n = len(lo)
+    out = []
+    for s, e in ranges:
+        s, e = int(s), min(int(e), n - 1)
+        # Farthest line in (s, e+1] holding each string state; j == n stands
+        # for "past EOF", state None (hiding through EOF leaves nothing below).
+        far = {}
+        for j in range(min(e + 1, n), s, -1):
+            far.setdefault(lo[j] if j < n else None, j)
+        while s < e:
+            top = lo[s + 1] if s + 1 < n else None
+            j = far.get(top, -1)     # first visible line below the hidden run
+            if j - 1 > s:
+                out.append((s, j - 1))
+                s = j                # revealed line heads the next
+            else:
+                s += 1
+    return out
+
+
 def _fold_normalize_ranges(n_lines, ranges):
     """Caller fold ranges → sorted, clipped (start, end) tuples. 0-based
     INCLUSIVE buffer lines; a collapsed range keeps line `start` visible and
@@ -7361,7 +7476,8 @@ def draw_text(input_value: str, height=None,
               ctrl_minus_down=False, ctrl_equal_down=False,
               ctrl_shift_minus_down=False, ctrl_shift_equal_down=False,
               single_line=False, is_search_box=False, focusable=True,
-              draw_state=None, request_focus=False, select_all_on_focus=False,
+              draw_state=None, text_editor_state: TextEditorState = None,
+              request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.149, font=Font.FONTAWESOME_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               import_fixes=None,
@@ -7450,6 +7566,11 @@ def draw_text(input_value: str, height=None,
         if _sc[3]:
             request_render()   # provisional: the trailing rescan needs a frame
         fold_ranges, _fold_default_col, _fold_key_of = _sc[1]
+    if (code_diff_mode and fold_ranges and syntax_highlight
+            and not single_line and not is_search_box):
+        # Diff-gap ranges know nothing about the lexer - keep lite
+        # string delimiters out of the hidden segments (see the helper).
+        fold_ranges = _string_neutral_ranges(ds, input_value, fold_ranges)
     if fold_ranges and not single_line and not is_search_box:
         if _fold_key_of is not None:
             # Collapse state is stored as line-independent KEYS (ds._fold_keys
@@ -8893,6 +9014,15 @@ def draw_text(input_value: str, height=None,
             ds.text_selection_end = drag_pos
             ds.text_cursor_pos = drag_pos
         ds.text_cursor_blink_time = time.time()
+        # The latched drag keeps arriving even after the cursor leaves this
+        # view, but this handler only runs on frames the (use_cache=True)
+        # editor body actually re-renders - and once the cursor is off-view
+        # the view's hover-driven per-frame invalidation stops, so the
+        # selection/auto-scroll froze at the view edge. Keep the vie
+        # re-rendering while the drag is held (similar pattern mirrors
+        # draw_overlay_titlebar and the number-token drag sustain).
+        ds.invalidate()
+        request_render()
 
     # Ctrl+B - IntelliJ-style "go to declaration" at the CARET, no mouse
     # involved. (This flag used to be read only inside the click handler above,
@@ -10985,6 +11115,7 @@ def draw_text(input_value: str, height=None,
                     _extra['def_buf_line'] = _bl + 1
                     _extra['tv_text'] = text
                     _extra['def_disp_line'] = _dl
+                    _extra['editor_state'] = text_editor_state
                 # Plain (wrapper-less) renderers need the editor's draw_state:
                 # they have no tile of their own, so gesture liveness requires
                 # invalidating the EDITOR tile (see draw_number_token_plain).
