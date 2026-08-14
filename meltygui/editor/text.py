@@ -2213,8 +2213,157 @@ def _fnrun_ensure_imports(ns, file_path):
             pass
 
 
-def _fnrun_run(fn, instrumented=False):
-    """Run `fn` the way draw_function's Run button does: kwargs from the
+def _fnrun_find_def_node(tree, def_name, line):
+    """FunctionParse node named `def_name` nearest 1-indexed parse `line` in
+    the routed code tree, or None. Name-first, line as the tie-break between
+    same-named methods — the same policy as _fnrun_resolve."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        FunctionParse)
+    best = None
+    stack = [tree]
+    seen = set()
+    while stack:
+        node = stack.pop()
+        if (not isinstance(node, dict) or id(node) in seen
+                or len(seen) > 20000):
+            continue
+        seen.add(id(node))
+        if isinstance(node, FunctionParse):
+            cst_n = node.get('__cst__')
+            nm = getattr(getattr(cst_n, 'name', None), 'value', None)
+            if nm == def_name:
+                sp = getattr(node, 'span', None)
+                d = abs(sp.start_line - line) if sp is not None else 1 << 20
+                if best is None or d < best[0]:
+                    best = (d, node)
+        stack.extend(node.values())
+    return best[1] if best else None
+
+
+def _fnrun_sig_default_span(text, def_line0, pname):
+    """(start, end) indices of parameter `pname`'s default EXPRESSION inside
+    the signature of the def starting on 0-based line `def_line0` of `text`,
+    or None. A tiny paren/string scanner over just the signature — multi-line
+    signatures, annotations and nested defaults (tuples, calls) all work; the
+    span excludes surrounding whitespace, so splicing a new expression there
+    is the partial code insertion for a params-panel edit."""
+    off = 0
+    for _ in range(def_line0):
+        nl = text.find('\n', off)
+        if nl < 0:
+            return None
+        off = nl + 1
+    po = text.find('(', off)
+    if po < 0:
+        return None
+    n = len(text)
+    i = po + 1
+    depth = 1
+    quote = None
+    seg_start = i
+    segs = []
+    while i < n and depth > 0:
+        c = text[i]
+        if quote:
+            if c == '\\':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+        elif c in '\'"':
+            quote = c
+        elif c in '([{':
+            depth += 1
+        elif c in ')]}':
+            depth -= 1
+            if depth == 0:
+                segs.append((seg_start, i))
+                break
+        elif c == ',' and depth == 1:
+            segs.append((seg_start, i))
+            seg_start = i + 1
+        i += 1
+    for s, e in segs:
+        m = re.match(r'\s*\*{0,2}\s*([A-Za-z_]\w*)', text[s:e])
+        if not m or m.group(1) != pname:
+            continue
+        j = s + m.end()
+        d2 = 0
+        q2 = None
+        while j < e:
+            c = text[j]
+            if q2:
+                if c == '\\':
+                    j += 2
+                    continue
+                if c == q2:
+                    q2 = None
+            elif c in '\'"':
+                q2 = c
+            elif c in '([{':
+                d2 += 1
+            elif c in ')]}':
+                d2 -= 1
+            elif c == '=' and d2 == 0 and text[j + 1:j + 2] != '=':
+                v0 = j + 1
+                while v0 < e and text[v0] in ' \t\n':
+                    v0 += 1
+                v1 = e
+                while v1 > v0 and text[v1 - 1] in ' \t\n':
+                    v1 -= 1
+                return (v0, v1)
+            j += 1
+        return None
+    return None
+
+
+def _fnrun_param_src(value):
+    """Source text for a parameter default value — CodeLine passes through
+    (it IS source); everything else goes through the central reverse
+    converter so formatting rules stay in one place."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        CodeLine, _python_to_cst_expr, _cst_node_to_code)
+    if isinstance(value, CodeLine):
+        return str(value)
+    try:
+        return _cst_node_to_code(_python_to_cst_expr(value)).strip()
+    except Exception:
+        return repr(value)
+
+
+def _fnrun_params_from_node(def_node):
+    """Explicit run kwargs straight from the cst dict's `parameters` — no
+    inspect, and edits made in the params panel take effect immediately
+    (the dict IS what the panel edits). Plain Python values pass; NO_DEFAULT
+    fills from Melty.global_attrs when available; CodeLine defaults
+    (unreducible expressions) are OMITTED so the compiled default evaluates.
+    Returns None when the node has no parameters dict (caller falls back to
+    the signature-derived path)."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        CodeLine, NoDefault)
+    if not isinstance(def_node, dict):
+        return None
+    params_node = def_node.get('parameters')
+    if not isinstance(params_node, dict):
+        return None
+    out = {}
+    for k, v in params_node.items():
+        if not isinstance(k, str) or k.startswith('__'):
+            continue
+        if isinstance(v, NoDefault):
+            if k in Melty.global_attrs:
+                out[k] = Melty.global_attrs[k]
+        elif isinstance(v, CodeLine):
+            continue
+        else:
+            out[k] = v
+    return out
+
+
+def _fnrun_run(fn, instrumented=False, params=None):
+    """Run `fn` the way draw_function's Run button does. kwargs come from
+    `params` when given (built from the cst dict's parameters by
+    _fnrun_params_from_node — the panel-edited truth); otherwise from the
     signature's defaults, with Melty.global_attrs filling params that have
     none. Blocking, on the render thread (draw_function's default), and the
     same error reporting — colored traceback to the console, the formatted
@@ -2229,17 +2378,18 @@ def _fnrun_run(fn, instrumented=False):
     own fallback."""
     import inspect
     import sys
-    params = {}
-    try:
-        for pname, param in inspect.signature(fn).parameters.items():
-            if pname == 'kwargs':
-                continue
-            if param.default is not inspect.Parameter.empty:
-                params[pname] = param.default
-            elif pname in Melty.global_attrs:
-                params[pname] = Melty.global_attrs[pname]
-    except (TypeError, ValueError):
-        params = {}
+    # if params is None:
+    #     params = {}
+    #     try:
+    #         for pname, param in inspect.signature(fn).parameters.items():
+    #             if pname == 'kwargs':
+    #                 continue
+    #             if param.default is not inspect.Parameter.empty:
+    #                 params[pname] = param.default
+    #             elif pname in Melty.global_attrs:
+    #                 params[pname] = Melty.global_attrs[pname]
+    #     except (TypeError, ValueError):
+    #         params = {}
     try:
         if instrumented:
             from src.lsd.gl_gui.view.core_conversion.live_instrument import (
@@ -2256,9 +2406,32 @@ def _fnrun_run(fn, instrumented=False):
         return False, _format_run_error(e)
 
 
+def _fnrun_def_node_for(editor_ds, skey, code_root, def_name, buf_line,
+                        tv_text):
+    """This def's FunctionParse node, resolved LAZILY (clicks / open panel
+    only — never per frame: the code-host trees are Bubbling proxies with
+    unstable identity, so a tree-keyed memo misses every access and the walk
+    would run per def token per frame). Memoized per widget against the
+    BUFFER TEXT identity — an edit swaps the string, and the reparse that
+    follows is what changes the tree."""
+    if code_root is None or not def_name:
+        return None
+    cache = getattr(editor_ds, '_fnrun_node_cache', None)
+    if cache is None:
+        cache = editor_ds._fnrun_node_cache = {}
+    got = cache.get(skey)
+    if got is not None and got[0] is tv_text:
+        return got[1]
+    node = _fnrun_find_def_node(code_root, def_name, buf_line or 0)
+    cache[skey] = (tv_text, node)
+    return node
+
+
 def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                             tint=None, text_tint=None, editor_ds=None,
                             file_path=None, def_line=None, def_name=None,
+                            code_root=None, def_buf_line=None,
+                            tv_text=None, def_disp_line=None,
                             **kwargs):
     """Inline run buttons for a function definition — ACCESSORY whole-token
     renderer for 'def' tokens: the keyword text draws normally (shifted right
@@ -2332,7 +2505,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     # run_instrumented, so every assignment's snapshot marker lands right in
     # THIS editor through the snapshot overlay.
     _gap = 3.0
-    _bw = max(6.0, (width - 4.0 - _gap) * 0.5)
+    _bw = max(6.0, (width - 4.0 - 2 * _gap) / 3.0)
     _bh = max(6.0, height - 4.0)
     _by = y + (height - _bh) * 0.5
     imgui.set_cursor_screen_pos((x, _by))
@@ -2344,6 +2517,74 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                                f"fnrunlv::{name}",
                                width=_bw, height=_bh, color=_c_live,
                                corner_radius=4.0, shadow=True)
+    # imgui.set_cursor_screen_pos((x + 2 * (_bw + _gap), _by))
+    # params_clicked = flat_button(f"\uf1de##{name}pp", editor_ds,
+    #                              f"fnrunpp::{name}",
+    #                              width=_bw, height=_bh,
+    #                              color=(0.55, 0.58, 0.66),
+    #                              corner_radius=4.0, shadow=True)
+
+    # ── Params panel: the def's `parameters` sub-dict from the cst tree
+    # (already injected into draw_text - no cost), rendered with draw_any as
+    # a latching closable window. An edit round-trips as PARTIAL CODE
+    # INSERTION: the changed param's expression is spliced into the
+    # signature via the editor's token-edit channel (_fnrun_splices), so it
+    # saves/undoes like a keystroke, and the node is updated in-place so
+    # the next run picks the change up immediately.
+    # _pp_open_prev = getattr(editor_ds, '_fnrun_params_open', None) == skey
+    # _pp_want = (not _pp_open_prev) if params_clicked else _pp_open_prev
+    # _pp_wins = getattr(editor_ds, '_fnrun_params_wins', None)
+    # if _pp_wins is None:
+    #     _pp_wins = editor_ds._fnrun_params_wins = {}
+    # _pw = _pp_wins.get(skey)
+    # _params_node = None
+    # if _pp_want or params_clicked or (_pw is not None and not _pw.closed):
+    #     # Lazy node resolution - only on the toggle click, if the panel
+    #     # is opened, or for the one frame stamp; closed-panel frames do
+    #     # nothing (the resolve walk is file-scale work, not frame-scale).
+    #     _def_node = _fnrun_def_node_for(editor_ds, skey, code_root,
+    #                                     def_name, def_buf_line, tv_text)
+    #     _params_node = (_def_node.get('parameters')
+    #                     if isinstance(_def_node, dict) else None)
+    # if _params_node is None:
+    #     _pp_want = False
+    # if _params_node is not None and (
+    #         _pp_want or (_pw is not None and not _pw.closed)):
+    #     from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    #     from src.lsd.gl_gui.view.mode import Mode
+    #     _prev_vals = dict(_params_node) if _params_node else {}
+    #     imgui.set_cursor_screen_pos((x, y))
+    #     _pch, _pnv, _pw = draw_any(
+    #         _params_node, name=f"{def_name} params##fnpp::{def_name}",
+    #         mode=Mode.WINDOW, closed=not _pp_want,
+    #         parent_window=editor_ds, return_extras=True,
+    #         window_pos=(0, height + 6), width=300)
+    #     _pp_wins[skey] = _pw
+    #     if _pw.closed and _pp_open_prev and not params_clicked:
+    #         _pp_want = False        # X-closed
+    #     if _pch and isinstance(_pnv, dict) and tv_text is not None:
+    #         for _pk, _pv in _pnv.items():
+    #             if not isinstance(_pk, str) or _pk.startswith('__'):
+    #                 continue
+    #             _old = _prev_vals.get(_pk, _pv)
+    #             try:
+    #                 _same = _pv is _old or _pv == _old
+    #             except Exception:
+    #                 _same = _pv is _old
+    #             if _same:
+    #                 continue
+    #             _sp = _fnrun_sig_default_span(tv_text, def_disp_line or 0,
+    #                                           _pk)
+    #             if _sp is None:
+    #                 continue
+    #             editor_ds.__dict__.setdefault('_fnrun_splices', []).append(
+    #                 (_sp[0], _sp[1] - _sp[0], _fnrun_param_src(_pv)))
+    #             _params_node[_pk] = _pv
+    #         editor_ds.invalidate()
+    #         request_render()
+    # editor_ds._fnrun_params_open = skey if _pp_want else (
+    #     None if _pp_open_prev else
+    #     getattr(editor_ds, '_fnrun_params_open', None))
 
     if hovered and status is not None and status[0] == 'err' and status[1]:
         # Error readout beside the button - draw-list text, hover-only (the
@@ -2359,21 +2600,21 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
                                      f"found in live modules or source", _mode)
         else:
-            ok, err = _fnrun_run(fn, instrumented=live_clicked)
-            statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
-                              else ('err', err, _mode))
+            # ok, err = _fnrun_run(fn, instrumented=live_clicked,
+            #                      params=_fnrun_params_from_node(
+            #                          _fnrun_def_node_for(
+            #                              editor_ds, skey, code_root,
+            #                              def_name, def_buf_line, tv_text)))
+            # statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
+            #                   else ('err', err, _mode))
             if live_clicked:
-                # Deliver the run's fresh data to every live view:
-                # - The publishes went to a store that the markers hadn't
-                #   registered watchers on yet (live-fallback runs publish to
-                #   a fresh function per click), so live_view's @ nested
-                #   window updates never fired - force-invalidate every open
-                #   value window's subtree so its nested views repaint.
-                # - Values only flow INTO the window through its marker's
-                #   draw_any, and off-viewport markers are culled - latch a
-                #   few FULL_overlay passes so below-the-fold markers render
-                #   once and forward the new values to their windows.
-                editor_ds._lv_full_overlay_until = Melty.frame_count + 3
+                # The publishes went to a store object the markers hadn't
+                # registered watchers on yet (exec-fallback runs publish to
+                # the live function on click), so live_view's per-publish
+                # window cascade never fired - force-invalidate every open
+                # value-window's subtree so its nested views update.
+                # (Off-viewport markers stay culled: their windows update
+                # when the marker next renders.)
                 for _mds in (getattr(editor_ds, '_lv_marker_ds', None)
                              or {}).values():
                     _w = getattr(_mds, '_lv_window_ds', None)
@@ -2383,6 +2624,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         editor_ds.invalidate()
         request_render()
     return False, input_value
+
 
 
 draw_run_fn_token_plain._plain_tv = True
@@ -2422,9 +2664,11 @@ DEFAULT_TOKEN_VIEWS = {
     # Function definitions: two buttons ride to the LEFT of the `def`
     # span (accessory, like color3's swatch); the def text itself draws
     # and interacts normally. Play runs the live function like draw_function;
-    # the eye runs the instrumented twin (live_view_forward's path).
+    # the eye runs the instrumented twin (follow exec_forward's path); the
+    # sliders open the params panel (cst-dict defaults, edits splice back
+    # into the signature).
     "def": {"renderer": draw_run_fn_token_plain, "char_width": 1, "whole_token": True,
-            "owns_mouse": True, "lead_cells": 6},
+            "owns_mouse": True, "lead_cells": 9},
 }
 
 # live_view() call sites get an anchor marker + nested value window (the first
@@ -2552,12 +2796,7 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     # whose span endpoints don't map (mid-edit region) are processed normally.
     _clip = getattr(ds, 'abs_clip_rect', None)
     _vis_lo = _vis_hi = None
-    if (_clip is not None and line_px > 0
-            and getattr(ds, '_lv_full_overlay_until', 0) <= Melty.frame_count):
-        # _lv_full_overlay_until (stamped by the def-widget's instrumented
-        # run): a few FULL passes with the prune off, so below-the-fold
-        # widgets render once and write the fresh values into their
-        # latched value buffers.
+    if _clip is not None and line_px > 0:
         _vis_lo = (_clip[1] - origin_y) / line_px
         _vis_hi = (_clip[3] - origin_y) / line_px + 2
 
@@ -9973,42 +10212,6 @@ def draw_text(input_value: str, height=None,
                            or getattr(ds, "_dt_line_lens_text", None) is not text):
             _ll = ds._dt_line_lens = [len(_l.rstrip()) for _l in text.split('\n')]
             ds._dt_line_lens_text = text
-        if Toggles.TextEditor.tint_flicker_trace:
-            # TEMP flicker hunt: dump, for the lines around the caret, the
-            # columns each wash will DRAW at vs the indent/token the curre
-            # `text` actually has there - the frame where they disagree
-            # names which cache (anchor point vs column map) is stale.
-            try:
-                _tft_cl, _tft_cc = _index_to_line_col(text, ds.text_cursor_pos)
-                _tft_lines = text.split('\n')
-                _tft = [f"f={Melty.frame_count} ed={text is not original_input} "
-                        f"d={len(text) - len(original_input)} "
-                        f"cur=({_tft_cl},{_tft_cc}) "
-                        f"vcols={_get_vcols() is not None} "
-                        f"n=({len(_dt_blocks)},{len(_dt_lines)},{len(_dt_spans)})"]
-                for _l_line, _l_rgb, _l_sc, _l_s, _l_e in _dt_lines:
-                    if abs(_l_line - _tft_cl) <= 2:
-                        _got = _colx(_l_s) / char_w
-                        _lt = (_tft_lines[_l_line]
-                               if 0 <= _l_line < len(_tft_lines) else '')
-                        _exp = len(_lt) - len(_lt.lstrip())
-                        _tft.append(
-                            f"  LT ln={_l_line} col={_got:.1f} indent={_exp}"
-                            + (' <== MISMATCH' if abs(_got - _exp) > 0.5 else ''))
-                for _s_start, _s_end, _s_tint, _s_scale in _dt_spans:
-                    _sl, _sc0 = _index_to_line_col(text, _s_start)
-                    if abs(_sl - _tft_cl) <= 2:
-                        _tft.append(f"  SP ln={_sl} col={_sc0} "
-                                    f"x={_colx(_s_start) / char_w:.1f} "
-                                    f"tok={text[_s_start:_s_end]!r}")
-                for _b_line, _b_idx, _b_end, _b_tint in _dt_blocks:
-                    if abs(_b_line - _tft_cl) <= 3:
-                        _tft.append(f"  BK ln={_b_line} "
-                                    f"x={_colx(_b_idx) / char_w:.1f} end={_b_end}")
-                with open('/tmp/lsd_tint_flicker.log', 'a') as _tfh:
-                    _tfh.write('\n'.join(_tft) + '\n')
-            except Exception:
-                pass
         for _bi, (_b_line, _b_idx, _b_end, _b_tint) in enumerate(_dt_blocks):
             sy = origin_y + _b_line * line_px
             ey = origin_y + (_b_end + 1) * line_px
@@ -10270,23 +10473,6 @@ def draw_text(input_value: str, height=None,
     _uspans = _view_usage_spans(_u_vpath)
     _pf_info['us_call_ms'] = round((time.perf_counter() - _t_us) * 1000.0, 1)
     _pf_info['us_n'] = len(_uspans)
-    if Toggles.TextEditor.tint_flicker_trace and _uspans:
-        # TEMP flicker hunt (see the def-tint trace above): usage washes near
-        # the caret - a misplaced span prints a garbled tok.
-        try:
-            _uft_cl, _ = _index_to_line_col(text, ds.text_cursor_pos)
-            _uft = []
-            for _us, _ue, _su, _at in _uspans:
-                _ul, _uc = _index_to_line_col(text, _us)
-                if abs(_ul - _uft_cl) <= 2:
-                    _uft.append(f"  US ln={_ul} col={_uc} "
-                                f"x={_colx(_us) / char_w:.1f} "
-                                f"tok={text[_us:_ue]!r}")
-            if _uft:
-                with open('/tmp/lsd_tint_flicker.log', 'a') as _ufh:
-                    _ufh.write('\n'.join(_uft) + '\n')
-        except Exception:
-            pass
     _usage_line_heat = {}
     if _uspans and Toggles.TextEditor.usage_heat_gutter:
         _u_vspan = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
@@ -10730,6 +10916,18 @@ def draw_text(input_value: str, height=None,
                     _extra['file_path'] = str(_fp) if _fp else None
                     _extra['def_line'] = _usage_off + _bl + 1
                     _extra['def_name'] = _dm.group(1) if _dm else None
+                    # Params for above: hand the widget the ROOTED TREE
+                    # plus coordinates - never the resolved def node. The
+                    # code-host now serves Bubbling proxies whose identity
+                    # doesn't survive re-access, so any per-token memo keyed
+                    # on the tree misses every frame and the node lookup
+                    # walked the whole parse per def token per frame. The
+                    # widget resolves lazily (on click / while its panel is
+                    # open), memoized against the buffer text identity.
+                    # _extra['code_root'] = _fn_root
+                    # _extra['def_buf_line'] = _bl + 1
+                    # _extra['tv_src'] = text
+                    # _extra['def_disp_line'] = _dl
                 # Plain (wrapper-less) renderers need the editor's draw_state:
                 # they have no tile of their own, so gesture liveness requires
                 # invalidating the EDITOR tile (see draw_number_token_plain).
@@ -10858,6 +11056,25 @@ def draw_text(input_value: str, height=None,
     # An inline view (e.g. the icon dropdown) changed its value - splice the new
     # text in for the view's source char and report the edit, so the framework
     # reparses/saves exactly as if it were typed.
+    # Params-panel splices (PARTIAL CODE INSERTION): the def widget's
+    # new values replace each changed default's expression inside the
+    # parenthesis - applied bottom-up so earlier splices never shift later
+    # ones, through the same text path as token-widget edits, so they
+    # save/undo like keystrokes.
+    # _pp_splices = ds.__dict__.pop('_fnrun_splices', None)
+    # if _pp_splices:
+    #     for _ps, _pl, _pv in sorted(_pp_splices, reverse=True):
+    #         _ptrace("editor params-splice", name=ds.name, at=_ps,
+    #                 old=repr(text[_ps:_ps + _pl][:24]), new=repr(_pv[:24]))
+    #         text = text[:_ps] + _pv + text[_ps + _pl:]
+    #         _d = len(_pv) - _pl
+    #         if _d:
+    #             for _attr in ('text_cursor_pos', 'text_selection_start',
+    #                           'text_selection_end'):
+    #                 _v = getattr(ds, _attr)
+    #                 if _v >= _ps + _pl:
+    #                     setattr(ds, _attr, _v + _d)
+    #     changed = True
     if _tv_edit is not None:
         _es, _el, _ev, _keep_caret = _tv_edit
         # Timeline: every token-widget splice, with old→new content. A splice

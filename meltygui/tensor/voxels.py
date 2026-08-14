@@ -104,13 +104,45 @@ void main() {
     // have rd == fwd, so view_cos == 1 and this is a no-op there.
     float view_cos = dot(rd, fwd);
 
+    // ── ground plane: the box rests on z = -volume_scale.z. One-sided
+    // (backface-culled analytically): a hit only counts for rays striking
+    // the TOP face — origin above the plane, direction pointing down — so
+    // from underneath the floor simply isn't there and the volume renders
+    // alone. A radial fade bounds it, so there's no hard horizon line.
+    float plane_t = -1.0;
+    float plane_a = 0.0;
+    // The floor is the enclosing view's BACKGROUND color (plane_tint,
+    // display-referred sRGB → decoded to linear like the LUT samples),
+    // lifted a step so it separates from the background it blends over —
+    // an exact match would vanish entirely.
+    vec3 plane_c = pow(plane_tint, vec3(2.2)) * 1.9 + vec3(0.015);
+    if (draw_plane && rd.z < -1e-6 && ro.z > -volume_scale.z) {
+        plane_t = (-volume_scale.z - ro.z) / rd.z;
+        vec2 pp = (ro + rd * plane_t).xy;
+        float ext = max(volume_scale.x, volume_scale.y);
+        // Exponential falloff from the box footprint outward: full under
+        // the box, then a long soft tail — no smoothstep end, no horizon.
+        float r = max(length(pp) - ext * 1.1, 0.0);
+        plane_a = 0.55 * exp(-1.5 * r / ext);
+    }
+
     // volume_scale: box extents per axis, voxel-count-proportional — so each
     // VOXEL is a cube and the tensor keeps its true shape.
     vec2 hit = rayBox(ro, rd, volume_scale);
-    if (hit.x > hit.y || hit.y < 0.0) { FragColor = vec4(0.0); return; }
+    bool box_hit = !(hit.x > hit.y || hit.y < 0.0);
+    if (!box_hit && plane_t <= 0.0) { FragColor = vec4(0.0); return; }
+
+    vec4 acc = vec4(0.0);
+    // Plane in FRONT of the volume (looking down at foreground floor past
+    // the box — possible since the fade extends beyond it): composite it
+    // first. The box's bottom face lies IN the plane, so a ray never
+    // crosses the plane mid-march — it's strictly before or after the box.
+    if (plane_t > 0.0 && box_hit && plane_t <= max(hit.x, 0.0)) {
+        acc = vec4(plane_c * plane_a, plane_a);
+        plane_t = -1.0;
+    }
 
     float t = max(hit.x, 0.0);
-    vec4 acc = vec4(0.0);
     // max_steps is a watchdog: the break on hit.y is what normally ends the
     // march. The whole box is covered only while max_steps * step_size
     // exceeds the worst-case chord (2*sqrt(3) ≈ 3.46 units) — a granular
@@ -175,6 +207,12 @@ void main() {
         }
         t += step_size;
     }
+    // Plane BEHIND the volume (the usual case): composite it under
+    // whatever the march accumulated.
+    if (plane_t > 0.0) {
+        acc.rgb += (1.0 - acc.a) * plane_c * plane_a;
+        acc.a   += (1.0 - acc.a) * plane_a;
+    }
     // Output gamma on the finished 2-D image, folded into the sRGB encode:
     // gamma 1.0 = pure sRGB encode (brightest, colorimetrically "correct"),
     // 2.2 = raw linear out (darkest). The default sits between — the encode
@@ -189,7 +227,8 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                aspect=1.0, brightness=1.0, contrast=1.0, density=1.0, gamma=1.6,
                threshold=0.1, step_size=0.0015, max_steps=4096, centered=False,
-               volume=None, lut=None,
+               volume=None, lut=None, draw_plane=True,
+               plane_tint=(0.1, 0.1, 0.1),
                volume_scale=(1.0, 1.0, 1.0), **kwargs):
     # Program bound, uniforms set - the body is just the draw call.
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
@@ -1226,6 +1265,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # gate → more opaque)
                 density=0.7, threshold=0.297, centered=False,
                 nearest=True, lut=Lut("jet"), step_size=0.0005, max_steps=4096,
+                # ── ground plane the box rests on (one-sided: invisible
+                # from below) ──
+                draw_plane=True,
                 # ── axis mapping: dims by index OR NAME. The first three dims
                 # by default; None still means "derive" (last three → z/y/x)
                 # for anything that clears one. ──
@@ -1525,7 +1567,14 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                    threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
                    pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
                    brightness=cam_brightness, contrast=cam_contrast,
-                   gamma=float(Toggles.Voxels.gamma), centered=centered)
+                   gamma=float(Toggles.Voxels.gamma), centered=centered,
+                   draw_plane=bool(draw_plane),
+                   # The floor picks up the ENCLOSING view's background
+                   # color, so it sits on the same palette as the window
+                   # it renders in.
+                   plane_tint=tuple(float(c) for c in (
+                       Melty.bg_color_stack[-1][:3]
+                       if Melty.bg_color_stack else (0.1, 0.1, 0.1))))
         if axis_edges and (name_size > 0 or num_size > 0):
             # Labels as in-scene textured quads. A bake/render hiccup should
             # not take down the view (or trigger the hotswap auto-revert) -

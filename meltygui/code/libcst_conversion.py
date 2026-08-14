@@ -8899,7 +8899,21 @@ def _python_to_cst_expr(py_value, old_node=None):
                 except Exception:
                     pass
                 quote_char = old_node.value[0]
-                escaped = py_value.replace("\\", "\\\\").replace(quote_char, f"\\{quote_char}")
+                if quote_char not in "'\"":
+                    # Prefixed literal (r'...', b'...') - value[0] is the
+                    # prefix, not a quote; re-rendering under the prefix
+                    # can't represent an arbitrary edited value (r'' has no
+                    # escapes at all), so fall back to a plain repr literal.
+                    return cst.SimpleString(repr(py_value))
+                # Escape control chars too - the old backslash+quote-only
+                # escape wrote an edited '\n' as a RAW newline inside the
+                # literal (unterminated string in the source). Unicode text
+                # (icons) lands as is; only the chars that break or restyle
+                # a literal are escaped.
+                escaped = (py_value.replace("\\", "\\\\")
+                           .replace("\n", "\\n").replace("\r", "\\r")
+                           .replace("\t", "\\t")
+                           .replace(quote_char, f"\\{quote_char}"))
                 return old_node.with_changes(value=f"{quote_char}{escaped}{quote_char}")
             return cst.SimpleString(repr(py_value))
         else:
