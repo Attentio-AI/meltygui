@@ -2970,7 +2970,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             # would run the code host → chain_out per keystroke (the echo
             # storm). Gated on text identity so it runs once per buffer
             # change, not per frame; a mid-typing unparseable expression
-            # just skips until it parses. Guarded by `elif not _pch`: on a
+            # just skips until it parses. Guarded by `and not _pch`: on
             # panel-edit frame the splice above is the truth flowing the
             # other way.
             _sync_memo = getattr(editor_ds, '_fnrun_sig_sync', None)
