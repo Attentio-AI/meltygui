@@ -516,7 +516,7 @@ class Mode(Enum):
         #     recursive=True,
         # ),
     }
-    
+
     # ── Inner modes for draw_with_modes children ────────────
     # Each operates on a GeneralParse and wraps a simple renderer in just
     # the converter chain it needs. Used as the `modes` arg to

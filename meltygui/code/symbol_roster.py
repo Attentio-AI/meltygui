@@ -244,6 +244,12 @@ def extract_table(path, text, key=None, with_tints=True):
                                  ln.rstrip()[:160]))
     if pending_import is not None:
         _parse_import(pending_import, path, imports, stars)
+    # Entries still open at EOF end on the last non-blank line.
+    last = len(lines)
+    while last > 1 and not lines[last - 1].strip():
+        last -= 1
+    for ix in open_ix:
+        entries[ix].end = last
     return FileTable(path, key, entries, imports, stars, len(lines))
 
 
@@ -296,9 +302,9 @@ def _absolutize(mod, path):
     try:
         root = Path(_src_root())
         rel = Path(path).resolve().relative_to(root.parent)
+        pkg = list(rel.parts[:-1])
     except (OSError, ValueError):
-        return None
-    pkg = list(rel.parts[:-1])
+        pkg = [Path(path).parent.name]      # outside the tree: best effort
     if dots > 1:
         pkg = pkg[:len(pkg) - (dots - 1)] if dots - 1 <= len(pkg) else []
     base = ".".join(pkg)
@@ -675,10 +681,10 @@ def _name_indexes():
         return st["by_name"], st["by_leaf"]
     by_name, by_leaf = {}, {}
     live = st["live"]
-    for p, tbl in list(st["tables"].items()):
-        held = live.get(p)
-        if held is not None:
-            tbl = held[0]
+    eff = dict(st["tables"])
+    for p, held in list(live.items()):
+        eff[p] = held[0]                 # live buffers override pending tables
+    for p, tbl in eff.items():
         for e in tbl.entries:
             if "." in e.qualname:
                 by_leaf.setdefault(e.name, []).append(e)
@@ -833,10 +839,13 @@ def tint_of(path, chain, table=None):
 
 # ── Occurrence scan + reverse lookup ─────────────────────────────────────────
 
-def iter_chains(text):
+def iter_chains(text, start=0, end=None):
     """Yield (start, end, chain) for every identifier chain in CODE — strings
-    and comments skipped — in one regex pass (~8ms per 13k lines)."""
-    for m in _CODE_RE.finditer(text):
+    and comments skipped — in one regex pass (~8ms per 13k lines; pass a
+    [start, end) slice to scan a window — start it on a string-clean line)."""
+    if end is None:
+        end = len(text)
+    for m in _CODE_RE.finditer(text, start, end):
         if m.group(2) is not None:
             yield m.start(2), m.end(2), m.group(2)
 
@@ -974,4 +983,199 @@ def chain_at(text, pos):
                     return ls + m.start(), ls + m.end(), chain, i
                 off += len(part) + 1
             return ls + m.start(), ls + m.end(), chain, len(chain.split(".")) - 1
+    return None
+
+
+# ── Function-local bindings (non scopes) ───────────────────────────────────────
+# Locals are first-classic table entries, but scoped: a binding appears in the
+# innermost DEF whose block holds it and is visible from that def and its
+# nested functions (closures), never from an enclosing class body or the
+# module. One per line - params (paren-balanced signature), assignment /
+# annotated-assignment targets incl. tuple targets, for/comprehension
+# targets, `with ... as`, `except ... as`, walrus - honouring global/nonlocal.
+
+class LocalBinding:
+    __slots__ = ("scope", "name", "line", "col", "kind")
+
+    def __init__(self, scope, name, line, col, kind):
+        self.scope = scope      # qualname of the def that owns the local
+        self.name = name
+        self.line = line        # 1-based file line of the binding token
+        self.col = col          # 0-based column of the name on that line
+        self.kind = kind        # "param" / "assign" / "for" / "with" / "except" / "walrus"
+
+    def __repr__(self):
+        return f"LocalBinding({self.scope}:{self.name} @{self.line}:{self.col} {self.kind})"
+
+
+_L_ASSIGN_RE = re.compile(
+    r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*(?::[^=\n]+)?=(?!=)")
+_L_FOR_RE = re.compile(r"\bfor\s+([A-Za-z_][\w\s,()]*?)\s+in\b")
+_L_AS_RE = re.compile(r"\bas\s+([A-Za-z_]\w*)")
+_L_WALRUS_RE = re.compile(r"\b([A-Za-z_]\w*)\s*:=")
+_L_GLOBAL_RE = re.compile(r"^\s*(?:global|nonlocal)\s+(.+)$")
+_L_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+_L_CODE_SPLIT_RE = re.compile(r'#.*$')
+
+
+def _code_part(line):
+    """The line without a trailing comment (strings with '#' are rare on
+    binding lines; acceptable)."""
+    return _L_CODE_SPLIT_RE.sub("", line)
+
+
+def _signature_params(lines, i):
+    """([(name, line_idx, col)], last_line_idx) — the parameters of the def
+    starting at 0-based line `i`, walking a paren-balanced, possibly
+    multi-line signature, and the line index its closing paren sits on.
+    Splits at depth-0 commas; each piece's leading identifier is the param
+    (`*`/`**` stripped; `self`, `cls`, bare `*` / `/` skipped)."""
+    out = []
+    first = lines[i]
+    p = first.find("(")
+    if p == -1:
+        return out, i
+    depth = 0
+    piece_start = None        # (line_idx, col) of the first non-space char of the piece
+    li, j, ln = i, p + 1, first
+    guard = 0
+    while li < len(lines) and guard < 400:
+        guard += 1
+        while j < len(ln):
+            ch = ln[j]
+            if ch == "#":
+                break                       # rest of line is a comment
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    if piece_start is not None:
+                        out.append(piece_start)
+                    return _params_from_pieces(lines, out), li
+                depth -= 1
+            elif ch == "," and depth == 0:
+                if piece_start is not None:
+                    out.append(piece_start)
+                piece_start = None
+            elif piece_start is None and not ch.isspace() and depth == 0:
+                piece_start = (li, j)
+            j += 1
+        li += 1
+        if li < len(lines):
+            ln = lines[li]
+            j = 0
+    if piece_start is not None:
+        out.append(piece_start)
+    return _params_from_pieces(lines, out), min(li, len(lines) - 1)
+
+
+def _params_from_pieces(lines, starts):
+    out = []
+    for (li, col) in starts:
+        seg = lines[li][col:]
+        m = re.match(r"\*{0,2}\s*([A-Za-z_]\w*)", seg)
+        if m is None:
+            continue
+        name = m.group(1)
+        if name in ("self", "cls"):
+            continue
+        out.append((name, li, col + m.start(1)))
+    return out
+
+
+_L_NON_BINDING_STARTS = ("for ", "if ", "elif ", "while ", "return ", "yield ",
+                         "del ", "assert ", "raise ", "import ", "from ", "def ",
+                         "class ", "@", "pass", "break", "continue", "try",
+                         "else", "finally", "lambda", "print(")
+
+
+def local_bindings(text, table, line_offset=0, lines=None, scopes=None):
+    """{(scope_qualname, name): [LocalBinding, …] (line order)} for the
+    function scopes of `table` — all of them, or only the Entry objects in
+    `scopes` (plus the defs nested inside them; the editor passes the scopes
+    intersecting its viewport). `text`/`lines` are the BUFFER; bindings are
+    reported in FILE lines (buffer line + 1 + line_offset)."""
+    if lines is None:
+        lines = text.split("\n")
+    n = len(lines)
+    if scopes is None:
+        ranges = [(e.line, e.end) for e in table.entries if e.kind == "def"]
+    else:
+        ranges = [(e.line, e.end) for e in scopes if e.kind == "def"]
+    merged = []
+    for lo, hi in sorted(ranges):
+        if merged and lo <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    out = {}
+    declared = set()           # (scope, name) declared global/nonlocal
+
+    def add(scope, name, li, col, kind):
+        k = (scope, name)
+        if k in declared:
+            return
+        out.setdefault(k, []).append(
+            LocalBinding(scope, name, li + 1 + line_offset, col, kind))
+
+    for lo, hi in merged:
+        b0 = max(0, lo - 1 - line_offset)
+        b1 = min(n - 1, hi - 1 - line_offset)
+        skip_to = -1                # last line of a multi-line signature
+        for i in range(b0, b1 + 1):
+            if i <= skip_to:
+                continue
+            raw = lines[i]
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            e = table.scope_at(i + 1 + line_offset)
+            if e is None or e.kind != "def":
+                continue
+            scope = e.qualname
+            if e.line == i + 1 + line_offset:
+                params, skip_to = _signature_params(lines, i)
+                for name, li, col in params:
+                    add(scope, name, li, col, "param")
+                continue
+            code = _code_part(raw)
+            mg = _L_GLOBAL_RE.match(code)
+            if mg is not None:
+                for nm in _L_NAME_RE.findall(mg.group(1)):
+                    declared.add((scope, nm))
+                    out.pop((scope, nm), None)
+                continue
+            st = code.lstrip()
+            if "for " in code:
+                for m in _L_FOR_RE.finditer(code):
+                    for nm in _L_NAME_RE.finditer(m.group(1)):
+                        add(scope, nm.group(0), i, m.start(1) + nm.start(), "for")
+            if st.startswith(("with ", "async with ")):
+                for m in _L_AS_RE.finditer(code):
+                    add(scope, m.group(1), i, m.start(1), "with")
+            elif st.startswith("except"):
+                m = _L_AS_RE.search(code)
+                if m is not None:
+                    add(scope, m.group(1), i, m.start(1), "except")
+            elif not st.startswith(_L_NON_BINDING_STARTS):
+                m = _L_ASSIGN_RE.match(code)
+                if m is not None:
+                    for nm in _L_NAME_RE.finditer(m.group(1)):
+                        add(scope, nm.group(0), i, m.start(1) + nm.start(), "assign")
+            if ":=" in code:
+                for m in _L_WALRUS_RE.finditer(code):
+                    add(scope, m.group(1), i, m.start(1), "walrus")
+    return out
+
+
+def local_key(table, scope, name, bindings):
+    """The (scope_qualname, name) binding key a bare `name` refers to from
+    `scope` (an Entry or None): the innermost visible FUNCTION scope that
+    binds it, else None. Class bodies and the module never own locals."""
+    if scope is None or not bindings:
+        return None
+    for sq in table.visible_scopes(scope):
+        k = (sq, name)
+        if k in bindings:
+            return k
     return None

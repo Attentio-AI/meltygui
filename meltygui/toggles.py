@@ -312,7 +312,7 @@ class Tint:
 @window
 class Swoosh:
     # Nested-window "swoosh" connector (parent outline -> nested view)
-    tint = (0.54, 0.36911, 0.00)   # fallback color if no style manager is available
+    tint = (1.0, 0.683, 0.0)   # fallback color if no style tint is available
     value = 1.023              # brightness of the highlight (super-bright tint)
     saturation = 0.791        # saturation scale applied to the current tint
     alpha = 1.0             # opacity of the swoosh
@@ -354,7 +354,7 @@ class Swoosh:
     ribbon_bow_shape = 2.0      # bow profile exponent: <1 broad arc, >1 mid bulge
 
 
-    # [tint=(0.739, 0.111, 0.111, 1.0), show_tint=True]
+    # [tint=(0.55, 0.073, 0.073, 1.0), show_tint=True]
     ribbon_alpha = 0.37         # fill opacity of the band (below the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
                                 # exceeds fade_size x fade_size; alpha then scales

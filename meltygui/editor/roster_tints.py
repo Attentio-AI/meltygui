@@ -49,7 +49,8 @@ def _decor_start(lines, def_line):
     return start
 
 
-def collect_def_tints(text, line_offset=0, view_path=None):
+def collect_def_tints(text, line_offset=0, view_path=None, window=None,
+                      line_open=None):
     """(blocks, spans, line_tints, name_tints) — see module doc.
 
     blocks:     [(def_buf_line, indent_buf_index, end_buf_line, tint)] per
@@ -57,14 +58,47 @@ def collect_def_tints(text, line_offset=0, view_path=None):
     spans:      [(start, end, rgb, scale)] per occurrence of a symbol whose
                 definition — here or in another file — carries a tint.
     line_tints: [(buf_line, rgb, scale, text_start, text_end)].
-    name_tints: {name: rgb} for the completion popup."""
+    name_tints: {name: rgb} for the completion popup.
+
+    `window` = (lo, hi) 0-based buffer lines: occurrences (spans, line
+    bands, the assignment sweep) are only computed inside it — the editor
+    passes its visible band plus margin, so the per-rebuild cost is
+    O(viewport), not O(buffer). Blocks always cover the whole buffer (they
+    come from the table, not a scan). `line_open` is the editor's per-line
+    string state (text_editor._update_line_open) so the scan can start at
+    the nearest string-clean line at/above `lo`; without it the start backs
+    up to the nearest column-0 def/class/decorator/import line."""
     if view_path is None:
         return ((), (), (), {})
     with roster.pass_scope():
-        return _collect(text, line_offset, view_path)
+        return _collect(text, line_offset, view_path, window, line_open)
 
 
-def _collect(text, line_offset, view_path):
+_DEF_LIKE_COL0 = re.compile(r"(?:async\s+)?(?:def|class)\s|@|import\s|from\s")
+
+
+def _scan_range(lines, line_start_idx, text, window, line_open):
+    """(scan_start_index, scan_end_index, lo_line, hi_line) for the chain
+    scan: the window clamped to the buffer, its start backed up to a line
+    that is not inside a multi-line string."""
+    n = len(lines)
+    if window is None:
+        return 0, len(text), 0, n - 1
+    lo = max(0, min(int(window[0]), n - 1))
+    hi = max(lo, min(int(window[1]), n - 1))
+    sl = lo
+    if line_open is not None and len(line_open) >= n:
+        while sl > 0 and line_open[sl] is not None:
+            sl -= 1
+    else:
+        while sl > 0 and not _DEF_LIKE_COL0.match(lines[sl]):
+            sl -= 1
+    start = line_start_idx[sl]
+    end = line_start_idx[hi + 1] - 1 if hi + 1 < len(line_start_idx) else len(text)
+    return start, min(end, len(text)), lo, hi
+
+
+def _collect(text, line_offset, view_path, window=None, line_open=None):
     from src.lsd.gl_gui.toggles import Toggles
     lines = text.split("\n")
     line_start_idx = [0]
@@ -72,6 +106,8 @@ def _collect(text, line_offset, view_path):
         line_start_idx.append(line_start_idx[-1] + len(l) + 1)
     vpath = roster._norm(str(view_path))
     own = roster.table_for(vpath, live_text=text, line_offset=line_offset)
+    scan_start, scan_end, win_lo, win_hi = _scan_range(lines, line_start_idx, text,
+                                                       window, line_open)
 
     # ── blocks: tinted class/def entries of this file that sit in the buffer ──
     blocks = []
@@ -93,15 +129,39 @@ def _collect(text, line_offset, view_path):
         blocks.append((start, line_start_idx[start] + indent, end, tuple(e.tint[:3])))
         block_range[e.qualname] = (start, end)
 
+    # ── locals: bindings of the function scopes touching the window ──
+    # A local is first-class: its binding(s) + every occurrence in its scope
+    # (and nested closures) are a symbol; it SHADOWS roster names; and its
+    # tint is its own `# [tint=...]` or - with propagation on - a faded
+    # blend of what its binding line reads (chained locals fade per hop).
+    from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
+    fade = Toggles.TextEditor.def_propagation_fade
+    mix_on = Toggles.TextEditor.def_tint_propagation
+    win_file_lo, win_file_hi = win_lo + 1 + line_offset, win_hi + 1 + line_offset
+    scopes = [e for e in own.entries
+              if e.kind == "def" and e.line <= win_file_hi and e.end >= win_file_lo]
+    bindings = roster.local_bindings(text, own, line_offset, lines, scopes) if scopes else {}
+    local_occ = {}      # (scope, name) -> [(start, end, buf_line)]
+
     # ── spans: every identifier chain in code, resolved per occurrence ──
     spans = []
     seen_spans = set()
-    name_tint = {}
-    memo = {}        # (scope qualname, chain) -> [(nlevels, ent)] (tinted only)
-    for s, e_, chain in roster.iter_chains(text):
+    name_tint = {}      # roster-resolved prefix / leaf name -> (rgb, scale)
+    memo = {}           # (scope qualname, chain) -> [(n_parts, entry)] (tinted only)
+    for s, e_, chain in roster.iter_chains(text, scan_start, scan_end):
         ln = bisect.bisect_right(line_start_idx, s) - 1
+        if ln < win_lo:
+            continue          # lead-in from the string-clean start: not visible
         sc = own.scope_at(ln + 1 + line_offset)
-        mkey = (sc.qualname if sc is not None else None, chain)
+        scq = sc.qualname if sc is not None else None
+        if bindings and sc is not None:
+            dot = chain.find(".")
+            first = chain if dot == -1 else chain[:dot]
+            lk = roster.local_key(own, sc, first, bindings)
+            if lk is not None:
+                local_occ.setdefault(lk, []).append((s, s + len(first), ln))
+                continue      # a local shadows every roster name
+        mkey = (scq, chain)
         got = memo.get(mkey)
         if got is None:
             got = []
@@ -128,67 +188,93 @@ def _collect(text, line_offset, view_path):
             name_tint[prefix] = (rgb, 1.0)
             name_tint.setdefault(ent.name, (rgb, 1.0))
 
-    # ── assignment sweep: own-comment tints + propagation blends (text-only,
-    #    ported from _collect_def_tints) ──
-    from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
-    fade = Toggles.TextEditor.def_propagation_fade
-    mix_on = Toggles.TextEditor.def_tint_propagation
-    _in_def = [False] * len(lines)
-    _scopes = []
-    for bi, lt in enumerate(lines):
-        s2 = lt.strip()
-        if not s2 or s2.startswith("#"):
-            _in_def[bi] = any(kd == "def" for _, kd in _scopes)
-            continue
-        ind = len(lt) - len(lt.lstrip())
-        while _scopes and _scopes[-1][0] >= ind:
-            _scopes.pop()
-        _in_def[bi] = any(kd == "def" for _, kd in _scopes)
-        m2 = _DEF_LINE_RE.match(lt)
-        if m2:
-            _scopes.append((ind, m2.group(1)))
-    for bi, lt in enumerate(lines):
-        m = _ASN_RE.match(lt)
-        if m is None:
-            continue
-        name = m.group(2)
-        start = line_start_idx[bi] + len(m.group(1))
-        end = start + len(name)
-        covered = (start, end) in seen_spans
-        res = None
-        if "#" in lt or (bi > 0 and lines[bi - 1].lstrip().startswith("#")):
-            try:
-                res = _scan_def_tint_lines(lines, bi + 1, None)
-            except Exception:
-                res = None
-        if res is not None and res[1] == bi + 1:
-            rgb, scale = tuple(res[0][:3]), 1.0
-            if covered:
-                for si, sp in enumerate(spans):
-                    if sp[0] >= start and text[sp[0]:sp[1]] == name:
-                        spans[si] = (sp[0], sp[1], rgb, scale, sp[4])
-                name_tint[name] = (rgb, scale)
-                continue
-        elif covered:
-            name_tint.setdefault(name, None)
-            continue
-        elif mix_on and _in_def[bi]:
-            rhs = lt[m.end():].split("#", 1)[0]
-            contribs = [name_tint[tok] for tok in _IDENT_RE.findall(rhs)
-                        if name_tint.get(tok) is not None]
-            if not contribs:
-                continue
-            uniq = list(dict.fromkeys(contribs))
-            n = len(uniq)
-            rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
-            scale = fade * (sum(c[1] for c in uniq) / n)
-            if scale < 0.2:
-                continue
-        else:
-            continue
-        seen_spans.add((start, end))
-        spans.append((start, end, rgb, scale, True))
-        name_tint[name] = (rgb, scale)
+    # ── local tints: own comment > propagation blend; then every occurrence ──
+    # local_tint[(scope, name)] = [(from_file_line, rgb, scale)] - segments sorted
+    # in order: the FIRST binding's tint owns the name, a LATER binding with
+    # its own `# [tint=...]` takes over from that line on.
+    local_tint = {}
+
+    def _tok_tint(tok, sc):
+        """Tint of an RHS token read in scope `sc`: a visible local's current
+        tint first (innermost scope wins), else the roster's."""
+        dot = tok.find(".")
+        first = tok if dot == -1 else tok[:dot]
+        lk = roster.local_key(own, sc, first, bindings) if sc is not None else None
+        if lk is not None:
+            segs = local_tint.get(lk)
+            return segs[-1][1:] if segs else None
+        t = name_tint.get(tok)
+        if t is None and dot != -1:
+            t = name_tint.get(first)
+        return t
+
+    def _rhs_of(b, lt):
+        code = roster._code_part(lt)
+        if b.kind == "assign":
+            p = code.find("=", b.col)
+            return code[p + 1:] if p != -1 else ""
+        if b.kind == "for":
+            p = code.find(" in ", b.col)
+            return code[p + 4:] if p != -1 else ""
+        if b.kind == "walrus":
+            p = code.find(":=", b.col)
+            return code[p + 2:] if p != -1 else ""
+        return ""
+
+    if bindings:
+        ordered = sorted(bindings.items(), key=lambda kv: kv[1][0].line)
+        for _pass in range(2 if mix_on else 1):
+            for lk, blist in ordered:
+                segs = local_tint.get(lk, [])
+                sc_e = own.by_qualname.get(lk[0])
+                for b in blist:
+                    bl = b.line - 1 - line_offset
+                    if not (0 <= bl < len(lines)):
+                        continue
+                    if any(sg[0] == b.line for sg in segs):
+                        continue                 # this line already coloured
+                    lt = lines[bl]
+                    own_t = None
+                    if "#" in lt or (bl > 0 and lines[bl - 1].lstrip().startswith("#")):
+                        try:
+                            res = _scan_def_tint_lines(lines, bl + 1, None)
+                        except Exception:
+                            res = None
+                        if res is not None and res[1] == bl + 1:
+                            own_t = (tuple(res[0][:3]), 1.0)
+                    if own_t is not None:
+                        segs.append((b.line, own_t[0], own_t[1]))
+                    elif not segs and mix_on and b is blist[0]:
+                        rhs = _rhs_of(b, lt)
+                        if not rhs:
+                            continue
+                        contribs = [t for t in (_tok_tint(tok, sc_e)
+                                                for tok in _IDENT_RE.findall(rhs))
+                                    if t is not None]
+                        if not contribs:
+                            continue
+                        uniq = list(dict.fromkeys(contribs))
+                        n = len(uniq)
+                        rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
+                        scale = fade * (sum(c[1] for c in uniq) / n)
+                        if scale < 0.2:
+                            continue
+                        segs.append((b.line, rgb, scale))
+                if segs:
+                    segs.sort()
+                    local_tint[lk] = segs
+        for lk, segs in local_tint.items():
+            for (s, e, ln) in local_occ.get(lk, ()):
+                fl = ln + 1 + line_offset
+                seg = segs[0]
+                for sg in segs:
+                    if sg[0] <= fl:
+                        seg = sg
+                if (s, e) in seen_spans:
+                    continue
+                seen_spans.add((s, e))
+                spans.append((s, e, seg[1], seg[2], fl == seg[0]))
+            name_tint.setdefault(lk[1], (segs[-1][1], segs[-1][2]))
 
     blocks.sort()
     # Misresolution filter (ported): an assignment-target span inside a

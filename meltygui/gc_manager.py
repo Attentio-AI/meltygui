@@ -169,6 +169,23 @@ def _stale_world_report(live):
         n = d.get("__name__")
         return n if isinstance(n, str) and n.startswith("src.") else None
 
+    def _stale_type(t):
+        """A class is stale when the module it names no longer binds it under
+        its qualname — the live class (even if reachable from old data via
+        shared stores) must NOT be crossed, or every live instance of it
+        reads as a root."""
+        modname = getattr(t, "__module__", None)
+        if not (isinstance(modname, str) and modname.startswith("src.")):
+            return False
+        obj = sys.modules.get(modname)
+        if obj is None:
+            return True
+        for part in t.__qualname__.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                return True
+        return obj is not t
+
     _NO_CROSS = (types.BuiltinFunctionType, types.MethodDescriptorType,
                  types.WrapperDescriptorType, types.GetSetDescriptorType,
                  types.MemberDescriptorType, types.ClassMethodDescriptorType)
@@ -188,11 +205,13 @@ def _stale_world_report(live):
                 return _stale_mod_name(r) is not None
             return True
         if isinstance(r, type):
-            return str(getattr(r, "__module__", "")).startswith("src.")
+            return _stale_type(r)
         if t is types.FunctionType:
             return _stale_mod_name(r.__globals__) is not None
         if t in _NO_CROSS:
             return False
+        if t.__module__ == "ast" and t.__name__ in ("Load", "Store", "Del"):
+            return False   # process-shared singletons: every live ast node points at them
         return True
 
     seeds = [o for o in live if _stale_mod_name(o)]
@@ -236,10 +255,12 @@ def _stale_world_report(live):
     me = globals()
     for o in live:
         oid = id(o)
-        if oid in world or oid in skip:
+        if oid in world or o is live or o is seeds:
             continue
         if type(o) is types.FrameType and o.f_globals is me:
             continue
+        if type(o) in _NO_CROSS:
+            continue           # slot/getset descriptors of the old classes: not holders
         try:
             refs = gc.get_referents(o)
         except Exception:
@@ -278,6 +299,87 @@ def _stale_world_report(live):
     for d, n in roots.most_common(40):
         own = owners.get(d)
         lines.append(f"  {n:>6}  {d[:150]}" + (f"   <- {own}" if own else ""))
+    # Upward anchor chains for the top roots: who holds the holder, up to a
+    # named anchor (module global / sys attribute / class attribute / thread
+    # frame). Each hop is a full-heap get_referrers, so this is time-budgeted.
+    lines.append("--- ANCHOR CHAINS (top roots, upward; budgeted):")
+    deadline = time.perf_counter() + 10.0
+    sys_attrs = {id(v): k for k, v in list(vars(sys).items())}
+    mod_dict_names = {id(vars(m)): n for n, m in list(sys.modules.items())
+                      if hasattr(m, "__dict__")}
+    own_structs = {id(live), id(seeds), id(roots), id(examples), id(owners)}
+    chased = 0
+    for d, n in roots.most_common(12):
+        if chased >= 4 or time.perf_counter() > deadline:
+            break
+        ex = examples.get(d)
+        if ex is None or d.startswith("module dict"):
+            continue
+        chased += 1
+        chain = [f"{d[:90]} (x{n})"]
+        cur = ex
+        visited = {id(cur)}
+        for _hop in range(6):
+            if time.perf_counter() > deadline:
+                chain.append("… (time budget)")
+                break
+            if id(cur) in sys_attrs:
+                chain.append(f"sys.{sys_attrs[id(cur)]}")
+                break
+            if id(cur) in mod_dict_names:
+                chain.append(f"module {mod_dict_names[id(cur)]} globals")
+                break
+            try:
+                refs = [r for r in gc.get_referrers(cur)
+                        if id(r) not in own_structs and id(r) not in visited
+                        and id(r) not in world
+                        and not (type(r) is types.FrameType and r.f_globals is me)]
+            except Exception:
+                break
+            if not refs:
+                chain.append("(no live referrer — held only from inside the stale world)")
+                break
+            # Prefer the most "anchored" referrer: frames, module dicts, sys
+            # values, classes first, plain containers after.
+            def _rank(r):
+                if type(r) is types.FrameType: return 0
+                if id(r) in mod_dict_names or id(r) in sys_attrs: return 0
+                if isinstance(r, type): return 1
+                if type(r) is dict: return 2
+                return 3
+            refs.sort(key=_rank)
+            nxt = refs[0]
+            visited.add(id(nxt))
+            if type(nxt) is dict:
+                ks = [k for k, v in list(nxt.items())[:4000] if v is cur][:2]
+                if id(nxt) in mod_dict_names:
+                    chain.append(f"module {mod_dict_names[id(nxt)]} globals {ks}")
+                    break
+                chain.append(f"dict[{ks}] (of {len(nxt)})")
+            elif type(nxt) is types.FrameType:
+                chain.append(f"frame {nxt.f_globals.get('__name__')}:{nxt.f_code.co_name}:{nxt.f_lineno}")
+                break
+            elif isinstance(nxt, type):
+                slot = [k for k, v in vars(nxt).items() if v is cur][:2]
+                chain.append(f"class {nxt.__module__}.{nxt.__qualname__} attrs={slot}")
+                break
+            elif type(nxt) in (list, tuple, set, frozenset):
+                chain.append(f"{type(nxt).__name__}[{len(nxt)}]")
+            elif type(nxt) is types.CellType:
+                chain.append("cell")
+            elif type(nxt) is types.FunctionType:
+                chain.append(f"function {nxt.__module__}.{nxt.__qualname__}")
+            elif type(nxt) is types.MethodType:
+                chain.append(f"bound method {type(nxt.__self__).__name__}.{nxt.__func__.__qualname__}")
+            else:
+                slot = []
+                try:
+                    slot = [k for k, v in vars(nxt).items() if v is cur][:2]
+                except Exception:
+                    pass
+                chain.append(f"{_type_name(nxt)} attrs={slot}")
+            cur = nxt
+        lines.append("  " + "  ->  ".join(chain))
     return lines
 
 

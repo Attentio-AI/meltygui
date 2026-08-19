@@ -1523,10 +1523,11 @@ def _view_size(draw_state):
     return width, height
 
 
-def _draw_voxel_error(draw_state, message):
+def _draw_voxel_error(draw_state, message, who="draw_voxels"):
     """The error card that stands IN PLACE of the 3-D view: same footprint,
     a dark panel, the reason wrapped inside. Also printed once per distinct
-    message so the console has it without a stack trace flood."""
+    message so the console has it without a stack trace flood. `who` names
+    the view in the title (draw_line_graph shares the card)."""
     width, height = _view_size(draw_state)
     dl = imgui.get_window_draw_list()
     x, y = imgui.get_cursor_screen_pos()
@@ -1538,7 +1539,7 @@ def _draw_voxel_error(draw_state, message):
     imgui.set_cursor_screen_pos((x + pad, y + pad))
     imgui.push_text_wrap_pos(x + width - pad)
     imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 0.55, 0.55, 1.0)
-    imgui.text("draw_voxels can't display this tensor")
+    imgui.text(f"{who} can't display this tensor")
     imgui.pop_style_color()
     imgui.text_wrapped(message)
     imgui.pop_text_wrap_pos()
@@ -1547,7 +1548,7 @@ def _draw_voxel_error(draw_state, message):
     imgui.dummy(width, height)
     if draw_state.misc.get("_voxel_err_msg") != message:
         draw_state.misc["_voxel_err_msg"] = message
-        print(f"[draw_voxels] {draw_state.name}: {message}")
+        print(f"[{who}] {draw_state.name}: {message}")
 
 
 def _draw_image_notice(img_pos, width, text):

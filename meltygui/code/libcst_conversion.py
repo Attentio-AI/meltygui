@@ -997,22 +997,27 @@ def _reclass_adopted_spans(spans: dict) -> int:
     an entry whose instances can't be re-classed (slots changed) is dropped
     so it recomputes. Returns the number of entries dropped."""
     dropped = []
+    n_re = 0
     for key, val in spans.items():
         try:
             _sig, syms = val
             for su in syms.values():
                 if type(su) is not SymbolUsage:
                     su.__class__ = SymbolUsage
+                    n_re += 1
                 d = su.definition
                 if d is not None and type(d) is not UsageRef:
                     d.__class__ = UsageRef
+                    n_re += 1
                 for c in su.callers:
                     if type(c) is not UsageRef:
                         c.__class__ = UsageRef
+                        n_re += 1
         except Exception:
             dropped.append(key)
     for key in dropped:
         spans.pop(key, None)
+    print(f"symbol store: re-classed {n_re} adopted instances, dropped {len(dropped)} spans")
     return len(dropped)
 
 

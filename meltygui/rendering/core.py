@@ -2661,7 +2661,23 @@ def render_func(*args, **o_kwargs):
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
                 someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible
 
-                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)) and not someone_elses_scroll:
+                # A left PRESS frame (down only, no drag yet) must render
+                # the hovered tile LIVE even though Melty.on_drag is already
+                # set from the press: imgui widgets (slider(input, ...) only
+                # activate on the one frame ioItemClicked fires, so a
+                # blit-served press frame loses the click outright - imgui
+                # never goes live, the following frame falls through to
+                # window_move and "steals" the widget. The previous hovered
+                # frame's invalidate normally covers this (it targets
+                # frame+1), but not when the press lands in the FIRST hovered
+                # frame (move + click in one event batch), right after another
+                # press frame, or inside the on_scroll hold-off. One live
+                # frame per press is cheap; drag frames stay blit-served.
+                press_frame = ("left_mouse_down" in Melty.events_by_type
+                               and "left_mouse_drag" not in Melty.events_by_type)
+                drag_blocked = (Melty.on_drag or someone_elses_scroll) and not press_frame
+
+                if not drag_blocked and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1):
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, force=True, note=Note(name="hover change",
                                                                                               tint=(1,1,0, 0.1),

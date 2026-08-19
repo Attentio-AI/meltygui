@@ -4561,6 +4561,9 @@ def _scan_def_tint(path, line, name=None):
 # scanner logic so hotswapped editors recompute instead of replaying a memo
 # built with the old code (draw_state can outlive the hotswap).
 _DEF_TINTS_VER = 29
+# Roster-mode viewport window quantum (lines): the occurrence scan covers the
+# visible band rounded out to whole chunks + one chunk of margin each side.
+_DT_WIN_CHUNK = 64
 
 
 # rgb -> packed comment-text tint; reset on hotswap (collector re-exec) so
@@ -5750,7 +5753,7 @@ def _comment_tints(ds, text):
     return ds._comment_tints
 
 
-def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
+def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None):
     """Cached-per-(code_tree, text) wrapper around _collect_def_tints — the
     exact key discipline of _usage_spans: the top-level __symbol_usages__
     map's identity rides in the key so the background usage pass's in-place
@@ -5793,11 +5796,22 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
         ds._def_tints_key = None
         ds._def_tints_raw = None
     su_top = code_tree.get("__symbol_usages__") if isinstance(code_tree, dict) else None
+    _win = None
     if _roster:
         from src.lsd.gl_gui.view.core_conversion import symbol_roster as _sr
         _sr.sweep()          # throttled: notices pending-disk edits in other files
-        key = (_DEF_TINTS_VER, "roster", _sr.generation(), id(text), line_offset,
-               str(view_path))
+        # Viewport window window mode: the window is the visible band
+        # quantized in _DT_WIN_CHUNK-line chunks with a chunk of margin each
+        # side, so small scrolls stay inside the computed window and a
+        # bigger one recomputes ONE cheap windowed pass (no debounce - see
+        # below: only the window moved, the content key is unchanged).
+        if vis is not None:
+            _c = _DT_WIN_CHUNK
+            _win = (max(0, (int(vis[0]) // _c - 1) * _c),
+                    (int(vis[1]) // _c + 2) * _c - 1)
+        _ckey = (_DEF_TINTS_VER, "roster", _sr.generation(), id(text), line_offset,
+                 str(view_path))
+        key = _ckey + (_win,)
     else:
         # NO text in the key - same reasoning as _usage_spans: text-only drift is
         # handled exactly by the splice remap; a recompute on a stale tree
@@ -5817,7 +5831,11 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
         # result instead; the attach's fresh su map busts the key.
         _su_pending = (not _roster and su_top is None
                        and getattr(code_tree, "symbol_usage", None))
-        if (getattr(ds, "_def_tints", None) is not None
+        # A pure window move (same content key) recomputes right away: it's
+        # a ~ms windowed scan and holding it would leave the freshly scrolled-
+        # in lines unwashed for the debounce window.
+        _win_only = (_roster and getattr(ds, "_def_tints_ckey", None) == _ckey)
+        if (getattr(ds, "_def_tints", None) is not None and not _win_only
                 and (_typing_hot() or _su_pending
                      or now - getattr(ds, "_def_tints_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
             request_render()   # typing/debounced: serve held (remapped below), retry later
@@ -5834,7 +5852,22 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
                 if _roster:
                     from src.lsd.gl_gui.view.core_views.roster_tints import (
                         collect_def_tints as _roster_collect)
-                    _fresh = _roster_collect(_base, line_offset, view_path)
+                    _base = text        # no tree: the buffer IS the base
+                    # Per-line string state for the windowed pass's clean
+                    # start: reuse the viewport tokenizer's incremental state
+                    # when it's for this very buffer, else keep our own.
+                    if getattr(ds, "_lo_text", None) is text:
+                        _lo_open = ds._lo_open
+                    else:
+                        ds._dt_lo_offs, ds._dt_lo_open = _update_line_open(
+                            getattr(ds, "_dt_lo_text", None),
+                            getattr(ds, "_dt_lo_offs", None),
+                            getattr(ds, "_dt_lo_open", None), text)
+                        ds._dt_lo_text = text
+                        _lo_open = ds._dt_lo_open
+                    _fresh = _roster_collect(_base, line_offset, view_path,
+                                             window=_win, line_open=_lo_open)
+                    ds._def_tints_ckey = _ckey
                 else:
                     _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
             except Exception:
@@ -10804,9 +10837,24 @@ def draw_text(input_value: str, height=None,
         # fold the display remap below is built on the frame-start layout,
         # so _fold_full stays the consistent (one-frame-stale) target.
         _dt_full = _fold_full if _fold_segments else text
+        # Visible band in FULL-buffer lines for the roster's chunked view
+        # (display lines via the fold map when a fold is collapsed).
+        _dt_vis = None
+        if Toggles.TextEditor.roster_def_tints and line_px:
+            try:
+                _clip = draw_state.abs_clip_rect
+                _v0 = max(0, int((_clip[1] + bar_height - top) / line_px) - 3)
+                _v1 = max(_v0, int((_clip[3] - top) / line_px) + 3)
+                if _fold_d2b is not None and _fold_d2b:
+                    _v0 = _fold_d2b[min(_v0, len(_fold_d2b) - 1)]
+                    _v1 = _fold_d2b[min(_v1, len(_fold_d2b) - 1)]
+                _dt_vis = (_v0, _v1)
+            except Exception:
+                _dt_vis = None
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
             ds, _dt_full, _usage_tree, _usage_off,
-            getattr(jump_to, 'path', None) if jump_to is not None else None)
+            getattr(jump_to, 'path', None) if jump_to is not None else None,
+            vis=_dt_vis)
         # Fold remap: def tints resolve against the FULL buffer (keeps the
         # last-good/anchor caches fold-independent); project the back into
         # display coords. Blocks whose head line is visible keep their wash,

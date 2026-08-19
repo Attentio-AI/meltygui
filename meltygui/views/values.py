@@ -265,6 +265,9 @@ def _word_edits(w, tw, budget):
     return best
 
 
+
+
+
 def _assign_words(qws, twords, budget):
     """Min total cost of every query word claiming a distinct target word
     (any order), or None. Tiny backtracking -- a handful of words a side."""
@@ -2145,7 +2148,6 @@ def draw_collection_as_tabs(input_value, tab_state: TabState = None, draw_state=
     if dnd_active_here != getattr(draw_state, "_tab_dnd_was_active", False):
         draw_state._tab_dnd_was_active = dnd_active_here
         if bar_ds is not None:
-            # bar_ds.invalidate()
             request_render()
 
     imgui.dummy(0, 2)
@@ -6322,6 +6324,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     ri, gi, bi = (int(round(c * 255)) for c in (r, g, b))
     hex_str = (f"#{ri:02x}{gi:02x}{bi:02x}{int(round(a * 255)):02x}"
                if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
+
 
     if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
         request_render()
@@ -10629,7 +10632,7 @@ def draw_single(input_value: any, view_func=None, mode: any = None, **kwargs):
 def draw_blank(input_value: any, **kwargs):
     return False, None
 
-# [tint=(0.772, 0.71, 0.15), show_tint=True]
+# [tint=(0.75, 0.0, 0.0), show_tint=True]
 def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=None, **kwargs):
     kwargs_view_func = view_func
     key = kwargs.get("key", None)
