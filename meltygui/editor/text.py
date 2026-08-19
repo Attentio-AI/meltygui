@@ -2202,6 +2202,19 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
             # outer def's own marker resolution.
             from src.lsd.gl_gui.view.core_conversion import (
                 chain_converters as _cc)
+            from src.lsd.gl_gui.view.core_conversion.live_view import (
+                adopt_live_store)
+            # The previously parked twin (and the real module function, if
+            # it ever ran with a store) hand their live store to this one:
+            # every body edit compiles a NEW function object here, and a
+            # superseding def owns its own __live_values__ - whole run
+            # generations of stacked tensors pinned by literally nothing
+            # referenced any more (the live-lab VRAM climb while typing).
+            _prev = modules[0].__dict__.get(f"_fnrun_live_{def_name}")
+            adopt_live_store(_prev, fn)
+            _live_fn = modules[0].__dict__.get(def_name)
+            if isinstance(_live_fn, types.FunctionType):
+                adopt_live_store(inspect.unwrap(_live_fn), fn)
             modules[0].__dict__[f"_fnrun_live_{def_name}"] = fn
             for k in [k for k in _cc._ENCLOSING_FN_CACHE
                       if k[0] == str(target)]:
@@ -2270,9 +2283,14 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
             chain_converters as _cc)
         _evicted = False
         for module in modules:
-            if module.__dict__.pop(f"_fnrun_live_{def_name}",
-                                   None) is not None:
+            _twin = module.__dict__.pop(f"_fnrun_live_{def_name}", None)
+            if _twin is not None:
                 _evicted = True
+                # The evicted twin's store moves to the live function it
+                # converges on - never orphaned with its state.
+                from src.lsd.gl_gui.view.core_conversion.live_view import (
+                    adopt_live_store)
+                adopt_live_store(_twin, fn)
         if _evicted or any(k[0] == str(target)
                            for k in _cc._ENCLOSING_FN_CACHE):
             for k in [k for k in _cc._ENCLOSING_FN_CACHE
@@ -5753,7 +5771,8 @@ def _comment_tints(ds, text):
     return ds._comment_tints
 
 
-def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None):
+def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
+               hold_live=True):
     """Cached-per-(code_tree, text) wrapper around _collect_def_tints — the
     exact key discipline of _usage_spans: the top-level __symbol_usages__
     map's identity rides in the key so the background usage pass's in-place
@@ -5799,9 +5818,10 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None):
     _win = None
     if _roster:
         from src.lsd.gl_gui.view.core_conversion import symbol_roster as _sr
-        _sr.sweep()          # throttled: notices pending-disk edits in other files
-        # Viewport window window mode: the window is the visible band
-        # quantized in _DT_WIN_CHUNK-line chunks with a chunk of margin each
+        _sr.sweep()          # throttled: notices pending/disk edits in OTHER files
+        _sr.register_consumer(ds)   # a later roster change invalidates this editor
+        # Viewport-only occurrence scan: the window is the visible band
+        # quantized to _DT_WIN_CHUNK-line chunks with a chunk of margin each
         # side, so small scrolls stay inside the computed window and a
         # bigger one recomputes ONE cheap windowed pass (no debounce - see
         # below: only the window moved, the content key is unchanged).
@@ -5866,7 +5886,8 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None):
                         ds._dt_lo_text = text
                         _lo_open = ds._dt_lo_open
                     _fresh = _roster_collect(_base, line_offset, view_path,
-                                             window=_win, line_open=_lo_open)
+                                             window=_win, line_open=_lo_open,
+                                             hold_live=hold_live)
                     ds._def_tints_ckey = _ckey
                 else:
                     _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
@@ -7967,13 +7988,22 @@ def draw_text(input_value: str, height=None,
               code_diff_mode=False, fold_all_collapsed=None,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
               autocomplete=True, unique=0,
-              show_widgets=True, show_root_backgrounds=True):
+              show_widgets=True, show_root_backgrounds=True,
+              highlight_token_matches=True, roster_live_hold=True):
     """`show_widgets=False` hides every inline token widget (run/eye buttons,
     number drags, bool switches, icon pickers -- the token_views layer).
+    `highlight_token_matches=False` turns off the caret-rest same-token wash
+    for this editor (embeds like global-search rows: the wash, drawn under
+    the definition tints, read as washed-out symbol colours there).
     `show_root_backgrounds=False` skips the definition block wash of ROOT
     symbols (blocks no other block in this buffer contains) -- for embeds
     that paint the enclosing class's background themselves (global search
-    rows), so the wash isn't drawn twice."""
+    rows), so the wash isn't drawn twice. Honoured only while
+    Toggles.TextEditor.root_symbol_tints is False.
+    `roster_live_hold=False` marks this buffer a READ-ONLY preview of its
+    file (global-search rows): its def tints resolve against the roster's
+    pending table instead of installing the buffer as the file's live
+    override (see roster_tints.collect_def_tints)."""
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -8437,7 +8467,8 @@ def draw_text(input_value: str, height=None,
     # PENDING file text, while the span start above is a DISK coordinate. An
     # unsaved disk edit above this span that changed the line count shifts
     # every site - fold that shift into the offset (0 when nothing is pending).
-    _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
+    if not getattr(jump_to, 'pending_coords', False):   # search results: already pending
+        _usage_off += _pending_line_delta(getattr(jump_to, 'path', None), _usage_off)
 
     def _view_usage_spans(vpath):
         """Usage spans in DISPLAY coordinates: always collected/resolved
@@ -10854,7 +10885,7 @@ def draw_text(input_value: str, height=None,
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
             ds, _dt_full, _usage_tree, _usage_off,
             getattr(jump_to, 'path', None) if jump_to is not None else None,
-            vis=_dt_vis)
+            vis=_dt_vis, hold_live=roster_live_hold)
         # Fold remap: def tints resolve against the FULL buffer (keeps the
         # last-good/anchor caches fold-independent); project the back into
         # display coords. Blocks whose head line is visible keep their wash,
@@ -10974,7 +11005,11 @@ def draw_text(input_value: str, height=None,
         # base (stuck flush to the enclosing scope - no shadow at the top
         # edge), bottom corners one step up, easing down (the peel).
         # Levels are also needed (shadow or not) to keep ROOT blocks apart
-        # when show_root_backgrounds is off.
+        # when root washes are off: the caller's show_root_backgrounds=False
+        # (global-search embeds) is honoured only while
+        # Toggles.TextEditor.root_symbol_tints is False.
+        show_root_backgrounds = (show_root_backgrounds
+                                 or Toggles.TextEditor.root_symbol_tints)
         _b_list = list(_dt_blocks) if (_dt_block_sh or not show_root_backgrounds) else []
         # O(blocks²), so memoized by the block tuple's identity (the ref in
         # the memo guards id change) - recomputing every frame was a real
@@ -11223,6 +11258,7 @@ def draw_text(input_value: str, height=None,
                              0.0, Toggles.TextEditor.def_line_blur_falloff),
                          offset=_scope_surface(_s_line) + _dt_sym_sh,
                          corner_radius=3.0, clip=_sh_clip, draw_state=ds)
+                
             draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _s_col, 3.0)
             if _dt_sym_ol_a > 0:
                 _s_ol = _ol_rgb(_sa, _dt_sym_ol_b)
@@ -11265,7 +11301,7 @@ def draw_text(input_value: str, height=None,
     # symbol-usage index involved - so it works in any text, even mid-edit or
     # unparseable. A unique identifier (its own occurrence and no other) lights
     # nothing up. Drawn under the usage washes / search glow / glyphs.
-    if (is_focused and not is_search_box
+    if (is_focused and not is_search_box and highlight_token_matches
             and Toggles.TextEditor.highlight_token_matches):
         _tok = _word_under_cursor(text, ds.text_cursor_pos)
         if _tok is not None:
@@ -11279,11 +11315,16 @@ def draw_text(input_value: str, height=None,
                     _m_line, _ = _index_to_line_col(text, _ms)
                     sy = origin_y + _m_line * line_px
                     ey = sy + line_px
-                    if ey < rect_min_y or sy > rect_max_y:
-                        continue
+                  
+                    # if ey < rect_min_y - 10.0 or sy > rect_max_y + 10.0:
+                    #     continue
+                        
                     sx = origin_x + _colx(_ms)
                     ex = origin_x + _colx(_me)
-                    draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _tm_color, 3.0)
+                    
+                    # Just the click to highlight is disabled with a flag
+                    if highlight_token_matches:
+                        draw_list.add_rect_filled(sx - 1, sy + 1, ex + 1, ey - 1, _tm_color, 3.0)
 
     _pf("body:tok_match")
     # Symbol-usage heat, PER LINE: instead of washing each symbol occurrence

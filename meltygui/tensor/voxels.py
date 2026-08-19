@@ -53,7 +53,7 @@ from src.lsd.gl_gui.text_texture import bake_text, bake_texts
 from src.lsd.gl_gui.toggles import SwooshMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-from src.lsd.gl_gui.view.core_views.core_render import render_func
+from src.lsd.gl_gui.view.core_views.core_render import render_func, release_input_refs
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.headers import draw_header
@@ -1114,7 +1114,7 @@ def _axis_edges(tilt, spin, zoom, aspect, width, height,
     its normal) — never from projected corner geometry. The old test used
     the projected quad's shoelace area against an absolute px² threshold and
     needed all four corners in front of the near plane; on a wide-skinny
-    volume (a (1, 96, 4096) slab is a 1.0 × 0.023 × 0.02 box) any zoom that
+    volume (a (1, 96, 4096) slab is a 1.0 × 0.023 × 0.0002 box) any zoom that
     makes the data readable puts the camera INSIDE the box's long span, the
     near corners fell to the behind-camera cutoff, and every face and edge
     touching them vanished — the axis hid exactly when you zoomed in to
@@ -1571,9 +1571,54 @@ def _draw_image_notice(img_pos, width, text):
     imgui.set_cursor_screen_pos(cur)
 
 
+def _is_tensorish(v):
+    """A torch tensor / ndarray, or a container whose top level holds one."""
+    if isinstance(v, np.ndarray):
+        return True
+    if type(v).__module__.startswith("torch") and hasattr(v, "data_ptr"):
+        return True
+    if isinstance(v, (list, tuple)):
+        return any(_is_tensorish(x) for x in v)
+    if isinstance(v, dict):
+        return any(_is_tensorish(x) for x in v.values())
+    return False
+
+
+def _voxels_cleanup(draw_state):
+    """Melty.cleanup hook (@render_func(on_cleanup=…)) for draw_voxels: sever
+    every reference this draw_state holds to the source tensor and the
+    uploaded volume, so the session teardown's torch.cuda.empty_cache() can
+    actually return the VRAM. Three places hold it:
+      * gl_state — the 3-D texture / CUDA-registered PBO ("volume" /
+        "volume_cuda") and the label atlas: release() queues them for the
+        GL-thread delete the teardown flushes;
+      * the wrapper's input slots (_input_value & co.) — the tensor the view
+        rendered; release_input_refs resets them;
+      * anything else tensor-shaped that landed on the draw_state (misc or a
+        plain attribute) — scrubbed generically rather than by name, so a new
+        field can't silently pin a volume.
+    The draw_state itself survives (registry entries persist across a restart-
+    in-place); a re-render refills everything."""
+    misc = getattr(draw_state, "misc", None)
+    if isinstance(misc, dict):
+        gl_state = misc.get("gl_state")
+        if gl_state is not None:
+            try:
+                gl_state.release()
+            except Exception as e:
+                print(f"[draw_voxels] gl_state release failed: {e!r}")
+        for k in [k for k, v in misc.items() if _is_tensorish(v)]:
+            misc.pop(k, None)
+    release_input_refs(draw_state)
+    for k, v in list(vars(draw_state).items()):
+        if k != "misc" and _is_tensorish(v):
+            setattr(draw_state, k, None)
+
+
 @render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True,
              auto_resize=False, min_width=269, with_header=draw_header,
-             bg_offset=0, min_height=293, disable_scroll=True, use_cache=True)
+             bg_offset=0, min_height=293, disable_scroll=True, use_cache=True,
+             on_cleanup=_voxels_cleanup)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 draw_state=None,
                 # ── camera + shading: cam_* names dodge the legacy DrawState
@@ -1920,13 +1965,16 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # tex.shape is (depth, height, width) = (z, y, x).
     t_depth, t_height, t_width = (max(1, int(s)) for s in tex.shape)
     longest = float(max(t_depth, t_height, t_width))
-    # Floor each extent so extreme aspect ratios stay visible: a 1-voxel dim
-    # on a 4096 box otherwise collapses to ~0.0005 world units - far below
-    # the ray step. 0.02 reads as a thin plate (labels/silhouette use the
-    # same floored scale, so the furniture stays consistent).
-    volume_scale = (max(0.02, t_width / longest),
-                    max(0.02, t_height / longest),
-                    max(0.02, t_depth / longest))
+    # No visibility floor: the earlier max(0.02, ...) per axis inflated the
+    # short side of anything past 50:1 (a (2048, 16) time tensor drew its
+    # 16-voxel side 2.5× too wide - voxels squished to way was a lie). Thin
+    # slabs don't need it - the shader accumulates opacity in volume-
+    # NORMALIZED segment lengths (seg * length(rd / volume_scale)), so a
+    # 1-voxel slab still reads at full density. The epsilon only guards the
+    # `/ volume_scale` divisions (labels/silhouette use the same scale).
+    volume_scale = (max(1e-5, t_width / longest),
+                    max(1e-5, t_height / longest),
+                    max(1e-5, t_depth / longest))
 
     # ── LUT: prefer the shared 1-D texture the LUT host materialized; fall
     # back to a direct upload of the named lut until the host has time ────

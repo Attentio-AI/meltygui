@@ -182,9 +182,19 @@ def twin_snap(value, name=None, dims=None):
         del frame
     dims = tuple(dims) if dims else None
     try:
-        from src.lsd.gl_gui.view.core_conversion.chain_converters import (
-            _enclosing_function)
-        fn = _enclosing_function(code.co_filename, lineno)
+        # The run's own store comes first (run_capture on this file, same
+        # file): the prune at run end and the accumulator's fresh-run reset
+        # both key on that object, so publishing anywhere else leaks.
+        fn = current_run_owner()
+        try:
+            same_file = (fn is not None and isinstance(fn, types.FunctionType)
+                         and fn.__code__.co_filename == code.co_filename)
+        except Exception:
+            same_file = False
+        if not same_file:
+            from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+                _enclosing_function)
+            fn = _enclosing_function(code.co_filename, lineno)
         if (isinstance(fn, types.FunctionType)
                 and isinstance(name, str) and name.isidentifier()):
             site = _Site((f"line:{lineno}#{name}",), None, None, fn, lineno)
@@ -848,6 +858,23 @@ def _record_scope_type(site, value, name, bare):
         pass
 
 
+# The single owner of the run_capture currently open on THIS thread (a small
+# stack: nested captures are possible in principle). twin_snap publishes to
+# it instead of re-resolving the store by (file, line): the resolver walk can
+# find a DIFFERENT function object than the one being run (the module's real
+# function vs the def-run path's exec'd twin parked beside it - same
+# co_firstlineno, first-in-dict wins), and the run_capture prunes one store
+# while the run fills another: stale keys (every renamed/removed site,
+# each with its accumulated stack) were never swept, and the accumulator
+# never saw a fresh run - the "accumulators still growing" symptom.
+_run_owner = threading.local()
+
+
+def current_run_owner():
+    stack = getattr(_run_owner, "stack", None)
+    return stack[-1] if stack else None
+
+
 @contextmanager
 def run_capture(store_obj):
     """Scope one instrumented run over `store_obj` (pass the UNWRAPPED
@@ -863,11 +890,18 @@ def run_capture(store_obj):
     except (AttributeError, TypeError):
         yield
         return
+    stack = getattr(_run_owner, "stack", None)
+    if stack is None:
+        stack = _run_owner.stack = []
+    stack.append(store_obj)
     try:
         yield
     except BaseException:
         vars(store_obj).pop("__live_touched__", None)
         raise
+    finally:
+        if stack and stack[-1] is store_obj:
+            stack.pop()
     touched = vars(store_obj).pop("__live_touched__", set())
     _prune_untouched(store_obj, touched)
 
@@ -922,6 +956,18 @@ def _prune_keys(store_obj, removed):
                     ds.invalidate()
                 except Exception:
                     pass
+                # The marker and its window stop rendering for good (the key
+                # is gone) but their draw_states persist: drop the captured
+                # value they hold (and the window's GPU texture), or every
+                # pruned key leaves a generation of tensors for the session.
+                try:
+                    from src.lsd.gl_gui.view.core_views.live_view_views import (
+                        release_live_value)
+                    release_live_value(ds, gl=False)
+                    if win is not None:
+                        release_live_value(win)
+                except Exception:
+                    pass
     try:
         store_targets = tuple(
             getattr(store_obj, "__live_store_watchers__", None) or ())
@@ -937,6 +983,41 @@ def _prune_keys(store_obj, removed):
         request_render()
     except Exception:
         pass  # headless (test)
+
+
+_STORE_ATTRS = ("__live_values__", "__live_accum__", "__live_labels__",
+                "__live_dim_names__", "__live_watchers__",
+                "__live_first_watchers__", "__live_store_watchers__",
+                "__frame_snapshot_keys__",
+                "__live_return_line__", "__live_error_line__")
+# (__live_touched__ stays put: it is an in-flight run_capture's marker on the
+# OLD function - moving it would just make that run prune an empty store.)
+
+
+def adopt_live_store(old, new):
+    """Move the live-view store from one function object to its SUCCESSOR —
+    the def-run path (text_editor._fnrun_resolve) exec-compiles a FRESH
+    function per body edit, and the old one — unreachable from any module
+    var once re-parked — still owned its whole `__live_values__` /
+    `__live_accum__` (the per-layer stacks: gigabytes per run). One owner
+    per def: `new` takes over the dicts BY IDENTITY (watchers, markers and
+    open value windows keep working unchanged — publishes to `new` land in
+    the same dicts), and `old` drops them, so a superseded function pins
+    nothing. If `new` already has a store (the real module function that ran
+    before its exec twin did) its own wins and the old one is just dropped —
+    the memory, not the continuity, is what matters."""
+    if old is None or new is None or old is new:
+        return
+    try:
+        od, nd = vars(old), vars(new)
+    except TypeError:
+        return
+    for attr in _STORE_ATTRS:
+        if attr not in od:
+            continue
+        moved = od.pop(attr)
+        if attr not in nd:
+            nd[attr] = moved
 
 
 def clear_file_stores(filename):

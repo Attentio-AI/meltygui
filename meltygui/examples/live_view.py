@@ -148,7 +148,7 @@ def _ensure_publisher():
 
 # ── Windows ──────────────────────────────────────────────────────────────────
 @window
-@render_func(tint=(0.487, 0.562, 0.6), auto_resize=True)
+@render_func(tint=(0.137, 0.553, 0.772), auto_resize=True)
 def live_view_values(input_value=None, draw_state=None, **kwargs):
     global _window_ds
     _window_ds = draw_state

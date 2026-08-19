@@ -50,7 +50,7 @@ def _decor_start(lines, def_line):
 
 
 def collect_def_tints(text, line_offset=0, view_path=None, window=None,
-                      line_open=None):
+                      line_open=None, hold_live=True):
     """(blocks, spans, line_tints, name_tints) — see module doc.
 
     blocks:     [(def_buf_line, indent_buf_index, end_buf_line, tint)] per
@@ -67,11 +67,40 @@ def collect_def_tints(text, line_offset=0, view_path=None, window=None,
     come from the table, not a scan). `line_open` is the editor's per-line
     string state (text_editor._update_line_open) so the scan can start at
     the nearest string-clean line at/above `lo`; without it the start backs
-    up to the nearest column-0 def/class/decorator/import line."""
+    up to the nearest column-0 def/class/decorator/import line.
+
+    `hold_live=False` for READ-ONLY previews of the file (global-search
+    rows: one-line span views of the pending text): the buffer is then NOT
+    installed as the file's live roster override. Holding it would let
+    every row of the same file stomp the hold in turn — each splice differs
+    (a class's 1-line span has no tint comment / extent), so the roster
+    generation bumped per row per frame, every roster consumer re-keyed and
+    re-rendered continuously, and cross-file lookups into that file saw a
+    different table each frame (washes flickering in the search list)."""
     if view_path is None:
         return ((), (), (), {})
     with roster.pass_scope():
-        return _collect(text, line_offset, view_path, window, line_open)
+        return _collect(text, line_offset, view_path, window, line_open,
+                        hold_live=hold_live)
+
+
+# Local-binding memo: (id(text), path(table)) -> {scope-qualname tuple: bindings}.
+# A pure scroll re-runs the windowed pass on the SAME buffer; the 5000-line
+# draw_text chunk's binding scan (~10ms) must not be paid per chunk crossed.
+_bind_memo = [None, None, {}]
+
+
+def _bindings_memo(text, own, line_offset, lines, scopes):
+    if not scopes:
+        return {}
+    key = (id(text), own.path)
+    if _bind_memo[0] != key:
+        _bind_memo[0], _bind_memo[1], _bind_memo[2] = key, text, {}   # hold text: it stays unique
+    sk = tuple(e.qualname for e in scopes)
+    b = _bind_memo[2].get(sk)
+    if b is None:
+        b = _bind_memo[2][sk] = roster.local_bindings(text, own, line_offset, lines, scopes)
+    return b
 
 
 _DEF_LIKE_COL0 = re.compile(r"(?:async\s+)?(?:def|class)\s|@|import\s|from\s")
@@ -98,14 +127,18 @@ def _scan_range(lines, line_start_idx, text, window, line_open):
     return start, min(end, len(text)), lo, hi
 
 
-def _collect(text, line_offset, view_path, window=None, line_open=None):
+def _collect(text, line_offset, view_path, window=None, line_open=None,
+             hold_live=True):
     from src.lsd.gl_gui.toggles import Toggles
     lines = text.split("\n")
     line_start_idx = [0]
     for l in lines:
         line_start_idx.append(line_start_idx[-1] + len(l) + 1)
     vpath = roster._norm(str(view_path))
-    own = roster.table_for(vpath, live_text=text, line_offset=line_offset)
+    # A preview buffer resolves against the PENDING table (or whatever live
+    # hold a real editor of this file keeps) instead of becoming the hold.
+    own = roster.table_for(vpath, live_text=text if hold_live else None,
+                           line_offset=line_offset)
     scan_start, scan_end, win_lo, win_hi = _scan_range(lines, line_start_idx, text,
                                                        window, line_open)
 
@@ -140,8 +173,19 @@ def _collect(text, line_offset, view_path, window=None, line_open=None):
     win_file_lo, win_file_hi = win_lo + 1 + line_offset, win_hi + 1 + line_offset
     scopes = [e for e in own.entries
               if e.kind == "def" and e.line <= win_file_hi and e.end >= win_file_lo]
-    bindings = roster.local_bindings(text, own, line_offset, lines, scopes) if scopes else {}
+    # Binding / tint SOURCE text: the buffer itself when it is the whole
+    # file; for a SPAN buffer (a function body or a one-line search), use the
+    # pending file - a local defined above the span (a param, an earlier
+    # assignment) must still colour its uses inside it.
+    whole_file = (line_offset == 0 and isinstance(own.key, tuple) and own.key[0] == "live")
+    if whole_file:
+        ftext, flines, foff = text, lines, 0
+    else:
+        ftext = roster.file_text(vpath)
+        flines, foff = ftext.split("\n"), 0
+    bindings = _bindings_memo(ftext, own, foff, flines, scopes)
     local_occ = {}      # (scope, name) -> [(start, end, buf_line)]
+    tint_lines = roster.tint_line_index(flines)  # prefilter for explicit-tint scans
 
     # ── spans: every identifier chain in code, resolved per occurrence ──
     spans = []
@@ -174,7 +218,11 @@ def _collect(text, line_offset, view_path, window=None, line_open=None):
         parts = chain.split(".")
         for n, ent in got:
             prefix = ".".join(parts[:n])
-            ps, pe = s, s + len(prefix)
+            # The wash covers only the resolved SEGMENT (`TextEditor` in
+            # `Toggles.TextEditor.x`), not the whole prefix back to the
+            # chain start - the earlier parts carry their own rects.
+            pe = s + len(prefix)
+            ps = pe - len(parts[n - 1])
             in_own = ent.path == vpath
             rng = block_range.get(ent.qualname) if in_own else None
             if rng is not None and rng[0] <= ln <= rng[1]:
@@ -191,18 +239,31 @@ def _collect(text, line_offset, view_path, window=None, line_open=None):
     # ── local tints: own comment > propagation blend; then every occurrence ──
     # local_tint[(scope, name)] = [(from_file_line, rgb, scale)] - segments sorted
     # in order: the FIRST binding's tint owns the name, a LATER binding with
-    # its own `# [tint=...]` takes over from that line on.
+    # its own `# [tint=...]` takes over from that line on  Computed LAZILY for
+    # the locals that occur in the window (plus the locals their binding
+    # lines read, recursively - that's the propagation chain), never for
+    # every binding of a 5000-line function.
     local_tint = {}
+    _IN_PROGRESS = ()
 
-    def _tok_tint(tok, sc):
-        """Tint of an RHS token read in scope `sc`: a visible local's current
-        tint first (innermost scope wins), else the roster's."""
+    def _seg_at(segs, at_line):
+        cur = segs[0]
+        for sg in segs:
+            if sg[0] <= at_line:
+                cur = sg
+        return cur
+
+    def _tok_tint(tok, sc, at_line, depth):
+        """Tint of an RHS token read in scope `sc` on file line `at_line`: a
+        visible local's tint IN EFFECT at that line first (innermost scope
+        wins; a later rebinding doesn't colour earlier reads), else the
+        roster's."""
         dot = tok.find(".")
         first = tok if dot == -1 else tok[:dot]
         lk = roster.local_key(own, sc, first, bindings) if sc is not None else None
         if lk is not None:
-            segs = local_tint.get(lk)
-            return segs[-1][1:] if segs else None
+            segs = _local_segments(lk, depth + 1)
+            return _seg_at(segs, at_line)[1:] if segs else None
         t = name_tint.get(tok)
         if t is None and dot != -1:
             t = name_tint.get(first)
@@ -221,60 +282,61 @@ def _collect(text, line_offset, view_path, window=None, line_open=None):
             return code[p + 2:] if p != -1 else ""
         return ""
 
-    if bindings:
-        ordered = sorted(bindings.items(), key=lambda kv: kv[1][0].line)
-        for _pass in range(2 if mix_on else 1):
-            for lk, blist in ordered:
-                segs = local_tint.get(lk, [])
-                sc_e = own.by_qualname.get(lk[0])
-                for b in blist:
-                    bl = b.line - 1 - line_offset
-                    if not (0 <= bl < len(lines)):
-                        continue
-                    if any(sg[0] == b.line for sg in segs):
-                        continue                 # this line already coloured
-                    lt = lines[bl]
-                    own_t = None
-                    if "#" in lt or (bl > 0 and lines[bl - 1].lstrip().startswith("#")):
-                        try:
-                            res = _scan_def_tint_lines(lines, bl + 1, None)
-                        except Exception:
-                            res = None
-                        if res is not None and res[1] == bl + 1:
-                            own_t = (tuple(res[0][:3]), 1.0)
-                    if own_t is not None:
-                        segs.append((b.line, own_t[0], own_t[1]))
-                    elif not segs and mix_on and b is blist[0]:
-                        rhs = _rhs_of(b, lt)
-                        if not rhs:
-                            continue
-                        contribs = [t for t in (_tok_tint(tok, sc_e)
-                                                for tok in _IDENT_RE.findall(rhs))
-                                    if t is not None]
-                        if not contribs:
-                            continue
-                        uniq = list(dict.fromkeys(contribs))
-                        n = len(uniq)
-                        rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
-                        scale = fade * (sum(c[1] for c in uniq) / n)
-                        if scale < 0.2:
-                            continue
-                        segs.append((b.line, rgb, scale))
-                if segs:
-                    segs.sort()
-                    local_tint[lk] = segs
-        for lk, segs in local_tint.items():
-            for (s, e, ln) in local_occ.get(lk, ()):
-                fl = ln + 1 + line_offset
-                seg = segs[0]
-                for sg in segs:
-                    if sg[0] <= fl:
-                        seg = sg
-                if (s, e) in seen_spans:
+    def _local_segments(lk, depth=0):
+        got = local_tint.get(lk)
+        if got is not None:
+            return () if got is _IN_PROGRESS else got
+        local_tint[lk] = _IN_PROGRESS          # cycle guard (x = x + 1)
+        segs = []
+        sc_e = own.by_qualname.get(lk[0])
+        blist = bindings.get(lk, ())
+        for b in blist:
+            bl = b.line - 1 - foff
+            if not (0 <= bl < len(flines)):
+                continue
+            lt = flines[bl]
+            own_t = None
+            if roster._scan_tint(flines, bl + 1, None, tint_lines, None) is not None:
+                try:
+                    res = _scan_def_tint_lines(flines, bl + 1, None)
+                except Exception:
+                    res = None
+                if res is not None and res[1] == bl + 1:
+                    own_t = (tuple(res[0][:3]), 1.0)
+            if own_t is not None:
+                segs.append((b.line, own_t[0], own_t[1]))
+            elif not segs and mix_on and b is blist[0] and depth < 6:
+                rhs = _rhs_of(b, lt)
+                if not rhs:
                     continue
-                seen_spans.add((s, e))
-                spans.append((s, e, seg[1], seg[2], fl == seg[0]))
-            name_tint.setdefault(lk[1], (segs[-1][1], segs[-1][2]))
+                contribs = [t for t in (_tok_tint(tok, sc_e, b.line, depth)
+                                        for tok in _IDENT_RE.findall(rhs))
+                            if t is not None]
+                if not contribs:
+                    continue
+                uniq = list(dict.fromkeys(contribs))
+                n = len(uniq)
+                rgb = tuple(sum(c[0][i] for c in uniq) / n for i in range(3))
+                scale = fade * (sum(c[1] for c in uniq) / n)
+                if scale < 0.2:
+                    continue
+                segs.append((b.line, rgb, scale))
+        segs.sort()
+        local_tint[lk] = segs
+        return segs
+
+    for lk, occs in local_occ.items():
+        segs = _local_segments(lk)
+        if not segs:
+            continue
+        for (s, e, ln) in occs:
+            fl = ln + 1 + line_offset
+            seg = _seg_at(segs, fl)
+            if (s, e) in seen_spans:
+                continue
+            seen_spans.add((s, e))
+            spans.append((s, e, seg[1], seg[2], fl == seg[0]))
+        name_tint.setdefault(lk[1], (segs[-1][1], segs[-1][2]))
 
     blocks.sort()
     # Misresolution filter (ported): an assignment-target span inside a
@@ -367,6 +429,12 @@ def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t
     own = roster.table_for(vpath, live_text=full_text, line_offset=line_offset)
     caret_line = full_text.count("\n", 0, cs) + 1 + line_offset
     sc = own.scope_at(caret_line)
+    # Locals first: a bare name bound in the caret's function (or an
+    # enclosing one) is that local - binding <-> every occurrence in scope.
+    if sc is not None and part_ix == 0:
+        loc = _local_ctrl_b(full_text, line_offset, own, sc, parts[0], cs, caret_line)
+        if loc is not None:
+            return loc
     res = roster.resolve_prefixes(vpath, parts[:part_ix + 1], own, scope=sc)
     entry = None
     for ent, n in res:
@@ -397,3 +465,53 @@ def _lookup(full_text, pos, vpath, line_offset, cs, ce, chain, parts, part_ix, t
     print(f"[roster ctrl+b] {entry.qualname} ({entry.kind}) -> {len(targets)} usages "
           f"in {ms:.0f}ms")
     return ps, pe, sym, True, targets
+
+
+def _local_ctrl_b(full_text, line_offset, own, sc, name, cs, caret_line):
+    """Ctrl+B on a function local. Returns (start, end, sym, at_def, targets)
+    or None when `name` isn't a local visible from `sc`."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import UsageRef
+    from pathlib import Path
+    # Outermost enclosing def: its scope covers every nested scope.
+    outer = sc
+    while outer is not None and outer.parent:
+        pe = own.by_qualname.get(outer.parent)
+        if pe is None or pe.kind != "def":
+            break
+        outer = pe
+    lines = full_text.split("\n")
+    bindings = roster.local_bindings(full_text, own, line_offset, lines, [outer])
+    lk = roster.local_key(own, sc, name, bindings)
+    if lk is None:
+        return None
+    scope_e = own.by_qualname.get(lk[0])
+    if scope_e is None:
+        return None
+    starts = roster._line_starts(full_text)
+    b0 = max(0, scope_e.line - 1 - line_offset)
+    b1 = min(len(lines) - 1, scope_e.end - 1 - line_offset)
+    lo_idx = starts[b0]
+    hi_idx = starts[b1 + 1] - 1 if b1 + 1 < len(starts) else len(full_text)
+    occ = []
+    for s, e, chain in roster.iter_chains(full_text, lo_idx, hi_idx):
+        dot = chain.find(".")
+        first = chain if dot == -1 else chain[:dot]
+        if first != name:
+            continue
+        ln = full_text.count("\n", 0, s)      # cheap enough for one scope
+        fl = ln + 1 + line_offset
+        osc = own.scope_at(fl)
+        if roster.local_key(own, osc, name, bindings) != lk:
+            continue
+        occ.append((s, s + len(first), fl, s - starts[ln]))
+    blines = {b.line for b in bindings[lk]}
+    sym = _Sym(name, None)
+    at_def = caret_line in blines
+    if at_def:
+        targets = [UsageRef(Path(own.path), fl, col, scope=lk[0], module_name="")
+                   for (s, e, fl, col) in occ if not (s <= cs < e)]
+    else:
+        cands = [b for b in bindings[lk] if b.line <= caret_line] or bindings[lk][:1]
+        b = cands[-1]
+        targets = [UsageRef(Path(own.path), b.line, b.col, scope=lk[0], module_name="")]
+    return cs, cs + len(name), sym, at_def, targets

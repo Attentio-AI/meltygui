@@ -166,9 +166,30 @@ _CODE_RE = re.compile(
 _KEYWORDS = frozenset(keyword.kwlist) | {"self", "cls", "True", "False", "None"}
 
 
-def _scan_tint(lines, line_no, name):
+def _scan_tint(lines, line_no, name, tint_lines=None, lookback=40):
     """Explicit source tint of the definition/assignment at 1-based line_no
-    via the editor's resolver; None standalone (tests) or when untinted."""
+    via the editor's resolver; None standalone (tests) or when untinted.
+    `tint_lines` (sorted 0-based indices of lines containing "tint", from
+    tint_line_index) is a prefilter: a tint can only come from the line
+    itself or the comment/decorator run above it, so a def with no "tint"
+    within `lookback` lines above is skipped without the (regex-heavy) scan."""
+    if tint_lines is not None:
+        import bisect
+        i = line_no - 1
+        k = bisect.bisect_right(tint_lines, i)
+        if k == 0:
+            return None
+        if lookback is None:
+            # Comment scan mode (assignments): the tint could sit anywhere in
+            # the `#` run directly above - an 8-line `# [tint=..., cam_zoom=
+            # ..., light_pos=(...)]` override is common - so back up over it.
+            j = i - 1
+            while j >= 0 and j > i - 64 and lines[j].lstrip().startswith("#"):
+                j -= 1
+            if tint_lines[k - 1] <= j:
+                return None
+        elif tint_lines[k - 1] < i - lookback:
+            return None
     try:
         from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
     except ImportError:
@@ -180,6 +201,17 @@ def _scan_tint(lines, line_no, name):
         return None
 
 
+_TINT_ASSIGN_RE = re.compile(r"tint\s*=\s*\(")
+
+
+def tint_line_index(lines):
+    """Sorted 0-based indices of lines that could DECLARE a tint — a
+    `tint=(` assignment form (decorator kwarg, `# [tint=(...)]` comment,
+    class-body `tint = (...)`) — the cheap prefilter for every explicit-tint
+    scan over a buffer. Prose merely mentioning "tint" doesn't count."""
+    return [i for i, l in enumerate(lines) if "tint" in l and _TINT_ASSIGN_RE.search(l)]
+
+
 def extract_table(path, text, key=None, with_tints=True):
     """Build a FileTable from `text` in ONE indent-stack pass (same shape as
     text_index._extract_symbols, plus qualnames, assignments and imports).
@@ -188,6 +220,7 @@ def extract_table(path, text, key=None, with_tints=True):
     module level and in class bodies only (locals are the usage graph's
     business), first binding per qualname wins."""
     lines = text.split("\n")
+    tl = tint_line_index(lines) if with_tints else None
     entries = []
     open_ix = []            # indices into `entries` of the open class/def stack
     imports, stars = {}, []
@@ -213,7 +246,7 @@ def extract_table(path, text, key=None, with_tints=True):
             parent = entries[open_ix[-1]] if open_ix else None
             qn = f"{parent.qualname}.{name}" if parent is not None else name
             e = Entry(path, qn, name, m.group(2), i + 1, len(lines), indent,
-                      m.start(3), _scan_tint(lines, i + 1, name) if with_tints else None,
+                      m.start(3), _scan_tint(lines, i + 1, name, tl) if with_tints else None,
                       parent.qualname if parent is not None else None,
                       ln.rstrip()[:160])
             entries.append(e)
@@ -239,7 +272,7 @@ def extract_table(path, text, key=None, with_tints=True):
                 continue   # re-binding: first binding wins per name (cheap win)
             entries.append(Entry(path, qn, name, "var", i + 1, i + 1, indent,
                                  m.start(2),
-                                 _scan_tint(lines, i + 1, None) if with_tints else None,
+                                 _scan_tint(lines, i + 1, None, tl, None) if with_tints else None,
                                  parent.qualname if parent is not None else None,
                                  ln.rstrip()[:160]))
     if pending_import is not None:
@@ -354,6 +387,7 @@ def module_to_path(dotted):
 
 _STATE_DEFAULTS = {
     "tables": dict,        # str(path) -> FileTable (pending text)
+    "texts": dict,         # str(path) -> (key, pending text) - see file_text
     "live": dict,          # str(path) -> (FileTable from an old save, pending key)
     "overrides": dict,     # (path, qualname) -> (tint, stamp_time)
     "gen": int,
@@ -368,6 +402,9 @@ _STATE_DEFAULTS = {
     "pass_names": lambda: None,
     "last_sweep": float,
     "last_full_sweep": float,
+    "consumers": dict,     # draw_state -> gen it last drew with (see register_consumer)
+    "notify_timer": lambda: None,
+    "universe_kicked": bool,
 }
 
 
@@ -385,6 +422,75 @@ def _state():
 
 def generation():
     return _state()["gen"]
+
+
+# ── Consumer notification ───────────────────────────────────────────────────
+# Editors are cached tiles: their body (where _def_tints runs) only re-runs
+# when invalidated, so a roster change made elsewhere - a tint change in
+# another file, the background universe load finishing, a lens write - must
+# invalidate the editors that drew roster tints that once per pass;
+# fan-out is coalesced (one timer, ~60ms) so the first universe load (one
+# gen bump per file) doesn't invalidate every editor per table. Same
+# mechanics as RenderHost._notify_consumers_now (safe off-thread).
+
+def register_consumer(draw_state):
+    """Mark `draw_state` as having drawn roster-derived content this pass."""
+    if draw_state is None:
+        return
+    st = _state()
+    st["consumers"][draw_state] = st["gen"]
+    if len(st["consumers"]) > 128:
+        st["consumers"] = {ds: g for ds, g in st["consumers"].items()
+                           if not getattr(ds, "closed", False)}
+
+
+def _schedule_notify():
+    st = _state()
+    with st["lock"]:
+        t = st.get("notify_timer")
+        if t is not None:
+            return                      # already pending: coalesce
+        t = threading.Timer(0.06, _notify_consumers)
+        t.daemon = True
+        st["notify_timer"] = t
+        t.start()
+
+
+def _notify_consumers():
+    st = _state()
+    with st["lock"]:
+        st["notify_timer"] = None
+        targets = [(ds, g) for ds, g in list(st["consumers"].items()) if g < st["gen"]]
+    if not targets:
+        return
+    try:
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from src.lsd.gl_gui.view.invalidation_tracker import Note
+    except Exception:
+        return
+    for ds, _g in targets:
+        tid = getattr(ds, "_tile_id", None)
+        if tid is None or getattr(ds, "closed", False):
+            continue
+        try:
+            Melty.cache.invalidate_up(tid, force=True, max_depth=8,
+                                      note=Note(name="symbol roster changed",
+                                                tint=(0.9, 0.7, 0.3), draw_state=ds))
+        except Exception:
+            pass
+    try:
+        request_render()
+    except Exception:
+        pass
+
+
+def _gen_bump(st):
+    """Bump the generation (caller holds the lock) and wake the consumers."""
+    st["gen"] += 1
+    st["by_name_gen"] = -1
+    if st["consumers"]:
+        _schedule_notify()
 
 
 class pass_scope:
@@ -411,7 +517,8 @@ class pass_scope:
 
 def _bump():
     st = _state()
-    st["gen"] += 1
+    with st["lock"]:
+        _gen_bump(st)
 
 
 def _file_key(path):
@@ -449,6 +556,23 @@ def _current_text(path):
         return Path(path).read_text(errors="replace")
     except OSError:
         return None
+
+
+def file_text(path):
+    """The CURRENT text of `path` (pending truth), cached on the same
+    content-free key as its table so repeated readers share one string
+    (identity-stable — memo keys can use id())."""
+    st = _state()
+    p = _norm(path)
+    key = _file_key(p)
+    ent = st["texts"].get(p)
+    if ent is not None and ent[0] == key:
+        return ent[1]
+    text = _current_text(p) or ""
+    if len(st["texts"]) > 256:
+        st["texts"].clear()
+    st["texts"][p] = (key, text)
+    return text
 
 
 def table_for(path, live_text=None, line_offset=0):
@@ -495,8 +619,7 @@ def table_for(path, live_text=None, line_offset=0):
             st["live"][p] = (tbl, pkey)
             _apply_overrides(st, p, tbl)
             if prev is None or _tables_differ(prev, tbl):
-                st["gen"] += 1
-                st["by_name_gen"] = -1
+                _gen_bump(st)
         return tbl
     ent = _pending_table(st, p)
     held = st["live"].get(p)
@@ -527,8 +650,7 @@ def _install(st, p, tbl):
         st["tables"][p] = tbl
         _apply_overrides(st, p, tbl)
         if prev is None or _tables_differ(prev, tbl):
-            st["gen"] += 1
-            st["by_name_gen"] = -1
+            _gen_bump(st)
 
 
 def _apply_overrides(st, p, tbl):
@@ -553,6 +675,15 @@ def sweep(force=False):
     is what re-keys the editors' tint caches. Call outside a pass."""
     st = _state()
     now = time.monotonic()
+    if not st["universe_kicked"]:
+        # First consumer: load every src file's table in the background so the
+        # by-name fallback sees the whole tree; consumers are notified as
+        # tables land (coalesced), so tints fill in without a full pass.
+        st["universe_kicked"] = True
+        try:
+            ensure_universe(blocking=False)
+        except Exception:
+            pass
     if not force and now - st.get("last_sweep", 0.0) < 0.1:
         return
     st["last_sweep"] = now
@@ -615,8 +746,7 @@ def set_tint(path, qualname, tint):
                 e = tbl.by_qualname.get(qualname)
                 if e is not None:
                     e.tint = t
-        st["gen"] += 1
-        st["by_name_gen"] = -1
+        _gen_bump(st)
 
 
 # ── Universe (every .py under src) ───────────────────────────────────────────

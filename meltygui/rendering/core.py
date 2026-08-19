@@ -504,6 +504,10 @@ def render_func(*args, **o_kwargs):
 
         return class_wrapper
 
+    # Session-teardown hook (see run_cleanup_callbacks): decorator-only, never
+    # a render kwarg, so kick it out before o_kwargs merge into call kwargs.
+    on_cleanup = o_kwargs.pop("on_cleanup", None)
+
     sig = inspect.signature(func)
     params = sig.parameters
     param_types = [params[p].annotation for p in params]
@@ -2661,23 +2665,7 @@ def render_func(*args, **o_kwargs):
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
                 someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible
 
-                # A left PRESS frame (down only, no drag yet) must render
-                # the hovered tile LIVE even though Melty.on_drag is already
-                # set from the press: imgui widgets (slider(input, ...) only
-                # activate on the one frame ioItemClicked fires, so a
-                # blit-served press frame loses the click outright - imgui
-                # never goes live, the following frame falls through to
-                # window_move and "steals" the widget. The previous hovered
-                # frame's invalidate normally covers this (it targets
-                # frame+1), but not when the press lands in the FIRST hovered
-                # frame (move + click in one event batch), right after another
-                # press frame, or inside the on_scroll hold-off. One live
-                # frame per press is cheap; drag frames stay blit-served.
-                press_frame = ("left_mouse_down" in Melty.events_by_type
-                               and "left_mouse_drag" not in Melty.events_by_type)
-                drag_blocked = (Melty.on_drag or someone_elses_scroll) and not press_frame
-
-                if not drag_blocked and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1):
+                if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)) and not someone_elses_scroll:
                     if not draw_state.just_shadow:
                         Melty.cache.invalidate(tile_id, force=True, note=Note(name="hover change",
                                                                                               tint=(1,1,0, 0.1),
@@ -4936,10 +4924,7 @@ def render_func(*args, **o_kwargs):
             # wraps/clips before the bar instead of going under it.
             scrollbar_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
                                  + SCROLLBAR_MARGIN)
-            # While a click-drag is in progress, drop the reserve so content
-            # isn't clipped at the right edge mid-gesture.
-            if Melty.on_drag:
-                scrollbar_reserve = 0
+          
             Melty.push_clip((draw_state.abs_left, draw_state.abs_top + header_height,
                              draw_state.abs_left + draw_state.width - scrollbar_reserve,
                              draw_state.abs_top + header_height + draw_state.height + 2))
@@ -5197,6 +5182,15 @@ def render_func(*args, **o_kwargs):
     wrapper.__render_func__ = True
     wrapper.__header_defaults__ = header_defaults
     wrapper.__params__ = params
+    # on_cleanup(draw_state): called once per draw_state of this view at
+    # Melty teardown (run_cleanup_callbacks). Stamped on the RAW func too -
+    # draw_state._view_func is the raw function, which is how the teardown
+    # walk finds the hook from a draw_state.
+    wrapper.on_cleanup = on_cleanup
+    try:
+        func.__on_cleanup__ = on_cleanup
+    except (AttributeError, TypeError):
+        pass                      # non-function callables: no raw-side stamp
     # Callable (lazy - DrawState must be constructible) the param names this
     # view auto-mirrors onto its draw_state. For introspection/docs/tests.
     wrapper.__auto_state_params__ = _auto_state_params
@@ -5398,6 +5392,59 @@ def get_draw_state(unique: int) -> DrawState:
 
 
 _headless_draw_state_registry = {}
+
+
+def release_input_refs(draw_state):
+    """Drop every wrapper-owned reference a draw_state holds to the value it
+    rendered: the input slots the render_func wrapper fills per call
+    (_input_value / _raw_input_value / _input_cache / _input_value_cache)
+    and the dirty-detection baseline (_original_load_data). For views whose
+    value is a GPU tensor these are the references that keep the tensor —
+    and its VRAM — alive after the view is gone; on_cleanup hooks call this
+    so torch.cuda.empty_cache() has something to return. The draw_state
+    stays valid: a later render simply refills the slots."""
+    draw_state._input_value = UNSET_VALUE
+    draw_state._raw_input_value = UNSET_VALUE
+    draw_state._input_value_cache = UNSET_VALUE
+    draw_state._input_cache = {"external_state": (UNSET_VALUE, 0, -1),
+                               "internal_state": (UNSET_VALUE, 0)}
+    draw_state._original_load_data = None
+
+
+def run_cleanup_callbacks():
+    """Melty.cleanup: call every @render_func(on_cleanup=fn) hook once per
+    draw_state that last rendered through that view. Runs BEFORE the GL /
+    GLState teardown so a hook can still release GL-backed resources through
+    the normal queue, and before torch.cuda.empty_cache() so severed tensor
+    references actually free VRAM. A hook that throws is reported and skipped
+    — teardown never stops on one view. Returns the number of hooks run."""
+    registries = []
+    try:
+        if Melty.vis is not None and getattr(Melty.vis, "root", None) is not None:
+            registries.append(Melty.vis.root.draw_state_registry)
+    except Exception:
+        pass
+    if Melty.draw_state_registry is not None:
+        registries.append(Melty.draw_state_registry)
+    registries.append(_headless_draw_state_registry)
+    seen = set()
+    ran = 0
+    for reg in registries:
+        if not isinstance(reg, dict):
+            continue
+        for ds in list(reg.values()):
+            if ds is None or id(ds) in seen:
+                continue
+            seen.add(id(ds))
+            fn = getattr(getattr(ds, "_view_func", None), "__on_cleanup__", None)
+            if fn is None:
+                continue
+            try:
+                fn(ds)
+                ran += 1
+            except Exception as e:
+                print(f"[melty] on_cleanup {getattr(fn, '__qualname__', fn)} failed: {e!r}")
+    return ran
 
 
 def strhash(s: str) -> int:

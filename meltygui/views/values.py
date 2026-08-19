@@ -1213,16 +1213,20 @@ def _file_meta_tint(path):
 class _RowSpan:
     """jump_to shim for a one-line search-row buffer: draw_text reads `.start`
     (0-based file line of the buffer's first line) to offset every tree-derived
-    wash into buffer space. `path` stays None on purpose — our line numbers are
-    already PENDING coordinates, and a real path would run the disk→pending
-    delta bridge a second time. `source` mirrors Address's slot (None) for any
+    wash into buffer space. `path` is the row's file so the ROSTER tint path
+    (text_editor._def_tints in roster mode needs a view_path to resolve the
+    row's symbols — calls like `draw_any(...)` wash in their definition's
+    tint); `pending_coords=True` tells the editor our line numbers are
+    already PENDING coordinates so it must NOT run the disk→pending delta
+    bridge a second time. `source` mirrors Address's slot (None) for any
     duck-typed reader; the jump-to BAR itself is off (show_jump_bar=False)."""
-    __slots__ = ("start", "path", "end", "source")
+    __slots__ = ("start", "path", "end", "source", "pending_coords")
 
-    def __init__(self, start):
+    def __init__(self, start, path=None):
         self.start = start
         self.end = start + 1
-        self.path = None
+        self.path = path
+        self.pending_coords = True
         self.source = None
 
 
@@ -3566,8 +3570,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                  # own shadow around the edges.
                                  z_offset=_row_lift,
                                  code_dict=_cdict, tint=(0,0,0,0),
-                                 jump_to=_RowSpan(_cl - 1), is_tree=False,
-                                 show_jump_bar=False,
+                                 jump_to=_RowSpan(_cl - 1, _cp), is_tree=False,
+                                 show_jump_bar=False, highlight_token_matches=False,
+                                 # A read-only preview of the row text:
+                                 # never the file's live roster override
+                                 # (rows of one file would stomp each other's
+                                 # hold every frame -- flickering washes).
+                                 roster_live_hold=False,
                                  selectable=False, return_extras=True)
                 
                 if _chost is not None:
@@ -5418,7 +5427,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
-             min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None, tint=(0.071, 0.354, 0.511))
+             min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None, tint=(0.0, 0.241, 0.556))
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left_mouse_held=False, shadow=True,
            left_mouse_down=False,
            color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None,
@@ -10004,10 +10013,11 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                 _res = draw_text(_ccode, name=f"dd_code_{key}", show_header=False,
                                  show_bg=False, shadow=True, single_line=True,
                                  width=_cw, height=h, use_cache=False, bg_offset=-2,
-                                 jump_to=_RowSpan(_cl - 1), is_search_box=True,
+                                 jump_to=_RowSpan(_cl - 1, _cp), is_search_box=True,
                                  is_tree=False, z_offset=2,
                                  show_jump_bar=False, line_numbers=[_cl],
                                  tint=row_tint, selectable=False,
+                                 roster_live_hold=False,   # single-only preview
                                  return_extras=True)
                 if _chost is not None:
                     # Repaint when the background parse lands (washes pop in) but

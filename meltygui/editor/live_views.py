@@ -491,9 +491,15 @@ def _mouse_in_window_tree(win_ds, mx, my):
     return False
 
 
+# auto_state=False: every named param would otherwise be MIRRORED onto the
+# draw_state (draw_state.value / .store_obj + the _auto_baseline copy) - so a
+# marker that stops rendering (culled off-viewport, key pruned) would keep
+# pinning its last tensor AND its last store-owning function (whose
+# __live_values__ may hold gigabytes of a superseded run) through those
+# mirrors. The marker writes none of its params, so it needs no auto-state.
 @render_func(use_cache=False, show_bg=False, shadow=False, with_header=None,
              show_name=False, selectable=False, disable_scroll=True, wrap=True,
-             z_offset=4, max_height=32)
+             z_offset=4, max_height=32, auto_state=False)
 def draw_live_view_marker(input_value=None, draw_state=None,
                           store_obj=None, key_path=None, captured=False,
                           code_tree_node=None, auto_open=True,
@@ -681,6 +687,13 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # rect), then closes, and an unarmed latch made the close a no-op.
         # The latch resets itself once the focused caret leaves the symbol.
         ds._lv_cursor_dismissed = True
+        # Closing a live view DELETES its captured value: the window was the
+        # only reason to keep the tensor (the store entry + its loop
+        # accumulator, often hundreds of MB) resident - the next run
+        # republishes it anyway. Drops the key, its window/marker refs and
+        # the GL texture (_live_view._prune_keys → release_live_value).
+        _drop_captured_value(store_obj, key_path)
+        captured = False
     open_now = bool(getattr(ds, "_lv_open", False))
 
     # ── EDIT-PIN: engaging with a preview window's own UI latches it open.
@@ -887,6 +900,14 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # after a root_draw_states re-dispatch).
         win_ds.live_root = live_root
         win_ds.live_key = ds.live_key
+        # The window's dispatch (Melty.draw, root_draw_states) re-reads
+        # the CURRENT value for this key from the store, so a publish while
+        # this marker is culled off-viewport still swaps the window's tensor
+        # (fresh display, and the previous generation is released on the
+        # spot instead of riding the stale kwargs until the marker next
+        # renders).
+        win_ds._lv_store_obj = store_obj
+        win_ds._lv_key_path = key_path
         # Auto loop dims for the REPLAY path: the deferred root_draw_states
         # dispatch re-splats the site's raw `# [...]` comment over the stored
         # kwargs (melty.py, "Live-view comment re-splat"), which would clobber
@@ -907,12 +928,114 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             ds._lv_cursor_in = False
             cursor_inside = False
             ds.invalidate()
+            # The X on a caret-held preview deletes the value too (same
+            # contract as the latched window above).
+            _drop_captured_value(store_obj, key_path)
 
     # Stamp whether THIS frame's window visibility is caret-held - the X-close
     # should only fire for a window the cursor preview was in.
     ds._lv_cursor_preview_shown = bool(preview_show and cursor_inside)
 
+    # A closed value window must not keep its last tensor (+ GL texture)
+    # alive while the store streams on - release once per close (the flag
+    # re-arms on the next show, when draw_any re-supplies the value).
+    if win_ds is not None and win_ds.closed and not _show:
+        if not getattr(win_ds, "_lv_released", False):
+            win_ds._lv_released = True
+            release_live_value(win_ds)
+            try:
+                from src.lsd.gl_gui.gc_manager import release_cuda_cache_soon
+                release_cuda_cache_soon(label="live window close")
+            except Exception:
+                pass
+    elif win_ds is not None and getattr(win_ds, "_lv_released", False):
+        win_ds._lv_released = False
+
+    # The marker itself must not outlive the value it was handed: the
+    # framework stores this call's kwargs on the ds (_kwargs), and a marker
+    # that isn't rendered again (scrolled off; culled; key pruned) would pin
+    # the tensor until the next time it draws. The value was only ever
+    # needed inside this body (the window got its own copy via draw_any).
+    _kw = ds.__dict__.get("_kwargs")
+    if isinstance(_kw, dict) and _kw.get("value") is not None:
+        _kw["value"] = None
+
     return False, None
+
+
+_VALUE_ATTRS = ("_raw_input_value", "_input_value", "_original_input_ref")
+_VALUE_KWARGS = ("input_value", "value")
+
+
+def release_live_value(ds, gl=True):
+    """Drop every reference a live-value VIEW holds to its captured value, so
+    a tensor the store no longer serves can actually die.
+
+    Draw_states persist (that's the framework contract — a closed window
+    keeps its size/position/params and lazily re-renders), and the wrapper
+    stamps the last-rendered value onto them (`_kwargs['input_value']`,
+    `_raw_input_value`, ...). For the live lab that is the leak: each run
+    publishes NEW tensors (the per-layer accumulators are hundreds of MB),
+    so a marker whose key was pruned (a renamed/removed assignment — every
+    few keystrokes while typing) or a value window the user X-closed kept
+    its last tensor — AND its GLState volume texture — pinned for the rest
+    of the session, one generation per orphan. VRAM climbed with every
+    edit; torch.cuda.empty_cache() can't help while the refs live.
+
+    Called when a key is pruned (live_view._prune_keys, for the marker and
+    its window) and by the marker whenever its window is closed. The marker
+    re-supplies the value on the next show (draw_any(value, draw_state=win)),
+    so nothing is lost: only the STALE copy goes. GL resources under the
+    window are released through the same path a deleted window takes
+    (GLState.on_window_deleted — queued deletes, drained on the GL thread);
+    the window lazily re-uploads when reopened. Safe from any thread (attr
+    writes, queued GL deletes) and idempotent."""
+    if ds is None:
+        return
+    targets = [ds]
+    try:
+        targets.extend(ds.descendants(max_depth=8))
+    except Exception:
+        pass
+    for d in targets:
+        for attr in _VALUE_ATTRS:
+            if getattr(d, attr, None) is not None:
+                try:
+                    setattr(d, attr, None)
+                except Exception:
+                    pass
+        kw = getattr(d, "_kwargs", None)
+        if isinstance(kw, dict):
+            for k in _VALUE_KWARGS:
+                if kw.get(k) is not None:
+                    kw[k] = None
+    if gl:
+        try:
+            from src.lsd.gl_gui.gl_state import GLState
+            GLState.on_window_deleted(ds)
+        except Exception:
+            pass
+
+
+def _drop_captured_value(store_obj, key_path):
+    """Delete one captured value from its store (the X-close contract): the
+    entry, its loop accumulator, label, watchers, and — via release_live_value
+    — the marker/window refs and GL texture. The marker stops rendering as
+    captured until the next run republishes the key."""
+    if store_obj is None or key_path is None:
+        return
+    try:
+        from src.lsd.gl_gui.view.core_conversion.live_view import _prune_keys
+        _prune_keys(store_obj, [key_path])
+    except Exception as e:
+        print(f"live_view: drop {key_path} failed: {e!r}")
+    # The tensor is unreferenced now; hand its blocks back to the system so
+    # the VRAM actually drops (allocator cache → empty_cache), off-thread.
+    try:
+        from src.lsd.gl_gui.gc_manager import release_cuda_cache_soon
+        release_cuda_cache_soon(label="live view close")
+    except Exception:
+        pass
 
 
 def set_marker_open(marker_ds, open_):

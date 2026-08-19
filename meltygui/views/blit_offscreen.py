@@ -1068,7 +1068,7 @@ class TileCacheMasked:
         self._LAYER_BG = 0
         # Rank clamp to the FULL layer budget (root band + nested band):
         # z_pos = layer * max_depth + rank, so the max layer rank is
-        # nested_layer_max * max_depth (6144 with 192 * 32). Anything tied at
+        # nested_layer_max * max_depth (8192 with 256 * 32). Anything tied at
         # the max loses R16 depth-mask ordering - this used to sit at 2048
         # (= 64 * 32), which is exactly where deep nested layers sometimes
         # z-fought. R16 holds 65535 ranks, so there's ample headroom.

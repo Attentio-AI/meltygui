@@ -30,6 +30,7 @@ import gc
 import time
 
 from src.lsd.gl_gui.notifications import lag_span, notify
+from src.lsd.gl_gui.toggles import Toggles
 
 _state = globals().get("_state") or {
     "applied": False,       # thresholds currently overridden
@@ -391,8 +392,7 @@ def _collect(label, live_graph=False):
     (the boot pass) also histograms EVERYTHING gc tracks — that is the graph
     about to be frozen, and its size is the boot collect's price."""
     import threading
-    if not _profile_enabled():
-        return gc.collect()
+    return
     stamp = time.strftime("%H:%M:%S")
     thread = threading.current_thread().name
     lines = [f"===== {stamp}  gc: {label}  [{thread}]  gen counts={gc.get_count()}"]
@@ -526,6 +526,21 @@ def collect_after_run(label="run"):
     min_s = float(Toggles.GC.post_run_min_s or 0.0)
     now = time.monotonic()
     since = now - _state.get("last_post_run", 0.0)
+    # The CUDA cache release is NOT the expensive part (that's the heap
+    # walk), but it is what nvidia-smi actually sees: everything the run
+    # retired by refcount alone (no longer retain the live lab's per-run
+    # activations once their parents re-render) sit in torch's allocator
+    # cache until empty_cache. Release on its own short cadence so VRAM
+    # tracks the live set while typing, independent of the collect spacing.
+    rel_s = float(Toggles.GC.post_run_cache_release_s or 0.0)
+    rel_since = now - _state.get("last_cache_release", 0.0)
+    if rel_since >= rel_s:
+        _state["last_cache_release"] = now
+        _release_cuda_cache()
+    else:
+        # Inside the spacing window: DEFER, never skip - a typing burst's
+        # last run must still hand its freed blocks back once it rests.
+        release_cuda_cache_soon(rel_s - rel_since, label=label)
     if min_s > 0.0 and since < min_s:
         # Too soon - arm/replace the trailing timer timer. The timer re-enters
         # this function; by then either the window has passed (collect) or
@@ -550,6 +565,29 @@ def collect_after_run(label="run"):
         _collect(f"post-{label}")
         _release_cuda_cache()
     _state["last_collect"] = time.monotonic()
+
+
+def release_cuda_cache_soon(delay_s=0.5, label="release"):
+    """torch.cuda.empty_cache() shortly, OFF the render thread, coalesced: a
+    burst of releases (closing several live views, a prune sweep, runs inside
+    the post_run_cache_release_s window) pays one call. Freed tensors only
+    leave the allocator's cache — and nvidia-smi / the studio's VRAM readout
+    — on empty_cache, and a close has no run behind it to trigger
+    collect_after_run's release."""
+    import threading
+    prev = _state.get("cache_release_timer")
+    if prev is not None:
+        prev.cancel()
+
+    def _fire():
+        _state["cache_release_timer"] = None
+        _state["last_cache_release"] = time.monotonic()
+        _release_cuda_cache()
+
+    t = threading.Timer(max(0.0, float(delay_s)), _fire)
+    t.daemon = True
+    _state["cache_release_timer"] = t
+    t.start()
 
 
 def _release_cuda_cache():

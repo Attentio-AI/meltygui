@@ -629,8 +629,15 @@ class Melty:
     # meaning for overlay channel counts and shadow-depth normalization;
     # nested_layer_max is the total layer budget (layers buckets, blit rank
     # clamp).
-    nested_layer_base = 64
-    nested_layer_max = 192
+    # The root band must stay LARGER than len(registered_windows) + the front
+    # boost: roots past nested_layer_base land inside the nested band, and
+    # nested_window_layer's inactive-chain clamp (nested_layer_base - 1) then
+    # puts a nested window AT or BELOW its parent (2026-08-19: ~66 registered
+    # windows put parents at 63-65 → context menus / live windows painted
+    # under their editor). 64 → 128 / 192 → 256; _LAYER_MAX (blit rank clamp)
+    # and always_on_top_layer follow automatically.
+    nested_layer_base = 128
+    nested_layer_max = 256
     # Reserved layer for always_on_top root windows (e.g. GlobalSearch): above
     # the whole nested band, below the dragged-item layer bucket
     # (len(layers) - 1). A root window passing always_on_top=True is pinned
@@ -2714,6 +2721,26 @@ class Melty:
                                     _cv = _merged_dim_names(_ad, _cv)
                                 _cv = _padded_dim_names(_cv, _nd or 0) or _cv
                         kwargs[_ck] = _cv
+        # Live-value re-read: a live value window replays from kwargs the
+        # MARKER last passed; while the marker is culled (scrolled off) a
+        # rerun's return invalidates this window but would redraw the OLD
+        # tensor - stale on screen and pinning a whole superseded
+        # generation. Read the current store value by the key the marker
+        # stamped back into the stored kwargs instead, so the previous tensor
+        # is released right here.
+        _lso = draw_state.__dict__.get('_lv_store_obj')
+        _lkp = draw_state.__dict__.get('_lv_key_path')
+        if _lso is not None and _lkp is not None:
+            try:
+                _lstore = getattr(_lso, '__live_values__', None)
+                if _lstore and _lkp in _lstore:
+                    _lv = _lstore[_lkp]
+                    if _lv is not kwargs.get('input_value'):
+                        from src.lsd.gl_gui.view.core_views.live_view_views import (
+                            _stacked_list_value)
+                        kwargs['input_value'] = _stacked_list_value(_lv, draw_state)
+            except Exception:
+                pass
         kwargs['layer_unique'] = draw_state.unique
         imgui.set_cursor_screen_pos((int(draw_state.abs_left), int(draw_state.abs_top)))
 
@@ -3811,6 +3838,16 @@ class Melty:
             notify_melty_shutdown()
         except Exception as e:
             print(f"[melty] mcp shutdown notify failed: {e}")
+        # View teardown hooks FIRST (@render_func(on_cleanup=fn)): a view
+        # severs what its draw_state holds (GPU tensors, interop textures)
+        # while GLState can still queue the GPU side normally. Cheap: one
+        # registry walk + per-view slot resets.
+        try:
+            from src.lsd.gl_gui.view.core_views.core_render import run_cleanup_callbacks
+            n_hooks = run_cleanup_callbacks()
+            _ptrace(f"melty: on_cleanup hooks run", n=n_hooks)
+        except Exception as e:
+            print(f"[melty] on_cleanup hooks failed: {e}")
         try:
             from src.lsd.gl_gui.gl_state import GLState
             GLState.shutdown_all()
@@ -3822,6 +3859,16 @@ class Melty:
         Monitor.shutdown()
         FileWatch.shutdown()
         cls.glfw_window = None
+        # Hand back the VRAM the hooks just released (refcount-freed).
+        # Deliberately NO gc.collect() here: a full pass at teardown walks AND
+        # deallocates the whole old session synchronously and that made shutdown
+        # take seconds. The next session's boot pass does that work.
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"[melty] cuda empty_cache at cleanup failed: {e}")
         _ptrace(f"melty: cleanup done in "
                 f"{(_time_mod.monotonic() - _t_cleanup0) * 1000:.0f}ms")
 

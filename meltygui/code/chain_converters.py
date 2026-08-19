@@ -1601,7 +1601,16 @@ def _enclosing_function(filename, lineno):
             same = _resolved(code.co_filename) == target
         except (OSError, ValueError):
             same = code.co_filename == str(target)
-        if same and code.co_firstlineno <= lineno and code.co_firstlineno > best["line"]:
+        if same and code.co_firstlineno <= lineno and (
+                code.co_firstlineno > best["line"]
+                # Tie (same def line): the fn-run path's parked exec twin
+                # (`_fnrun_live_<name>`, __fnrun_exec__) that the object runs
+                # publish to and prune on - it must win over the module's
+                # real function, which comes earlier in the module dict, or
+                # the lens reads one store while runs fill it.
+                or (code.co_firstlineno == best["line"]
+                    and getattr(inner, "__fnrun_exec__", False)
+                    and not getattr(best["fn"], "__fnrun_exec__", False))):
             best["line"] = code.co_firstlineno
             best["fn"] = inner
 

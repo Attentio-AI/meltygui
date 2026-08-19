@@ -824,6 +824,15 @@ class Toggles:
         # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
         roster_def_tints = True
 
+        # Definition block washes of ROOT symbols (blocks no other block in
+        # the buffer contains — top-level classes/defs). Embeds that paint
+        # the enclosing class's background themselves (global-search rows)
+        # ask draw_text to skip these via show_root_backgrounds=False; with
+        # this True that request is ignored and root symbols keep their
+        # tints everywhere, False honours it.
+        # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
+        root_symbol_tints = True
+
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
         # identifier-bounded character match - no CST / symbol-DB metadata is
@@ -833,7 +842,11 @@ class Toggles:
 
         # [tint=(0.72, 0.11, 0.11), show_tint=True]
         def_block_alpha = 1.0
-        def_symbol_alpha = 0.616
+
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
+        def_symbol_alpha = 1.0
+
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
         def_line_alpha = 0.078
 
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
@@ -1359,6 +1372,7 @@ class Toggles:
         # gen2's auto-trigger is deferred and full collects run at
         # input-idle instead of landing mid-keystroke (the observed 3.3s
         # gen2 stall in the render thread). Off = stock collector.
+        enable = True
         manage = True
         # Auto gen2 threshold while managed - effectively "manual threshold";
         # the idle collector below is what actually runs full passes.
@@ -1379,6 +1393,11 @@ class Toggles:
         # lower this if iterating on models that fill the card. 0 = collect
         # after every run.
         post_run_min_s = 120.0
+        # Minimum spacing between post-run torch.cuda.empty_cache() calls -
+        # separate from the collect above: freeing cached blocks is cheap
+        # and is what makes freed activations actually leave VRAM (nvidia-
+        # smi) while a typing burst runs the lab every keystroke. 0 = every run.
+        post_run_cache_release_s = 2.0
         # Never freeze/collect before the app has been up this long (caches
         # still filling - freezing mid-load would pin a half-built graph).
         boot_delay_s = 30.0
@@ -1434,13 +1453,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = False   # TEMP: on while debugging param-edit → editor wakeups
-    # gc profiling (gc.py): every managed collect (boot / idle / post-run)
-    # runs with DEBUG_SAVEALL and writes a by-type histogram of the CYCLIC
-    # garbage it reclaimed to /tmp/lsd_gc_profile.log; the boot pass also
-    # histograms the whole live graph before it freezes it. Expensive when
-    # on (walks every object) - for finding what leaks, not for daily use.
-    memory_profile = True
+    symbol_perf_log = False   # TEMP: on while debugging param-edit → editor wake chain
     attrib_churn_log = False
     debug_threads = False
 
@@ -1461,6 +1474,8 @@ class Toggles:
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
+
+    memory_profile = False
 
     # Shadow Settings for the compositor shadow pass (melty.py post_frame:
     # ShadowCast at reduced res over the R16 shadow mask, then
