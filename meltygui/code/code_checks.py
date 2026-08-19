@@ -105,12 +105,13 @@ class _Scope:
 # Project decorator conventions, matched BY NAME (bare or called). This is a
 # project-specific lint, so the names are checked without resolving them:
 #   * transparent - returns the function UNCHANGED (window_decoration.window
-#     only registers), so the def's own signature is the calling convention.
+#     and core_decoration.defaults only register), so the def's own signature
+#     is the calling convention - in any order relative to @render_func.
 #   * wrapper - @render_func replaces the function with core_render's
 #     `wrapper(input_shape=None, **kwargs)`: at most ONE positional, any
 #     kwarg accepted (modes/defaults/comment-args may fill that arguments,
 #     but only the positional shape is knowable).
-_TRANSPARENT_DECORATORS = frozenset({"window"})
+_TRANSPARENT_DECORATORS = frozenset({"window", "defaults"})
 _WRAPPER_DECORATORS = frozenset({"render_func"})
 
 
@@ -177,6 +178,18 @@ class _Collector:
 
     def run(self, tree):
         self._body(tree.body, self.module)
+
+    def __del__(self):
+        # The scope graph is cyclic: child.parent points up while
+        # parent.classes[name] = (ClassDef, child) points down - and defs /
+        # classes / calls hold ast nodes, so every pass left the ENTIRE parsed
+        # tree as cyclic garbage that only a full gc pass could reclaim (the
+        # gc profile of this session's boot collect: 680k objects, ~all ast.*
+        # nodes + their __dict__/body lists). Collectors are function-local
+        # everywhere, so cut the up-edges here and the tree frees by refcount
+        # the moment the pass returns.
+        for s in self.scopes:
+            s.parent = None
 
     # ── plumbing ────────────────────────────────────────────────────────────
     def _new_scope(self, kind, parent):

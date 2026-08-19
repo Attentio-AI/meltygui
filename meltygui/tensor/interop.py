@@ -31,7 +31,8 @@ import ctypes
 
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLTexture, _scalar, is_gl_thread, tight_unpack
+from src.lsd.gl_gui.gl_state import (GLTexture, _scalar, is_gl_thread, texture3d_fit,
+                                     tight_unpack)
 
 # Keeps the test/standalone-pushed primary context referenced; the
 # globals().get idiom survives hotswap re-exec (NB: gl_state's _persistent
@@ -177,6 +178,15 @@ def tensor_to_texture(gl_state, key, tensor, version):
     nbytes = tensor.nelement() * (2 if half else 4)
 
     def create():
+        # Same pre-flight as GLState.texture3d: an over-limit shape must not
+        # reach glBufferData/glTexImage3D (it raised GL_INVALID_VALUE, leaked
+        # the buffer + registration, and the "cpu path path then failed
+        # identically). Callers clamp extents via texture3d_fit first; this
+        # refuses allocation on a MISS only (the VRAM budget is measured against
+        # free memory, which a cache hit's own allocation already consumed).
+        _, problems = texture3d_fit((depth, height, width), 2 if half else 4)
+        if problems:
+            raise ValueError("tensor_to_texture: " + "; ".join(problems))
         # The proven sequence (lsd_studio's update_canvas_voxel): buffer +
         # registration first, then the texture allocated with a NULL pointer
         # and the single-pixel internal format - all data flows through the

@@ -1201,9 +1201,13 @@ DEFAULT_TOKEN_VIEWS = None
 #      renderer gets only the N-cell lead area to the text's LEFT (e.g. the
 #      color3 swatch). The line grows by N cells; vcols carries the shift so
 #      caret/click/selection stay exact. This is THE pattern for widgets that
-#      ride beside the text instead of replacing it.
-#  - type key → matched (isinstance) against nodes in the routed code_tree
-#    (Conditional/Loop/...); positioned by the node's `.span`. With `char_width=None`
+#      ride beside their text instead of replacing it.
+#      TRAILING (`"trail_cells": N`): the mirror of ACCESSORY - the token
+#      text draws normally in place and the widget occupies the N-cell area
+#      right AFTER it; the rest of the line shifts right by N (vcols carries
+#      it). E.g. the def run buttons between a def's name and its `(`.
+#  • type key → matched (isinstance) against nodes of the routed code_tree
+#    (Conditional/Loop/…); positioned by the node's `.span`. With `char_width=None`
 #    it's a non-inline OVERLAY drawing callback (floats over/by the code, doesn't
 #    edit text): `renderer(x, y, w, h, draw_state=, char_w=, line_px=, node=, span=)`.
 # 
@@ -2720,19 +2724,22 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                             file_path=None, def_line=None, def_name=None,
                             code_root=None, def_buf_line=None,
                             tv_text=None, def_disp_line=None,
-                            editor_state=None,
+                            editor_state=None, fn_tint=None,
                             **kwargs):
-    """Inline run buttons for a function definition — ACCESSORY whole-token
-    renderer for 'def' tokens: the keyword text draws normally (shifted right
-    by the lead cells) and this widget gets only the lead area to its LEFT.
-    Two flat_buttons split it: PLAY runs the LIVE function like
-    draw_function's Run button (_fnrun_run: params from signature defaults +
-    Melty.global_attrs); the EYE runs the INSTRUMENTED twin instead
-    (run_instrumented — live_view_forward's path), so every assignment
-    publishes a snapshot and its marker anchors right in this editor via the
-    snapshot overlay. Errors print the colored traceback and surface on the
-    button that ran (red; hover shows the message beside it); success flashes
-    that button, fading over ~45 frames.
+    """Inline run buttons for a function definition — TRAILING accessory
+    renderer for 'def_name' tokens: the name text draws normally and this
+    widget rides in the `trail_cells` area right AFTER it, between the name
+    and the parameter list (`def f[==][=](a, b):`); the rest of the line
+    shifts right by the trail (vcols carries it, like lead_cells). Two
+    flat_buttons: the double-wide PLAY runs the
+    INSTRUMENTED twin (run_instrumented — live_view_forward's path), so
+    every assignment publishes a snapshot and its marker anchors right in
+    this editor via the snapshot overlay (inline, running always means
+    inspecting); the sliders open the params panel. Both wear the
+    function's definition tint (`fn_tint`, the def-block tint) when it has
+    one. Errors print the colored traceback and surface on the run button
+    (red; hover shows the message beside it); success flashes it, fading
+    over ~45 frames.
 
     Plain (wrapper-less) like the other token widgets. The click routes
     through flat_button's on_action claim on the EDITOR draw_state — the
@@ -2764,17 +2771,17 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         hov_reg[skey] = hovered
         editor_ds.invalidate()
 
-    _c_run = (0.499, 0.844, 0.488)         # draw_function's run-button green
-    _c_live = (0.40, 0.53, 0.78)           # draw_function_live's lab color
+    # Function tint (the def-block tint) colors both buttons when the def
+    # has one; otherwise the live blue / neutral grey defaults.
+    _has_tint = fn_tint is not None and len(fn_tint) >= 3
+    _c_live = (tuple(fn_tint[:3]) if _has_tint
+               else (0.40, 0.53, 0.78))    # draw_function_live's lab blue
+    _c_pp = tuple(fn_tint[:3]) if _has_tint else (0.55, 0.58, 0.66)
     if status is not None:
-        _smode = status[2] if len(status) > 2 else 'run'
         if status[0] == 'err':
-            if _smode == 'live':
-                _c_live = (0.85, 0.30, 0.24)
-            else:
-                _c_run = (0.85, 0.30, 0.24)
+            _c_live = (0.85, 0.30, 0.24)
         else:
-            # Success flash on the button that ran: brighten, fade back, then
+            # Success flash on the run button: brighten, fade out, then
             # clear - the invalidate + request_render pump while fading
             # mirrors draw_function's result_fade.
             age = Melty.frame_count - status[1]
@@ -2782,35 +2789,29 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             if k <= 0.0:
                 statuses.pop(skey, None)
             else:
-                if _smode == 'live':
-                    _c_live = tuple(min(1.0, c + 0.5 * k) for c in _c_live)
-                else:
-                    _c_run = tuple(min(1.0, c + 0.5 * k) for c in _c_run)
+                _c_live = tuple(min(1.0, c + 0.5 * k) for c in _c_live)
                 editor_ds.invalidate()
                 request_render()
 
-    # Two buttons split the lead area: plain run (play), then the
-    # INSTRUMENTED run (eye) - live_view_forward's twin path via
-    # run_instrumented, so every assignment's snapshot marker lands right in
-    # THIS editor through the snapshot overlay.
+    # Two buttons: the DOUBLE-WIDE instrumented run (play glyph) -
+    # live_view_forward's twin path via run_instrumented, so every
+    # assignment's snapshot marker lands right in THIS editor through the
+    # snapshot overlay - and the params-panel toggle (sliders glyph).
     _gap = 3.0
-    _bw = max(6.0, (width - 4.0 - 2 * _gap) / 3.0)
+    _unit = max(6.0, (width - 4.0 - 2 * _gap) / 3.0)
+    _bw_run = 2 * _unit + _gap
     _bh = max(6.0, height - 4.0)
     _by = y + (height - _bh) * 0.5
     imgui.set_cursor_screen_pos((x, _by))
-    clicked = flat_button(f"##{name}", editor_ds, f"fnrun::{name}",
-                          width=_bw, height=_bh, color=_c_run,
-                          corner_radius=4.0, shadow=True)
-    imgui.set_cursor_screen_pos((x + _bw + _gap, _by))
-    live_clicked = flat_button(f"##{name}lv", editor_ds,
+    live_clicked = flat_button(f"\uf04b##{name}lv", editor_ds,
                                f"fnrunlv::{name}",
-                               width=_bw, height=_bh, color=_c_live,
+                               width=_bw_run, height=_bh, color=_c_live,
                                corner_radius=4.0, shadow=True)
-    imgui.set_cursor_screen_pos((x + 2 * (_bw + _gap), _by))
+    imgui.set_cursor_screen_pos((x + _bw_run + _gap, _by))
     params_clicked = flat_button(f"\uf1de##{name}pp", editor_ds,
                                  f"fnrunpp::{name}",
-                                 width=_bw, height=_bh,
-                                 color=(0.55, 0.58, 0.66),
+                                 width=_unit, height=_bh,
+                                 color=_c_pp,
                                  corner_radius=4.0, shadow=True)
 
     # ── Params panel: the def's `parameters` sub-dict from the cst tree
@@ -3045,22 +3046,21 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         dl.add_text(x + width + 6.0, y - height,
                     imgui.get_color_u32_rgba(1.0, 0.45, 0.40, 1.0), status[1])
 
-    if clicked or live_clicked:
-        _mode = 'live' if live_clicked else 'run'
+    if live_clicked:
+        _mode = 'live'
         fn = _fnrun_resolve(file_path, def_line, def_name)
         if fn is None:
             statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
                                      f"found in live modules or source", _mode)
         else:
-            ok, err = _fnrun_run(fn, instrumented=live_clicked,
+            ok, err = _fnrun_run(fn, instrumented=True,
                                  params=_fnrun_params_from_node(
                                      _fnrun_def_node_for(
                                          editor_ds, skey, code_root,
                                          def_name, def_buf_line, tv_text)))
             statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
                               else ('err', err, _mode))
-            if live_clicked:
-                _fnrun_after_live_run(editor_ds)
+            _fnrun_after_live_run(editor_ds)
         editor_ds.invalidate()
         request_render()
     return False, input_value
@@ -3076,7 +3076,9 @@ draw_run_fn_token_plain._plain_tv = True
 # For whole_token entries char_width is also the "this is inline" flag - the
 # widget REPLACES the text at exactly token-width (len(token) cells), unless
 # lead_cells=N makes it an ACCESSORY: the text draws normally (shifted N cells
-# right) and the widget gets only the N-cell lead area beside it. owns_mouse
+# right) and the widget gets only the N-cell lead space beside it, or
+# trail_cells=N makes it TRAILING: the text draws in place and the widget
+# gets the N-cell area right after it (the rest of the text shifts). owns_mouse
 # marks widgets that consume clicks (they subscribe to the left_mouse_*
 # events); for REPLACE widgets draw_text then emulates the caret placement a
 # text click would have given. pad_px widens a REPLACE widget's view N px per
@@ -3099,14 +3101,13 @@ DEFAULT_TOKEN_VIEWS = {
                "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
     "color3": {"renderer": draw_color3_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
-    # Function definitions: two buttons ride to the LEFT of the `def`
-    # span (accessory, like color3's swatch); the def text itself draws
-    # and interacts normally. Play runs the live function like draw_function;
-    # the eye runs the instrumented twin (follow exec_forward's path); the
-    # sliders open the params panel (cst-dict defaults, edits splice back
-    # into the signature).
-    "def": {"renderer": draw_run_fn_token_plain, "char_width": 1, "whole_token": True,
-            "owns_mouse": True, "lead_cells": 9},
+    # Function definitions: run buttons TRAIL the def's name token - between
+    # the name and its parameter list (`def f[==][>>](a, b):`); the name
+    # itself draws and edits normally. The double-wide play runs the
+    # instrumented twin (live_view_forward's path); the sliders open the
+    # params panel (cst-dict defaults, syncable back into the signature).
+    "def_name": {"renderer": draw_run_fn_token_plain, "char_width": 1,
+                 "whole_token": True, "owns_mouse": True, "trail_cells": 9},
 }
 
 # live_view() call sites get an anchor marker + nested value window (the first
@@ -3563,11 +3564,6 @@ def _resolve_anchor_lines(line_map, base_text, text):
 
 
 def _resolve_usage_spans(raw, anchors, base_text, text):
-
-
-
-
-
     """Project a raw [(start, end, su, at_def)] set (base-text coords) onto the
     current buffer via its anchors. Columns transfer verbatim — a resolved
     line's content is identical by construction."""
@@ -5034,6 +5030,25 @@ def fold_display_line(ds, text, bli):
     return max(0, bisect.bisect_right(d2b, bli) - 1)
 
 
+def fold_buffer_line_at(ds, text, pos):
+    """FULL-buffer 0-based line of caret display offset `pos` -- the inverse
+    of fold_display_line for a CHAR offset. The caret lives in fold display
+    space (the spliced text draw_text renders), so counting newlines in the
+    full buffer up to it lands short by every collapsed body above the
+    caret; this counts in the display text and maps the display line back
+    through the layout's disp->buf table. Identity while nothing is
+    collapsed / the layout was built against another buffer."""
+    _fc = getattr(ds, '_fold_cache', None)
+    if (not getattr(ds, '_fold_collapsed', None) or _fc is None
+            or _fc[0] is not text):
+        return text.count('\n', 0, pos)
+    disp, d2b = _fc[2][0], _fc[2][3]
+    dl = disp.count('\n', 0, max(0, min(pos, len(disp))))
+    if not d2b:
+        return dl
+    return d2b[min(dl, len(d2b) - 1)]
+
+
 def jump_emph_cols(text, pos, span=None):
     """Column span (col0, col1) the jump emphasis should flash for a landing
     at buffer index `pos` — shared by the cross-file consumption
@@ -5199,12 +5214,18 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
             j -= 1
         return start
 
-    def _block_extent(buf_line):
+    def _block_extent(buf_line, name=None):
         if not (0 <= buf_line < len(lines)):
             return None
         # The recorded def line may be the decorated statement's first line
         # (`@defaults(...)`); snap to the class/def keyword for the indent
         # and body extent, then extend the top back up over the decorators.
+        # Otherwise reverse-recover it by NAME (a plain, non-render_func def's
+        # def line is co_firstlineno in DISK coordinates - one unsaved
+        # edit above it and the recorded line lands on a body line, whose
+        # indent then misplaced the whole wash one indent in).
+        if name:
+            buf_line = _verify_def_line(lines, buf_line + 1, name) - 1
         buf_line = _snap_to_def(lines, buf_line)
         def_line_text = lines[buf_line]
         indent = len(def_line_text) - len(def_line_text.lstrip())
@@ -5248,7 +5269,7 @@ def _collect_def_tints(code_tree, text, line_offset=0, view_path=None):
                     # definition merely resolves to the same line (parameters
                     # of a tinted def resolve to the def line).
                     tinted_lines[ln] = (tint, k.split("#", 1)[0])
-                    blk = _block_extent(ln - 1 - line_offset)
+                    blk = _block_extent(ln - 1 - line_offset, k.split("#", 1)[0])
                     if blk is not None:
                         _b_start, _b_lidx, _b_bend, _b_def = blk
                         blocks.append((_b_start, _b_lidx, _b_bend, tint))
@@ -5754,7 +5775,15 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
     fast typing pays the collect a few times a second, not per keystroke.
     Stale spans can sit a hair off the glyphs for that window; they're
     translucent washes, and the background parse churn already did this."""
-    if not isinstance(code_tree, dict):
+    from src.lsd.gl_gui.toggles import Toggles
+    # Roster mode (Toggles.TextEditor.roster_def_tints): washes come from the
+    # text-derived symbol roster (roster_tints.collect_def_tints) - no
+    # cst-dict, no __symbol_usages__. The key is the buffer text identity + the
+    # roster generation (bumps when ANY file's table changed, incl. a def
+    # typed in another file), so a new tinted def anywhere repaints this
+    # after the debounce; the typing-hot hold + anchor remap below are shared.
+    _roster = bool(Toggles.TextEditor.roster_def_tints) and view_path is not None
+    if not _roster and not isinstance(code_tree, dict):
         return ((), (), (), {})
     # Hotswap shape check: a held result from before the comment-tints split
     # was a 5-tuple; drop it rather than serve it through the debounce path.
@@ -5763,14 +5792,20 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
         ds._def_tints = None
         ds._def_tints_key = None
         ds._def_tints_raw = None
-    su_top = code_tree.get("__symbol_usages__")
-    # NO text in the key - same reasoning as _usage_spans: text-only churn is
-    # handled exactly by the shift remap; a recompute on a stale tree
-    # re-verified stale sites against shifted text which which washes out on
-    # every inserted newline. Fresh tree / symbol attach / cross-file pending
-    # gen still recompute.
-    key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset,
-           str(view_path), _tint_total_gen() - _tint_gen_of(view_path))
+    su_top = code_tree.get("__symbol_usages__") if isinstance(code_tree, dict) else None
+    if _roster:
+        from src.lsd.gl_gui.view.core_conversion import symbol_roster as _sr
+        _sr.sweep()          # throttled: notices pending-disk edits in other files
+        key = (_DEF_TINTS_VER, "roster", _sr.generation(), id(text), line_offset,
+               str(view_path))
+    else:
+        # NO text in the key - same reasoning as _usage_spans: text-only drift is
+        # handled exactly by the splice remap; a recompute on a stale tree
+        # re-verified stale sites against shifted text and blinked washes out on
+        # every inserted newline. Fresh tree / symbol map / cross-file pending
+        # gen still recompute.
+        key = (_DEF_TINTS_VER, id(code_tree), id(su_top), line_offset,
+               str(view_path), _tint_total_gen() - _tint_gen_of(view_path))
     # raw-missing: a hotswapped ds has only the legacy resolved tuple.
     if (getattr(ds, "_def_tints_key", None) != key
             or getattr(ds, "_def_tints_raw", None) is None):
@@ -5780,7 +5815,7 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
         # __symbol_usages__ yet would collect ZERO sus - every propagated
         # symbol gone until the next good recompute. Hold the last-good
         # result instead; the attach's fresh su map busts the key.
-        _su_pending = (su_top is None
+        _su_pending = (not _roster and su_top is None
                        and getattr(code_tree, "symbol_usage", None))
         if (getattr(ds, "_def_tints", None) is not None
                 and (_typing_hot() or _su_pending
@@ -5796,8 +5831,15 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None):
                 if _cand is not None and (_cand[1] - _cand[0]) <= 512 and abs(_cand[2]) <= 512:
                     _base = _src
             try:
-                _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
+                if _roster:
+                    from src.lsd.gl_gui.view.core_views.roster_tints import (
+                        collect_def_tints as _roster_collect)
+                    _fresh = _roster_collect(_base, line_offset, view_path)
+                else:
+                    _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
             except Exception:
+                import traceback
+                traceback.print_exc()
                 _fresh = ((), (), (), {})
             _blocks, _spans, _lts, _ = _fresh
             ds._def_tints_raw = _fresh
@@ -6423,14 +6465,17 @@ def _build_vcols(text, tokens, token_views):
     char_width-N inline widget thus reserves N cells visually while staying ONE
     source character for editing/caret. Returns None when no inline views apply
     (the fast path: 1 char == 1 cell everywhere)."""
-    # Whole-token widgets are exactly token-width (1 cell per token char), so
-    # they don't disturb the column map - except lead_cells accessory views,
-    # which shift the token's text right by the lead. Only per-char views with
-    # a widened char_width and lead_cells views need vcols at all.
+    # Whole-token widgets are exactly token-width (1 cell per source char), so
+    # they don't disturb the column map - except lead_cells / trail_cells
+    # accessory views, which shift the token's text (lead) or the rest of
+    # the line (trail) right. Only per-char views with a widened char_width
+    # and lead/trail views need vcols at all.
     def _bends_grid(v):
         if not isinstance(v, dict) or v.get("char_width") is None:
             return False
-        return bool(v.get("lead_cells")) if v.get("whole_token") else True
+        if v.get("whole_token"):
+            return bool(v.get("lead_cells") or v.get("trail_cells"))
+        return True
     if not token_views or not any(
             isinstance(k, str) and _bends_grid(v) for k, v in token_views.items()):
         return None
@@ -6441,11 +6486,14 @@ def _build_vcols(text, tokens, token_views):
     for tok, ck in tokens:
         view = token_views.get(ck) if isinstance(ck, str) else None
         cw = view.get("char_width") if (view and view.get("char_width") is not None) else None
+        trail = 0
         if cw is not None and view.get("whole_token"):
             # Token text is 1 cell per char; an accessory view's lead_cells
-            # shift where the text starts (the widget takes in the lead area).
+            # shift where the text starts (the widget sits in the same area),
+            # a trailing view's trail_cells shift what FOLLOWS the token.
             if tok and '\n' not in tok:
                 col += view.get("lead_cells", 0)
+                trail = view.get("trail_cells", 0)
             cw = None
         for ch in tok:
             if i >= n:
@@ -6453,6 +6501,7 @@ def _build_vcols(text, tokens, token_views):
             vcols[i] = col
             col = 0.0 if ch == '\n' else col + (cw if cw is not None else 1.0)
             i += 1
+        col += trail
     vcols[n] = col
     return vcols
 
@@ -6978,26 +7027,27 @@ def _scroll_into_view(ds, top_abs, bottom_abs, margin=40.0, center=False):
     bottom of the document lands as close to center as the scroll range allows.
     """
     def _notify_scroll(kind, node, old_sy, new_sy):
-        # Debug trail for flaky scroll-to-search: every programmatic scroll
+        pass
+        # # Audit trail for flaky scroll-to-line: every programmatic scro
         # write lands in the notification center under the "scroll" tag,
-        # with the estimated editor line the band corresponds to.
-        from src.lsd.gl_gui.notifications import notify
-        lp = getattr(ds, '_diff_line_px', None)
-        inset = getattr(ds, '_diff_top_inset', 0) or 0
-        est_line = None
-        if lp:
-            # Invert band → line with the scroll that was in effect when the
-            # caller computed top_abs (the code above already moved node).
-            _sy_at_calc = old_sy if node is ds else ds.scroll_offset[1]
-            est_line = round((top_abs - ds.abs_top - inset
-                              + _sy_at_calc) / lp) + 1
-        notify(f"scroll {kind} node={getattr(node, 'name', None)} "
-               f"ds={getattr(ds, 'name', None)} line≈{est_line} "
-               f"sy={old_sy:.0f}->{new_sy:.0f} band=({top_abs:.0f},{bottom_abs:.0f}) "
-               f"view=({node.abs_top + node.header_height:.0f},"
-               f"{node.abs_top + (node.height or 0):.0f}) "
-               f"max_y={getattr(node, '_max_scroll_y', None)} center={center}",
-               tag="scroll")
+        # with the estimated editor line the band corresponds to a
+        # from src.gsd.gl_gui.notifications import notify
+        # lp = getattr(ds, '_diff_line_px', None)
+        # inset = getattr(ds, '_diff_top_inset', 0) or 0
+        # est_line = None
+        # if lp:
+        #     # Invert band → line with the scroll that was in e
+            # caller computed top_abs (the write above has moved node).ffect when the
+        #     _scroll_at_calc = old_sy if node is ds else ds.scroll_offset[1]
+        #     est_line = round((top_abs - ds.abs_top - inset
+        #                       + _sy_at_calc) / lp) + 1
+        # notify(f"scroll {kind} node={getattr(node, 'name', None)} "
+        #        f"ds={getattr(ds, 'name', None)} line≈{est_line} "
+        #        f"y={old_sy:.0f}->{new_sy:.0f} band=({top_abs:.0f},{bottom_abs:.0f}) "
+        #        f"view=({node.abs_top + node.header_height:.0f},"
+        #        f"{node.abs_top + (node.height or 0):.0f}) "
+        #        f"max_y={getattr(node, '_max_scroll_y', None)} center={center}",
+        #        tag="scroll")
 
     node = ds
     seen = set()
@@ -7836,7 +7886,10 @@ def fold_project_jump(ds, text, pos, li):
         ds.invalidate()
         return pos, li
     ranges = _fc[1][0]
-    hiding = [r for r in col if r[0] < li <= r[1]]
+    # Any fold HIDING li (body line) or LEADED by li (r[0] == li): landing on
+    # a collapsed def's own line must open its body first, or the jump just
+    # parks the caret on the collapse line and shows nothing.
+    hiding = [r for r in col if r[0] <= li <= r[1]]
     for r in hiding:
         col.discard(r)
     # External mutation: the body's harvest won't run until its next frame,
@@ -8186,10 +8239,14 @@ def draw_text(input_value: str, height=None,
                         _dl = _pdisp.count('\n', 0, _cp)
                         _cp_full = (_fstarts[_pd2b[min(_dl, len(_pd2b) - 1)]]
                                     + _col)
-                        _fold_old_dline = _dl
                     else:
                         _cp_full = _cp
-                        _fold_old_dline = input_value.count('\n', 0, _cp)
+                    # Deliberately NO _fold_old_dline: that arms the
+                    # collapse-all scroll-anchor hold, which re-asserts the
+                    # PRE-expand scroll for several frames and stomps the
+                    # search section's scroll-to-match below (Enter on a
+                    # match inside a collapsed fold expanded it but the
+                    # view stayed put). The search scroll owns the view.
                     _fold_kb_all = True
                     ds.invalidate()
                     request_render()
@@ -9117,6 +9174,41 @@ def draw_text(input_value: str, height=None,
                 _best = _sp
         return _best
 
+    def _roster_ctrl_b(pos):
+        """Ctrl+B via the symbol roster at DISPLAY index `pos`: maps the caret
+        into full-buffer coordinates, asks roster_tints.ctrl_b_lookup, and
+        maps the returned symbol span back through the fold remap. Returns
+        (start, end, sym, at_def, targets) or None."""
+        _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
+        if _vpath is None:
+            return None
+        try:
+            from src.lsd.gl_gui.view.core_views.roster_tints import ctrl_b_lookup
+            _dl = text.count('\n', 0, pos)
+            _col = pos - (text.rfind('\n', 0, pos) + 1)
+            _fl = (_fold_d2b[_dl] if _fold_d2b is not None
+                   and _dl < len(_fold_d2b) else _dl)
+            _full = _fold_full if _fold_segments else text
+            _fls = _line_starts(_full)
+            if not (0 <= _fl < len(_fls)):
+                return None
+            _bpos = _fls[_fl] + _col
+            _r = ctrl_b_lookup(_full, _bpos, _vpath, _usage_off)
+        except Exception as _e:
+            _uj_log(f"roster ctrl+b RAISED {type(_e).__name__}: {_e}")
+            return None
+        if _r is None:
+            _uj_log(f"roster ctrl+b: no symbol at pos={pos}")
+            return None
+        _s, _e, _sym, _at_def, _targets = _r
+        if _fold_remap_spans is not None:
+            _sp = _fold_remap_spans(((_s, _e, _sym, _at_def),), 'uj_roster')
+            if _sp:
+                _s, _e = _sp[0][0], _sp[0][1]
+        _uj_log(f"roster ctrl+b: {getattr(_sym, 'name', '?')} at_def={_at_def} "
+                f"targets={len(_targets)}")
+        return _s, _e, _sym, _at_def, _targets
+
     def _try_usage_jump(pos, force_picker=False):
         """Usage jump at buffer index `pos` (Ctrl+B): one counterpart opens
         straight in IntelliJ; several open the usage-jump picker under the
@@ -9132,6 +9224,16 @@ def draw_text(input_value: str, height=None,
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
         _view_span = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
         _rechecked = False
+        # Try roster first (Toggles.TextEditor.SymbolUsages.ctrl_b_roster):
+        # textual resolution over pending/live spans - a usage jumps to its
+        # definition, a definition lists its usages (trigram index +
+        # resolve-back). Falls back to the graph/recheck below when the
+        # roster can't place the caret's symbol or finds no targets.
+        if Toggles.TextEditor.SymbolUsages.ctrl_b_roster and _vpath is not None:
+            _rr = _roster_ctrl_b(pos)
+            if _rr is not None and _rr[4]:
+                _rs, _re_, _rsym, _rat_def, _rtargets = _rr
+                return _present_usage_targets(_rs, _rsym, _rtargets, force_picker)
         if Toggles.TextEditor.SymbolUsages.ctrl_b_always_recheck:
             _rechecked = True
             _fresh = _usage_recheck(pos)
@@ -10403,7 +10505,11 @@ def draw_text(input_value: str, height=None,
     # We search locally, register our matches to the session so every view
     # combines into one global set, and scroll to the global-current match
     # when it lands in this view.
-    search_term = search_text or (ds.search_text if ds.search_active else "")
+    # The find UI's search input box (is_search_box) never matches: its text IS
+    # the query, so the term an ancestor owner forwards down would highlight
+    # every character typed into it as a hit.
+    search_term = ("" if is_search_box
+                   else search_text or (ds.search_text if ds.search_active else ""))
     # Match against the FULL buffer, not the fold display text: results
     # inside collapsed folds must be found and counted, and the fold section
     # already auto-expanded when it hides the CURRENT match. Cached
@@ -10517,6 +10623,73 @@ def draw_text(input_value: str, height=None,
         elif cursor_logical_x - ds.text_h_scroll > visible_width - edge_padding:
             ds.text_h_scroll = cursor_logical_x - visible_width + edge_padding
 
+    # --- Undo/redo landing ---
+    # The wrapper tail stamped `_undo_landing` = (restored text, start, end,
+    # frame) when Ctrl+Z / Ctrl+Shift+Z restored this view's value (see the
+    # undo interception in pre_render). Once the restored buffer has flowed
+    # back in as parent input, scroll the changed range into view (centered when
+    # it sits off-screen; untouched when already visible) and flash it - the
+    # same yellow emphasis a usage jump gets - so an undo of an edit made
+    # far from the viewport is never a silent, invisible change. Consumed at
+    # most once; dropped after a few frames if the restored text never shows
+    # up (the parent rejected the write).
+    _ul = getattr(ds, '_undo_landing', None)
+    if _ul is not None and line_px and not is_search_box:
+        _ul_text, _ul_a, _ul_b, _ul_frame = _ul
+        _ul_stale = Melty.frame_count - _ul_frame > 8
+        if _ul_stale:
+            ds._undo_landing = None
+        elif _fold_full == _ul_text:
+            ds._undo_landing = None
+            _n = len(_fold_full)
+            _ua = min(max(_ul_a, 0), _n)
+            _ub = min(max(_ul_b, _ua), _n)
+            _uli0 = _fold_full.count('\n', 0, _ua)
+            _uli1 = _fold_full.count('\n', 0, _ub)
+            # Columns for a single-line change (multi-line, identical in full and
+            # white space); a pure delete still gets a 1-cell marker.
+            _ucols = None
+            if _uli0 == _uli1:
+                _uls = _fold_full.rfind('\n', 0, _ua) + 1
+                _ucols = (_ua - _uls, max(_ub - _uls, _ua - _uls + 1))
+            # Fold projection: expand any collapsed fold hiding the change and
+            # map both ends into visible lines (see fold_project_jump).
+            _, _uli0 = fold_project_jump(ds, _fold_full, _ua, _uli0)
+            if _ub != _ua:
+                _, _uli1 = fold_project_jump(ds, _fold_full, _ub, _uli1)
+            else:
+                _uli1 = _uli0
+            # Live-origin compensation, same as the caret-follow below: an
+            # earlier fold jump in this body leaves origin_y stale.
+            _uty0 = (origin_y + (_origin_sy - ds.scroll_offset[1])
+                     + _uli0 * line_px)
+            _uty1 = (origin_y + (_origin_sy - ds.scroll_offset[1])
+                     + (_uli1 + 1) * line_px)
+            _scroll_into_view(ds, _uty0, min(_uty1, _uty0 + 6 * line_px),
+                              center=True)
+
+            def _undo_flash_rect(ds=ds, li0=_uli0, li1=_uli1, cols=_ucols):
+                lp = getattr(ds, '_diff_line_px', None) or 16
+                inset = getattr(ds, '_diff_top_inset', 0)
+                y0 = ds.abs_top + inset + li0 * lp - ds.scroll_offset[1]
+                y1 = ds.abs_top + inset + (li1 + 1) * lp - ds.scroll_offset[1]
+                vt, vb = ds.abs_top, ds.abs_top + (ds.height or 0)
+                if y1 < vt or y0 > vb:
+                    return None
+                x0, x1 = ds.abs_left, ds.abs_left + (ds.width or 0)
+                cw = getattr(ds, '_diff_char_w', None)
+                ox = getattr(ds, '_diff_origin_x_off', None)
+                if cols is not None and cw and ox is not None:
+                    x0 = max(x0, ds.abs_left + ox + cols[0] * cw - 3)
+                    x1 = min(x1, ds.abs_left + ox + cols[1] * cw + 3)
+                    if x1 <= x0:
+                        return None
+                return (x0, max(y0, vt) - 1, x1, min(y1, vb) + 1)
+
+            Melty.emphasize(f"undo_landing {ds.name}", _undo_flash_rect)
+            ds.invalidate()
+            request_render()
+
     # --- Vertical auto-scroll ---
     # Vertical counterpart of the horizontal follow above: when the caret moves
     # to a line off the top/bottom of the viewport (typing past the last visible
@@ -10612,7 +10785,9 @@ def draw_text(input_value: str, height=None,
     # hover-coincident body run during initial parse churn would read
     # that as "tints removed" and drop the retained glow at random.
     _dt_on = Toggles.TextEditor.definition_tints and not is_search_box
-    if not (_dt_on and not isinstance(_usage_tree, dict)):
+    # Roster tints don't read the parse tree - no parse-churn hold needed.
+    if not (_dt_on and not Toggles.TextEditor.roster_def_tints
+            and not isinstance(_usage_tree, dict)):
         clear_glows(ds)
     if _dt_on:
         _t_dt = time.perf_counter()
@@ -11285,6 +11460,10 @@ def draw_text(input_value: str, height=None,
     # lookback) are processed but viewport-culled. Each token is drawn one
     # line-segment at a time with a single add_text call rather than per glyph.
     win_line, win_off, tokens, _ = _window()
+    # Def-block tint per def line (display coords, like the token loop's
+    # line counter) - the debug run buttons wear their function's tint.
+    _fn_tint_lines = ({b[0]: b[3] for b in _dt_blocks}
+                      if _dt_blocks else {})
     # Glyph tinting: glyphs under a definition-tint wash lean ever so
     # slightly toward the wash color (syntax color stays the base), so text
     # reads as part of its panel - the same treatment used app-wide. Token
@@ -11397,7 +11576,12 @@ def draw_text(input_value: str, height=None,
             if _pres_lines is not None and _cur_ln not in _pres_lines:
                 color = _mix_packed(color, (0.0, 0.0, 0.0), _pres_k)
             _lead = _view.get("lead_cells", 0)
-            _cells = _lead + len(token)
+            # TRAILING (`trail_cells`): the accessory's mirror - the token
+            # text draws in place, the widget gets the trail cells right
+            # after it (the rest of the line shifts; vcols carries it).
+            _trail = _view.get("trail_cells", 0)
+            _cells = _lead + len(token) + _trail
+            _wx = x + (_lead + len(token)) * char_w if _trail else x
             # While the editor caret sits on TOP a REPLACE token, the widget
             # gets out of the way entirely: the token rides as plain text, so
             # caret, selection and typing behave like any other code, and the
@@ -11405,7 +11589,8 @@ def draw_text(input_value: str, height=None,
             # composites ABOVE the editor tile, so a caret under it would be
             # invisible anyway.) _tv_idx is still consumed so the OTHER
             # visible widgets keep their render-order names (and state).
-            _caret_in = (not _lead and Melty.text_focused_ds is ds
+            _caret_in = (not _lead and not _trail
+                         and Melty.text_focused_ds is ds
                          and src_i <= ds.text_cursor_pos <= src_i + len(token))
             if _caret_in and y + line_px >= rect_min_y and y <= rect_max_y:
                 _tv_idx += 1
@@ -11430,9 +11615,14 @@ def draw_text(input_value: str, height=None,
                 # breathing room around the glyphs. (Expanding inside the
                 # renderer doesn't work: drawing clips at the view boundary.)
                 # The cells the token reserves in the grid stay exact.
-                _pad = 0 if _lead else _view.get("pad_px", 0)
-                imgui.set_cursor_screen_pos((x - _pad, y))
-                _w = (_lead * char_w) if _lead else (len(token) * char_w + 2 * _pad)
+                _pad = 0 if (_lead or _trail) else _view.get("pad_px", 0)
+                imgui.set_cursor_screen_pos((_wx - _pad, y))
+                if _trail:
+                    _w = _trail * char_w
+                elif _lead:
+                    _w = _lead * char_w
+                else:
+                    _w = len(token) * char_w + 2 * _pad
                 # Inside a tint-carrying override comment, bool/number
                 # widgets adopt the comment's (adjusted) color for clutter
                 # reduction; the same widgets in code keep their own color.
@@ -11500,13 +11690,13 @@ def draw_text(input_value: str, height=None,
                                       or _view.get("tint"))
                 elif _view.get("tint") is not None:
                     _extra.setdefault('tint', _view["tint"])
-                if color_key == 'def':
-                    # Run-button context: the function this `def` heads -
+                if color_key == 'def_name':
+                    # Run-button context: which function this token heads -
                     # resolved by absolute file line (display line from y,
                     # projected through the fold layout to a buffer line,
-                    # plus _usage_off maps buffer → file, exactly as the
-                    # live-code overlays start with) plus the def's name
-                    # read straight off the source at the token.
+                    # then _usage_off maps buffer → file, same offset the
+                    # live-view overlays work with) plus the def's name -
+                    # the token itself.
                     _dl = int((y - origin_y) / line_px + 0.5)
                     _bl = (_fold_d2b[_dl]
                            if _fold_d2b is not None and 0 <= _dl < len(_fold_d2b)
@@ -11515,10 +11705,9 @@ def draw_text(input_value: str, height=None,
                     _fp = (getattr(_fn_root, 'file_path', None)
                            or getattr(getattr(_fn_root, 'address', None), 'path', None)
                            or getattr(jump_to, 'path', None))
-                    _dm = re.match(r'def\s+(\w+)', text[src_i:src_i + 200])
                     _extra['file_path'] = str(_fp) if _fp else None
                     _extra['def_line'] = _usage_off + _bl + 1
-                    _extra['def_name'] = _dm.group(1) if _dm else None
+                    _extra['def_name'] = token
                     # Params for above: hand the widget the ROOTED TREE
                     # plus coordinates - never the resolved def node. The
                     # code-host now serves Bubbling proxies whose identity
@@ -11532,6 +11721,7 @@ def draw_text(input_value: str, height=None,
                     _extra['tv_text'] = text
                     _extra['def_disp_line'] = _dl
                     _extra['editor_state'] = text_editor_state
+                    _extra['fn_tint'] = _fn_tint_lines.get(_cur_ln)
                 # Plain (wrapper-less) renderers need the editor's draw_state:
                 # they have no tile of their own, so gesture liveness requires
                 # invalidating the EDITOR tile (see draw_number_token_plain).
@@ -11542,13 +11732,13 @@ def draw_text(input_value: str, height=None,
                     # while a press on the swatch doesn't move the caret
                     # (the wrapped version's left_mouse_down latch did this).
                     if _view.get("owns_mouse"):
-                        ds._plain_tv_rects.append((x - _pad, y, x - _pad + _w, y + line_px))
+                        ds._plain_tv_rects.append((_wx - _pad, y, _wx - _pad + _w, y + line_px))
                 try:
                     _res = _view["renderer"](token, width=_w, height=line_px,
                                              name=_name, **_extra)
                 except Exception:                    _res = None
                 imgui.set_cursor_screen_pos(_save_cur)
-                if _lead:
+                if _lead or _trail:
                     draw_list.add_text(x + _lead * char_w, y, color, token)
                 if (isinstance(_res, tuple) and len(_res) >= 2 and _res[0]
                         and isinstance(_res[1], str) and _res[1] != token):
@@ -11572,7 +11762,7 @@ def draw_text(input_value: str, height=None,
                 # Pass-through widgets (bool) and ACCESSORY widgets skip this:
                 # their text takes normal editor clicks, and a press on an
                 # accessory (opening its popover) shouldn't move the caret.
-                if (_view.get("owns_mouse") and not _lead
+                if (_view.get("owns_mouse") and not _lead and not _trail
                         and x <= io.mouse_pos.x < x + _cells * char_w
                         and y <= io.mouse_pos.y < y + line_px):
                     if imgui.is_mouse_clicked(0):
@@ -12052,11 +12242,22 @@ def draw_text(input_value: str, height=None,
                                  left + ds.content_width, rect_max_y, True)
         _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
         _need_chev = gutter_w <= 0.0    # no gutter: chevrons fall back here
+        # A def fold header is widened by the run buttons trailing the def's
+        # name (the def_name token view's trail_cells); the badge - placed
+        # from the header's CHAR length - shifts with them.
+        _def_tv = token_views.get('def_name') if token_views else None
+        _trail_px = (_def_tv.get("trail_cells", 0) * char_w
+                     if isinstance(_def_tv, dict) else 0.0)
         for _rng, _dl, _fcol, _nh, _hlen, _fa, _fhl in _fold_folds:
             _fy = origin_y + _dl * line_px
             if _fy > rect_max_y or _fy + 2 * line_px < rect_min_y:
                 continue
             _bx = origin_x + _hlen * char_w + char_w
+            if _trail_px:
+                # Header line text = the _hlen chars ending at the anchor.
+                _hl_s = text[max(0, _fa - _hlen):_fa].lstrip()
+                if _hl_s.startswith('def ') or _hl_s.startswith('async def '):
+                    _bx += _trail_px
 
             if _fcol:
                 # [tint=(0.656, 0.044, 0.615), show_tint=True]

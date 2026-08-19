@@ -25,6 +25,8 @@ import shlex
 import shutil
 import subprocess
 import threading
+
+from src.lsd.gl_gui.lifecycle import module_is_live
 import time
 from pathlib import Path
 
@@ -325,7 +327,7 @@ _window_ds = None  # draw_claude_terminals' draw_state, stashed each render
 def _poll_loop():
     global _live_sessions
     last = None
-    while True:
+    while module_is_live(globals()):   # exits when a restart purges this module
         if Core.melty.frame_count < 4:
             time.sleep(2)
         # Resilient: this thread starts at startup - BEFORE GLFW is initialized - so an

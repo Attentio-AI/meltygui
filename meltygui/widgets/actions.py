@@ -20,8 +20,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import (
-    SearchHit, _category_tint, _jump_to_symbol_def, draw_any, draw_button,
+from src.lsd.gl_gui.view.core_views.new_core_view import (SearchHit, _category_tint, _jump_to_symbol_def, draw_any, draw_button,
     draw_type, search_index)
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
@@ -189,7 +188,7 @@ class ActionRunner:
     _focus_requested = False  # one-shot: focus the first str param next frame
 
 
-@search_index
+@search_index(kind="Actions")
 def action_index():
     """Every function on the Actions class (toggles.py). Activating a hit
     opens the ActionRunner parameter popup rather than jumping anywhere.

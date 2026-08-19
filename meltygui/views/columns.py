@@ -396,6 +396,44 @@ def window_edge_pass(window):
                     ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
+def reframe_window(window, d_left, d_right, extra_edges=()):
+    """Move the window's LEFT frame edge by ``d_left`` and its RIGHT frame
+    edge by ``d_right`` (screen px, negative = leftward) mid-body, keeping
+    every registered interior edge at its SCREEN position — the same
+    "line the window up with its frame edges" rebase window_edge_pass does
+    post-solve, callable by a body that must change the frame itself (the
+    code editor growing left to keep its main pane in place when a compare
+    split opens). ``extra_edges`` are edge dicts not currently registered
+    (a row released at the top of the body and re-registered later) that
+    must ride along too. Frame edges end up at [0, width] so the next pass
+    sees no foreign change and re-solves nothing. Registered views are
+    invalidated like an edge-solve move (freeze_resize views included:
+    this is a one-shot layout change, not a drag)."""
+    if not d_left and not d_right:
+        return
+    _ensure_window_state(window)
+    fe = getattr(window, "_frame_edges", None)
+    if not fe:
+        fe = [{"x": 0.0}, {"x": float(window.width or 0)}]
+        window._frame_edges = fe
+    pos = window.window_pos or (0, 0)
+    window.window_pos = (pos[0] + d_left, pos[1])
+    window.width = snap_int((window.width or 0) - d_left + d_right)
+    if d_left:
+        seen = set()
+        for e in list(_all_edges(window)) + list(extra_edges):
+            if e is fe[0] or e is fe[1] or id(e) in seen:
+                continue
+            seen.add(id(e))
+            e["x"] -= d_left
+    fe[0]["x"] = 0.0
+    fe[1]["x"] = float(window.width)
+    for ds, _ in window._edge_views.values():
+        if not ds.size_change:
+            ds.invalidate(note=Note(reason="reframe window", **_NOTE))
+    request_render()
+
+
 def edge_under_cursor(window, cursor_x_window, cursor_y_abs, left=False):
     """The column edge a right-drag resize should move, given the drag-start
     cursor (``cursor_x_window`` in window coords — offset from window.abs_left
@@ -484,17 +522,22 @@ class ColumnLayout:
 
     def __init__(self, draw_state, n_cols, column_edges=None,
                  column_widths=None, left_edge=None, right_edge=None,
-                 resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9)):
+                 resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9),
+                 padding_y=None):
         self.draw_state = draw_state
         self.n_cols = n_cols
         n_lines = self.n_lines = n_cols + 1
         # Cells inset by `padding` on every side and the whole row carries
         # ONE filled rounded band (drawn before the cells, so their rounded
         # backgrounds read as holes in it): the band shows through the
-        # padding and fills the gaps between columns, so the row reads as
-        # a single rounded rectangle. border_color None (or padding 0)
-        # removes it.
+        # padding and fills the space between columns, so the row reads as
+        # a single rounded rectangle. border_color=None (or padding 0)
+        # disables it. `padding_y` overrides the VERTICAL inset alone
+        # (default: same as padding) - a bandless host (the code editor's
+        # compare split) keeps the horizontal padding around its dividers
+        # without pushing the cells down below the row origin.
         self.padding = float(padding)
+        self.padding_y = float(padding if padding_y is None else padding_y)
         self.border_color = border_color
         self._cell_radius = {}
 
@@ -718,23 +761,24 @@ class ColumnLayout:
         `height` is the FULL cell band including padding — the content box
         is inset from it."""
         pad = self.padding
+        pad_y = self.padding_y
         left_b = self._bound_left(idx)
         inner_w = self.inner_width(idx)
         x0 = snap_int(self.win_x + left_b + pad)
-        y0 = snap_int(self.top + pad)
+        y0 = snap_int(self.top + pad_y)
         imgui.set_cursor_screen_pos((self.win_x + left_b + pad,
-                                     self.top + pad))
+                                     self.top + pad_y))
         clip_h = height if height is not None else (self.draw_state.height
                                                     or MIN_ROW_HEIGHT)
         Core.melty.push_clip((x0, y0, x0 + snap_int(inner_w),
                               snap_int(self.top) + snap_int(clip_h)
-                              - snap_int(pad)))
+                              - snap_int(pad_y)))
         try:
             yield inner_w
         finally:
             Core.melty.pop_clip()
             bottom = imgui.get_cursor_screen_pos()[1]
-            self._bottom = max(self._bottom, bottom + pad)
+            self._bottom = max(self._bottom, bottom + pad_y)
 
     def note_child(self, idx, child_ds):
         """Optional: record column idx's child draw_state so the band's

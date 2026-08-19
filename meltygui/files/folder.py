@@ -23,6 +23,8 @@ appeared/vanished with no edit to invalidate it).
 
 import shutil
 import threading
+
+from src.lsd.gl_gui.lifecycle import module_is_live
 import time
 from pathlib import Path
 
@@ -433,7 +435,7 @@ def draw_test_folders(input_value, draw_state, **kwargs):
 # thread sweeps EVERY registered root; on a change to a tree, swap in the new
 # snapshot AND re-render that root's @window.
 def _poll_loop():
-    while True:
+    while module_is_live(globals()):   # exits once script restart purges this module
         if Core.melty.frame_count < 4:
             time.sleep(2)
         for root, proxy in list(_proxies.items()):

@@ -1,5 +1,6 @@
 import functools as _functools
 import gc as _gc
+import sys as _sys
 import locale
 import threading as _threading
 import time
@@ -113,9 +114,14 @@ def _gc_watch(phase, info):
                 pass
 
 
-if not globals().get("_GC_WATCH_INSTALLED"):
-    _GC_WATCH_INSTALLED = True
-    _gc.callbacks.append(_gc_watch)
+# One installed callback per PROCESS, tracked on sys: a module-global guard
+# resets on the in-place restart's re-import, and each stacked callback pinned
+# its session's module dict (and fired on every GC). Replace, don't append.
+# (Sweeping by name also sheds the stack left by sessions predating this.)
+_gc.callbacks[:] = [cb for cb in _gc.callbacks
+                    if getattr(cb, "__name__", None) != "_gc_watch"]
+_gc.callbacks.append(_gc_watch)
+_sys._lsd_gc_watch = _gc_watch
 
 
 def _format_value(value):

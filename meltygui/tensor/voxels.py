@@ -46,7 +46,7 @@ import imgui
 import numpy as np
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture
+from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.shader_func import shader_func
 from src.lsd.gl_gui.text_texture import bake_text, bake_texts
@@ -896,9 +896,39 @@ def _resolve_axes(shape, dim_names, x_dim, y_dim, z_dim):
     return tuple(resolved)
 
 
+def to_display_dtype(t):
+    """Coerce ANY torch tensor into something the raymarcher can sample:
+    a dense, real, float16/float32 tensor. float16/32 pass through untouched
+    (they upload as R16F/R32F with no copy); every other dtype maps to
+    float32 by meaning, not by bit pattern — complex → magnitude, bool →
+    0/1, ints/uints → their values, float64/bfloat16 → narrowed (bfloat16
+    must NOT go to float16: its exponent range overflows). Quantized tensors
+    dequantize, sparse layouts densify. Raises ValueError with a readable
+    reason for anything that can't become a real float volume."""
+    import torch
+    if t.is_quantized:
+        t = t.dequantize()
+    if t.layout != torch.strided:
+        try:
+            t = t.to_dense()
+        except Exception as e:
+            raise ValueError(f"cannot densify {t.layout} tensor: {e}") from e
+    if t.dtype in (torch.float16, torch.float32):
+        return t
+    if t.is_complex():
+        return t.abs().float()
+    if t.dtype == torch.bool or not t.is_floating_point():
+        return t.to(torch.float32)          # bool, int8..int64, uint8..
+    try:
+        return t.float()                    # float64, bfloat16, float8_*...
+    except Exception as e:
+        raise ValueError(f"unsupported tensor dtype {t.dtype}: {e}") from e
+
+
 def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
                  slices=(), mean_dims=(), sort_dim=-1, normalize=False,
-                 nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128):
+                 nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
+                 nf_pad=False):
     """tensor → (depth, height, width) display volume, PURE: every choice
     arrives as an argument (the draw_voxels params), nothing is stored.
     Unmapped dims pin to their `slices` index (missing entries → 0) or
@@ -909,11 +939,11 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
     volume (signed data scales by max-magnitude so zero stays anchored).
     Stays on t's device. Returns (vol3, (z_dim, y_dim, x_dim), shape)."""
     import torch
-    t = t.detach()
+    t = to_display_dtype(t.detach())
+    if t.numel() == 0:
+        raise ValueError(f"empty tensor (shape {tuple(t.shape)}) — nothing to display")
     while t.dim() < 3:
         t = t.unsqueeze(0)
-    if t.dtype not in (torch.float16, torch.float32):
-        t = t.float()
     n = t.dim()
     shape = tuple(int(s) for s in t.shape)
     zd, yd, xd = _resolve_axes(shape, dim_names, x_dim, y_dim, z_dim)
@@ -955,7 +985,7 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
         chop = dim_to_axis.get(xd if chop_d is None else chop_d)
         along = dim_to_axis.get(zd if along_d is None else along_d)
         if chop and along and chop != along:
-            vol = neural_flow_volume(vol, chop, along, int(nf_chunk))
+            vol = neural_flow_volume(vol, chop, along, int(nf_chunk), pad=nf_pad)
     if normalize:
         lo, hi = vol.min(), vol.max()
         if lo < 0:
@@ -969,18 +999,55 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
 _AXIS_POS = {"z": 0, "y": 1, "x": 2}
 
 
-def neural_flow_volume(vol, chop_axis, along_axis, chunk):
+def neural_flow_volume(vol, chop_axis, along_axis, chunk, pad=False):
     """The old viewer's neural flow on the DISPLAY volume: chop one axis into
     `chunk`-wide blocks and concatenate them group-major along another —
     identical layout to the original get_neural_flow's j*orig+i ordering,
-    which is exactly cat(split). No-op when the chop doesn't divide evenly
-    or the axes coincide."""
+    which is exactly cat(split). No-op when the axes coincide, or when the
+    chop doesn't divide evenly — unless `pad`, which zero-fills the chop
+    axis up to the next multiple first (the auto-wrap path: any chunk must
+    work, a ragged last block is fine)."""
     chop, along = _AXIS_POS[chop_axis], _AXIS_POS[along_axis]
     size = int(vol.shape[chop])
-    if chop == along or chunk <= 0 or size <= chunk or size % chunk != 0:
+    if chop == along or chunk <= 0 or size <= chunk:
         return vol
     import torch
+    if size % chunk != 0:
+        if not pad:
+            return vol
+        extra = chunk - size % chunk
+        # F.pad's (before, after) pairs run from the last dim backwards.
+        spec = [0, 0] * (vol.dim() - 1 - chop) + [0, extra]
+        vol = torch.nn.functional.pad(vol, spec)
     return torch.cat(vol.split(chunk, dim=chop), dim=along).contiguous()
+
+
+def auto_neural_flow(shape, dim_names, x_dim, y_dim, z_dim, max_extent):
+    """The auto-wrap decision for a DISPLAYED axis longer than `max_extent`
+    (the GL limit, or the user's readability cap): returns
+    (chop_dim, along_dim, chunk) tensor-dim indices for neural flow, or None
+    when every displayed extent fits. Chops the LONGEST over-limit axis into
+    ~sqrt-sized chunks — the smallest divisor >= sqrt(size) when one exists
+    below the limit, else ceil(sqrt) with padding — and lays the blocks along
+    the SHORTEST other displayed axis (a (1, 32000) row becomes a ~180x180
+    slab). One pass only; anything still over-limit afterwards clamps."""
+    shape = tuple(int(s) for s in shape)
+    shape = (1,) * (3 - len(shape)) + shape if len(shape) < 3 else shape
+    if max_extent <= 0:
+        return None
+    zd, yd, xd = _resolve_axes(shape, dim_names, x_dim, y_dim, z_dim)
+    shown = (zd, yd, xd)
+    over = [d for d in shown if shape[d] > max_extent]
+    if not over:
+        return None
+    chop = max(over, key=lambda d: shape[d])
+    along = min((d for d in shown if d != chop), key=lambda d: shape[d])
+    size = shape[chop]
+    root = int(math.ceil(math.sqrt(size)))
+    chunk = next((c for c in range(root, min(size, max_extent) + 1) if size % c == 0),
+                 root)
+    return chop, along, chunk
+
 
 
 @render_func(show_bg=False)
@@ -1411,8 +1478,100 @@ def _render_label_billboards(gl_state, specs, cam, height):
         gl.glDisable(gl.GL_BLEND)
 
 
+def _describe_tensor(t):
+    """'Tensor[32, 1, 570, 4096] float16 cuda:0' — for error cards."""
+    try:
+        dev = getattr(t, "device", None)
+        dev = f" {dev}" if dev is not None and str(dev) != "cpu" else ""
+        return f"{type(t).__name__}{list(t.shape)} {str(t.dtype).replace('torch.', '')}{dev}"
+    except Exception:
+        return repr(t)[:80]
+
+
+def _view_size(draw_state):
+    """(width, height) the 3-D image occupies — shared by the render path
+    and the error card so the card holds the view's footprint (no layout
+    jump between a good frame and a failed one). Sized from the OWNING
+    WINDOW, not this view's own content rect — a nested view's rect derives
+    from what it rendered last frame (self-referential), while the window's
+    height is the user-dragged size. The owning window IS the draw_state
+    when draw_voxels is itself a window (closable); parent_window for a
+    closable voxel grabbed an ANCESTOR that doesn't move with it."""
+    win = draw_state if draw_state.closable else (draw_state.parent_window or draw_state)
+    width = max(64, int(draw_state.content_width or win.content_width or 0))
+    # Vertical reserve: the actual header band (0 if hidden) plus a little
+    # slack for the footer/status margin (the old hardcoded 30 was the
+    # 23px header + this slack).
+    _reserve = int(draw_state.header_height or 0) + 7
+    if draw_state.closable:
+        height = max(100, draw_state.height - _reserve)
+    else:
+        # When in a parent's flow, draw_state.height is only trustworthy
+        # when something explicit wrote it - a user drag ("initial
+        # window size"), a passed height kwarg, fill_height. The auto_resize
+        # measurement path ("... item_rect[1]") is what this view drew last
+        # frame - sizing the image from it is a feedback loop that sustains
+        # any spike forever (image = height-30 → measures back ≈ height →
+        # committed again); fall back to the design height (min_height,
+        # overridable per call site) for that case, and a bad committed
+        # height self-heals on the next live render.
+        _h_src = str(draw_state._source.get("height", ""))
+        if draw_state.height and "item_rect" not in _h_src:
+            height = max(100, int(draw_state.height) - _reserve)
+        else:
+            height = max(100, int(draw_state.min_height or 293) - _reserve)
+    return width, height
+
+
+def _draw_voxel_error(draw_state, message):
+    """The error card that stands IN PLACE of the 3-D view: same footprint,
+    a dark panel, the reason wrapped inside. Also printed once per distinct
+    message so the console has it without a stack trace flood."""
+    width, height = _view_size(draw_state)
+    dl = imgui.get_window_draw_list()
+    x, y = imgui.get_cursor_screen_pos()
+    dl.add_rect_filled(x, y, x + width, y + height,
+                       imgui.get_color_u32_rgba(0.09, 0.05, 0.05, 1.0), 6.0)
+    dl.add_rect(x, y, x + width, y + height,
+                imgui.get_color_u32_rgba(0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
+    pad = 12.0
+    imgui.set_cursor_screen_pos((x + pad, y + pad))
+    imgui.push_text_wrap_pos(x + width - pad)
+    imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 0.55, 0.55, 1.0)
+    imgui.text("draw_voxels can't display this tensor")
+    imgui.pop_style_color()
+    imgui.text_wrapped(message)
+    imgui.pop_text_wrap_pos()
+    # Reserve the full footprint so the layout matches a rendered frame.
+    imgui.set_cursor_screen_pos((x, y))
+    imgui.dummy(width, height)
+    if draw_state.misc.get("_voxel_err_msg") != message:
+        draw_state.misc["_voxel_err_msg"] = message
+        print(f"[draw_voxels] {draw_state.name}: {message}")
+
+
+def _draw_image_notice(img_pos, width, text):
+    """Small wrapped caption on the image's top-left (clamp notices):
+    a translucent plate under wrapped imgui text, cursor restored after."""
+    x, y = img_pos
+    pad = 6.0
+    wrap_w = max(40.0, width - 2 * pad - 4)
+    tw, th = imgui.calc_text_size(text, wrap_width=wrap_w)
+    imgui.get_window_draw_list().add_rect_filled(
+        x + 2, y + 2, x + min(tw, wrap_w) + 2 * pad + 2, y + th + 2 * pad + 2,
+        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.6), 4.0)
+    cur = imgui.get_cursor_screen_pos()
+    imgui.set_cursor_screen_pos((x + pad + 2, y + pad + 2))
+    imgui.push_text_wrap_pos(x + pad + 2 + wrap_w)
+    imgui.push_style_color(imgui.COLOR_TEXT, 1.0, 0.8, 0.4, 1.0)
+    imgui.text_wrapped(text)
+    imgui.pop_style_color()
+    imgui.pop_text_wrap_pos()
+    imgui.set_cursor_screen_pos(cur)
+
+
 @render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True,
-             auto_resize=False, min_width=269, with_header=draw_header, tint=(0.126, 0.267, 0.083),
+             auto_resize=False, min_width=269, with_header=draw_header,
              bg_offset=0, min_height=293, disable_scroll=True, use_cache=True)
 def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 draw_state=None,
@@ -1490,25 +1649,91 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         source_shape = tuple(getattr(src, "source_shape", src.shape))
     else:
         import torch
-        t = src if isinstance(src, torch.Tensor) else torch.from_numpy(np.asarray(src))
-        vol, mapping, source_shape = slice_volume(
-            t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims,
-            sort_dim, normalize, nf_on, nf_chop, nf_along, nf_chunk)
+        try:
+            t = src if isinstance(src, torch.Tensor) else torch.from_numpy(np.asarray(src))
+        except (TypeError, ValueError, RuntimeError) as e:
+            _draw_voxel_error(draw_state, f"{type(src).__name__} is not tensor-shaped:\n{e}")
+            gl_state.drop("volume"); gl_state.drop("volume_cuda")
+            return False, None
+        # ── preflight: slicing + upload can fail on BAD DATA (odd dtypes,
+        # empty tensors) or on the DRIVER (an extent past
+        # GL_MAX_3D_TEXTURE_SIZE, a volume larger than VRAM). Decide here,
+        # before any GL interaction: over-limit extents CLAMP to the
+        # displayable prefix (with a notice over the image), anything
+        # unrecoverable shows an error card in place of the 3-D view. The
+        # error path also flushes stale textures so a bad frame never
+        # keeps a previous volume alive under the message. ─────────────
+        # ── auto neural flow: if nf OFF, a displayed axis longer than the
+        # readability cap (Toggles.Voxels.auto_flow_extent) or the GL limit
+        # is wrapped HERE - effective nf_* locals for this render only (the
+        # user's params stay untouched; the labels below use the effective
+        # values and show e.g. "vocab % 180" or "batch - vocab"). ───────────
+        nf_pad = False
+        if not nf_on:
+            _cap = int(Toggles.Voxels.auto_flow_extent)
+            _gl_max = int(gl_limits()["max_3d"])
+            _cap = min(_cap, _gl_max) if _cap > 0 else _gl_max
+            auto = auto_neural_flow(t.shape, dim_names, x_dim, y_dim, z_dim, _cap)
+            if auto is not None:
+                nf_on, nf_pad = True, True
+                nf_chop, nf_along, nf_chunk = (TensorDim(auto[0]),
+                                               TensorDim(auto[1]), auto[2])
+        try:
+            vol, mapping, source_shape = slice_volume(
+                t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims,
+                sort_dim, normalize, nf_on, nf_chop, nf_along, nf_chunk,
+                nf_pad=nf_pad)
+        except (ValueError, TypeError, RuntimeError, IndexError) as e:
+            _draw_voxel_error(draw_state, f"can't build a volume from "
+                              f"{_describe_tensor(t)}:\n{e}")
+            gl_state.drop("volume"); gl_state.drop("volume_cuda")
+            return False, None
+        # Extents only here (max_bytes=inf): the VRAM budget is judged by
+        # the upload on a cache MISS (texture3d / tensor_to_texture create),
+        # since it's measured against FREE memory and a cached volume's GPU
+        # allocation must not fail its next frame. That refusal surfaces
+        # as the "GPU upload failed" card below.
+        clamped_shape, problems = texture3d_fit(vol.shape, vol.element_size(),
+                                                max_bytes=float("inf"))
+        if any("GL_MAX_3D_TEXTURE_SIZE" not in p for p in problems):
+            _draw_voxel_error(draw_state, f"{_describe_tensor(t)} → volume "
+                              f"{tuple(int(s) for s in vol.shape)}:\n"
+                              + "\n".join(problems))
+            gl_state.drop("volume"); gl_state.drop("volume_cuda")
+            return False, None
+        clamp_note = None
+        if problems:
+            # Display the leading max-size block of each over-limit axis.
+            d3, h3, w3 = clamped_shape
+            vol = vol[:d3, :h3, :w3].contiguous()
+            clamp_note = "clamped: " + "; ".join(problems)
         version = ((id(src), getattr(src, "_version", 0)), mapping, slices,
                    mean_dims, int(sort_dim), bool(normalize), bool(nf_on),
-                   str(nf_chop), str(nf_along), int(nf_chunk))
+                   str(nf_chop), str(nf_along), int(nf_chunk), nf_pad, clamped_shape)
         tex = None
-        if vol.is_cuda:
-            from src.lsd.gl_gui import cuda_interop
-            tex = cuda_interop.tensor_to_texture(gl_state, "volume_cuda", vol,
-                                                 version=version)
-        if tex is None:
-            tex = gl_state.texture3d("volume", vol.cpu().numpy(), version=version)
-            gl_state.drop("volume_cuda")
-        else:
-            gl_state.drop("volume")
+        try:
+            if vol.is_cuda:
+                from src.lsd.gl_gui import cuda_interop
+                tex = cuda_interop.tensor_to_texture(gl_state, "volume_cuda", vol,
+                                                     version=version)
+            if tex is None:
+                tex = gl_state.texture3d("volume", vol.cpu().numpy(), version=version)
+                gl_state.drop("volume_cuda")
+            else:
+                gl_state.drop("volume")
+        except Exception as e:
+            # The driver refused something the pre-flight didn't predict
+            # (out of memory, unsupported format...). Show it, don't crash
+            # the render loop; the deps still ensure we retry only when the
+            # source or mapping change.
+            _draw_voxel_error(draw_state, f"GPU upload failed for volume "
+                              f"{tuple(int(s) for s in vol.shape)} "
+                              f"({vol.dtype}):\n{e}")
+            gl_state.drop("volume"); gl_state.drop("volume_cuda")
+            return False, None
         tex.source_shape = source_shape       # tensor metadata on the buffer
         tex.source_ndim = len(source_shape)
+        tex.clamp_note = clamp_note
 
     # Edge labels - the mapped dim's name (+ neural-flow decoration) and its
     # DISPLAYED size, recomputed per frame from the params.
@@ -1557,28 +1782,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # voxel window, so the controls panel - parented to `win` below - followed
     # the ancestor and stayed put while the voxel window was dragged.
     win = draw_state if draw_state.closable else (draw_state.parent_window or draw_state)
-    width = max(64, int(draw_state.content_width or win.content_width or 0))
-    # Vertical reserve: the actual header height (0 when hidden) + a little
-    # slack for the controls/status margin (the old hardcoded 30 was the
-    # 23px header + some slack).
-    _reserve = int(draw_state.header_height or 0) + 7
-    if draw_state.closable:
-        height = max(100, draw_state.height - _reserve)
-    else:
-        # Nested in a parent's flow, draw_state.height is only trustworthy
-        # when something authoritative wrote it - a resize callback ("initial
-        # size..."), a passed height kwarg, fill_height. The auto_resize
-        # measurement path ("... item_rect[1]") is what this view drew last
-        # frame - sizing the image from it is a feedback loop that sustains
-        # any spike forever (image = height-30 → measures back ≈ height →
-        # committed again); fall back to the design height (min_height,
-        # overridable per call site) for that case, and a bad committed
-        # height self-heals on the next live render.
-        _h_src = str(draw_state._source.get("height", ""))
-        if draw_state.height and "item_rect" not in _h_src:
-            height = max(100, int(draw_state.height) - _reserve)
-        else:
-            height = max(100, int(draw_state.min_height or 293) - _reserve)
+    width, height = _view_size(draw_state)
     if slider_dims:
         # The sliders live INSIDE the view's box - give them their rows by
         # shrinking the image, not by growing past the window.
@@ -1812,6 +2016,12 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
 
     img_pos = imgui.get_cursor_screen_pos()
     imgui.image(fb.texture_id, width, height, uv0=(0, 1), uv1=(1, 0))
+    clamp_note = getattr(tex, "clamp_note", None)
+    if clamp_note:
+        # The volume on screen is a PREFIX of the tensor; say so on the image
+        # (top-left, wrapped to the image width) rather than silently
+        # showing a truncated tensor.
+        _draw_image_notice(img_pos, width, clamp_note)
 
     # ── the outline stays 2-D imgui (crisp 1px outline over the volume) ────
     if axis_edges:
@@ -1878,7 +2088,6 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         _anchor_y = win.abs_top if draw_state.closable else draw_state.abs_top
         imgui.set_cursor_screen_pos((win.abs_left + (win.width or width) + 12, _anchor_y))
         
-        # [tint=(0.003, 0.172, 0.031), show_tint=True]
         changed, _, panel_ds = draw_any(draw_state.locate_params,
                                         name=f"controls##{draw_state.name}",
                                         is_tree=False,

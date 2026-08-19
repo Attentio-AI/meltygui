@@ -986,11 +986,47 @@ def _disk_cache_enabled() -> bool:
         return True
 
 
+def _reclass_adopted_spans(spans: dict) -> int:
+    """Re-point the adopted store's SymbolUsage / UsageRef instances at THIS
+    session's classes. An instance references its class, and the instances in
+    a sys-adopted store were built by earlier sessions — so each one pinned
+    that session's class → methods → __globals__ → its ENTIRE module graph
+    (old Melty, draw_states, cst trees). The gc boot profile showed three
+    whole sessions alive this way, rooted by 447k UsageRefs. The classes are
+    identical source, so the layouts match and __class__ assignment is legal;
+    an entry whose instances can't be re-classed (slots changed) is dropped
+    so it recomputes. Returns the number of entries dropped."""
+    dropped = []
+    for key, val in spans.items():
+        try:
+            _sig, syms = val
+            for su in syms.values():
+                if type(su) is not SymbolUsage:
+                    su.__class__ = SymbolUsage
+                d = su.definition
+                if d is not None and type(d) is not UsageRef:
+                    d.__class__ = UsageRef
+                for c in su.callers:
+                    if type(c) is not UsageRef:
+                        c.__class__ = UsageRef
+        except Exception:
+            dropped.append(key)
+    for key in dropped:
+        spans.pop(key, None)
+    return len(dropped)
+
+
 def _load_symbol_store() -> dict:
     store = getattr(sys, "_symbol_index_store", None)
     if isinstance(store, dict):
         store.setdefault("hashes", {})  # adopt; backfill the hash dict if older
         store["origin"] = "sys"  # this process life got the spans from sys
+        n_dropped = _reclass_adopted_spans(store.get("spans", {}))
+        for k in list(store.get("hashes", {})):
+            if k not in store["spans"]:
+                store["hashes"].pop(k, None)
+        if n_dropped:
+            _ptrace("store: dropped un-reclassable adopted spans", n=n_dropped)
         _ptrace("store: adopted live symbol store (restart-in-place)",
                 spans=len(store.get("spans", ())), gen=store.get("gen"))
         return store  # restart-in-place: adopt those dicts
@@ -1743,7 +1779,12 @@ def _collect_targets(file_tree, module, s: int, e: int):
                 walk(child, obj, class_obj=obj)  # entering a class
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 obj = cd.get(child.name)
-                add(child.name, child.lineno, child.col_offset, container, obj)
+                # Only module-level defs and methods are targets here. A def
+                # nested in a FUNCTION is a local of that function - owned by
+                # the local-usage path (_local_var_bindings) - registering it as
+                # a (id(func), name) member made a callerless ghost.
+                if isinstance(container, (_ModuleType, type)):
+                    add(child.name, child.lineno, child.col_offset, container, obj)
                 walk(child, obj, class_obj=class_obj)  # method keeps its class
             elif isinstance(child, (ast.Assign, ast.AnnAssign)):
                 tgts = child.targets if isinstance(child, ast.Assign) else [child.target]
@@ -1949,9 +1990,25 @@ def _local_var_bindings(file_tree, start_line, end_line):
     """Binding sites of function-LOCAL variables overlapping the span — a
     parameter, or an assignment / annotation / aug-assign / walrus / for / with /
     except / comprehension target inside a function body, not declared
-    global/nonlocal. Returns (bounds, declared_global):
+    global/nonlocal. Returns (bounds, declared_global, scope_parent, extent):
       bounds            {(scope, name): (line, col)}  first binding of each local
       declared_global   {(scope, name)}  names declared global/nonlocal
+      scope_parent      {nested_def_name: enclosing scope}  for defs nested in a
+                        function — lets a ref in a closure resolve to the
+                        enclosing function's local (a captured param / var, or
+                        a sibling helper) by walking up the chain
+      extent            (lo, hi) file lines of the OUTERMOST functions
+                        overlapping the span — the range a local's occurrences
+                        must be gathered over so a one-line probe (the Ctrl+B
+                        recheck on a binding line) still sees the uses further
+                        down the function; equals the span when it covers
+                        whole functions
+
+    A def nested inside a function is itself a local of the enclosing scope
+    (bound at its `def` line): its calls within that function — and from sibling
+    closures, via scope_parent — link to it and it links back, exactly like a
+    variable. Nested defs used to be registered as callerless "members" of the
+    function object and linked in neither direction.
 
     A binding-ONLY walk: it records assignment-like targets and params, never
     every Name occurrence — the occurrences (sites) come for free from the span
@@ -1981,6 +2038,8 @@ def _local_var_bindings(file_tree, start_line, end_line):
     Nonlocal = ast.Nonlocal
     bounds = {}
     declared_global = set()
+    scope_parent = {}
+    extent = [start_line, end_line]
 
     def record_bind(scope, name, line, col):
         k = (scope, name)
@@ -2002,9 +2061,21 @@ def _local_var_bindings(file_tree, start_line, end_line):
         for child in iter_child(node):
             t = child.__class__
             if t is FunctionDef or t is AsyncFunctionDef:
+                if in_func:
+                    # A nested def is a local of the enclosing function. Bind
+                    # it BEFORE the span prune: a call to it elsewhere in that
+                    # function (a one-line probe far below its def) must still
+                    # resolve to this binding; only the walk INTO it is pruned.
+                    record_bind(scope, child.name, child.lineno, child.col_offset)
+                    scope_parent[child.name] = scope
                 cend = getattr(child, "end_lineno", child.lineno) or child.lineno
                 if child.lineno > end_line or cend < start_line:
                     continue  # span-pruned: O(span), not O(file)
+                if not in_func:
+                    if child.lineno < extent[0]:
+                        extent[0] = child.lineno
+                    if cend > extent[1]:
+                        extent[1] = cend
                 a = child.args
                 params = (*a.posonlyargs, *a.args, *a.kwonlyargs)
                 if a.vararg: params += (a.vararg,)
@@ -2055,11 +2126,11 @@ def _local_var_bindings(file_tree, start_line, end_line):
                 walk(child, scope, in_func)
 
     walk(file_tree, "<module>", False)
-    return bounds, declared_global
+    return bounds, declared_global, scope_parent, tuple(extent)
 
 
 def _build_local_entries(bounds, declared_global, local_sites,
-                         start_line, end_line, rp_str, mod_name):
+                         start_line, end_line, rp_str, mod_name, extent=None):
     """Local-variable usage entries from the binding sites (_local_var_bindings)
     plus the occurrences the span ref scan gathered (local_sites: {(scope,name):
     [(line,col),...]}). Definition = the binding, sites = every in-span
@@ -2068,16 +2139,29 @@ def _build_local_entries(bounds, declared_global, local_sites,
     (no occurrence beyond its binding) is skipped so it doesn't wash. Keyed
     scope+name+def-line (NUL-joined, never a bare identifier) so two scopes' `i`,
     and a local shadowing a module global, get distinct entries; the display
-    spelling rides in `name` (see _rebuild_symbol_usages)."""
+    spelling rides in `name` (see _rebuild_symbol_usages).
+
+    `extent` (lo, hi) — the enclosing functions' full line range from
+    _local_var_bindings — is where CALLERS are gathered when given (the jump
+    targets from the binding), while `sites` (the washed / clickable
+    occurrences) stay inside the SPAN [start_line, end_line] like every other
+    symbol's, so a span view never carries out-of-buffer sites. An entry is
+    only emitted when it has an in-span site: a one-line probe builds entries
+    just for the locals on that line, each carrying every use in its function
+    — which is what lets Ctrl+B on the binding line list them."""
     raw = {}
+    lo, hi = extent if extent is not None else (start_line, end_line)
     for (scope, name), defpos in bounds.items():
         if (scope, name) in declared_global:
             continue
         site_set = {defpos}
         site_set.update(local_sites.get((scope, name), ()))
-        in_span = sorted(p for p in site_set if start_line <= p[0] <= end_line)
-        callers = [p for p in in_span if p != defpos]
+        in_extent = sorted(p for p in site_set if lo <= p[0] <= hi)
+        callers = [p for p in in_extent if p != defpos]
         if not callers:
+            continue
+        in_span = [p for p in in_extent if start_line <= p[0] <= end_line]
+        if not in_span:
             continue
         dl, dc = defpos
         key = "%s\x1f%s\x1f%d" % (scope, name, dl)
@@ -2150,11 +2234,26 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     # Toggles.TextEditor.SymbolUsages.local_symbol_usages.
     from src.lsd.gl_gui.toggles import Toggles
     if Toggles.TextEditor.SymbolUsages.local_symbol_usages:
-        local_bounds, local_global = _local_var_bindings(file_tree, start_line, end_line)
+        local_bounds, local_global, local_parent, (local_lo, local_hi) = (
+            _local_var_bindings(file_tree, start_line, end_line))
         local_keys = local_bounds.keys() - local_global
     else:
         local_bounds, local_global, local_keys = {}, set(), set()
+        local_parent, local_lo, local_hi = {}, start_line, end_line
     local_sites = {}  # (scope, name) -> [(line, col), ...]
+
+    def _local_key(scope, name):
+        # The local a bare name in `scope` refers to: its own binding first,
+        # else the nearest enclosing function's (closure capture / sibling
+        # reference) - scope_parent == None, not a local -> module resolution.
+        seen_scopes = 0
+        while scope is not None and seen_scopes < 16:
+            k = (scope, name)
+            if k in local_keys:
+                return k
+            scope = local_parent.get(scope)
+            seen_scopes += 1
+        return None
     # Also target objects REFERENCED (not defined) in the span, so usage sites
     # link back too (the REVERSE direction):
     #  - bare names - decorators (@window/@defaults), used enums (ProfileMode)
@@ -2182,14 +2281,20 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
         return b if b is not None else _lookup(name)
 
     for (kind, payload, line, col, scope) in file_refs:
-        if not (start_line <= line <= end_line):
+        in_span = start_line <= line <= end_line
+        if not in_span and not (local_keys and local_lo <= line <= local_hi):
             continue
         if kind == "name":
-            if (scope, payload) in local_keys:
+            _lk = _local_key(scope, payload) if local_keys else None
+            if _lk is not None:
                 # Local var: record every occurrence (the span ref scan IS the
                 # occurrence source - no separate every-Name walk) and skip the
                 # global resolution (a local shadows a same-named global).
-                local_sites.setdefault((scope, payload), []).append((line, col))
+                # Gathered over the enclosing function's extent, not just the
+                # span, so a binding above top still lists the uses below.
+                local_sites.setdefault(_lk, []).append((line, col))
+                continue
+            if not in_span:
                 continue
             obj = _lookup(payload)
             if obj is not None:
@@ -2211,6 +2316,8 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
                 # draw_main) got a site - the rest had no reference recorded.
                 sites.setdefault(payload, []).append((line, col))
         elif kind == "attr":
+            if not in_span:
+                continue
             base_repr, attr = payload
             if base_repr.__class__ is tuple:  # dotted base `A.B` -> re-walk
                 base = _lookup_base(base_repr[0], scope)
@@ -2447,7 +2554,8 @@ def _symbol_refs_index(file_path: str, start_line: int, end_line: int, text=None
     _t_def = _time.monotonic() - _t_def0
     if local_bounds:
         out.update(_build_local_entries(local_bounds, local_global, local_sites,
-                                        start_line, end_line, rp_str, mod_name))
+                                        start_line, end_line, rp_str, mod_name,
+                                        extent=(local_lo, local_hi)))
     # Performance summary per compute: where the time went. `slept` inside scan/defs is
     # the cooperative GIL-yield share - big slept vs small work = contention,
     # higher index cost. reparsed = files whose mtime cache missed this run.
@@ -5047,6 +5155,19 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         old_lo = _stmt_text_start(i0)
         if old_lo is None or old_lo < 0:
             return _inc_fallback("bad-region-start")
+        # i1 was picked by CODE start (s1 > last_row), but the region boundary
+        # sits ABOVE stmt i1's leading blank/comment lines. An edit that touches
+        # a statement's tail AND the gap below it (delete/paste across a
+        # blank line, a coalesced burst of keystrokes) has last_row inside
+        # the leading lines - widen the region to take stmt i1 too, else
+        # the changed rows fall outside it (was: footer-or-degenerate).
+        while i1 < len(table):
+            hi = _stmt_text_start(i1)
+            if hi is None:
+                return _inc_fallback("unplaced-next-stmt")
+            if last_row <= hi:
+                break
+            i1 += 1
         if i1 < len(table):
             old_hi_excl = _stmt_text_start(i1)  # 0-based exclusive old end
             if old_hi_excl is None:
@@ -5108,7 +5229,20 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         if Toggles.TextEditor.verify_incremental_cst:
             if new_mod.code != new_src:
                 return _inc_fallback("verify-mismatch")
-        region_gp = cst_module_to_dict(region_mod)
+        # Convert the FOLDED region, not the raw parse: standalone, a statement's
+        # leading comment lines sit in region_mod.header, and the header
+        # extractor keys every comment as a module-level Comment and treats a
+        # `# [...]` line as a module override - while the full parse skipped
+        # that header line (a def's/class's leading override routes via the
+        # CHILD's __overrides__). Left raw, the region minted a stray Comment +
+        # `__overrides__` key at module level (draw_any's tint override): the
+        # first merge silently dropped the child override and the next edit's
+        # region minted `__overrides__` again → incremental-collision fallback.
+        # Same code (header + leading_lines render identically), so spans and
+        # the verified merge are unaffected.
+        region_gp = cst_module_to_dict(
+            region_mod.with_changes(header=[], body=region_body)
+            if region_mod.header else region_mod)
         if not isinstance(region_gp, GeneralParse):
             return _inc_fallback("region-convert-failed")
         rc = getattr(region_gp, "_stmt_key_counts", None)
@@ -5132,7 +5266,7 @@ def cst_dict_incremental_update(prev_gp, old_src, new_src):
         for k in plan:
             if isinstance(k, str):
                 if k in seen_names:
-                    return _inc_fallback("key-collision-name")
+                    return _inc_fallback(f"key-collision-name {str(k)[:40]!r}")
                 seen_names.add(k)
         # ── build (no fallback past this point mutates shared data yet) ──
         merged = GeneralParse(source=new_src)

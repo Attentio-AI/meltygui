@@ -481,6 +481,21 @@ def _selection_for_search(owner_ds):
     return sel
 
 # [tint=(0.373, 0.672, 0.373), show_tint=True]
+def _str_change_span(old, new):
+    """(start, end) of the region of `new` that differs from `old` — common
+    prefix / common suffix trimmed (suffix bounded so it never overlaps the
+    prefix). end == start when the change was a pure deletion in `new`."""
+    n_old, n_new = len(old), len(new)
+    lim = min(n_old, n_new)
+    p = 0
+    while p < lim and old[p] == new[p]:
+        p += 1
+    s = 0
+    while s < lim - p and old[n_old - 1 - s] == new[n_new - 1 - s]:
+        s += 1
+    return p, n_new - s
+
+
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     if not callable(func):
@@ -4584,6 +4599,17 @@ def render_func(*args, **o_kwargs):
                         print(f"undo mutation apply failed: {_mut_err}")
                         new_value = _live
                 else:
+                    # Text undo/redo entry: stamp the changed span (in the
+                    # RESTORED version's coordinates) so the parent view can
+                    # scroll the change into view and flash it next body run
+                    # (draw_text consumes `_undo_landing`). Restores go
+                    # through the same wrapper-tail path for every value type,
+                    # so this is the one place that knows both sides.
+                    _live = new_value if child_changed else input_value
+                    if isinstance(_requested, str) and isinstance(_live, str):
+                        _a, _b = _str_change_span(_live, _requested)
+                        draw_state._undo_landing = (_requested, _a, _b,
+                                                    Melty.frame_count)
                     new_value = _requested
                 child_changed = True
                 draw_state.apply_undo_state(target_ui)
@@ -5163,7 +5189,42 @@ def render_func(*args, **o_kwargs):
     # without anyone importing the module that defines it (avoids import cycles).
     Melty.render_funcs_by_name[wrapper.__name__] = wrapper
 
+    # Decorator-order independence: `@window` / `@defaults` return their
+    # argument unchanged, so written before @render_func they ran on the RAW
+    # function and registered IT. draw_main's window loop then saw an object
+    # without __render_func__ (a code_file_io editor of the source instead of
+    # the view), and hotswap's registry reconcile couldn't recognise the
+    # throwaway raw a recompile re-registered. Adopt any registration made on
+    # the raw onto the wrapper now, so every order lands on the same object.
+    _adopt_raw_registrations(func, wrapper)
+
     return wrapper
+
+
+def _adopt_raw_registrations(raw, wrapper):
+    """Re-point registrations that `@window` / `@defaults` made on `raw` (they
+    ran BEFORE @render_func wrapped it) onto `wrapper`, the object the app
+    calls and the hotswap reconcile tracks. No-op when nothing registered."""
+    if raw is wrapper:
+        return
+    # A @window that ran before melty installed its registrar sits in the
+    # decoration module's pending list - retarget it there too.
+    try:
+        from src.lsd.gl_gui.view.core_views.decoration import window_decoration as _wd
+        _wd._pending[:] = [((wrapper if c is raw else c), kw) for c, kw in _wd._pending]
+    except Exception:
+        pass
+    wins = getattr(Melty, "annotated_window_classes", None)
+    if isinstance(wins, dict):
+        for key, entry in list(wins.items()):
+            if isinstance(entry, tuple) and len(entry) == 2 and entry[0] is raw:
+                wins[key] = (wrapper, entry[1])
+    for reg_name in ("default_kwargs_by_type", "default_kwargs_by_attrib_type",
+                     "default_funcs_by_name_type"):
+        reg = getattr(Melty, reg_name, None)
+        # Plain `in` - these are defaultdicts, a [] would create an entry.
+        if isinstance(reg, dict) and raw in reg:
+            reg[wrapper] = reg.pop(raw)
 
 
 # Keys the wrapper consumes for control CONVERSION/PLUMBING, not appearance -

@@ -80,6 +80,89 @@ def _scalar(x):
     return int(x[0]) if hasattr(x, "__len__") else int(x)
 
 
+# Driver limits, queried ONCE on the GL thread and cached for the process
+# (they never change for a context). Survives hotswap like the registries.
+_gl_limits = _persistent("_gl_limits", dict)
+
+# GL_NVX_gpu_memory_info enums (absent from many PyOpenGL builds' namespace).
+_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX = 0x9048
+_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX = 0x9049
+
+
+def gl_limits():
+    """{'max_3d': int, 'max_2d': int, 'total_vram_kb': int|None} — the
+    context's texture-size limits (GL_MAX_3D_TEXTURE_SIZE et al). Cached
+    after the first successful query; off the GL thread (or before any
+    context exists) returns conservative spec minimums WITHOUT caching, so
+    a real query still lands once the render thread asks."""
+    if _gl_limits:
+        return _gl_limits
+    limits = {"max_3d": 2048, "max_2d": 16384, "total_vram_kb": None}
+    if not is_gl_thread():
+        return limits
+    try:
+        max_3d = _scalar(gl.glGetIntegerv(gl.GL_MAX_3D_TEXTURE_SIZE))
+        max_2d = _scalar(gl.glGetIntegerv(gl.GL_MAX_TEXTURE_SIZE))
+    except Exception:
+        return limits          # no context yet - don't cache the guess
+    if max_3d <= 0 or max_2d <= 0:
+        return limits          # no current context: glGet returns 0 silently
+    limits["max_3d"], limits["max_2d"] = max_3d, max_2d
+    try:
+        limits["total_vram_kb"] = _scalar(
+            gl.glGetIntegerv(_GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX))
+    except Exception:
+        limits["total_vram_kb"] = None
+    _gl_limits.update(limits)
+    return _gl_limits
+
+
+def gl_free_vram_kb():
+    """Currently free VRAM in KiB via GL_NVX_gpu_memory_info, or None when
+    the extension is unavailable. Cheap (one glGet) but only meaningful on
+    the GL thread."""
+    if not is_gl_thread():
+        return None
+    try:
+        return _scalar(gl.glGetIntegerv(_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX))
+    except Exception:
+        return None
+
+
+def texture3d_fit(shape, itemsize, max_bytes=None):
+    """Decide BEFORE any upload whether a (depth, height, width) 3-D texture
+    of `itemsize`-byte texels can exist here. Returns
+    (clamped_shape, problems): `clamped_shape` is `shape` with every extent
+    cut to GL_MAX_3D_TEXTURE_SIZE, `problems` a list of human-readable
+    strings — an over-limit extent (recoverable: display the clamped
+    prefix), a byte total past `max_bytes` (default: half of the reported
+    free VRAM, or 2 GiB when the driver won't say — NOT recoverable by
+    clamping, the caller should refuse), or a degenerate (empty / non-3-D)
+    shape. Empty `problems` = safe to allocate as-is."""
+    problems = []
+    dims = tuple(int(s) for s in shape)
+    if len(dims) != 3:
+        return dims, [f"volume must be 3-D, got shape {dims}"]
+    if any(d <= 0 for d in dims):
+        return dims, [f"empty volume (shape {dims}) — nothing to display"]
+    lim = gl_limits()
+    max_3d = int(lim["max_3d"])
+    clamped = tuple(min(d, max_3d) for d in dims)
+    if clamped != dims:
+        over = ", ".join(f"{'zyx'[i]}={dims[i]}" for i in range(3) if dims[i] > max_3d)
+        problems.append(f"{over} exceeds GL_MAX_3D_TEXTURE_SIZE={max_3d}; "
+                        f"showing the first {max_3d} along that axis")
+    if max_bytes is None:
+        free_kb = gl_free_vram_kb()
+        max_bytes = (free_kb * 1024) // 2 if free_kb else 2 * 1024 ** 3
+    nbytes = clamped[0] * clamped[1] * clamped[2] * int(itemsize)
+    if nbytes > max_bytes:
+        problems.append(f"volume needs {nbytes / 2**20:.0f} MiB of texture memory "
+                        f"(budget {max_bytes / 2**20:.0f} MiB) — pin or average "
+                        f"more dims to shrink it")
+    return clamped, problems
+
+
 class tight_unpack:
     """Save → canonical tight-row GL_UNPACK_* state → restore, around texture
     uploads. Leftover pitch state (ROW_LENGTH/SKIP_* from any other GL code in
@@ -351,9 +434,17 @@ class GLState:
                 data = data.astype(np.float32)
         depth, height, width = (int(s) for s in data.shape)
         filt = gl.GL_NEAREST if nearest else gl.GL_LINEAR
-
         def create():
             import ctypes
+            # Refuse up front with a readable reason rather than letting the
+            # driver raise GL_INVALID_VALUE out of glTexImage3D (which also
+            # leaks the half-configured texture object). Inside create() on
+            # purpose: the VRAM budget is measured against FREE memory, so
+            # a cache hit must never be re-judged against what its own
+            # allocation consumed.
+            _, problems = texture3d_fit(data.shape, data.dtype.itemsize)
+            if problems:
+                raise ValueError("texture3d: " + "; ".join(problems))
             tex = _scalar(gl.glGenTextures(1))
             gl.glBindTexture(gl.GL_TEXTURE_3D, tex)
             gl.glTexParameteri(gl.GL_TEXTURE_3D, gl.GL_TEXTURE_MIN_FILTER, filt)

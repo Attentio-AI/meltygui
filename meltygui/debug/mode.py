@@ -516,7 +516,7 @@ class Mode(Enum):
         #     recursive=True,
         # ),
     }
-
+    
     # ── Inner modes for draw_with_modes children ────────────
     # Each operates on a GeneralParse and wraps a simple renderer in just
     # the converter chain it needs. Used as the `modes` arg to
@@ -543,7 +543,6 @@ class Mode(Enum):
     # below) because the chain references Mode.CODE_INNER_TEXT /
     # Mode.CODE_INNER_UI as enum members, which only exist post-finalization.
     CODE = {}
-
 
 def _populate_code_mode():
     """Fill in Mode.CODE.value. Deferred until after the Mode class is

@@ -602,7 +602,7 @@ class Toggles:
         class SymbolUsages:
             # Auto-attach symbol usages to every editor parse (background, fast
             # path only); the Index button stays as a force refresh.
-            auto_index = True
+            auto_index = False
 
             # Incremental symbol-usage refresh on live edits: reuse the prior
             # compute's expensive half (cross-file callers + defs, ~80% of cost)
@@ -653,6 +653,16 @@ class Toggles:
             # recheck resolves nothing under the caret. Off = the recheck
             # runs only as the no-targets fallback before the red flash.
             ctrl_b_always_recheck = True
+
+            # Ctrl+B through the symbol roster FIRST (roster_tints.ctrl_b_lookup):
+            # name -> definition by forward resolution of the view's chain,
+            # definition -> usages via the trigram index + resolve-name
+            # filter. Pending/live-buffer included, nested defs and class
+            # members included, milliseconds instead of the ~1s live-object
+            # recheck. The usage graph / recheck below is the fallback
+            # when the roster can't resolve the caret's symbol.
+            ctrl_b_roster = True
+
 
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
@@ -803,6 +813,16 @@ class Toggles:
 
         # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
         definition_tints = True
+
+        # Definition tints from the text-derived SYMBOL ROSTER
+        # (core_conversion/symbol_roster.py + core_views/roster_tints.py):
+        # washes come from the live buffer + pending text of every file,
+        # no cst-dict parse, no background usage graph, no live objects —
+        # a tinted def typed anywhere paints its references on the next
+        # rebuild without saving or hotswapping. Off = the legacy
+        # _collect_def_tints path (cst-dict + __symbol_usages__).
+        # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
+        roster_def_tints = True
 
         # When the caret rests on an identifier, every OTHER place that exact
         # token appears in the visible buffer gets this background wash. A dumb,
@@ -1022,6 +1042,14 @@ class Toggles:
         # colorimetrically "correct"); 2.2 = raw linear out (darkest). Read
         # live per frame by draw_voxels.
         gamma = 2.2
+
+        # Auto neural flow: when nf_on is OFF and a DISPLAYED axis is longer
+        # than this (or than GL_MAX_3D_TEXTURE_SIZE, whichever is smaller),
+        # draw_voxels wraps it itself - chops it into ~sqrt-sized chunks spaced
+        # along the shortest visible axis - so a (1, 32000)) row renders
+        # as a readable slab instead of a hairline (or a clamped prefix).
+        # 0 disables. Read live per render.
+        auto_flow_extent = 8192
 
     @defaults(tint=(0.545, 0.451, 0.248))
     class UIScale:
@@ -1381,7 +1409,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     show_filled_tiles = False
@@ -1407,6 +1435,12 @@ class Toggles:
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
     symbol_perf_log = False   # TEMP: on while debugging param-edit → editor wakeups
+    # gc profiling (gc.py): every managed collect (boot / idle / post-run)
+    # runs with DEBUG_SAVEALL and writes a by-type histogram of the CYCLIC
+    # garbage it reclaimed to /tmp/lsd_gc_profile.log; the boot pass also
+    # histograms the whole live graph before it freezes it. Expensive when
+    # on (walks every object) - for finding what leaks, not for daily use.
+    memory_profile = True
     attrib_churn_log = False
     debug_threads = False
 

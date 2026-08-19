@@ -699,12 +699,17 @@ def _recompile(func: types.FunctionType, source: str,
         # matter which twin's raw the editor resolved.
         _twins = _patch_twin_raws(unwrapped)
 
-        _redirect_function_registrations(_pre_reg, new_wrapper,
-                                         live_raw=unwrapped, live_func=func)
+        _live_wrapper = _redirect_function_registrations(
+            _pre_reg, new_wrapper, live_raw=unwrapped, live_func=func,
+            new_raw=new_func)
         # Re-run decoration effects (@defaults) onto the live function: the exec
         # registered them under the throwaway exec produced, so copy them across
         # or the edited decoration will never reach the function the app renders.
-        _redirect_function_decorations(new_wrapper, new_func, func, unwrapped)
+        # Key on the resolved LIVE wrapper (the module-global the app calls),
+        # not `func` - the editor may hand _recompile the raw, and an entry
+        # left under the stale wrapper key would shadow the fresh one.
+        _redirect_function_decorations(new_wrapper, new_func,
+                                       _live_wrapper or func, unwrapped)
 
         # And carry the freshly-evaluated @render_func decoration state (closure
         # config + instance attrs) onto the live wrapper, so editing a decorator
@@ -906,7 +911,8 @@ def _recompile_module(module: types.ModuleType, source: str,
                 # module global keep executing the live one; whichever side a
                 # later edit reaches, the other freezes.
                 _redirect_function_registrations(_pre_reg, new_obj,
-                                                 live_raw=old_raw, live_func=old_obj)
+                                                 live_raw=old_raw, live_func=old_obj,
+                                                 new_raw=new_raw)
                 _redirect_function_decorations(new_obj, new_raw, old_obj, old_raw)
                 if both_wrapped and getattr(new_obj, "__render_func__", False):
                     _transfer_wrapper_state(old_obj, new_obj, new_raw)
@@ -1359,8 +1365,11 @@ def _restore_twin_raws(twins) -> None:
 
 
 def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
-                                     live_raw=None, live_func=None) -> None:
+                                     live_raw=None, live_func=None,
+                                     new_raw=None):
     """Reconcile the decorator-driven function registries after a recompile.
+    Returns the resolved LIVE wrapper the entries were pointed at (None when no
+    safe target was found and the registries were left alone).
 
     The function analog of `_redirect_class_registrations`. `_recompile` re-execs
     a function's source, which RE-RUNS its decorators (`@render_func` is_default_for
@@ -1387,7 +1396,7 @@ def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
     to a snapshot value that unwraps to the raw, then to the editor's object.
     """
     if new_wrapper is None:
-        return
+        return None
 
     def _unwraps_to(v, raw):
         if raw is None:
@@ -1419,10 +1428,18 @@ def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
     if live_wrapper is None:
         live_wrapper = live_func
     if live_wrapper is None:
-        return  # no safe target - leave the registries untouched
+        return None  # no safe target - leave the registries untouched
 
     def _is_live(v):
         return (v is live_wrapper or v is new_wrapper or _unwraps_to(v, live_raw))
+
+    def _is_fresh(v):
+        # The re-run decorators register the throwaway WRAPPER - or, in a
+        # `@window`/`@defaults` written below @render_func, the throwaway RAW
+        # (render_func's _adopt_raw_registrations normally re-points it, but
+        # we the raw, so an un-adopted entry never survives as a rotting
+        # object that draws the window / drifts resolve_address).
+        return v is new_wrapper or (new_raw is not None and v is new_raw)
 
     for name, before in pre_snapshot.items():
         reg = getattr(Melty, name, None)
@@ -1434,9 +1451,9 @@ def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
         fresh = {}
         for key, val in list(reg.items()):
             if is_window:
-                if isinstance(val, tuple) and len(val) == 2 and val[0] is new_wrapper:
+                if isinstance(val, tuple) and len(val) == 2 and _is_fresh(val[0]):
                     fresh[key] = val[1]  # keep the fresh @window kwargs
-            elif val is new_wrapper:
+            elif _is_fresh(val):
                 fresh[key] = None
 
         # Keys this function owned BEFORE the edit.
@@ -1468,6 +1485,7 @@ def _redirect_function_registrations(pre_snapshot: dict, new_wrapper,
         reg = getattr(Melty, reg_name, None)
         if isinstance(reg, dict) and new_wrapper in reg:
             reg[live_wrapper] = reg.pop(new_wrapper)
+    return live_wrapper
 
 
 def _transfer_wrapper_state(live_wrapper, new_wrapper, new_raw) -> None:

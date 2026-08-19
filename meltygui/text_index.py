@@ -412,6 +412,16 @@ def _state(root: str) -> dict:
     if not isinstance(store, dict):
         store = sys._lsd_text_index_state = {}
     st = store.get(root)
+    if st is not None:
+        # Adopted across a restart-in-place: the segment object was built by an
+        # earlier session and references THAT session's _Segment class, which
+        # pins its entire module graph. Same source → same layout → re-point it.
+        seg = st.get("seg")
+        if seg is not None and type(seg) is not _Segment:
+            try:
+                seg.__class__ = _Segment
+            except TypeError:
+                st["seg"] = None          # layout changed: rebuild lazily
     if st is None:
         st = store[root] = {
             "seg": None,          # _Segment | None
@@ -542,12 +552,67 @@ def _verify(abs_path: str, text: str, ql: str, per_file=_PER_FILE_CAP):
     return out
 
 
-def _hit(kind, root, rel, line, text, tint):
+def _hit(kind, root, rel, line, text, tint, scope=None):
     return {"kind": kind, "path": os.path.join(root, rel), "rel": rel,
-            "line": line, "text": text, "tint": tint}
+            "line": line, "text": text, "tint": tint, "scope": scope}
 
 
-def search(query: str, limit=200):
+def _enclosing_scope(symbols, hit_line):
+    """Qualname chain (tuple of def/class names, outermost first) of the
+    definitions whose block span contains `hit_line` — the scope a content
+    hit sits in ("Toggles", "TextEditor"); () at module level. Same
+    containment walk as _enclosing_tint."""
+    chain = []
+    for name, ln, indent, _kind, _t, end, _sig in symbols:
+        if ln > hit_line:
+            break
+        if hit_line <= end:
+            while chain and chain[-1][1] >= indent:
+                chain.pop()
+            chain.append((name, indent))
+    return tuple(n for n, _i in chain)
+
+
+def candidate_paths(query: str, exts=(".py",)) -> list:
+    """Absolute paths whose CURRENT text may contain `query` (case-
+    insensitive): every overlay file (dirty / new — their segment entry is
+    stale, so they are always candidates) plus the segment files whose
+    trigram postings cover the query. A SUPERSET of the true matches —
+    callers verify against the text. `exts` filters by extension. The
+    symbol roster's reverse lookup (usages of a definition) is built on
+    this: O(results) posting intersection instead of a scan of every file.
+    Call from a background thread on first use: it builds the index."""
+    ql = query.lower()
+    qb = ql.encode("utf-8", "replace")
+    root = _search_root()
+    st = _state(root)
+    _ensure_segment(st, root)
+    _sweep(st, root)
+    _maybe_rebuild(st, root)
+    seg = st["seg"]
+    out = []
+    seen = set()
+    for ap in sorted(st["dirty"] | st["extra"]):
+        if os.path.splitext(ap)[1].lower() in exts and ap not in seen:
+            seen.add(ap)
+            out.append(ap)
+    if seg is not None:
+        if len(qb) < 3:
+            fids = range(len(seg.paths))      # too short to trigram: everything
+        else:
+            fids = (int(f) for f in _candidates(seg, qb))
+        for fid in fids:
+            rel = seg.paths[fid]
+            if os.path.splitext(rel)[1].lower() not in exts:
+                continue
+            ap = os.path.join(root, rel)
+            if ap not in seen:
+                seen.add(ap)
+                out.append(ap)
+    return out
+
+
+def search(query: str, limit=200, per_file=_PER_FILE_CAP):
     """Case-insensitive search over the src root, pending edits included.
     Returns hit dicts {kind, path, rel, line, text, tint} in three kinds,
     listed in this order:
@@ -555,10 +620,12 @@ def search(query: str, limit=200):
       symbol — a class/def NAME matches (text = the def line, tint = the
                definition's own explicit tint)
       line   — full-text content match (text = the line, tint = the innermost
-               enclosing tinted definition's — the editor's block wash)
+               enclosing tinted definition's — the editor's block wash,
+               scope = the enclosing def/class qualname chain as a tuple)
     Tints are index-resolved and None when no source tint applies (the UI
     falls back to FileMeta / category tints). Overlay (dirty/new) files are
-    served live and shadow their stale segment entries. Call from a
+    served live and shadow their stale segment entries. `per_file` caps the
+    content hits reported per file (default _PER_FILE_CAP). Call from a
     background thread: the first call builds the index."""
     ql = query.lower()
     qb = ql.encode("utf-8", "replace")
@@ -604,10 +671,11 @@ def search(query: str, limit=200):
         ltints = _extract_line_tints(text, rel.endswith(".py"))
         _sym_match(rel, syms)
         if len(line_hits) < limit:
-            for line, snippet in _verify(ap, text, ql):
+            for line, snippet in _verify(ap, text, ql, per_file):
                 line_hits.append(_hit("line", root, rel, line, snippet,
                                       _line_tint(ltints, line)
-                                      or _enclosing_tint(syms, line)))
+                                      or _enclosing_tint(syms, line),
+                                      _enclosing_scope(syms, line)))
 
     # ── segment symbol tables (overlay files shadowed above) ──
     if seg is not None:
@@ -633,9 +701,10 @@ def search(query: str, limit=200):
             text = _current_text(ap)
             if not text:
                 continue
-            for line, snippet in _verify(ap, text, ql):
+            for line, snippet in _verify(ap, text, ql, per_file):
                 line_hits.append(_hit("line", root, seg.paths[fid], line,
                                       snippet,
                                       _line_tint(seg.line_tints[fid], line)
-                                      or _enclosing_tint(seg.symbols[fid], line)))
+                                      or _enclosing_tint(seg.symbols[fid], line),
+                                      _enclosing_scope(seg.symbols[fid], line)))
     return (file_hits + sym_hits + line_hits)[:limit]

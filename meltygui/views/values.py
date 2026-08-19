@@ -87,6 +87,7 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
     if button(f"{file_name_truncated}:{input_value.f_lineno}",
               height=30, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+
         threading.Thread(
             target=open_in_intellij,
             args=(str(input_value.f_code.co_filename),),
@@ -123,8 +124,6 @@ def draw_type_name(input_value, **kwargs):
             imgui.text(f"{input_value.__name__}")
     except Exception as e:
         imgui.text(f"Error displaying type: {e}")
-        
-        
 
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
     """The (index, lowercased key string) pairs draw_collection renders and
@@ -191,6 +190,151 @@ def _fuzzy_key_match(q, k):
     if len(q) < 4:
         return False
     return _fuzzy_substring_distance(q, k) <= max(1, len(q) // 4)
+
+
+# --- Word-aware fuzzy matcher (global search) ---------------------------------
+# Identifiers are WORDS ("draw_any" -> draw, any; "TextEditor" -> text,
+# editor). A query matches when its words each claim a DISTINCT target word:
+#   * a query word claims a target word it PREFIXES exactly ("dr" -> draw),
+#     or is an exact mid-word substring of when >= 2 chars ("raw" -> draw,
+#     "ny" -> any -- never a lone char: "a" must START a word, so "draw_a"
+#     never lands on draw_int / draw_collection via the "a" in draw), or
+#     fuzzily matches when its FIRST character matches ("amy" -> any: 1 edit)
+#     -- fuzz budget is only spent where the word start agrees;
+#   * words are unordered ("any_draw" -> draw_any);
+#   * a query without separators ("anydraw", "drawany", "rawany", "dra") is
+#     tried as one word, then SEGMENTED into pieces that each claim a word by
+#     the same rules ("any" + "draw").
+# _word_match() returns the total edit cost (0 = exact) or None.
+_WORD_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def _split_words(s):
+    """Lowercased word tuple of an identifier / label: separators (`_`, `.`,
+    `/`, ` `, `-`, ...) and camelCase boundaries both split; digits are their
+    own words. ("draw_any" -> ("draw", "any"), "GLState" -> ("gl", "state"),
+    "new_core_view.py" -> ("new", "core", "view", "py"))."""
+    return tuple(w.lower() for w in _WORD_RE.findall(s))
+
+
+def _edit_distance(a, b, cap):
+    """Damerau/OSA edit distance, capped (returns cap + 1 once exceeded)."""
+    m, n = len(a), len(b)
+    if abs(m - n) > cap:
+        return cap + 1
+    prev2 = None
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        ai = a[i - 1]
+        cur = [i] + [0] * n
+        row_min = i
+        for j in range(1, n + 1):
+            cost = 0 if ai == b[j - 1] else 1
+            v = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if (prev2 is not None and j > 1
+                    and ai == b[j - 2] and a[i - 2] == b[j - 1]):
+                v = min(v, prev2[j - 2] + 1)
+            cur[j] = v
+            if v < row_min:
+                row_min = v
+        if row_min > cap:
+            return cap + 1
+        prev2 = prev
+        prev = cur
+    return prev[n]
+
+
+def _word_edits(w, tw, budget):
+    """Cost of query word `w` claiming target word `tw`: 0 for an exact
+    prefix or a >=2-char exact substring; the edit distance of a fuzzy
+    PREFIX (same first char, >=3 chars, ~1 typo per 3 chars) when within
+    `budget`; None when it can't claim it."""
+    if tw.startswith(w):
+        return 0
+    if len(w) >= 2 and w in tw:
+        return 0
+    if budget <= 0 or len(w) < 3 or w[0] != tw[0]:
+        return None
+    tol = min(budget, 1 + (len(w) - 3) // 3)
+    best = None
+    for L in (len(w) - 1, len(w), len(w) + 1):
+        if 0 < L <= len(tw):
+            d = _edit_distance(w, tw[:L], tol)
+            if d <= tol and (best is None or d < best):
+                best = d
+    return best
+
+
+def _assign_words(qws, twords, budget):
+    """Min total cost of every query word claiming a distinct target word
+    (any order), or None. Tiny backtracking -- a handful of words a side."""
+    n = len(twords)
+    used = [False] * n
+    best = [None]
+
+    def rec(i, cost):
+        if best[0] is not None and cost >= best[0]:
+            return
+        if i == len(qws):
+            best[0] = cost
+            return
+        w = qws[i]
+        for j in range(n):
+            if used[j]:
+                continue
+            e = _word_edits(w, twords[j], budget - cost)
+            if e is None:
+                continue
+            used[j] = True
+            rec(i + 1, cost + e)
+            used[j] = False
+
+    rec(0, 0)
+    return best[0]
+
+def _segment_match(q, twords, budget):
+    """Min cost of segmenting separator-less `q` into consecutive pieces
+    that each claim a distinct target word (rules of _word_edits), or None.
+    ("anydraw" -> any + draw; "drawamy" -> draw + amy~any.)"""
+    n = len(twords)
+    used = [False] * n
+    best = [None]
+    L = len(q)
+
+    def rec(pos, cost):
+        if best[0] is not None and cost >= best[0]:
+            return
+        if pos == L:
+            best[0] = cost
+            return
+        for j in range(n):
+            if used[j]:
+                continue
+            tw = twords[j]
+            used[j] = True
+            for k in range(pos + 1, L + 1):
+                e = _word_edits(q[pos:k], tw, budget - cost)
+                if e is not None:
+                    rec(k, cost + e)
+            used[j] = False
+
+    rec(0, 0)
+    return best[0]
+
+
+def _word_match(q, qws, twords, budget):
+    """Total edit cost of query `q` (lowercased; `qws` its words) against a
+    target's words, or None. Word-form queries assign words; a single-word
+    query tries a straight word claim, then segmentation."""
+    if not twords:
+        return None
+    if len(qws) > 1:
+        return _assign_words(qws, twords, budget)
+    if len(qws) == 1:
+        e = _assign_words(qws, twords, budget)
+        if e is not None:
+            return e
+    return _segment_match(q, twords, budget)
 
 
 # --- Global search indexes ---------------------------------------------------
@@ -479,6 +623,8 @@ def _hit_base_tint(hit):
     sym = getattr(hit, "sym", None)
     if sym is None:
         return _category_tint(hit.kind)
+    if sym.kind == "local":
+        return _LOCAL_TINT
     return _category_tint({"file": "Files", "class": "Classes"}.get(sym.kind, "Functions"))
 
 
@@ -499,6 +645,23 @@ class _ShowMoreRow:
         self.kind = kind
 
 
+class _FileMoreRow:
+    """Sentinel row closing a FILE's block in the Code tree when the file
+    holds more matching rows than FILE_ROW_CAP shows. Selectable like any
+    row; Enter / click expands THAT file (GlobalSearch.expanded_files) so
+    every match inside it lists."""
+    __slots__ = ("path", "count", "file_hit")
+    kind = CODE_CATEGORY
+    label = "more in file"
+
+    def __init__(self, path, count, file_hit):
+        self.path = path
+        self.count = count
+        self.file_hit = file_hit
+
+FILE_ROW_CAP = 8  # rows shown under a file before it collapses to "+ n more"
+
+
 class _LoadAllRow:
     """Sentinel row replacing the old "+ n more" label when the active tab
     holds more hits than max_visible shows. A real row in the on-screen list —
@@ -517,7 +680,21 @@ def _pick_count(counts, hit):
     return counts.get(f"{hit.kind}:{hit.label}", 0)
 
 
-def _code_tree_rows(hits):
+def _match_tier(hit, scores):
+    """0 = exact substring match (or a local-symbol hit, always exact),
+    1 = word-assignment match with no typos, 2 = fuzzy (typo) match. From
+    the (dist, prefix) score global_search_results reported; unknown -> 0."""
+    sc = scores.get(id(hit)) if scores else None
+    if sc is None:
+        return 0
+    d = sc[0]
+    return 0 if d == 0 else (1 if d < 1 else 2)
+
+
+FUZZY_PER_SCOPE = 2  # non-exact siblings shown per scope when the scope has exact matches
+
+
+def _code_tree_rows(hits, scores=None, expanded=()):
     """Lay Code hits out as a file -> class -> def TREE, flattened to rows.
     Every hit's ancestors (sym.parent chain) are inserted above it -- as
     CONTEXT rows when they didn't match themselves (see _is_context_row) --
@@ -529,30 +706,33 @@ def _code_tree_rows(hits):
     if not hits:
         return []
     counts = (getattr(_ensure_search_store(), "counts", None) or {})
-    nodes = {}  # id(hit) -> [hit, {id: child node}, rank]
+    nodes = {}  # id(hit) -> [hit, {id: child node}, rank, direct]
     roots = {}
     passthrough = []  # (rank, hit) for hits without a sym
 
-    def node_for(h, rank):
+    def node_for(h, rank, direct):
         n = nodes.get(id(h))
         if n is None:
-            n = nodes[id(h)] = [h, {}, rank]
+            n = nodes[id(h)] = [h, {}, rank, direct]
             parent = h.sym.parent
             if parent is not None:
-                node_for(parent, rank)[1][id(h)] = n
+                node_for(parent, rank, False)[1][id(h)] = n
             else:
                 roots[id(h)] = n
+        elif direct:
+            n[3] = True
         return n
 
     for rank, h in enumerate(hits):
         if getattr(h, "sym", None) is None:
             passthrough.append((rank, h))
             continue
-        node_for(h, rank)
+        node_for(h, rank, True)
     if not nodes:
         return list(hits)
 
     weight = {}
+    tier = {}
 
     def w(n):
         k = id(n)
@@ -561,30 +741,72 @@ def _code_tree_rows(hits):
                             + [w(c) for c in n[1].values()])
         return weight[k]
 
+    def t(n):
+        """Best (lowest) match tier anywhere in the subtree; a context-only
+        node takes its children's."""
+        k = id(n)
+        if k not in tier:
+            own = _match_tier(n[0], scores) if n[3] else 3
+            tier[k] = min([own] + [t(c) for c in n[1].values()])
+        return tier[k]
+
+    def order_children(children, rank_key):
+        """Siblings: EXACT-tier subtrees first (an exact call site outranks a
+        typo-distance def), then DIRECT hits ahead of context-only subtrees
+        (higher scope wins -- a matched def before a function that merely
+        calls it, however often that function was picked), then most-used,
+        then definition order / rank. When the scope has exact matches,
+        non-exact siblings are capped at FUZZY_PER_SCOPE."""
+        kids = sorted(children, key=lambda c: (t(c), not c[3], -w(c), rank_key(c)))
+        if kids and t(kids[0]) == 0:
+            out, extra = [], 0
+            for c in kids:
+                if t(c) > 0:
+                    extra += 1
+                    if extra > FUZZY_PER_SCOPE:
+                        continue
+                out.append(c)
+            kids = out
+        return kids
+
     rows = []
+    direct_ids = {id(h) for h in hits}
 
-    def emit(n):
-        rows.append(n[0])
-        for c in sorted(n[1].values(), key=lambda c: (-w(c), c[0].sym.order)):
-            emit(c)
+    def emit(n, out):
+        out.append(n[0])
+        for c in order_children(n[1].values(), lambda c: c[0].sym.order):
+            emit(c, out)
 
-    # Files (roots) order by RELEVANCE -- the scorer rank of the best match
-    # anywhere inside them (rank already includes popularity in all its
-    # tiers) -- so the top result's file leads the list. Usage-count-first
-    # ordering applies WITHIN a file (siblings above).
-    for n in sorted(roots.values(), key=lambda n: n[2]):
-        emit(n)
+    # Files (roots): the same order -- exact-tier files first, then the
+    # scorer rank of the best match inside (rank folds popularity in within
+    # match tiers), same fuzzy cap. Each file's block is capped at
+    # FILE_ROW_CAP rows (best first, since they're in tree order) with a
+    # "+ n more" sentinel unless the file is in `expanded`.
+    for n in order_children(roots.values(), lambda n: n[2]):
+        block = []
+        emit(n, block)
+        root_hit = n[0]
+        rpath = str(root_hit.sym.path)
+        if len(block) - 1 > FILE_ROW_CAP and rpath not in expanded:
+            # "+ n more" counts hidden MATCHES, not their context rows.
+            hidden = sum(1 for r in block[FILE_ROW_CAP + 1:] if id(r) in direct_ids)
+            block = block[:FILE_ROW_CAP + 1]
+            if hidden:
+                block.append(_FileMoreRow(rpath, hidden, root_hit))
+        rows.extend(block)
     # Non-Code hits keep their relative order after the tree (a mixed list
     # only happens in the All tab, which groups by category anyway).
     rows.extend(h for _r, h in passthrough)
     return rows
 
 
-def _expand_rows(kind, hits):
+def _expand_rows(kind, hits, scores=None, expanded=()):
     """The on-screen rows for a category's hits: the Code category expands
     into its tree (context rows included); every other category shows its
-    hits as they are."""
-    return _code_tree_rows(hits) if kind == CODE_CATEGORY else list(hits)
+    hits as they are. `scores` = the (dist, prefix) map from the query;
+    `expanded` = file paths whose blocks list every row."""
+    return (_code_tree_rows(hits, scores, expanded) if kind == CODE_CATEGORY
+            else list(hits))
 
 
 def _is_context_row(row, matched):
@@ -596,7 +818,10 @@ def _is_context_row(row, matched):
 
 def _sym_depth(row):
     """Tree depth of a Code row (file 0, top-level def 1, method 2, ...);
-    None for non-Code rows."""
+    None for non-Code rows. A file block's "+ n more" sentinel sits at
+    depth 1 so the file's background block encloses it."""
+    if isinstance(row, _FileMoreRow):
+        return 1
     sym = getattr(row, "sym", None)
     if sym is None:
         return None
@@ -626,7 +851,7 @@ def _first_pick(rows, matched, ranked=()):
     return 0
 
 
-def _all_tab_items(by_kind, horizontal=False, keep_order=False):
+def _all_tab_items(by_kind, horizontal=False, keep_order=False, scores=None, expanded=()):
     """(rows, groups) for the All tab — `groups` is parallel to `rows` and
     names each row's label line. Vertical: a "Top" block first (every
     category's #1 hit, priority order), then each category's next-best hits
@@ -650,7 +875,7 @@ def _all_tab_items(by_kind, horizontal=False, keep_order=False):
     if horizontal:
         rows, groups = [], []
         for k in order:
-            exp = _expand_rows(k, ranked[k])
+            exp = _expand_rows(k, ranked[k], scores, expanded)
             rows.extend(exp)
             groups.extend([k] * len(exp))
             if len(by_kind[k]) > per_cat:
@@ -662,11 +887,11 @@ def _all_tab_items(by_kind, horizontal=False, keep_order=False):
     for h in tops:
         # A Code top hit brings its ancestor context rows along (file/class
         # above the def), so the Top block reads the same as the Code tab.
-        exp = _expand_rows(h.kind, [h])
+        exp = _expand_rows(h.kind, [h], scores, expanded)
         rows.extend(exp)
         groups.extend([TOP_GROUP] * len(exp))
     for k in order:
-        rest = _expand_rows(k, ranked[k][1:])
+        rest = _expand_rows(k, ranked[k][1:], scores, expanded)
         rows.extend(rest)
         groups.extend([k] * len(rest))
         if len(by_kind[k]) > per_cat:
@@ -678,9 +903,24 @@ def _all_tab_items(by_kind, horizontal=False, keep_order=False):
 GLOBAL_SEARCH_INDEXES = []
 
 
-def search_index(fn):
-    GLOBAL_SEARCH_INDEXES.append(fn)
-    return fn
+def search_index(fn=None, *, kind=None):
+    """Register a search provider. `kind` names the category its hits carry
+    (`@search_index(kind="Code")`) so a query scoped to ONE tab only runs
+    that tab's providers; a bare `@search_index` (kind None) runs for every
+    scope."""
+    def _reg(f):
+        f._search_kind = kind
+        GLOBAL_SEARCH_INDEXES.append(f)
+        return f
+    return _reg(fn) if fn is not None else _reg
+
+
+def _providers_for(kinds):
+    """The providers a query scoped to `kinds` (None = all) must run."""
+    if kinds is None:
+        return list(GLOBAL_SEARCH_INDEXES)
+    return [p for p in GLOBAL_SEARCH_INDEXES
+            if getattr(p, "_search_kind", None) in (None, *kinds)]
 
 
 def _launch_window(name):
@@ -703,7 +943,7 @@ def _launch_window(name):
     request_render()
 
 
-@search_index
+@search_index(kind="Windows")
 def window_index():
     """Every window registered with the window manager — open or closed, dock
     displayed or not — minus the manager's excluded list and the search window
@@ -802,7 +1042,7 @@ _symbol_hits_memo = (None, None)
 _HIT_SCHEMA = 4
 
 
-@search_index
+@search_index(kind="Code")
 def symbol_index():
     """Every function and class defined in a loaded src module -- module-level
     defs plus class members (methods, nested classes) at ANY nesting depth --
@@ -912,7 +1152,7 @@ def _short_unique_paths(paths):
 _file_hits_memo = (None, None)
 
 
-@search_index
+@search_index(kind="Code")
 def file_index():
     """Every loaded src file, labelled by its src-relative path, in the Code
     category (a file hit is the ROOT of its symbols' tree). Activating a hit
@@ -1065,6 +1305,165 @@ def _text_hit(row, show_path=False):
                      kind="Text", match=text, parts=parts, code_row=code_row)
 
 
+_LOCAL_TINT = (0.38, 0.68, 0.72)  # local-symbol rows' base colour (Text-ish tint)
+_code_lookup_memo = (None, None, None)  # (symbol hits id, file hits id, {(path, qualname): hit})
+
+
+def _code_hit_lookup():
+    """{(path, qualname): hit} over the Code providers -- files under
+    qualname "" -- memoized on the two hit lists' identity."""
+    global _code_lookup_memo
+    syms, files = symbol_index(), file_index()
+    if _code_lookup_memo[0] is syms and _code_lookup_memo[1] is files:
+        return _code_lookup_memo[2]
+    look = {(h.sym.path, h.sym.qualname): h for h in syms}
+    look.update({(h.sym.path, ""): h for h in files})
+    _code_lookup_memo = (syms, files, look)
+    return look
+
+
+_string_lines_memo = {}  # str(path) -> (file-lines key, frozenset of 1-based lines opening INSIDE a triple-quoted string)
+def _in_string_lines(path):
+    """1-based lines of `path` that BEGIN inside a triple-quoted string
+    (docstring / GLSL block interiors and closers) -- a content hit on one
+    is prose, not code. A regex-driven line scan of the in-memory text: it
+    tracks the triple-quote state across lines, and within a line skips
+    simple quoted strings and `#` comments so a quoted delimiter literal or
+    a commented delimiter can't flip it. Memoized on the file-lines key;
+    cheap enough for the async text-search thread, no tokenizer."""
+    lines, key = _file_lines(path)
+    ent = _string_lines_memo.get(str(path))
+    if ent is not None and ent[0] == key:
+        return ent[1]
+    inside = set()
+    open_q = None  # the triple-quote delimiter of the string we're inside
+    for i, ln in enumerate(lines):
+        if open_q is not None:
+            inside.add(i + 1)
+        pos = 0
+        n = len(ln)
+        while pos < n:
+            if open_q is not None:
+                k = ln.find(open_q, pos)
+                if k == -1:
+                    break
+                open_q = None
+                pos = k + 3
+                continue
+            m = _STR_TOK_RE.search(ln, pos)
+            if m is None:
+                break
+            tok = m.group(0)
+            if tok == "#":
+                break  # comment: rest of the line is not code
+            if tok in (_TQ, _SQ):
+                open_q = tok
+                pos = m.end()
+                continue
+            # A simple one-line string: skip to its closing quote (backslash
+            # escapes honoured); unterminated -> ignore the rest of the line.
+            q = tok
+            j = m.end()
+            while j < n:
+                c = ln[j]
+                if c == "\\":
+                    j += 2
+                    continue
+                if c == q:
+                    break
+                j += 1
+            pos = j + 1
+    if len(_string_lines_memo) > 64:
+        _string_lines_memo.clear()
+    fs = frozenset(inside)
+    _string_lines_memo[str(path)] = (key, fs)
+    return fs
+
+_TQ, _SQ = '"' * 3, "'" * 3  # the two triple-quote delimiters
+# Tokens the string-state scan looks on: triple quotes first (longest
+# match), then a lone quote, then a comment start.
+_STR_TOK_RE = re.compile(_TQ + "|" + _SQ + "|\"|'|#")
+
+
+def _local_symbol_hits(rows, q):
+    """The Code tab's LOCAL layer from full-text `line` rows: every line
+    whose CODE (not comment/string) contains the query as part of an
+    identifier becomes one local-symbol hit -- the identifier -- parented on
+    the innermost enclosing def/class Code hit (its file when the line is at
+    module level), so a call to `draw_collection` inside `draw_main` lists
+    as file -> draw_main -> draw_collection. Every occurrence line is a hit
+    (one per line), so all the calls inside a scope list. Def/class lines are the
+    symbol index's own hits and are skipped; lines in files that aren't
+    loaded modules (no file hit) are skipped too -- the Code universe is the
+    loaded-module set. Local hits rank BELOW every scored Code hit (they are
+    appended after the results), so a definition always takes the default
+    highlight over its uses."""
+    from src.lsd.gl_gui.view.core_views.text_editor import tokenize
+    from src.lsd.gl_gui.text_index import _DEF_RE
+    look = _code_hit_lookup()
+    seen = set()
+    out = []
+    for row in rows:
+        if row.get("kind") != "line" or not str(row["rel"]).endswith(".py"):
+            continue
+        text = row["text"]
+        try:
+            toks = list(tokenize(text))
+        except Exception:
+            continue
+        ident = None
+        for tok, ck in toks:
+            if ck in ("comment", "string", "string_doc"):
+                continue
+            if q in tok.lower() and re.fullmatch(r"[A-Za-z_]\w*", tok):
+                ident = tok
+                break
+        if ident is None:
+            continue
+        m = _DEF_RE.match(text)
+        if m is not None and m.group(3) == ident:
+            continue  # the definition itself: the symbol index's hit
+        st = text.lstrip()
+        if st.startswith("import ") or (st.startswith("from ") and " import " in st):
+            continue  # an import binding, not a use
+        path = Path(row["path"])
+        try:
+            path = path.resolve()
+        except OSError:
+            pass
+        if row["line"] in _in_string_lines(path):
+            continue  # inside a docstring / multi-line string: prose
+        scope = tuple(row.get("scope") or ())
+        parent = None
+        for n in range(len(scope), -1, -1):
+            parent = look.get((path, ".".join(scope[:n])))
+            if parent is not None:
+                break
+        if parent is None:
+            continue  # file isn't a loaded module -> outside the Code universe
+        pq = parent.sym.qualname
+        line = row["line"]
+        key = (path, line, ident)
+        if key in seen:
+            continue
+        seen.add(key)
+        code = text.strip()[:200]
+        qn = f"{pq}.{ident}" if pq else ident
+        out.append(SearchHit(f"{qn} @ {row['rel']}:{line}", _LOCAL_TINT,
+                             (lambda p=path, l=line: _jump_to_text_hit(p, l)),
+                             kind=CODE_CATEGORY, match=ident,
+                             code_row=(path, line, "", code, str(line)),
+                             sym=CodeSym(path, qn, "local", line, parent, ident)))
+    return out
+
+
+# Line-hit limit handed to the trigram search: the Code tab's local layer
+# wants EVERY call site of a common name (the per-file "+ n more" hides the
+# bulk), so this is well above the old display-sized 200.
+_TEXT_SEARCH_LIMIT = 1500
+_TEXT_PER_FILE_LIMIT = 200  # per-file content hit cap (index default is 5)
+
+
 def _kick_text_search(q):
     """Start a background full-text search when the query changed. Debounced by
     a generation counter: the thread sleeps briefly, and a newer keystroke's
@@ -1076,6 +1475,7 @@ def _kick_text_search(q):
     gen = GlobalSearch._text_gen
     if len(q) < 3:  # below the trigram minimum
         GlobalSearch.text_results = []
+        GlobalSearch.local_results = []
         return
 
     def _run():
@@ -1084,7 +1484,8 @@ def _kick_text_search(q):
             return
         try:
             from src.lsd.gl_gui import text_index
-            rows = text_index.search(q)
+            rows = text_index.search(q, limit=_TEXT_SEARCH_LIMIT,
+                                     per_file=_TEXT_PER_FILE_LIMIT)
         except Exception:
             traceback.print_exc()
             rows = []
@@ -1098,6 +1499,11 @@ def _kick_text_search(q):
         GlobalSearch.text_results = [
             _text_hit(row, show_path=len(rels_by_name[os.path.basename(row["rel"])]) > 1)
             for row in rows]
+        try:
+            GlobalSearch.local_results = _local_symbol_hits(rows, q)
+        except Exception:
+            traceback.print_exc()
+            GlobalSearch.local_results = []
         _repaint_global_search()
 
     threading.Thread(target=_run, daemon=True, name="global-text-search").start()
@@ -1152,7 +1558,6 @@ def _setting_live(path):
             return None
     return obj if isinstance(obj, _SETTING_TYPES) else None
 
-
 def _setting_group_tint(path):
     """The @defaults tint of the group a setting lives in (Toggles.TextEditor's
     for `TextEditor.*`), so a row is coloured like its pane in the Toggles
@@ -1185,7 +1590,6 @@ def _setting_def_line(setting_path, path):
             return None
     attr_pat = re.compile(rf"^\s*{re.escape(parts[-1])}\s*[:=]")
     return next((i + 1 for i in range(idx, len(lines)) if attr_pat.match(lines[i])), None)
-
 
 def _jump_to_setting_def(setting_path):
     """Open toggles.py in the in-app editor at a setting's assignment — the
@@ -1268,7 +1672,8 @@ def _begin_editing(path):
     GlobalSearch._edit_focus = True
     Core.melty.text_focused_ds = None
 
-
+              
+        
 def _end_editing():
     """Leave value editing and put the caret back in the search box."""
     if GlobalSearch.editing is None:
@@ -1277,6 +1682,7 @@ def _end_editing():
     GlobalSearch._edit_focus = False
     GlobalSearch._focus_requested = True
     _repaint_global_search()
+
 
 
 def _activate_setting(path):
@@ -1290,6 +1696,7 @@ def _activate_setting(path):
     else:
         _begin_editing(path)
         _repaint_global_search()
+
 
 
 def _value_widget(hit, value, r_edge, ry, row_h, width):
@@ -1362,7 +1769,7 @@ def drain_pending_settings():
 _toggle_hits_memo = (None, None)
 
 
-@search_index
+@search_index(kind="Toggles")
 def toggle_index():
     """Every bool/int/float/str setting under Toggles — flat class vars plus
     nested groups, labelled by dotted path (`TextEditor.enable_spell_check`).
@@ -1415,8 +1822,9 @@ def _provider_corpus(provider):
         # symbols match on their qualname alone.
         sym = getattr(h, "sym", None)
         full = key if (sym is not None and sym.qualname) else low
-        corpus.append((low, key,
-                       frozenset(key[i:i + 2] for i in range(len(key) - 1)), h, full))
+        # words + char set drive the word-aware fuzzy matcher: the set is a
+        # cheap prune (a query char the key lacks can only be a typo).
+        corpus.append((low, key, frozenset(key), h, full, _split_words(key)))
     _scorer_corpus_memo[name] = (hits, corpus)
     return corpus
 
@@ -1481,8 +1889,9 @@ def _activate_hit(hit, store):
     if store is None:
         print("GlobalSearchStore: pick NOT recorded — store is None "
               "(Core.melty.vis or root.global_search_store missing)")
-    elif hit.kind == "Text":
-        pass  # per-query "path:line:col" hits - churn, not popularity
+    elif hit.kind == "Text" or (getattr(hit, "sym", None) is not None
+                                and hit.sym.kind == "local"):
+        pass  # per-query "path:line" hits are churn, not popularity
     else:
         try:
             store.record(hit.kind, hit.label)
@@ -1493,25 +1902,25 @@ def _activate_hit(hit, store):
     hit.activate()
 
 
-def _recent_hits(store, limit=60):
+def _recent_hits(store, limit=60, kinds=None):
     """The most recently PICKED hits, newest first — what global search shows
     while the query box is still empty. Only hits that still exist in an
     index appear (stale store entries just never match). Stores from before
     the recency list fall back to the popularity ranking."""
     recent = getattr(store, "recent", None) if store is not None else None
     if not recent:
-        return _popular_hits(store, limit)
+        return _popular_hits(store, limit, kinds)
     order = {k: i for i, k in enumerate(recent)}
     found = {}
-    for provider in GLOBAL_SEARCH_INDEXES:
-        for _low, _key, _bi, hit, _full in _provider_corpus(provider):
+    for provider in _providers_for(kinds):
+        for _low, _key, _cs, hit, _full, _ws in _provider_corpus(provider):
             i = order.get(f"{hit.kind}:{hit.label}")
             if i is not None and i not in found:
                 found[i] = hit
     return [found[i] for i in sorted(found)][:limit]
 
 
-def _popular_hits(store, limit=60):
+def _popular_hits(store, limit=60, kinds=None):
     """The most-selected hits over time, best-first with the same per-category
     cap as the scorer — the empty-query view for stores that predate the
     recency list (see _recent_hits). Only hits that still exist in an index
@@ -1520,8 +1929,8 @@ def _popular_hits(store, limit=60):
         return []
     counts = store.counts
     ranked = []
-    for provider in GLOBAL_SEARCH_INDEXES:
-        for _low, _key, _bi, hit, _full in _provider_corpus(provider):
+    for provider in _providers_for(kinds):
+        for _low, _key, _cs, hit, _full, _ws in _provider_corpus(provider):
             c = counts.get(f"{hit.kind}:{hit.label}", 0)
             if c > 0:
                 ranked.append((c, hit))
@@ -1535,7 +1944,7 @@ def _popular_hits(store, limit=60):
     return out
 
 
-def global_search_results(q, store=None, limit=60):
+def global_search_results(q, store=None, limit=60, kinds=None, scores=None):
     """Query every registered search index and return the hits matching `q`,
     best-first — the global-search result list.
 
@@ -1549,31 +1958,39 @@ def global_search_results(q, store=None, limit=60):
     whose name starts with exactly what's been typed, and the limit trims the
     long fuzzy tail. Dedupes by label across providers; the limit applies
     PER CATEGORY — the display is per category, so a category with many
-    short-labelled hits must not starve the others out of the list."""
-    tol = max(1, len(q) // 4)
-    q_bigrams = frozenset(q[i:i + 2] for i in range(len(q) - 1))
-    bigram_budget = 2 * tol
-    use_fuzzy = len(q) >= 4
+    short-labelled hits must not starve the others out of the list. `kinds`
+    (a set of category names) scopes the query to those categories'
+    providers — the active tab's — so a Toggles search never scores the
+    thousands of symbol labels; None runs every provider (the All tab).
+    `scores`, if a dict, is filled with id(hit) -> (dist, prefix) for the
+    returned hits (dist 0 = exact) so callers can tier other result sources
+    (the async local-symbol hits) against them."""
+    # Edit budget for the fuzzy matcher: ~1 typo per 4 chars, min 1; short
+    # queries (< 3 chars) are exact-only -- too little signal to fuzz.
+    budget = max(1, len(q) // 4)
+    use_fuzzy = len(q) >= 3
+    q_words = _split_words(q)
+    q_chars = frozenset(q)
     scored = []
     seen = set()
-    for provider in GLOBAL_SEARCH_INDEXES:
-        for low, key, key_bigrams, hit, full in _provider_corpus(provider):
+    for provider in _providers_for(kinds):
+        for low, key, key_chars, hit, full, key_words in _provider_corpus(provider):
             if low in seen:
                 continue
             if q in key or q in full:
                 dist = 0
             elif use_fuzzy:
-                # Bigram lower bound before the O(len(q)-len(key)) edit-
-                # distance DP: one edit disturbs at most 2 of the query's
-                # bigrams, so more than 2-tol missing bigrams cannot be
-                # within tolerance. Prunes *all of the symbol index's
-                # thousands of matches at C-set speed (the plain char-set
-                # bound was too weak - long labels have most letters).
-                if len(q_bigrams - key_bigrams) > bigram_budget:
+                # Cheap prune: more query chars missing from the key than the
+                # budget can handle -> no word assignment can succeed.
+                if len(q_chars - key_chars) > budget:
                     continue
-                dist = _fuzzy_substring_distance(q, key)
-                if dist > tol:
+                dist = _word_match(q, q_words, key_words, budget)
+                if dist is None:
                     continue
+                # Word-assignment matches tier above exact substrings even at
+                # zero edits ("draw_t" -> draw_info_tab via draw _tab is a partial
+                # match, not the substring hit draw_texture is): 0.5 + edits.
+                dist += 0.5
             else:
                 continue
             seen.add(low)
@@ -1595,6 +2012,8 @@ def global_search_results(q, store=None, limit=60):
         if c < limit:
             per_kind[hit.kind] = c + 1
             out.append(hit)
+            if scores is not None:
+                scores[id(hit)] = (_dist, _prefix)
     return out
 
 
@@ -2471,23 +2890,53 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         input_value.query = new_query
 
     q = (input_value.query or "").strip().lower()
-    if q != input_value._last_query:
+
+    def _scope():
+        """Provider scope for the active chip: only ITS category's providers
+        run (None = every provider, for the All tab). Text is async and has
+        no provider -- its chip scopes to nothing here."""
+        a = input_value.active_kind
+        return None if a == ALL_CATEGORY else {a}
+
+    def _search(limit=60):
+        kinds = _scope()
+        scores = {}
+        res = (global_search_results(q, store, limit=limit, kinds=kinds, scores=scores)
+               if len(q) >= 2 else _recent_hits(store, limit=limit, kinds=kinds))
+        if not res and kinds is not None and len(q) >= 2:
+            # The active tab matched nothing: fall back to the FULL search so
+            # the borrowed-categories view (see _items_for) has rows to show.
+            # Paid only in the common case.
+            res = global_search_results(q, store, limit=limit, kinds=None, scores=scores)
+        input_value._scores = scores
+        return res
+
+    # Recompute on a query OR scope change (Tab / chip / All): results hold
+    # only the active tab's hits, so a chip re-queries just that tab.
+    scope_key = (q, input_value.active_kind)
+    if scope_key != input_value._last_scope:
+        new_query = q != input_value._last_query
         input_value._last_query = q
+        input_value._last_scope = scope_key
         input_value.show_all = False  # a new query starts back at the top view
         # Empty box: show the most-selected hits over time instead of nothing.
-        input_value.results = (global_search_results(q, store) if len(q) >= 2
-                               else _recent_hits(store))
-        input_value.selected = 0  # reset highlight to the top match on a new query
+        input_value.results = _search()
+        if new_query:
+            input_value.selected = 0  # reset highlight to the top match on a new query
+            input_value.expanded_files = set()  # per-file "+ n more" collapses again
         input_value._snap_sel = True  # ...skipping Code context rows
     # Full-text hits arrive async from the trigram index (no-op while q is
-    # unchanged); they land on input_value.text_results and repaint us.
-    _kick_text_search(q)
+    # unchanged); they land on input_value.text_results and repaint us. Only
+    # kicked when a tab that shows them is up (All / Text).
+    if input_value.active_kind in (ALL_CATEGORY, "Text", CODE_CATEGORY):
+        _kick_text_search(q)
 
     # The query's own hits by identity: any Code row not in here is a context
     # row (an ancestor shown for perspective) -- drawn dim, and skipped when
     # the highlight resets (a new query / tab lands on the best real match).
     matched = {id(h) for h in input_value.results}
     matched.update(id(h) for h in input_value.text_results)
+    matched.update(id(h) for h in input_value.local_results)
 
     # Group ranked hits by category; only the ACTIVE category's results render
     # (one at a time), picked by the selector row under the box.
@@ -2496,6 +2945,20 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         by_kind.setdefault(hit.kind, []).append(hit)
     if len(q) >= 3 and input_value.text_results:
         by_kind["Text"] = list(input_value.text_results)
+    ranked = list(input_value.results)  # the default-highlight preference order
+    if len(q) >= 3 and input_value.local_results:
+        # The Code tab's second layer (async, before the text index): EXACT
+        # matches first regardless of scope, then scope -- so the locals (all
+        # exact substring hits) slot in after the exact-tier scored Code hits
+        # (defs/classes/files still win among exacts) but AHEAD of the second
+        # (typo) tier.
+        _sc = getattr(input_value, "_scores", None) or {}
+        code = by_kind.get(CODE_CATEGORY, [])
+        exact = [h for h in code if _sc.get(id(h), (0,))[0] == 0]
+        fuzzy = [h for h in code if _sc.get(id(h), (0,))[0] != 0]
+        by_kind[CODE_CATEGORY] = exact + list(input_value.local_results) + fuzzy
+        others = [h for h in ranked if h.kind != CODE_CATEGORY]
+        ranked = exact + list(input_value.local_results) + fuzzy + others
     cats = _search_cats(by_kind)
     # The active category is STICKY - it never auto-switches, so the chips
     # remember where you put it.
@@ -2516,7 +2979,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         all_rows, all_groups = list(input_value.results), None
     else:
         all_rows, all_groups = _all_tab_items(by_kind, horizontal=horiz,
-                                              keep_order=blank)
+                                              keep_order=blank,
+                                              scores=getattr(input_value, "_scores", None),
+                                              expanded=input_value.expanded_files)
 
     def _items_for(kind):
         """(rows, is_fallback) for a category: its own hits, or — when it
@@ -2531,11 +2996,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         if kind == ALL_CATEGORY:
             return all_rows, False
         own = by_kind.get(kind) or []
+        _scs = getattr(input_value, "_scores", None)
+        _exp = input_value.expanded_files
         if own or not input_value.results:
-            return _expand_rows(kind, own), False
+            return _expand_rows(kind, own, _scs, _exp), False
         grouped = []
         for k in dict.fromkeys(h.kind for h in input_value.results):
-            grouped.extend(_expand_rows(k, by_kind[k]))
+            grouped.extend(_expand_rows(k, by_kind[k], _scs, _exp))
         return grouped, True
 
     items, fallback = _items_for(active)
@@ -2561,7 +3028,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     input_value.selected = (input_value.selected % n_rows) if n_rows else 0
     if input_value._snap_sel:
         input_value._snap_sel = False
-        input_value.selected = _first_pick(vis_items, matched, input_value.results)
+        input_value.selected = _first_pick(vis_items, matched, ranked)
 
     def _load_all():
         """Activate the _LoadAllRow: recompute the results with the
@@ -2569,9 +3036,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         (a new query resets to the capped view). The highlight stays where it
         is, so it lands on the first newly revealed row."""
         input_value.show_all = True
-        input_value.results = (global_search_results(q, store, limit=10 ** 9)
-                               if len(q) >= 2
-                               else _recent_hits(store, limit=10 ** 9))
+        input_value.results = _search(limit=10 ** 9)
         request_render()
 
     # While the box holds text focus: Tab / Shift+Tab pick the category (the
@@ -2610,7 +3075,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             items, fallback = _items_for(active)
             vis_items, n_vis, n_over = _vis(items)
             n_rows = len(vis_items)
-            input_value.selected = _first_pick(vis_items, matched, input_value.results)
+            input_value.selected = _first_pick(vis_items, matched, ranked)
             request_render()
         vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
                 - sum(1 for k, _m in keys if k == glfw.KEY_UP)
@@ -2630,6 +3095,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 input_value.active_kind = _hit.kind
                 input_value.selected = 0
                 input_value._snap_sel = True
+                request_render()
+            elif isinstance(_hit, _FileMoreRow):
+                # Expand that file's block; the highlight stays put, so it
+                # lands on the first newly revealed row.
+                input_value.expanded_files.add(_hit.path)
+                input_value.show_all = True  # lift the display cap so the block can show
                 request_render()
             elif (_enter_mods[0] & glfw.MOD_SHIFT) and _goto is not None:
                 # Shift+Enter: jump to the hit's DEFINITION (its action's /
@@ -2730,10 +3201,18 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     chip_layout = []  # (kind, label, cx, cy, chip_w)
     cx, cy = x0, y0
     for k in cats:
-        cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow)
-                   and not _is_context_row(r, matched))
-               if k == ALL_CATEGORY else len(by_kind.get(k, ())))
-        lbl = f"{k} {cnt}"
+        # Counts only for what this scope actually searched: the active chip
+        # (and All when it's active); other chips are just names -- their
+        # results aren't computed until they're picked.
+        if k == active:
+            cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow)
+                       and not _is_context_row(r, matched))
+                   if k == ALL_CATEGORY else len(by_kind.get(k, ())))
+            lbl = f"{k} {cnt}"
+        elif active == ALL_CATEGORY and k in by_kind:
+            lbl = f"{k} {len(by_kind[k])}"
+        else:
+            lbl = k
         chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
         if cx > x0 and cx + chip_w > x0 + w:
             cx = x0
@@ -2912,6 +3391,24 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 input_value.selected = idx
                 _load_all()
             continue
+        if isinstance(hit, _FileMoreRow):
+            # A file block's "+ n more" row: bare text at the file's child
+            # indent, selectable; activating it expands the file.
+            _fx = bx + TREE_INDENT + GROUP_INSET
+            _ft = hit.file_hit.tint() if callable(hit.file_hit.tint) else hit.file_hit.tint
+            dl.add_text(_fx + 8, ry + (ROW_H - line_h) / 2.0,
+                        _mix(_ft, 1.0 if hot else 0.5, sat=text_saturation),
+                        f"+ {hit.count} more")
+            if sel:
+                dl.add_rect(_fx, ry, bx + bw, ry + ROW_H, sel_color,
+                            rounding=4.0, thickness=sel_thickness)
+            if (click is not None and bx <= click[0] <= bx + bw
+                    and ry <= click[1] <= ry + ROW_H):
+                input_value.selected = idx
+                input_value.expanded_files.add(hit.path)
+                input_value.show_all = True
+                request_render()
+            continue
         if isinstance(hit, _ShowMoreRow):
             # The category's "show more" row: bare tinted text at row size but
             # no background/icon - just like any row (outline on
@@ -2944,7 +3441,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # its category's, drawn OUTSIDE the row's background rect in a fixed
         # column, so every row's rect and label align. (getattr: memoized hits
         # from before a hotswap may predate the SearchHit class.)
-        rx = bx + ICON_COL + _ind
+        # Symbol rows (no no gutter) start where their scope's group block
+        # would (GROUP_INSET past the tree indent), so a def row's bg and a
+        # sibling class/function block share the same left edge; file rows
+        # keep the icon gutter.
+        rx = bx + _ind + (ICON_COL if (_sym is None or not _ind) else GROUP_INSET)
         # Code symbol rows carry no icon (the code line speaks for itself);
         # only file rows / custom categories fall back to the category icon.
         _icon = getattr(hit, "icon", None) or (None if _sym is not None
@@ -2956,11 +3457,31 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # (FileMeta / category tint); the class/function base colours are just
         # text and icon, not a wash behind every untinted def.
         _own = _sym is None or _hit_own_tint(hit)
+        # Depth lift of the surface this row sits on: the nearest enclosing
+        # tinted ancestor's group block (2 + 2*depth, see the block pass), or
+        # this row's own tinted bg. The row's editor tile is lifted by the
+        # same amount so the two depth marks tie instead of fighting.
+        _row_lift = 0
+        if _sym is not None:
+            _a, _ad = _sym.parent, (_depths[idx] or 0) - 1
+            while _a is not None:
+                if _hit_own_tint(_a):
+                    _row_lift = 2 + 2 * _ad
+                    break
+                _a, _ad = _a.sym.parent, _ad - 1
+            if _own and not _ctx:
+                _row_lift = 2 + 2 * (_depths[idx] or 0)
         if hot and not _own:
             # Untinted Code row under the cursor / highlight: a faint gre
             # wash, not the base colour (that read as a blue band).
             dl.add_rect_filled(rx, ry, bx + bw, ry + ROW_H, hot_bg_untinted, rounding=4.0)
         elif hot or (not _ctx and _own):
+            if _own and _sym is not None and not _ctx:
+                # An own-tinted Code row is a block of its own (a tinted def
+                # with no children shown), same lift as the group blocks, so
+                # it rides at the same level as its tinted neighbours.
+                add_shadow((rx, ry, bx + bw - rx, ROW_H),
+                           offset=2.0 + 2.0 * (_depths[idx] or 0), corner_radius=4.0)
             dl.add_rect_filled(rx, ry, bx + bw, ry + ROW_H,
                                _mix(tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
         text_x = rx + 8
@@ -3033,6 +3554,15 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                  show_header=False, show_bg=False, shadow=False,
                                  single_line=True, width=_cw, height=ROW_H,
                                  use_cache=True, temp=True,
+                                 # The row tile rides at EXACTLY the depth of
+                                 # the raised surface it sits on (its
+                                 # enclosing tinted block's lift, or its own
+                                 # tinted bg's) -- see _row_lift. Lower and
+                                 # the block's raised depth still masks the
+                                 # tile's washes out until a hover forces a
+                                 # live render; higher and the tile draws its
+                                 # own shadow around the edges.
+                                 z_offset=_row_lift,
                                  code_dict=_cdict, tint=(0,0,0,0),
                                  jump_to=_RowSpan(_cl - 1), is_tree=False,
                                  show_jump_bar=False,
@@ -3164,8 +3694,12 @@ class GlobalSearch:
     window_ds = None  # this window's own draw_state (for the show shortcut)
     _focus_requested = False
     _last_query = None
+    _last_scope = None  # (query, active_kind) the scores were computed for
+    _scores = None  # dict(hit) -> (match, prefix) for the current results (exact = 0)
+    expanded_files = set()  # Code-tree files whose "+ n more" was opened (reset per query)
     results = []  # cached [SearchHit] for the current query
     text_results = []  # async [SearchHit] from the tracy full-text index
+    local_results = []  # async Code-tab local-symbol hits (built beside text_results)
     _text_query = None  # last query handed to _kick_text_search
     _text_gen = 0  # generation counter that debounces/cancels text search
     selected = 0  # index (in on-screen order) of the arrow-key highlight
@@ -4882,7 +5416,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
-             min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None)
+             min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None, tint=(0.071, 0.354, 0.511))
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left_mouse_held=False, shadow=True,
            left_mouse_down=False,
            color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None,
@@ -6990,6 +7524,8 @@ def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **k
     grouped param values (cheap — no registry parses) and the Debug button
     switches to the dropdown rows. The header group starts collapsed in
     both modes."""
+    if input_value is None:
+        return False, None
     from src.lsd.gl_gui.view.core_views.anywhere import _unset_value
     target = input_value
     # locate_all_params: the view's own params PLUS the header's
@@ -7237,7 +7773,6 @@ def draw_config_tab(input_value, **kwargs):
                      show_name=True, show_header=True,
                      show_add_delete=False, draw=True)
     return False, input_value
-
 
 @render_func(use_cache=True, show_bg=False, live=False, mode=Modes.WINDOW, show_header=False, show_name=False,
              selectable=False)
@@ -10094,8 +10629,7 @@ def draw_single(input_value: any, view_func=None, mode: any = None, **kwargs):
 def draw_blank(input_value: any, **kwargs):
     return False, None
 
-
-@defaults(tint=(0.628, 0.063, 0.063))
+# [tint=(0.772, 0.71, 0.15), show_tint=True]
 def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=None, **kwargs):
     kwargs_view_func = view_func
     key = kwargs.get("key", None)

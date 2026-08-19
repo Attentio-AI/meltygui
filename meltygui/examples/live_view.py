@@ -165,11 +165,9 @@ def live_view_values(input_value=None, draw_state=None, **kwargs):
         imgui.text(f"  {len(store)} keys")
 
 
-@window
-@render_func(tint=(0.295, 0.463, 0.672), auto_resize=True)
+@render_func(auto_resize=True)
 def live_view_code(input_value=None, draw_state=None, **kwargs):
-    # The toy source through the unified editor route. Ctrl+Enter hotswaps;
-    # the publisher's next tick republishes through the new code.
+  
     draw_any(decay_step, mode=Mode.NEW_CODE, name="decay_step source")
     draw_any(orbit, mode=Mode.NEW_CODE, name="orbit source")
     draw_any(wave_field, mode=Mode.NEW_CODE, name="wave_field source")
