@@ -227,9 +227,22 @@ def _fuzzy_key_match(q, k):
 # `file` (optional) = the BASENAME of the file the hit lives in, drawn as a
 # dim suffix after the label (skipped on Files rows — there the label IS the
 # file). Display-only: label keeps the full identity/match text.
+# `sym` (optional) = a CodeSym: set on every Code-category hit (files,
+# classes, functions). `parent` is the hit's ENCLOSING Code hit (a method's
+# class, a class's file; None for a file), which is what lets the Code tab
+# lay hits out as a file -> class -> def tree with context rows for the
+# ancestors that didn't match. `order` is the definition order among
+# siblings (dict insertion order of the module/class body -- cheap, and it
+# tracks source order without touching the file); `kind` is
+# "file" / "class" / "function".
 SearchHit = namedtuple("SearchHit",
-                       "label tint activate kind match state keep_open set_state icon parts goto code_row file",
-                       defaults=("", None, None, False, None, None, None, None, None, None))
+                       "label tint activate kind match state keep_open set_state icon parts goto code_row file sym",
+                       defaults=("", None, None, False, None, None, None, None, None, None, None))
+# `display` is the row's short label: a symbol's own name, a file's shortest
+# path SUFFIX that is unique among the indexed files (bare name when no other
+# file shares it) -- the label keeps the full path for identity and keys.
+CodeSym = namedtuple("CodeSym", "path qualname kind order parent display", defaults=(None,))
+CODE_CATEGORY = "Code"
 
 # The combined meta-category: every category's best hits interleaved
 # (see _all_tab_items). Always a selector chip; never a hit's `kind`.
@@ -260,13 +273,18 @@ _CATEGORY_ICONS = {
     "Text": "",  # align-left
     "Classes": "",  # cube
     "Functions": "",  # code
+    "Code": "",  # code
 }
+# Per-symbol icons for Code rows (a hit's own icon -- set at index time).
+_SYM_ICONS = {"file": _CATEGORY_ICONS["Files"], "class": _CATEGORY_ICONS["Classes"],
+              "function": _CATEGORY_ICONS["Functions"]}
+_CODE_CAT_TINT = (0.55, 0.72, 0.85)
 
 
 def _category_icon(kind):
     return _CATEGORY_ICONS.get(kind)
 
-
+    
 def _cst_parse_tint(*parse_types):
     """The @defaults tint the cst-dict view renders these parse types with
     (first type declaring one wins — default_kwargs_by_type is an exact-type
@@ -290,6 +308,8 @@ def _category_tint(kind):
         return _WINDOW_CAT_TINT
     if kind == "Files":
         return _FILE_CAT_TINT
+    if kind == "Code":
+        return _CODE_CAT_TINT
     if kind == "Text":
         return _TEXT_CAT_TINT
     if kind == "Toggles":
@@ -299,40 +319,145 @@ def _category_tint(kind):
     return (1, 1, 1)
 
 
-# (id(class) → rgb tint or None) - cleared whenever the symbol hits
-# rebuild, so a tint edit shows up within one _src_mod_map TTL.
-_symbol_tint_memo = {}
+# id(class/function) → (file-lines key, def line, source tint) - re-resolved
+# when the file's in-memory text changes (key mismatch), cleared whenever the
+# search hits rebuild.
+_symbol_info_memo = {}
 
 
-def _class_source_tint(obj, path):
-    """The tint a class's SOURCE declares — a `@window(tint=...)`-style
-    decorator kwarg, a `# [tint=...]` override comment above the def, or a
-    class-body `tint = (...)` — via the editor's _scan_def_tint_lines, the
-    same resolution definition tints use (and the same stores the cst-dict
-    parse merges into __overrides__). Covers root AND nested classes: the def
-    line is found by scanning for `class <name>` at any indent. Lazy +
-    memoized — call it only for rows actually displayed."""
-    key = id(obj)
-    if key in _symbol_tint_memo:
-        return _symbol_tint_memo[key]
-    tint = None
+def _file_lines(path):
+    """The IN-MEMORY lines of `path` -- PendingSave.current_file_text (disk
+    with every queued span edit spliced in: the app's source of truth, the
+    same text the trigram index and the editor buffers reflect) split into
+    lines, plus a cheap identity `key` for memoizing anything derived from
+    them: (id of the FileWatch-cached disk string, pending gen). Neither
+    hashes content -- the disk string object is replaced on an external
+    change, the gen bumps on a queued edit."""
+    from src.lsd.gl_gui.view.core_views.text_editor import _pending_gen_of
+    disk = Melty.read_code(path)
+    key = (id(disk), _pending_gen_of(path))
+    ent = _file_lines_memo.get(str(path))
+    if ent is not None and ent[0] == key:
+        return ent[1], key
+    if disk is None:
+        lines = []
+    else:
+        from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+        text = PendingSave.current_file_text(path)
+        lines = (text if text is not None else disk).splitlines()
+    if len(_file_lines_memo) > 64:
+        _file_lines_memo.clear()
+    _file_lines_memo[str(path)] = (key, lines)
+    return lines, key
+
+
+_file_lines_memo = {}  # str(path) -> (key, lines)
+
+
+def _symbol_source_info(obj, path):
+    """(def_line, tint) for a live class/function -- the 1-based line of its
+    `class`/`def` statement in the file's IN-MEMORY text (_file_lines: disk
+    + pending edits, so an external or queued edit moves it), and the tint
+    its SOURCE declares (a `@window(tint=...)`-style decorator kwarg, a
+    `# [tint=...]` override comment above the def, or a class-body
+    `tint = (...)`) via the editor's _scan_def_tint_lines -- the same
+    resolution definition tints use. Only explicit tints count.
+
+    Never parses the module. A function's co_firstlineno (DISK coordinates,
+    bridged to pending by _pending_line_delta) anchors the search: the
+    `def <name>` candidate nearest the anchor wins, so same-named methods in
+    different classes resolve and small drifts (edits above, decorators)
+    don't matter. A class anchors on its first method the same way; a class
+    with no methods (Toggles groups) takes the first `class <name>` after
+    its enclosing class's line (resolved recursively via the qualname).
+    Memoized per object on the file-lines key -- recomputed only when the
+    in-memory text changes. Returns (None, None) when unresolvable."""
+    lines, fkey = _file_lines(path)
+    ent = _symbol_info_memo.get(id(obj))
+    if ent is not None and ent[0] == fkey:
+        return ent[1], ent[2]
+    line, tint = None, None
     try:
-        from src.lsd.gl_gui.view.core_views.text_editor import _scan_def_tint_lines
-        src = Melty.read_code(path)
-        if src:
-            lines = src.splitlines()
-            last = obj.__qualname__.rsplit(".", 1)[-1]
+        from src.lsd.gl_gui.view.core_views.text_editor import (
+            _scan_def_tint_lines, _pending_line_delta)
+        qn = obj.__qualname__
+        last = qn.rsplit(".", 1)[-1]
+
+        def _anchor(fn):
+            """Pending-coordinate line of a function's first decorator."""
+            try:
+                ln = inspect.unwrap(fn).__code__.co_firstlineno
+            except Exception:
+                return None
+            return ln + _pending_line_delta(path, ln - 1)
+
+        def _nearest(cands, anchor):
+            return min(cands, key=lambda c: abs(c + 1 - anchor)) if anchor is not None else cands[0]
+
+        if isinstance(obj, type):
             pat = re.compile(rf"^\s*class\s+{re.escape(last)}\b")
-            for i, ln in enumerate(lines):
-                if pat.match(ln):
-                    res = _scan_def_tint_lines(lines, i + 1, last)
-                    if res is not None:
-                        tint = tuple(res[0][:3])
-                    break
+            cands = [i for i, ln in enumerate(lines) if pat.match(ln)]
+            if len(cands) > 1 and "." in qn:
+                # Groups: only candidates below the enclosing class's line.
+                mod = sys.modules.get(getattr(obj, "__module__", None) or "")
+                parent = mod
+                for part in qn.split(".")[:-1]:
+                    parent = getattr(parent, part, None)
+                    if parent is None:
+                        break
+                if isinstance(parent, type):
+                    p_line, _pt = _symbol_source_info(parent, path)
+                    if p_line is not None:
+                        below = [c for c in cands if c + 1 > p_line]
+                        cands = below or cands
+            if len(cands) > 1:
+                anchors = []
+                for m in vars(obj).values():
+                    if isinstance(m, (staticmethod, classmethod)):
+                        m = m.__func__
+                    if isinstance(m, types.FunctionType):
+                        a = _anchor(m)
+                        if a is not None:
+                            anchors.append(a)
+                if anchors:
+                    a = min(anchors)
+                    below = [c for c in cands if c + 1 < a]
+                    cands = [below[-1]] if below else cands[:1]
+            if cands:
+                line = cands[0] + 1
+        else:
+            pat = re.compile(rf"^\s*(async\s+)?def\s+{re.escape(last)}\b")
+            cands = [i for i, ln in enumerate(lines) if pat.match(ln)]
+            if cands:
+                line = _nearest(cands, _anchor(obj)) + 1
+        if line is not None:
+            res = _scan_def_tint_lines(lines, line, last)
+            if res is not None:
+                tint = tuple(res[0][:3])
     except Exception:
-        tint = None
-    _symbol_tint_memo[key] = tint
-    return tint
+        line, tint = None, None
+    _symbol_info_memo[id(obj)] = (fkey, line, tint)
+    return line, tint
+
+
+def _symbol_source_tint(obj, path):
+    return _symbol_source_info(obj, path)[1]
+
+
+def _symbol_code_row(obj, path):
+    """The `code_row` tuple for a class/function search row -- (path, line,
+    "", dedented def line, "<line>") -- so the row renders through the real
+    editor exactly like a Text-tab symbol hit; None when the def line can't
+    be resolved. Line AND text come from the file's in-memory lines
+    (_file_lines), i.e. pending coordinates -- what the editor buffer shows
+    and what jump_to_line expects."""
+    line, _tint = _symbol_source_info(obj, path)
+    if line is None:
+        return None
+    lines, _k = _file_lines(path)
+    if not (0 < line <= len(lines)):
+        return None
+    return (path, line, "", lines[line - 1].lstrip()[:200], str(line))
 
 
 def _hit_own_tint(hit):
@@ -343,7 +468,18 @@ def _hit_own_tint(hit):
     tint = hit.tint() if callable(hit.tint) else hit.tint
     if not (isinstance(tint, (tuple, list)) and len(tint) >= 3):
         return False
-    return tuple(tint[:3]) != tuple(_category_tint(hit.kind)[:3])
+    return tuple(tint[:3]) != tuple(_hit_base_tint(hit)[:3])
+
+
+def _hit_base_tint(hit):
+    """The tint a hit would carry if it had NO tint of its own -- the category
+    fallback, or for a Code hit the fallback of its symbol kind (a file /
+    class / function each render in a different base colour, so the category
+    tint alone can't tell an own-tinted class from a plain function)."""
+    sym = getattr(hit, "sym", None)
+    if sym is None:
+        return _category_tint(hit.kind)
+    return _category_tint({"file": "Files", "class": "Classes"}.get(sym.kind, "Functions"))
 
 
 # Group label for the All tab's leading block (every category's #1 hit).
@@ -377,6 +513,119 @@ class _LoadAllRow:
         self.count = count
 
 
+def _pick_count(counts, hit):
+    return counts.get(f"{hit.kind}:{hit.label}", 0)
+
+
+def _code_tree_rows(hits):
+    """Lay Code hits out as a file -> class -> def TREE, flattened to rows.
+    Every hit's ancestors (sym.parent chain) are inserted above it -- as
+    CONTEXT rows when they didn't match themselves (see _is_context_row) --
+    so a method hit always shows its class and file. Files order by the
+    scorer rank of their best nested match (most relevant file first);
+    siblings inside a file order by the highest pick count anywhere in their
+    subtree (most-used first), then by definition order. Non-Code hits pass
+    through in place."""
+    if not hits:
+        return []
+    counts = (getattr(_ensure_search_store(), "counts", None) or {})
+    nodes = {}  # id(hit) -> [hit, {id: child node}, rank]
+    roots = {}
+    passthrough = []  # (rank, hit) for hits without a sym
+
+    def node_for(h, rank):
+        n = nodes.get(id(h))
+        if n is None:
+            n = nodes[id(h)] = [h, {}, rank]
+            parent = h.sym.parent
+            if parent is not None:
+                node_for(parent, rank)[1][id(h)] = n
+            else:
+                roots[id(h)] = n
+        return n
+
+    for rank, h in enumerate(hits):
+        if getattr(h, "sym", None) is None:
+            passthrough.append((rank, h))
+            continue
+        node_for(h, rank)
+    if not nodes:
+        return list(hits)
+
+    weight = {}
+
+    def w(n):
+        k = id(n)
+        if k not in weight:
+            weight[k] = max([_pick_count(counts, n[0])]
+                            + [w(c) for c in n[1].values()])
+        return weight[k]
+
+    rows = []
+
+    def emit(n):
+        rows.append(n[0])
+        for c in sorted(n[1].values(), key=lambda c: (-w(c), c[0].sym.order)):
+            emit(c)
+
+    # Files (roots) order by RELEVANCE -- the scorer rank of the best match
+    # anywhere inside them (rank already includes popularity in all its
+    # tiers) -- so the top result's file leads the list. Usage-count-first
+    # ordering applies WITHIN a file (siblings above).
+    for n in sorted(roots.values(), key=lambda n: n[2]):
+        emit(n)
+    # Non-Code hits keep their relative order after the tree (a mixed list
+    # only happens in the All tab, which groups by category anyway).
+    rows.extend(h for _r, h in passthrough)
+    return rows
+
+
+def _expand_rows(kind, hits):
+    """The on-screen rows for a category's hits: the Code category expands
+    into its tree (context rows included); every other category shows its
+    hits as they are."""
+    return _code_tree_rows(hits) if kind == CODE_CATEGORY else list(hits)
+
+
+def _is_context_row(row, matched):
+    """A Code row shown only as an ANCESTOR of a match -- present for context,
+    never the default highlight. `matched` is the id-set of the query's own
+    hits."""
+    return getattr(row, "sym", None) is not None and id(row) not in matched
+
+
+def _sym_depth(row):
+    """Tree depth of a Code row (file 0, top-level def 1, method 2, ...);
+    None for non-Code rows."""
+    sym = getattr(row, "sym", None)
+    if sym is None:
+        return None
+    d, p = 0, sym.parent
+    while p is not None:
+        d += 1
+        p = p.sym.parent
+    return d
+
+
+def _first_pick(rows, matched, ranked=()):
+    """The row the highlight lands on when it resets: the BEST-RANKED hit
+    present in `rows` (`ranked` = the query's hits, scorer order -- the tree
+    orders by usage/definition order, so the top match isn't necessarily the
+    top row), else the first non-context row, else 0."""
+    n = len(rows)
+    if not n:
+        return 0
+    pos = {id(r): i for i, r in enumerate(rows)}
+    for h in ranked:
+        i = pos.get(id(h))
+        if i is not None:
+            return i
+    for i, r in enumerate(rows):
+        if not _is_context_row(r, matched):
+            return i
+    return 0
+
+
 def _all_tab_items(by_kind, horizontal=False, keep_order=False):
     """(rows, groups) for the All tab — `groups` is parallel to `rows` and
     names each row's label line. Vertical: a "Top" block first (every
@@ -401,16 +650,23 @@ def _all_tab_items(by_kind, horizontal=False, keep_order=False):
     if horizontal:
         rows, groups = [], []
         for k in order:
-            rows.extend(ranked[k])
-            groups.extend([k] * len(ranked[k]))
+            exp = _expand_rows(k, ranked[k])
+            rows.extend(exp)
+            groups.extend([k] * len(exp))
             if len(by_kind[k]) > per_cat:
                 rows.append(_ShowMoreRow(k))
                 groups.append(k)
         return rows, groups
     tops = sorted((ranked[k][0] for k in order), key=lambda h: not _hit_own_tint(h))
-    rows, groups = list(tops), [TOP_GROUP] * len(tops)
+    rows, groups = [], []
+    for h in tops:
+        # A Code top hit brings its ancestor context rows along (file/class
+        # above the def), so the Top block reads the same as the Code tab.
+        exp = _expand_rows(h.kind, [h])
+        rows.extend(exp)
+        groups.extend([TOP_GROUP] * len(exp))
     for k in order:
-        rest = ranked[k][1:]
+        rest = _expand_rows(k, ranked[k][1:])
         rows.extend(rest)
         groups.extend([k] * len(rest))
         if len(by_kind[k]) > per_cat:
@@ -505,6 +761,16 @@ def _jump_to_symbol_def(obj, path):
     parses the whole module, so it stays on a daemon thread and lands on
     open_files.jump_to_line once known."""
     from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    if obj is not None:
+        # The def row is cheap to resolve now (_symbol_source_info: a memoized
+        # regex scan, no module parse) -- hand it to open_in_editor up front,
+        # in PENDING coordinates, so a file that isn't open yet scrolls to the
+        # def on its first frame (the async path below only landed the line on
+        # an ALREADY-active editor). `token` puts the caret on the name.
+        cr = _symbol_code_row(obj, path)
+        if cr is not None:
+            open_in_editor(path, cr[1], token=obj.__qualname__.rsplit(".", 1)[-1])
+            return
     host = open_in_editor(path)
     if obj is None or host is None:
         return
@@ -530,63 +796,114 @@ def _jump_to_symbol_def(obj, path):
 # so an identity memo would re-sweep (and wipe its class-tint memo) every 5s
 # mid-typing; the content key only rebuilds when a module actually (un)loads.
 _symbol_hits_memo = (None, None)
+# Bumped when SearchHit's args / the Code hit layout changes: the memos are
+# module globals that survive a hotswap, so the version in the memo signature
+# is what forces a rebuild instead of serving pre-change hits.
+_HIT_SCHEMA = 4
 
 
 @search_index
 def symbol_index():
-    """Every function and class defined in a loaded src module — module-level
-    defs plus one level of class members (methods, nested classes) — labelled
-    `qualname — module`. Activating a hit jumps to the definition in IntelliJ,
-    like the editor's Ctrl+B. Covers loaded modules only: the file universe is
-    the symbol index's _src_mod_map, so a file nothing imports is invisible."""
+    """Every function and class defined in a loaded src module -- module-level
+    defs plus class members (methods, nested classes) at ANY nesting depth --
+    labelled `qualname - module`, in the Code category. Each hit's `sym`
+    links to its enclosing hit (class -> file, method -> class), so the Code
+    tab can lay results out as a tree. Activating a hit jumps to the
+    definition in the in-app editor, like the editor's Ctrl+B. Covers loaded
+    modules only: the file universe is the symbol index's _src_mod_map, so a
+    file nothing imports is invisible."""
     global _symbol_hits_memo
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
     mod_map = _src_mod_map()
-    mod_sig = tuple(mod_map)
+    mod_sig = (tuple(mod_map), _HIT_SCHEMA)
     memo_sig, memo_hits = _symbol_hits_memo
     if memo_sig == mod_sig:
         return memo_hits
 
     hits = []
+    file_hits = {h.sym.path: h for h in file_index()}
 
     class_tint = _category_tint("Classes")
     fn_tint = _category_tint("Functions")
-    _symbol_tint_memo.clear()
+    _symbol_info_memo.clear()
 
-    def add(obj, path, stem):
+    def add(obj, path, stem, parent, order):
         qn = getattr(obj, "__qualname__", None) or obj.__name__
-        if "<" in qn:  # lambdas / <locals> - no stable, jumpable name
-            return
+        if "<" in qn:  # lambdas / <locals> -- no stable, jumpable source
+            return None
         is_class = isinstance(obj, type)
         # Plain ASCII separator: an em dash renders as the missing-glyph "?"
-        # in the UI font. A class's tint is its OWN source tint (decorator /
-        # override comment / class var) - resolved lazily at render time (the
-        # hit's tint is a CALLABLE), since it needs a file read and scan and
-        # only displayed rows should pay it.
-        tint = ((lambda o=obj, p=path: _class_source_tint(o, p) or class_tint)
-                if is_class else fn_tint)
-        hits.append(SearchHit(f"{qn} - {stem}", tint,
-                              lambda o=obj, p=path: _jump_to_symbol_def(o, p),
-                              kind="Classes" if is_class else "Functions",
-                              file=path.name))
+        # in the UI font. A symbol's tint is its OWN source tint (decorator /
+        # override comment / magic var), falling back to the class/function
+        # base colour -- resolved lazily at draw time (the hit's tint is a
+        # CALLABLE), since it needs a module parse + scan and only displayed
+        # rows should pay it.
+        base = class_tint if is_class else fn_tint
+        tint = (lambda o=obj, p=path, b=base: _symbol_source_tint(o, p) or b)
+        kind = "class" if is_class else "function"
+        # code_row is a CALLABLE (resolved at draw, memoized): the def line
+        # needs a source scan, which only displayed rows should pay.
+        hit = SearchHit(f"{qn} - {stem}", tint,
+                        lambda o=obj, p=path: _jump_to_symbol_def(o, p),
+                        kind=CODE_CATEGORY, match=qn, file=path.name,
+                        code_row=(lambda o=obj, p=path: _symbol_code_row(o, p)),
+                        sym=CodeSym(path, qn, kind, order, parent, qn.rsplit(".", 1)[-1]))
+        hits.append(hit)
+        return hit
 
-    for path, mod in mod_map.items():
-        mod_name = mod.__name__
-        stem = path.stem
-        for obj in list(vars(mod).values()):
+    def walk(owner_vars, path, stem, mod_name, parent, owner_qn):
+        """Add every def in a module/class body dict, recursing into classes
+        NESTED there (qualname-checked, so an attribute that merely
+        references a class defined elsewhere isn't re-parented under it)."""
+        order = 0
+        for obj in list(owner_vars.values()):
+            if isinstance(obj, (staticmethod, classmethod)):
+                obj = obj.__func__
             if (not isinstance(obj, (types.FunctionType, type))
                     or getattr(obj, "__module__", None) != mod_name):
                 continue  # imported name, not a definition in this file
-            add(obj, path, stem)
+            qn = getattr(obj, "__qualname__", None) or obj.__name__
+            expect = f"{owner_qn}.{obj.__name__}" if owner_qn else obj.__name__
+            if qn != expect:
+                continue  # an alias to a def owned elsewhere
+            if not isinstance(obj, type):
+                try:
+                    code = inspect.unwrap(obj).__code__
+                except Exception:
+                    code = None
+                if (code is not None and code.co_filename != str(path)
+                        and (code.co_filename.startswith("<")
+                             or Path(code.co_filename).resolve() != path)):
+                    continue  # generated (dataclass dunders) -- no source to show
+            hit = add(obj, path, stem, parent, order)
+            if hit is None:
+                continue
+            order += 1
             if isinstance(obj, type):
-                for member in list(vars(obj).values()):
-                    if isinstance(member, (staticmethod, classmethod)):
-                        member = member.__func__
-                    if (isinstance(member, (types.FunctionType, type))
-                            and getattr(member, "__module__", None) == mod_name):
-                        add(member, path, stem)
+                walk(vars(obj), path, stem, mod_name, hit, qn)
+
+    for path, mod in mod_map.items():
+        walk(vars(mod), path, path.stem, mod.__name__, file_hits.get(path), "")
     _symbol_hits_memo = (mod_sig, hits)
     return hits
+
+
+def _short_unique_paths(paths):
+    """{path: shortest trailing path that is unique among `paths`} -- the bare
+    file name when nothing else shares it, else as many parent dirs as it
+    takes to tell same-named files apart ("core_views/text_editor.py")."""
+    out = {}
+    parts = {p: p.parts for p in paths}
+    for p in paths:
+        pp = parts[p]
+        for n in range(1, len(pp) + 1):
+            tail = pp[-n:]
+            if not any(q is not p and parts[q][-n:] == tail for q in paths):
+                out[p] = "/".join(tail)
+                break
+        else:
+            out[p] = "/".join(pp)
+    return out
 
 
 # Same content-signature memo as the symbol sweep: keeps the hits list's
@@ -597,23 +914,30 @@ _file_hits_memo = (None, None)
 
 @search_index
 def file_index():
-    """Every loaded src file, labelled by its src-relative path. Activating a
-    hit opens the file in the in-app code editor. Same loaded-module universe
-    as the symbol index (_src_mod_map)."""
+    """Every loaded src file, labelled by its src-relative path, in the Code
+    category (a file hit is the ROOT of its symbols' tree). Activating a hit
+    opens the file in the in-app code editor. Same loaded-module universe as
+    the symbol index (_src_mod_map)."""
     global _file_hits_memo
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
     mod_map = _src_mod_map()
-    mod_sig = tuple(mod_map)
+    mod_sig = (tuple(mod_map), _HIT_SCHEMA)
     memo_sig, memo_hits = _file_hits_memo
     if memo_sig == mod_sig:
         return memo_hits
-    tint = _category_tint("Files")
+    base = _category_tint("Files")
     hits = []
-    for path in mod_map:
+    shorts = _short_unique_paths(list(mod_map))
+    for order, path in enumerate(mod_map):
         label = path.as_posix().split("/src/", 1)[-1]
+        # The file's own FileMeta tint (the colour its editor tab wears),
+        # live -- a callable so that a repaint follows an edit.
+        tint = (lambda p=path, b=base: _file_meta_tint(p) or b)
         hits.append(SearchHit(label, tint,
                               lambda p=path: _jump_to_symbol_def(None, p),
-                              kind="Files", match=path.name))
+                              kind=CODE_CATEGORY, match=path.name,
+                              icon=_SYM_ICONS["file"],
+                              sym=CodeSym(path, "", "file", order, None, shorts[path])))
     _file_hits_memo = (mod_sig, hits)
     return hits
 
@@ -1084,8 +1408,15 @@ def _provider_corpus(provider):
     for h in hits:
         low = h.label.lower()
         key = h.match.lower() if h.match else low
+        # `full` is a wider match haystack (the whole label, so a
+        # directory query still lists files). A SYMBOL's label carries its
+        # file stem ("qn - f") for visibility only -- matching on it would
+        # match every def in a file whenever that file name is typed, so
+        # symbols match on their qualname alone.
+        sym = getattr(h, "sym", None)
+        full = key if (sym is not None and sym.qualname) else low
         corpus.append((low, key,
-                       frozenset(key[i:i + 2] for i in range(len(key) - 1)), h))
+                       frozenset(key[i:i + 2] for i in range(len(key) - 1)), h, full))
     _scorer_corpus_memo[name] = (hits, corpus)
     return corpus
 
@@ -1105,7 +1436,41 @@ def _ensure_search_store():
         from src.lsd.gl_gui.model.app_model import GlobalSearchStore
         store = root.global_search_store = GlobalSearchStore()
         print("GlobalSearchStore: backfilled onto live root (root predated the field)")
+    _migrate_store_code_kinds(store)
     return store
+
+
+# The categories we merged into "Code" -- their pick counts / recency carry
+# over under the new kind so ranking history survives the merge.
+_LEGACY_CODE_KINDS = ("Files:", "Classes:", "Functions:")
+_store_migrated_for = None  # id(store) last migrated this session
+
+
+def _migrate_store_code_kinds(store):
+    """One-shot per store: rewrite "Files:/Classes:/Functions:<label>" keys to
+    "Code:<label>" (labels are unchanged across the merge). Idempotent --
+    cheap identity check after the first pass."""
+    global _store_migrated_for
+    if id(store) == _store_migrated_for:
+        return
+    _store_migrated_for = id(store)
+    try:
+        counts = store.counts
+        for key in [k for k in counts if k.startswith(_LEGACY_CODE_KINDS)]:
+            new = CODE_CATEGORY + ":" + key.split(":", 1)[1]
+            counts[new] = counts.get(new, 0) + counts.pop(key)
+        rec = getattr(store, "recent", None) or []
+        if any(k.startswith(_LEGACY_CODE_KINDS) for k in rec):
+            seen, out = set(), []
+            for k in rec:
+                if k.startswith(_LEGACY_CODE_KINDS):
+                    k = CODE_CATEGORY + ":" + k.split(":", 1)[1]
+                if k not in seen:
+                    seen.add(k)
+                    out.append(k)
+            store.recent = out
+    except Exception:
+        traceback.print_exc()
 
 
 def _activate_hit(hit, store):
@@ -1139,7 +1504,7 @@ def _recent_hits(store, limit=60):
     order = {k: i for i, k in enumerate(recent)}
     found = {}
     for provider in GLOBAL_SEARCH_INDEXES:
-        for _low, _key, _bi, hit in _provider_corpus(provider):
+        for _low, _key, _bi, hit, _full in _provider_corpus(provider):
             i = order.get(f"{hit.kind}:{hit.label}")
             if i is not None and i not in found:
                 found[i] = hit
@@ -1156,7 +1521,7 @@ def _popular_hits(store, limit=60):
     counts = store.counts
     ranked = []
     for provider in GLOBAL_SEARCH_INDEXES:
-        for _low, _key, _bi, hit in _provider_corpus(provider):
+        for _low, _key, _bi, hit, _full in _provider_corpus(provider):
             c = counts.get(f"{hit.kind}:{hit.label}", 0)
             if c > 0:
                 ranked.append((c, hit))
@@ -1192,10 +1557,10 @@ def global_search_results(q, store=None, limit=60):
     scored = []
     seen = set()
     for provider in GLOBAL_SEARCH_INDEXES:
-        for low, key, key_bigrams, hit in _provider_corpus(provider):
+        for low, key, key_bigrams, hit, full in _provider_corpus(provider):
             if low in seen:
                 continue
-            if q in key or q in low:
+            if q in key or q in full:
                 dist = 0
             elif use_fuzzy:
                 # Bigram lower bound before the O(len(q)-len(key)) edit-
@@ -1216,7 +1581,7 @@ def global_search_results(q, store=None, limit=60):
             # character index - form a tier above other exact-substring hits,
             # so with popularity applied within tiers, the top hit is the
             # most-used result whose name starts with what's been typed.
-            prefix = 0 if (key.startswith(q) or low.startswith(q)) else 1
+            prefix = 0 if (key.startswith(q) or full.startswith(q)) else 1
             scored.append((dist, prefix, len(key), hit))
     # Popularity tier: within a (distance, prefix) tier, results picked often
     # over time (GlobalSearchStore counts) rank ahead of never-picked ones.
@@ -1236,14 +1601,16 @@ def global_search_results(q, store=None, limit=60):
 def _dismiss_global_search():
     """Close the GlobalSearch window and release the box's text focus — called
     after a result is activated (clicked or Enter), so picking a result also
-    dismisses the search. Also clears the query, so the next open starts fresh
-    (Esc, which doesn't call this, leaves the query for resuming)."""
+    dismisses the search. The query survives (selected on the next open)."""
     win = Core.melty.find_window("GlobalSearch")
     if win is not None:
         win.closed = True
-    GlobalSearch.query = ""
-    GlobalSearch._last_query = None
-    GlobalSearch.selected = 0
+    # The query (and its selection) are KEPT: the next open shows the last
+    # search with the box's text selected (select_all_on_focus in the
+    # summon), so typing replaces it and Enter re-runs it. `selected` is
+    # not reset either - the rows still paint this frame after the
+    # activation, and a reset showed the highlight hopping to row 0 just
+    # before the window closed.
     GlobalSearch.show_all = False
     GlobalSearch.editing = None
     GlobalSearch._edit_focus = False
@@ -1509,7 +1876,7 @@ def draw_symbol_usage(input_value):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse,
                              CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath),
-             use_cache=True,
+             use_cache=True, tint=(0.139, 0.111, 0.093),
              header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
              wrap=False, with_header=draw_header, indent_size=3, searchable=True, child_kwargs=None)
@@ -2062,7 +2429,7 @@ def draw_type(input_value: type, **kwargs):
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
-             with_header=None, bg_offset=4, auto_resize=False, temp=True)
+             with_header=None, bg_offset=4, auto_resize=False)
 def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching hits
     from the registered search indexes (GLOBAL_SEARCH_INDEXES). Results are
@@ -2073,6 +2440,14 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # param stays as an explicit override. _ensure_search_store (called every
     # frame from draw_main) guarantees the attr exists on the live root.
     store = _ensure_search_store()
+    # Persisted UI state rides the store (AppModel): adopt the last session's
+    # query + active tab ONCE per store object (getattr: never live stores from
+    # before those fields existed), and write changes back at the end of the
+    # body.
+    if store is not None and input_value._store_adopted is not store:
+        input_value._store_adopted = store
+        input_value.query = getattr(store, "query", "") or ""
+        input_value.active_kind = getattr(store, "active_kind", None) or ALL_CATEGORY
     # Expose our own window draw_state + honour a focus request from draw_main's
     # Ctrl+Shift+F shortcut (one-shot: grab the box's text focus this frame).
     input_value.window_ds = draw_state
@@ -2086,7 +2461,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # rows keep the search visible.
     box = draw_text(input_value.query, name="Search", show_name=False, searchable=False, header_same_line=False,
                     show_bg=False,
-                    font=Font.JETBRAINS_MONO_50, request_focus=_focus, is_tree=False, align_header=False,
+                    font=Font.JETBRAINS_MONO_50, request_focus=_focus, select_all_on_focus=True,
+                    is_tree=False, align_header=False,
                     is_search_box=True,
                     single_line=True, return_extras=True)
     changed, new_query = box[0], box[1]
@@ -2102,9 +2478,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         input_value.results = (global_search_results(q, store) if len(q) >= 2
                                else _recent_hits(store))
         input_value.selected = 0  # reset highlight to the top match on a new query
+        input_value._snap_sel = True  # ...skipping Code context rows
     # Full-text hits arrive async from the trigram index (no-op while q is
     # unchanged); they land on input_value.text_results and repaint us.
     _kick_text_search(q)
+
+    # The query's own hits by identity: any Code row not in here is a context
+    # row (an ancestor shown for perspective) -- drawn dim, and skipped when
+    # the highlight resets (a new query / tab lands on the best real match).
+    matched = {id(h) for h in input_value.results}
+    matched.update(id(h) for h in input_value.text_results)
 
     # Group ranked hits by category; only the ACTIVE category's results render
     # (one at a time), picked by the selector row under the box.
@@ -2149,10 +2532,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             return all_rows, False
         own = by_kind.get(kind) or []
         if own or not input_value.results:
-            return own, False
+            return _expand_rows(kind, own), False
         grouped = []
         for k in dict.fromkeys(h.kind for h in input_value.results):
-            grouped.extend(by_kind[k])
+            grouped.extend(_expand_rows(k, by_kind[k]))
         return grouped, True
 
     items, fallback = _items_for(active)
@@ -2176,6 +2559,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     vis_items, n_vis, n_over = _vis(items)
     n_rows = len(vis_items)
     input_value.selected = (input_value.selected % n_rows) if n_rows else 0
+    if input_value._snap_sel:
+        input_value._snap_sel = False
+        input_value.selected = _first_pick(vis_items, matched, input_value.results)
 
     def _load_all():
         """Activate the _LoadAllRow: recompute the results with the
@@ -2224,7 +2610,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             items, fallback = _items_for(active)
             vis_items, n_vis, n_over = _vis(items)
             n_rows = len(vis_items)
-            input_value.selected = 0
+            input_value.selected = _first_pick(vis_items, matched, input_value.results)
             request_render()
         vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
                 - sum(1 for k, _m in keys if k == glfw.KEY_UP)
@@ -2243,6 +2629,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 # (same as clicking its chip) and stays open.
                 input_value.active_kind = _hit.kind
                 input_value.selected = 0
+                input_value._snap_sel = True
                 request_render()
             elif (_enter_mods[0] & glfw.MOD_SHIFT) and _goto is not None:
                 # Shift+Enter: jump to the hit's DEFINITION (its action's /
@@ -2267,6 +2654,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # Width of the icon gutter at each row's left - the category (or file)
     # icon sits here, OUTSIDE the row's background rect.
     ICON_COL = 22.0
+    ICON_X = 4.0  # icon's x inset within the gutter
+    icon_alpha = 0.55  # icons pull back from the text
+    suffix_alpha = 0.55  # the dim line-number / location suffix at a row's right
     CHIP_H, CHIP_GAP, CHIP_PAD = 22.0, 6.0, 8.0
     CHIP_ROW_GAP = 6.0
     # Only the ACTIVE chip gets a background - the rest are plain coloured
@@ -2276,6 +2666,15 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     chip_text_idle, chip_text_hover = 0.62, 1.0
     row_bg_value, row_bg_hot = 0.045, 0.10
     row_text_value, row_text_hot = 0.9, 1.5
+    ctx_text_value = 0.5  # Code context rows (ancestors that didn't match)
+    hot_bg_untinted = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.07)  # hover/select wash on untinted Code rows
+    TREE_INDENT = 16.0  # px per Code tree level (file -> class -> def)
+    # Group background behind a Code row AND its descendants (a file's block
+    # envelopes its classes/defs, a def all its defs) in the row's own
+    # column: darker than a row bg, one step brighter per nesting level so the
+    # inner block read inside the outer.
+    group_bg_value, group_bg_step = 0.028, 0.012
+    GROUP_INSET = ICON_COL - 4.0  # block's left edge sits just past the row icon
     # The file name at a row's far right (hit.file) - just barely above the
     # row background (bg is 0.045/0.10), so it reads only when looked for.
     # Files rows skip it (label IS the file).
@@ -2316,11 +2715,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         imgui.pop_font()
     GROUP_H = small_line_h + 7.0
 
-    def _mix(tint, value, factor=0.8, sat=1.0):
+    def _mix(tint, value, factor=0.8, sat=1.0, alpha=1.0):
         c = tint if (isinstance(tint, tuple) and len(tint) >= 3) else (0.5, 0.5, 0.5)
         col = sm.make_color_rgb(c[0], c[1], c[2], value=value, factor=factor,
                                 saturation_scale=sat)
-        return imgui.get_color_u32_rgba(col[0], col[1], col[2], 1.0)
+        return imgui.get_color_u32_rgba(col[0], col[1], col[2], alpha)
 
     # ---- category chip layout, calculated first so the content dummy can
     # report the right height: chips flow left-to-right and WRAP into further
@@ -2331,7 +2730,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     chip_layout = []  # (kind, label, cx, cy, chip_w)
     cx, cy = x0, y0
     for k in cats:
-        cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow))
+        cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow)
+                   and not _is_context_row(r, matched))
                if k == ALL_CATEGORY else len(by_kind.get(k, ())))
         lbl = f"{k} {cnt}"
         chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
@@ -2438,6 +2838,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 and cy <= click[1] <= cy + CHIP_H):
             input_value.active_kind = k
             input_value.selected = 0
+            input_value._snap_sel = True
             request_render()
 
     # ---- result rows: the active category (or, if it's empty, every
@@ -2462,6 +2863,35 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                     _mix(_category_tint(_g), 0.55, sat=text_saturation), _g)
         if small_font is not None:
             imgui.pop_font()
+    # ---- Code tree group backgrounds: every Code row that has descendant
+    # rows below it gets one tinted block from itself through its last
+    # descendant (rows are laid out in tree order, so a subtree is the run of
+    # deeper rows that follows). Drawn first, so rows paint over them; inner
+    # blocks paint over outer ones. ----
+    _depths = [_sym_depth(r) for r in vis_items]
+    for i, hit in enumerate(vis_items):
+        d = _depths[i]
+        if d is None:
+            continue
+        j = i + 1
+        while j < n_rows and _depths[j] is not None and _depths[j] > d:
+            j += 1
+        if j == i + 1 or not _hit_own_tint(hit):
+            continue  # no children, or no tint of its own -> no block
+        gt = hit.tint() if callable(hit.tint) else hit.tint
+        gx, gy, gw = row_layout[i]
+        _lx, ly, _lw = row_layout[j - 1]
+        if row_layout[j - 1][0] != gx:
+            continue  # spans a column break (horizontal All tab)
+        # The block starts just after the row's own icon (the icon stays on
+        # the surface, outside the block) and casts a shadow, one step higher
+        # per nesting level so an inner block lifts off its outer one.
+        gx0 = gx + d * TREE_INDENT + GROUP_INSET
+        gy1 = ly + ROW_H
+        add_shadow((gx0, gy, gx + gw - gx0, gy1 - gy), offset=2.0 + 2.0 * d,
+                   corner_radius=4.0)
+        dl.add_rect_filled(gx0, gy, gx + gw, gy1,
+                           _mix(gt, group_bg_value + d * group_bg_step), rounding=4.0)
     for idx, hit in enumerate(vis_items):
         bx, ry, bw = row_layout[idx]
         sel = (idx == input_value.selected)
@@ -2496,23 +2926,43 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                     and ry <= click[1] <= ry + ROW_H):
                 input_value.active_kind = hit.kind
                 input_value.selected = 0
+                input_value._snap_sel = True
                 request_render()
             continue
         # A class hit's tint is a lazy resolver (source scan) - call it here,
         # so only displayed rows pay for it (memoized inside).
         tint = hit.tint() if callable(hit.tint) else hit.tint
+        # Code rows: indent by tree depth (file -> class -> def), when an
+        # ANCESTOR hit only for context (not itself a match) is dim --
+        # no background unless highlighted/selected, muted text -- so the eye
+        # lands on the real hits but the file/class still reads.
+        _sym = getattr(hit, "sym", None)
+        _ind = (_depths[idx] or 0) * TREE_INDENT
+        _ctx = _is_context_row(hit, matched)
+        _tv = row_text_hot if hot else (ctx_text_value if _ctx else row_text_value)
         # Icon gutter: the hit's own icon (e.g. an action's @function icon) or
         # its category's, drawn OUTSIDE the row's background rect in a fixed
         # column, so every row's rect and label align. (getattr: memoized hits
         # from before a hotswap may predate the SearchHit class.)
-        rx = bx + ICON_COL
-        _icon = getattr(hit, "icon", None) or _category_icon(hit.kind)
+        rx = bx + ICON_COL + _ind
+        # Code symbol rows carry no icon (the code line speaks for itself);
+        # only file rows / custom categories fall back to the category icon.
+        _icon = getattr(hit, "icon", None) or (None if _sym is not None
+                                               else _category_icon(hit.kind))
         if _icon:
-            dl.add_text(bx + 2, ry + (ROW_H - line_h) / 2.0,
-                        _mix(tint, row_text_hot if hot else row_text_value,
-                             sat=text_saturation), _icon)
-        dl.add_rect_filled(rx, ry, bx + bw, ry + ROW_H,
-                           _mix(tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
+            dl.add_text(bx + ICON_X + _ind, ry + (ROW_H - line_h) / 2.0,
+                        _mix(tint, _tv, sat=text_saturation, alpha=icon_alpha), _icon)
+        # A Code row paints its own background only when it carries its OWN tint
+        # (FileMeta / category tint); the class/function base colours are just
+        # text and icon, not a wash behind every untinted def.
+        _own = _sym is None or _hit_own_tint(hit)
+        if hot and not _own:
+            # Untinted Code row under the cursor / highlight: a faint gre
+            # wash, not the base colour (that read as a blue band).
+            dl.add_rect_filled(rx, ry, bx + bw, ry + ROW_H, hot_bg_untinted, rounding=4.0)
+        elif hot or (not _ctx and _own):
+            dl.add_rect_filled(rx, ry, bx + bw, ry + ROW_H,
+                               _mix(tint, row_bg_hot if hot else row_bg_value), rounding=4.0)
         text_x = rx + 8
         # Text hits carry a pre-coloured render plan (`parts` - the editor's
         # syntax palette, built off-thread with the hit); segments with color
@@ -2521,19 +2971,23 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # block-wash color, see _def_wash_32): consecutive washed segments
         # paint one continuous rectangle under the code, previewing exactly how
         # the line renders in the editor after jump-to.
-        _row_col = _mix(tint, row_text_hot if hot else row_text_value,
-                        sat=text_saturation)
+        _row_col = _mix(tint, _tv, sat=text_saturation)
         # The hit's file name, drawn at the row's FAR RIGHT (after the value
-        # widget / pick count claim their space). File rows skip it - there
-        # the label is the file.
-        _row_file = None if hit.kind == "Files" else getattr(hit, "file", None)
+        # suffix and pick count claim their space). Code rows skip it - the
+        # file is a row of its own above (or IS the row).
+        _row_file = None if _sym is not None else getattr(hit, "file", None)
         # code_row hits render their code through the REAL editor: draw_text
         # with the file's live cst-dict parse and a jump_to line-offset shim,
         # so washes/token colors are pixel-identical to the jump target. The
         # raw location prefix/suffix frames it; a higher-priority click sub
         # here reclaims activation from the editor's own caret sub (the tab
         # close-button pattern). parts stays as a fallback plan.
+        _suffix_w = 0.0
         _cr = getattr(hit, "code_row", None)
+        # Code rows: the code line resolves lazily (memoized) -- context
+        # class rows render their full def line too.
+        if callable(_cr):
+            _cr = _cr()
         _cr_drawn = False
         if _cr is not None:
             _cp, _cl, _cpre, _ccode, _csuf = _cr
@@ -2557,6 +3011,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             _cdict, _chost = _row_code_hosts(_cp)
             imgui.set_cursor_screen_pos((text_x, ry))
             try:
+        
                 # use_cache=True: a row body re-rendering EVERY window repaint
                 # became the dominant cost with many rows - cached row tiles
                 # blit-skip when clean and only re-render on a direct input
@@ -2567,13 +3022,22 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 # window composite (def-tint washes lost the flip until a
                 # hover forced new renders). If washes go stale again, this
                 # toggle is the knob.
-                _res = draw_text(_ccode, name=f"gs_code_row_{idx}", unique=idx,
+                # The row editor is keyed on the RESULT (a symbol's
+                # "qualname - file" label; a text hit's file:line), not its
+                # list index, so a row keeps its cached tile as results
+                # change and a new result in the same slot is a new key.
+                _rname = (hit.label if _sym is not None
+                          else f"{os.path.basename(str(_cp))}:{_cl}")
+                _res = draw_text(_ccode, name=f"gs_code_row_{_rname}",
+                                 show_widgets=False, show_root_backgrounds=False,
                                  show_header=False, show_bg=False, shadow=False,
                                  single_line=True, width=_cw, height=ROW_H,
-                                 use_cache=True, code_dict=_cdict,
-                                 jump_to=_RowSpan(_cl - 1), is_tree=False, z_offset=2,
+                                 use_cache=True, temp=True,
+                                 code_dict=_cdict, tint=(0,0,0,0),
+                                 jump_to=_RowSpan(_cl - 1), is_tree=False,
                                  show_jump_bar=False,
                                  selectable=False, return_extras=True)
+                
                 if _chost is not None:
                     # Repaint when the background parse lands (washes pop in).
                     # The ROW's ds now so rows use cached tiles - a window
@@ -2586,7 +3050,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 traceback.print_exc()
             if _cr_drawn and _csuf:
                 dl.add_text(bx + bw - 8 - _sw, _ty,
-                            imgui.get_color_u32_rgba(0.52, 0.55, 0.6, 1.0), _csuf)
+                            imgui.get_color_u32_rgba(0.52, 0.55, 0.6, suffix_alpha), _csuf)
+                _suffix_w = _sw + 12.0  # right-edge widgets (pick count) sit left of it
             if _cr_drawn and draw_state.on_action(
                     "left_mouse_down", view_id=f"gs_row_act_{idx}",
                     rect=(bx, ry, bx + bw, ry + ROW_H),
@@ -2617,7 +3082,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             # drops a trailing " - stem" that would duplicate the file name
             # drawn at the row's far right (symbol labels carry one).
             _main = hit.label
-            if _row_file:
+            if _sym is not None and getattr(_sym, "display", None):
+                # A symbol row shows just its short name (the class/file it
+                # belongs to is the tree header above it); a file row its
+                # shortest unique path suffix.
+                _main = _sym.display
+            elif _row_file:
                 _fstem = os.path.splitext(_row_file)[0]
                 if _main.endswith(f" - {_fstem}"):
                     _main = _main[: -len(f" - {_fstem}")]
@@ -2625,7 +3095,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             text_x += imgui.calc_text_size(_main)[0]
         # Right edge: a hit with live state shows it - a bool as a switch drawn
         # here, anything else as a real widget (drag/text) done by _value_widget.
-        r_edge = bx + bw - 8
+        r_edge = bx + bw - 8 - _suffix_w
         val_rect = None
         st = hit.state() if hit.state is not None else None
         if isinstance(st, bool):
@@ -2641,8 +3111,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             r_edge = sx0 - 6
         elif st is not None and hit.set_state is not None:
             r_edge, val_rect = _value_widget(hit, st, r_edge, ry, ROW_H, VAL_W)
-        # Lifetime pick count, right-aligned and dim - only show above zero.
-        cnt_ = _counts.get(f"{hit.kind}:{hit.label}", 0)
+        # Lifetime pick count, right-aligned and dim - developer mode only,
+        # and only when above zero (it's a debug signal, not user info).
+        cnt_ = _counts.get(f"{hit.kind}:{hit.label}", 0) if Toggles.developer_mode else 0
         if cnt_ > 0:
             cs = str(cnt_)
             cw = imgui.calc_text_size(cs)[0]
@@ -2674,6 +3145,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # Value widgets moved the cursor; put it back where the dummy left it so
     # the enclosing layout is unaffected.
     imgui.set_cursor_screen_pos(after_rows)
+    if store is not None:
+        if getattr(store, "query", None) != input_value.query:
+            store.query = input_value.query
+        if getattr(store, "active_kind", None) != input_value.active_kind:
+            store.active_kind = input_value.active_kind
     return False, input_value
     
 @window(view_func=draw_global_search, mode=Modes.WINDOW_RESIZABLE, always_on_top=True, tint=(0.35, 0.388, 0.422, 1.00),
@@ -2682,8 +3158,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # registry entry didn't survive the last save) had closed=False,
         # which popped the search open at (0,0) on load startup - the box should
         # only ever appear when summoned (Ctrl+Shift+F / dock).
-        name="GlobalSearch",
-        initial={"width": 400, "height": 320, "closed": True})
+        name="GlobalSearch")
 class GlobalSearch:
     query = ""
     window_ds = None  # this window's own draw_state (for the show shortcut)
@@ -2694,6 +3169,8 @@ class GlobalSearch:
     _text_query = None  # last query handed to _kick_text_search
     _text_gen = 0  # generation counter that debounces/cancels text search
     selected = 0  # index (in on-screen order) of the arrow-key highlight
+    _snap_sel = False  # one-shot: move `selected` off Code context rows next frame
+    _store_adopted = None  # the GlobalSearchStore whose persisted query/_kind we adopted
     show_all = False  # "load all" picked: query + display caps lifted until the query changes
     _fit_sig = None  # last contents signature the height was auto-fit to
     active_kind = ALL_CATEGORY  # the category whose rows show (Left/Right cycles)
@@ -2876,7 +3353,7 @@ dropdown_demo_data = {
 drop_down_selection = None
 # hey there
 @render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
-             show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header)
+             show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header, tint=(0.72, 0.11, 0.11))
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict
@@ -5509,7 +5986,7 @@ def draw_float_ctx(input_value):
                        col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
 
 
-@render_func(is_default_for=(float), shadow=False, use_cache=False, wrap=False,
+@render_func(is_default_for=(float), shadow=False, use_cache=False, wrap=False, tint=(0.114, 0.087, 0.35),
              is_tree=False, with_header=draw_header, align_header=True, temp=True)
 def draw_float(input_value: float,
                draw_state,
@@ -5536,7 +6013,7 @@ def draw_float(input_value: float,
 
 
 @render_func(shadow=False, use_cache=False, wrap=False, is_tree=False,
-             with_header=draw_header, align_header=True, temp=True)
+             with_header=draw_header, align_header=True, temp=True, tint=(0.071, 0.354, 0.511))
 def draw_button(input_value="", draw_state=None, label="", tint=(1.0, 1.0, 1.0, 1.0), min_width=80,
                 min_height=14, wrap=False, height=23):
     """A VALUE-ROW button — draw_float's shape with a button where the slider
@@ -5661,7 +6138,7 @@ def draw_vis(input_val):
     return False, input_val
 
 
-@render_func(is_default_for="AppModel", show_bg=True, tint=(0.6, 0.2, 0.8), with_header=draw_header)
+@render_func(is_default_for="AppModel", show_bg=True, with_header=draw_header)
 def draw_app_model(input_val):
     imgui.text("An App Model Instance")
 
@@ -6499,7 +6976,7 @@ def draw_info_param(input_value, **kwargs):
 
 @render_func(use_cache=True, show_bg=False, show_header=False, disable_scroll=False,
              searchable=True, show_name=False, selectable=False)
-@window(tint=(0.767, 0.671, 0.183))
+@window
 def draw_info_tab(input_value, search_text='', draw_state=None, unique=None, **kwargs):
     """One row per view param: a source dropdown for LOOKING at the different
     input sources, plus the value stored at the selected source — editable
@@ -6760,45 +7237,6 @@ def draw_config_tab(input_value, **kwargs):
                      show_name=True, show_header=True,
                      show_add_delete=False, draw=True)
     return False, input_value
-
-
-#
-# # I want to use the order of the enum elements as a way of determining the source of the input.
-# # From the frameworks perspective it just sees parameters injected. Melty is routing data from many different sources
-# # and does its best to pick sensible defaults when there are multiple sources. Which source takes priority depends on
-# # how the code is written, and the code may change. Rather than trying to infer the priority, we are just hard coding it
-# # so. I can adjust the order of the elements in the enum to reflect the runtime behavior of Melty. This is just my
-# # rough memory of which sources take priority.
-# class SourcePriority(Enum):
-#     MODE = 0
-#     RENDER_FUNC = 1
-#     AT_DEFAULT_CODE_TYPE = 2
-#     AT_DEFAULT_CODE_TYPE = 3
-#     LIVE_COMMENT = 4
-#     CALLER_0 = 5 # Caller is a litter more complicated, we need the whole call state as potential sources. Similar thing for mode I think.
-#     CALLER_1 = 6 # Hopefully there's a better way than hard coding the caller depth
-#
-# def get_value_for_source(attr_name, input_source, draw_state):
-#
-#     value_at_source = None # Do the same thing we do in the input tab, but cleaner
-#     return input_source, value_at_source
-#
-# def set_anywhere(attr_name, value, draw_state):
-#
-#     # Use the melty routing system to set the value at its source,
-#     # be that code, memory, code comments, decoration or enum.
-#
-#     # The live tab can already figure out which sources exist, so we can easily have a list of potential sources to pull
-#     # from.
-#     input_matrix = {} # Map possible values for each source, same as input tab
-#     sources_that_exist = [SourcePriority.MODE, SourcePriority.RENDER_FUNC] # infer from input matrix
-#
-#     sorted_by_priority = sorted(sources_that_exist, key=lambda s: s.value) # Sort by the enum value, lower is highest priority
-#     top_priority_source = sorted_by_priority[0]
-#     input_matrix[top_priority_source] = value # This should update wherever it happens to be, if the framework did its job
-#
-#     # We could cross compare with the current value in draw_state._kwargs[attr_name] and see if it matches. Not bullet proof but would
-#     # catch a bunch of bugs. Don't throw but maybe do a notify()
 
 
 @render_func(use_cache=True, show_bg=False, live=False, mode=Modes.WINDOW, show_header=False, show_name=False,
@@ -9657,25 +10095,12 @@ def draw_blank(input_value: any, **kwargs):
     return False, None
 
 
+@defaults(tint=(0.628, 0.063, 0.063))
 def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=None, **kwargs):
-    # ── New chain system (opt-in) ─────────────────────────────
-    # if chain is not None:
-    #     from src.lsd.gl_gui.view.core_conversion.chain import run_chain
-    #     return run_chain(chain, input_value, **kwargs)
-
-    # print(f"{kwargs.get('key', None)}: draw_any called with type {type(input_value).__name__} and view_func {view_func.__name__ if view_func else None}")
-
-    # # meta selection
     kwargs_view_func = view_func
     key = kwargs.get("key", None)
     real_type = kwargs.get("real_type", type(input_value))
     collection_type = kwargs.get("type_collection", type(kwargs.get("collection", None)))
-
-    # if view_func is None:
-    #     view_func = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type, attrib_key=key)
-    #
-    # if view_func is None:
-    #     view_func = draw_collection
 
     if view_func is None:
         new_default = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
@@ -9685,11 +10110,6 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
         if view_func is None:
             view_func = new_default
 
-    # Explicit chain= (e.g. a lens) runs the render_func chain executor directly,
-    # bypassing type/mode routing. Mode-derived chains are still handled below.
-    if chain is not None:
-        return run_chain(input_value, chain=chain, **kwargs)
-
     if mode is None:
         mode = Core.melty.mode_stack[-1] if len(Core.melty.mode_stack) > 0 else None
 
@@ -9697,16 +10117,6 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
         main_mode = mode[0]
     else:
         main_mode = mode
-
-    # --- Search: forward the active search term to searchable child views ---
-    # The term rides Core.melty.search_stack so it reaches the whole subtree. We
-    # simply hand it to each searchable view via its `search_text` param and
-    # let the view decide what to do with it (the text editor highlights
-    # matches in place). No value conversion or filtering happens here.
-    # if (len(Core.melty.search_stack) > 0
-    #         and (getattr(kwargs_view_func, '_searchable', False) or kwargs.get("searchable", False))
-    #         and "search_text" not in kwargs):
-    #     kwargs["search_text"] = Core.melty.search_stack[-1]
 
     if main_mode is not None:
         # Loop over super types

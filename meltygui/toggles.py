@@ -1015,6 +1015,7 @@ class Toggles:
         comment_min_brightness = 0.170
 
 
+    # [tint=(0.25, 0.6, 0.25), show_tint=True]
     class Voxels:
         # Output gamma on the finished voxel image, folded into the raymarch
         # shader's final sRGB encode: 1.0 = pure sRGB encode (brightest,
@@ -1152,7 +1153,7 @@ class Toggles:
         # All shows each category's #1 hit first (in this order), then each
         # category's next-best hits up to all_tab_per_category per category.
         # Kinds not matching here fall in after these.
-        search_priority = ("Toggles", "Actions", "Windows", "Files", "Text", "Classes", "Functions")
+        search_priority = ("Toggles", "Actions", "Windows", "Code", "Text")
         # Hits each category contributes to the All tab (the #1 lands in the
         # top block; the rest sit under the category's own label).
         all_tab_per_category = 13

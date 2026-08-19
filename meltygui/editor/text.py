@@ -4956,6 +4956,84 @@ def _live_receiver_file(ns, rcv):
 _SITE_RECOVER_LINES = 4
 
 
+def def_block_end(lines, li):
+    """Last 0-based line of the definition whose `def`/`class` statement is
+    `lines[li]` -- the body's indented extent, trailing blank lines excluded.
+    Returns `li` itself when the line isn't a def/class statement (or the
+    body is empty)."""
+    if not (0 <= li < len(lines)):
+        return li
+    head = lines[li]
+    if re.match(r"\s*(?:async\s+)?(?:def|class)\s", head) is None:
+        return li
+    ind = len(head) - len(head.lstrip())
+    end = li
+    for j in range(li + 1, len(lines)):
+        ln = lines[j]
+        if not ln.strip():
+            continue
+        if len(ln) - len(ln.lstrip()) <= ind:
+            break
+        end = j
+    return end
+
+
+def fold_focus_scope(ds, text, li):
+    """Collapse every fold in the buffer EXCEPT the chain enclosing 0-based
+    line `li` -- a symbol jump's "show me just this": the landed def/class
+    and each ancestor scope stay open, everything else (sibling defs, other
+    classes, the import block, comment runs) folds. Inside the landed
+    scope, its own nested scopes stay open too; only its default-collapsed
+    folds (docstrings, comment runs) fold. Writes the durable KEYS and
+    primes ds._fold_cache with the new layout so a fold_project_jump right
+    after maps through it. No-op (False) when the editor has no fold layout
+    for this buffer yet."""
+    _fc = getattr(ds, '_fold_cache', None)
+    kf = getattr(ds, '_fold_key_of', None)
+    if _fc is None or _fc[0] is not text or not kf:
+        return False
+    ranges = _fc[1][0]
+    sc = getattr(ds, '_scope_rng_cache', None)
+    default_col = set(sc[1][1]) if (sc is not None and sc[0] is text) else set()
+    target = next((r for r in ranges if r[0] == li), None)
+    col = set()
+    for r in ranges:
+        if r[0] <= li <= r[1]:
+            continue  # the landed scope or one of its ancestors: open
+        if (target is not None and target[0] < r[0] and r[1] <= target[1]
+                and r not in default_col):
+            continue  # a scope nested inside the landed one: open
+        col.add(r)
+    ds._fold_collapsed = col
+    ds._fold_keys = {kf[r] for r in col if r in kf}
+    exp = getattr(ds, '_fold_search_exp', None)
+    if exp:
+        exp.clear()
+    if getattr(ds, '_fold_search_exp_keys', None):
+        ds._fold_search_exp_keys = set()
+    built = _fold_build(text, ranges, col)
+    ds._fold_cache = (text, (ranges, frozenset(col)), built)
+    ds.invalidate()
+    return True
+
+
+def fold_display_line(ds, text, bli):
+    """Project a FULL-buffer 0-based line to the editor's fold display space
+    (identity while nothing is collapsed / the fold layout was built against
+    another buffer). A line hidden inside a collapsed fold maps to the
+    fold's head line. Read-only counterpart of fold_project_jump -- expands
+    nothing."""
+    if not getattr(ds, '_fold_collapsed', None):
+        return bli
+    _fc = getattr(ds, '_fold_cache', None)
+    if _fc is None or _fc[0] is not text:
+        return bli
+    d2b = _fc[2][3]
+    if not d2b:
+        return bli
+    return max(0, bisect.bisect_right(d2b, bli) - 1)
+
+
 def jump_emph_cols(text, pos, span=None):
     """Column span (col0, col1) the jump emphasis should flash for a landing
     at buffer index `pos` — shared by the cross-file consumption
@@ -7802,7 +7880,14 @@ def draw_text(input_value: str, height=None,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               code_diff_mode=False, fold_all_collapsed=None,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
-              autocomplete=True, unique=0):
+              autocomplete=True, unique=0,
+              show_widgets=True, show_root_backgrounds=True):
+    """`show_widgets=False` hides every inline token widget (run/eye buttons,
+    number drags, bool switches, icon pickers -- the token_views layer).
+    `show_root_backgrounds=False` skips the definition block wash of ROOT
+    symbols (blocks no other block in this buffer contains) -- for embeds
+    that paint the enclosing class's background themselves (global search
+    rows), so the wash isn't drawn twice."""
     ds = draw_state
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -8236,7 +8321,7 @@ def draw_text(input_value: str, height=None,
 
     # Plain-text mode (codec tells "not Python source"): no Darcula colors and
     # no inline token widgets - both are artifacts of the Python tokenizer.
-    if not syntax_highlight:
+    if not syntax_highlight or not show_widgets:
         token_views = {}
 
     elif token_views is None:
@@ -10665,13 +10750,16 @@ def draw_text(input_value: str, height=None,
         # page surface. Per block the mark then PEELS: top corners at the
         # base (stuck flush to the enclosing scope - no shadow at the top
         # edge), bottom corners one step up, easing down (the peel).
-        _b_list = list(_dt_blocks) if _dt_block_sh else []
+        # Levels are also needed (shadow or not) to keep ROOT blocks apart
+        # when show_root_backgrounds is off.
+        _b_list = list(_dt_blocks) if (_dt_block_sh or not show_root_backgrounds) else []
         # O(blocks²), so memoized by the block tuple's identity (the ref in
         # the memo guards id change) - recomputing every frame was a real
         # render-thread cost on buffers with hundreds of defs.
         _blm = getattr(ds, '_dt_blvl_memo', None)
+        _blm_key = (bool(_dt_block_sh), bool(show_root_backgrounds))
         if (_blm is not None and _blm[0] is _dt_blocks
-                and _blm[1] == bool(_dt_block_sh)):
+                and _blm[1] == _blm_key):
             _b_lvls = _blm[2]
         else:
             _b_lvls = []
@@ -10680,7 +10768,7 @@ def draw_text(input_value: str, height=None,
                     1 for _l1, _i1, _e1, _t1 in _b_list
                     if (_l1 <= _l0 and _e0 <= _e1
                         and (_l1, _e1) != (_l0, _e0))))
-            ds._dt_blvl_memo = (_dt_blocks, bool(_dt_block_sh), _b_lvls)
+            ds._dt_blvl_memo = (_dt_blocks, _blm_key, _b_lvls)
 
         # Per-line result cache for _scope_surface: each call scans every
         # block, and the wash/symbol-shadow passes call it per visible def
@@ -10726,6 +10814,8 @@ def draw_text(input_value: str, height=None,
             _ll = ds._dt_line_lens = [len(_l.rstrip()) for _l in text.split('\n')]
             ds._dt_line_lens_text = text
         for _bi, (_b_line, _b_idx, _b_end, _b_tint) in enumerate(_dt_blocks):
+            if not show_root_backgrounds and _b_lvls and _b_lvls[_bi] == 0:
+                continue  # the embed paints non-symbol backgrounds itself
             sy = origin_y + _b_line * line_px
             ey = origin_y + (_b_end + 1) * line_px
             if ey < rect_min_y or sy > rect_max_y:

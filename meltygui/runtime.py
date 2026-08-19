@@ -1126,7 +1126,7 @@ class Melty:
 
     @classmethod
     def emphasize(cls, key, rect, tint=(1.0, 0.85, 0.3), auto_fade=True,
-                  rounding=6.0, fade_frames=18, thickness=2.0):
+                  rounding=6.0, fade_frames=18, thickness=2.0, clip=None):
         """Register a rounded-rect emphasis flash, drawn by the overlay pass
         (next to the InvalidateTracker loop) with the same frame-based fade:
         alpha = 1 - frames_past / fade_frames.
@@ -1151,19 +1151,25 @@ class Melty:
         rect is (x0, y0, x1, y1) in absolute screen coords, or a zero-arg
         callable returning one (or None to skip a frame) so the flash can
         track a scrolling target. A callable that raises (e.g. its captured
-        draw_state died) drops the note."""
+        draw_state died) drops the note.
+
+        clip: optional (x0, y0, x1, y1) screen rect -- or a zero-arg callable
+        returning one -- the flash is scissored to (e.g. the editor view the
+        flashed lines scroll inside), so a rect that runs past its owner's
+        edges doesn't paint over neighbours."""
         note = cls.emphasis_notes.get(key)
         if note is None or not auto_fade or not note.auto_fade:
             cls.emphasis_notes[key] = types.SimpleNamespace(
                 rect=rect, tint=tint, frame=cls.frame_count,
                 auto_fade=auto_fade, rounding=rounding,
                 fade_frames=fade_frames, thickness=thickness,
-                last_touch=cls.frame_count)
+                last_touch=cls.frame_count, clip=clip)
         else:
             # Already fading automatically: refresh geometry/looks only.
             note.rect, note.tint = rect, tint
             note.rounding, note.thickness = rounding, thickness
             note.last_touch = cls.frame_count
+            note.clip = clip
 
     @classmethod
     def overlay_channel_for(cls, ds) -> int:
@@ -3426,12 +3432,23 @@ class Melty:
             if rect is not None:
                 x0, y0, x1, y1 = rect
                 r, g, b = note.tint[:3]
+                # Draw-list-level scissor (NOT imgui.push_clip_rect -- that
+                # one corrupts tiles): the note's own clip, if any.
+                clip = getattr(note, "clip", None)
+                try:
+                    clip = clip() if callable(clip) else clip
+                except Exception:
+                    clip = None
+                if clip is not None:
+                    overlay.push_clip_rect(clip[0], clip[1], clip[2], clip[3], True)
                 overlay.add_rect_filled(x0, y0, x1, y1,
                                         imgui.get_color_u32_rgba(r, g, b, 0.25 * alpha),
                                         rounding=note.rounding)
                 overlay.add_rect(x0, y0, x1, y1,
                                  imgui.get_color_u32_rgba(r, g, b, 0.9 * alpha),
                                  rounding=note.rounding, thickness=note.thickness)
+                if clip is not None:
+                    overlay.pop_clip_rect()
 
         if Toggles.InvalidateTracker.enable:
             for key, note in InvalidateTracker.invalidations.items():
