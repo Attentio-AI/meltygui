@@ -908,7 +908,7 @@ def render_func(*args, **o_kwargs):
             elif draw_state.closed and input_value == Melty.registered_windows:
                 draw_state.closed = False
 
-        draw_state._kwargs = kwargs
+        _restamp_kwargs(draw_state, kwargs)
         ds_kwargs = copy(kwargs)
         exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
                              "name", "z_offset", "use_cache", "active_layer", "auto_resize",
@@ -1573,7 +1573,7 @@ def render_func(*args, **o_kwargs):
                         ds_attrs[p] = v
                         auto_state_baseline[p] = v
 
-            draw_state._kwargs = kwargs
+            _restamp_kwargs(draw_state, kwargs)
 
             # if draw_state.kwargs is None:
             #     draw_state.kwargs = AttrDict(kwargs)
@@ -5394,6 +5394,22 @@ def get_draw_state(unique: int) -> DrawState:
 _headless_draw_state_registry = {}
 
 
+def _restamp_kwargs(draw_state, kwargs):
+    """draw_state._kwargs = kwargs, breaking the PREVIOUS dict's self-cycle
+    first. Every wrapper call sets kwargs['next_kwargs'] = kwargs (the
+    header/child plumbing below), which makes each superseded kwargs dict
+    — holding input_value, i.e. a whole tensor generation for a live value
+    window — unreachable-but-cyclic garbage the moment the next render
+    replaces it. The studio runs with gen2 collection effectively off
+    (gc_manager), so those dicts lived for the session: 31 GB of retired
+    generations reclaimed by a single gc.collect() when this was found.
+    Popping the self-reference lets refcounting free the old dict at once."""
+    prev = draw_state.__dict__.get("_kwargs")
+    if prev is not None and prev is not kwargs and type(prev) is dict:
+        prev.pop("next_kwargs", None)
+    draw_state._kwargs = kwargs
+
+
 def release_input_refs(draw_state):
     """Drop every wrapper-owned reference a draw_state holds to the value it
     rendered: the input slots the render_func wrapper fills per call
@@ -5409,6 +5425,9 @@ def release_input_refs(draw_state):
     draw_state._input_cache = {"external_state": (UNSET_VALUE, 0, -1),
                                "internal_state": (UNSET_VALUE, 0)}
     draw_state._original_load_data = None
+    kw = draw_state.__dict__.get("_kwargs")
+    if type(kw) is dict:
+        kw.pop("next_kwargs", None)      # the self-cycle (see _restamp_kwargs)
 
 
 def run_cleanup_callbacks():

@@ -967,7 +967,26 @@ _VALUE_ATTRS = ("_raw_input_value", "_input_value", "_original_input_ref")
 _VALUE_KWARGS = ("input_value", "value")
 
 
-def release_live_value(ds, gl=True):
+def _sever_value_pins(window_ds):
+    """Under `window_ds`, cut every GLState-cached TORCH reference to the
+    displayed value while keeping the cache entry's metadata: the
+    cuda_march path's `cuda_view` (a CudaVolumeView over a strided view of
+    the source) has its `.view` nulled and its key cleared, so the previous
+    generation can die, yet draw_voxels' hold-last-frame path can still
+    read source_shape/mapping off it to keep the slice sliders up. The FBO
+    / last image / GL-path textures are display-GPU objects and stay."""
+    from src.lsd.gl_gui.gl_state import GLState
+    for state in GLState.states_under(window_ds):
+        cv = state.peek("cuda_view")
+        if cv is not None:
+            try:
+                cv.view = None
+                cv._vol_key = None      # never a cache hit again
+            except Exception:
+                state.drop("cuda_view")
+
+
+def release_live_value(ds, gl=True, keep_image=False):
     """Drop every reference a live-value VIEW holds to its captured value, so
     a tensor the store no longer serves can actually die.
 
@@ -989,7 +1008,10 @@ def release_live_value(ds, gl=True):
     window are released through the same path a deleted window takes
     (GLState.on_window_deleted — queued deletes, drained on the GL thread);
     the window lazily re-uploads when reopened. Safe from any thread (attr
-    writes, queued GL deletes) and idempotent."""
+    writes, queued GL deletes) and idempotent. `keep_image=True` (the
+    fresh-run release) only severs the cached torch refs (_sever_value_pins)
+    and leaves the FBO / last image, so the window holds its last frame
+    until the new value arrives."""
     if ds is None:
         return
     targets = [ds]
@@ -1012,7 +1034,10 @@ def release_live_value(ds, gl=True):
     if gl:
         try:
             from src.lsd.gl_gui.gl_state import GLState
-            GLState.on_window_deleted(ds)
+            if keep_image:
+                _sever_value_pins(ds)
+            else:
+                GLState.on_window_deleted(ds)
         except Exception:
             pass
 

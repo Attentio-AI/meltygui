@@ -82,6 +82,14 @@ _lock = threading.Lock()
 # resolution, so it never re-parses per call.)
 _sites = {}
 
+# Every object that ever owned a live store (functions, the def-run path's
+# parked twins, ...). Weak: a store owner that dies takes its store with it.
+# The CUDA OOM responder (gc_manager.respond_to_cuda_oom) sweeps these -
+# nothing else enumerates stores, they are found by resolution.
+_store_owners = globals().get("_store_owners")
+if _store_owners is None:
+    _store_owners = weakref.WeakSet()
+
 # str(path) -> (mtime, ast.Module, source text). One C-speed parse per file
 # version, shared by span lookup and previous-assignment resolution.
 _asts = {}
@@ -612,6 +620,8 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     except (AttributeError, TypeError):
         return
     first = site.key_path not in store
+    if first:
+        _register_store_owner(site.store_obj)
     label = name or (site.var_name if bare else site.arg_label)
     if label:
         vars(site.store_obj).setdefault("__live_labels__", {})[
@@ -635,13 +645,24 @@ def _publish(site, value, name, bare, dims=None, idx=None):
             print(f"live_view: accumulate failed for {site.key_path}: {e!r}",
                   file=sys.stderr)
             display = value
+    touched = vars(site.store_obj).get("__live_touched__")
+    if touched is not None and site.key_path not in touched and not first:
+        # FIRST publish of this key in a fresh run: the store is about to
+        # drop the previous generation of value - make sure it actually
+        # dies. The window's marker / draw_states pin the value they just
+        # rendered (and the window's GL volume / cuda_view cache pins it
+        # too) until they re-render, which doesn't happen until the run is
+        # done publishing - so without this every visible view kept the OLD
+        # generation alive for the whole run and peak VRAM was 2× (views
+        # hidden → 1×, the tell). Release now; the window refills from the
+        # store on its next frame (the publish below notifies it).
+        _release_key_watchers(site.store_obj, site.key_path)
     # The value is stored RAW - a single object assignment, atomic under the
     # GIL, so the rendering thread always reads either the old or new value.
     store[site.key_path] = display
     # Run-scope liveness: while a run_capture is active for this store,
     # every published key is recorded so the run's exit can prune the rest
     # (set.add - atomic under the GIL).
-    touched = vars(site.store_obj).get("__live_touched__")
     if touched is not None:
         touched.add(site.key_path)
     _record_scope_type(site, value, name, bare)
@@ -691,12 +712,22 @@ def _accumulate(store_obj, key_path, value, dims, idx):
     ent = accums.get(key_path)
     if (ent is None or ent["dims"] != dims
             or (touched is not None and key_path not in touched)):
+        # A fresh run's stack almost always ends the same size as the last
+        # one (same loop) - size the buffer to that at the start instead
+        # of doubling up to it: each doubling step held the old + new
+        # buffer (the 16→32 step on a 32-layer (32, 1413, 1413) stack is
+        # a 2 GB + 4 GB transient per key) - on a card that's full, the
+        # transient IS the OOM.
+        hint = 0
+        if ent is not None and ent["dims"] == dims:
+            hint = int(ent["n"] or ent.get("hint", 0))
         ent = accums[key_path] = {
             "dims": dims,   # static loop names, outermost first
             "slots": {},    # idx tuple | ('#', n) counter -> row/seq position
             "buf": None,    # stack growth buffer (cap, *shape) | None
             "n": 0,         # buffer rows in use
             "seq": None,    # list fallback (non-stackable / ragged shapes)
+            "hint": hint,   # last run's final row count - the initial cap
         }
     by_index = (idx is not None and len(idx) == len(dims)
                 and all(type(i) is int for i in idx))
@@ -735,7 +766,8 @@ def _accumulate(store_obj, key_path, value, dims, idx):
         return seq
 
     if buf is None:
-        buf = ent["buf"] = _accum_alloc(value, 4)
+        buf = ent["buf"] = _accum_alloc(
+            value, max(4, min(_ACCUM_CAP, int(ent.get("hint", 0)))))
     pos = ent["slots"].get(slot_key)
     if pos is None:
         if ent["n"] >= _ACCUM_CAP:
@@ -875,6 +907,44 @@ def current_run_owner():
     return stack[-1] if stack else None
 
 
+def _register_store_owner(store_obj):
+    try:
+        _store_owners.add(store_obj)
+    except TypeError:
+        pass          # not weak-referenceable - won't be swept, fine
+
+
+def release_all_live_stores():
+    """Drop EVERY live-view store: values, loop accumulators (the per-run
+    stacks — gigabytes), labels, watchers; close/release every marker and
+    value window that watched them (GL textures included, via
+    release_live_value). The CUDA-OOM response: after an out-of-memory the
+    live set IS the VRAM, and a partial run's stacks + every window's pinned
+    generation must go before anything can run again. Markers re-publish
+    and windows re-fill on the next run; nothing is lost that a run doesn't
+    recreate. Returns the number of keys dropped. Safe from any thread."""
+    dropped = 0
+    for owner in list(_store_owners):
+        try:
+            store = vars(owner).get("__live_values__")
+        except TypeError:
+            continue
+        keys = list(store) if store else []
+        if keys:
+            _prune_keys(owner, keys)
+            dropped += len(keys)
+        # Anything _prune_keys leaves behind (a key that never published a
+        # value but has an accumulator entry, a fresh-run scope, ...).
+        for attr in ("__live_accum__", "__live_dim_names__", "__live_touched__"):
+            try:
+                d = vars(owner).get(attr)
+                if hasattr(d, "clear"):
+                    d.clear()
+            except TypeError:
+                pass
+    return dropped
+
+
 @contextmanager
 def run_capture(store_obj):
     """Scope one instrumented run over `store_obj` (pass the UNWRAPPED
@@ -890,6 +960,16 @@ def run_capture(store_obj):
     except (AttributeError, TypeError):
         yield
         return
+    _register_store_owner(store_obj)
+    # The previous generation goes BEFORE the run allocates the next generation -
+    # every big value in the store (and the watchers' pins to it), not just
+    # the keys this run fails to republish: an edit that removes a line
+    # re-keys every `line:N#...` site below it, so the per-key release in
+    # _publish never fires for them: the old stacks would live until the
+    # end-of-run prune (or past it, if the run OOMs - a failed run prunes
+    # nothing). Windows hold their last frame anyway; small values
+    # (scalars, strings) stay so text markers don't blink.
+    _release_store_generation(store_obj)
     stack = getattr(_run_owner, "stack", None)
     if stack is None:
         stack = _run_owner.stack = []
@@ -904,6 +984,81 @@ def run_capture(store_obj):
             stack.pop()
     touched = vars(store_obj).pop("__live_touched__", set())
     _prune_untouched(store_obj, touched)
+
+
+_RELEASE_MIN_BYTES = 1 << 20
+
+
+def _big_tensorish(v, min_bytes=_RELEASE_MIN_BYTES):
+    kind = type(v).__name__
+    try:
+        if kind == "Tensor":
+            return v.numel() * v.element_size() >= min_bytes
+        if kind == "ndarray":
+            return v.nbytes >= min_bytes
+    except Exception:
+        return False
+    return False
+
+
+def _release_store_generation(store_obj, min_bytes=_RELEASE_MIN_BYTES):
+    """Drop every big tensor/ndarray value in `store_obj`'s store (the entry
+    stays, value None — the marker still reads as captured and its window
+    holds its last frame), clear the matching accumulator buffers (keeping
+    the row count as the next run's pre-size hint), and release the
+    watchers' pins. Returns the number of values released. Any thread."""
+    try:
+        store = vars(store_obj).get("__live_values__")
+        accums = vars(store_obj).get("__live_accum__") or {}
+    except TypeError:
+        return 0
+    if not store:
+        return 0
+    n = 0
+    for key in list(store):
+        v = store.get(key)
+        if not _big_tensorish(v, min_bytes):
+            continue
+        store[key] = None
+        ent = accums.get(key)
+        if ent is not None:
+            ent["hint"] = int(ent.get("n") or ent.get("hint", 0))
+            ent["buf"] = None
+            ent["seq"] = None
+            ent["slots"] = {}
+            ent["n"] = 0
+        _release_key_watchers(store_obj, key)
+        n += 1
+    return n
+
+
+def _release_key_watchers(store_obj, key_path):
+    """Drop the captured-value refs (+ GL resources) held by every marker and
+    value window watching `key_path` — WITHOUT closing them or touching the
+    store. The per-run peak-VRAM guard (see _publish); same release as a
+    prune, minus the prune. Any thread."""
+    try:
+        from src.lsd.gl_gui.view.core_views.live_view_views import release_live_value
+    except Exception:
+        return
+    for attr in ("__live_watchers__", "__live_first_watchers__"):
+        watchers = getattr(store_obj, attr, None)
+        if not watchers:
+            continue
+        try:
+            targets = tuple(watchers.get(key_path) or ())
+        except RuntimeError:
+            targets = ()
+        for ds in targets:
+            try:
+                release_live_value(ds, gl=False)
+                win = getattr(ds, "_lv_window_ds", None)
+                if win is not None:
+                    # keep the FBO's last image: the window shows its last
+                    # frame until the fresh value lands (no error flash)
+                    release_live_value(win, keep_image=True)
+            except Exception:
+                pass
 
 
 def _prune_untouched(store_obj, touched):
@@ -1018,6 +1173,7 @@ def adopt_live_store(old, new):
         moved = od.pop(attr)
         if attr not in nd:
             nd[attr] = moved
+    _register_store_owner(new)
 
 
 def clear_file_stores(filename):

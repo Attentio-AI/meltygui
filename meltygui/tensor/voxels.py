@@ -46,7 +46,7 @@ import imgui
 import numpy as np
 import OpenGL.GL as gl
 
-from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit
+from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit, tight_unpack
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.shader_func import shader_func
 from src.lsd.gl_gui.text_texture import bake_text, bake_texts
@@ -397,6 +397,104 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
     if unit >= 0:
         gl.glBindSampler(unit, 0)   # sampler bindings outlive the draw call
+
+
+# ── cuda_march image path: kernel-rendered RGBA8 → display-GPU texture → FBO ──
+IMAGE_BLIT_FRAG = """
+#version 330 core
+out vec4 FragColor;
+uniform sampler2D image;
+void main() { FragColor = texelFetch(image, ivec2(gl_FragCoord.xy), 0); }
+"""
+
+
+@shader_func(fragment=IMAGE_BLIT_FRAG)
+def image_blit_pass(gl_state: GLState = None, image=None, program=None, **kwargs):
+    """Fullscreen copy of `image` (a 2-D GLTexture the size of the target)
+    into the bound FBO — the voxel_pass stand-in for cuda_march frames."""
+    gl.glBindVertexArray(gl_state.vao("fs_triangle"))
+    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+
+_CUDA_LAST_ERROR = globals().get("_CUDA_LAST_ERROR")
+
+
+def _cuda_march_ready():
+    try:
+        from src.lsd.gl_gui import cuda_march
+        return cuda_march.available()
+    except Exception:
+        return False
+
+
+def _cuda_render(gl_state, cv, width, height, lut="jet", **cam):
+    """Run the CUDA raymarcher over `cv` (CudaVolumeView) at width×height
+    and return a display-GPU RGBA8 GLTexture holding the premultiplied
+    image — or None (error recorded in _CUDA_LAST_ERROR, drawn as status).
+    Resources by gl_state key: the output image + LUT live on the TENSOR's
+    device, a pinned host buffer carries the image over, and `cuda_image`
+    is the GL texture it lands in (all re-made only when size/device/LUT
+    change)."""
+    global _CUDA_LAST_ERROR
+    import torch
+    from src.lsd.gl_gui import cuda_march
+    dev = cv.view.device
+    W, H = int(width), int(height)
+    try:
+        out = gl_state.get("cuda_out",
+                           lambda: torch.empty(H, W, 4, dtype=torch.uint8, device=dev),
+                           deps=(W, H, str(dev)))
+        lut_list = LUTS.get(lut, LUTS["jet"])
+        lut_t = gl_state.get("cuda_lut",
+                             lambda: torch.tensor(lut_list, dtype=torch.float32,
+                                                  device=dev).reshape(-1, 3).contiguous(),
+                             deps=(str(lut), len(lut_list), str(dev)))
+        host = gl_state.get("cuda_host",
+                            lambda: torch.empty(H, W, 4, dtype=torch.uint8).pin_memory(),
+                            deps=(W, H))
+        cuda_march.march(cv.view, out, lut_t, display_shape=cv.shape, nf=cv.nf,
+                         norm=cv.norm, aspect=W / H, **cam)
+        # D2H on torch's (legacy default) stream orders after the kernel on
+        # the same device's null stream - no explicit synchronize.
+        host.copy_(out)
+
+        def create():
+            tex_id = _scalar_int(gl.glGenTextures(1))
+            gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, W, H, 0,
+                            gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+            for pn, pv in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST),
+                           (gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST),
+                           (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
+                           (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
+                gl.glTexParameteri(gl.GL_TEXTURE_2D, pn, pv)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_RGBA8)
+
+        img = gl_state.get("cuda_image", create,
+                           lambda tx: gl.glDeleteTextures([tx.texture_id]),
+                           deps=(W, H))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, img.texture_id)
+        with tight_unpack():
+            gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, W, H, gl.GL_RGBA,
+                               gl.GL_UNSIGNED_BYTE, host.numpy())
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        _CUDA_LAST_ERROR = None
+        return img
+    except Exception as e:
+        msg = f"cuda_march failed: {e}"
+        if msg != _CUDA_LAST_ERROR:
+            print(f"[voxels] {msg}")
+            print_stack_trace()
+        _CUDA_LAST_ERROR = msg
+        return None
+
+
+def _scalar_int(v):
+    try:
+        return int(v)
+    except TypeError:
+        return int(v[0])
 
 
 # ── label billboards: text quads IN the 3d scene ───────────────────────────
@@ -925,21 +1023,32 @@ def to_display_dtype(t):
         raise ValueError(f"unsupported tensor dtype {t.dtype}: {e}") from e
 
 
-def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
-                 slices=(), mean_dims=(), sort_dim=-1, normalize=False,
-                 nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
-                 nf_pad=False):
-    """tensor → (depth, height, width) display volume, PURE: every choice
-    arrives as an argument (the draw_voxels params), nothing is stored.
-    Unmapped dims pin to their `slices` index (missing entries → 0) or
-    average when listed in mean_dims (keepdim, then pinned at 0); a
-    DISPLAYED dim in mean_dims keeps its extent with the mean broadcast
-    along it (the value repeats across the plot); sort
-    orders fibers along a dim; normalize min-max stretches the DISPLAYED
-    volume (signed data scales by max-magnitude so zero stays anchored).
-    Stays on t's device. Returns (vol3, (z_dim, y_dim, x_dim), shape)."""
+def _display_view_dtype(t):
+    """The cuda_march sibling of to_display_dtype: only what the kernel's
+    load switch can't decode gets materialized (quantized → dequantized,
+    sparse → dense, complex → magnitude); bf16/ints/bool/f64 stay as they
+    are and decode in the kernel — no f32 copy."""
     import torch
-    t = to_display_dtype(t.detach())
+    if t.is_quantized:
+        t = t.dequantize()
+    if t.layout != torch.strided:
+        try:
+            t = t.to_dense()
+        except Exception as e:
+            raise ValueError(f"cannot densify {t.layout} tensor: {e}") from e
+    if t.is_complex():
+        t = t.abs().float()
+    return t
+
+
+def _slice_core(t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims, sort_dim,
+                nf_on, nf_chop, nf_along, materialize):
+    """Shared slice logic: tensor → (z, y, x) volume as a VIEW (no
+    contiguous() — `materialize` decides the dtype pre-pass), plus the
+    mapping, source shape and the resolved neural-flow axes (positions in
+    the (z, y, x) volume, None = off)."""
+    import torch
+    t = (to_display_dtype if materialize else _display_view_dtype)(t.detach())
     if t.numel() == 0:
         raise ValueError(f"empty tensor (shape {tuple(t.shape)}) — nothing to display")
     while t.dim() < 3:
@@ -952,7 +1061,10 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
     picked = (zd, yd, xd)
     mean_set = {int(d) for d in (mean_dims or ()) if 0 <= int(d) < n}
     for d in mean_set:
-        m = t.mean(dim=d, keepdim=True)
+        # f32 accumulate + result regardless of the input dtype (int inputs
+        # need it; bf16 inputs would otherwise round the mean - the view
+        # path must match the materialized one bit for bit).
+        m = t.mean(dim=d, keepdim=True, dtype=torch.float32)
         # A DISPLAYED dim keeps its extent with the mean BROADCAST along it
         # (the same value repeats across the plot - visual convenience);
         # an unmapped dim stays collapsed and pins at 0 below.
@@ -974,7 +1086,8 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
     sub = t[index]  # picked 3 dims keep original order
     remaining = sorted(picked)
     vol = sub.permute(remaining.index(zd), remaining.index(yd),
-                      remaining.index(xd)).contiguous()
+                      remaining.index(xd))
+    chop = along = None
     if nf_on:
         # Flow is pinned to TENSOR DIMS (remapping x/y/z never changes WHICH
         # data gets chopped); unset dims default to chop=x, along=z. A chop
@@ -984,19 +1097,127 @@ def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
         dim_to_axis = {xd: "x", yd: "y", zd: "z"}
         chop = dim_to_axis.get(xd if chop_d is None else chop_d)
         along = dim_to_axis.get(zd if along_d is None else along_d)
-        if chop and along and chop != along:
-            vol = neural_flow_volume(vol, chop, along, int(nf_chunk), pad=nf_pad)
+        if not (chop and along and chop != along):
+            chop = along = None
+    return vol, (zd, yd, xd), shape, chop, along
+
+
+def slice_volume(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
+                 slices=(), mean_dims=(), sort_dim=-1, normalize=False,
+                 nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
+                 nf_pad=False):
+    """tensor → (depth, height, width) display volume, PURE: every choice
+    arrives as an argument (the draw_voxels params), nothing is stored.
+    Unmapped dims pin to their `slices` index (missing entries → 0) or
+    average when listed in mean_dims (keepdim, then pinned at 0); a
+    DISPLAYED dim in mean_dims keeps its extent with the mean broadcast
+    along it (the value repeats across the plot); sort
+    orders fibers along a dim; normalize min-max stretches the DISPLAYED
+    volume (signed data scales by max-magnitude so zero stays anchored).
+    Stays on t's device. Returns (vol3, (z_dim, y_dim, x_dim), shape)."""
+    import torch
+    vol, mapping, shape, chop, along = _slice_core(
+        t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims, sort_dim,
+        nf_on, nf_chop, nf_along, materialize=True)
+    vol = vol.contiguous()
+    if chop is not None:
+        vol = neural_flow_volume(vol, chop, along, int(nf_chunk), pad=nf_pad)
     if normalize:
         lo, hi = vol.min(), vol.max()
         if lo < 0:
             vol = vol / (torch.maximum(hi.abs(), lo.abs()) + 1e-12)
         else:
             vol = (vol - lo) / (hi - lo + 1e-12)
-    return vol, (zd, yd, xd), shape
+    return vol, mapping, shape
+
+
+class CudaVolumeView:
+    """The cuda_march stand-in for the volume GLTexture: NO GL object — the
+    kernel samples `view` (a strided (z, y, x) torch view of the source, on
+    whatever GPU it lives) in place. Carries the same metadata draw_voxels
+    reads off a volume texture (`shape` = DISPLAYED extents after neural
+    flow, source_shape, mapping, clamp_note) plus the kernel's sampling
+    facts: `nf` = (chop_axis, along_axis, chunk) with axes 0=z 1=y 2=x
+    (chop -1 = off) and `norm` = (lo, hi, mode)."""
+
+    __slots__ = ("view", "shape", "nf", "norm", "source_shape", "source_ndim",
+                 "mapping", "clamp_note", "_vol_key", "dim_names")
+
+    def __init__(self, view, shape, nf, norm, mapping, source_shape):
+        self.view, self.shape, self.nf, self.norm = view, tuple(shape), nf, norm
+        self.mapping, self.source_shape = mapping, tuple(source_shape)
+        self.source_ndim = len(source_shape)
+        self.clamp_note = None
+        self._vol_key = None
+        self.dim_names = ()
+
+    def __repr__(self):
+        return f"CudaVolumeView({self.shape} of {tuple(self.view.shape)} on {self.view.device})"
+
+
+def slice_volume_view(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
+                      slices=(), mean_dims=(), sort_dim=-1, normalize=False,
+                      nf_on=False, nf_chop=None, nf_along=None, nf_chunk=128,
+                      nf_pad=False):
+    """slice_volume for the cuda_march path: the same choices, but the result
+    is a CudaVolumeView over a strided VIEW of the source — no contiguous(),
+    no dtype copy, neural flow as in-kernel index math, normalize as a
+    (lo, hi) pair the kernel applies per sample. Only sort/mean (genuine
+    transforms) and densify/complex materialize anything; those run once
+    per vol_key like everything else behind draw_voxels' cache gate."""
+    vol, mapping, shape, chop, along = _slice_core(
+        t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims, sort_dim,
+        nf_on, nf_chop, nf_along, materialize=False)
+    from src.lsd.gl_gui import cuda_march
+    display_shape, nf = tuple(int(s) for s in vol.shape), (-1, -1, 0)
+    if chop is not None:
+        display_shape, nf = cuda_march.nf_display_shape(
+            vol.shape, _AXIS_POS[chop], _AXIS_POS[along], int(nf_chunk), pad=nf_pad)
+    norm = (0.0, 1.0, 0)
+    if normalize:
+        lo, hi = float(vol.min()), float(vol.max())
+        norm = (lo, max(abs(hi), abs(lo)), 2) if lo < 0 else (lo, hi, 1)
+    return CudaVolumeView(vol, display_shape, nf, norm, mapping, shape)
 
 
 # Display-axis position in the sliced (z, y, x) volume.
 _AXIS_POS = {"z": 0, "y": 1, "x": 2}
+
+
+def _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width):
+    """The slice sliders, one row per unmapped dim under the image. An edit
+    writes the full-length slices tuple to draw_state (auto-state: it
+    diverges the param, persists, and feeds the volume key so the volume
+    re-slices + re-uploads on the next frame). Shared by the render path and
+    the hold-last-frame path (no value yet) so the rows never flash."""
+    for d in slider_dims:
+        label = dim_names[d] if d < len(dim_names) else f"dim{d}"
+        cur = max(0, min(int(slices[d]) if d < len(slices) else 0,
+                         source_shape[d] - 1))
+        imgui.push_item_width(max(60, width - 110))
+        s_changed, s_val = imgui.slider_int(f"{label}##slice{d}", cur,
+                                            0, source_shape[d] - 1)
+        imgui.pop_item_width()
+        if s_changed and int(s_val) != cur:
+            new_slices = list(slices) + [0] * (len(source_shape) - len(slices))
+            new_slices[d] = int(s_val)
+            draw_state.slices = tuple(new_slices)
+            draw_state.invalidate()
+            request_render()
+
+
+def _cached_volume_texture(gl_state, vol_key, keys=("volume_cuda", "volume", "cuda_view")):
+    """The already-uploaded volume texture for `vol_key`, or None. Checks
+    both upload paths (interop CudaVolume wraps its GLTexture as .texture);
+    a hit means draw_voxels skips slice_volume AND the upload outright."""
+    for key in keys:
+        rec = gl_state.peek(key)
+        if rec is None:
+            continue
+        tex = getattr(rec, "texture", rec)
+        if getattr(tex, "_vol_key", None) == vol_key:
+            return tex
+    return None
 
 
 def neural_flow_volume(vol, chop_axis, along_axis, chunk, pad=False):
@@ -1661,6 +1882,12 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 mean_dims=TensorDims(()), sort_dim=TensorDim(-1),
                 normalize=False, nf_on=False, nf_chop=TensorDim(-1),
                 nf_along=TensorDim(-1), nf_chunk=128,
+                # ── experimental: raymarch IN CUDA on the value's own GPU,
+                # reading the tensor's memory through its strides (no volume
+                # copy, no 3-D texture, any device); only the 2-D image
+                # crosses to the display GPU. Nearest sampling, no shadows /
+                # lighting / gradients yet (see cuda_march.py). ──
+                cuda_march=True,
                 # ── volume furniture (screen px) ──
                 name_size=17.0, name_padding=30.1, name_opacity=1.1,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
@@ -1678,6 +1905,42 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     signature (auto draw_state params: gestures and the controls panel
     write draw_state.<name>, only diverged values persist/serialize)."""
     src = input_value
+    if src is None:
+        # Between a live value being released (a new run's first publish
+        # drops the previous generation) and the new data arriving, the
+        # window renders with no value. Hold the LAST image - the FBO
+        # survives that release - and keep the slice sliders up (their
+        # geometry comes from the metadata still on the cached volume
+        # entry) instead of flashing an error card; a window that never
+        # rendered shows nothing.
+        fb = gl_state.peek("target")
+        if fb is not None:
+            dim_names = tuple(_clean_dim_name(x, i) for i, x in enumerate(dim_names or ()))
+            slices = tuple(int(v) for v in (slices or ()))
+            mean_dims = tuple(int(v) for v in (mean_dims or ()))
+            meta = None
+            for key in ("volume_cuda", "volume", "cuda_view"):
+                rec = gl_state.peek(key)
+                if rec is not None:
+                    meta = getattr(rec, "texture", rec)
+                    break
+            source_shape = tuple(getattr(meta, "source_shape", ()) or ())
+            mapping = getattr(meta, "mapping", None)
+            # the marker's dim_names merge skips a None value; use the names
+            # the last valid frame stamped
+            dim_names = tuple(getattr(meta, "dim_names", None) or dim_names)
+            slider_dims = []
+            if mapping is not None and len(source_shape) > 3:
+                slider_dims = [d for d in range(len(source_shape))
+                               if d not in mapping and d not in mean_dims
+                               and source_shape[d] > 1]
+            width, height = _view_size(draw_state)
+            if slider_dims:
+                height = max(100, height - int(imgui.get_frame_height_with_spacing())
+                             * len(slider_dims))
+            imgui.image(fb.texture_id, width, height, uv0=(0, 1), uv1=(1, 0))
+            _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width)
+        return False, None
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
     if getattr(src, "target", None) == int(gl.GL_TEXTURE_1D):
         imgui.text(f"{src!r} — a LUT, not a volume")
@@ -1715,15 +1978,62 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # user's params stay untouched; the labels below use the effective
         # values and show e.g. "vocab % 180" or "batch - vocab"). ───────────
         nf_pad = False
+        # The CUDA path needs pycuda + a CUDA tensor; anything else (CPU
+        # tensors, no pycuda) silently takes the GL path.
+        use_cuda = bool(cuda_march) and bool(getattr(t, "is_cuda", False)) and _cuda_march_ready()
         if not nf_on:
             _cap = int(Toggles.Voxels.auto_flow_extent)
-            _gl_max = int(gl_limits()["max_3d"])
-            _cap = min(_cap, _gl_max) if _cap > 0 else _gl_max
+            if use_cuda:
+                # no 3-D texture → no GL extent limit; only the readability cap
+                _cap = _cap if _cap > 0 else 0
+            else:
+                _gl_max = int(gl_limits()["max_3d"])
+                _cap = min(_cap, _gl_max) if _cap > 0 else _gl_max
             auto = auto_neural_flow(t.shape, dim_names, x_dim, y_dim, z_dim, _cap)
             if auto is not None:
                 nf_on, nf_pad = True, True
                 nf_chop, nf_along, nf_chunk = (TensorDim(auto[0]),
                                                TensorDim(auto[1]), auto[2])
+        # ── cache gate BEFORE any tensor work: slice_volume is pure but not
+        # free - on a multi-GB tensor its type coercion / permute-contiguous
+        # / neural-flow repack / normalize min-max are whole-tensor GPU
+        # passes, and running them every frame (the upload was already
+        # version-gated, the slice that feeds it was not) pinned an orbit
+        # at ~18 fps with the raymarcher all the way down. The key is
+        # the params that decide the volume (the effective nf_* after
+        # auto-flow); the volume-derived facts (mapping, source_shape,
+        # clamp_note) ride the cached texture. ─────────────────────────
+        vol_key = ((id(src), getattr(src, "_version", 0)), dim_names,
+                   str(x_dim), str(y_dim), str(z_dim), slices, mean_dims,
+                   int(sort_dim), bool(normalize), bool(nf_on), str(nf_chop),
+                   str(nf_along), int(nf_chunk), nf_pad, use_cuda)
+        tex = _cached_volume_texture(gl_state, vol_key)
+        if tex is not None:
+            mapping, source_shape = tex.mapping, tex.source_shape
+            vol = None
+    if not isinstance(src, GLTexture) and tex is None and use_cuda:
+        try:
+            cv = slice_volume_view(
+                t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims,
+                sort_dim, normalize, nf_on, nf_chop, nf_along, nf_chunk,
+                nf_pad=nf_pad)
+        except (ValueError, TypeError, RuntimeError, IndexError) as e:
+            _draw_voxel_error(draw_state, f"can't build a volume view from "
+                              f"{_describe_tensor(t)}:\n{e}")
+            gl_state.drop("cuda_view")
+            return False, None
+        cv._vol_key = vol_key
+        cv.dim_names = dim_names
+        # The view is the cached "volume": gl_state holds it by the same key
+        # discipline as the textures (no GL - nothing to delete). The GL
+        # volume (possibly GBs of display-GPU VRAM) is released on the
+        # switch, and vice versa below.
+        gl_state.drop("cuda_view")
+        gl_state.get("cuda_view", lambda: cv, deps=vol_key)
+        gl_state.drop("volume"); gl_state.drop("volume_cuda")
+        tex, mapping, source_shape = cv, cv.mapping, cv.source_shape
+    if not isinstance(src, GLTexture) and tex is None:
+        gl_state.drop("cuda_view")
         try:
             vol, mapping, source_shape = slice_volume(
                 t, dim_names, x_dim, y_dim, z_dim, slices, mean_dims,
@@ -1753,10 +2063,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             d3, h3, w3 = clamped_shape
             vol = vol[:d3, :h3, :w3].contiguous()
             clamp_note = "clamped: " + "; ".join(problems)
-        version = ((id(src), getattr(src, "_version", 0)), mapping, slices,
-                   mean_dims, int(sort_dim), bool(normalize), bool(nf_on),
-                   str(nf_chop), str(nf_along), int(nf_chunk), nf_pad, clamped_shape)
-        tex = None
+        version = vol_key + (mapping, clamped_shape)
         try:
             if vol.is_cuda:
                 from src.lsd.gl_gui import cuda_interop
@@ -1780,6 +2087,10 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         tex.source_shape = source_shape       # tensor metadata on the buffer
         tex.source_ndim = len(source_shape)
         tex.clamp_note = clamp_note
+        tex.mapping = mapping
+        tex.dim_names = dim_names
+        tex._vol_key = vol_key                # the gate above uses this
+        vol = None                            # don't hold the temp volume
 
     # Edge labels - the mapped dim's name (+ neural-flow decoration) and its
     # DISPLAYED size, recomputed per frame from the params.
@@ -1955,10 +2266,11 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
 
     # Filtering is sampler state on the texture, view-owned, applied per frame.
     filt = gl.GL_NEAREST if nearest else gl.GL_LINEAR
-    gl.glBindTexture(tex.target, tex.texture_id)
-    gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MIN_FILTER, filt)
-    gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MAG_FILTER, filt)
-    gl.glBindTexture(tex.target, 0)
+    if isinstance(tex, GLTexture):
+        gl.glBindTexture(tex.target, tex.texture_id)
+        gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MIN_FILTER, filt)
+        gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MAG_FILTER, filt)
+        gl.glBindTexture(tex.target, 0)
 
     # Box extents proportional to voxel counts (longest axis = 1), so every
     # voxel renders as a CUBE and a (4, 32, 48) tensor reads as a flat slab -
@@ -2036,28 +2348,44 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
         # int() so a UI-dragged float never flips the uniform's inferred
         # GLSL type (the loop bound must be an int).
-        voxel_pass(gl_state, volume=tex, volume_lin=tex, lut=lut_tex,
-                   aspect=width / height,
-                   volume_scale=volume_scale, step_size=step_size,
-                   max_steps=int(max_steps), density=density,
-                   threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
-                   pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
-                   brightness=cam_brightness, contrast=cam_contrast,
-                   gamma=float(Toggles.Voxels.gamma), centered=centered,
-                   draw_plane=bool(draw_plane),
-                   shadow_opacity=float(shadow_opacity),
-                   shadow_softness=float(shadow_softness),
-                   # The studio-wide compositor shadow color: the floor
-                   # shadow matches whatever the UI's shadows are tinted.
-                   shadow_tint=tuple(float(c) for c in Toggles.shadow_color),
-                   draw_shading=bool(draw_shading),
-                   self_shading=bool(self_shading),
-                   plane_side=float(plane_side),
-                   light_pos=tuple(float(c) for c in light_pos),
-                   light_tint=tuple(float(c) for c in light_tint),
-                   light_brightness=float(light_brightness),
-                   ambient_light=float(ambient_light),
-                   shading_strength=float(shading_strength))
+        if isinstance(tex, CudaVolumeView):
+            # The CUDA kernel already produced the premultiplied image (on
+            # the tensor's GPU, hopped to a display-GPU RGBA8 texture);
+            # blit it into the FBO under the same blend state so labels,
+            # outline and the rest of the view are untouched.
+            img_tex = _cuda_render(
+                gl_state, tex, width, height, lut=lut, tilt=tilt, spin=spin,
+                zoom=cam_zoom, pan=(pan_x, pan_y, pan_z), ortho=bool(ortho),
+                volume_scale=volume_scale, step_size=float(step_size),
+                max_steps=int(max_steps), density=float(density),
+                threshold=float(threshold), brightness=float(cam_brightness),
+                contrast=float(cam_contrast), gamma=float(Toggles.Voxels.gamma),
+                centered=bool(centered))
+            if img_tex is not None:
+                image_blit_pass(gl_state, image=img_tex)
+        else:
+            voxel_pass(gl_state, volume=tex, volume_lin=tex, lut=lut_tex,
+                       aspect=width / height,
+                       volume_scale=volume_scale, step_size=step_size,
+                       max_steps=int(max_steps), density=density,
+                       threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
+                       pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
+                       brightness=cam_brightness, contrast=cam_contrast,
+                       gamma=float(Toggles.Voxels.gamma), centered=centered,
+                       draw_plane=bool(draw_plane),
+                       shadow_opacity=float(shadow_opacity),
+                       shadow_softness=float(shadow_softness),
+                       # The studio-wide compositor shadow color: the floor
+                       # shadow matches whatever the UI's shadows are tinted.
+                       shadow_tint=tuple(float(c) for c in Toggles.shadow_color),
+                       draw_shading=bool(draw_shading),
+                       self_shading=bool(self_shading),
+                       plane_side=float(plane_side),
+                       light_pos=tuple(float(c) for c in light_pos),
+                       light_tint=tuple(float(c) for c in light_tint),
+                       light_brightness=float(light_brightness),
+                       ambient_light=float(ambient_light),
+                       shading_strength=float(shading_strength))
         if not _blend_was:
             gl.glDisable(gl.GL_BLEND)
     if depth_was_on:
@@ -2080,20 +2408,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # edit writes the full-length slices tuple to draw_state (auto-state:
     # it diverges the param, persists, and resets slice_volume's version so
     # the volume re-slices + re-uploads on the next frame). ──────────────
-    for d in slider_dims:
-        label = dim_names[d] if d < len(dim_names) else f"dim{d}"
-        cur = max(0, min(int(slices[d]) if d < len(slices) else 0,
-                         source_shape[d] - 1))
-        imgui.push_item_width(max(60, width - 110))
-        s_changed, s_val = imgui.slider_int(f"{label}##slice{d}", cur,
-                                            0, source_shape[d] - 1)
-        imgui.pop_item_width()
-        if s_changed and int(s_val) != cur:
-            new_slices = list(slices) + [0] * (len(source_shape) - len(slices))
-            new_slices[d] = int(s_val)
-            draw_state.slices = tuple(new_slices)
-            draw_state.invalidate()
-            request_render()
+    _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width)
 
     # ── ALL controls live in a satellite panel opening to the RIGHT of
     # the window: the renderer's full params, rendered automatically -
@@ -2165,6 +2480,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         if voxel_pass.last_error:
             # imgui.set_cursor_screen_pos((draw_state.abs_left, draw_state.abs_top))
             imgui.text_colored(voxel_pass.last_error.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
+        if isinstance(tex, CudaVolumeView) and _CUDA_LAST_ERROR:
+            imgui.text_colored(_CUDA_LAST_ERROR.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
 
         if changed:
             draw_state.invalidate()

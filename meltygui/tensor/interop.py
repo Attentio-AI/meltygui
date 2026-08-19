@@ -167,9 +167,11 @@ def tensor_to_texture(gl_state, key, tensor, version):
     gl_dev = current_device_index()
     if gl_dev is None:
         return None
-    if (tensor.device.index or 0) != gl_dev:
-        tensor = tensor.to(f"cuda:{gl_dev}")
-    tensor = tensor.contiguous()
+    cross_device = (tensor.device.index or 0) != gl_dev
+    if cross_device:
+        # Deferred to the version-miss check below: a multi-GB cross-GPU
+        # move (staged through host) every frame is not a cache hit.
+        pass
 
     depth, height, width = (int(s) for s in tensor.shape)
     half = tensor.dtype == torch.float16
@@ -231,6 +233,9 @@ def tensor_to_texture(gl_state, key, tensor, version):
         cv = gl_state.get(key, create, delete,
                           deps=((depth, height, width), "f16" if half else "f32"))
         if cv.last_version != version:
+            if cross_device:
+                tensor = tensor.to(f"cuda:{gl_dev}")
+            tensor = tensor.contiguous()
             mapping = cv.registered.map()
             try:
                 ptr, _size = mapping.device_ptr_and_size()

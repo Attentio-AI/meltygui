@@ -1205,6 +1205,11 @@ class Toggles:
         # Per-category cap for the horizontal layout's columns (replaces
         # all_tab_per_category there - columns have the vertical room).
         all_tab_horizontal_per_category = 15
+        # Seconds the query must sit unchanged before the typo-tolerant
+        # (fuzzy) CodeSearch runs. Typing only pays the 0.2 ms exact pass;
+        # fuzzy hits arrive afterwards as a trailing stream, never moving
+        # the rows already shown.
+        fuzzy_debounce_s = 0.2
 
     @defaults(tint=(0.47, 0.463, 0.417))
     class ScrollSettings:
@@ -1401,6 +1406,11 @@ class Toggles:
         # Never freeze/collect before the app has been up this long (caches
         # still filling - freezing mid-load would pin a half-built graph).
         boot_delay_s = 30.0
+        # On a CUDA out-of-memory, print gc_manager.report_vram_holders()
+        # BEFORE the responder sweeps: the largest CUDA storages and who
+        # references them (store key / draw / attr / frame / module).
+        # A few seconds of gc walk, OOM-time only.
+        oom_holder_report = True
 
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:

@@ -59,6 +59,7 @@ from src.lsd.gl_gui.view.playground.voxel_playground import (
     _describe_tensor, _draw_image_notice, _draw_voxel_error, _ensure_host,
     _resolve_dim, _tick_values, _view_size, demo_4d, demo_5d, to_display_dtype,
     voxel_io)
+from src.lsd.gl_gui.view.playground.voxel_playground import _cached_volume_texture
 
 
 # ── shaders ────────────────────────────────────────────────────────────────
@@ -405,6 +406,18 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
                               who="draw_line_graph")
             gl_state.drop("series"); gl_state.drop("series_cuda")
             return False, None
+        # Cache gate BEFORE any tensor work (same fix as draw_voxels): the
+        # slice / finite-range / pack are whole-tensor passes; on a hit the
+        # metadata rides the cached texture exactly like a GLTexture input.
+        vol_key = ((id(src), getattr(src, "_version", 0)), dim_names,
+                   str(x_dim), str(line_dim), slices, mean_dims,
+                   bool(normalize), int(max_lines))
+        tex = _cached_volume_texture(gl_state, vol_key, keys=("series_cuda", "series"))
+        if tex is not None:
+            mapping, source_shape = tex.mapping, tex.source_shape
+            n_samples, tex_w, y_range = tex.n_samples, tex.tex_w, tex.y_range
+            n_lines, clamp_note = int(tex.shape[0]), tex.clamp_note
+    if not isinstance(src, GLTexture) and tex is None:
         try:
             lines, mapping, source_shape = slice_lines(
                 t, dim_names, x_dim, line_dim, slices, mean_dims, normalize)
@@ -464,6 +477,8 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         tex.source_ndim = len(source_shape)
         tex.n_samples, tex.tex_w, tex.y_range = n_samples, tex_w, y_range
         tex.clamp_note = clamp_note
+        tex.mapping = mapping
+        tex._vol_key = vol_key
 
     # ── labels: the x dim's name + the series caption ──
     x_label, caption = "", ""

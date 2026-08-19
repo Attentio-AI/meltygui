@@ -392,7 +392,8 @@ def _collect(label, live_graph=False):
     (the boot pass) also histograms EVERYTHING gc tracks — that is the graph
     about to be frozen, and its size is the boot collect's price."""
     import threading
-    return
+    if not _profile_enabled():
+        return gc.collect()
     stamp = time.strftime("%H:%M:%S")
     thread = threading.current_thread().name
     lines = [f"===== {stamp}  gc: {label}  [{thread}]  gen counts={gc.get_count()}"]
@@ -597,3 +598,300 @@ def _release_cuda_cache():
             torch.cuda.empty_cache()
     except Exception:
         pass
+
+
+# ── CUDA out-of-memory response ─────────────────────────────────────────────
+# After an OOM the live set IS the VRAM: a partial run's accumulator stacks,
+# every live-view window's pinned generation, the runners' previous results,
+# plus whatever the failed run's traceback cycles hold - and nothing retires
+# any of it (the idle/post-run collects are gated or deferred, and
+# empty_cache can't nothing anything is still referenced). Left alone, a
+# later run OOMs too and the only way out was a full reset. The responder
+# dumps out of state deliberately, runs a REAL gc.collect (the exception →
+# traceback → frame cycles are exactly what pins the failed generation), and
+# empties the CUDA cache on every device, then retries what came back.
+#
+# Modules that hold big live state register a releaser here (called with no
+# args, any thread, must not raise) - draw_function's runner threads do.
+OOM_RELEASE_HOOKS = globals().get("OOM_RELEASE_HOOKS") or []
+
+
+def is_cuda_oom(exc):
+    """True for a CUDA allocation failure however it surfaced: torch's
+    OutOfMemoryError, the runtime-API 'CUDA error: out of memory'
+    RuntimeError (e.g. from a custom kernel's context), pycuda's
+    MemoryError, or a GL/CUDA interop refusal carrying the same words."""
+    if exc is None:
+        return False
+    try:
+        import torch
+        if isinstance(exc, torch.cuda.OutOfMemoryError):
+            return True
+    except Exception:
+        pass
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if name == "MemoryError" and type(exc).__module__.startswith("pycuda"):
+        return True
+    return "out of memory" in msg and ("cuda" in msg or "cublas" in msg
+                                       or name == "OutOfMemoryError")
+
+
+def _device_mem():
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return {}
+        return {i: (torch.cuda.memory_allocated(i), torch.cuda.memory_reserved(i))
+                for i in range(torch.cuda.device_count())}
+    except Exception:
+        return {}
+
+
+_REPORT_SKIP = ("_describe_holder", "report_vram_holders", "_oom_cleanup", "_dict_slot")
+
+
+def _dict_slot(d, obj):
+    for k, v in list(d.items()):
+        if v is obj:
+            return k
+    return None
+
+
+def _describe_holder(obj, depth, seen, lines, prefix, internal):
+    """One line per referrer of `obj` (up to `depth` hops), naming what kind
+    of container holds it and, where cheap, WHICH slot: dict key, attribute
+    name on an instance, frame code name, module/function name. No
+    closures in here — a genexpr capturing `obj` would show up as a cell."""
+    if depth <= 0 or id(obj) in seen:
+        return
+    seen.add(id(obj))
+    import types
+    try:
+        refs = gc.get_referrers(obj)
+    except Exception:
+        return
+    internal.add(id(refs))
+    shown = 0
+    for r in refs:
+        if id(r) in internal or r is lines or r is seen:
+            continue
+        if isinstance(r, types.FrameType) and r.f_code.co_name in _REPORT_SKIP:
+            continue
+        tn = type(r).__name__
+        if isinstance(r, dict):
+            key = _dict_slot(r, obj)
+            owner = None
+            for rr in gc.get_referrers(r):
+                if getattr(rr, "__dict__", None) is r:
+                    owner = rr
+                    break
+                if isinstance(rr, dict):
+                    nm = _dict_slot(rr, r)
+                    if nm is not None:
+                        owner = f"dict[{nm!r}]"
+                        break
+            if owner is not None and not isinstance(owner, str):
+                oname = (getattr(owner, "__qualname__", None) or getattr(owner, "__name__", None)
+                         or getattr(owner, "name", None) or type(owner).__name__)
+                label = f"attr {key!r} of {type(owner).__name__} {oname}"
+            else:
+                label = f"dict[{key!r}]" + (f" in {owner}" if owner else "")
+        elif isinstance(r, (list, tuple, set, frozenset)):
+            label = f"{tn}[{len(r)}]"
+        elif isinstance(r, types.FrameType):
+            label = (f"frame {r.f_code.co_name} "
+                     f"({r.f_code.co_filename.rsplit('/', 1)[-1]}:{r.f_lineno})")
+        elif isinstance(r, types.CellType):
+            label = "closure cell"
+        else:
+            slot = None
+            for a in getattr(r, "__slots__", ()):
+                if getattr(r, a, None) is obj:
+                    slot = a
+                    break
+            if slot is None:
+                try:        # 3.12 inline class dicts: the instance IS the referrer
+                    slot = _dict_slot(vars(r), obj)
+                except TypeError:
+                    pass
+            label = tn + (f".{slot}" if slot else "")
+            qn = getattr(r, "__qualname__", None)
+            if isinstance(qn, str):
+                label += f" {qn}"
+        lines.append(f"{prefix}<- {label}")
+        shown += 1
+        if shown >= 4:
+            lines.append(f"{prefix}   (+{len(refs) - shown} more referrers)")
+            break
+        if not isinstance(r, types.FrameType):
+            _describe_holder(r, depth - 1, seen, lines, prefix + "   ", internal)
+
+
+def report_vram_holders(top=12, device=None, depth=3):
+    """Who holds the VRAM: every CUDA tensor reachable from gc, aggregated
+    by STORAGE (views share one), the top-N storages by bytes with the
+    referrer chain of one tensor over each. Unfreezes the permanent
+    generation for the walk (gc.get_objects skips it) and re-freezes.
+    Parameters show up too — the model's weights are part of the answer.
+    Returns the report lines (also printed). Seconds, OOM-time only."""
+    t0 = time.perf_counter()
+    # Unfrozen for the WHOLE report: neither get_objects nor get_referrers
+    # looks through the permanent generation. Deliberately NOT re-frozen
+    # here: gc.freeze() freezes EVERYTHING tracked - including whatever
+    # cyclic garbage is pending - and a frozen cycle can never be collected
+    # (an earlier version did this and pinned 28 retired generations). The
+    # OOM handler re-freezes after its collect (the boot regime); a manual
+    # call leaves the heap unfrozen, which only makes the next collect walk
+    # more.
+    gc.unfreeze()
+    return _report_vram_holders(top, device, depth, t0)
+
+
+def _report_vram_holders(top, device, depth, t0):
+    objs = gc.get_objects()
+    by_storage = {}
+    n_tensors = 0
+    for o in objs:
+        if type(o).__name__ not in ("Tensor", "Parameter"):
+            continue
+        try:
+            if not o.is_cuda or (device is not None and (o.device.index or 0) != device):
+                continue
+            st = o.untyped_storage()
+            key = (st.data_ptr(), o.device.index or 0)
+            nbytes = st.nbytes()
+        except Exception:
+            continue
+        n_tensors += 1
+        ent = by_storage.get(key)
+        if ent is None:
+            by_storage[key] = [nbytes, o.device.index or 0, [o]]
+        elif len(ent[2]) < 4:
+            ent[2].append(o)    # the full tensor AND its views: a VIEW held
+                                # by a draw call holds the storage just as well
+    del objs, o
+    total = 0
+    per_dev = {}
+    for nb, d, _t in by_storage.values():
+        total += nb
+        per_dev[d] = per_dev.get(d, 0) + nb
+    del _t
+    ranked = sorted(by_storage.values(), key=lambda e: -e[0])
+    # Representatives in ONE flat list the describer knows to skip; the
+    # bookkeeping containers above are released before any referrer walk.
+    reps = []
+    for e in ranked[:top]:
+        reps.append((e[0], e[1], tuple(e[2])))
+    small = 0
+    for e in ranked[top:]:
+        small += e[0]
+    n_storages = len(by_storage)
+    del by_storage, ranked, e, ent
+    lines = [f"=== VRAM holders: {n_tensors} CUDA tensors over {n_storages} storages, "
+             f"{total/2**30:.1f} GB reachable (walk {time.perf_counter()-t0:.1f}s)",
+             "  per device: " + ", ".join(f"cuda:{d} {v/2**30:.1f} GB"
+                                          for d, v in sorted(per_dev.items()))]
+    seen = set()
+    internal = {id(reps), id(per_dev)}
+    for e in reps:
+        internal.add(id(e))
+        internal.add(id(e[2]))
+    del e
+    for i in range(len(reps)):
+        nb, d, ts = reps[i]
+        lines.append(f"- {nb/2**30:6.2f} GB cuda:{d} storage, {len(ts)} tensor(s) over it:")
+        for t in ts:
+            lines.append(f"   {type(t).__name__}{tuple(t.shape)} "
+                         f"{str(t.dtype).replace('torch.', '')}"
+                         f"{' (view)' if t.numel() * t.element_size() < nb else ''}")
+            _describe_holder(t, depth, seen, lines, "     ", internal)
+        del t, ts
+    lines.append(f"  (+{small/2**30:.1f} GB in {max(0, n_storages - top)} smaller storages)")
+    text = "\n".join(lines)
+    print(text)
+    return lines
+
+
+def _oom_cleanup(where):
+    import threading
+    _state["oom_timer"] = None
+    before = _device_mem()
+    if Toggles.GC.oom_holder_report:
+        try:
+            report_vram_holders()
+        except Exception as e:
+            print(f"[gc] oom: holder report failed: {e!r}")
+    dropped = 0
+    try:
+        from src.lsd.gl_gui.view.core_conversion.live_view import release_all_live_stores
+        dropped = release_all_live_stores()
+    except Exception as e:
+        print(f"[gc] oom: release_all_live_stores failed: {e!r}")
+    for hook in list(OOM_RELEASE_HOOKS):
+        try:
+            hook()
+        except Exception as e:
+            print(f"[gc] oom: release hook {getattr(hook, '__name__', hook)} failed: {e!r}")
+    # A real collect, regardless of the profiler/idle gating: the failed
+    # run's pending cycles are the generation that must die. Unfreeze
+    # first (prior runs / an earlier report may have frozen garbage),
+    # re-freeze what remains for the boot regime: later collects only walk
+    # what's new.
+    t0 = time.perf_counter()
+    try:
+        gc.unfreeze()
+        n = gc.collect()
+        gc.freeze()
+    except Exception:
+        n = -1
+    _release_cuda_cache()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                with torch.cuda.device(i):
+                    torch.cuda.empty_cache()
+    except Exception:
+        pass
+    after = _device_mem()
+    parts = []
+    for i in sorted(set(before) | set(after)):
+        ba, br = before.get(i, (0, 0))
+        aa, ar = after.get(i, (0, 0))
+        parts.append(f"cuda:{i} reserved {br/2**30:.1f}→{ar/2**30:.1f} GB "
+                     f"(allocated {ba/2**30:.1f}→{aa/2**30:.1f})")
+    msg = (f"CUDA OOM in {where}: released {dropped} live keys, "
+           f"gc {n} objs in {1000*(time.perf_counter()-t0):.0f}ms; "
+           + "; ".join(parts))
+    print(f"[gc] {msg}")
+    try:
+        notify(msg, tint=(1.0, 0.55, 0.3), tag="oom")
+    except Exception:
+        pass
+    try:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+    except Exception:
+        pass
+    _state["last_post_run"] = _state["last_collect"] = time.monotonic()
+
+
+def respond_to_cuda_oom(exc=None, where="run", delay_s=0.25):
+    """Call from an except block that caught `exc` (or with exc=None to
+    force). No-op unless is_cuda_oom(exc). The cleanup itself is DEFERRED
+    onto a short timer thread — it must run after the raising frames have
+    unwound (while the handler runs, the traceback still pins the failed
+    run's tensors, and a collect there frees nothing) — and coalesced, so a
+    burst of failures pays one sweep. Returns whether a cleanup was armed."""
+    import threading
+    if exc is not None and not is_cuda_oom(exc):
+        return False
+    prev = _state.get("oom_timer")
+    if prev is not None:
+        prev.cancel()
+    t = threading.Timer(max(0.0, float(delay_s)), _oom_cleanup, args=(where,))
+    t.daemon = True
+    _state["oom_timer"] = t
+    t.start()
+    return True

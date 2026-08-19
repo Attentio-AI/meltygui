@@ -2591,10 +2591,12 @@ def _fnrun_run(fn, instrumented=False, params=None):
             fn(**params)
         return True, None
     except Exception as e:
-        from src.lsd.gl_gui.view.core_views.new_core_view import _format_run_error
+        from src.lsd.gl_gui.view.core_views.new_core_view import (
+            _format_run_error, _respond_to_cuda_oom)
         from src.lsd.gl_gui.utils.custom_views import print_colored_traceback
         print(f"Error calling function '{fn.__name__}': {e}")
         print_colored_traceback(*sys.exc_info())
+        _respond_to_cuda_oom(e, fn.__name__)
         return False, _format_run_error(e)
 
 

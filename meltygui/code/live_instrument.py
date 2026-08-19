@@ -84,6 +84,13 @@ def run_instrumented(fn, *args, **kwargs):
                 return twin(*args, **kwargs)
             except BaseException as e:
                 _stamp_error_line(target, twin, e)
+                # An out-of-memory run leaves the live set holding onto VRAM;
+                # arm the deferred sweep (runs after these frames unwind).
+                try:
+                    from src.lsd.gl_gui.gc_manager import respond_to_cuda_oom
+                    respond_to_cuda_oom(e, where=getattr(target, "__name__", "run"))
+                except Exception:
+                    pass
                 raise
     finally:
         # Retire the PREVIOUS run's generation: the studio's gc_manager keeps

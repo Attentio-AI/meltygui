@@ -843,7 +843,11 @@ def _first_pick(rows, matched, ranked=()):
     n = len(rows)
     if not n:
         return 0
-    pos = {id(r): i for i, r in enumerate(rows)}
+    # First occurrence wins: a hit can appear twice (matched in the fast
+    # tree, repeated as a context row in the trailing async section).
+    pos = {}
+    for i, r in enumerate(rows):
+        pos.setdefault(id(r), i)
     for h in ranked:
         i = pos.get(id(h))
         if i is not None:
@@ -1483,6 +1487,7 @@ def _kick_text_search(q):
     if len(q) < 3:  # below the trigram minimum
         GlobalSearch.text_results = []
         GlobalSearch.local_results = []
+        GlobalSearch._text_done_query = q
         return
 
     def _run():
@@ -1511,9 +1516,40 @@ def _kick_text_search(q):
         except Exception:
             traceback.print_exc()
             GlobalSearch.local_results = []
+        # Landed for `q` (AFTER the results, so a repaint never sees
+        # done-but-stale): the debounced fuzzy pass waits on this so the
+        # locals and the typo hits enter the trailing section together.
+        GlobalSearch._text_done_query = q
         _repaint_global_search()
 
     threading.Thread(target=_run, daemon=True, name="global-text-search").start()
+
+
+def _kick_fuzzy_search(q):
+    """Arm the debounced FUZZY pass for `q` (the typo-tolerant word matcher,
+    2-25 ms of pure-Python edit distance over the Code corpus -- never paid
+    per keystroke). A sleeper thread waits Toggles.GlobalSearch.fuzzy_debounce_s,
+    and if no newer query superseded it, marks the generation ready and
+    wakes the render loop; draw_global_search then runs the scorer ON THE
+    GL THREAD (a thread would hold the GIL for the same milliseconds and
+    stall rendering just the same -- the GIL-convoy lesson). The hits land
+    in GlobalSearch.fuzzy_results, drawn as a TRAILING section below every
+    fast-pass row, so the rows already on screen never move."""
+    GlobalSearch._fuzzy_gen += 1
+    gen = GlobalSearch._fuzzy_gen
+    GlobalSearch.fuzzy_results = []
+    GlobalSearch._fuzzy_done = False
+    if len(q) < 3:  # the scorer doesn't fuzz short queries anyway
+        return
+
+    def _run():
+        time.sleep(Toggles.GlobalSearch.fuzzy_debounce_s)
+        if GlobalSearch._fuzzy_gen != gen:
+            return
+        GlobalSearch._fuzzy_ready_gen = gen
+        _repaint_global_search()
+
+    threading.Thread(target=_run, daemon=True, name="global-fuzzy-search").start()
 
 
 # --- Toggles category -------------------------------------------------------
@@ -1951,9 +1987,16 @@ def _popular_hits(store, limit=60, kinds=None):
     return out
 
 
-def global_search_results(q, store=None, limit=60, kinds=None, scores=None):
+def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier="all"):
     """Query every registered search index and return the hits matching `q`,
     best-first — the global-search result list.
+
+    `tier` splits the work between the two search passes draw_global_search
+    runs: "exact" = substring / prefix hits only (~0.2 ms over the whole Code
+    corpus -- the per-keystroke pass), "fuzzy" = ONLY the word-aware typo
+    matches, skipping every key an exact pass already claimed (2-25 ms of
+    pure-Python edit distance -- the debounced pass), "all" = both in one
+    list (offline callers / tests).
 
     Matching runs against the hit's `match` key when it has one (a file's
     BASENAME, so partial file names hit and the directory prefix doesn't
@@ -1975,7 +2018,9 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None):
     # Edit budget for the fuzzy matcher: ~1 typo per 4 chars, min 1; short
     # queries (< 3 chars) are exact-only -- too little signal to fuzz.
     budget = max(1, len(q) // 4)
-    use_fuzzy = len(q) >= 3
+    use_fuzzy = len(q) >= 3 and tier != "exact"
+    if tier == "fuzzy" and not use_fuzzy:
+        return []
     q_words = _split_words(q)
     q_chars = frozenset(q)
     scored = []
@@ -1985,6 +2030,8 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None):
             if low in seen:
                 continue
             if q in key or q in full:
+                if tier == "fuzzy":
+                    continue  # the exact pass already listed it
                 dist = 0
             elif use_fuzzy:
                 # Cheap prune: more query chars missing from the key than the
@@ -2905,17 +2952,45 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         return None if a == ALL_CATEGORY else {a}
 
     def _search(limit=60):
+        """The FAST pass: exact substring / prefix hits only (~0.2 ms over
+        the Code corpus), run synchronously on every query change. The
+        typo-tolerant tier is the separate debounced pass (_run_fuzzy)."""
         kinds = _scope()
         scores = {}
-        res = (global_search_results(q, store, limit=limit, kinds=kinds, scores=scores)
+        res = (global_search_results(q, store, limit=limit, kinds=kinds, scores=scores, tier="exact")
                if len(q) >= 2 else _recent_hits(store, limit=limit, kinds=kinds))
         if not res and kinds is not None and len(q) >= 2:
             # The active tab matched nothing: fall back to the FULL search so
             # the borrowed-categories view (see _items_for) has rows to show.
             # Paid only in the common case.
-            res = global_search_results(q, store, limit=limit, kinds=None, scores=scores)
+            kinds = None
+            res = global_search_results(q, store, limit=limit, kinds=None, scores=scores, tier="exact")
         input_value._scores = scores
+        input_value._search_kinds = kinds
+        input_value._search_limit = limit
         return res
+
+    def _run_fuzzy():
+        """The SLOW pass: the word-aware typo matcher over the same scope and
+        limit the fast pass settled on, skipping everything it already
+        listed. Scores merge into the same map (ids are distinct) so the
+        Code tree tiers the hits; the hits themselves stay OUT of
+        input_value.results -- they draw as a trailing section."""
+        input_value._fuzzy_done = True
+        if len(q) < 3:
+            input_value.fuzzy_results = []
+            return
+        scores = input_value._scores if isinstance(input_value._scores, dict) else {}
+        input_value._scores = scores
+        input_value.fuzzy_results = global_search_results(
+            q, store, limit=input_value._search_limit, kinds=input_value._search_kinds,
+            scores=scores, tier="fuzzy")
+        if input_value.fuzzy_results and not input_value.results \
+                and not input_value.local_results:
+            # Nothing was on screen to protect: let the highlight land on
+            # the best typo hit instead of the first (context) row.
+            input_value._snap_sel = True
+        request_render()
 
     # Recompute on a query OR scope change (Tab / chip / All): results hold
     # only the active tab's hits, so a chip re-queries just that tab.
@@ -2927,6 +3002,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         input_value.show_all = False  # a new query starts back at the top view
         # Empty box: show the most-selected hits over time instead of nothing.
         input_value.results = _search()
+        _kick_fuzzy_search(q)  # typo tier lands later, below the rows
         if new_query:
             input_value.selected = 0  # reset highlight to the top match on a new query
             input_value.expanded_files = set()  # per-file "+ n more" collapses again
@@ -2934,8 +3010,18 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # Full-text hits arrive async from the trigram index (no-op while q is
     # unchanged); they land on input_value.text_results and repaint us. Only
     # kicked when a tab that shows them is up (All / Text).
-    if input_value.active_kind in (ALL_CATEGORY, "Text", CODE_CATEGORY):
+    text_tab = input_value.active_kind in (ALL_CATEGORY, "Text", CODE_CATEGORY)
+    if text_tab:
         _kick_text_search(q)
+    # The fuzzy pass runs here, on the GL thread, when its debounce has
+    # elapsed for the CURRENT generation -- and, on tabs that also show the
+    # async local-symbol hits, after those have landed for this query, so the
+    # trailing section fills in one step (locals + typo hits) instead of
+    # the locals shoving the typo rows down a moment later.
+    if (not input_value._fuzzy_done
+            and input_value._fuzzy_ready_gen == input_value._fuzzy_gen
+            and (not text_tab or input_value._text_done_query == q)):
+        _run_fuzzy()
 
     # The query's own hits by identity: any Code row not in here is a context
     # row (an ancestor shown for perspective) -- drawn dim, and skipped when
@@ -2943,28 +3029,30 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     matched = {id(h) for h in input_value.results}
     matched.update(id(h) for h in input_value.text_results)
     matched.update(id(h) for h in input_value.local_results)
+    matched.update(id(h) for h in input_value.fuzzy_results)
 
     # Group ranked hits by category; only the ACTIVE category's results render
-    # (one at a time), picked by the selector row under the box.
+    # (one at a time), picked by the selector chip under the box. by_kind
+    # holds the FAST pass only: it decides the chip bar and the layout of
+    # everything drawn on the query-change frame. The async tiers -- the
+    # Code tab's local-symbol hits (exact, from the text index) and the
+    # debounced typo hits -- go in `trailing`, drawn as their OWN category
+    # (own tree / rows, context rows repeated) strictly BELOW the fast rows,
+    # so nothing already on screen changes position or order when they land.
     by_kind = {}
     for hit in input_value.results:
         by_kind.setdefault(hit.kind, []).append(hit)
     if len(q) >= 3 and input_value.text_results:
         by_kind["Text"] = list(input_value.text_results)
-    ranked = list(input_value.results)  # the default-highlight preference order
-    if len(q) >= 3 and input_value.local_results:
-        # The Code tab's second layer (async, before the text index): EXACT
-        # matches first regardless of scope, then scope -- so the locals (all
-        # exact substring hits) slot in after the exact-tier scored Code hits
-        # (defs/classes/files still win among exacts) but AHEAD of the second
-        # (typo) tier.
-        _sc = getattr(input_value, "_scores", None) or {}
-        code = by_kind.get(CODE_CATEGORY, [])
-        exact = [h for h in code if _sc.get(id(h), (0,))[0] == 0]
-        fuzzy = [h for h in code if _sc.get(id(h), (0,))[0] != 0]
-        by_kind[CODE_CATEGORY] = exact + list(input_value.local_results) + fuzzy
-        others = [h for h in ranked if h.kind != CODE_CATEGORY]
-        ranked = exact + list(input_value.local_results) + fuzzy + others
+    trailing = {}
+    if len(q) >= 3:
+        for hit in list(input_value.local_results) + list(input_value.fuzzy_results):
+            trailing.setdefault(hit.kind, []).append(hit)
+    # The default-highlight preference order: fast rows, then the trailing
+    # tiers in their own order.
+    ranked = list(input_value.results)
+    for k in trailing:
+        ranked.extend(trailing[k])
     cats = _search_cats(by_kind)
     # The active category is STICKY - it never auto-switches, so the chips
     # remember where you put it.
@@ -2988,6 +3076,15 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                               keep_order=blank,
                                               scores=getattr(input_value, "_scores", None),
                                               expanded=input_value.expanded_files)
+        # The async tiers append AFTER the interleave, under their own
+        # category label (vertical: a single "Code" group at the bottom;
+        # horizontal: the bottom of that category's column) -- append-only
+        # either way.
+        for k, hits in trailing.items():
+            exp = _expand_rows(k, hits, getattr(input_value, "_scores", None),
+                               input_value.expanded_files)
+            all_rows = all_rows + exp
+            all_groups = list(all_groups or []) + [k] * len(exp)
 
     def _items_for(kind):
         """(rows, is_fallback) for a category: its own hits, or — when it
@@ -3004,11 +3101,18 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         own = by_kind.get(kind) or []
         _scs = getattr(input_value, "_scores", None)
         _exp = input_value.expanded_files
+        # Whether this is the fallback view is decided by the FAST pass
+        # alone (tr async tiers only ever append below), so the highlight can't
+        # flip from borrowed rows to own rows when a trailing tier lands.
         if own or not input_value.results:
-            return _expand_rows(kind, own, _scs, _exp), False
+            rows = _expand_rows(kind, own, _scs, _exp)
+            rows.extend(_expand_rows(kind, trailing.get(kind) or [], _scs, _exp))
+            return rows, False
         grouped = []
         for k in dict.fromkeys(h.kind for h in input_value.results):
             grouped.extend(_expand_rows(k, by_kind[k], _scs, _exp))
+        for k, hits in trailing.items():
+            grouped.extend(_expand_rows(k, hits, _scs, _exp))
         return grouped, True
 
     items, fallback = _items_for(active)
@@ -3043,6 +3147,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         is, so it lands on the first newly revealed row."""
         input_value.show_all = True
         input_value.results = _search(limit=10 ** 9)
+        # Lift the fuzzy tier's cap too -- an explicit pick, so it's paid
+        # right now rather than on another debounce.
+        _run_fuzzy()
         request_render()
 
     # While the box holds text focus: Tab / Shift+Tab pick the category (the
@@ -3210,13 +3317,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         # Counts only for what this scope actually searched: the active chip
         # (and All when it's active); other chips are just names -- their
         # results aren't computed until they're picked.
+        # Counts fold the async tiers in once they land (locals / typo
+        # searches) -- the chip count is the one thing allowed to change then.
         if k == active:
             cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow)
                        and not _is_context_row(r, matched))
-                   if k == ALL_CATEGORY else len(by_kind.get(k, ())))
+                   if k == ALL_CATEGORY
+                   else len(by_kind.get(k, ())) + len(trailing.get(k, ())))
             lbl = f"{k} {cnt}"
-        elif active == ALL_CATEGORY and k in by_kind:
-            lbl = f"{k} {len(by_kind[k])}"
+        elif active == ALL_CATEGORY and (k in by_kind or k in trailing):
+            lbl = f"{k} {len(by_kind.get(k, ())) + len(trailing.get(k, ()))}"
         else:
             lbl = k
         chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
@@ -3713,6 +3823,15 @@ class GlobalSearch:
     local_results = []  # async Code-tab local-symbol hits (built beside text_results)
     _text_query = None  # last query handed to _kick_text_search
     _text_gen = 0  # generation counter that debounces/cancels text search
+    _text_done_query = None  # query whose text/local results have LANDED
+    # The debounced typo-tolerant pass (see _kick_fuzzy_search): its results
+    # draw as a trailing section below the exact-pass rows.
+    fuzzy_results = []
+    _fuzzy_gen = 0  # bumped per query; the sleeper's ticket
+    _fuzzy_ready_gen = -1  # generation whose debounce has expired
+    _fuzzy_done = False  # fuzzy_results computed for the current generation
+    _search_kinds = None  # provider scope the current results were computed with
+    _search_limit = 60  # per-category limit of the current results (lifted by load-all)
     selected = 0  # index (in on-screen order) of the arrow-key highlight
     _snap_sel = False  # one-shot: move `selected` off Code context rows next frame
     _store_adopted = None  # the GlobalSearchStore whose persisted query/_kind we adopted
@@ -6710,6 +6829,35 @@ def _format_run_error(exc):
     return text
 
 
+# Runner draw states holding a run's `result` - what the CUDA-OOM responder
+# frees (a forward pass result is typically the largest single live object).
+_RUN_RESULT_HOLDERS = globals().get("_RUN_RESULT_HOLDERS")
+if _RUN_RESULT_HOLDERS is None:
+    import weakref as _weakref
+    _RUN_RESULT_HOLDERS = _weakref.WeakSet()
+
+
+def _release_run_results():
+    for ds in list(_RUN_RESULT_HOLDERS):
+        try:
+            ds.result = None
+            ds.misc.pop("_result_frame", None)
+        except Exception:
+            pass
+    _RUN_RESULT_HOLDERS.clear()
+
+
+def _respond_to_cuda_oom(exc, where):
+    try:
+        from src.lsd.gl_gui.gc_manager import respond_to_cuda_oom, OOM_RELEASE_HOOKS
+        if not any(getattr(h, "__name__", None) == "_release_run_results"
+                   for h in OOM_RELEASE_HOOKS):
+            OOM_RELEASE_HOOKS.append(_release_run_results)
+        respond_to_cuda_oom(exc, where=where)
+    except Exception:
+        pass
+
+
 @render_func(is_default_for=(types.FunctionType, types.MethodType), z_offset=0, use_cache=True,
              show_add_delete=False, selectable=False, show_bg=True,
              parent_show_add_delete=False, is_tree=False, show_name=False, with_header=draw_header)
@@ -6790,12 +6938,14 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             def _worker():
                 try:
                     draw_state.result = fn(**params)
+                    _RUN_RESULT_HOLDERS.add(draw_state)
                     draw_state.misc["_result_frame"] = Melty.frame_count
                     draw_state.misc.pop("_run_error", None)
                 except Exception as e:
                     draw_state.misc["_run_error"] = _format_run_error(e)
                     print(f"Error calling function '{input_value.__name__}': {e}")
                     print_colored_traceback(*sys.exc_info())
+                    _respond_to_cuda_oom(e, input_value.__name__)
                 finally:
                     draw_state.misc.pop("_run_busy", None)
                     # invalidate_up_current reads the live render stack - only
@@ -6818,6 +6968,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             return
         try:
             draw_state.result = input_value(**draw_state.params)
+            _RUN_RESULT_HOLDERS.add(draw_state)
             draw_state.misc["_result_frame"] = Melty.frame_count
             draw_state.misc.pop("_run_error", None)
             Core.melty.cache.invalidate_up_current(force=True)
@@ -6828,6 +6979,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             Core.melty.cache.invalidate_up_current(force=True)
             print(f"Error calling function '{input_value.__name__}': {e}")
             print_colored_traceback(*sys.exc_info())
+            _respond_to_cuda_oom(e, input_value.__name__)
 
     busy = run_in_thread and draw_state.misc.get("_run_busy")
     # One-offed run request (draw_function_live's Ctrl+Enter - the

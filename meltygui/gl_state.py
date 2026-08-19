@@ -353,6 +353,36 @@ class GLState:
                 hops += 1
 
     @classmethod
+    def states_under(cls, window_ds):
+        """Every live state owned by a draw_state under `window_ds` (the
+        on_window_deleted ownership walk, as a list)."""
+        out = []
+        if window_ds is None:
+            return out
+        for state in list(_live_states):
+            node = state._owner_ds
+            hops = 0
+            while node is not None and hops < 64:
+                if node is window_ds:
+                    out.append(state)
+                    break
+                nxt = getattr(node, "parent_window", None)
+                if nxt is None or nxt is node:
+                    break
+                node = nxt
+                hops += 1
+        return out
+
+    @classmethod
+    def drop_under(cls, window_ds, keys):
+        """Drop just `keys` from every live state owned under `window_ds` —
+        the selective sibling of on_window_deleted for releasing what PINS a
+        value while the window keeps its FBO / last image."""
+        for state in cls.states_under(window_ds):
+            for k in keys:
+                state.drop(k)
+
+    @classmethod
     def shutdown_all(cls):
         for state in list(_live_states):
             state.release()
