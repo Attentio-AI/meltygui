@@ -464,10 +464,11 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
         _transfer = (float(cam["threshold"]), float(cam["density"]),
                      float(cam["brightness"]), float(cam["contrast"]),
                      bool(cam["centered"]))
-        mip = None
-        # Only SELF-SHADING reads the mip (its per-sample light march); it
-        # bakes OPACITY using the current transfer, so the key includes it.
-        if shade_list[7] > 0.5 and shade_list[8] > 0.5:    # draw_shadows + self_shading
+        # The (j, k) mip is the colour march's TRAVERSAL grid now (two-level
+        # DDA skips empty cells through it) as well as self-shading's light
+        # field; it bakes OPACITY under the current transfer, so the key
+        # includes it. Always baked on the cuda path.
+        if True:
             mip = gl_state.get(
                 "cuda_mip",
                 lambda: cuda_march.build_mip(
@@ -2263,14 +2264,14 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         light_brightness = _fly("light_brightness", light_brightness)
         ambient_light = _fly("ambient_light", ambient_light)
         shading_strength = _fly("shading_strength", shading_strength)
-        # (Data-shaping params - slices/dims/nf/sort/normalize - are consumed
-        # ABOVE this gate; they can't be re-read here, but the pump below
-        # re-renders until the write lands and the new vol_key rebuilds.)
-        # And keep re-rendering until the slow write LANDS (locate_* clears
-        # the entry): the landing itself doesn't invalidate this view, so
-        # without the pump the final value never repaints.
-        draw_state.invalidate()
-        request_render()
+        # # (Data-shaping params - slices/dims/nf/scale/normalize - are consumed
+        # # ABOVE this gate and they can't be re-read here, but the pump below
+        # # re-renders until the trip lands and the new tex_key rebuilds.)
+        # # And keep re-rendering until the slow write LANDS (locate_* clears
+        # # the entry): the landing itself doesn't invalidate this frame, so
+        # # without the pump the final value never rebuilds.
+        # draw_state.invalidate()
+        # request_render()
 
     # ── gestures → draw_state params (auto-state: the caller diverges the
     # param so it persists; events are hover-routed wrapper kwargs) ──────

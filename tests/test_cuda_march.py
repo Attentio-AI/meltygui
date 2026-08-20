@@ -120,7 +120,11 @@ def test_cuda_image_matches_gl_voxel_pass(st):
         return np.frombuffer(raw, np.uint8).reshape(H, W, 4).copy()
 
     fb = st.fbo("target", W, H)
-    # GL path
+    # GL path - at a CONVERGED step: the CUDA march is exact DDA (per-voxel
+    # segments, no step size), and GL's fixed-step algorithm approaches it
+    # as step -> 0, so the reference must be fine-stepped or the comparison
+    # measures GL's own quantization error.
+    gl_cam = dict(cam, step_size=0.002, max_steps=4000)
     tex = st.texture3d("volume", vol.cpu().numpy(), version=1)
     lut_tex = st.texture1d("lut", LUTS["jet"], version=("jet",))
     with fb:
@@ -129,7 +133,7 @@ def test_cuda_image_matches_gl_voxel_pass(st):
         voxel_pass(st, volume=tex, volume_lin=tex, lut=lut_tex, aspect=W / H,
                    pan_x=0.0, pan_y=0.0, pan_z=0.0,
                    draw_plane=False, draw_shading=False, self_shading=False,
-                   **{k: v for k, v in cam.items() if k != "pan"})
+                   **{k: v for k, v in gl_cam.items() if k != "pan"})
         a = read()
     assert voxel_pass.last_error is None, voxel_pass.last_error
     # CUDA path
@@ -145,11 +149,11 @@ def test_cuda_image_matches_gl_voxel_pass(st):
     assert a[..., 3].any() and b[..., 3].any()
     lit = (a[..., 3] > 0) | (b[..., 3] > 0)
     diff = np.abs(a.astype(int) - b.astype(int)).max(-1)
-    # Same camera, volume, transfer function and encode; the two paths only
-    # differ in float rounding (GL texture coords vs floorf(p*n) at voxel
-    # seams), so all but a sliver of boundary pixels must be identical.
-    assert (diff[lit] > 8).mean() < 0.02, (diff[lit] > 8).mean()
-    assert np.median(diff[lit]) <= 1
+    # matches camera, threshold, transfer function and encode; residuals are
+    # GL's remaining step quantization vs DDA's exact integral, plus voxel-
+    # coordinate rounding - bulk agreement, seam pixels excepted.
+    assert (diff[lit] > 12).mean() < 0.03, (diff[lit] > 12).mean()
+    assert np.median(diff[lit]) <= 2, np.median(diff[lit])
 
 
 def test_shading_touches_only_the_floor_unless_self():
@@ -299,3 +303,48 @@ def test_floor_map_size_tracks_data():
     # rect maps: extents follow volume_scale per axis
     Rx, Ry = cm.floor_map_extent((1.0, 0.25, 0.1))
     assert abs(Rx - 1.5) < 1e-6 and abs(Ry - 0.375) < 1e-6
+
+
+def test_dda_coarse_skip_is_exact():
+    """Empty-cell skipping must not change a single pixel: mip-guided
+    two-level DDA == plain fine DDA (shading off isolates the colour march;
+    the volume is >262144 voxels so the coarse path actually engages)."""
+    torch.manual_seed(9)
+    vol = torch.zeros(64, 128, 128, device=DEV)
+    vol[torch.rand(64, 128, 128, device=DEV) > 0.999] = 1.0
+    vol[20:30, 40:60, 40:60] = 0.5
+    lut = torch.tensor([[0, 0, 1], [1, 0, 0]], dtype=torch.float32, device=DEV)
+    kw = dict(display_shape=tuple(vol.shape), tilt=0.5, spin=0.9, zoom=3.2,
+              volume_scale=(1.0, 1.0, 0.5), max_steps=100000,
+              threshold=0.3, density=0.7)
+    def render(m):
+        out = torch.zeros(160, 160, 4, dtype=torch.uint8, device=DEV)
+        cm.march(vol, out, lut, mip=m, **kw)
+        return out.cpu().numpy()
+    a = render(None)
+    b = render(cm.build_mip(vol, display_shape=tuple(vol.shape)))
+    assert a[..., 3].any()
+    assert np.array_equal(a, b)
+
+
+def test_step_size_is_the_coalescing_stride():
+    """CUDA step_size = sampling stride: default stays exact (K=1); a big
+    step coalesces voxels — still renders, similar in the large, cheaper."""
+    torch.manual_seed(11)
+    vol = (torch.rand(64, 256, 256, device=DEV) * 0.4)
+    lut = torch.tensor([[0, 0, 1], [1, 0, 0]], dtype=torch.float32, device=DEV)
+    kw = dict(display_shape=tuple(vol.shape), tilt=0.5, spin=0.9, zoom=3.2,
+              volume_scale=(1.0, 1.0, 0.25), max_steps=100000,
+              threshold=0.3, density=0.7)
+    def render(step):
+        out = torch.zeros(120, 120, 4, dtype=torch.uint8, device=DEV)
+        cm.march(vol, out, lut, step_size=step, **kw)
+        return out.cpu().numpy().astype(int)
+    exact = render(0.0005)                    # K = 1 (voxel = 2/256)
+    tiny = render(0.004)                      # ~K = 1 boundary: voxel=0.0078 -> K=1
+    assert np.array_equal(exact, tiny)        # sub-voxel steps are exact
+    coarse = render(0.03)                     # K ~ 4
+    lit = exact[..., 3] > 0
+    assert coarse[..., 3].any()
+    # coarse is an approximation of the same image, not a different scene
+    assert np.abs(exact - coarse)[lit].mean() < 30

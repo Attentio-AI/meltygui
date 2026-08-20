@@ -296,6 +296,106 @@ __device__ __forceinline__ float2 floor_lookup(const __half* __restrict__ m,
     return make_float2(a, b);
 }
 
+// ── fine DDA (Amanatides-Woo) over display voxels in [t0, t1): each voxel
+// along the ray is visited EXACTLY ONCE with its exact segment length —
+// there is no step size. Zoomed out, no voxel is skipped (fixed steps
+// aliased past sub-step spikes); zoomed in, a screen-filling voxel costs
+// one sample instead of step_size's fifty, and nothing far-clips at
+// max_steps * step_size. `budget` (shared across cells) is the watchdog.
+// Returns false when the walk should stop (opacity saturated / budget out).
+__device__ bool dda_fine(const Ctx& c, const Shade& S,
+                         const float* __restrict__ lut, int lut_n,
+                         float3 ro, float3 rd, float t0, float t1,
+                         float dirn, float view_cos,
+                         float4& acc, int& budget, int K)
+{
+    if (t1 <= t0) return true;
+    int nx = c.v.nx, ny = c.v.ny, nz = c.v.nz;
+    // index-space ray: u_a(t) = ((ro_a/vs_a)*0.5 + 0.5)*n_a + rd_a*0.5*n_a/vs_a * t
+    float ox = ((ro.x / c.vs.x) * 0.5f + 0.5f) * nx, dx = rd.x * 0.5f * nx / c.vs.x;
+    float oy = ((ro.y / c.vs.y) * 0.5f + 0.5f) * ny, dy = rd.y * 0.5f * ny / c.vs.y;
+    float oz = ((ro.z / c.vs.z) * 0.5f + 0.5f) * nz, dz = rd.z * 0.5f * nz / c.vs.z;
+    float tn = t0 + (t1 - t0) * 1e-6f;          // nudge off the entry face
+    int ix = min(max((int)floorf(ox + dx * tn), 0), nx - 1);
+    int iy = min(max((int)floorf(oy + dy * tn), 0), ny - 1);
+    int iz = min(max((int)floorf(oz + dz * tn), 0), nz - 1);
+    int sx = dx > 0.f ? 1 : -1, sy = dy > 0.f ? 1 : -1, sz2 = dz > 0.f ? 1 : -1;
+    float BIG = 1e30f;
+    float tDx = dx != 0.f ? fabsf(1.0f / dx) : BIG;
+    float tDy = dy != 0.f ? fabsf(1.0f / dy) : BIG;
+    float tDz = dz != 0.f ? fabsf(1.0f / dz) : BIG;
+    float tMx = dx != 0.f ? ((float)(ix + (sx > 0 ? 1 : 0)) - ox) / dx : BIG;
+    float tMy = dy != 0.f ? ((float)(iy + (sy > 0 ? 1 : 0)) - oy) / dy : BIG;
+    float tMz = dz != 0.f ? ((float)(iz + (sz2 > 0 ? 1 : 0)) - oz) / dz : BIG;
+    float tm = t0;
+    while (true) {
+        // K > 1 = the quality dial: coalesce up to K voxel crossings into
+        // one sample (taken at the segment midpoint's voxel). K == 1 is
+        // the exact walk and uses the tracked indices (bit-stable at
+        // boundaries, which the coarse-skip equivalence relies on).
+        float tExit = fminf(fminf(tMx, tMy), fminf(tMz, t1));
+        for (int k2 = 1; k2 < K && tExit < t1; k2++) {
+            if (tMx <= tMy && tMx <= tMz) {
+                ix += sx; tMx += tDx;
+                if (ix < 0 || ix >= nx) break;
+            } else if (tMy <= tMz) {
+                iy += sy; tMy += tDy;
+                if (iy < 0 || iy >= ny) break;
+            } else {
+                iz += sz2; tMz += tDz;
+                if (iz < 0 || iz >= nz) break;
+            }
+            tExit = fminf(fminf(tMx, tMy), fminf(tMz, t1));
+        }
+        float seg = tExit - tm;
+        if (seg > 0.0f) {
+            if (--budget < 0) return false;
+            int jx = ix, jy = iy, jz = iz;
+            if (K > 1) {
+                float tc = tm + seg * 0.5f;
+                jx = min(max((int)floorf(ox + dx * tc), 0), nx - 1);
+                jy = min(max((int)floorf(oy + dy * tc), 0), ny - 1);
+                jz = min(max((int)floorf(oz + dz * tc), 0), nz - 1);
+            }
+            float2 vm = remapValue(sample_i(c.v, jz, jy, jx),
+                                   c.brightness, c.contrast, c.centered);
+            float seg_n = seg * dirn * view_cos;
+            float a = alphaFor(vm.y, seg_n, c.gate, c.density);
+            if (a > 0.0f) {
+                float f = fminf(fmaxf(vm.x * (float)lut_n - 0.5f, 0.0f), (float)(lut_n - 1));
+                int i0 = (int)floorf(f); int i1 = min(i0 + 1, lut_n - 1); float wl = f - (float)i0;
+                float3 col = f3(powf(lut[3*i0]   * (1.f - wl) + lut[3*i1]   * wl, 2.2f),
+                                powf(lut[3*i0+1] * (1.f - wl) + lut[3*i1+1] * wl, 2.2f),
+                                powf(lut[3*i0+2] * (1.f - wl) + lut[3*i1+2] * wl, 2.2f));
+                // Voxels keep their LUT colours — no normal-based Lambert;
+                // self_shading is a pure transmittance darkening.
+                if (S.draw_shading && S.self_shading && a > 0.01f) {
+                    float3 wp = add3(ro, mul3(rd, tm + seg * 0.5f));
+                    float vis = lightVisibilityInfo(c, wp, S.light_pos, 6, 0.7f).x;
+                    float lit = S.ambient_light + (1.0f - S.ambient_light) * vis;
+                    float shade = 1.0f + (lit - 1.0f) * S.shading_strength;
+                    col = mul3(col, shade);
+                }
+                float kk = (1.0f - acc.w) * a;
+                acc.x += kk * col.x; acc.y += kk * col.y; acc.z += kk * col.z;
+                acc.w += (1.0f - acc.w) * a;
+                if (acc.w > 0.98f) return false;
+            }
+        }
+        if (tExit >= t1) return true;
+        if (tMx <= tMy && tMx <= tMz) {
+            ix += sx; tm = tMx; tMx += tDx;
+            if (ix < 0 || ix >= nx) return true;
+        } else if (tMy <= tMz) {
+            iy += sy; tm = tMy; tMy += tDy;
+            if (iy < 0 || iy >= ny) return true;
+        } else {
+            iz += sz2; tm = tMz; tMz += tDz;
+            if (iz < 0 || iz >= nz) return true;
+        }
+    }
+}
+
 extern "C" __global__ void march(
     const unsigned char* __restrict__ data, int dtype,
     int nz, int ny, int nx, int snz, int sny, int snx,
@@ -392,41 +492,64 @@ extern "C" __global__ void march(
             plane_t = -1.0f;
         }
         if (box_hit) {
-            float t = fmaxf(hit.x, 0.0f);
-            float rdn = len3(div3(rd, c.vs));
-            for (int i = 0; i < max_steps; i++) {
-                if (t >= hit.y || acc.w > 0.98f) break;
-                float seg = fminf(step_size, hit.y - t);
-                float tm = t + seg * 0.5f;
-                float3 wp = add3(ro, mul3(rd, tm));
-                float3 p = add3(mul3(div3(wp, c.vs), 0.5f), f3(0.5f, 0.5f, 0.5f));
-                float2 vm = remapValue(sample(c.v, p), c.brightness, c.contrast, c.centered);
-                float seg_n = seg * rdn * view_cos;
-                float a = alphaFor(vm.y, seg_n, c.gate, c.density);
-                if (a > 0.0f) {
-                    // LUT (linear 1-D texture semantics), decoded to linear light
-                    float f = fminf(fmaxf(vm.x * (float)lut_n - 0.5f, 0.0f), (float)(lut_n - 1));
-                    int i0 = (int)floorf(f); int i1 = min(i0 + 1, lut_n - 1); float wl = f - (float)i0;
-                    float3 col = f3(powf(lut[3*i0]   * (1.f - wl) + lut[3*i1]   * wl, 2.2f),
-                                    powf(lut[3*i0+1] * (1.f - wl) + lut[3*i1+1] * wl, 2.2f),
-                                    powf(lut[3*i0+2] * (1.f - wl) + lut[3*i1+2] * wl, 2.2f));
-                    // Voxels keep their LUT colours — NO normal-based
-                    // Lambert (the GL path's gradient shading painted
-                    // structure over the data and cost 7 trilinear taps per
-                    // sample; for tensor viz the data IS the surface).
-                    // self_shading is a pure transmittance darkening: the
-                    // near-field light march (mip taps), no normals.
-                    if (S.draw_shading && S.self_shading && a > 0.01f) {
-                        float vis = lightVisibilityInfo(c, wp, S.light_pos, 6, 0.7f).x;
-                        float lit = S.ambient_light + (1.0f - S.ambient_light) * vis;
-                        float shade = 1.0f + (lit - 1.0f) * S.shading_strength;
-                        col = mul3(col, shade);
+            // Two-level DDA: outer over the (f, k) mip cells (empty cells
+            // skipped in O(1)), inner exact voxel traversal. No step size —
+            // `step_size` is a no-op for the CUDA colour march; max_steps
+            // is the voxel-visit watchdog. Tiny volumes (or no mip) go
+            // straight to fine DDA.
+            float t0v = fmaxf(hit.x, 0.0f);
+            float t1v = hit.y;
+            float dirn = len3(div3(rd, c.vs));
+            int budget = max_steps;
+            // step_size's CUDA meaning: the sampling stride, floored at one
+            // voxel — K = how many voxel crossings coalesce per sample.
+            // The default (0.0005) keeps K = 1 (exact) for anything up to
+            // ~4000 voxels wide; raising it trades exactness for speed.
+            float vox_w = 2.0f / (float)max(c.v.nx, max(c.v.ny, c.v.nz));
+            int K = max(1, (int)(step_size / vox_w + 0.5f));
+            bool coarse = c.mip && ((long long)c.v.nx * c.v.ny * c.v.nz > 262144);
+            if (!coarse) {
+                dda_fine(c, S, lut, lut_n, ro, rd, t0v, t1v, dirn, view_cos, acc, budget, K);
+            } else {
+                int mx = c.mx, my = c.my, mz = c.mz;
+                float ox = ((ro.x / c.vs.x) * 0.5f + 0.5f) * mx, dx = rd.x * 0.5f * mx / c.vs.x;
+                float oy = ((ro.y / c.vs.y) * 0.5f + 0.5f) * my, dy = rd.y * 0.5f * my / c.vs.y;
+                float oz = ((ro.z / c.vs.z) * 0.5f + 0.5f) * mz, dz = rd.z * 0.5f * mz / c.vs.z;
+                float tn = t0v + (t1v - t0v) * 1e-6f;
+                int ix = min(max((int)floorf(ox + dx * tn), 0), mx - 1);
+                int iy = min(max((int)floorf(oy + dy * tn), 0), my - 1);
+                int iz = min(max((int)floorf(oz + dz * tn), 0), mz - 1);
+                int sx = dx > 0.f ? 1 : -1, sy = dy > 0.f ? 1 : -1, sz2 = dz > 0.f ? 1 : -1;
+                float BIG = 1e30f;
+                float tDx = dx != 0.f ? fabsf(1.0f / dx) : BIG;
+                float tDy = dy != 0.f ? fabsf(1.0f / dy) : BIG;
+                float tDz = dz != 0.f ? fabsf(1.0f / dz) : BIG;
+                float tMx = dx != 0.f ? ((float)(ix + (sx > 0 ? 1 : 0)) - ox) / dx : BIG;
+                float tMy = dy != 0.f ? ((float)(iy + (sy > 0 ? 1 : 0)) - oy) / dy : BIG;
+                float tMz = dz != 0.f ? ((float)(iz + (sz2 > 0 ? 1 : 0)) - oz) / dz : BIG;
+                float tm = t0v;
+                while (true) {
+                    float tExit = fminf(fminf(tMx, tMy), fminf(tMz, t1v));
+                    if (tExit > tm) {
+                        float2 fk = mip_at(c, iz, iy, ix);
+                        if (fk.x > 0.0f || fk.y > 1e-3f) {
+                            if (!dda_fine(c, S, lut, lut_n, ro, rd, tm, tExit,
+                                          dirn, view_cos, acc, budget, K))
+                                break;
+                        }
                     }
-                    float kk = (1.0f - acc.w) * a;
-                    acc.x += kk * col.x; acc.y += kk * col.y; acc.z += kk * col.z;
-                    acc.w += (1.0f - acc.w) * a;
+                    if (tExit >= t1v) break;
+                    if (tMx <= tMy && tMx <= tMz) {
+                        ix += sx; tm = tMx; tMx += tDx;
+                        if (ix < 0 || ix >= mx) break;
+                    } else if (tMy <= tMz) {
+                        iy += sy; tm = tMy; tMy += tDy;
+                        if (iy < 0 || iy >= my) break;
+                    } else {
+                        iz += sz2; tm = tMz; tMz += tDz;
+                        if (iz < 0 || iz >= mz) break;
+                    }
                 }
-                t += step_size;
             }
         }
         // Plane BEHIND the volume (the usual case): composite it under.
