@@ -561,7 +561,7 @@ class Toggles:
         # way to "50") never lands mid-keystroke — which matters with Auto
         # Execute on, where the synced value triggers a run. Re-armed per
         # keystroke. 0 = sync immediately. Read live.
-        fnrun_text_sync_debounce_ms = 606
+        fnrun_text_sync_debounce_ms = 400
 
         # Incremental cst→dict conversion: when a previous good parse exists,
         # re-convert only the changed top-level statements and splice them

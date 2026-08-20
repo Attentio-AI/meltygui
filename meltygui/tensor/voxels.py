@@ -427,7 +427,7 @@ def _cuda_march_ready():
         return False
 
 
-def _cuda_render(gl_state, cv, width, height, lut="jet", **cam):
+def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
     """Run the CUDA raymarcher over `cv` (CudaVolumeView) at width×height
     and return a display-GPU RGBA8 GLTexture holding the premultiplied
     image — or None (error recorded in _CUDA_LAST_ERROR, drawn as status).
@@ -452,8 +452,54 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", **cam):
         host = gl_state.get("cuda_host",
                             lambda: torch.empty(H, W, 4, dtype=torch.uint8).pin_memory(),
                             deps=(W, H))
+        # shading params ride one small device array, re-uploaded only when
+        # a value changes (deps = the values themselves)
+        shade_list = list(shade) if shade is not None else cuda_march.shade_params()
+        shade_t = gl_state.get("cuda_shade",
+                               lambda: torch.tensor(shade_list, dtype=torch.float32, device=dev),
+                               deps=(tuple(shade_list), str(dev)))
+        # Shading mip: baked once per volume version (one full volume read),
+        # then every shading tap reads the few-MB dense copy instead of the
+        # strided source - keeping shading cost independent of tensor size.
+        _transfer = (float(cam["threshold"]), float(cam["density"]),
+                     float(cam["brightness"]), float(cam["contrast"]),
+                     bool(cam["centered"]))
+        mip = None
+        # Only SELF-SHADING reads the mip (its per-sample light march); it
+        # bakes OPACITY using the current transfer, so the key includes it.
+        if shade_list[7] > 0.5 and shade_list[8] > 0.5:    # draw_shadows + self_shading
+            mip = gl_state.get(
+                "cuda_mip",
+                lambda: cuda_march.build_mip(
+                    cv.view, display_shape=cv.shape, nf=cv.nf, norm=cv.norm,
+                    threshold=_transfer[0], density=_transfer[1],
+                    brightness=_transfer[2], contrast=_transfer[3],
+                    centered=_transfer[4]),
+                deps=(cv._vol_key, cv.shape, str(dev), _transfer))
+        # Floor map is a BAKED full-res map - the plane's shadow depends on
+        # the volume/light/transfer, never the camera, so it re-bakes only
+        # when those change (slice slider, tensor version, light or
+        # brightness edit), and orbiting reads it for free. Softness happens
+        # live (the blur is map taps at render time).
+        floor_map, floor_R = None, (0.0, 0.0)
+        if shade_list[0] > 0.5 and shade_list[7] > 0.5:    # draw_floor
+            _light = (tuple(shade_list[9:12]), float(shade_list[6]))  # pos, side
+            vsc = cam["volume_scale"]
+            floor_R = cuda_march.floor_map_extent(vsc)
+            floor_map = gl_state.get(
+                "cuda_floor",
+                lambda: cuda_march.build_floor_map(
+                    cv.view, display_shape=cv.shape, volume_scale=vsc,
+                    nf=cv.nf, norm=cv.norm,
+                    threshold=_transfer[0], density=_transfer[1],
+                    brightness=_transfer[2], contrast=_transfer[3],
+                    centered=_transfer[4],
+                    light_pos=_light[0], plane_side=_light[1]),
+                deps=(cv._vol_key, cv.shape, str(dev), _transfer, _light,
+                      tuple(round(float(v), 5) for v in vsc)))
         cuda_march.march(cv.view, out, lut_t, display_shape=cv.shape, nf=cv.nf,
-                         norm=cv.norm, aspect=W / H, **cam)
+                         norm=cv.norm, aspect=W / H, shade=shade_t, mip=mip,
+                         floor_map=floor_map, floor_extent=floor_R, **cam)
         # D2H on torch's (legacy default) stream orders after the kernel on
         # the same device's null stream - no explicit synchronize.
         host.copy_(out)
@@ -1184,6 +1230,23 @@ def slice_volume_view(t, dim_names=(), x_dim=None, y_dim=None, z_dim=None,
 _AXIS_POS = {"z": 0, "y": 1, "x": 2}
 
 
+def _volume_scale(shape):
+    """Box extents per axis for a (depth, height, width) = (z, y, x) volume,
+    proportional to voxel counts (longest axis = 1), so every voxel renders
+    as a CUBE and a (4, 32, 48) tensor reads as a flat slab. Returned as the
+    shader's (x, y, z) order. No visibility floor: an earlier max(0.02, …)
+    per axis inflated the short side of anything past 50:1 (a (2048, 16)
+    time tensor drew its 16-voxel side 2.5× too wide). Thin slabs don't need
+    it — opacity accumulates in volume-NORMALIZED segment lengths, so a
+    1-voxel dim still reads at full density. The epsilon only guards the
+    `/ volume_scale` divisions (labels/silhouette use the same scale)."""
+    t_depth, t_height, t_width = (max(1, int(s)) for s in shape)
+    longest = float(max(t_depth, t_height, t_width))
+    return (max(1e-5, t_width / longest),
+            max(1e-5, t_height / longest),
+            max(1e-5, t_depth / longest))
+
+
 def _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width):
     """The slice sliders, one row per unmapped dim under the image. An edit
     writes the full-length slices tuple to draw_state (auto-state: it
@@ -1885,8 +1948,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # ── experimental: raymarch IN CUDA on the value's own GPU,
                 # reading the tensor's memory through its strides (no volume
                 # copy, no 3-D texture, any device); only the 2-D image
-                # crosses to the display GPU. Nearest sampling, no shadows /
-                # lighting / gradients yet (see cuda_march.py). ──
+                # crosses to the display GPU. Colour march is nearest-only;
+                # shading taps (normals, light marches, floor shadow) read a
+                # trilinear field like the GL version (see cuda_march.py). ──
                 cuda_march=True,
                 # ── volume furniture (screen px) ──
                 name_size=17.0, name_padding=30.1, name_opacity=1.1,
@@ -1938,7 +2002,21 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             if slider_dims:
                 height = max(100, height - int(imgui.get_frame_height_with_spacing())
                              * len(slider_dims))
+            img_pos = imgui.get_cursor_screen_pos()
             imgui.image(fb.texture_id, width, height, uv0=(0, 1), uv1=(1, 0))
+            # the 2-D axis outline is drawn over the image each frame (not
+            # rendered into the FBO) - recompute it from the last volume's
+            # extents + the current camera so it doesn't blink either
+            shape = tuple(getattr(meta, "shape", ()) or ())
+            if len(shape) == 3:
+                try:
+                    edges = _axis_edges(tilt, spin, cam_zoom, width / height, width, height,
+                                        scale=_volume_scale(shape),
+                                        pan=(pan_x, pan_y, pan_z), ortho=ortho)
+                    if edges:
+                        _draw_axis_lines(imgui.get_window_draw_list(), img_pos, edges)
+                except Exception:
+                    pass
             _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape, width)
         return False, None
     # A 1-D texture is a LUT, not a volume - don't try to raymarch it.
@@ -2167,6 +2245,32 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         cam_brightness = _fly("cam_brightness", cam_brightness)
         cam_contrast = _fly("cam_contrast", cam_contrast)
         ortho = _fly("ortho", ortho)
+        # EVERY display-affecting panel param rides the same gate, not just
+        # the camera: a panel edit whose driving source is slow (an override
+        # comment's parse->copy->hotkey trip) otherwise renders the STALE
+        # injected kwarg until the trip lands - "changes not always
+        # reflected", especially visible on the cuda path where transfer params
+        # also key the mip/floor bakes.
+        density, threshold = _fly("density", density), _fly("threshold", threshold)
+        step_size, max_steps = _fly("step_size", step_size), _fly("max_steps", max_steps)
+        nearest, centered = _fly("nearest", nearest), _fly("centered", centered)
+        draw_plane = _fly("draw_plane", draw_plane)
+        shadow_opacity = _fly("shadow_opacity", shadow_opacity)
+        shadow_softness = _fly("shadow_softness", shadow_softness)
+        draw_shading = _fly("draw_shading", draw_shading)
+        self_shading = _fly("self_shading", self_shading)
+        light_pos, light_tint = _fly("light_pos", light_pos), _fly("light_tint", light_tint)
+        light_brightness = _fly("light_brightness", light_brightness)
+        ambient_light = _fly("ambient_light", ambient_light)
+        shading_strength = _fly("shading_strength", shading_strength)
+        # (Data-shaping params - slices/dims/nf/sort/normalize - are consumed
+        # ABOVE this gate; they can't be re-read here, but the pump below
+        # re-renders until the write lands and the new vol_key rebuilds.)
+        # And keep re-rendering until the slow write LANDS (locate_* clears
+        # the entry): the landing itself doesn't invalidate this view, so
+        # without the pump the final value never repaints.
+        draw_state.invalidate()
+        request_render()
 
     # ── gestures → draw_state params (auto-state: the caller diverges the
     # param so it persists; events are hover-routed wrapper kwargs) ──────
@@ -2272,21 +2376,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         gl.glTexParameteri(tex.target, gl.GL_TEXTURE_MAG_FILTER, filt)
         gl.glBindTexture(tex.target, 0)
 
-    # Box extents proportional to voxel counts (longest axis = 1), so every
-    # voxel renders as a CUBE and a (4, 32, 48) tensor reads as a flat slab -
-    # tex.shape is (depth, height, width) = (z, y, x).
-    t_depth, t_height, t_width = (max(1, int(s)) for s in tex.shape)
-    longest = float(max(t_depth, t_height, t_width))
-    # No visibility floor: the earlier max(0.02, ...) per axis inflated the
-    # short side of anything past 50:1 (a (2048, 16) time tensor drew its
-    # 16-voxel side 2.5× too wide - voxels squished to way was a lie). Thin
-    # slabs don't need it - the shader accumulates opacity in volume-
-    # NORMALIZED segment lengths (seg * length(rd / volume_scale)), so a
-    # 1-voxel slab still reads at full density. The epsilon only guards the
-    # `/ volume_scale` divisions (labels/silhouette use the same scale).
-    volume_scale = (max(1e-5, t_width / longest),
-                    max(1e-5, t_height / longest),
-                    max(1e-5, t_depth / longest))
+    volume_scale = _volume_scale(tex.shape)
 
     # ── LUT: prefer the shared 1-D texture the LUT host materialized; fall
     # back to a direct upload of the named lut until the host has time ────
@@ -2353,6 +2443,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             # the tensor's GPU, hopped to a display-GPU RGBA8 texture);
             # blit it into the FBO under the same blend state so labels,
             # outline and the rest of the view are untouched.
+            from src.lsd.gl_gui import cuda_march as _cm
             img_tex = _cuda_render(
                 gl_state, tex, width, height, lut=lut, tilt=tilt, spin=spin,
                 zoom=cam_zoom, pan=(pan_x, pan_y, pan_z), ortho=bool(ortho),
@@ -2360,7 +2451,18 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 max_steps=int(max_steps), density=float(density),
                 threshold=float(threshold), brightness=float(cam_brightness),
                 contrast=float(cam_contrast), gamma=float(Toggles.Voxels.gamma),
-                centered=bool(centered))
+                centered=bool(centered),
+                shade=_cm.shade_params(
+                    draw_plane=bool(draw_plane), shadow_opacity=float(shadow_opacity),
+                    shadow_softness=float(shadow_softness),
+                    shadow_tint=tuple(float(c) for c in Toggles.shadow_color)[:3],
+                    plane_side=float(plane_side), draw_shading=bool(draw_shading),
+                    self_shading=bool(self_shading),
+                    light_pos=tuple(float(c) for c in light_pos),
+                    light_tint=tuple(float(c) for c in light_tint),
+                    light_brightness=float(light_brightness),
+                    ambient_light=float(ambient_light),
+                    shading_strength=float(shading_strength)))
             if img_tex is not None:
                 image_blit_pass(gl_state, image=img_tex)
         else:
@@ -2484,7 +2586,12 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             imgui.text_colored(_CUDA_LAST_ERROR.splitlines()[0], 1.0, 0.45, 0.40, 1.0)
 
         if changed:
-            draw_state.invalidate()
+            # UP, not self: this view is often nested (a live-value window,
+            # a collection row) and its pixels are baked into ancestor blit
+            # tiles - a self-only invalidate left the ancestor serving the
+            # stale image, so panel edits "didn't take" until something else
+            # repushed the ancestor.
+            draw_state.invalidate_up()
             request_render()
             return changed, input_value
 
