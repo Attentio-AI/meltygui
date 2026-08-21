@@ -93,16 +93,17 @@ def run_instrumented(fn, *args, **kwargs):
                     pass
                 raise
     finally:
-        # Retire the PREVIOUS run's generation: the studio's gc_manager keeps
+        pass
+        # # Retire the PREVIOUS run's garbage: the GUI's gc_manager kee
         # gen2 out of auto-reach, so the cycle-trapped graphs each run
         # replaces (deepcopied components, the old ForwardPassResult) pin
         # their CUDA tensors until an explicit collect. This runs on the
-        # run's main thread, win or lose - the problem exists either way.
-        try:
-            from src.lsd.gl_gui.gc_manager import collect_after_run
-            collect_after_run(getattr(target, "__name__", "run"))
-        except Exception:
-            pass
+        # run's worker thread, win or lose - the garbage exists either way.ps
+        # try:
+        #     from src.lsd.gl_gui.gc_manager import collect_after_run
+        #     collect_after_run(getattr(target, "__name__", "run"))
+        # except Exception:
+        #     pass
 
 
 def _stamp_error_line(target, twin, exc):

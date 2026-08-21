@@ -428,6 +428,10 @@ class Toggles:
         # line-independent fold KEYS) but this switch skips the layer entirely.
         # Read live.
         scope_fold_ranges = True
+        # Compound-statement folds (if/elif/else/for/while/try/except/
+        # finally/with/match/case) alongside the def/class scopes. Read on
+        # the next fold rescan (text edit), not per frame.
+        block_fold_ranges = True
         # Master switch for the live-view pipeline: off = the editor draws no
         # live-view/snapshot markers (and drops the gutter toggle column), and
         # opening a context menu no longer collects - the menu-open stack
@@ -440,7 +444,6 @@ class Toggles:
         # preview (closes on mouse-leave); double-click still latches it
         # open permanently. Read live per marker render.
         live_hover_preview = False
-
 
         # Auto-open the value window for 3-D+ tensors (typically voxel volumes)
         # the moment an instrumented run captures them. Off = every snapshot

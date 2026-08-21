@@ -157,6 +157,10 @@ def lag_span(label, min_ms=50.0):
     near-zero cost when fast, so it can sit on hot paths. Includes the thread
     name: a slow span on a worker still stalls the render thread for its
     GIL-held portion, so every entry here is a frame-drop suspect."""
+    # Stack of the SPAN SITE, captured on entry (a few µs - no source
+    # lookup); clicking the toast opens the `with lag_span(...)` line. Skips
+    # contextlib's generator plumbing and lag_traced's wrapper.
+    stack = capture_stack(skip_files=("contextlib.py",), skip_funcs=("wrapper", "lag_span"))
     t0 = time.perf_counter()
     try:
         yield
@@ -165,7 +169,7 @@ def lag_span(label, min_ms=50.0):
         if ms >= min_ms:
             tint = (1.0, 0.25, 0.2) if ms >= 300 else (1.0, 0.65, 0.2)
             notify(f"{label}  {ms:.0f}ms  [{_threading.current_thread().name}]",
-                   tint=tint, tag="lag")
+                   tint=tint, tag="lag", stack=stack)
 
 
 def lag_traced(label, min_ms=50.0):
@@ -201,10 +205,12 @@ def _gc_watch(phase, info):
             # including mid-operation at boot - never pull request_render (and
             # its lazy glfw import) from here; the next UI frame shows it.
             try:
+                # The stack is whatever allocation the collector interrupted -
+                # still the best "who triggered it" there is.
                 notify(f"gc gen{gen}  {ms:.0f}ms  collected={info.get('collected')}"
                        f"  [{_threading.current_thread().name}]",
                        tint=(1.0, 0.25, 0.2) if ms >= 300 else (1.0, 0.65, 0.2),
-                       tag="lag", urgent=False)
+                       tag="lag", urgent=False, stack=capture_stack(skip_funcs=("_gc_watch",)))
             except Exception:
                 pass
 

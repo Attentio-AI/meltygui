@@ -7420,6 +7420,12 @@ def _describe_code_tree(code_tree):
 _FOLD_SCOPE_HEAD_RE = re.compile(r'(?:async\s+)?(?:def|class)\s')
 _FOLD_SCOPE_NAME_RE = re.compile(r'(?:async\s+)?(?:def|class)\s+(\w+)')
 _FOLD_IMPORT_RE = re.compile(r'(?:import|from)\s')
+# Compound-statement block headers (keyword first, a ':' last before any
+# trailing comment). A multiline header (`if (a and\n b):` deliberately
+# doesn't match: its first line has no ':' - a it just doesn't fold.
+_FOLD_BLOCK_RE = re.compile(
+    r'(?:(async)\s+)?(if|elif|else|for|while|try|except|finally|with|match|case)'
+    r'\b.*:\s*(?:#.*)?$')
 
 
 # Bump when _scope_fold_ranges()` default_collapsed SOURCES change so
@@ -7443,11 +7449,17 @@ def _scope_fold_ranges(text):
     working on the syntactically broken buffers every mid-edit frame
     produces, where a parse-based scan would go stale per keystroke.
 
-    Four sources:
+    Five sources:
       scopes — every def / async def / class keeps its header (decorators
         stay above, visible) and hides down to its last non-blank body line;
         nested scopes each get their own range (the normalizer accepts
         strict nesting).
+      blocks — if/elif/else/for/while/try/except/finally/with/match/case
+        (Toggles.TextEditor.block_fold_ranges). Same header-kept, body-hidden
+        shape as scopes, nested on the same indent stack, so `else:` at the
+        `if`'s indent pops the `if` fold and opens its own. Keyed on the
+        enclosing def/class qualname + the header text (blocks don't extend
+        the qualname path a nested def sees). Never default-collapsed.
       multiline strings — docstrings / GLSL blocks. The fold keeps BOTH
         delimiter lines visible ((open, close-1) hides only the interior) so
         the collapsed display text still tokenizes as a TERMINATED string —
@@ -7461,6 +7473,8 @@ def _scope_fold_ranges(text):
         before other module-level code (blank lines, comments and paren /
         backslash continuations stay inside). Also returned in
         default_collapsed: imports start folded on a fresh editor."""
+    from src.lsd.gl_gui.toggles import Toggles
+    blocks_on = Toggles.TextEditor.block_fold_ranges
     lines = text.split('\n')
     out = []
     default_col = []
@@ -7539,7 +7553,9 @@ def _scope_fold_ranges(text):
                 continue
             j += 1
     # Pass 2 - scopes, comment runs, top import block.
-    stack = []                   # (indent, header_line)
+    stack = []                   # (indent, header_line, scope_path, block_key)
+                                 # block_key None for def/class, else the
+                                 # ('block', ...) identity of a compound stmt
     last_code = -1               # last non-blank line seen
     run_start = run_ind = None   # current same-indent comment run
 
@@ -7577,9 +7593,9 @@ def _scope_fold_ranges(text):
             continue
         ind = len(ln) - len(ln.lstrip())
         while stack and ind <= stack[-1][0]:
-            _, hdr, _spath = stack.pop()
+            _, hdr, _spath, _bkey = stack.pop()
             if last_code > hdr:
-                _emit(hdr, last_code, ('scope',) + _spath)
+                _emit(hdr, last_code, _bkey or (('scope',) + _spath))
         if not imp_done and not is_comment:
             if imp_cont:
                 imp_last = i
@@ -7596,12 +7612,17 @@ def _scope_fold_ranges(text):
         if _FOLD_SCOPE_HEAD_RE.match(s):
             _snm = _FOLD_SCOPE_NAME_RE.match(s)
             stack.append((ind, i, (stack[-1][2] if stack else ())
-                          + ((_snm.group(1) if _snm else '?'),)))
+                          + ((_snm.group(1) if _snm else '?'),), None))
+        elif blocks_on and not is_comment and _FOLD_BLOCK_RE.match(s):
+            _spath = stack[-1][2] if stack else ()
+            _bm = _FOLD_BLOCK_RE.match(s)
+            stack.append((ind, i, _spath,
+                          ('block',) + _spath + (_bm.group(2), s)))
         last_code = i
     _close_run(len(lines) - 1)
-    for _, hdr, _spath in stack:
+    for _, hdr, _spath, _bkey in stack:
         if last_code > hdr:
-            _emit(hdr, last_code, ('scope',) + _spath)
+            _emit(hdr, last_code, _bkey or (('scope',) + _spath))
     if imp_first is not None and imp_last is not None and imp_last > imp_first:
         _emit(imp_first, imp_last, ('imports',), default=True)
     out.sort()
@@ -7667,6 +7688,10 @@ def _fold_carry(old_text, new_text, scan_result, collapsed_keys):
                 name = next((s for s in reversed(k[1:])
                              if isinstance(s, str)), None)
                 if m is None or (name is not None and m.group(1) != name):
+                    return None
+            elif kind == 'block':
+                m = _FOLD_BLOCK_RE.match(hline)
+                if m is None or m.group(2) != k[-2]:
                     return None
             elif kind == 'comment':
                 if not hline.startswith('#'):
@@ -8161,9 +8186,11 @@ def draw_text(input_value: str, height=None,
                     ds.invalidate()
                     request_render()
                     break
-        # Keyboard folding - Ctrl+Minus/Equal collapse/expand the scope at
-        # the caret, Ctrl+Shift+Minus/Equal every root scope. The keys are
-        # hover-routed like any other param but gated on text focus (same
+        # Keyboard folding — Ctrl+Minus/Equal collapse/expand the scope at
+        # the caret (repeated presses walk outward: Ctrl+- folds the next
+        # enclosing open scope, Ctrl+= opens the folds in the next
+        # enclosing scope), Ctrl+Shift+Minus/Equal every ROOT scope. The events are
+        # hover-routed like any event param but gated on text focus (same
         # rationale as Ctrl+B: only the focused editor may act on its caret).
         # Resolved here, before the display build, for the same reason as the
         # badge above - this frame's layout depends on the toggle.
@@ -8237,6 +8264,30 @@ def draw_text(input_value: str, height=None,
                                  if r in ds._fold_collapsed), None)
                     if _rng is not None:
                         ds._fold_collapsed.discard(_rng)
+                    else:
+                        # Everything at the caret is already open: walk
+                        # OUTWARD - expand the collapsed folds nested in the
+                        # innermost scope at the caret, then (next press) in
+                        # the surrounding one, ... up to the whole buffer -
+                        # so Ctrl+= repeated progressively reveals more, the
+                        # inverse of Ctrl+- collapsing progressively outward.
+                        # Default-collapsed folds (docstrings, comment runs,
+                        # imports) are skipped like expand-all does; they
+                        # open only when the caret touches them.
+                        _skip = set(_fold_default_col or ())
+                        _scopes = list(reversed(_at)) + [
+                            (0, input_value.count('\n'))]
+                        for _sr in _scopes:
+                            _inside = {r for r in ds._fold_collapsed
+                                       if _sr[0] <= r[0] and r[1] <= _sr[1]
+                                       and r != _sr and r not in _skip}
+                            if _inside:
+                                ds._fold_collapsed -= _inside
+                                ds._fold_search_exp -= _inside
+                                _fold_kb_all = True   # multi-fold caret path
+                                ds.invalidate()
+                                request_render()
+                                break
                 if _rng is not None:
                     _fold_toggled = _rng
                     ds._fold_search_exp.discard(_rng)

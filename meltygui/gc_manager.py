@@ -29,7 +29,7 @@ end_frame hook line in melty.py is restart-bound (melty never hotswaps).
 import gc
 import time
 
-from src.lsd.gl_gui.notifications import lag_span, notify
+from src.lsd.gl_gui.notifications import lag_span, notify, capture_stack
 from src.lsd.gl_gui.toggles import Toggles
 
 _state = globals().get("_state") or {
@@ -442,7 +442,7 @@ def _collect(label, live_graph=False):
     _write(lines)
     notify(f"gc profile: {label} → {total} cyclic objs, top {hist[0][1] if hist else 0} "
            f"{hist[0][0] if hist else '-'}  (see {PROFILE_LOG})",
-           tint=(0.9, 0.7, 0.3), tag="lag")
+           tint=(0.9, 0.7, 0.3), tag="lag", stack=capture_stack())
     return n
 
 
@@ -472,7 +472,7 @@ def _boot_collect_and_freeze(label):
     _state["last_collect"] = time.monotonic()
     notify(f"gc: froze {gc.get_freeze_count()} objects out of gen2 scans"
            f" (unfroze {prev_frozen} from prior sessions first)",
-           tint=(0.4, 0.9, 0.4), tag="lag")
+           tint=(0.4, 0.9, 0.4), tag="lag", stack=capture_stack())
 
 
 def tick():

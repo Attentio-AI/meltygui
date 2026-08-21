@@ -10,6 +10,7 @@ The original immutable CST node is never serialized — just referenced.
 
 import ast
 import enum
+import functools
 import inspect
 import math
 import re
@@ -3928,6 +3929,12 @@ def _build_ast_span_map(module, source=None):
 
     pair(list(module.body), tree.body)
     out[module] = Span(1, 0, source.count("\n") + 1, len(source.rsplit("\n", 1)[-1]))
+    # The nested helpers are recursive closures (function -> __closure__ cell
+    # -> function), a reference cycle that also includes `out` -- and `out` is
+    # keyed by EVERY libcst node. Left alone, each conversion parked the whole
+    # CST (~37k objects) as cyclic garbage until the next gen2 pass. Releasing
+    # the locals empties the cells so the tree dies by refcount instead.
+    pair = pair_if = pair_else = pair_try = body_list = sp = list_sp = params_sp = None
     return out
 
 
@@ -7964,9 +7971,8 @@ def cst_call_to_dict(value: cst.Call, pos_names_override=None, result_cls=CallPa
             # a runtime "multiple values" collision; see dict_to_cst_call.
             for el in arg.value.elements:
                 if isinstance(el, cst.DictElement) and isinstance(el.key, cst.SimpleString):
-                    try:
-                        key = ast.literal_eval(el.key.value)
-                    except (ValueError, SyntaxError):
+                    key = el.key.evaluated_value  # libcst-native; ast.literal_eval leaves closure cycles
+                    if key is None:
                         continue
                     if isinstance(key, str):
                         readable[key] = _cst_to_python_or_raw(el.value)
@@ -7999,9 +8005,8 @@ def _patch_starstar_dict(star_arg, edits):
     new_elements = []
     for el in d.elements:
         if isinstance(el, cst.DictElement) and isinstance(el.key, cst.SimpleString):
-            try:
-                key = ast.literal_eval(el.key.value)
-            except (ValueError, SyntaxError):
+            key = el.key.evaluated_value  # libcst-native; ast.literal_eval leaves closure cycles
+            if key is None:
                 new_elements.append(el)
                 continue
             if isinstance(key, str) and key in edits:
@@ -8328,6 +8333,18 @@ def _is_bare_call_key(key):
     return base.endswith("()")
 
 
+@functools.lru_cache(maxsize=1024)
+def _cached_signature(obj):
+    """inspect.signature per callable, memoized. On builtins it runs
+    _signature_fromstr, which defines a local class + closures (a gc cycle)
+    on EVERY call -- ~50 per conversion. Hotswapped functions are new objects
+    and simply miss; unhashable callables fall through uncached."""
+    try:
+        return inspect.signature(obj)
+    except (TypeError, ValueError):
+        return None
+
+
 def _call_positional_param_names(call_node):
     """Resolve the callee and return the ordered names of its positional
     parameters (positional-only + positional-or-keyword), so a positional
@@ -8354,8 +8371,10 @@ def _call_positional_param_names(call_node):
     if obj is _UNREADABLE or not callable(obj):
         return None
     try:
-        sig = inspect.signature(obj)
-    except (TypeError, ValueError):
+        sig = _cached_signature(obj)
+    except TypeError:  # unhashable callable: lru_cache can't key it
+        sig = None
+    if sig is None:
         return None  # builtins, C functions with no introspectable signature
 
     names = []
