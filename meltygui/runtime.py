@@ -469,8 +469,8 @@ class FileWatch:
             shutdown_jedi_pool, shutdown_symbol_index_daemon)
         shutdown_jedi_pool()
         # Stops the warmer daemon + clears its process guard (a future
-        # restart-in-place then starts a fresh one) and flushes the portable
-        # symbol results to ~/.lsd/symbol_index.json for instant warm starts.
+        # restart-in-place then starts a new one) and prunes stale spans
+        # from the in-memory symbol store.
         shutdown_symbol_index_daemon()
 
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave

@@ -2664,7 +2664,6 @@ def render_func(*args, **o_kwargs):
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
                 someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible
-
                 if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)) and not someone_elses_scroll:
                     if not draw_state.just_shadow:
                         note = "hover_change"

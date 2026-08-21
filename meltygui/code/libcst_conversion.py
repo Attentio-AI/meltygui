@@ -954,36 +954,15 @@ def _intra_usage_worker(source: str, is_class: bool) -> dict[str, list[str]]:
 # shortcuts. Project-wide reference search is expensive, so it runs in the
 # child-process pool and is cached per file mtime - effectively once per save.
 
-# ── Cache-result persistence ───────────────────────────────────
-# The span cache below stores the END RESULT of indexing {symbol: SymbolUsage}
-# per source span. Unlike _index_refs_cache its contents are plain
-# paths/lines/names - no live-object id() keys - so it can outlive the module:
-#   - restart-in-place: shared through a sys-level store (same trick as the
-#     daemon state; sys is persistent across re-execs)
-#   - full-process restart: pickled to ~/.lsd/symbol_index.pkl
-# _mtime_snapshot records each file's mtime when the persisted results were
-# computed. The warmer's generation bump counts only files whose mtime moved
-# past the snapshot, so rebuilding the refs cache after a reboot (its id-based
-# keys CANNOT be persisted) does not lapse existing spans - those serve
-# instantly from this cache while the refs rebuild in the background.
-_SYMBOL_INDEX_PICKLE = _Path.home() / ".lsd" / "symbol_index.pkl"
-# v2: definition lines now point at the `def`/`class` keyword (decorators
-# skipped) - old pickles hold decorator-line defs, invalidate at once.
-# v3: unresolved member/module defs no longer record line 0 (base class
-# header / module import line instead) - flush cached line-0 defs.
-_SYMBOL_INDEX_PICKLE_VERSION = 3
-
-
-def _disk_cache_enabled() -> bool:
-    """Gate for the symbol-index DISK cache (the ~/.lsd pickle read+write).
-    Defaults to enabled if Toggles can't be reached — this runs at module-load
-    time (see _load_symbol_store below) where the import can still be mid-cycle,
-    so a failure must not silently disable warm-start."""
-    try:
-        from src.lsd.gl_gui.toggles import Toggles  # late: avoid import cycle
-        return Toggles.symbol_index_disk_cache
-    except Exception:
-        return True
+# ── Span-result persistence ───────────────────────────────────
+# The span cache below holds the END RESULT of indexing ({symbol: SymbolUsage}
+# per source span). Unlike _index_refs_cache its contents are pure
+# paths/lines/names - no live-object id()s - so it can outlive the module
+# across a restart-in-place, adopted through a sys-level attr (same trick as
+# the daemon store; sys is shared across re-execs). It is NOT written to disk;
+# a fresh process starts cold. _mtime_snapshot records each file's mtime when
+# the results were computed, so the warmer's generation bump runs only files
+# whose mtime moved past the snapshot.
 
 
 def _reclass_adopted_spans(spans: dict) -> int:
@@ -1035,27 +1014,7 @@ def _load_symbol_store() -> dict:
         _ptrace("store: adopted live symbol store (restart-in-place)",
                 spans=len(store.get("spans", ())), gen=store.get("gen"))
         return store  # restart-in-place: adopt those dicts
-    spans, gen, mtimes, hashes = {}, 0, {}, {}
-    if not _disk_cache_enabled():  # cache off: skip warm-start, stay cold
-        store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes,
-                 "origin": "disk"}
-        sys._symbol_index_store = store
-        return store
-    with _pspan("store: warm-start load") as _sp:
-        try:  # fresh process: warm-start from pick
-            import pickle
-            with open(_SYMBOL_INDEX_PICKLE, "rb") as f:
-                payload = pickle.load(f)
-            if payload.get("version") == _SYMBOL_INDEX_PICKLE_VERSION:
-                spans = payload["spans"]
-                gen = payload["gen"]
-                mtimes = payload["mtimes"]
-                hashes = payload.get("hashes", {})  # absent in pre-hash pickles
-        except Exception as e:
-            _sp.add(failed=type(e).__name__)  # missing/corrupt/stale-format → cold
-        _sp.add(spans=len(spans), gen=gen)
-    store = {"spans": spans, "gen": gen, "mtimes": mtimes, "hashes": hashes,
-             "origin": "disk"}
+    store = {"spans": {}, "gen": 0, "mtimes": {}, "hashes": {}, "origin": "fresh"}
     sys._symbol_index_store = store
     return store
 
@@ -1117,34 +1076,6 @@ def _prune_symbol_store():
         _usage_graph_source.pop(k, None)
     for path in [p for p in _mtime_snapshot if cur_mtime.get(p, 0) is None]:
         _mtime_snapshot.pop(path, None)
-
-
-def _save_symbol_store():
-    """Atomic pickle of the portable index results (spans + generation + mtime
-    snapshot). The refs cache is deliberately NOT saved — its keys are live-
-    object ids, meaningless outside this exact process state. Shallow-copies
-    the dicts first so a concurrent cache write can't fail the dump (values
-    are immutable tuples)."""
-    if not _disk_cache_enabled():  # cache off: keep the pickle clean
-        return
-    try:
-        _prune_symbol_store()
-    except Exception:
-        pass
-    with _pspan("store: save pickle", min_ms=5.0, spans=len(_symbol_usage_cache)):
-        try:
-            import pickle, os
-            _SYMBOL_INDEX_PICKLE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = _SYMBOL_INDEX_PICKLE.with_suffix(".tmp")
-            with open(tmp, "wb") as f:
-                pickle.dump({"version": _SYMBOL_INDEX_PICKLE_VERSION,
-                             "spans": dict(_symbol_usage_cache),
-                             "gen": _index_generation,
-                             "mtimes": dict(_mtime_snapshot),
-                             "hashes": dict(_span_hashes)}, f)
-            os.replace(tmp, _SYMBOL_INDEX_PICKLE)
-        except Exception:
-            pass
 
 
 _symbol_store = _load_symbol_store()
@@ -1389,7 +1320,7 @@ _def_line_cache: dict = {}  # (defining_file, qualname|id) -> (mtime, lineno)
 # invalidates this file's cached usages after one warmer pass - mtime alone
 # only sees edits to THIS file. Doubles as a "results need servicable" gate
 # (> 0) for the auto-index pass in cst_span_to_dict. Backed from the
-# persistence store so restored spans stay valid across reboots; bumps write
+# sys-level store so cached spans stay valid across restart-in-place; bumps write
 # back to the store (ints rebind, dicts are shared by reference).
 _index_generation = _symbol_store["gen"]
 
@@ -9383,8 +9314,8 @@ def build_index_cache() -> tuple:
         if entry is not prev:
             reparsed += 1
             # A REAL content change happens when the mtime moved past the
-            # persisted snapshot: a refs rebuild after reboot re-parses every
-            # file (ids are fresh) but must not lapse restored span results.
+            # snapshot: a refs rebuild after a restart-in-place re-parses every
+            # file (ids are fresh) but does not lapse adopted span results.
             # entry[0] is (mtime, cache_gen) - only the MTIME half counts
             # here: streaming edits already sig the edited file's own spans,
             # and bumping the generation per queued keystroke would suck.
@@ -9426,8 +9357,8 @@ def _bump_generation():
     gained or lost callers. Bumping the generation lapses them (see
     _compute_symbol_usages); the callbacks wake idle consumers (cached editor
     hosts replay their blit until something re-runs them, so a change they
-    can't observe must push the re-index trigger); the store write-back +
-    save persist the new state. Shared tail of both change detectors: the
+    can't observe must push the re-index trigger); the store write-back
+    records the new generation and stale spans are pruned. Shared tail of both change detectors: the
     file-watch path below (primary) and the warmer's reconcile pass."""
     global _index_generation
     _index_generation += 1
@@ -9444,7 +9375,7 @@ def _bump_generation():
         except Exception as _e:
             _ptrace(f"gen callback {getattr(cb, '__name__', cb)} RAISED "
                     f"{type(_e).__name__}: {_e}")
-    _save_symbol_store()
+    _prune_symbol_store()
 
 
 # ── File-watch driven index updates ───────────────────────────
@@ -9642,7 +9573,7 @@ def shutdown_symbol_index_daemon():
     if ev is not None:
         ev.set()
     sys._symbol_index_daemon_started = False
-    _save_symbol_store()
+    _prune_symbol_store()
 
 #
 # # Guard to `sys` (shared across the src/lsd.py module dupes) so the daemon runs

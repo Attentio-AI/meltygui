@@ -32,10 +32,17 @@ import math
 
 import numpy as np
 
-# Per-device compiled kernels + retained primary contexts. globals().get
-# avoids hotswap re-exec (a re-exec must not recompile or re-retain).
-_KERNELS = globals().get("_KERNELS") or {}
-_CONTEXTS = globals().get("_CONTEXTS") or {}
+# Per-device compiled kernels and retained primary contexts, parked on sys so
+# they are PROCESS-lifetime: globals().get would survive a hotswap re-exec
+# but not the in-place restart (studio_server purges src.*), and the old
+# module dict then became cyclic garbage that the next session's boot
+# gc collector freed with no CUDA context current - PyCUDA's "Resources in
+# out-of-thread context could not be cleaned up" warning, printed by the
+# studio.py warning hook as a full stack trace. Same dedupe pattern as the
+# other sys._lsd_* roots (see lifecycle.py); also spares the recompile.
+import sys as _sys
+_KERNELS = _sys.__dict__.setdefault("_lsd_cuda_march_kernels", {})
+_CONTEXTS = _sys.__dict__.setdefault("_lsd_cuda_march_contexts", {})
 _last_logged = globals().get("_last_logged")
 
 

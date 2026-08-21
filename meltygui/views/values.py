@@ -1698,10 +1698,21 @@ def _repaint_global_search():
     request_render()
 
 
+# Frame until which drain_pending_settings keeps the Toggles host alive
+# (with pulse) after a setting write. Writes that don't come from the
+# search window (the ETS loop in Melty.begin_frame) have no consumer of their
+# own, and an evictable host with none is swept from Melty.render_hosts
+# after HostLifecycle.idle_frames - before its background parse landed or
+# its own dict -> source save had time, so the edit never reached toggles.py.
+_setting_host_pulse_until = 0
+
+
 def _set_setting(path, value):
     """Write a setting, parking it for retry while the host is still parsing
     (picking a row moments after the first keystroke), so an early edit isn't
     silently dropped."""
+    global _setting_host_pulse_until
+    _setting_host_pulse_until = Melty.frame_count + 2 * int(Toggles.HostLifecycle.idle_frames) + 600
     if not _write_setting(path, value):
         _pending_setting_writes[path] = (value, Melty.frame_count + 600)
     _repaint_global_search()
@@ -1783,9 +1794,14 @@ def _value_widget(hit, value, r_edge, ry, row_h, width):
     return wx - 6, (wx, wy, wx + width, wy + h)
 
 
-def drain_pending_settings():
+def drain_pending_settings(draw_state=None):
     """Retry setting writes parked while the host was still parsing. Called
-    every frame from draw_main; free when nothing is parked."""
+    every frame from draw_main; free when nothing is parked. `draw_state`
+    (draw_main's root ds) is pulsed as the Toggles host's consumer for a
+    while after any setting write, so a write made outside the search window
+    (E hotkey) keeps the host drawing until its parse and save have run."""
+    if draw_state is not None and Melty.frame_count <= _setting_host_pulse_until:
+        _toggles_dict_host().notify_on_change(draw_state)
     if not _pending_setting_writes:
         return
     for path, (value, deadline) in list(_pending_setting_writes.items()):
@@ -4030,7 +4046,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
 
     # Setting edits made from global search before the Goggles code host had
     # parsed - retried here until they land (no-op, nothing is parked).
-    drain_pending_settings()
+    drain_pending_settings(draw_state)
 
     # Slow-source writes parked during a mouse drag (anywhere's fast/slow
     # split) run their real set_anywhere the frame the button releases.

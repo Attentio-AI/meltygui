@@ -1356,7 +1356,7 @@ class Toggles:
     @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:
         keep_for_frames = 100
-        enable = False
+        enable = True
         draw_rect = True
 
         # [tint=(0.85, 0.45, 0.05), show_tint=True]
@@ -1437,7 +1437,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     show_filled_tiles = False
