@@ -2798,21 +2798,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                else (0.40, 0.53, 0.78))    # draw_function_live's lab blue
     _c_pp = tuple(fn_tint[:3]) if _has_tint else (0.55, 0.58, 0.66)
     if status is not None:
-        if status[0] == 'err':
-            _c_live = (0.85, 0.30, 0.24)
-        else:
-            # Success flash on the run button: brighten, fade out, then
-            # clear - the invalidate + request_render pump while fading
-            # mirrors draw_function's result_fade.
-            age = Melty.frame_count - status[1]
-            k = max(0.0, 1.0 - age / 45.0)
-            if k <= 0.0:
-                statuses.pop(skey, None)
-            else:
-                _c_live = tuple(min(1.0, c + 0.5 * k) for c in _c_live)
-                editor_ds.invalidate()
-                request_render()
-
+        statuses.pop(skey, None)
     # Two buttons: the DOUBLE-WIDE instrumented run (play glyph) -
     # live_view_forward's twin path via run_instrumented, so every
     # assignment's snapshot marker lands right in THIS editor through the
@@ -3199,7 +3185,7 @@ def _lv_line_map(parse_source, buffer_text):
 
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None, buffer_text=None,
-                          cursor_line=None, cursor_col=None, fold_line_map=None):
+                          sel_lo=None, sel_hi=None, fold_line_map=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
@@ -3295,8 +3281,8 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
                                          h=h, draw_state=ds, char_w=char_w, line_px=line_px,
                                          node=node, span=span, root=code_tree,
                                          line_offset=line_offset, jump_to=jump_to,
-                                         line_map=line_map, cursor_line=cursor_line,
-                                         cursor_col=cursor_col)
+                                         line_map=line_map, sel_lo=sel_lo,
+                                         sel_hi=sel_hi)
                     except Exception:
                         pass
                     break
@@ -12036,10 +12022,16 @@ def draw_text(input_value: str, height=None,
         # Caret position in buffer space (1-indexed line, non-shifted col) for
         # the live_view overlays - with hover preview off, a marker whose symbol
         # the caret sits on shows its value window instead.
-        _cur_line = _cur_col = None
-        if Melty.text_focused_ds is ds:
-            _cl0, _cc0 = _index_to_line_col(text, ds.text_cursor_pos)
-            _cur_line, _cur_col = _cl0 + 1, _cc0 - _tv_shift
+        # Value widgets show their window only while SELECTED: hand the
+        # focused editor's non-empty selection down as (line, col) bounds
+        # (1-indexed lines, shift-corrected cols); a blank editor passes None.
+        _sel_lo = _sel_hi = None
+        if Melty.text_focused_ds is ds and _has_selection(ds):
+            _s0, _s1 = _sel_range(ds)
+            _l0, _c0 = _index_to_line_col(text, _s0)
+            _l1, _c1 = _index_to_line_col(text, _s1)
+            _sel_lo = (_l0 + 1, _c0 - _tv_shift)
+            _sel_hi = (_l1 + 1, _c1 - _tv_shift)
         # Folds collapsed? pass the FULL buffer to the parse→buffer diff
         # bridge (the display text has one deletion per collapsed fold, and
         # the single-region diff maps everything between the first and last
@@ -12061,8 +12053,8 @@ def draw_text(input_value: str, height=None,
         _draw_cst_token_views(_tv_tree, token_views, origin_x + _tv_shift * char_w,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to,
-                              buffer_text=_tv_buf, cursor_line=_cur_line,
-                              cursor_col=_cur_col, fold_line_map=_tv_fold_lm)
+                              buffer_text=_tv_buf, sel_lo=_sel_lo,
+                              sel_hi=_sel_hi, fold_line_map=_tv_fold_lm)
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------

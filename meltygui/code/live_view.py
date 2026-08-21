@@ -520,6 +520,63 @@ def watch(store_obj, key_path, draw_state, first_only=False):
         pass
 
 
+def rerun_hint(store_obj, key_path):
+    """The placeholder a loop site holds while nothing shows it."""
+    label = (vars(store_obj).get("__live_labels__") or {}).get(key_path)
+    return f"Rerun to visualize {label or key_path[-1]}"
+
+
+def park_rerun_hint(store_obj, key_path):
+    """A value window just stopped showing: forget its accumulated stack and
+    swap the store value for the rerun hint, then sever every watcher pin
+    (marker + window draw_states, GL texture) so the tensor has no referrer
+    left — the VRAM comes back now, not at the next run. The key STAYS (the
+    marker keeps reading captured); the next run with the window open
+    accumulates again. Any thread; never raises."""
+    try:
+        d = vars(store_obj)
+        accums = d.get("__live_accum__")
+        if accums:
+            accums.pop(key_path, None)
+        store = d.get("__live_values__")
+        if store is not None and key_path in store:
+            store[key_path] = rerun_hint(store_obj, key_path)
+    except (AttributeError, TypeError):
+        return
+    _release_key_watchers(store_obj, key_path)
+
+
+# Headless override for the accumulate-only-when-watched gate below: tests
+# (and any widgetless driver) flip this on so loop sites stack without a
+# window watching them. Patch via unittest.mock / direct assignment.
+ACCUMULATE_UNWATCHED = False
+
+
+def has_visible_widget(store_obj, key_path):
+    """True when some live widget for `key_path` currently SHOWS its value
+    window. The full per-publish watcher (`__live_watchers__`) is registered
+    only while a marker's window exists, but draw_states persist past an
+    X-close, so also require the watcher's window ds to be open. Any
+    thread; never raises."""
+    if ACCUMULATE_UNWATCHED:
+        return True
+    try:
+        watchers = vars(store_obj).get("__live_watchers__")
+        if not watchers:
+            return False
+        try:
+            targets = tuple(watchers.get(key_path) or ())
+        except RuntimeError:  # concurrent registration resized the set
+            return True       # benign, err on the side of accumulating
+        for ds in targets:
+            win = getattr(ds, "_lv_window_ds", None)
+            if win is not None and not getattr(win, "closed", False):
+                return True
+    except (AttributeError, TypeError):
+        pass
+    return False
+
+
 _last_wake = 0.0
 
 
@@ -576,15 +633,47 @@ def _notify_watchers(store_obj, key_path, first):
                 pass
     if not notified:
         return
-    global _last_wake
+    _wake_render(throttle=True)
+
+
+_wake_timer = None
+
+
+def _wake_render(throttle):
+    """Wake the render loop. throttle=True rate-limits to ~30/s — but with a
+    TRAILING edge: a wake that falls inside the window arms a one-shot
+    timer, so the LAST publish of a burst always gets painted. Without it a
+    run's final publish landed inside the window of the one before, the
+    invalidation sat pending with the loop asleep, and the window stayed on
+    whatever intermediate layer the previous frame had caught."""
+    global _last_wake, _wake_timer
     now = time.time()
-    if now - _last_wake > 0.033:
-        _last_wake = now
+    if throttle and now - _last_wake <= 0.033:
+        if _wake_timer is None:
+            t = threading.Timer(0.04, _wake_render, kwargs={"throttle": False})
+            t.daemon = True
+            _wake_timer = t
+            t.start()
+        return
+    _last_wake = now
+    _wake_timer = None
+    try:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+    except Exception:
+        pass  # headless (tests) - nothing to wake
+
+
+def settle_store(store_obj, keys):
+    """Run-end pass: re-invalidate every watcher of `keys` and wake the loop
+    UNTHROTTLED, so the state rendered after a run is the run's FINAL state —
+    intermediate frames during a long run are fine, landing on one is not."""
+    for key in tuple(keys or ()):
         try:
-            from src.lsd.gl_gui.utils.glfw_utils import request_render
-            request_render()
+            _notify_watchers(store_obj, key, first=False)
         except Exception:
-            pass  # headless (tests) - nothing to wake
+            pass
+    _wake_render(throttle=False)
 
 
 # ── capture internals ─────────────────────────────────────────────────────────
@@ -620,8 +709,12 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     except (AttributeError, TypeError):
         return
     first = site.key_path not in store
-    if first:
-        _register_store_owner(site.store_obj)
+    # Register on EVERY publish, not just a key's first - the store rides
+    # the function object and outlives the session, so after a restart
+    # every key is already "known" and a first-only registration left the
+    # owner registry EMPTY - release_all_live_stores (cleanup, the OOM
+    # responder) then dropped nothing. WeakSet.add is O(1).
+    _register_store_owner(site.store_obj)
     label = name or (site.var_name if bare else site.arg_label)
     if label:
         vars(site.store_obj).setdefault("__live_labels__", {})[
@@ -631,7 +724,19 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     # BEFORE the touched.add - "key not yet touched this run" is how the
     # accumulator detects a fresh run and resets.
     display = value
-    if dims:
+    if dims and not has_visible_widget(site.store_obj, site.key_path):
+        # Loop site nobody is LOOKING at: don't stack (a 32-layer stack of
+        # hidden states is gigabytes PER key, repeated for every hidden
+        # widget). Drop any existing stack and park a hint in its place -
+        # opening the widget shows it, and the next run, with the window
+        # now watching, accumulates for real.
+        try:
+            vars(site.store_obj).get("__live_accum__", {}).pop(
+                site.key_path, None)
+        except Exception:
+            pass
+        display = rerun_hint(site.store_obj, site.key_path)
+    elif dims:
         try:
             display = _accumulate(site.store_obj, site.key_path, value,
                                   tuple(dims), idx)
@@ -914,6 +1019,34 @@ def _register_store_owner(store_obj):
         pass          # not weak-referenceable - won't be swept, fine
 
 
+def _discover_store_owners():
+    """Every function object carrying a live store, found by a gc walk —
+    the fallback for a registry that missed owners. A module scan is NOT
+    enough: the store rides the function OBJECT, and a recompile/hotswap
+    replaces the module's attribute while the superseded function lives on
+    (the `_sites` cache holds it via Site.store_obj) with its whole store —
+    14 GB of stacks in one session, reachable from nothing nameable.
+    Unfreezes first: gc_manager freezes the boot generation and
+    gc.get_objects() skips frozen objects. Cleanup / OOM-time cost only
+    (~0.5 s)."""
+    import gc
+    try:
+        gc.unfreeze()
+    except Exception:
+        pass
+    found = []
+    for o in gc.get_objects():
+        if not isinstance(o, types.FunctionType):
+            continue
+        try:
+            d = vars(o)
+        except TypeError:
+            continue
+        if "__live_values__" in d or "__live_accum__" in d:
+            found.append(o)
+    return found
+
+
 def release_all_live_stores():
     """Drop EVERY live-view store: values, loop accumulators (the per-run
     stacks — gigabytes), labels, watchers; close/release every marker and
@@ -924,7 +1057,13 @@ def release_all_live_stores():
     and windows re-fill on the next run; nothing is lost that a run doesn't
     recreate. Returns the number of keys dropped. Safe from any thread."""
     dropped = 0
-    for owner in list(_store_owners):
+    owners = list(_store_owners)
+    known = {id(o) for o in owners}
+    for o in _discover_store_owners():
+        if id(o) not in known:
+            owners.append(o)
+            _register_store_owner(o)
+    for owner in owners:
         try:
             store = vars(owner).get("__live_values__")
         except TypeError:
@@ -977,13 +1116,17 @@ def run_capture(store_obj):
     try:
         yield
     except BaseException:
-        vars(store_obj).pop("__live_touched__", None)
+        touched = vars(store_obj).pop("__live_touched__", None)
+        # A failed run (OOM mid-loop) still re-paints what it did publish
+        # - the windows must show the store's truth, not a stale frame.
+        settle_store(store_obj, touched)
         raise
     finally:
         if stack and stack[-1] is store_obj:
             stack.pop()
     touched = vars(store_obj).pop("__live_touched__", set())
     _prune_untouched(store_obj, touched)
+    settle_store(store_obj, touched)
 
 
 _RELEASE_MIN_BYTES = 1 << 20

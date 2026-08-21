@@ -1856,6 +1856,51 @@ def _draw_image_notice(img_pos, width, text):
     imgui.set_cursor_screen_pos(cur)
 
 
+def format_bytes(n):
+    """Tensor byte count → 'KB' / 'MB' / 'GB' string (the old volume
+    renderer's 2-dp formatting) plus its size tint: green ≤10 MB, yellow
+    ≤100 MB, red above."""
+    n = int(n or 0)
+    if n > 1024 ** 3:
+        txt = f"{n / 1024 ** 3:.2f} GB"
+    elif n > 1024 ** 2:
+        txt = f"{n / 1024 ** 2:.2f} MB"
+    else:
+        txt = f"{n / 1024:.2f} KB"
+    if n > 100 * 1024 ** 2:
+        tint = (1.0, 0.45, 0.4, 1.0)
+    elif n > 10 * 1024 ** 2:
+        tint = (1.0, 0.85, 0.35, 1.0)
+    else:
+        tint = (0.5, 0.9, 0.5, 1.0)
+    return txt, tint
+
+
+def _draw_tensor_meta(img_pos, height, t):
+    """Bottom-left caption over the image: shape · dtype · device · bytes
+    (size tinted by magnitude), read straight off the source tensor."""
+    try:
+        shape = "×".join(str(int(d)) for d in t.shape)
+        dtype = str(t.dtype).replace("torch.", "")
+        nbytes = int(t.numel()) * int(t.element_size())
+    except Exception:
+        return
+    dev = str(getattr(t, "device", "cpu"))
+    head = "  ".join(p for p in (shape, dtype, dev if dev != "cpu" else "") if p)
+    size_txt, size_tint = format_bytes(nbytes)
+    pad, gap = 5.0, 8.0
+    hw, hh = imgui.calc_text_size(head)
+    sw, sh = imgui.calc_text_size(size_txt)
+    tw, th = hw + gap + sw, max(hh, sh)
+    x, y = img_pos
+    x0, y0 = x + 2, y + height - th - 2 * pad - 2
+    dl = imgui.get_window_draw_list()
+    dl.add_rect_filled(x0, y0, x0 + tw + 2 * pad, y0 + th + 2 * pad,
+                       imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.55), 4.0)
+    dl.add_text(x0 + pad, y0 + pad, imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 1.0), head)
+    dl.add_text(x0 + pad + hw + gap, y0 + pad, imgui.get_color_u32_rgba(*size_tint), size_txt)
+
+
 def _is_tensorish(v):
     """A torch tensor / ndarray, or a container whose top level holds one."""
     if isinstance(v, np.ndarray):
@@ -2502,6 +2547,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # (top-left, wrapped to the image width) rather than silently
         # showing a truncated tensor.
         _draw_image_notice(img_pos, width, clamp_note)
+    if not isinstance(src, GLTexture):
+        _draw_tensor_meta(img_pos, height, t)
 
     # ── the outline stays 2-D imgui (crisp 1px outline over the volume) ────
     if axis_edges:

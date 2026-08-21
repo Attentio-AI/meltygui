@@ -165,7 +165,7 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.191, 0.428, 0.157))
+    @defaults(tint=(0.127, 0.989, 0.0))
     def checkbox_text_true():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
@@ -1048,7 +1048,7 @@ class Toggles:
         comment_min_brightness = 0.170
 
 
-    # [tint=(0.25, 0.6, 0.25), show_tint=True]
+    # [tint=(0.013, 0.583, 0.013), show_tint=True]
     class Voxels:
         # Output gamma on the finished voxel image, folded into the raymarch
         # shader's final sRGB encode: 1.0 = pure sRGB encode (brightest,
@@ -1370,7 +1370,6 @@ class Toggles:
         # [tint=(0.0, 0.56, 0.872), show_tint=True]
         draw_bvh = False
 
-    # Global App Toggles
     @defaults(tint=(0.63, 0.44, 0.2))
     class GC:
         # Deliberate collector scheduling (gc_manager.tick in Melty.end_frame):
@@ -1438,7 +1437,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
     show_fps = True
 
     show_filled_tiles = False
@@ -1451,8 +1450,6 @@ class Toggles:
     # Build the node→span map from Python's `ast` (C code) instead of libcst's
     # PositionProvider (whole-tree codegen, ~64% of cst→dict cost).
     new_position_map = True
-
-
 
     # While typing, pause the background cst→dict parse at statement boundaries so
     # the render thread gets the GIL uncontended. Never sleeps render

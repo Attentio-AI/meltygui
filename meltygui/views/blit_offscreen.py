@@ -14,6 +14,7 @@ import imgui
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.notifications import notify, capture_stack
 from src.lsd.gl_gui.model.core_model.core_enums import OffscreenDebugMode
 from src.lsd.gl_gui.model.core_model.draw_state import TileMode
 from src.lsd.gl_gui.toggles import Toggles, shadow_depth_at
@@ -544,6 +545,28 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
     t.last_invalidated_frame = max(t.last_invalidated_frame, frame_id + 1)
     request_render()
     return t
+
+
+# Frames dropped from the inner side of an invalidate trace so the notified
+# jump target is the CALLER of invalidate - not this file's plumbing, not the
+# DrawState.invalidate* shims.
+_INVALIDATE_SKIP_FILES = ("blit_offscreen.py", "draw_state.py")
+_INVALIDATE_SKIP_FUNCS = ("invalidate", "invalidate_up", "invalidate_parent", "invalidate_by_obj",
+                          "invalidate_up_by_obj", "invalidate_all", "invalidate_scrolled_in")
+
+
+def notify_invalidate_stack(note, draw_state, kind="invalidate"):
+    """Toast (tag "invalidate") carrying the caller's stack — click it to open
+    the call site in the editor. notify() dedupes repeats of the same site and
+    shows a count, so this is safe to call per invalidate."""
+    stack = capture_stack(skip_files=_INVALIDATE_SKIP_FILES, skip_funcs=_INVALIDATE_SKIP_FUNCS)
+    if not stack:
+        return
+    name = getattr(note, "name", None) or kind
+    view = getattr(getattr(draw_state, "_view_func", None), "__name__", None)
+    text = f"{kind}: {name}" + (f"  [{view}]" if view else "")
+    notify(text, tint=getattr(note, "tint", (1, 0.6, 0.3))[:3] or (1, 0.6, 0.3),
+           tag="invalidate", stack=stack, urgent=False)
 
 
 class _GLState:
@@ -1511,9 +1534,6 @@ class TileCacheMasked:
         if note is None:
             note = Note(name="Unnamed invalidate_up", reason="", tint=(1, 0, 0),
                         frame=Melty.frame_count, draw_state=draw_state)
-            if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
-                if Toggles.InvalidateTracker.enable:
-                    print_stack_trace()
 
         note.draw_state = draw_state
 
@@ -1545,12 +1565,12 @@ class TileCacheMasked:
 
         parent_draw_state = self.key_to_draw_state.get(k, None)
         if parent_draw_state is not None and parent_draw_state._print_last_invalid:
-            print_stack_trace()
+            notify_invalidate_stack(note, parent_draw_state, kind="invalidate_up")
         for top, child, child_draw_state in child_keys_list:
 
             inside_clip, below, above = parent_draw_state.is_inside_clip(child_draw_state)
             if child_draw_state is not None and child_draw_state._print_last_invalid:
-                print_stack_trace()
+                notify_invalidate_stack(note, child_draw_state, kind="invalidate_up (child)")
             if (child_draw_state.inside_clip and inside_clip) or bypass_clip:
                 if child != k:
                     pt = self._tiles.get(child)
@@ -1622,33 +1642,20 @@ class TileCacheMasked:
         if note is None:
             note = Note(name="Unnamed invalidate", reason="", tint=(1, 0, 0, 0.1),
                         frame=Melty.frame_count, draw_state=draw_state)
-            if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
-                if Toggles.InvalidateTracker.enable:
-                    print_stack_trace()
 
         note.draw_state = draw_state
 
         if note.frame == 0:
             note.frame = Melty.frame_count
 
-        if Melty.frame_count > 100 and Melty.frame_count % 30 == 0:
-            if draw_state is not None and draw_state._print_last_invalid:
-                print_stack_trace()
-
-        if Toggles.InvalidateTracker.invalidate_stack_trace:
-            # Throttle: at most one trace per 100 frames. last_print_invalidate
-            # is stamped only when a trace actually prints - stamping it on
-            # every invalidate left frames_since == 0 for every same-frame
-            # invalidate after the first, which printed a full (inspect +
-            # pygments) trace per invalidated tile and dominated frame time
-            # during scroll.
-            frames_since_last_print = Melty.frame_count - Melty.last_print_invalidate
-            if Melty.frame_count > 100 and frames_since_last_print > 100:
-                if note.name != "hover change":
-                    print_stack_trace()
-                    if draw_state is not None:
-                        print("View_func", draw_state._view_func.__name__)
-                    Melty.last_print_invalidate = Melty.frame_count
+        # Same gate as InvalidateTracker.invalidations below, but the
+        # "invalidate" notify column shows every invalidation the tracker
+        # overlay sees (named or not, hover changes included); notify()
+        # collapses repeats of one call site into a counted entry.
+        if (Toggles.InvalidateTracker.enable or Toggles.InvalidateTracker.invalidate_stack_trace
+                or (draw_state is not None and draw_state._print_last_invalid)):
+            notify_invalidate_stack(note, draw_state)
+            Melty.last_print_invalidate = Melty.frame_count
 
         t = self._tiles.get(k)
         if t is not None:
@@ -1675,7 +1682,7 @@ class TileCacheMasked:
                     # descendant, and it gets stranded with stale composition.
                     parent_draw_state = self.key_to_draw_state.get(parent, None)
                     if parent_draw_state is not None and parent_draw_state._print_last_invalid:
-                        print_stack_trace()
+                        notify_invalidate_stack(note, parent_draw_state, kind="invalidate (ancestor)")
                     pt.force_invalidate = True
                     _bump_note(pt, f"anc-of:{k[:48]}:{getattr(note, 'name', None)}")
                     pt.last_invalidated_frame = max(pt.last_invalidated_frame, self._frame_id + 1 + frame_delta)

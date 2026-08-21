@@ -16,6 +16,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
 import torch
 
 from src.lsd.gl_gui.view.core_conversion import chain_converters as cc
@@ -71,6 +72,16 @@ def _store_owners(path):
             and "__live_values__" in (o.__dict__ or {})
             and o.__code__.co_filename == str(path)]
 
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _accumulate_unwatched():
+    """Headless: no live widget watches any key, so loop sites would park
+    the 'Rerun to visualize …' hint instead of stacking. Flip the gate."""
+    from unittest.mock import patch
+    import src.lsd.gl_gui.view.core_conversion.live_view as lv
+    with patch.object(lv, "ACCUMULATE_UNWATCHED", True):
+        yield
 
 def test_twin_publishes_to_run_capture_owner(tmp_path):
     mod, path = _load_module(tmp_path)

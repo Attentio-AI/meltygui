@@ -16,7 +16,7 @@ from imgui.core import _DrawList
 
 from rtree import index as rtree_index
 
-from src.lsd.gl_gui.notifications import draw_notifications
+from src.lsd.gl_gui.notifications import draw_notifications, notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.mode_defaults import register_defaults
 from src.lsd.gl_gui.utils import glfw_utils
@@ -1634,7 +1634,28 @@ class Melty:
                 if Toggles.TextEditor.text_focus_stack_trace:
                     print_stack_trace()
                 request_render()
-        else:
+
+        # Global hotkey: bare E toggles the invalidation tracker (the rects
+        # in the "invalidate" notify log). Press edge from the callback
+        # queue; only when no Melty editor and no imgui input owns the
+        # keyboard, and no modifier is held (Ctrl+E etc. stay free).
+        if (focused is None and not want_text
+                and any(k == glfw.KEY_E and not (m & (glfw.MOD_CONTROL | glfw.MOD_ALT | glfw.MOD_SUPER))
+                        for k, m in cls.frame_key_events)):
+            new_value = not Toggles.InvalidateTracker.enable
+            # Same write path as a global-search Toggles row: edits the Toggles
+            # render-host parse (with flush-edits + queued source save), so
+            # the flip persists into toggles.py. Parked + retried by
+            # drain_pending_settings while the host is still parsing; flip the
+            # live attr too so the overlay responds this frame either way.
+            Toggles.InvalidateTracker.enable = new_value
+            from src.lsd.gl_gui.view.core_views.new_core_view import _set_setting
+            _set_setting("InvalidateTracker.enable", new_value)
+            notify(f"InvalidateTracker {'on' if new_value else 'off'}",
+                   tint=(1, 1, 0.4), tag="InvalidateTracker")
+            request_render()
+
+        if not any(k == glfw.KEY_ESCAPE for k, _ in cls.frame_key_events):
             for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
                 # A bare held MODIFIER (340-347: shift/ctrl/alt/super) is not
                 # input the editor needs to catch - no edge, no text - but the
@@ -2821,11 +2842,56 @@ class Melty:
 
         for ds_id, discard_ds in to_discard:
             cls.root_draw_states[ds_id].remove(discard_ds)
+            # A discarded nested window keeps its draw_state (the framework
+            # contract) - and with it every wrapper slot holding the value
+            # it last rendered, plus its GLState textures. In the live lab
+            # that is a multi-GB tensor per window: switching editor tabs
+            # discarded the old tab's value windows and pinned their
+            # stacks for the session. Release the value refs now; a window
+            # the parent re-registers on its next frame simply refills them.
+            cls.release_window_tree(discard_ds)
 
         note = Note(name="refresh_nested_windows", reason="refresh_nested_windows", tint=(1, 0, 1))
         Melty.cache.invalidate_up(parent_window._tile_id,
                                   max_depth=10, force=True, note=note)
 
+
+    @classmethod
+    def release_window_tree(cls, ds, unregister_nested=True):
+        """Lifecycle release for a window that is going away (deleted root,
+        X-closed or discarded nested window, session teardown): drop every
+        wrapper-owned reference to the value it last rendered (core_render.
+        release_input_refs — the input slots + offscreen/blit caches) on the
+        ds and its descendants, do the same for every nested window
+        registered UNDER it in root_draw_states (recursively — a deleted
+        editor window takes its live value windows and their satellites
+        with it), and queue its GL resources for deletion. Draw_states
+        persist (framework contract): a window that comes back simply
+        refills its slots on its next render. With `unregister_nested` the
+        nested entries are also removed from root_draw_states — a deleted
+        root's nested windows would otherwise linger orphaned. Never
+        raises; idempotent."""
+        if ds is None:
+            return
+        try:
+            from src.lsd.gl_gui.view.core_views.core_render import release_input_refs
+            release_input_refs(ds)
+            for d in ds.descendants(max_depth=8):
+                release_input_refs(d)
+        except Exception:
+            pass
+        nested = cls.root_draw_states.get(ds.id)
+        if nested:
+            for child in list(nested):
+                if child is not ds:
+                    cls.release_window_tree(child, unregister_nested)
+            if unregister_nested:
+                cls.root_draw_states.pop(ds.id, None)
+        try:
+            from src.lsd.gl_gui.gl_state import GLState
+            GLState.on_window_deleted(ds)
+        except Exception:
+            pass
 
     @classmethod
     def refresh_nested_windows(cls, draw_state):
@@ -2998,6 +3064,9 @@ class Melty:
 
         for ds_id, discard_ds in to_discard:
             cls.root_draw_states[ds_id].remove(discard_ds)
+            # A closed nested window drops what it rendered (value slots,
+            # nested windows below it, GL) - not just its registration.
+            cls.release_window_tree(discard_ds)
 
         # Universal item drag-and-drop: pick up armed header drags, draw the
         # drop-point lines and commit/cancel on release. BEFORE the layer
@@ -3848,6 +3917,36 @@ class Melty:
             _ptrace(f"melty: on_cleanup hooks run", n=n_hooks)
         except Exception as e:
             print(f"[melty] on_cleanup hooks failed: {e}")
+        # The live-view STORES next: they ride the store-owning function
+        # objects (module globals, parked def-runners) which outlive the
+        # session, and without this every captured value and loop stack -
+        # the (layer, head, query, key) volumes, 14 GB in one session -
+        # carried straight into the next one. Same sweep as the OOM
+        # responder: values, accumulators, watchers, marker/window refs.
+        try:
+            from src.lsd.gl_gui.view.core_conversion.live_view import release_all_live_stores
+            n_keys = release_all_live_stores()
+            _ptrace(f"melty: live stores released", n=n_keys)
+        except Exception as e:
+            print(f"[melty] live store release failed: {e}")
+        # Then every window tree - registered roots and whatever nested
+        # windows hang under them - drops its rendered values, so a restart
+        # (the old session's roots get around, see sys._lsd_* dedupe) doesn't
+        # carry the old session's tensors into the new one.
+        try:
+            n_trees = 0
+            for mw in list(cls.registered_windows.values()):
+                ds = getattr(mw, "draw_state", None)
+                if ds is not None:
+                    cls.release_window_tree(ds); n_trees += 1
+                # the ManagedWindow's own value slot pins the root's tensors
+                mw.input_value = None
+            for parent_id in list(cls.root_draw_states.keys()):
+                for ds in list(cls.root_draw_states.get(parent_id) or ()):
+                    cls.release_window_tree(ds); n_trees += 1
+            _ptrace(f"melty: window trees released", n=n_trees)
+        except Exception as e:
+            print(f"[melty] window tree release failed: {e}")
         try:
             from src.lsd.gl_gui.gl_state import GLState
             GLState.shutdown_all()
@@ -4058,12 +4157,13 @@ class Melty:
                 print(f"Warning: Tried to delete window but {window_key} not found in registered_windows")
                 print(f"Registered windows: {list(Melty.registered_windows.keys())}")
 
-            # Views under a deleted window give up their GL resources
-            # (queued; drained by flush_deletes in end_frame). Their
-            # draw_states persist, so a re-created window lazily
-            # re-allocates on its next draw.
-            from src.lsd.gl_gui.gl_state import GLState
-            GLState.on_window_deleted(draw_state)
+            # A deleted window gives back everything under it: the value
+            # refs its views hold, its nested windows (live value windows
+            # and their satellites get unregistered too, or they'd linger
+            # orphaned) and the GL resources (queued; drained by
+            # flush_deletes in end_frame). Draw_states survive, so a
+            # re-created window lazily refills on its next render.
+            cls.release_window_tree(draw_state)
 
             cls.pending_delete_window = None
             request_render()
@@ -4075,6 +4175,28 @@ class Melty:
         if not cls.imgui_active:
 
             window_key = cls.pending_move_to_front[0]
+
+            # Raising a window takes text focus away from an editor that lives
+            # in a DIFFERENT window. The clicked window is the innermost nested
+            # one (first of the chain) or the root itself; focus survives only
+            # when that window is on the focused draw_state's parent_window path.
+            focused = cls.text_focused_ds
+            if focused is not None:
+                nested_chain = cls.pending_move_to_front[2]
+                clicked = nested_chain[0] if nested_chain else cls.pending_move_to_front[1]
+                node, _n, inside = focused, 0, False
+                while node is not None and _n < 64:
+                    if node is clicked:
+                        inside = True
+                        break
+                    nxt = node.parent_window
+                    if nxt is node:
+                        break
+                    node = nxt
+                    _n += 1
+                if not inside:
+                    focused.invalidate_up()
+                    cls.text_focused_ds = None
 
             # Raise each clicked nested window to the front (end) of its
             # parent's nested-window list - the order there determines sibling

@@ -2667,8 +2667,10 @@ def render_func(*args, **o_kwargs):
 
                 if (not Melty.on_drag and not imgui.is_mouse_dragging(2) and not imgui.is_mouse_dragging(1)) and not someone_elses_scroll:
                     if not draw_state.just_shadow:
-                        Melty.cache.invalidate(tile_id, force=True, note=Note(name="hover change",
-                                                                                              tint=(1,1,0, 0.1),
+                        note = "hover_change"
+                        if draw_state.width is None:
+                            note = "hover_change + width=None"
+                        Melty.cache.invalidate(tile_id, force=True, note=Note(name=note, tint=(1,1,0, 0.1),
                                                                                               reason="unhovered" if not draw_state._bounding_hovered else "hovered",
                                                                                               frame=Melty.frame_count,
                                                                                               draw_state=draw_state))
@@ -5591,6 +5593,13 @@ def get_resize_handle(a_ds):
 
     margin = 34
     left, top = (right - margin, bottom - margin)
+    # Never let the grab triangle climb into the header row: on a short window
+    # it would sit over the close button (and win the press, being a
+    # priority_delta=1 drag sub plus an invisible button), leaving close
+    # unclickable. The visible triangle is only 13px, so a clamped rect
+    # still covers it.
+    header_bottom = a_ds.top + (a_ds.header_height or 0)
+    top = max(top, min(header_bottom, bottom))
     return left, top, right, bottom
 
 

@@ -305,6 +305,15 @@ def _left_of_window_pos(anchor_left, marker_x, marker_y=None, win_h=None,
     return (x_off, y_off)
 
 
+def _token_in_selection(line, start_col, end_col, sel_lo, sel_hi):
+    """True when the token on buffer `line` spanning [start_col, end_col) lies
+    entirely within the editor selection `sel_lo..sel_hi` ((line, col) tuples,
+    None when the editor has no selection / isn't focused)."""
+    if line is None or sel_lo is None or sel_hi is None:
+        return False
+    return sel_lo <= (line, start_col) and (line, end_col) <= sel_hi
+
+
 def _marker_idle_skip(editor_ds, name, x, y, w, h, captured, cursor_inside,
                       store_obj, key_path, buffer_line, auto_open):
     """True when marker `name` is provably a NO-OP this frame, letting the
@@ -348,8 +357,8 @@ def _marker_idle_skip(editor_ds, name, x, y, w, h, captured, cursor_inside,
 
 def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                            line_px=20.0, node=None, span=None, root=None,
-                           line_offset=0, jump_to=None, cursor_line=None,
-                           cursor_col=None, **kwargs):
+                           line_offset=0, jump_to=None, sel_lo=None,
+                           sel_hi=None, **kwargs):
     """token_views overlay callback for CallParse nodes (plain function — the
     overlay pass calls it with raw screen coords, no render_func wrapper)."""
     if getattr(node, "func_name", None) != "live_view":
@@ -391,14 +400,15 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             token_cells = max(1, len(src_lines[span.start_line - 1].rstrip())
                               - span.start_col)
     pad = 2.0
-    # Caret containment in buffer space: span lines are parse-relative, so map
-    # through the parse→buffer bridge before comparing with the caret line.
+    # Selection predicate in buffer space: span lines are parse-relative,
+    # so map through the parse→buffer bridge before comparing with the
+    # editor's (line, col) selection bounds. The widget counts as "inside"
+    # only when its whole token lies within the selection - a bare caret
+    # (no selection) never shows the window.
     _lm = kwargs.get("line_map")
     _sl = _lm(span.start_line) if _lm else span.start_line
-    cursor_inside = (_sl is not None and cursor_line == _sl
-                     and cursor_col is not None
-                     and span.start_col <= cursor_col
-                     < span.start_col + token_cells)
+    cursor_inside = _token_in_selection(
+        _sl, span.start_col, span.start_col + token_cells, sel_lo, sel_hi)
     snap = live_values_for(store_obj)
     # Per-store name-map memo: the snapshot scan is O(store), and this runs
     # per visible call token per frame - a frame-snapshot store made that
@@ -687,13 +697,10 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # rect), then closes, and an unarmed latch made the close a no-op.
         # The latch resets itself once the focused caret leaves the symbol.
         ds._lv_cursor_dismissed = True
-        # Closing a live view DELETES its captured value: the window was the
-        # only reason to keep the tensor (the store entry + its loop
-        # accumulator, often hundreds of MB) resident - the next run
-        # republishes it anyway. Drops the key, its window/marker refs and
-        # the GL texture (_live_view._prune_keys → release_live_value).
+        # Closing a live view forgets its DATA (the loop accumulator + the
+        # tensor, often hundreds of MB) - the store keeps the marker with a
+        # rerun hint so the widget stays, and the next run refills it.
         _drop_captured_value(store_obj, key_path)
-        captured = False
     open_now = bool(getattr(ds, "_lv_open", False))
 
     # ── EDIT-PIN: engaging with a preview window's own UI latches it open.
@@ -928,7 +935,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             ds._lv_cursor_in = False
             cursor_inside = False
             ds.invalidate()
-            # The X on a caret-held preview deletes the value too (same
+            # The X on a caret-held preview parks the hint too (same
             # contract as the latched window above).
             _drop_captured_value(store_obj, key_path)
 
@@ -943,6 +950,15 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         if not getattr(win_ds, "_lv_released", False):
             win_ds._lv_released = True
             release_live_value(win_ds)
+            # A closed window no longer earns its stack: drop the key's
+            # accumulator and park the rerun hint in the store (the key
+            # stays, the marker stays green), severing the marker/window
+            # pins so nothing references the value any more.
+            try:
+                from src.lsd.gl_gui.view.core_conversion.live_view import park_rerun_hint
+                park_rerun_hint(store_obj, key_path)
+            except Exception as e:
+                print(f"live_view: park hint for {key_path} failed: {e!r}")
             try:
                 from src.lsd.gl_gui.gc_manager import release_cuda_cache_soon
                 release_cuda_cache_soon(label="live window close")
@@ -1019,7 +1035,17 @@ def release_live_value(ds, gl=True, keep_image=False):
         targets.extend(ds.descendants(max_depth=8))
     except Exception:
         pass
+    from src.lsd.gl_gui.view.core_views.core_render import release_input_refs
     for d in targets:
+        # The wrapper owns more refs than the obvious two: the offscreen
+        # blit stamps `_input_value_cache` (mark_start_offscreen) and the
+        # change detector keeps `_input_cache["external_state"]` - a closed
+        # value window kept a 13 GB stack alive via exactly those.
+        # release_input_refs is the wrapper's own complete list.
+        try:
+            release_input_refs(d)
+        except Exception:
+            pass
         for attr in _VALUE_ATTRS:
             if getattr(d, attr, None) is not None:
                 try:
@@ -1043,17 +1069,18 @@ def release_live_value(ds, gl=True, keep_image=False):
 
 
 def _drop_captured_value(store_obj, key_path):
-    """Delete one captured value from its store (the X-close contract): the
-    entry, its loop accumulator, label, watchers, and — via release_live_value
-    — the marker/window refs and GL texture. The marker stops rendering as
-    captured until the next run republishes the key."""
+    """Forget one captured value's DATA on X-close: the loop accumulator is
+    dropped, the store entry is swapped for the rerun hint, and every
+    marker/window pin + GL texture is severed (live_view.park_rerun_hint).
+    The KEY stays — the widget must keep rendering as captured so it can be
+    reopened; the next run with it open refills it."""
     if store_obj is None or key_path is None:
         return
     try:
-        from src.lsd.gl_gui.view.core_conversion.live_view import _prune_keys
-        _prune_keys(store_obj, [key_path])
+        from src.lsd.gl_gui.view.core_conversion.live_view import park_rerun_hint
+        park_rerun_hint(store_obj, key_path)
     except Exception as e:
-        print(f"live_view: drop {key_path} failed: {e!r}")
+        print(f"live_view: park hint for {key_path} failed: {e!r}")
     # The tensor is unreferenced now; hand its blocks back to the system so
     # the VRAM actually drops (allocator cache → empty_cache), off-thread.
     try:
@@ -1426,11 +1453,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             else:
                 end_col = start_col + max(1, len(name))
         pad = 2.0
-        # Caret containment: _ml is already buffer-space, as are the cursor
-        # box's - same test the call-token overlay does.
-        _cl, _cc = kwargs.get("cursor_line"), kwargs.get("cursor_col")
-        cursor_inside = (_cl == _ml and _cc is not None
-                         and start_col <= _cc < end_col)
+        # Selection containment: _ml is in buffer-space, cols are the
+        # boxed symbol span - same test the call-token overlay does.
+        cursor_inside = _token_in_selection(
+            _ml, start_col, end_col, kwargs.get("sel_lo"), kwargs.get("sel_hi"))
         _snm = (f"lvs::{fn.__qualname__}"
                 f"::{_skey_names.get(key_path) or _stable_key_name(key_path)}")
         _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
