@@ -2897,6 +2897,7 @@ def _fnrun_auto_exec_scan(editor_ds, editor_state, text, code_root):
     widget has registered — so auto-exec keeps firing while the def line
     is scrolled out of view. The def's last known display line seeds the
     extraction hint; its code root is refreshed from the editor's."""
+    editor_ds._fnrun_code_root = code_root      # for open-together (fresh tree)
     if editor_state is None or text is getattr(editor_ds, '_fnrun_scan_tv', None):
         return
     editor_ds._fnrun_scan_tv = text
@@ -2908,21 +2909,6 @@ def _fnrun_auto_exec_scan(editor_ds, editor_state, text, code_root):
             continue
         _fnrun_auto_exec_consider(editor_ds, editor_state, skey, ent, text,
                                   code_root, ent[5][4], ent[5][3])
-
-
-def _lines_subsequence(sub_text, full_text):
-    """True when every line of `sub_text` appears, in order, in `full_text`
-    — the buffer (folds spliced out) against the pending file text."""
-    full = full_text.split('\n')
-    i = 0
-    n = len(full)
-    for ln in sub_text.split('\n'):
-        while i < n and full[i] != ln:
-            i += 1
-        if i >= n:
-            return False
-        i += 1
-    return True
 
 
 def _fnrun_change_key(src):
@@ -3025,18 +3011,27 @@ def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
         return          # the edit didn't touch this def's signature
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     ptext = PendingSave.current_file_text(str(file_path))
-    buf_def = _fnrun_extract_def_text(tv_text, (def_disp_line or 0) + 1, def_name)
     pend_def = (_fnrun_extract_def_text(ptext, def_line, def_name)
                 if ptext is not None else None)
-    if (buf_def is None or pend_def is None
-            or not _lines_subsequence(buf_def[0], pend_def[0])):
-        # Pending doesn't carry this edit yet (the pending save channel
-        # is still behind it) - "has pending moved" is NOT enough: it may
-        # have already landed the PREVIOUS edit, and ignoring that would run
-        # one edit behind and never this current one. Poll until the
-        # buffer's def lines all appear, in order, in pending. (the buffer
-        # is display text with folded ranges spliced out, so subsequence,
-        # not equality). Bounded so a stuck channel can't poll forever.
+    # The key as it is NOW (not as armed - an open-to-save or an other
+    # edit since the arm would otherwise gate against stale text), and the
+    # editor's FULL buffer string, not the display text: display has
+    # signature ranges spliced out, so only the full text can be compared
+    # EXACTLY to pending. Exact equality is the only safe gate - the
+    # earlier "buffer lines are a subsequence of pending" passed on a
+    # stale pending after a DELETE (the remaining lines were all still
+    # there, in order) and ran the old code.
+    full = (getattr(editor_ds, '_kwargs', None) or {}).get('input_value')
+    if not isinstance(full, str):
+        full = tv_text
+    buf_def = _fnrun_extract_def_text(full, def_line, def_name)
+    if buf_def is None or pend_def is None or buf_def[0] != pend_def[0]:
+        # Pending doesn't carry this buffer yet (the deferred save channel
+        # is still behind it) — "has pending moved" is NOT enough: it may
+        # have just landed the PREVIOUS edit, and compiling that would run
+        # one edit behind and never revisit this one. Poll until pending's
+        # def lines equals the buffer's. Bounded so a stuck editor can't
+        # poll forever.
         now = time.monotonic()
         if ent[4] is None:
             ent[4] = now + 5.0
@@ -3087,6 +3082,10 @@ def fnrun_auto_run_on_open(editor_ds, store_obj):
     if state is None or not state.params_auto_execute.get(def_name):
         return
     ent[2] = None                       # "changed": the expiry runs now
+    ctx = list(ent[5])
+    ctx[1] = getattr(editor_ds, '_fnrun_code_root', ctx[1])   # current root
+    ent[5] = tuple(ctx)
+    ent[4] = None
     _fnrun_auto_exec_arm(editor_ds, state, skey, skey[0], def_name, ent, 0.2)
 
 
