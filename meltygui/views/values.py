@@ -8774,6 +8774,13 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         # through its normal path.
         _lroot = getattr(_pds, "live_root", None)
         if isinstance(_lroot, dict):
+            # Resolve against the editor's CURRENT root: the stamp is the
+            # marker's last render, and a reparse since (the window's def
+            # scrolled off the screen, say) orphaned it - a write into the
+            # orphan shows in the replay but never reaches the save.
+            from src.lsd.gl_gui.view.core_views.live_view_views import (
+                current_live_root)
+            _lroot = current_live_root(_pds)
             _lkey = getattr(_pds, "live_key", None)
             if isinstance(_lkey, str):
                 _lovs = _lroot.get("__overrides__")

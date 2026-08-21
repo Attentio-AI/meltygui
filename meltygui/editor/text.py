@@ -2073,37 +2073,60 @@ def _fnrun_extract_def(file_path, def_line, def_name):
 
 def _fnrun_extract_def_text(text, def_line, def_name):
     """_fnrun_extract_def over an explicit `text` (1-based `def_line` in
-    it) — the editor buffer, for callers whose truth is what's displayed."""
-    lines = text.split('\n')
-    pat = re.compile(rf'^(\s*)(?:async\s+)?def\s+{re.escape(def_name)}\b')
-    # `def_line` is a HINT, not an address: callers hand in disk-coordinate
-    # lines (co_firstlineno, the widget's _usage_off mapping) while `text`
-    # is usually the PENDING buffer, and unsaved edits above the def shift
-    # the two apart by any amount. A ±5 probe (the old rule) missed as soon
-    # as more than five lines were deleted above the def - and the caller
-    # then fell back to the LIVE module function, silently running the
-    # pre-edit code. Scan every same-named def and take the nearest.
-    hit = None
-    best = None
-    for cand, ln in enumerate(lines):
-        m = pat.match(ln)
-        if m is None:
-            continue
-        d = abs(cand - (def_line - 1))
-        if best is None or d < best:
-            best = d
-            hit = (cand, len(m.group(1)))
-    if hit is None:
-        return None
-    start, indent = hit
-    end = start + 1
-    while end < len(lines):
-        ln = lines[end]
-        if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+    it) — the editor buffer, for callers whose truth is what's displayed.
+
+    `def_line` is a HINT, not an address: callers hand in disk-coordinate
+    lines (co_firstlineno, the widget's _usage_off mapping) while `text`
+    is usually the PENDING buffer, and unsaved edits above the def shift
+    the two apart by any amount; the nearest same-named def wins. Cost is
+    O(file) only in C (a compiled regex scan for the def headers + one
+    newline count to the chosen one) plus O(def) in Python for the block —
+    never a whole-file split: this runs per keystroke."""
+    hits = []
+    needle = "def " + def_name
+    pos = 0
+    n = len(text)
+    while True:
+        off = text.find(needle, pos)
+        if off < 0:
             break
-        end += 1
-    return ("\n".join(l[indent:] if len(l) >= indent else l
-                      for l in lines[start:end]), start)
+        pos = off + 1
+        end = off + len(needle)
+        if end < n and (text[end].isalnum() or text[end] == '_'):
+            continue                        # longer name sharing the prefix
+        head = off
+        if text.startswith("async ", max(0, off - 6)) and off >= 6:
+            head = off - 6
+        ls = text.rfind('\n', 0, head) + 1
+        if text[ls:head].strip():
+            continue                        # not at the start of its line
+        hits.append((ls, head - ls))        # (line start offset, indent)
+    if not hits:
+        return None
+    if len(hits) == 1:
+        off, indent = hits[0]
+    else:
+        # Nearest header to the hint line: rank by line distance, which
+        # needs each hit's line - newline counts up to each hit are C-speed.
+        want = max(0, def_line - 1)
+        off, indent = min(hits, key=lambda h: abs(text.count('\n', 0, h[0])
+                                                   - want))
+    start = text.count('\n', 0, off)
+    out = []
+    pos = off
+    n = len(text)
+    first = True
+    while pos < n:
+        nl = text.find('\n', pos)
+        if nl < 0:
+            nl = n
+        ln = text[pos:nl]
+        if not first and ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+            break
+        out.append(ln[indent:] if len(ln) >= indent else ln)
+        first = False
+        pos = nl + 1
+    return "\n".join(out), start
 
 
 # (resolved file, def name) -> (src_key, fn): the last pending-def compile,
@@ -2797,46 +2820,94 @@ def _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
         return _key_of(tv_text, (def_disp_line or 0) + 1)
 
     # entry = [tv_text_seen, deadline, buf_baseline, (unused), give_up_at,
-    #         ctx]. The baseline is the BUFFER key (display text, folds
-    # spliced out); pending is checked by line-subsequence at expiry (see
-    # _fnrun_auto_exec_fire). ctx = the def's coordinates as of the last
-    # arm, for the expiry task (which runs OUTSIDE the widget).
+    #         armed ctx, pending-check ctx]. The baseline is the change key
+    # (display text with folds spliced out); pending is checked by
+    # line-subsequence at expiry (_fnrun_auto_exec_fire). Both ctx tuples
+    # carry the text + coordinates for the render-thread stages, which run
+    # OUTSIDE the widget.
     ent = watch.get(skey)
     if ent is None:
         _k0 = _buf_key()
         watch[skey] = [tv_text, None, _k0, None, None,
                        (_k0, code_root, def_buf_line, def_line, def_disp_line,
-                        tv_text)]
+                        tv_text), None]
         return
     if status is not None:
         # A run just finished (inline button / panel): the text it
         # saw is the new baseline; don't chase it with another run.
         ent[2] = _buf_key()
         ent[1] = None
-    if ent[0] is tv_text:
+    _fnrun_auto_exec_consider(editor_ds, editor_state, skey, ent, tv_text,
+                              code_root, def_disp_line, def_line)
+
+
+def _fnrun_auto_exec_consider(editor_ds, editor_state, skey, ent, text,
+                              code_root, def_disp_line, def_line):
+    """Note a possibly-changed buffer for one registered def. Shared by the
+    def widget and the editor-level scan (_fnrun_auto_exec_scan) — the
+    widget only renders while the def line is in the viewport, so the scan
+    keeps auto-exec alive once the user scrolls away. RENDER-THREAD COST:
+    one identity test, and on a new text object one Timer start — the def
+    extraction + change key run on that timer (_fnrun_auto_exec_check), so
+    a keystroke never pays O(def) tokenizing inside draw_text."""
+    if ent[0] is text:
         return
-    ent[0] = tv_text
-    # Identity change is not an edit: the editor hands out several distinct
-    # text objects for the same content across consecutive frames (fold /
-    # chain rebuilds), and re-arming on each kept pushing the deadline out
-    # so the debounce never expired. Arm only when the def's change key
-    # (comments/whitespace/literal defaults excluded) differs from what
-    # was last armed or run.
-    _nk = _buf_key()
-    if _nk is None or _nk == ent[2] or _nk == (ent[5] or (None,))[0]:
+    ent[0] = text
+    ent[6] = (text, code_root, def_disp_line, def_line)
+    import threading as _thr
+    pt = getattr(editor_ds, '_fnrun_check_timer', None)
+    if pt is not None:
+        pt.cancel()
+    t = _thr.Timer(0.02, _fnrun_auto_exec_check,
+                   args=(editor_ds, editor_state, skey, ent))
+    t.daemon = True
+    editor_ds._fnrun_check_timer = t
+    t.start()
+
+
+def _fnrun_auto_exec_check(editor_ds, editor_state, skey, ent):
+    """Timer thread: did the def's CODE change? Identity alone is not an
+    edit (the editor hands out several text objects for one content across
+    frames; arming on each pushed the deadline forever) — compare the
+    change key against what was last run or armed, and only then arm the
+    debounce. A newer buffer supersedes this check (ent[0] moved on)."""
+    try:
+        text, code_root, def_disp_line, def_line = ent[6]
+    except (TypeError, ValueError):
         return
-    # Fresh buffer: (re)arm the trailing window. Everything past here runs
-    # from a timer, posted to the render thread (Melty.post_to_render) -
-    # NOT from a per widget run. The widget only runs when the editor tile
-    # repaints, and a wake that never requests a frame leaves the tile
-    # cached (the expiry never came until the next keystroke); doing the
-    # check and run in the posted task needs no repaint at all.
+    if ent[0] is not text:
+        return
+    got = _fnrun_extract_def_text(text, (def_disp_line or 0) + 1, skey[1])
+    if got is None:
+        return
+    nk = _fnrun_change_key(got[0])
+    if nk == ent[2] or nk == (ent[5] or (None,))[0]:
+        return
     from src.lsd.gl_gui.toggles import Toggles
     dbc = Toggles.TextEditor.fnrun_auto_exec_edit_debounce_ms / 1000.0
     ent[4] = None
-    ent[5] = (_nk, code_root, def_buf_line, def_line, def_disp_line, tv_text)
-    _fnrun_auto_exec_arm(editor_ds, editor_state, skey, file_path, def_name,
+    ent[5] = (nk, code_root, got[1] + 1, def_line, got[1], text)
+    _fnrun_auto_exec_arm(editor_ds, editor_state, skey, skey[0], skey[1],
                          ent, dbc)
+
+
+def _fnrun_auto_exec_scan(editor_ds, editor_state, text, code_root):
+    """Editor-body hook, once per render: ONE identity test in steady
+    state; on a changed buffer, _fnrun_auto_exec_consider for each def the
+    widget has registered — so auto-exec keeps firing while the def line
+    is scrolled out of view. The def's last known display line seeds the
+    extraction hint; its code root is refreshed from the editor's."""
+    if editor_state is None or text is getattr(editor_ds, '_fnrun_scan_tv', None):
+        return
+    editor_ds._fnrun_scan_tv = text
+    watch = getattr(editor_ds, '_fnrun_edit_watch', None)
+    if not watch:
+        return
+    for skey, ent in list(watch.items()):
+        if ent[5] is None or not editor_state.params_auto_execute.get(skey[1]):
+            continue
+        _fnrun_auto_exec_consider(editor_ds, editor_state, skey, ent, text,
+                                  code_root, ent[5][4], ent[5][3])
 
 
 def _lines_subsequence(sub_text, full_text):
@@ -2913,9 +2984,10 @@ def _fnrun_prebaseline_splices(editor_ds, skey, tv_text, def_disp_line,
 
 def _fnrun_auto_exec_arm(editor_ds, editor_state, skey, file_path, def_name,
                          ent, delay):
-    """Schedule the auto-execute expiry check `delay` seconds out; the
-    timer posts `_fire` onto the render thread (same thread as the inline
-    play button's run path). Re-arming cancels the previous timer."""
+    """Schedule the auto-execute expiry check `delay` seconds out on a
+    timer thread (_fnrun_auto_exec_fire does the pending gate there and
+    posts only the run to the render thread). Re-arming cancels the
+    previous timer."""
     import threading as _thr
     deadline = time.monotonic() + delay
     ent[1] = deadline
@@ -2927,36 +2999,30 @@ def _fnrun_auto_exec_arm(editor_ds, editor_state, skey, file_path, def_name,
     pt = getattr(editor_ds, '_fnrun_edit_timer', None)
     if pt is not None:
         pt.cancel()
-    t = _thr.Timer(max(delay, 0.01), lambda: Melty.post_to_render(_fire))
-    t.daemon = True
+    t = _thr.Timer(max(delay, 0.01), _fire)      # timer thread; the run
+    t.daemon = True                               # alone is posted to render
     editor_ds._fnrun_edit_timer = t
     t.start()
 
 
 def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
                           ent, deadline):
-    """Expiry of the auto-execute debounce (render thread). Superseded
-    timers (a newer arm moved the deadline) and a meanwhile-toggled-off Auto
-    Execute are no-ops. Compares the buffer key against its baseline (did
-    THIS def change?), then waits until PendingSave carries the buffer's def
-    lines (150 ms re-arms, ≤5 s) before compiling — the compile reads
-    pending, never a stale generation."""
+    """Expiry of the auto-execute debounce (TIMER THREAD — string work
+    only; the run is posted to the render thread). Superseded timers (a
+    newer arm moved the deadline) and a meanwhile-toggled-off Auto Execute
+    are no-ops. The armed change key is compared against the baseline (did
+    THIS def change?), then the fire waits until PendingSave carries the
+    buffer's def lines (150 ms re-arms, ≤5 s) before compiling — the
+    compile reads pending, never a stale generation."""
     if ent[1] != deadline or ent[5] is None:
         return
     if not editor_state.params_auto_execute.get(def_name):
         return
     _armed_key, code_root, def_buf_line, def_line, def_disp_line, tv_text = ent[5]
-
-    def _key_of(text, line1):
-        got = _fnrun_extract_def_text(text, line1, def_name)
-        if got is None:
-            return None
-        return _fnrun_change_key(got[0])
-
     ent[1] = None
-    key = _key_of(tv_text, (def_disp_line or 0) + 1)
+    key = _armed_key
     if key is None or key == ent[2]:
-        return          # unparseable, or the edit didn't touch this def
+        return          # the edit didn't touch this def's signature
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     ptext = PendingSave.current_file_text(str(file_path))
     buf_def = _fnrun_extract_def_text(tv_text, (def_disp_line or 0) + 1, def_name)
@@ -2979,24 +3045,28 @@ def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
                                  def_name, ent, 0.15)
         return
     ent[2] = key
-    statuses = getattr(editor_ds, '_fnrun_status', None)
-    if statuses is None:
-        statuses = editor_ds._fnrun_status = {}
-    fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
-    if fn is None:
-        statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
-                                 f"found in live modules or source", 'live')
-    else:
-        ok, err = _fnrun_run(fn, instrumented=True,
-                             params=_fnrun_params_from_node(
-                                 _fnrun_def_node_for(
-                                     editor_ds, skey, code_root,
-                                     def_name, def_buf_line, tv_text)))
-        statuses[skey] = (('ok', Melty.frame_count, 'live') if ok
-                          else ('err', err, 'live'))
-        _fnrun_after_live_run(editor_ds)
-    editor_ds.invalidate()
-    request_render()
+
+    def _run():
+        statuses = getattr(editor_ds, '_fnrun_status', None)
+        if statuses is None:
+            statuses = editor_ds._fnrun_status = {}
+        fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
+        if fn is None:
+            statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
+                                     f"found in live modules or source", 'live')
+        else:
+            ok, err = _fnrun_run(fn, instrumented=True,
+                                 params=_fnrun_params_from_node(
+                                     _fnrun_def_node_for(
+                                         editor_ds, skey, code_root,
+                                         def_name, def_buf_line, tv_text)))
+            statuses[skey] = (('ok', Melty.frame_count, 'live') if ok
+                              else ('err', err, 'live'))
+            _fnrun_after_live_run(editor_ds)
+        editor_ds.invalidate()
+        request_render()
+
+    Melty.post_to_render(_run)
 
 
 def fnrun_auto_run_on_open(editor_ds, store_obj):
@@ -12432,6 +12502,10 @@ def draw_text(input_value: str, height=None,
     # drag doesn't grow a text selection. Scroll/edit invalidations re-run the
     # body, so the rects track the screen pixels the user actually sees.
     ds._plain_tv_rects = []
+    # Auto-exec edit watch for defs whose widget is scrolled out of view:
+    # one identity test per render (see _fnrun_auto_exec_scan).
+    _fnrun_auto_exec_scan(ds, text_editor_state, text,
+                          code_dict if code_dict is not None else code_tree)
     for token, color_key in tokens:
         if color_key == 'clipped':
             # Off-screen stretch on a visible line (see _window_tokens band):

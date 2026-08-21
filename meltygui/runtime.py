@@ -2714,6 +2714,14 @@ class Melty:
         # kwargs, exactly like a fresh wrapper call.
         _lr = draw_state.__dict__.get('live_root')
         _lk = draw_state.__dict__.get('live_key')
+        if isinstance(_lr, dict) and draw_state.__dict__.get('_lv_locator') is not None:
+            # The stamp is only as fresh as the marker's last render; a
+            # re-save since replaced the tree. Resolve the owner against the
+            # editor's CURRENT tree (memoized per tree on the ds) so the
+            # replay splats the values the save will read, not the orphan's.
+            from src.lsd.gl_gui.view.core_views.live_view_views import (
+                current_live_root)
+            _lr = current_live_root(draw_state)
         if isinstance(_lr, dict) and _lk:
             _ca = _lr.get("__overrides__", {}).get(f"__{_lk}__")
             if isinstance(_ca, dict):

@@ -251,6 +251,118 @@ def _override_owner(scope_node, lookup_key):
     return scope_node
 
 
+def _is_def_parse(node, def_name):
+    cst_node = node.get("__cst__") if isinstance(node, dict) else None
+    return (type(cst_node).__name__ == "FunctionDef"
+            and getattr(getattr(cst_node, "name", None), "value", None) == def_name)
+
+
+def _find_def_node(tree, def_name, near_line):
+    """The def parse named `def_name` in `tree` (a module or span parse).
+    Module-level defs are a direct key lookup; otherwise (methods, nested
+    defs) a plain dict walk, and when the name repeats (same-named methods
+    on two classes) the one whose span starts nearest `near_line`. The
+    caller memoizes per tree."""
+    direct = tree.get(def_name) if isinstance(tree, dict) else None
+    if _is_def_parse(direct, def_name):
+        return direct
+    best, best_d = None, None
+    stack, seen = [tree], set()
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if _is_def_parse(node, def_name):
+            sp = getattr(node, "span", None)
+            d = abs((getattr(sp, "start_line", 0) or 0) - (near_line or 0))
+            if best is None or d < best_d:
+                best, best_d = node, d
+        for v in node.values():
+            if isinstance(v, dict):
+                stack.append(v)
+    return best
+
+
+def _host_held_tree(node):
+    """The tree the owning code host CURRENTLY holds — the one its chain_out
+    serializes — reached from ANY generation of the site's dict: every
+    parse dict keeps `_bubble_root` (the dict RenderHost) after a reparse
+    orphans it, and the host's `_held()` is the live tree. None when the
+    node isn't host-backed (tests, plain parses)."""
+    root = getattr(node, "_bubble_root", None)
+    held = getattr(root, "_held", None)
+    if callable(held):
+        try:
+            cur = held()
+        except Exception:
+            return None
+        if isinstance(cur, dict):
+            return cur
+    return None
+
+
+def current_live_root(ds):
+    """The dict that owns a live site's `# [...]` comment, resolved against
+    the tree the code host CURRENTLY holds — for the marker's own comment
+    splat, set_anywhere's `# [<key>]` source row, and the replayed window's
+    comment re-splat in Melty.draw.
+
+    Why not the stamped `live_root` (or the editor's code_dict kwarg): every
+    reparse (incremental merges included) REPLACES the def dict, its block
+    dicts and their __overrides__. The marker re-stamps only when it renders
+    (an open window whose def is scrolled off-viewport is pruned whole by
+    the overlay walk), and the editor's code_dict is whatever the cached
+    tabs body last captured from the host — both lag the host's held tree
+    by an arbitrary number of frames. A panel edit then wrote into an
+    orphan: the replay re-splatted the value from it (the UI moved), the
+    host serialized its OWN tree without it, and the next fresh render
+    handed the window the real tree — the value snapped back and
+    anywhere_value's cross-check fired ("settled at 1, not the TensorDim(3)
+    that was set"), most often when one write's round trip overlapped the
+    next write. Resolving through the host puts the write where the save
+    reads, whatever the editor happens to be showing.
+
+    Anchor: the stamped dict's `_bubble_root` → host → `_held()`; the
+    editor's code_dict/code_tree is the fallback when the site isn't
+    host-backed, then the stamp itself. Memoized per tree on the ds (tree
+    identity + its `source` str — the content-free change signal) and kept
+    across renders, so the def lookup runs once per reparse per ds."""
+    d = ds.__dict__
+    stamped = d.get("live_root")
+    loc = d.get("_lv_locator")
+    if loc is None:
+        return stamped
+    editor_ds, def_name, def_line = loc
+    tree = _host_held_tree(stamped)
+    if tree is None and editor_ds is not None:
+        # draw_text params (auto-state markers): the spanned node tree
+        # rides code_dict on the non-host route (code_tree rides the error
+        # dict case) and code_tree on all chain routes.
+        ed = editor_ds.__dict__
+        tree = ed.get("code_dict")
+        if not isinstance(tree, dict):
+            tree = ed.get("code_tree")
+    if not isinstance(tree, dict):
+        return stamped
+    src = getattr(tree, "source", None)
+    cache = d.get("_lv_owner_cache")
+    if (cache is not None and cache[0] is tree
+            and (src is None or cache[1] is src)):
+        return cache[2]
+    node = _find_def_node(tree, def_name, def_line)
+    scope = node.get("locals") if isinstance(node, dict) else None
+    key = d.get("live_key")
+    owner = stamped
+    if isinstance(scope, dict) and isinstance(key, str):
+        owner = _override_owner(scope, key)
+        if owner is not stamped:
+            # Keep the stamp fresh for anything still reading it raw.
+            object.__setattr__(ds, "live_root", owner)
+    object.__setattr__(ds, "_lv_owner_cache", (tree, src, owner))
+    return owner
+
+
 # First-spawn size estimates for the display clamps below: the real size
 # only exists after the window's first render (the spawn must pass it).
 # Height: voxel/value windows both land in this size. Width: matches
@@ -519,7 +631,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                           corner_radius=4.0, value=None,
                           left_mouse_double_clicked=False,
                           cursor_inside=False, editor_ds=None,
-                          buffer_line=None, unique=0, **kwargs):
+                          buffer_line=None, def_node=None, unique=0, **kwargs):
     """The live-view token widget — draw_bool_token's pattern plus one extra
     call, draw_any(value, mode=WINDOW). `value` is the captured value (None +
     captured=False while the site hasn't run); the window call just forwards
@@ -602,12 +714,30 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     comment_args = {}
     lookup_key = None
     live_root = code_tree_node
+    _locator = None
     if key_path:
         tail = str(key_path[-1])
         lookup_key = (tail.split("#", 1)[1]
                       if tail.startswith("line:") and "#" in tail else tail)
     if isinstance(code_tree_node, dict) and lookup_key:
         live_root = _override_owner(code_tree_node, lookup_key)
+        # Locator for current_live_root (def name + start line, the editor
+        # ds only as a fallback during readers), stamped BEFORE the comment
+        # read so this render's own splat also resolves through the code
+        # host's held tree - `code_tree_node` is whatever the cached tabs
+        # body last captured and can lag a reparse by frames.
+        _dcst = def_node.get("__cst__") if isinstance(def_node, dict) else None
+        _dname = getattr(getattr(_dcst, "name", None), "value", None)
+        _locator = None
+        if _dname:
+            _dspan = getattr(def_node, "span", None)
+            _locator = (editor_ds, _dname, getattr(_dspan, "start_line", 0) or 0)
+        object.__setattr__(ds, "live_root", live_root)
+        object.__setattr__(ds, "live_key", lookup_key)
+        object.__setattr__(ds, "_lv_locator", _locator)
+        _resolved = current_live_root(ds)
+        if isinstance(_resolved, dict):
+            live_root = _resolved
         _ov = live_root.get("__overrides__")
         _ca = _ov.get(f"__{lookup_key}__") if isinstance(_ov, dict) else None
         if isinstance(_ca, dict):
@@ -675,6 +805,14 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # lookup, so line-keyed sites find their statement entry too.
     ds.live_root = live_root
     ds.live_key = lookup_key
+    # Locator for current_live_root (stamped first, before the comment
+    # read): readers that run while this marker ISN'T rendering (replayed
+    # window, set_anywhere from its panel) resolve the owner dict through
+    # the code host's held tree instead of the stamp, which every reparse
+    # orwrites. The owner memo (_lv_owner_dict) is keyed on tree identity
+    # and therefore survives renders - the def lookup runs once per
+    # reparse, not once per frame.
+    object.__setattr__(ds, "_lv_locator", _locator)
 
     auto_open = comment_args.get("auto_open", auto_open)
 
@@ -925,6 +1063,12 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # after a root_draw_states re-dispatch).
         win_ds.live_root = live_root
         win_ds.live_key = ds.live_key
+        # Same contract as the marker's (see current_live_root): the window
+        # outlives this render - its replay re-splat and its panel's
+        # set_anywhere must not trust a stamped tree a reparse may have
+        # replaced since; they resolve through the host's held tree (memo
+        # keyed by host identity, so it self-refreshes on every reparse).
+        object.__setattr__(win_ds, "_lv_locator", _locator)
         # The window's dispatch (Melty.draw, root_draw_states) re-reads
         # the CURRENT value for this key from the store, so a publish while
         # this marker is culled off-viewport still swaps the window's tensor
@@ -1528,7 +1672,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             height=line_px + 2 * pad,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
             cursor_inside=cursor_inside, editor_ds=draw_state,
-            buffer_line=_ml - 1, name=_snm, auto_open=_sao)
+            buffer_line=_ml - 1, name=_snm, auto_open=_sao,
+            def_node=node)
     # TEMP perf: one line per slow enough pass (keys=store size for this
     # def, culled=off-viewport, idle=fast-id skips, drawn=full wrapper calls).
     _soms = (time.perf_counter() - _sot0) * 1000.0
