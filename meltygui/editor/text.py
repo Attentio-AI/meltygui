@@ -8247,44 +8247,80 @@ def _scope_fold_ranges(text):
     return out, default_col, key_of
 
 
+def _fold_splice_shift(old_text, new_text):
+    """Range shifter for the single covering splice old_text -> new_text:
+    (shift, exact, d_lines). shift(r) maps an old (start, end) fold tuple
+    into new-text line coords; exact(r) says whether that mapping's START
+    line is provably right for r. Identity (and exact) when the texts are
+    equal or the edit changed no line count.
+
+    _text_splice is PREFIX-greedy, so an edit touching the boundary of a
+    blank-line run is attributed to the line BELOW the run — which can be
+    a fold header:
+    - a pure INSERTION whose char position sits at/before the start of its
+      attributed line TRANSLATES a fold starting on that line (its header
+      moved down) instead of stretching over it — stretching there
+      swallowed the header into the hidden body (the caret-jumps-into-
+      collapsed-fold mangle; _fold_reassemble resolves the same ambiguity
+      suffix-first, and the two must agree);
+    - a DELETION / replacement whose old region ends exactly at a line
+      start leaves that line whole: it TRANSLATES up by the lines removed
+      above it (blank lines deleted right above a collapsed comment run —
+      the stretch rule kept the header index, sliding the fold onto the
+      run's SECOND line, which still passed the '#' check: two comment
+      lines showed until the quiet rescan).
+    Anything else whose header line lies inside the edit's line span while
+    the line count changed is NOT exact: the header may have moved, been
+    joined, or died — callers must rescan rather than guess."""
+    spl = _text_splice(old_text, new_text)
+    if spl is None or not spl[3]:
+        return (lambda r: r), (lambda r: True), 0
+    p, oe, _d, dl, el, oel = spl
+    ols = _line_starts(old_text)
+    ins_at_line_start = p == oe and el < len(ols) and p <= ols[el]
+    del_to_line_start = p < oe and oel < len(ols) and oe == ols[oel]
+
+    def translated(r):
+        return (r[0] > oel or (ins_at_line_start and r[0] >= el)
+                or (del_to_line_start and r[0] >= oel))
+
+    def shift(r):
+        if r[1] < el:
+            return r
+        if translated(r):
+            return (r[0] + dl, r[1] + dl)
+        return (r[0], max(r[0], r[1] + dl))
+
+    def exact(r):
+        return r[1] < el or r[0] < el or translated(r)
+
+    return shift, exact, dl
+
+
 def _fold_carry(old_text, new_text, scan_result, collapsed_keys):
     """Carry a held _scope_fold_ranges result across one edit without
     rescanning: shift the range tuples through the edit's single covering
-    splice (fold KEYS are line-independent and never move). Returns the
-    shifted (ranges, default_col, key_of) — or None when the carry can't be
-    trusted and the caller must run the real scan.
+    splice (_fold_splice_shift; fold KEYS are line-independent and never
+    move). Returns the shifted (ranges, default_col, key_of) — or None when
+    the carry can't be trusted and the caller must run the real scan:
 
-    - _text_splice is PREFIX-greedy, so a newline inserted in front of a
-      blank-line run is attributed to the line BELOW the run — which can be
-      a fold header. A pure insertion whose char position sits at/before the
-      start of its attributed line therefore TRANSLATES a fold starting on
-      that line (its header moved down) instead of stretching over it —
-      stretching there swallowed the header into the hidden body (the
-      caret-jumps-into-collapsed-fold mangle; _fold_reassemble resolves the
-      same ambiguity suffix-first, and the two must agree).
+    - a COLLAPSED fold whose header line sits inside a line-count-changing
+      edit without a provable translation (see _fold_splice_shift) — the
+      shifted range would hide the wrong lines;
     - Verification: every COLLAPSED fold's carried header line must still
       look like its key (def/class name for scopes, '#' for comment runs,
       the exact opening line for strings, an import for the block). Any
-      mismatch — a seam edit, an ambiguity this shift rule doesn't model —
+      mismatch — a seam edit, an ambiguity the shift rules don't model —
       returns None: correctness is the scan's job; the carry only skips it
       when provably safe. Expanded folds aren't checked (a wrong range there
       hides nothing; the trailing rescan corrects it)."""
     ranges, dcol, key_of = scan_result
-    spl = _text_splice(old_text, new_text)
-    if spl is not None and spl[3]:
-        p, oe, _d, dl, el, oel = spl
-        ins_at_line_start = False
-        if p == oe:                     # pure insertion
-            ols = _line_starts(old_text)
-            ins_at_line_start = el < len(ols) and p <= ols[el]
-
-        def shift(r):
-            if r[1] < el:
-                return r
-            if r[0] > oel or (ins_at_line_start and r[0] >= el):
-                return (r[0] + dl, r[1] + dl)
-            return (r[0], max(r[0], r[1] + dl))
-
+    shift, exact, dl = _fold_splice_shift(old_text, new_text)
+    if dl:
+        if collapsed_keys:
+            _ck = set(collapsed_keys)
+            if any(k in _ck and not exact(r) for r, k in key_of.items()):
+                return None
         key_of = {shift(r): k for r, k in key_of.items()}
         ranges = [shift(r) for r in ranges]
         dcol = [shift(r) for r in dcol]
@@ -8321,6 +8357,37 @@ def _fold_carry(old_text, new_text, scan_result, collapsed_keys):
                 if hline != k[1]:
                     return None
     return ranges, dcol, key_of
+
+
+def _fold_rekey(old_text, old_scan, new_text, new_scan, keys):
+    """Carry collapse KEYS across a rescan that may have re-identified the
+    folds. A key names a fold by its header text (comment runs, strings) or
+    its name path (scopes, blocks), so an edit to a COLLAPSED fold's header
+    line — a # [tint=...] value drag on a comment run's first line, a def
+    rename, typing at a collapsed header's end — minted a new key, the old
+    one projected to nothing, and the fold popped open (only when the edit
+    hit the FIRST line of the run: body-line edits kept the key — the
+    "sometimes" in the report). Each key's old range is shifted through
+    the edit (_fold_splice_shift) and matched to the new scan's fold that
+    starts on the same line with the same kind; a match adopts the new key
+    (range identity beats name identity — an identical run pasted above
+    re-numbers the duplicates, and the collapsed one must stay the
+    collapsed one). Anything else keeps its old key: still valid, or an
+    orphan that re-projects when its fold reappears (undo). Returns the
+    remapped set; `keys` itself is never mutated."""
+    if not keys:
+        return keys
+    old_range_of = {k: r for r, k in old_scan[2].items()}
+    by_start = {(r[0], k[0]): k for r, k in new_scan[2].items()}
+    shift, exact, _dl = _fold_splice_shift(old_text, new_text)
+    out = set()
+    for k in keys:
+        r = old_range_of.get(k)
+        nk = None
+        if r is not None and exact(r):
+            nk = by_start.get((shift(r)[0], k[0]))
+        out.add(k if nk is None else nk)
+    return out
 
 
 def _string_neutral_ranges(ds, text, ranges):
@@ -8717,8 +8784,23 @@ def draw_text(input_value: str, height=None,
                 ds._scope_rng_cache = _sc
                 _sc_hit = True
         if not _sc_hit or (_sc[3] and not _typing_hot()):
-            _sc = (input_value, _scope_fold_ranges(input_value),
-                   _FOLD_SEED_VER, False)
+            _new_sc = (input_value, _scope_fold_ranges(input_value),
+                       _FOLD_SEED_VER, False)
+            if _sc_ok and getattr(ds, '_fold_keys', None):
+                # The rescan may have re-identified folds (a collapsed
+                # comment block's header line edited by a value drag / typing,
+                # a def renamed): move each collapse key onto its fold range
+                # now range where its fold landed, or the fold pops open the
+                # moment the scan lands (see _fold_rekey). Against the
+                # held entry - the old text, not the splice-carried
+                # provisional (same text, old keys) on the trailing rescan.
+                ds._fold_keys = _fold_rekey(_sc[0], _sc[1], input_value,
+                                            _new_sc[1], ds._fold_keys)
+                if getattr(ds, '_fold_search_exp_keys', None):
+                    ds._fold_search_exp_keys = _fold_rekey(
+                        _sc[0], _sc[1], input_value, _new_sc[1],
+                        ds._fold_search_exp_keys)
+            _sc = _new_sc
             ds._scope_rng_cache = _sc
         if _sc[3]:
             request_render()   # provisional: the trailing rescan needs a frame
