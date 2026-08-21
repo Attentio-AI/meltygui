@@ -58,6 +58,7 @@ value window's dim_names.
 
 import ast
 import inspect
+import itertools
 import sys
 import threading
 import time
@@ -520,6 +521,109 @@ def watch(store_obj, key_path, draw_state, first_only=False):
         pass
 
 
+_PUBLISH_GEN = itertools.count(1)
+
+
+def _stamp_publish_gen(value):
+    """Stamp a monotonic publish generation on a tensor-like value
+    (`_lv_pub`). Views that cache work per source (the voxel / line-graph
+    volume uploads) key on it next to `id()`/`_version`: a fresh run's
+    tensor is routinely allocated at the SAME id as the generation just
+    released at run start (`_release_store_generation` frees it first), and
+    `_version` starts at 0 for both — an identity-only key then hits the
+    cache and shows the previous run's texture. No invalidation involved:
+    the key changes exactly when a new value was published. Values that
+    refuse attributes (ndarrays, scalars) are left alone."""
+    try:
+        if hasattr(value, "shape") and hasattr(value, "__dict__"):
+            value._lv_pub = next(_PUBLISH_GEN)
+    except Exception:
+        pass
+
+
+def publish_gen(value):
+    """The `_lv_pub` stamp of a published value (0 when unstamped) — fold
+    into any per-source cache key beside id()/_version."""
+    try:
+        return int(getattr(value, "_lv_pub", 0) or 0)
+    except Exception:
+        return 0
+
+
+# Largest line distance a re-key may span: an edit shifts a site by the
+# lines it inserted/deleted above it - a same-named assignment further away
+# is a different site.
+REKEY_MAX_SHIFT = 12
+
+
+def _adopt_rekeyed(store_obj, key_path, store):
+    """If `key_path` is new to the store while an UNTOUCHED (this run)
+    same-label `line:N#name` key sits within REKEY_MAX_SHIFT lines, that
+    key is this site's previous generation: move its entry — value,
+    accumulator, label, dim names, both watcher sets, frame-snapshot
+    membership — under `key_path`. Nearest line wins; only during an active
+    run (a touched set exists) so a second same-named site is never
+    mistaken for a re-key outside the publish sequence."""
+    if key_path in store:
+        return
+    label = _key_label(key_path)
+    if label is None:
+        return
+    try:
+        d = vars(store_obj)
+    except TypeError:
+        return
+    touched = d.get("__live_touched__")
+    if touched is None:
+        return
+    line = _key_line(key_path)
+    best = None
+    for k in tuple(store):
+        if k in touched or _key_label(k) != label or len(k) != len(key_path):
+            continue
+        kl = _key_line(k)
+        if kl is None or line is None:
+            continue
+        dist = abs(kl - line)
+        if dist > REKEY_MAX_SHIFT or (best is not None and dist >= best[0]):
+            continue
+        best = (dist, k)
+    if best is None:
+        return
+    old = best[1]
+    for attr in ("__live_values__", "__live_accum__", "__live_labels__",
+                 "__live_dim_names__", "__live_watchers__",
+                 "__live_first_watchers__"):
+        m = d.get(attr)
+        if not m or old not in m:
+            continue
+        try:
+            ent = m.pop(old)
+        except (KeyError, RuntimeError):
+            continue
+        if key_path in m and attr in ("__live_watchers__",
+                                      "__live_first_watchers__"):
+            try:
+                m[key_path].update(ent)
+            except Exception:
+                m[key_path] = ent
+        else:
+            m[key_path] = ent
+    snaps = d.get("__frame_snapshot_keys__")
+    if snaps and old in snaps:
+        snaps.discard(old)
+        snaps.add(key_path)
+
+
+def _key_line(key_path):
+    """The line of a `line:N#name` key path's last segment, else None."""
+    tail = key_path[-1] if isinstance(key_path, tuple) and key_path else key_path
+    if not isinstance(tail, str) or not tail.startswith("line:"):
+        return None
+    num = tail[5:].partition("#")[0]
+    return int(num) if num.isdigit() else None
+
+
 def rerun_hint(store_obj, key_path):
     """The placeholder a loop site holds while nothing shows it."""
     label = (vars(store_obj).get("__live_labels__") or {}).get(key_path)
@@ -572,9 +676,39 @@ def has_visible_widget(store_obj, key_path):
             win = getattr(ds, "_lv_window_ds", None)
             if win is not None and not getattr(win, "closed", False):
                 return True
+        # Re-keyed site: an edit above the line moved `line:N#name` to
+        # `line:M#name`, and the run publishes the new key before its
+        # (name-keyed, still open) marker has re-rendered and re-watched
+        # it. Nothing is registered under the new key yet, but the window
+        # is right there: treat an open window under any same-named key
+        # as watching (two same-named sites may over-accumulate for one
+        # run; the data loss the other way was the real cost).
+        label = _key_label(key_path)
+        if label is not None:
+            for k, targets in tuple(watchers.items()):
+                if k is key_path or _key_label(k) != label:
+                    continue
+                try:
+                    targets = tuple(targets or ())
+                except RuntimeError:
+                    return True
+                for ds in targets:
+                    win = getattr(ds, "_lv_window_ds", None)
+                    if win is not None and not getattr(win, "closed", False):
+                        return True
     except (AttributeError, TypeError):
         pass
     return False
+
+
+def _key_label(key_path):
+    """The token name of a `line:N#name` key path (its last segment), else
+    None — the line-free identity a site keeps across re-keys."""
+    tail = key_path[-1] if isinstance(key_path, tuple) and key_path else key_path
+    if not isinstance(tail, str) or not tail.startswith("line:"):
+        return None
+    _, sep, name = tail.partition("#")
+    return name if sep else None
 
 
 _last_wake = 0.0
@@ -719,6 +853,13 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     if label:
         vars(site.store_obj).setdefault("__live_labels__", {})[
             site.key_path] = label
+    # Re-keyed site (an edit above it moved `line:N#name` to `line:M#name`):
+    # rename the OLD key's entry in place before this first publish, so the
+    # two generations never coexist - the marker/window names (ordinal
+    # among same-label keys), the watcher sets, the accumulator and the
+    # value all carry over, the end-of-run pass sees nothing removed, and
+    # nothing needs invalidating beyond this key's own publish.
+    _adopt_rekeyed(site.store_obj, site.key_path, store)
     # A loop site accumulates: the store holds the growing stack/list, the
     # raw per-iteration value only feeds the type recorder below. Must run
     # BEFORE the touched.add - "key not yet touched this run" is how the
@@ -764,6 +905,7 @@ def _publish(site, value, name, bare, dims=None, idx=None):
         _release_key_watchers(site.store_obj, site.key_path)
     # The value is stored RAW - a single object assignment, atomic under the
     # GIL, so the rendering thread always reads either the old or new value.
+    _stamp_publish_gen(display)
     store[site.key_path] = display
     # Run-scope liveness: while a run_capture is active for this store,
     # every published key is recorded so the run's exit can prune the rest
@@ -1204,6 +1346,62 @@ def _release_key_watchers(store_obj, key_path):
                 pass
 
 
+def _retained_markers(store_obj, store, removed):
+    """ids of watcher draw_states (markers) of `removed` keys that must keep
+    their window: the marker still serves a SURVIVING key. Two tests, either
+    suffices:
+      - identity: the same ds is registered under a surviving key (the
+        marker rendered since the re-key and re-watched);
+      - stable name: the removed key's line-free name (label + ordinal
+        among same-label keys, the convention marker/window names already
+        use — live_view_views._stable_key_names) is also the name of a
+        surviving key. Old-generation names rank over removed ∪ survivors
+        that already have watchers (keys published before this run);
+        new-generation names over the survivors — so an in-def shift of
+        every `hidden` site keeps every `hidden` window.
+    Markers are name-keyed (`lvs::fn::hidden#1`), so a site that moved
+    lines comes back as the SAME draw_state — nothing to hand over."""
+    keep = set()
+    removed_set = set(removed)
+    survivors = [k for k in store if k not in removed_set]
+    if not survivors:
+        return keep
+    watcher_maps = []
+    for attr in ("__live_watchers__", "__live_first_watchers__"):
+        w = getattr(store_obj, attr, None)
+        if w:
+            watcher_maps.append(w)
+
+    def _targets(k):
+        out = []
+        for w in watcher_maps:
+            try:
+                out.extend(tuple(w.get(k) or ()))
+            except RuntimeError:
+                pass
+        return out
+
+    surviving_ds = set()
+    old_gen = list(removed_set)
+    for k in survivors:
+        t = _targets(k)
+        if t:
+            surviving_ds.update(id(d) for d in t)
+            old_gen.append(k)
+    try:
+        from src.lsd.gl_gui.view.core_views.live_view_views import (
+            _stable_key_names)
+        old_names = _stable_key_names(old_gen)
+        new_names = set(_stable_key_names(survivors).values())
+    except Exception:
+        old_names, new_names = {}, set()
+    for k in removed:
+        for d in _targets(k):
+            if id(d) in surviving_ds or old_names.get(k) in new_names:
+                keep.add(id(d))
+    return keep
+
+
 def _prune_untouched(store_obj, touched):
     """Drop every store key not in `touched` — run_capture's whole-store sweep.
     The per-key removal mechanics live in _prune_keys (shared with the frame-
@@ -1226,6 +1424,21 @@ def _prune_keys(store_obj, removed):
     if not store or not removed:
         return
     labels = getattr(store_obj, "__live_labels__", None)
+    # Line shifts: keys are line-anchored (`line:N#name`), so an edit that
+    # inserts/removes a line above a site re-keys it - the old key lands
+    # here as "removed" while the SAME assignment republished under
+    # `line:M#name`, served by the SAME name-keyed marker. Its window must
+    # survive (see _retained_markers); only markers whose site is really
+    # gone are closed.
+    keep = _retained_markers(store_obj, store, removed)
+    # One-time cleanup of the (temporary) parking lot: windows parked
+    # under __live_window_handoff__ were never adopted and sat orphaned.
+    try:
+        for _w in (vars(store_obj).pop("__live_window_handoff__", None)
+                   or {}).values():
+            _w.closed = True
+    except Exception:
+        pass
     for key in removed:
         store.pop(key, None)
         if labels:
@@ -1243,6 +1456,14 @@ def _prune_keys(store_obj, removed):
             except RuntimeError:
                 targets = ()
             for ds in targets:
+                if id(ds) in keep:
+                    # The same marker (name-stable: line stripped, ordinal
+                    # among same-label keys) still serves a surviving key -
+                    # the site moved lines, it didn't go away. Its window
+                    # stays open and pinned; the marker re-watches the new
+                    # key on its next render (an open window keeps it out
+                    # of _marker_idle_skip).
+                    continue
                 win = getattr(ds, "_lv_window_ds", None)
                 if win is not None:
                     try:

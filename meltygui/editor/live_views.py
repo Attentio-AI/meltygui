@@ -69,6 +69,9 @@ def _store_name(obj):
     return getattr(obj, "__qualname__", None) or getattr(obj, "__name__", "?")
 
 
+_NO_VALUE = object()     # "window has received no value yet" sentinel
+
+
 def _display_key(key):
     """Human title for one key-path element: a `line:N#name` key (frame
     snapshots / twin_snap stamps) reads as its token name, not the line
@@ -893,6 +896,19 @@ def draw_live_view_marker(input_value=None, draw_state=None,
             # identity; the wrapper restamps _view_func per call, so the
             # body still re-routes by the value type.
             win_kwargs["draw_state"] = win_ds
+            # NEW VALUE → repaint, exactly once per publish: the window is a
+            # deferred nested root, so this call only restamps its kwargs;
+            # the publish's own invalidation (_notify_watchers, during the
+            # run) will arrive BEFORE this marker re-renders; the window
+            # repaints on the new input, and a restamped kwargs is
+            # not itself a dirty signal: the window then held its last
+            # frame (voxels) or the run-start None ("No view for type")
+            # until something else triggered it. Gate on identity: an
+            # unchanged value never invalidates.
+            if (getattr(win_ds, "_raw_input_value", _NO_VALUE) is not value
+                    and win_ds._tile_id is not None):
+                Core.melty.cache.invalidate_up(win_ds._tile_id, force=True,
+                                              max_depth=8)
         _c, _v, win_ds = draw_any(value, **(win_kwargs | comment_args))
         # Showstop: if the framework still handed back a different ds
         # (a path that ignores the pinned draw_state), close the replaced

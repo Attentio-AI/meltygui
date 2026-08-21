@@ -1148,10 +1148,42 @@ _L_NAME_RE = re.compile(r"[A-Za-z_]\w*")
 _L_CODE_SPLIT_RE = re.compile(r'#.*$')
 
 
+def _string_end(ln, j):
+    """(end, open_quote) for the string literal opening at ln[j] (a quote
+    char): `end` is the index just past it, honouring backslash escapes;
+    `open_quote` is None when it closes on this line, else the quote the
+    literal continues with on the next line (a triple, or a plain quote
+    left unterminated mid-edit)."""
+    q = ln[j]
+    if ln.startswith(q * 3, j):
+        e = ln.find(q * 3, j + 3)
+        return (len(ln), q * 3) if e == -1 else (e + 3, None)
+    k = j + 1
+    n = len(ln)
+    while k < n:
+        c = ln[k]
+        if c == "\\":
+            k += 2
+            continue
+        if c == q:
+            return k + 1, None
+        k += 1
+    return n, q
+
+
 def _code_part(line):
-    """The line without a trailing comment (strings with '#' are rare on
-    binding lines; acceptable)."""
-    return _L_CODE_SPLIT_RE.sub("", line)
+    """The line without a trailing comment — string-aware, so a '#' inside
+    a literal (`prompt="# [tint=...]"`) doesn't truncate the code."""
+    j, n = 0, len(line)
+    while j < n:
+        c = line[j]
+        if c == "#":
+            return line[:j]
+        if c in "\"'":
+            j, _open = _string_end(line, j)
+            continue
+        j += 1
+    return line
 
 
 def _signature_params(lines, i):
@@ -1169,12 +1201,29 @@ def _signature_params(lines, i):
     piece_start = None        # (line_idx, col) of the first non-space char of the piece
     li, j, ln = i, p + 1, first
     guard = 0
+    open_q = None             # quote of a string literal spanning lines
     while li < len(lines) and guard < 400:
         guard += 1
+        if open_q is not None:
+            e = ln.find(open_q)
+            if e == -1:
+                li += 1
+                if li < len(lines):
+                    ln = lines[li]
+                continue
+            j = e + len(open_q)
+            open_q = None
         while j < len(ln):
             ch = ln[j]
             if ch == "#":
                 break                       # rest of line is a comment
+            if ch in "\"'":
+                # A default value's string literal: skip it, so a '#',
+                # bracket or comma inside it can't end the walk or change depth.
+                if piece_start is None and depth == 0:
+                    piece_start = (li, j)
+                j, open_q = _string_end(ln, j)
+                continue
             if ch in "([{":
                 depth += 1
             elif ch in ")]}":

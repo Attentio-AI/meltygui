@@ -578,6 +578,16 @@ class Toggles:
         # keystroke. 0 = sync immediately. Read live.
         fnrun_text_sync_debounce_ms = 400
 
+        # Trailing debounce (ms) on Auto Execute's CODE-EDIT trigger: with
+        # a def and Auto Execute on, an edit to the def's text (body, params,
+        # annotations - literal defaults excluded, the panel path already
+        # runs those) recompiles + instrument-runs it once typing has been
+        # quiet this long. Re-armed per keystroke; the trigger reads
+        # PendingSave, so expiry waits (short retries) for the deferred
+        # save channel to carry the edit. 0 = run on every buffer change
+        # that reaches pending. Read live.
+        fnrun_auto_exec_edit_debounce_ms = 700
+
         # Incremental cst→dict conversion: when a previous good parse exists,
         # re-convert only the changed top-level statements and splice them
         # into the held parse + module cst (cst_dict_incremental_update) -

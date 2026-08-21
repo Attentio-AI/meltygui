@@ -1270,6 +1270,16 @@ def _draw_slice_sliders(draw_state, slider_dims, dim_names, slices, source_shape
             request_render()
 
 
+def source_identity(src):
+    """Cache identity of a tensor source: id + in-place version + the live
+    publish generation (live_view._stamp_publish_gen). id()/_version alone
+    collide across runs — the released previous generation's address is
+    reused by the next run's tensor, _version 0 on both — and the cached
+    texture of the OLD run was served for the new value."""
+    from src.lsd.gl_gui.view.core_conversion.live_view import publish_gen
+    return (id(src), getattr(src, "_version", 0), publish_gen(src))
+
+
 def _cached_volume_texture(gl_state, vol_key, keys=("volume_cuda", "volume", "cuda_view")):
     """The already-uploaded volume texture for `vol_key`, or None. Checks
     both upload paths (interop CudaVolume wraps its GLTexture as .texture);
@@ -2127,7 +2137,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # the params that decide the volume (the effective nf_* after
         # auto-flow); the volume-derived facts (mapping, source_shape,
         # clamp_note) ride the cached texture. ─────────────────────────
-        vol_key = ((id(src), getattr(src, "_version", 0)), dim_names,
+        vol_key = (source_identity(src), dim_names,
                    str(x_dim), str(y_dim), str(z_dim), slices, mean_dims,
                    int(sort_dim), bool(normalize), bool(nf_on), str(nf_chop),
                    str(nf_along), int(nf_chunk), nf_pad, use_cuda)

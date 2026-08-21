@@ -55,6 +55,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 # TensorDims / Lut route to the same pickers), the same dtype coercion, the
 # same LUTs, the same error drawing / notice / footprint helpers.
 from src.lsd.gl_gui.view.playground.voxel_playground import (
+    source_identity,
     LUTS, Lut, TensorDim, TensorDims, _LUT_TEXTURES, _clean_dim_name,
     _describe_tensor, _draw_image_notice, _draw_voxel_error, _ensure_host,
     _resolve_dim, _tick_values, _view_size, demo_4d, demo_5d, to_display_dtype,
@@ -409,7 +410,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         # Cache gate BEFORE any tensor work (same fix as draw_voxels): the
         # slice / finite-range / pack are whole-tensor passes; on a hit the
         # metadata rides the cached texture exactly like a GLTexture input.
-        vol_key = ((id(src), getattr(src, "_version", 0)), dim_names,
+        vol_key = (source_identity(src), dim_names,
                    str(x_dim), str(line_dim), slices, mean_dims,
                    bool(normalize), int(max_lines))
         tex = _cached_volume_texture(gl_state, vol_key, keys=("series_cuda", "series"))
@@ -454,7 +455,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
             notes.append(f"{n_samples}+ samples exceed the GL texture budget; "
                          f"showing the first {h3 * w3}")
         clamp_note = "; ".join(notes) if notes else None
-        version = ((id(src), getattr(src, "_version", 0)), mapping, slices,
+        version = (source_identity(src), mapping, slices,
                    mean_dims, bool(normalize), n_lines, tuple(vol.shape))
         tex = None
         try:

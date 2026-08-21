@@ -31,6 +31,22 @@ _MONO_TUI_RANGE: Tuple[int, ...] = (
 )
 
 
+# Default glyph ranges for every non-merged font. imgui's own default is
+# Latin-only (0x0020-0x00FF), which leaves U+2026 "..." (elisions, "dot..."),
+# en/em dashes, smart quotes, arrows and the geometric bullets rendering
+# as "?" all over the app. DejaVu Sans and JetBrains Mono cover all of
+# these; the atlas grows by a few hundred glyphs per font. Trailing 0
+# terminates the list.
+_UI_RANGE: Tuple[int, ...] = (
+    0x0020, 0x00FF,  # Basic Latin + Latin-1 Supplement
+    0x2010, 0x2027,  # general punctuation (dashes, smart quotes, ellipsis)
+    0x2190, 0x21FF,  # arrows
+    0x25A0, 0x25FF,  # geometric shapes (● ◯ ▶ ▪)
+    0x2600, 0x27BF,  # misc symbols + dingbats (  )
+    0,
+)
+
+
 @dataclass(frozen=True)
 class FontSpec:
     path: str
@@ -197,8 +213,14 @@ class FontManager:
                     pixel_snap_h=True,
                 )
             try:
-                if spec.glyph_ranges is not None:
-                    ranges = imgui.GlyphRanges(list(spec.glyph_ranges))
+                # Merged (icon) fonts use their explicit range; base fonts
+                # without one get _UI_RANGE instead of imgui's Latin-only
+                # default (see the comment on _UI_RANGE).
+                glyph_ranges = spec.glyph_ranges
+                if glyph_ranges is None and not spec.merge:
+                    glyph_ranges = _UI_RANGE
+                if glyph_ranges is not None:
+                    ranges = imgui.GlyphRanges(list(glyph_ranges))
                     handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg, ranges)
                 else:
                     handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg)

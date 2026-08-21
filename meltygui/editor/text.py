@@ -2068,18 +2068,31 @@ def _fnrun_extract_def(file_path, def_line, def_name):
     text = PendingSave.current_file_text(str(file_path))
     if text is None:
         return None
+    return _fnrun_extract_def_text(text, def_line, def_name)
+
+
+def _fnrun_extract_def_text(text, def_line, def_name):
+    """_fnrun_extract_def over an explicit `text` (1-based `def_line` in
+    it) — the editor buffer, for callers whose truth is what's displayed."""
     lines = text.split('\n')
     pat = re.compile(rf'^(\s*)(?:async\s+)?def\s+{re.escape(def_name)}\b')
+    # `def_line` is a HINT, not an address: callers hand in disk-coordinate
+    # lines (co_firstlineno, the widget's _usage_off mapping) while `text`
+    # is usually the PENDING buffer, and unsaved edits above the def shift
+    # the two apart by any amount. A ±5 probe (the old rule) missed as soon
+    # as more than five lines were deleted above the def - and the caller
+    # then fell back to the LIVE module function, silently running the
+    # pre-edit code. Scan every same-named def and take the nearest.
     hit = None
-    for probe in range(0, 6):
-        for cand in (def_line - 1 + probe, def_line - 1 - probe):
-            if 0 <= cand < len(lines):
-                m = pat.match(lines[cand])
-                if m:
-                    hit = (cand, len(m.group(1)))
-                    break
-        if hit is not None:
-            break
+    best = None
+    for cand, ln in enumerate(lines):
+        m = pat.match(ln)
+        if m is None:
+            continue
+        d = abs(cand - (def_line - 1))
+        if best is None or d < best:
+            best = d
+            hit = (cand, len(m.group(1)))
     if hit is None:
         return None
     start, indent = hit
@@ -2247,14 +2260,32 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
         # The namespace holds only imports that LIVE when executed - a def typed
         # alongside a new import needs that import exec'd here now.
         _fnrun_ensure_imports(ns, file_path)
+        # Pad the (dedented) block back to its DISK start line so the
+        # compiled function is COORDINATE-TRUE in the convention everything
+        # else speaks: co_firstlineno = DISK coords (the in-session
+        # truth - hotswapped module functions keep it, the live_view
+        # instrumenter bridges disk → pending itself via _stamp_delta, and
+        # the published `line:N#name` store keys are disk-anchored too).
+        # Padding to the PENDING line instead (as this did) shifted every
+        # key this twin published by the unsaved delta above the def, so a
+        # run from here and a run of the live function alternated key
+        # sets - each run re-keyed every site, closing (or mis-anchoring)
+        # every open live-value store. A block compiled at line 1 is just
+        # as wrong the other way (the instrumenter fell back to an
+        # un-instrumented run). Two passes: the delta is defined at a disk
+        # line, which we only know after travers above it once.
+        disk0 = start0
         try:
-            # Pad the (dedented) block down to its real pending line so the
-            # resulting code is COORDINATE-TRUE: instrumented_twin re-reads
-            # the def's source from the file/pending text at co_firstlineno -
-            # a block compiled at line 1 pointed it at the top-of-file
-            # imports and it silently fell back to an un-instrumented run
-            # (no live view).
-            exec(compile("\n" * start0 + src, str(file_path), 'exec'), ns)
+            from src.lsd.gl_gui.view.core_conversion.live_instrument import (
+                _delta_above, _pending_gen)
+            if _pending_gen(str(file_path)):
+                _d = _delta_above(str(file_path), start0 + 1)
+                _d = _delta_above(str(file_path), max(1, start0 - _d + 1))
+                disk0 = max(0, start0 - _d)
+        except Exception:
+            disk0 = start0
+        try:
+            exec(compile("\n" * disk0 + src, str(file_path), 'exec'), ns)
         except Exception:
             return None
         fn = ns.get(def_name)
@@ -2722,6 +2753,249 @@ def _fnrun_after_live_run(editor_ds):
     request_render()
 
 
+def _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
+                             def_line, def_name, code_root, def_buf_line,
+                             tv_text, def_disp_line, status):
+    """Auto Execute's CODE-EDIT channel (the panel's param-edit channel is
+    draw_fnrun_params_panel): while the def's Auto Execute is on, an edit to
+    the def's own text recompiles and instrument-runs it — once, at the
+    trailing edge of a typing burst.
+
+    Per widget run: a fresh editor buffer (tv_text identity — the cheap
+    signal, never a content compare) arms a per-def deadline; a one-shot
+    timer posts the expiry check to the render thread (_fnrun_auto_exec_fire
+    — independent of whether the editor tile repaints). At expiry
+    the def's source is extracted from the BUFFER (tv_text at
+    def_disp_line — the truth the user sees) and reduced to _fnrun_src_key
+    with LITERAL defaults masked and no line pin — so the run fires for
+    body/param/annotation edits of THIS def only: edits elsewhere in the
+    file, line shifts from above, and the panel's own default splices
+    (already run) all compare equal. The compile reads PendingSave, which
+    the deferred save channel fills BEHIND the buffer, so the run waits
+    (150 ms polls, ≤5 s) until every buffer line of the def appears in
+    order in pending's (the buffer is display text with folds spliced out,
+    so subsequence, not equality) — never compiles a stale generation. Any run observed this frame (`status` — inline or panel)
+    refreshes the baseline without running, and the baseline is first
+    taken silently, so toggling Auto Execute on or opening the file never
+    runs by itself."""
+    if editor_state is None or tv_text is None or not def_name:
+        return
+    if not editor_state.params_auto_execute.get(def_name):
+        editor_ds.__dict__.get('_fnrun_edit_watch', {}).pop(skey, None)
+        return
+    watch = getattr(editor_ds, '_fnrun_edit_watch', None)
+    if watch is None:
+        watch = editor_ds._fnrun_edit_watch = {}
+
+    def _key_of(text, line1):
+        got = _fnrun_extract_def_text(text, line1, def_name)
+        if got is None:
+            return None
+        return _fnrun_change_key(got[0])
+
+    def _buf_key():
+        return _key_of(tv_text, (def_disp_line or 0) + 1)
+
+    # entry = [tv_text_seen, deadline, buf_baseline, (unused), give_up_at,
+    #         ctx]. The baseline is the BUFFER key (display text, folds
+    # spliced out); pending is checked by line-subsequence at expiry (see
+    # _fnrun_auto_exec_fire). ctx = the def's coordinates as of the last
+    # arm, for the expiry task (which runs OUTSIDE the widget).
+    ent = watch.get(skey)
+    if ent is None:
+        watch[skey] = [tv_text, None, _buf_key(), None, None, None]
+        return
+    if status is not None:
+        # A run just finished (inline button / panel): the text it
+        # saw is the new baseline; don't chase it with another run.
+        ent[2] = _buf_key()
+        ent[1] = None
+    if ent[0] is tv_text:
+        return
+    ent[0] = tv_text
+    # Identity change is not an edit: the editor hands out several distinct
+    # text objects for the same content across consecutive frames (fold /
+    # chain rebuilds), and re-arming on each kept pushing the deadline out
+    # so the debounce never expired. Arm only when the def's change key
+    # (comments/whitespace/literal defaults excluded) differs from what
+    # was last armed or run.
+    _nk = _buf_key()
+    if _nk is None or _nk == ent[2] or _nk == (ent[5] or (None,))[0]:
+        return
+    # Fresh buffer: (re)arm the trailing window. Everything past here runs
+    # from a timer, posted to the render thread (Melty.post_to_render) -
+    # NOT from a per widget run. The widget only runs when the editor tile
+    # repaints, and a wake that never requests a frame leaves the tile
+    # cached (the expiry never came until the next keystroke); doing the
+    # check and run in the posted task needs no repaint at all.
+    from src.lsd.gl_gui.toggles import Toggles
+    dbc = Toggles.TextEditor.fnrun_auto_exec_edit_debounce_ms / 1000.0
+    ent[4] = None
+    ent[5] = (_nk, code_root, def_buf_line, def_line, def_disp_line, tv_text)
+    _fnrun_auto_exec_arm(editor_ds, editor_state, skey, file_path, def_name,
+                         ent, dbc)
+
+
+def _lines_subsequence(sub_text, full_text):
+    """True when every line of `sub_text` appears, in order, in `full_text`
+    — the buffer (folds spliced out) against the pending file text."""
+    full = full_text.split('\n')
+    i = 0
+    n = len(full)
+    for ln in sub_text.split('\n'):
+        while i < n and full[i] != ln:
+            i += 1
+        if i >= n:
+            return False
+        i += 1
+    return True
+
+
+def _fnrun_change_key(src):
+    """What "the def changed" means for Auto Execute: the def's source
+    canonicalized through the tokenizer with COMMENTS dropped and token
+    spacing normalized. So a comment edit (`# [tint=…]` included — those
+    are read live) or re-spacing within a line never triggers a recompile;
+    everything else does — body/signature/annotation/name edits, a default
+    TYPED into the signature (the params panel's own splices are
+    pre-baselined by _apply_splices, so they don't double-run), and line
+    changes (blank lines added/removed: NL tokens are kept — a line shift
+    re-keys the live sites below it, and the rerun is what re-publishes
+    them). Indentation survives as INDENT/DEDENT tokens. Falls back to the
+    raw text when the source doesn't tokenize (mid-edit)."""
+    import io
+    import tokenize
+    parts = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            t = tok.type
+            if t in (tokenize.COMMENT, tokenize.ENCODING, tokenize.ENDMARKER):
+                continue
+            if t in (tokenize.NEWLINE, tokenize.NL):
+                parts.append("\n")
+            elif t == tokenize.INDENT:
+                parts.append("\x01")
+            elif t == tokenize.DEDENT:
+                parts.append("\x02")
+            else:
+                parts.append(tok.string + " ")
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return src
+    return "".join(parts)
+
+
+def _fnrun_prebaseline_splices(editor_ds, skey, tv_text, def_disp_line,
+                               def_name):
+    """The params panel just queued signature splices for a def whose run
+    it already triggered: move the Auto Execute baseline to the text AS IT
+    WILL READ once the splices land, so the edit-watcher doesn't see the
+    landed splice as a fresh edit and run the def a second time."""
+    watch = getattr(editor_ds, '_fnrun_edit_watch', None)
+    ent = watch.get(skey) if watch else None
+    if ent is None:
+        return
+    text = tv_text
+    try:
+        for start, length, new in sorted(
+                editor_ds.__dict__.get('_fnrun_splices', ()),
+                key=lambda t: -t[0]):
+            text = text[:start] + new + text[start + length:]
+        got = _fnrun_extract_def_text(text, (def_disp_line or 0) + 1, def_name)
+    except Exception:
+        return
+    if got is not None:
+        ent[2] = _fnrun_change_key(got[0])
+        ent[1] = None            # cancel any pending expiry for the old text
+
+
+def _fnrun_auto_exec_arm(editor_ds, editor_state, skey, file_path, def_name,
+                         ent, delay):
+    """Schedule the auto-execute expiry check `delay` seconds out; the
+    timer posts `_fire` onto the render thread (same thread as the inline
+    play button's run path). Re-arming cancels the previous timer."""
+    import threading as _thr
+    deadline = time.monotonic() + delay
+    ent[1] = deadline
+
+    def _fire():
+        _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path,
+                              def_name, ent, deadline)
+
+    pt = getattr(editor_ds, '_fnrun_edit_timer', None)
+    if pt is not None:
+        pt.cancel()
+    t = _thr.Timer(max(delay, 0.01), lambda: Melty.post_to_render(_fire))
+    t.daemon = True
+    editor_ds._fnrun_edit_timer = t
+    t.start()
+
+
+def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
+                          ent, deadline):
+    """Expiry of the auto-execute debounce (render thread). Superseded
+    timers (a newer arm moved the deadline) and a meanwhile-toggled-off Auto
+    Execute are no-ops. Compares the buffer key against its baseline (did
+    THIS def change?), then waits until PendingSave carries the buffer's def
+    lines (150 ms re-arms, ≤5 s) before compiling — the compile reads
+    pending, never a stale generation."""
+    if ent[1] != deadline or ent[5] is None:
+        return
+    if not editor_state.params_auto_execute.get(def_name):
+        return
+    _armed_key, code_root, def_buf_line, def_line, def_disp_line, tv_text = ent[5]
+
+    def _key_of(text, line1):
+        got = _fnrun_extract_def_text(text, line1, def_name)
+        if got is None:
+            return None
+        return _fnrun_change_key(got[0])
+
+    ent[1] = None
+    key = _key_of(tv_text, (def_disp_line or 0) + 1)
+    if key is None or key == ent[2]:
+        return          # unparseable, or the edit didn't touch this def
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    ptext = PendingSave.current_file_text(str(file_path))
+    buf_def = _fnrun_extract_def_text(tv_text, (def_disp_line or 0) + 1, def_name)
+    pend_def = (_fnrun_extract_def_text(ptext, def_line, def_name)
+                if ptext is not None else None)
+    if (buf_def is None or pend_def is None
+            or not _lines_subsequence(buf_def[0], pend_def[0])):
+        # Pending doesn't carry this edit yet (the pending save channel
+        # is still behind it) - "has pending moved" is NOT enough: it may
+        # have already landed the PREVIOUS edit, and ignoring that would run
+        # one edit behind and never this current one. Poll until the
+        # buffer's def lines all appear, in order, in pending. (the buffer
+        # is display text with folded ranges spliced out, so subsequence,
+        # not equality). Bounded so a stuck channel can't poll forever.
+        now = time.monotonic()
+        if ent[4] is None:
+            ent[4] = now + 5.0
+        if now < ent[4]:
+            _fnrun_auto_exec_arm(editor_ds, editor_state, skey, file_path,
+                                 def_name, ent, 0.15)
+        return
+    ent[2] = key
+    statuses = getattr(editor_ds, '_fnrun_status', None)
+    if statuses is None:
+        statuses = editor_ds._fnrun_status = {}
+    fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
+    if fn is None:
+        statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
+                                 f"found in live modules or source", 'live')
+    else:
+        ok, err = _fnrun_run(fn, instrumented=True,
+                             params=_fnrun_params_from_node(
+                                 _fnrun_def_node_for(
+                                     editor_ds, skey, code_root,
+                                     def_name, def_buf_line, tv_text)))
+        statuses[skey] = (('ok', Melty.frame_count, 'live') if ok
+                          else ('err', err, 'live'))
+        _fnrun_after_live_run(editor_ds)
+    editor_ds.invalidate()
+    request_render()
+
+
 @render_func(show_bg=False, shadow=False, with_header=None, show_name=False,
              use_cache=False, selectable=False, is_tree=False)
 def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
@@ -2935,10 +3209,22 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                                         def_name, def_buf_line, tv_text)
         _params_node = (_def_node.get('parameters')
                         if isinstance(_def_node, dict) else None)
-    if _params_node is None:
-        if _pp_want:
+    # DISPLAYED-node latch (also read further down): the background reparse
+    # rebuilds the tree mid-typing, so the node handed to the panel is held
+    # across frames and only advanced quieting.
+    _shown_map = getattr(editor_ds, '_fnrun_shown_nodes', None)
+    if _shown_map is None:
+        _shown_map = editor_ds._fnrun_shown_nodes = {}
+    if _params_node is None and _pp_want:
+        # Transient miss - the cst tree is mid-rebuild after an edit (a
+        # newline shifting the def used to land here every time), or a
+        # held/failed parse. Keep the panel up on the node it last showed;
+        # closing is the USER's act (toggle click / header X), never a
+        # parse hiccup's. Only a def with no node ever seen closes.
+        _params_node = _shown_map.get(skey)
+        if _params_node is None:
             _pp_vis[def_name] = False
-        _pp_want = False
+            _pp_want = False
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
         from src.lsd.gl_gui.view.mode import Mode
@@ -2957,9 +3243,6 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         # second, undebounced channel into the panel. Hold the last shown
         # node and hand THAT to the panel; the swap to the current node
         # happens only in the debounce-expiry branch below.
-        _shown_map = getattr(editor_ds, '_fnrun_shown_nodes', None)
-        if _shown_map is None:
-            _shown_map = editor_ds._fnrun_shown_nodes = {}
         _shown = _shown_map.get(skey)
         if _shown is None:
             _shown = _shown_map[skey] = _params_node
@@ -3006,6 +3289,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                 editor_ds.__dict__.setdefault('_fnrun_splices', []).append(
                     (_sp[0], _sp[1] - _sp[0], _new_src))
                 _params_node[_pk] = _pv
+            _fnrun_prebaseline_splices(editor_ds, skey, tv_text, def_disp_line,
+                                       def_name)
             editor_ds.invalidate()
             request_render()
 
@@ -3125,6 +3410,9 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                                               max_depth=8)
                     request_render()
                 _shown_map[skey] = _params_node
+    _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
+                             def_line, def_name, code_root, def_buf_line,
+                             tv_text, def_disp_line, status)
     if hovered and status is not None and status[0] == 'err' and status[1]:
         # Error readout beside the button - draw-list text, hover-only (the
         # hover-edge invalidation above repaints it in and out).
