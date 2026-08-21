@@ -2803,7 +2803,10 @@ def _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
     # arm, for the expiry task (which runs OUTSIDE the widget).
     ent = watch.get(skey)
     if ent is None:
-        watch[skey] = [tv_text, None, _buf_key(), None, None, None]
+        _k0 = _buf_key()
+        watch[skey] = [tv_text, None, _k0, None, None,
+                       (_k0, code_root, def_buf_line, def_line, def_disp_line,
+                        tv_text)]
         return
     if status is not None:
         # A run just finished (inline button / panel): the text it
@@ -2994,6 +2997,27 @@ def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
         _fnrun_after_live_run(editor_ds)
     editor_ds.invalidate()
     request_render()
+
+
+def fnrun_auto_run_on_open(editor_ds, store_obj):
+    """A live-value window was opened BY THE USER (marker double-click /
+    gutter) on a def with Auto Execute on: request the routine auto-run —
+    clear the def's baseline and arm the same expiry an edit would, so it
+    recompiles + runs (coalesced by the arm's timer) and the window fills
+    instead of showing the parked rerun hint. No-op until the def widget
+    has registered the def (its line rendered once this session)."""
+    def_name = getattr(store_obj, "__name__", None)
+    watch = getattr(editor_ds, '_fnrun_edit_watch', None) or {}
+    skey, ent = next(((k, e) for k, e in watch.items() if k[1] == def_name),
+                     (None, None))
+    if ent is None or ent[5] is None:
+        return
+    state = next((v for v in (getattr(editor_ds, "misc", None) or {}).values()
+                  if hasattr(v, "params_auto_execute")), None)
+    if state is None or not state.params_auto_execute.get(def_name):
+        return
+    ent[2] = None                       # "changed": the expiry runs now
+    _fnrun_auto_exec_arm(editor_ds, state, skey, skey[0], def_name, ent, 0.2)
 
 
 @render_func(show_bg=False, shadow=False, with_header=None, show_name=False,

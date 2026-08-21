@@ -824,6 +824,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if hovered and imgui.is_mouse_double_clicked(0):
         open_now = not open_now
         ds._lv_open = open_now
+        if open_now:
+            _auto_run_on_user_open(editor_ds, store_obj)
         if open_now and win_ds is not None:
             # Reopening: snap the window back to the LEFT of the editor
             # window (it may have been dragged onto the code). The window's
@@ -1106,6 +1108,18 @@ def _drop_captured_value(store_obj, key_path):
         pass
 
 
+def _auto_run_on_user_open(editor_ds, store_obj):
+    """User opened a value window: with Auto Execute on for the def, the
+    def widget recompiles + runs so the window fills (text_editor.
+    fnrun_auto_run_on_open — coalesced there). Never raises."""
+    try:
+        from src.lsd.gl_gui.view.core_views.text_editor import (
+            fnrun_auto_run_on_open)
+        fnrun_auto_run_on_open(editor_ds, store_obj)
+    except Exception as e:
+        print(f"live_view: auto-run on open failed: {e!r}")
+
+
 def set_marker_open(marker_ds, open_):
     """Gutter-button entry point: latch a marker's value window open/closed
     from OUTSIDE the marker body (raw draw-list button, no render_func).
@@ -1120,6 +1134,9 @@ def set_marker_open(marker_ds, open_):
         return
     marker_ds._lv_open = open_
     win_ds = getattr(marker_ds, "_lv_window_ds", None)
+    if open_:
+        _auto_run_on_user_open(getattr(marker_ds, "_lv_editor_ds", None),
+                               (getattr(marker_ds, "_kwargs", None) or {}).get("store_obj"))
     if open_ and win_ds is not None:
         # Clear the window's stale closed flag NOW: this latch is set from
         # OUTSIDE the marker body (the gutter runs after a close left
