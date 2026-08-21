@@ -1364,8 +1364,9 @@ def cleanup_cuda_memory(verbose=False, vis=None):
     # Clear PyTorch cache
     torch.cuda.empty_cache()
 
-    # Run Python garbage collector to collect objects that are no longer referefnced
-    gc.collect()
+    # No gc.collect here: on first boot this walked (and reaped) the whole
+    # PREVIOUS session - a multi-second stall. The launcher runs that by
+    # itself once the session has ended and its UI is up (server_gui.render_gui).
 
     # Force CUDA synchronization - ensures all operations are complete
     torch.cuda.synchronize()

@@ -37,7 +37,13 @@ _state = globals().get("_state") or {
     "frozen": False,        # boot collect+freeze done
     "last_collect": 0.0,
     "boot_t": time.monotonic(),
+    "last_tick": 0.0,       # frame gap detection (frames park in wait_events)
+    "focused": True,        # glfw FOCUSED as of the last tick
+    "resumed_t": 0.0,       # last focus-gain / frame-gap moment
 }
+# Hotswap reuses the live _state dict - backfill fields added since.
+for _k, _v in (("last_tick", 0.0), ("focused", True), ("resumed_t", 0.0)):
+    _state.setdefault(_k, _v)
 
 PROFILE_LOG = "/tmp/lsd_gc_profile.log"
 
@@ -490,9 +496,36 @@ def tick():
         _state["applied"] = True
     now = time.monotonic()
     if now - _state["boot_t"] < Toggles.GC.boot_delay_s:
+        _state["last_tick"] = now
         return
-    last_input = getattr(Melty, "_last_input_time", 0.0)
-    if now - last_input < Toggles.GC.idle_seconds:
+
+    # Frames only run on events (the main loop parks in glfw.poll_events), so
+    # while the user is away this tick never fires; the last frame BACK saw
+    # "idle for ages" and collected right in the user's face. Two signals fix
+    # the problem: the focus-LOST edge (its event wakes exactly one frame -
+    # the best possible moment to ask for a collect, nobody is looking), and
+    # a focus-GAIN / long frame gap, which restarts the idle clock so a
+    # collect requires idle_seconds of quiet measured from focus return.
+    focused = _window_focused(Melty)
+    was_focused = _state["focused"]
+    _state["focused"] = focused
+    frame_gap = now - _state["last_tick"]
+    _state["last_tick"] = now
+    if (focused and not was_focused) or frame_gap >= Toggles.GC.idle_seconds:
+        _state["resumed_t"] = now
+    lost_focus = was_focused and not focused
+    last_input = max(getattr(Melty, "_last_input_time", 0.0), _state["resumed_t"])
+
+    if lost_focus:
+        if not _state["frozen"]:
+            with lag_span("gc: boot collect+freeze (unfocused)", 0.0):
+                _boot_collect_and_freeze("boot")
+        elif now - _state["last_collect"] >= Toggles.GC.unfocus_collect_s:
+            with lag_span("gc: unfocus collect", 0.0):
+                _collect("unfocus")
+            _state["last_collect"] = now
+        return
+    if not focused or now - last_input < Toggles.GC.idle_seconds:
         return
     if not _state["frozen"]:
         with lag_span("gc: boot collect+freeze", 0.0):
@@ -501,6 +534,19 @@ def tick():
         with lag_span("gc: idle collect", 0.0):
             _collect("idle")
         _state["last_collect"] = now
+
+
+def _window_focused(Melty) -> bool:
+    """glfw FOCUSED of the studio window; True when there is no window yet
+    (tests / headless) so the idle path behaves as before."""
+    window = getattr(Melty, "glfw_window", None)
+    if window is None:
+        return True
+    try:
+        import glfw
+        return bool(glfw.get_window_attrib(window, glfw.FOCUSED))
+    except Exception:
+        return True
 
 
 def collect_after_run(label="run"):

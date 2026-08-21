@@ -414,6 +414,13 @@ class Toggles:
     class TextEditor:
 
         enable_spell_check = False
+        # Long-line token clipping (_window_tokens band): a line longer
+        # than long_line_cols chars is tokenized/drawn only over the visible
+        # column span (+ margin), the rest riding as O(1) 'clipped' tokens.
+        # long_line_band_cols is the band's quantum/margin in columns - the
+        # window_tokens only misses when the x-scroll crosses a step.
+        long_line_cols = 1500
+        long_line_band_cols = 512
         text_focus_stack_trace = False
         # TEMP: dump a def-tint coordinate trace in /tmp/lsd_tint_flicker.log
         # while hunting the one-frame wash misplacement on edits - logs each
@@ -432,6 +439,11 @@ class Toggles:
         # finally/with/match/case) alongside the def/class scopes. Read on
         # the next fold rescan (text edit), not per frame.
         block_fold_ranges = True
+        # Enter inside a single-quoted string literal closes it and reopens
+        # it on the next line (implicit concatenation, parenthesised when
+        # not already inside parentheses) instead of leaving an unterminated
+        # string. Read live.
+        enter_splits_strings = True
         # Master switch for the live-view pipeline: off = the editor draws no
         # live-view/snapshot markers (and drops the gutter toggle column), and
         # opening a context menu no longer collects - the menu-open stack
@@ -1388,6 +1400,10 @@ class Toggles:
         idle_seconds = 15.0
         # Minimum spacing between idle collects.
         idle_collect_s = 120.0
+        # Minimum spacing for a collect that at the moment the window
+        # LOSES focus (alt-tab / minimize): the one frame nobody is watching.
+        # Focus-gain restarts the idle clock, so returning never collects.
+        unfocus_collect_s = 20.0
         # Minimum spacing between post-run collects (collect_after_run -
         # the live lab's per-run VRAM retirement). Auto Execute runs the
         # previewed function per mouse-drag tick; collecting after every

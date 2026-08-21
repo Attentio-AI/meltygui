@@ -38,6 +38,8 @@ def _hex(h):
 
 COLORS = {
     'default': _hex('#a9b7c6'),  # Token (from Darcula)
+    # Off-screen stretch of a long line, never drawn (see _window_tokens band)
+    'clipped': _hex('#a9b7c6'),
     'keyword': _hex('#cc7832'),  # Keyword
     'keyword_const': _hex('#cc7832'),  # Keyword.Constant (None)
     'bool': _hex('#cc7832'),  # True/False - own key so color highlighting can target them
@@ -753,6 +755,84 @@ def _comment_continuation(text, pos, stop, offs, line_open):
     if pos < ce:
         return None
     return h - _get_line_start(text, pos), text[h:ce]
+
+
+_STR_PREFIX_CHARS = frozenset('rRbBfFuU')
+
+
+def _string_split(text, pos, stop, offs, line_open):
+    """Enter inside a SINGLE-quoted string literal: (new_text, new_caret) that
+    keeps the buffer valid Python, or None when the split isn't mid-string
+    (or can't be made safely). The literal is closed at the caret and
+    reopened on the next line with the same prefix + quote (`f"…"` stays an
+    f-string), aligned under the original opener — implicit concatenation.
+    When the literal isn't already inside an open (, [ or {, it is wrapped
+    in parentheses (inserted before the prefix and after the closing quote)
+    so the continuation line parses. Triple-quoted strings are left to the
+    plain newline path (a raw newline is already valid there). Declines
+    (None) when the caret follows an odd run of backslashes (splitting
+    would orphan an escape) or the literal has no closer on this line
+    (already broken — nothing to keep valid)."""
+    in_str, _h = _line_lex_at(text, pos, offs, line_open)
+    if in_str is None or len(in_str) != 1:
+        return None
+    ls = _get_line_start(text, pos)
+    # Opener: the unescaped `in_str` quote nearest before pos on this line.
+    # _line_lex_at already proved pos is inside a string opened on this line
+    # (single-quote state never survives a newline), so re-scan forwards from
+    # the line start with the same rules to locate it.
+    i, q_at, cur = ls, None, None
+    while i < pos:
+        c = text[i]
+        if cur is not None:
+            if c == '\\':
+                i += 2
+                continue
+            if c == cur:
+                cur = None
+            i += 1
+            continue
+        if c == '#':
+            return None
+        if c in '\'"':
+            if text.startswith(c * 3, i):
+                return None          # triple inside the scan - leave it
+            cur, q_at = c, i
+        i += 1
+    if cur is None or q_at is None:
+        return None
+    # Odd backslash run right before the caret → the split would orphan it.
+    bs = 0
+    while pos - 1 - bs >= q_at + 1 and text[pos - 1 - bs] == '\\':
+        bs += 1
+    if bs % 2:
+        return None
+    # Closer on this line (escape-aware); none → already unterminated.
+    j, close_at = pos, None
+    while j < stop:
+        c = text[j]
+        if c == '\\':
+            j += 2
+            continue
+        if c == in_str:
+            close_at = j
+            break
+        j += 1
+    if close_at is None:
+        return None
+    # Any prefix (f / rb / ...) immediately before the opener.
+    ps = q_at
+    while ps > ls and text[ps - 1] in _STR_PREFIX_CHARS:
+        ps -= 1
+    if ps > ls and (text[ps - 1].isalnum() or text[ps - 1] == '_'):
+        ps = q_at                     # identifier char before it: not a prefix
+    prefix = text[ps:q_at]
+    wrap = _unclosed_opener(text, ps) is None
+    col = ps - ls + (1 if wrap else 0)
+    head = text[:ps] + ('(' if wrap else '') + text[ps:pos] + in_str
+    cont = '\n' + ' ' * col + prefix + in_str
+    tail = text[pos:close_at + 1] + (')' if wrap else '') + text[close_at + 1:]
+    return head + cont + tail, len(head) + len(cont)
 
 
 # First top-level def in the buffer - a function span's own def sits at column
@@ -6297,14 +6377,178 @@ def _line_offsets(text):
     return offs
 
 
+# --- String/comment STATE scanner ------------------------------------------
+# `_tokenize_raw` is a per-token Python loop: ~35ms over a 200k-char line). The
+# line_open bookkeeping (and the long-line column band below) only need to know
+# where strings and comments are, not every identifier, so this scanner jumps
+# between the characters that can change lexer state with C-speed regex
+# searches: a loop iteration per quote/hash rather than per token. It
+# replicates `_tokenize_raw`'s string rules exactly (tested against it in
+# tests/test_incremental_tokenize.py): triple quotes close at the next literal
+# triple (no escapes), single/double quotes accept backslash escapes and DO run
+# across newlines until closed, comments end at the newline, a bare triple is
+# 'string_doc' and a prefixed one (`r'''`, `f"""`) is 'string'.
+_LEX_OUT_RE = re.compile('#|"""|\'\'\'|"|\'')
+_LEX_SQ_RE = {'"': re.compile(r'\\.|"', re.DOTALL),
+              "'": re.compile(r"\\.|'", re.DOTALL)}
+_LEX_PREFIX = frozenset('fFrRbBuU')
+
+
+def _quote_is_prefixed(text, q):
+    """Would `_tokenize_raw` reach the quote at `q` through its string-PREFIX
+    branch (`r"`, `rb"`, `f'''`)? A prefix letter only counts when the scanner
+    lands ON it as a token start — glued to an identifier (`xr"`) the word
+    branch swallows it, a decorator (`@r"`) swallows its dotted name, a number
+    (`1_r"`) ends right before it. Exact: replays the tokenizer's decorator /
+    number / word branches over the [alnum_.@] run that ends at the quote."""
+    if q == 0 or text[q - 1] not in _LEX_PREFIX:
+        return False
+    j = q
+    while j > 0 and (text[j - 1].isalnum() or text[j - 1] in '_.@'):
+        j -= 1
+    n = len(text)
+    pos = j
+    while pos < q:
+        ch = text[pos]
+        if (ch in _LEX_PREFIX
+                and (q == pos + 1
+                     or (q == pos + 2 and text[pos + 1] in _LEX_PREFIX))):
+            return True
+        if ch == '@' and (pos == 0 or text[pos - 1] in '\n '):
+            pos += 1
+            while pos < n and (text[pos].isalnum() or text[pos] in '_.'):
+                pos += 1
+        elif ch.isdigit() or (ch == '.' and pos + 1 < n and text[pos + 1].isdigit()):
+            end = pos
+            if end + 1 < n and text[end] == '0' and text[end + 1] in 'xXoObB':
+                end += 2
+                while end < n and text[end] in '0123456789abcdefABCDEF_':
+                    end += 1
+            else:
+                has_dot = False
+                while end < n and (text[end].isdigit() or text[end] in '._eE'):
+                    if text[end] == '.':
+                        if has_dot:
+                            break
+                        has_dot = True
+                    if text[end] in 'eE' and end + 1 < n and text[end + 1] in '+-':
+                        end += 1
+                    end += 1
+            pos = end
+        elif ch.isalpha() or ch == '_':
+            while pos < n and (text[pos].isalnum() or text[pos] == '_'):
+                pos += 1
+        else:
+            pos += 1
+    return False
+
+
+def _iter_lex_spans(text, pos=0, state=None, stop=None):
+    """Yield (start, end, state) for every string and comment token of
+    `_tokenize_raw(text[pos:])` in order, where `state` is None for a comment
+    and the (closing_quote, color_kind) pair for a string. `state` seeds a scan
+    that begins INSIDE a string (the span then starts at `pos`). Stops early
+    once a span would start at/after `stop`. Everything between spans is code."""
+    n = len(text)
+    if stop is None:
+        stop = n
+    if state is not None:
+        q, _kind = state
+        if len(q) == 3:
+            c = text.find(q, pos)
+            end = c + 3 if c != -1 else n
+        else:
+            end = n
+            for m in _LEX_SQ_RE[q].finditer(text, pos):
+                if m.group() == q:
+                    end = m.end()
+                    break
+        yield pos, end, state
+        pos = end
+    search = _LEX_OUT_RE.search
+    while pos < stop:
+        m = search(text, pos)
+        if m is None or m.start() >= stop:
+            return
+        i = m.start()
+        tok = m.group()
+        if tok == '#':
+            end = text.find('\n', i)
+            end = end if end != -1 else n
+            yield i, end, None
+        elif len(tok) == 3:
+            pre = _quote_is_prefixed(text, i)
+            c = text.find(tok, i + 3)
+            end = c + 3 if c != -1 else n
+            yield i, end, (tok, 'string' if pre else 'string_doc')
+        else:
+            end = n
+            for mm in _LEX_SQ_RE[tok].finditer(text, i + 1):
+                if mm.group() == tok:
+                    end = mm.end()
+                    break
+            yield i, end, (tok, 'string')
+        pos = end
+
+
+def _iter_newline_states(text, pos=0, state=None):
+    """Yield (offset_after_newline, line_open_state) for every newline of
+    `text[pos:]`, in order — the state a line START inherits: None when the
+    newline is code or ends a comment, the string's (quote, kind) when it sits
+    inside a string. Lazy, so callers can stop at reconvergence."""
+    find = text.find
+    for a, b, st in _iter_lex_spans(text, pos, state):
+        nl = find('\n', pos, a)
+        while nl != -1:
+            yield nl + 1, None
+            nl = find('\n', nl + 1, a)
+        if st is not None:
+            nl = find('\n', a, b)
+            while nl != -1:
+                yield nl + 1, st
+                nl = find('\n', nl + 1, b)
+        pos = b
+    nl = find('\n', pos)
+    while nl != -1:
+        yield nl + 1, None
+        nl = find('\n', nl + 1)
+
+
+def _lex_state_at(text, pos, state, target):
+    """Lexer state at offset `target` given the scan starts at `pos` in `state`:
+    (None, target) for code, ('comment', span_start) inside a comment, or
+    ((quote, kind), span_start) inside a string."""
+    for a, b, st in _iter_lex_spans(text, pos, state, stop=target + 1):
+        if a <= target < b:
+            return ('comment' if st is None else st), a
+        if a > target:
+            break
+    return None, target
+
+
 def _line_open_full(text):
     """(line_offsets, line_open) computed from scratch. line_open[i] is the
     string state active at the START of line i — None outside any string, else
     a (closing_quote, color_kind) pair for the multi-line string spanning into
     the line. The kind is carried because a PREFIXED triple (`r'''…`, `f\"\"\"…`)
     colors as 'string', not 'string_doc' — only a bare triple is 'string_doc'.
-    Derived straight from `_tokenize_raw`, so it agrees with `tokenize()`
-    exactly. O(buffer); used on first render, then maintained incrementally."""
+    Agrees with `tokenize()` exactly (`_line_open_full_ref` is the reference
+    derived straight from `_tokenize_raw`; the scanner is tested against it).
+    O(quotes), not O(tokens); used on first render, then maintained
+    incrementally."""
+    offs = _line_offsets(text)
+    line_open = [None] * len(offs)
+    line = 0
+    for _off, st in _iter_newline_states(text):
+        line += 1
+        if st is not None and line < len(line_open):
+            line_open[line] = st
+    return offs, line_open
+
+
+def _line_open_full_ref(text):
+    """Reference implementation of `_line_open_full` via `_tokenize_raw` (the
+    scanner must match this char-for-char; see tests/test_incremental_tokenize)."""
     offs = _line_offsets(text)
     line_open = [None] * len(offs)
     line = 0
@@ -6371,26 +6615,14 @@ def _update_line_open(prev_text, prev_offs, prev_open, text):
     old_clean = {prev_offs[k]: k for k in range(len(prev_offs)) if prev_open[k] is None}
 
     tail = [None]                # line_open for line sl (clean by construction)
-    off = start_off
     stop_old = None
-    for tok, kind in _tokenize_raw(text[start_off:]):
-        if '\n' not in tok:
-            off += len(tok)
-            continue
-        qk = (_opener_quote(tok), kind) if kind in ('string', 'string_doc') else None
-        for ch in tok:
-            off += 1
-            if ch != '\n':
-                continue
-            state = None if tok == '\n' else qk
-            if state is None and off >= new_hi:
-                oc = old_clean.get(off - delta)   # same clean line in the old tail?
-                if oc is not None:
-                    stop_old = oc                 # reconverged → reuse old suffix
-                    break
-            tail.append(state)
-        if stop_old is not None:
-            break
+    for off, state in _iter_newline_states(text, start_off):
+        if state is None and off >= new_hi:
+            oc = old_clean.get(off - delta)   # same clean line in the old tail?
+            if oc is not None:
+                stop_old = oc                 # reconverged → reuse old suffix
+                break
+        tail.append(state)
 
     new_open = prev_open[:sl] + tail + (prev_open[stop_old:] if stop_old is not None else [])
     return new_offs, new_open
@@ -6429,12 +6661,22 @@ def _resume_in_string(body, opener):
     return head + rest
 
 
-def _window_tokens(text, line_offs, line_open, v0, v1, lookback=12):
+def _window_tokens(text, line_offs, line_open, v0, v1, lookback=12, band=None):
     """Merged tokens for just the line range [v0, v1] (plus `lookback` lines of
     context above, so the merge passes have correct left-context for v0's first
     line), and the absolute (start_line, start_offset) the first token sits at.
     The per-character coloring matches the corresponding span of
-    `list(tokenize(text))` — including windows that open inside a docstring."""
+    `list(tokenize(text))` — including windows that open inside a docstring.
+
+    `band=(c0, c1, long_cols)` clips LONG lines horizontally too: any line in
+    the range longer than `long_cols` chars is tokenized only over columns
+    [c0, c1) (the visible span plus margin); the stretches either side come
+    back as single ('...', 'clipped') tokens of the exact source length, so
+    consumers that walk offsets stay exact while the glyph loop / vcols skip
+    them in O(1). The lexer state at the cut comes from `_lex_state_at`, so a
+    band opening mid-string or mid-comment colors correctly; the merge passes
+    see only `lookback`-style local context at the left cut (a color tuple or
+    unary sign straddling the cut is covered by the band margin)."""
     nlines = len(line_offs)
     if nlines == 0:
         return 0, 0, []
@@ -6444,12 +6686,83 @@ def _window_tokens(text, line_offs, line_open, v0, v1, lookback=12):
     start_off = line_offs[wl]
     end_off = line_offs[v1 + 1] if v1 + 1 < nlines else len(text)
     opener = line_open[wl] if wl < len(line_open) else None
+    if band is not None:
+        c0, c1, long_cols = band
+        # Long lines in the range, segment the tokens at them; short runs in
+        # between tokenize as one chunk (their line_open seeds the resume).
+        long_lines = [ln for ln in range(wl, v1 + 1)
+                      if ((line_offs[ln + 1] - 1 if ln + 1 < nlines else len(text))
+                          - line_offs[ln]) > long_cols]
+        if long_lines:
+            return wl, start_off, _banded_tokens(
+                text, line_offs, line_open, wl, v1, end_off, long_lines, c0, c1)
     body = text[start_off:end_off]
     toks = _resume_in_string(body, opener) if opener else list(tokenize(body))
     return wl, start_off, toks
 
 
+def _tokenize_from(body, state):
+    """Tokenize `body` given the lexer state at its start: None → code,
+    'comment' → the rest of the line is one comment token, (quote, kind) →
+    resume inside that string."""
+    if not body:
+        return []
+    if state is None:
+        return list(tokenize(body))
+    if state == 'comment':
+        nl = body.find('\n')
+        if nl == -1:
+            return [(body, 'comment')]
+        return [(body[:nl], 'comment')] + list(tokenize(body[nl:]))
+    return _resume_in_string(body, state)
+
+
+def _banded_tokens(text, line_offs, line_open, wl, v1, end_off, long_lines, c0, c1):
+    """Token list for lines [wl, v1] where `long_lines` (ascending) are cut to
+    columns [c0, c1) — see _window_tokens. Short stretches between long lines
+    are tokenized whole; each long line becomes clipped-prefix, band tokens,
+    clipped-suffix (+ its newline)."""
+    nlines = len(line_offs)
+    out = []
+    pos = line_offs[wl]
+    for ln in long_lines:
+        ls = line_offs[ln]
+        le = line_offs[ln + 1] - 1 if ln + 1 < nlines else len(text)
+        # Short lines since the last cut, opening in their first line's state.
+        if ls > pos:
+            st_line = bisect.bisect_right(line_offs, pos) - 1
+            out.extend(_tokenize_from(text[pos:ls], line_open[st_line]))
+        a = ls + max(0, c0)
+        b = min(le, ls + c1)
+        if a >= le:
+            a = b = le
+        elif b < a:
+            b = a
+        state = line_open[ln]
+        if a > ls:
+            out.append((text[ls:a], 'clipped'))
+            state, _span_start = _lex_state_at(text, ls, state, a)
+        # Tokenize the band alone (no trailing newline), then clip the rest.
+        btoks = _tokenize_from(text[a:b], state)
+        out.extend(btoks)
+        if b < le:
+            out.append((text[b:le], 'clipped'))
+        if le < end_off:
+            out.append(('\n', 'default'))
+        pos = le + 1
+    if pos < end_off:
+        st_line = bisect.bisect_right(line_offs, pos) - 1
+        out.extend(_tokenize_from(text[pos:end_off], line_open[st_line]))
+    return out
+
+
 _LINE_STARTS_CACHE: dict = {}   # id(text) -> (text, [line-start char offsets])
+
+
+def _line_offsets_cached(text):
+    """`_line_offsets(text)` through the identity memo below (same list shape:
+    the start offset of every line, offs[0] == 0)."""
+    return _line_starts(text)
 
 
 def _line_starts(text):
@@ -6530,11 +6843,26 @@ def _build_vcols(text, tokens, token_views):
     if not token_views or not any(
             isinstance(k, str) and _bends_grid(v) for k, v in token_views.items()):
         return None
+    # Only the VISIBLE tokens matter: if none of them carries a grid-bending
+    # view there is nothing to map (the common case - and on a long-line
+    # window it avoids building a per-char array the size of the line).
+    if not any(ck != 'clipped' and _bends_grid(token_views.get(ck))
+               for _, ck in tokens):
+        return None
     n = len(text)
     vcols = [0.0] * (n + 1)
     col = 0.0
     i = 0
     for tok, ck in tokens:
+        if ck == 'clipped':
+            # Off-screen stretch of a wrapped line: identity columns, assigned
+            # at C speed (a 200k-char run would still cost ~10ms here).
+            L = min(len(tok), n - i)
+            ic = int(col)
+            vcols[i:i + L] = range(ic, ic + L) if ic == col else [col + k for k in range(L)]
+            col += L
+            i += L
+            continue
         view = token_views.get(ck) if isinstance(ck, str) else None
         cw = view.get("char_width") if (view and view.get("char_width") is not None) else None
         trail = 0
@@ -7437,6 +7765,11 @@ _FOLD_BLOCK_RE = re.compile(
 _FOLD_SEED_VER = 4
 
 
+_FOLD_OUT_RE = re.compile("[#'\"]")
+_FOLD_CLOSE_RE = {d: re.compile(r"\\.|" + re.escape(d))
+                  for d in ('"', "'", '"""', "'''")}
+
+
 def _scope_fold_ranges(text):
     """(ranges, default_collapsed, key_of) fold sources for `text` — the
     scope_collapse=True feed for draw_text's fold layer. key_of maps each
@@ -7503,20 +7836,20 @@ def _scope_fold_ranges(text):
     # inline comment must not open a phantom multiline string - a raw find
     # scanner marks everything below such a line as string interior, which
     # then suppresses scope/comment detection for the rest of the file.
+    # Event-driven: the scan skips between the chars that can change state
+    # (quotes, '#', backslashes) at C speed - a 200k char line used to cost
+    # ~10ms in the per-char Python walk this replaced, with identical rules.
+    _out_search = _FOLD_OUT_RE.search
     for i, ln in enumerate(lines):
         j, L = 0, len(ln)
         while True:
             if str_open is not None:
                 s0, delim = str_open
                 closed = -1
-                while j < L:
-                    if ln[j] == '\\':
-                        j += 2
-                        continue
-                    if ln.startswith(delim, j):
-                        closed = j
+                for m in _FOLD_CLOSE_RE[delim].finditer(ln, j):
+                    if m.group() == delim:
+                        closed = m.start()
                         break
-                    j += 1
                 if closed == -1:
                     if i != s0:
                         str_interior.add(i)
@@ -7529,29 +7862,26 @@ def _scope_fold_ranges(text):
                 str_open = None
                 j = closed + 3
                 continue
-            if j >= L:
+            m = _out_search(ln, j)
+            if m is None:
                 break
+            j = m.start()
             c = ln[j]
             if c == '#':
                 break                # comment - rest of the line is inert
-            if c in '\'"':
-                if ln.startswith(c * 3, j):
-                    str_open = (i, c * 3)
-                    j += 3
-                    continue
-                # Single-quoted string: opaque to the closing quote (or line
-                # end, a broken buffer) so a '\"\"\"' INSIDE it stays inert.
-                j += 1
-                while j < L:
-                    if ln[j] == '\\':
-                        j += 2
-                        continue
-                    if ln[j] == c:
-                        j += 1
-                        break
-                    j += 1
+            if ln.startswith(c * 3, j):
+                str_open = (i, c * 3)
+                j += 3
                 continue
+            # Single-quoted string: opaque to the closing quote (or the
+            # end on a broken buffer) so a '\"\"\"' INSIDE it stays inert.
             j += 1
+            end = L
+            for m in _FOLD_CLOSE_RE[c].finditer(ln, j):
+                if m.group() == c:
+                    end = m.end()
+                    break
+            j = end
     # Pass 2 - scopes, comment runs, top import block.
     stack = []                   # (indent, header_line, scope_path, block_key)
                                  # block_key None for def/class, else the
@@ -8796,7 +9126,28 @@ def draw_text(input_value: str, height=None,
             v0, v1 = 0, nlines - 1
         v0 = max(0, min(v0, nlines - -12))
         v1 = max(v0, min(v1, nlines - 1))
-        key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0)
+        # Horizontal band (long lines only): the visible column span from the
+        # clip rect's X extent and the h-scroll, widened to a margin and
+        # quantized to `long_line_band_cols` steps so the cache survives
+        # small h-scrolls; the band only joins the key when some line in the
+        # window is longer than `long_line_cols` (short lines: band=None,
+        # and the key/tokens are exactly what they were before).
+        band = None
+        _long_cols = Toggles.TextEditor.long_line_cols
+        if len(text) > _long_cols and char_w > 0:
+            _offs_b = _line_offsets_cached(text)
+            _v0b, _v1b = max(0, v0 - 12), v1
+            _nl = len(_offs_b)
+            if any(((_offs_b[ln + 1] - 1 if ln + 1 < _nl else len(text)) - _offs_b[ln])
+                   > _long_cols for ln in range(_v0b, min(_v1b, _nl - 1) + 1)):
+                _text_x0 = left + gutter_w + gutter_margin
+                _step = max(64, Toggles.TextEditor.long_line_band_cols)
+                _bc0 = int((_clip[0] - _text_x0 + ds.text_h_scroll) / char_w)
+                _bc1 = int((_clip[2] - _text_x0 + ds.text_h_scroll) / char_w) + 1
+                _bc0 = max(0, (_bc0 // _step - 1) * _step)
+                _bc1 = (_bc1 // _step + 2) * _step
+                band = (_bc0, _bc1, _long_cols)
+        key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0, band)
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
 
@@ -8807,7 +9158,8 @@ def draw_text(input_value: str, height=None,
                     getattr(ds, '_lo_text', None), getattr(ds, '_lo_offs', None),
                     getattr(ds, '_lo_open', None), text)
                 ds._lo_text = text
-            wl, start_off, toks = _window_tokens(text, ds._lo_offs, ds._lo_open, v0, v1)
+            wl, start_off, toks = _window_tokens(text, ds._lo_offs, ds._lo_open, v0, v1,
+                                                 band=band)
             win_len = sum(len(t) for t, _ in toks)
             arr = _build_vcols(text[start_off:start_off + win_len], toks, token_views) \
                 if token_views else None
@@ -8815,11 +9167,32 @@ def draw_text(input_value: str, height=None,
         else:
             # Plain mode: the visible lines as ONE 'default' token (the segment
             # loop below splits it at newlines). No strings → no line_open needed.
-            offs = _line_offsets(text)
+            offs = _line_offsets_cached(text)
             wl, start_off = v0, offs[v0]
             end_off = offs[v1 + 1] if v1 + 1 < len(offs) else len(text)
-            win_text = text[start_off:end_off]
-            toks = [(win_text, 'default')] if win_text else []
+            if band is not None:
+                # Same horizontal cut as the syntax path, one 'default' token
+                # per visible band (no lexer state to track in plain mode).
+                _bc0, _bc1, _long_cols = band
+                toks = []
+                for ln in range(v0, v1 + 1):
+                    ls = offs[ln]
+                    le = offs[ln + 1] - 1 if ln + 1 < len(offs) else len(text)
+                    if le - ls > _long_cols:
+                        a, b = min(le, ls + _bc0), min(le, ls + _bc1)
+                        if a > ls:
+                            toks.append((text[ls:a], 'clipped'))
+                        if b > a:
+                            toks.append((text[a:b], 'default'))
+                        if le > b:
+                            toks.append((text[b:le], 'clipped'))
+                    elif le > ls:
+                        toks.append((text[ls:le], 'default'))
+                    if le < end_off:
+                        toks.append(('\n', 'default'))
+            else:
+                win_text = text[start_off:end_off]
+                toks = [(win_text, 'default')] if win_text else []
             vcols = None
         ds._win_key = key
         ds._win_data = (wl, start_off, toks, vcols)
@@ -10075,13 +10448,25 @@ def draw_text(input_value: str, height=None,
                 # statement's indent. Only when real content moves down
                 # (tail < stop), Enter at a comment's end starts a fresh line.
                 cont = ''
+                _split = None
                 if syntax_highlight and tail < stop:
                     _offs, _lopen = _ac_lex_state(ds, text)
-                    cc = _comment_continuation(text, pos, stop, _offs, _lopen)
-                    if cc is not None:
-                        indent, cont = cc
-                text = text[:pos] + '\n' + ' ' * indent + cont + text[tail:]
-                ds.text_cursor_pos = pos + 1 + indent + len(cont)
+                    # Splitting a single-quoted string literal: close it,
+                    # reopen on the next line (implicit concatenation, parens
+                    # added when not already bracketed) so the buffer stays
+                    # valid Python - see _string_split.
+                    if Toggles.TextEditor.enter_splits_strings:
+                        _split = _string_split(text, pos, stop, _offs, _lopen)
+                    if _split is None:
+                        cc = _comment_continuation(text, pos, stop, _offs,
+                                                   _lopen)
+                        if cc is not None:
+                            indent, cont = cc
+                if _split is not None:
+                    text, ds.text_cursor_pos = _split
+                else:
+                    text = text[:pos] + '\n' + ' ' * indent + cont + text[tail:]
+                    ds.text_cursor_pos = pos + 1 + indent + len(cont)
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
@@ -11654,6 +12039,12 @@ def draw_text(input_value: str, height=None,
     # body, so the rects track the screen pixels the user actually sees.
     ds._plain_tv_rects = []
     for token, color_key in tokens:
+        if color_key == 'clipped':
+            # Off-screen stretch on a visible line (see _window_tokens band):
+            # never contains a newline, never draws - just advance.
+            x += len(token) * char_w
+            src_i += len(token)
+            continue
         color = COLORS[color_key]
         # Inside a tint-carrying override comment, the comment text and the
         # merged color-tuple token (color3 - the picker's `(r, g, b)` text)
