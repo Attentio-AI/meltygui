@@ -3756,12 +3756,21 @@ def _usage_spans(ds, text, code_tree, line_offset=0, view_path=None):
         # _carry_symbols). Collecting NOW would find no sus and replace the
         # held spans with nothing - hold the last-good spans (splice-remapped
         # below) until the frame-boundary attach lands and busts the key.
+        # The carry marker is the `_needs_distribute` flag + a carried DICT
+        # (_carry_symbols). NOT a simple truthy `symbol_usage`: a tree with no
+        # symbol layer holds the default `[None]` (truthy), which would it
+        # "pending" forever and - with request_render() - turned every
+        # re-render of the editor into a frame: hover → repaint → request →
+        # frame → hover ... (thousands of hover_change notes, no input).
         _su_pending = (su_top is None
-                       and getattr(code_tree, "symbol_usage", None))
-        if (getattr(ds, "_usage_spans", None) is not None
-                and (_typing_hot() or _su_pending
-                     or now - getattr(ds, "_usage_spans_time", 0.0) < _TINT_RECOMPUTE_MIN_S)):
+                       and getattr(code_tree, "_needs_distribute", False)
+                       and isinstance(getattr(code_tree, "symbol_usage", None), dict))
+        _held = getattr(ds, "_usage_spans", None) is not None
+        if _held and (_typing_hot()
+                      or now - getattr(ds, "_usage_spans_time", 0.0) < _TINT_RECOMPUTE_MIN_S):
             request_render()   # typing/debounced: serve held (remapped below), retry later
+        elif _held and _su_pending:
+            pass   # hold; the frame-boundary attach (attach_to_render) wakes the loop & busts the key
         else:
             # Collect against the TREE'S OWN text when the buffer has moved on:
             # a reparse that lands mid-burst carries sites for the text it was

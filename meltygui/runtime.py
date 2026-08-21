@@ -1642,15 +1642,8 @@ class Melty:
         if (focused is None and not want_text
                 and any(k == glfw.KEY_E and not (m & (glfw.MOD_CONTROL | glfw.MOD_ALT | glfw.MOD_SUPER))
                         for k, m in cls.frame_key_events)):
-            new_value = not Toggles.InvalidateTracker.enable
-            # Same write path as a global-search Toggles row: edits the Toggles
-            # render-host parse (with flush-edits + queued source save), so
-            # the flip persists into toggles.py. Parked + retried by
-            # drain_pending_settings while the host is still parsing; flip the
-            # live attr too so the overlay responds this frame either way.
-            Toggles.InvalidateTracker.enable = new_value
-            from src.lsd.gl_gui.view.core_views.new_core_view import _set_setting
-            _set_setting("InvalidateTracker.enable", new_value)
+            from src.lsd.gl_gui.view.core_views.new_core_view import toggle_setting
+            new_value = toggle_setting("InvalidateTracker.enable")
             notify(f"InvalidateTracker {'on' if new_value else 'off'}",
                    tint=(1, 1, 0.4), tag="InvalidateTracker")
             request_render()
@@ -2841,7 +2834,12 @@ class Melty:
                 cls.apply_refresh_nested_windows(ds)
 
         for ds_id, discard_ds in to_discard:
-            cls.root_draw_states[ds_id].remove(discard_ds)
+            # release_window_tree on an earlier discard pops the whole
+            # nested list of a closed parent, so a closed child also queued
+            # here may already be gone - tolerate it.
+            siblings = cls.root_draw_states.get(ds_id)
+            if siblings is not None and discard_ds in siblings:
+                siblings.remove(discard_ds)
             # A discarded nested window keeps its draw_state (the framework
             # contract) - and with it every wrapper slot holding the value
             # it last rendered, plus its GLState textures. In the live lab
@@ -3063,7 +3061,12 @@ class Melty:
                     cls.root_draw_states_by_layer[ds.abs_layer].append(ds)
 
         for ds_id, discard_ds in to_discard:
-            cls.root_draw_states[ds_id].remove(discard_ds)
+            # release_window_tree on an earlier discard pops the whole
+            # nested list of a closed parent, so a closed child also queued
+            # here could already be gone - tolerate it.
+            siblings = cls.root_draw_states.get(ds_id)
+            if siblings is not None and discard_ds in siblings:
+                siblings.remove(discard_ds)
             # A closed nested window drops what it rendered (value slots,
             # nested windows below it, GL) - not just its registration.
             cls.release_window_tree(discard_ds)

@@ -1027,13 +1027,19 @@ def request_render(for_frames:int | None=None):
         frames_left = for_frames
 
 
-    if Toggles.InvalidateTracker.invalidate_stack_trace:
-        if Core.melty.frame_count > 100 and (Core.melty.frame_count % 500 == 0):
-            print_stack_trace(size=3, section="REQUEST RENDER")
-
-    if Toggles.InvalidateTracker.invalidate_request_render:
-        if Core.melty.frame_count > 100 and (Core.melty.frame_count % 50 == 0):
-            print_stack_trace(size=3, section="REQUEST RENDER")
+    # "request_render" notify function: every call toasts its caller's stack
+    # (click → open the call site in the editor), gated like the invalidate
+    # column on InvalidateTracker.enable (E hotkey). notify() collapses
+    # repeats of one call site into one counted entry, and is never urgent here
+    # - an urgent notify would call back into request_render.
+    if (Toggles.InvalidateTracker.enable or Toggles.InvalidateTracker.invalidate_request_render
+            or Toggles.InvalidateTracker.invalidate_stack_trace):
+        from src.lsd.gl_gui.notifications import notify, capture_stack
+        stack = capture_stack(skip_files=("glfw_utils.py",), skip_funcs=("request_render",))
+        if stack:
+            fn = stack[-1][2]
+            notify(f"request_render  [{fn}]  {threading.current_thread().name}",
+                   tint=(0.4, 0.8, 1.0), tag="request_render", stack=stack, urgent=False)
 
 
     _needs_render.set()

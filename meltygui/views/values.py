@@ -1677,7 +1677,16 @@ def _write_setting(path, value):
     runs on a dict-pane edit — without it the edit wouldn't reach the live
     class until a recompile."""
     from src.lsd.gl_gui.view.core_conversion.chain_converters import live_apply_edits
-    gp = _toggles_dict_host()._held()
+    host = _toggles_dict_host()
+    # Let the host SETTLE before writing: its consumer returns a local edit
+    # outbound only when _local_edit_frame > _input_change_frame + 1
+    # (RenderHost._internal_view_func's local_ahead), and it clears the dirty
+    # flag either way. A write landing the frame after a cold parse landed
+    # (the E hotkey on an unparsed Toggles host) was silently swallowed for
+    # good. Park it - the caller retries next frame.
+    if Melty.frame_count <= host._input_change_frame + 1:
+        return False
+    gp = host._held()
     node = gp.get(Toggles.__name__) if isinstance(gp, dict) else None
     parts = path.split(".")
     for p in parts[:-1]:
@@ -1716,6 +1725,21 @@ def _set_setting(path, value):
     if not _write_setting(path, value):
         _pending_setting_writes[path] = (value, Melty.frame_count + 600)
     _repaint_global_search()
+
+
+def toggle_setting(path):
+    """Flip a bool Toggles setting by dotted path, in the live class NOW and
+    in toggles.py through the Toggles code host (same write as a global-search
+    row). The one entry point for global hotkeys (E → InvalidateTracker.enable).
+    Returns the new value."""
+    node = Toggles
+    parts = path.split(".")
+    for p in parts[:-1]:
+        node = getattr(node, p)
+    value = not getattr(node, parts[-1])
+    setattr(node, parts[-1], value)
+    _set_setting(path, value)
+    return value
 
 
 def _begin_editing(path):

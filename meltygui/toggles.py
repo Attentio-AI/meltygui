@@ -1356,7 +1356,7 @@ class Toggles:
     @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:
         keep_for_frames = 100
-        enable = True
+        enable = False
         draw_rect = True
 
         # [tint=(0.85, 0.45, 0.05), show_tint=True]
@@ -1583,7 +1583,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 0.967
+    glow_strength = 0.886
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),
@@ -1615,7 +1615,7 @@ class Toggles:
     # smoothstep^exponent, smooth at BOTH ends so there is no hard edge at
     # the far extent. 1 = plain smoothstep; higher = the light dies faster
     # near the source and trails out longer - a more prominent gradient.
-    glow_area_falloff = 6.02
+    glow_area_falloff = 2.25
     # Fan-edge penumbra: the side edges of the light cone blur by this many
     # px per px of drop (symmetric about the trapezoid center) - razor-sharp
     # at the source and progressively softer with distance, like a real
