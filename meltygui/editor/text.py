@@ -2262,13 +2262,14 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
         if got is None or not modules:
             return None
         src, start0 = got
-        # Fast path: only literal parameter defaults changed since the last
-        # compile of this def → reuse the compiled code. The run passes
-        # the panel's values as explicit kwargs, so the stale compiled
-        # defaults never evaluate; body/signature/expression-default edits
-        # (and line moves) change the key and recompile.
+        # Reuse the compiled function while the def's source (and its
+        # pending start line) is unchanged.
         _ck = (str(target), def_name)
-        _key = _fnrun_src_key(src, start0)
+        # Keyed on the FULL source: the compiled defaults are the run's
+        # inputs now (no explicit kwargs), so a default-only edit must
+        # recompile too - masking literals (_fnrun_src_key) guarantees the
+        # change overrode them. A def compile is sub-millisecond.
+        _key = (src, start0)
         _hit = _FNRUN_COMPILE_CACHE.get(_ck)
         if _key is not None and _hit is not None and _hit[0] == _key:
             return _hit[1]
@@ -2755,6 +2756,30 @@ def _fnrun_def_node_for(editor_ds, skey, code_root, def_name, buf_line,
     return node
 
 
+def _fnrun_detach(node):
+    """A shallow copy of a code-host tree node that DOESN'T bubble: same
+    class (so it renders and reads exactly like the node — `.span`, the
+    `__cst__` keys, the values), but with no `_bubble_root`, so edits made
+    to it in the params panel never dirty the code host. A bubbled edit
+    makes the host regenerate the editor's source from the TREE, which
+    lags the text by the reparse debounce, and that replaced whatever the
+    user had typed since. The panel edits the copy; the splice carries
+    the edit into the text; the reparse refreshes the real node."""
+    # NOT copy.copy: it rebuilds a dict subclass through its own
+    # __setitem__ - the bubbling one - and the copied __dict__ still
+    # names the original root, so the panel panel dirtied the host once
+    # per param. Raw dict update + a __dict__ copy with the root cleared.
+    cls = type(node)
+    c = cls.__new__(cls)
+    dict.update(c, node)
+    try:
+        c.__dict__.update(getattr(node, "__dict__", {}))
+        c._bubble_root = None
+    except Exception:
+        pass
+    return c
+
+
 def _fnrun_after_live_run(editor_ds):
     """Post-instrumented-run delivery, shared by the inline eye and the
     params panel's eye: force-invalidate every open value window's subtree
@@ -2918,7 +2943,7 @@ def _fnrun_change_key(src):
     are read live) or re-spacing within a line never triggers a recompile;
     everything else does — body/signature/annotation/name edits, a default
     TYPED into the signature (the params panel's own splices are
-    pre-baselined by _apply_splices, so they don't double-run), and line
+    pre-baselined by _fnrun_queue_panel_splices, so they don't double-run), and line
     changes (blank lines added/removed: NL tokens are kept — a line shift
     re-keys the live sites below it, and the rerun is what re-publishes
     them). Indentation survives as INDENT/DEDENT tokens. Falls back to the
@@ -2944,6 +2969,86 @@ def _fnrun_change_key(src):
     return "".join(parts)
 
 
+def _fnrun_resolve_splices(text, queued):
+    """Turn name-queued params-panel splices `(def_name, line_hint, param,
+    new_src)` into `(start, length, new_src)` against `text` AS IT IS NOW.
+    A queued splice is applied on a later editor body run, so offsets
+    captured at queue time are stale after any keystroke in between — the
+    old offset-based queue overwrote whatever had shifted into its span.
+    Per entry: the def is located by name (nearest the hinted display
+    line), the param's default span by the signature scanner, and the new
+    source replaces whatever the default holds: a panel edit is the user's
+    latest intent for THAT param. (An earlier "drop it if the text no
+    longer holds the source the panel last saw" rule compared against a
+    record the def widget maintains only while drawn, so with the def
+    scrolled away every panel edit was dropped and pending never got the
+    value.) Already-equal defaults are skipped."""
+    out = []
+    for def_name, hint, pk, new_src in queued:
+        got = _fnrun_extract_def_text(text, (hint or 0) + 1, def_name)
+        if got is None:
+            continue
+        sp = _fnrun_sig_default_span(text, got[1], pk)
+        if sp is None:
+            continue
+        if text[sp[0]:sp[1]] == new_src:
+            continue
+        out.append((sp[0], sp[1] - sp[0], new_src))
+    return out
+
+
+def _fnrun_queue_panel_splices(editor_ds, skey, def_name, hint, values=None):
+    """Write the params panel's edits back into the code — from ANYWHERE
+    (the def widget, or the Auto-Execute hold timer via post_to_render),
+    never only from the widget: the widget renders only while the def line
+    is in the viewport, so a write-back that waited for it stranded panel
+    values out of the text whenever the user scrolled away, and the next
+    text→panel sync then "snapped the panel back" to the text's values.
+
+    Works off the editor-held state alone: the DISPLAYED copy
+    (`_fnrun_shown_nodes[skey]`, what the panel mutates) and the per-param
+    "source the panel last saw" (`_fnrun_param_seen[skey]`). A param whose
+    rendered source equals the seen source was not touched — skipped, the
+    text is truth. Each changed param is queued BY NAME for
+    _fnrun_resolve_splices (the editor body resolves the span against the
+    text as it is then and writes the value — a panel edit is the latest
+    intent for that param), mirrored RAW into the real tree node (no
+    bubbling — a bubbled write regenerates the editor text from the
+    lagging tree), and the auto-exec baseline is pre-advanced so the
+    landed splice isn't taken for a fresh edit."""
+    shown = (getattr(editor_ds, '_fnrun_shown_nodes', None) or {}).get(skey)
+    seen = (getattr(editor_ds, '_fnrun_param_seen', None) or {}).get(skey)
+    if shown is None or seen is None:
+        return
+    if values is not None and values is not shown:
+        for pk, pv in values.items():
+            dict.__setitem__(shown, pk, pv)
+    node = ((getattr(editor_ds, '_fnrun_node_cache', None) or {})
+            .get(skey) or (None, None))[1]
+    params_node = node.get('parameters') if isinstance(node, dict) else None
+    queue = editor_ds.__dict__.setdefault('_fnrun_splices', [])
+    queued = False
+    for pk, pv in shown.items():
+        if not isinstance(pk, str) or pk.startswith('__'):
+            continue
+        new_src = _fnrun_param_src(pv)
+        if seen.get(pk) == new_src:
+            continue
+        queue.append((def_name, hint or 0, pk, new_src))
+        seen[pk] = new_src
+        queued = True
+        if isinstance(params_node, dict):
+            dict.__setitem__(params_node, pk, pv)
+    if not queued:
+        return
+    ctx = next((e[5] for k, e in (getattr(editor_ds, '_fnrun_edit_watch', None)
+                                  or {}).items() if k[1] == def_name), None)
+    if ctx is not None:
+        _fnrun_prebaseline_splices(editor_ds, skey, ctx[5], ctx[4], def_name)
+    editor_ds.invalidate()
+    request_render()
+
+
 def _fnrun_prebaseline_splices(editor_ds, skey, tv_text, def_disp_line,
                                def_name):
     """The params panel just queued signature splices for a def whose run
@@ -2957,7 +3062,8 @@ def _fnrun_prebaseline_splices(editor_ds, skey, tv_text, def_disp_line,
     text = tv_text
     try:
         for start, length, new in sorted(
-                editor_ds.__dict__.get('_fnrun_splices', ()),
+                _fnrun_resolve_splices(
+                    text, editor_ds.__dict__.get('_fnrun_splices', ())),
                 key=lambda t: -t[0]):
             text = text[:start] + new + text[start + length:]
         got = _fnrun_extract_def_text(text, (def_disp_line or 0) + 1, def_name)
@@ -3050,11 +3156,13 @@ def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
             statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
                                      f"found in live modules or source", 'live')
         else:
-            ok, err = _fnrun_run(fn, instrumented=True,
-                                 params=_fnrun_params_from_node(
-                                     _fnrun_def_node_for(
-                                         editor_ds, skey, code_root,
-                                         def_name, def_buf_line, tv_text)))
+            # Inputs come from the COMPILED PENDING CODE - and the signature
+            # defaults - never from a cached parse node: the gate above
+            # made pending equal the editor buffer, so those defaults ARE
+            # what the editor (and, once its splice landed, the params
+            # panel) shows. Passing node-derived kwargs here calls the def
+            # with whatever an older tree held.
+            ok, err = _fnrun_run(fn, instrumented=True)
             statuses[skey] = (('ok', Melty.frame_count, 'live') if ok
                               else ('err', err, 'live'))
             _fnrun_after_live_run(editor_ds)
@@ -3171,18 +3279,35 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
             editor_ds.invalidate()
         draw_state.invalidate()
         request_render()
-    # A panel edit is observed HERE, inside the deferred window render - but
-    # the splice that puts it into the source happens in the def widget's
-    # body (draw_run_fn_token_plain's _edit branch), which lives inside the
-    # editor's blit-cached tile and only re-runs if something dirties it.
-    # Nothing else does: this panel is its own root window, so the edit never
-    # touches the editor's tiles. Invalidate the editor so the widget re-runs
-    # next frame, sees the latched changed, and splices the new default.
-    if _ch and editor_ds is not None:
-        # TEMP DEBUG (paired with "fnrun widget panel-ret").
-        _ptrace("fnrun panel edit", def_name=fnrun_name)
-        editor_ds.invalidate()
-        request_render()
+    # A params edit writes the CODE from right here - this panel is the only
+    # place that knows it happened, and it must not wait for the def widget
+    # (which renders only while the def line is in the viewport: routing the
+    # write through it left the text - what every run compiles - without the
+    # panel's values whenever the def was scrolled away). With auto_execute
+    # the edit already ran above; the write-back rides a trailing window so
+    # a drag doesn't pay splice → reparse per tick. Otherwise it's immediate.
+    if _ch and editor_ds is not None and fnrun_file and fnrun_name:
+        _skey = (str(fnrun_file), fnrun_name)
+        _pt = getattr(editor_ds, '_fnrun_hold_timer', None)
+        if _pt is not None:
+            _pt.cancel()
+        if auto_execute:
+            from src.lsd.gl_gui.toggles import Toggles
+            _hd = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
+            import threading as _thr
+
+            def _flush(_ed=editor_ds, _sk=_skey, _dn=fnrun_name,
+                       _hint=fnrun_line or 0, _vals=input_value):
+                _fnrun_queue_panel_splices(_ed, _sk, _dn, _hint, values=_vals)
+
+            _t = _thr.Timer(max(_hd, 0.01),
+                            lambda: Melty.post_to_render(_flush))
+            _t.daemon = True
+            editor_ds._fnrun_hold_timer = _t
+            _t.start()
+        else:
+            _fnrun_queue_panel_splices(editor_ds, _skey, fnrun_name,
+                                       fnrun_line or 0, values=input_value)
     return _ch, _val
 
 
@@ -3338,7 +3463,23 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         # happens only in the debounce-expiry branch below.
         _shown = _shown_map.get(skey)
         if _shown is None:
-            _shown = _shown_map[skey] = _params_node
+            _shown = _shown_map[skey] = _fnrun_detach(_params_node)
+        # Per-param "source the panel last SAW": a param whose rendered
+        # source still equals that was not touched in the panel, and the
+        # splice below must leave its expression alone: the shown node can be
+        # an older parse than the code (that is the latch's point), and
+        # writing the changed param back snapped typed-in defaults
+        # back to stale values ("the inputs revert when a live view
+        # opens"). Seeded from the node on first show; advanced by the
+        # text→panel sync and by each splice.
+        _seen_map = getattr(editor_ds, '_fnrun_param_seen', None)
+        if _seen_map is None:
+            _seen_map = editor_ds._fnrun_param_seen = {}
+        _seen = _seen_map.get(skey)
+        if _seen is None:
+            _seen = _seen_map[skey] = {
+                _pk: _fnrun_param_src(_pv) for _pk, _pv in _shown.items()
+                if isinstance(_pk, str) and not _pk.startswith('__')}
         _pch, _pnv, _pw = draw_fnrun_params_panel(
             _shown, name=f"{def_name} params##fnpp::{def_name}",
             mode=Mode.WINDOW, closed=not _pp_want,
@@ -3357,73 +3498,9 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         _ptrace("fnrun widget panel-ret", def_name=def_name, pch=bool(_pch),
                 pnv=type(_pnv).__name__, tv=tv_text is not None)
 
-        def _apply_splices(_vals):
-            """Diff each param's RENDERED SOURCE against the signature TEXT —
-            never against a value snapshot: the panel renders deferred and
-            mutates the node in place between our runs, so by the time the
-            changed latch reaches us the node already holds the new value
-            and old-vs-new compares equal (the never-splices bug). The text
-            is the truth this widget writes; unedited params round-trip
-            byte-identically through _fnrun_param_src (CodeLine IS source;
-            values keep their __cst__ formatting), so only a real edit
-            produces a differing expression."""
-            for _pk, _pv in _vals.items():
-                if not isinstance(_pk, str) or _pk.startswith('__'):
-                    continue
-                _sp = _fnrun_sig_default_span(tv_text, def_disp_line or 0,
-                                              _pk)
-                if _sp is None:
-                    continue
-                _new_src = _fnrun_param_src(_pv)
-                if tv_text[_sp[0]:_sp[1]] == _new_src:
-                    continue
-                _ptrace("fnrun widget diff", key=_pk, span=_sp,
-                        new=repr(_new_src)[:32])
-                editor_ds.__dict__.setdefault('_fnrun_splices', []).append(
-                    (_sp[0], _sp[1] - _sp[0], _new_src))
-                _params_node[_pk] = _pv
-            _fnrun_prebaseline_splices(editor_ds, skey, tv_text, def_disp_line,
-                                       def_name)
-            editor_ds.invalidate()
-            request_render()
-
-        _ae_on = (bool(editor_state.params_auto_execute.get(def_name))
-                  if editor_state is not None else False)
-        _hold_map = getattr(editor_ds, '_fnrun_splice_hold', None)
-        if _hold_map is None:
-            _hold_map = editor_ds._fnrun_splice_hold = {}
-        if _pch and isinstance(_pnv, dict) and tv_text is not None:
-            if _ae_on:
-                # AUTO EXECUTE: the edit already RAN (the panel triggers the
-                # cached compiled result with explicit params per edit) - the
-                # text write-back is deferred to a TRAILING edge, re-armed
-                # per edit, so a drag doesn't fire splice → dirty=True →
-                # save → reparse per tick. The panel node holds the values;
-                # the hold-expiry branch below splices them once, quiet-side.
-                from src.lsd.gl_gui.toggles import Toggles
-                _hd = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
-                _hold_map[skey] = time.monotonic() + _hd
-                import threading as _thr
-                _pt = getattr(editor_ds, '_fnrun_hold_timer', None)
-                if _pt is not None:
-                    _pt.cancel()
-                _t = _thr.Timer(max(_hd, 0.01), request_render)
-                _t.daemon = True
-                editor_ds._fnrun_hold_timer = _t
-                _t.start()
-            else:
-                _apply_splices(_pnv)
-        elif (_hold_map.get(skey) is not None and tv_text is not None
-              and isinstance(_pnv, dict)):
-            # Deferred auto-execute write-back: one splice only at the
-            # trailing edge (or immediately once Auto Execute is toggled
-            # off - the hold must never strand panel values out of the code).
-            if time.monotonic() >= _hold_map[skey] or not _ae_on:
-                _hold_map[skey] = None
-                _apply_splices(_pnv)
-            else:
-                editor_ds.invalidate()   # timer wakes the expiry frame
-        elif isinstance(_params_node, dict) and tv_text is not None:
+        # The panel writes its own edits to the code (draw_fnrun_params_panel
+        # → _fnrun_queue_panel_splices); this widget only syncs TEXT → PANEL.
+        if isinstance(_params_node, dict) and tv_text is not None:
             # TEXT → PANEL sync (the reverse of the splice above): a
             # signature edit done in the editor shows in the open panel
             # immediately instead of waiting out the debounced background
@@ -3493,6 +3570,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                     except Exception:
                         continue        # mid-typing fragment - try later
                     dict.__setitem__(_params_node, _pk, _val)
+                    dict.__setitem__(_shown, _pk, _val)   # the displayed copy
+                    _seen[_pk] = _txt
                     _synced = True
                 # Expiry is ALSO the only place the displayed-node cach
                 # advances to the current (usually post-reparse) node - the
@@ -3502,7 +3581,14 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                     Melty.cache.invalidate_up(_pw._tile_id, force=True,
                                               max_depth=8)
                     request_render()
-                _shown_map[skey] = _params_node
+                # The latch advances to the current parse: its values come
+                # from the editor, so they are all "seen". Detached copy -
+                # see _fnrun_detach.
+                _seen.update({
+                    _pk: _fnrun_param_src(_pv)
+                    for _pk, _pv in _params_node.items()
+                    if isinstance(_pk, str) and not _pk.startswith('__')})
+                _shown_map[skey] = _fnrun_detach(_params_node)
     _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
                              def_line, def_name, code_root, def_buf_line,
                              tv_text, def_disp_line, status)
@@ -3515,16 +3601,14 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
 
     if live_clicked:
         _mode = 'live'
-        fn = _fnrun_resolve(file_path, def_line, def_name)
+        # Same truth as the auto-run: the pending code, with its own
+        # signature defaults (no node-derived kwargs, see the auto-run).
+        fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
         if fn is None:
             statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
                                      f"found in live modules or source", _mode)
         else:
-            ok, err = _fnrun_run(fn, instrumented=True,
-                                 params=_fnrun_params_from_node(
-                                     _fnrun_def_node_for(
-                                         editor_ds, skey, code_root,
-                                         def_name, def_buf_line, tv_text)))
+            ok, err = _fnrun_run(fn, instrumented=True)
             statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
                               else ('err', err, _mode))
             _fnrun_after_live_run(editor_ds)
@@ -12851,6 +12935,8 @@ def draw_text(input_value: str, height=None,
     # ones, through the same text path as token-widget edits, so they
     # save/undo like keystrokes.
     _pp_splices = ds.__dict__.pop('_fnrun_splices', None)
+    if _pp_splices:
+        _pp_splices = _fnrun_resolve_splices(text, _pp_splices)
     if _pp_splices:
         for _ps, _pl, _pv in sorted(_pp_splices, reverse=True):
             _ptrace("editor params-splice", name=ds.name, at=_ps,
