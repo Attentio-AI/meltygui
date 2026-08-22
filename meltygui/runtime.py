@@ -3820,17 +3820,20 @@ class Melty:
         Melty.cache.finalize_captures((int(fb_w), int(fb_h)))
         _gt.stamp("captures")
         _ps_t3 = _pp()
+        
+        if Toggles.filter_brightness:
+            Melty.filter.brightness_contrast(
+                         input_framebuffer=0,
+                         output_framebuffer=0,
+                         brightness=Toggles.brightness,
+                         contrast=Toggles.contrast,
+                         width=int(fb_w),
+                         height=int(fb_h)
+                     )
+
 
         if Toggles.filters:
-            Melty.filter.brightness_contrast(
-                input_framebuffer=0,
-                output_framebuffer=0,
-                brightness=Toggles.brightness,
-                contrast=Toggles.contrast,
-                width=int(fb_w),
-                height=int(fb_h)
-            )
-
+         
             # if Toggles.draw_melty:
             total_layers = 1.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 100.0
             diff = (total_layers * 65535.0)

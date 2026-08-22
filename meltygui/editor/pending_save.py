@@ -1265,7 +1265,7 @@ class PendingSave:
         return summary
 
 
-@window(disable_scroll=False, z_offset=0, tint=(0.34, 0.644, 0.583))
+@window(disable_scroll=False, z_offset=0, tint=(0.77, 0.95, 0.91))
 @render_func()
 def draw_pending_saves():
     pass

@@ -4118,7 +4118,7 @@ dropdown_demo_data = {
 drop_down_selection = None
 # hey there
 @render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
-             show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header, tint=(0.72, 0.11, 0.11))
+             show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict

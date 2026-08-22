@@ -947,7 +947,7 @@ class Toggles:
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
         editor_saturation = 0.394
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        editor_value = 0.051
+        editor_value = 0.346
 
 
         # Assignment propagation: a local defined FROM tinted symbols takes a
@@ -1114,6 +1114,40 @@ class Toggles:
         # operation and a ~64->128MB atlas at 1.25 - so it is a setting to
         # change deliberately, not to animate. 1.0 = the authored look.
         scale = 1.00
+
+    @defaults(tint=(0.545, 0.451, 0.248))
+    class Fonts:
+        # Subpixel (LCD & "ClearType"-style) text anti-aliasing. The at
+        # atlas is baked 3x oversampled horizontally, and each glyph quad
+        # covers 3 atlas texels per screen pixel; the imgui renderer
+        # (split_overlay_renderer.py) samples those as per-channel R/G/B
+        # coverage and blends them with dual-source blending - tripling the
+        # horizontal resolution of lines and curves the way IntelliJ and the
+        # desktop do. Off = classic grayscale AA (same atlas, one tap).
+        # Turn off on a ROTATED monitor (stripes run vertically there) or
+        # when text must be fringe-free. Read live per frame.
+        lcd_subpixel = True
+
+        # Subpixel stripe order of the panel. Nearly every desktop panel is
+        # RGB left-to-right; a BGR panel shows orange/blue fringes on the
+        # wrong sides of every glyph - flip this. Read live per frame.
+        lcd_bgr = False
+
+        # Contrast curve on glyph coverage: coverage ** (1 / text_gamma).
+        # > 1 darkens the anti-aliased mid-tones so strokes read thicker
+        # (Java2D's "high contrast"); 1.0 = linear coverage, the unaltered
+        # rasterizer output. Applies in both LCD and grayscale modes to glyphs
+        # only - never to rects / lines / images. Read live per frame.
+        text_gamma = 1.0
+
+        # Replace stb_truetype's glyph bitmaps with FreeType light-hinted
+        # LCD renders at atlas bake (FontManager.hint_atlas): baselines,
+        # x-heights and crossbars snap to pixel rows instead of smearing
+        # over two - the other half of the LCD look, grayscale being the
+        # first. Needs freetype-py; glyphs the hinter grows past their
+        # atlas rect keep stb's bitmap. Read at atlas bake: must under a
+        # UI-scale change to apply.
+        freetype_hinting = True
 
     # [icon=""]
     @defaults(tint=(0.36, 0.42, 0.52))
@@ -1422,6 +1456,10 @@ class Toggles:
         # Idle time after the last keystroke before a request is sent.
         debounce_s = 0.25
 
+        # Only generate when the caret is at the end of its line (nothing but
+        # whitespace after it) - never mid-line. Off = complete anywhere.
+        only_at_line_end = True
+
         # Ghost text is shown one CHUNK at a time: this many newline-
         # separated lines (a partial rest-of-line counts as one). Tab
         # accepts the chunk and the next one appears instantly from the
@@ -1518,7 +1556,7 @@ class Toggles:
         # references them (store key / draw / attr / frame / module).
         # A few seconds of gc walk, OOM-time only.
         oom_holder_report = True
-        
+
 
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:
@@ -1581,12 +1619,13 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.609
+    brightness = 0.085
     # [tint=(0.458, 0.474, 0.5)]
-    contrast = 2.132
+    contrast = 1.116
 
     debug_z_depth = False
     filters = True
+    filter_brightness = False
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False

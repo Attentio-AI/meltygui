@@ -50,6 +50,28 @@ def server_installed() -> bool:
     return LS_ENTRY.exists()
 
 
+def cached_login_user(config_dir=None):
+    """The signed-in GitHub user from the Copilot token file on disk, or
+    None — WITHOUT spawning the language server. Lets the accounts window
+    show sign-in state at startup with no process spawn and no web request.
+    `config_dir` is the account's XDG_CONFIG_HOME (None = the user default,
+    shared with the IDE plugins)."""
+    base = Path(os.path.expanduser(config_dir)) if config_dir else (Path.home() / ".config")
+    for name in ("apps.json", "hosts.json"):
+        f = base / "github-copilot" / name
+        try:
+            if not f.exists():
+                continue
+            data = json.loads(f.read_text())
+        except Exception:
+            continue
+        for entry in (data.values() if isinstance(data, dict) else []):
+            if isinstance(entry, dict):
+                if entry.get("oauth_token") or entry.get("user"):
+                    return entry.get("user") or "signed in"
+    return None
+
+
 def install_server(log=print) -> bool:
     """`npm install` the language server under LS_ROOT (network). Blocking —
     call from a worker thread."""

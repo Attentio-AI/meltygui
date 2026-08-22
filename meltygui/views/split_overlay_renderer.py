@@ -47,11 +47,147 @@ class SplitOverlayRenderer(GlfwRenderer):
     debug_static_mask = False
     debug_static_rect = (400, 400, 400, 400)  # screen-space (x, y, w, h)
 
+    # LCD subpixel text. The font atlas is 3x oversampled horizontally
+    # (fonts.py, FontSpec.oversample), so a glyph edge covers exactly three
+    # atlas texels per screen pixel and the texel at -1/0/+1 IS the coverage
+    # of the R/G/B sub's centre (stb's 3-wide box prefilter = FreeType's
+    # 'light' LCD filter). Dual-source blending applies that per channel:
+    #   dst = src.rgb * cov.rgb + dst * (1 - cov.rgb)
+    # Everything else imgui draws keeps exact stock behaviour: solid
+    # geometry (rects, fills, AA fringes) uses the atlas white pixel with a
+    # CONSTANT uv -> fwidth(uv) == 0 exactly; thin AA lines sample the
+    # TexUvLines strip, which only varies in u -> the two-axis test keeps
+    # them grayscale; images/tiles are actual textures (Atlas == 0) and get
+    # uniform coverage == alpha, which with the same blend func is plain
+    # alpha blending. Proven byte-identical for non-glyph UI lists.
+    FRAGMENT_SHADER_SRC = """
+    #version 330
+
+    uniform sampler2D Texture;
+    uniform vec2 TexelSize;   // 1 / font atlas size
+    uniform int Atlas;        // 1: this command samples the font atlas
+    uniform int Lcd;          // Toggles.Fonts.lcd_subpixel
+    uniform int Bgr;          // Toggles.Fonts.lcd_bgr
+    uniform float Gamma;      // Toggles.Fonts.text_gamma
+    in vec2 Frag_UV;
+    in vec4 Frag_Color;
+    layout(location = 0, index = 0) out vec4 Out_Color;
+    layout(location = 0, index = 1) out vec4 Out_Cov;
+
+    void main() {
+        vec4 t = texture(Texture, Frag_UV.st);
+        vec3 cov = vec3(t.a);
+        if (Atlas == 1) {
+            vec2 fw = fwidth(Frag_UV);
+            if (fw.x > 0.0 && fw.y > 0.0) {
+                if (Lcd == 1) {
+                    float l = texture(Texture, Frag_UV.st - vec2(TexelSize.x, 0.0)).a;
+                    float r = texture(Texture, Frag_UV.st + vec2(TexelSize.x, 0.0)).a;
+                    cov = (Bgr == 1) ? vec3(r, t.a, l) : vec3(l, t.a, r);
+                }
+                cov = pow(cov, vec3(1.0 / Gamma));
+            }
+        }
+        float a = Frag_Color.a;
+        Out_Color = vec4(Frag_Color.rgb * t.rgb, a * t.a);
+        Out_Cov   = vec4(cov * a, a * t.a);
+    }
+    """
+
+    _STOCK_FRAGMENT_SHADER_SRC = GlfwRenderer.FRAGMENT_SHADER_SRC
+
     def __init__(self, window, attach_callbacks: bool = True):
+        # Set before super().__init__: it builds the device objects (shader)
+        # and the font texture, both of which the overrides below stamp onto
+        # these slots.
+        self._lcd_ok = False
+        self._loc_texel = self._loc_atlas = self._loc_lcd = self._loc_bgr = self._loc_gamma = -1
+        self._atlas_texel = (0.0, 0.0)
         super().__init__(window, attach_callbacks=attach_callbacks)
         self._has_overlay = False
         self._scaled_this_frame = False
         self._mask_debug_logged = False
+
+    def _create_device_objects(self):
+        """Build the LCD program; if the driver can't link it (no dual-source
+        blending), fall back to the stock shader + stock blending so text
+        still renders, just grayscale."""
+        try:
+            super()._create_device_objects()
+            if not gl.glGetProgramiv(self._shader_handle, gl.GL_LINK_STATUS):
+                raise RuntimeError(gl.glGetProgramInfoLog(self._shader_handle))
+            self._loc_texel = gl.glGetUniformLocation(self._shader_handle, "TexelSize")
+            self._loc_atlas = gl.glGetUniformLocation(self._shader_handle, "Atlas")
+            self._loc_lcd = gl.glGetUniformLocation(self._shader_handle, "Lcd")
+            self._loc_bgr = gl.glGetUniformLocation(self._shader_handle, "Bgr")
+            self._loc_gamma = gl.glGetUniformLocation(self._shader_handle, "Gamma")
+            self._lcd_ok = min(self._loc_texel, self._loc_atlas, self._loc_lcd,
+                               self._loc_bgr, self._loc_gamma) >= 0
+        except Exception as e:
+            print(f"SplitOverlayRenderer: LCD text shader unavailable ({e}); "
+                  f"falling back to grayscale text")
+            self._lcd_ok = False
+        if not self._lcd_ok:
+            self.FRAGMENT_SHADER_SRC = self._STOCK_FRAGMENT_SHADER_SRC
+            super()._create_device_objects()
+
+    def refresh_font_texture(self):
+        """Stock upload, with the atlas routed through FontManager.hint_atlas
+        (FreeType light-hinted LCD glyphs) when enabled. Same GL state
+        handling as the base: save/restore the bound texture, delete the
+        previous atlas texture, clear imgui's CPU copy after upload."""
+        last_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+        width, height, pixels = self.io.fonts.get_tex_data_as_rgba32()
+        pixels = self._hinted_atlas(width, height, pixels) or pixels
+
+        if self._font_texture is not None:
+            gl.glDeleteTextures([self._font_texture])
+        self._font_texture = gl.glGenTextures(1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self._font_texture)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, width, height, 0,
+                        gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, pixels)
+        self.io.fonts.texture_id = self._font_texture
+        gl.glBindTexture(gl.GL_TEXTURE_2D, last_texture)
+        self.io.fonts.clear_tex_data()
+        self._atlas_texel = (1.0 / max(1, width), 1.0 / max(1, height))
+
+    def _hinted_atlas(self, width, height, pixels):
+        """FreeType-hinted texels for the atlas imgui just built, or None to
+        upload stb's. Only a FontManager with live handles (it baked the
+        current atlas) may probe it. NB: pyimgui returns a fresh wrapper
+        from every get_io(), so io identity can't be compared."""
+        from src.lsd.gl_gui.toggles import Toggles
+        if not Toggles.Fonts.freetype_hinting:
+            return None
+        from src.lsd.gl_gui.melty import Melty
+        fm = getattr(Melty, "font_mgr", None)
+        if fm is None or not fm._handles:
+            return None
+        try:
+            return fm.hint_atlas(width, height, pixels)
+        except Exception as e:  # never let the atlas upload fail over hinting
+            print(f"SplitOverlayRenderer: FreeType hinting pass failed ({e!r}); "
+                  f"uploading stb atlas")
+            return None
+
+    def _bind_text_mode(self) -> int:
+        """Blend func + per-frame LCD uniforms for the bound program. Returns
+        the font texture id the per-command Atlas uniform compares against,
+        or -1 when running the stock shader."""
+        if not self._lcd_ok:
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            return -1
+        from src.lsd.gl_gui.toggles import Toggles
+        gl.glBlendFuncSeparate(gl.GL_SRC1_COLOR, gl.GL_ONE_MINUS_SRC1_COLOR,
+                               gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        gl.glUniform2f(self._loc_texel, *self._atlas_texel)
+        gl.glUniform1i(self._loc_lcd, 1 if Toggles.Fonts.lcd_subpixel else 0)
+        gl.glUniform1i(self._loc_bgr, 1 if Toggles.Fonts.lcd_bgr else 0)
+        gamma = float(Toggles.Fonts.text_gamma)
+        gl.glUniform1f(self._loc_gamma, gamma if gamma > 0.0 else 1.0)
+        return int(self._font_texture) if self._font_texture is not None else -1
 
     def begin_frame_split(self) -> None:
         """Snapshot whether the foreground list has content. Call after the UI
@@ -110,7 +246,6 @@ class SplitOverlayRenderer(GlfwRenderer):
 
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendEquation(gl.GL_FUNC_ADD)
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glDisable(gl.GL_CULL_FACE)
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glEnable(gl.GL_SCISSOR_TEST)
@@ -128,6 +263,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glUseProgram(self._shader_handle)
         gl.glUniform1i(self._attrib_location_tex, 0)
         gl.glUniformMatrix4fv(self._attrib_proj_mtx, 1, gl.GL_FALSE, ortho_projection)
+        font_tex = self._bind_text_mode()
         gl.glBindVertexArray(self._vao_handle)
 
         # Upload the merged foreground vtx/idx buffers once for all channels.
@@ -222,6 +358,8 @@ class SplitOverlayRenderer(GlfwRenderer):
                 if seg_hi <= seg_lo:
                     continue
                 gl.glBindTexture(gl.GL_TEXTURE_2D, cmd.texture_id)
+                if font_tex >= 0:
+                    gl.glUniform1i(self._loc_atlas, 1 if int(cmd.texture_id) == font_tex else 0)
                 x, y, z, w = cmd.clip_rect
                 gl.glScissor(int(x), int(fb_height - w), int(z - x), int(w - y))
                 gl.glDrawElements(gl.GL_TRIANGLES, seg_hi - seg_lo, gltype,
@@ -345,7 +483,6 @@ class SplitOverlayRenderer(GlfwRenderer):
 
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendEquation(gl.GL_FUNC_ADD)
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glDisable(gl.GL_CULL_FACE)
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glEnable(gl.GL_SCISSOR_TEST)
@@ -364,6 +501,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glUseProgram(self._shader_handle)
         gl.glUniform1i(self._attrib_location_tex, 0)
         gl.glUniformMatrix4fv(self._attrib_proj_mtx, 1, gl.GL_FALSE, ortho_projection)
+        font_tex = self._bind_text_mode()
         gl.glBindVertexArray(self._vao_handle)
 
         for commands in command_lists:
@@ -387,6 +525,8 @@ class SplitOverlayRenderer(GlfwRenderer):
 
             for command in commands.commands:
                 gl.glBindTexture(gl.GL_TEXTURE_2D, command.texture_id)
+                if font_tex >= 0:
+                    gl.glUniform1i(self._loc_atlas, 1 if int(command.texture_id) == font_tex else 0)
 
                 x, y, z, w = command.clip_rect
                 gl.glScissor(int(x), int(fb_height - w), int(z - x), int(w - y))

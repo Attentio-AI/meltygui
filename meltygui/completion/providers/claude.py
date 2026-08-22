@@ -31,17 +31,43 @@ Rules:
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_+-]*\n(.*?)\n?```\s*$", re.S)
 
 
+def has_credentials(account="default") -> bool:
+    """True when Claude can be reached at all: an account key, an
+    ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN env var, or an `ant auth login`
+    profile on disk. Cheap — filesystem + env only, no import, no network."""
+    try:
+        from src.lsd.gl_gui.view.playground.internet_accounts import account_field
+        if account_field("anthropic", account, "api_key"):
+            return True
+    except Exception:
+        pass
+    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        return True
+    d = os.environ.get("ANTHROPIC_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".config", "anthropic")
+    creds = os.path.join(d, "credentials")
+    try:
+        return os.path.isdir(creds) and any(f.endswith(".json") for f in os.listdir(creds))
+    except OSError:
+        return False
+
+
 class ClaudeSession(FimSession):
     """One Anthropic client. Credentials come from the Internet Accounts
     entry `account` (kind "anthropic": `api_key`, `base_url`); with no key
     stored the SDK's normal resolution applies (ANTHROPIC_API_KEY /
-    ANTHROPIC_AUTH_TOKEN env, an `ant auth login` profile)."""
+    ANTHROPIC_AUTH_TOKEN env, an `ant auth login` profile).
+
+    Claude is NOT loaded (no `import anthropic`, no client) unless a
+    credential exists — construction raises early otherwise, so a studio
+    with no key never pays the anthropic import or a doomed request."""
     KIND = "anthropic"
 
     def __init__(self, account="default", base_url=None, timeout_s=30.0):
+        self.account = account
+        if not has_credentials(account):
+            raise RuntimeError("no Anthropic API key — add one in Internet Accounts")
         import anthropic
         from src.lsd.gl_gui.view.playground.internet_accounts import account_field
-        self.account = account
         key = account_field("anthropic", account, "api_key")
         base_url = base_url or account_field("anthropic", account, "base_url")
         kw = {"timeout": timeout_s, "max_retries": 1}
@@ -60,6 +86,9 @@ class ClaudeSession(FimSession):
             self.client.close()
         except Exception:
             pass
+
+    def alive(self):
+        return getattr(self, "client", None) is not None
 
 
 def _window(req: FimRequest, prefix_chars: int, suffix_chars: int):

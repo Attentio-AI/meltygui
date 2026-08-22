@@ -8936,7 +8936,7 @@ def draw_text(input_value: str, height=None,
               single_line=False, is_search_box=False, focusable=True,
               draw_state=None, text_editor_state: TextEditorState = None,
               request_focus=False, select_all_on_focus=False,
-              wrap=False, line_height=1.149, font=Font.FONTAWESOME_MONO_19, jump_to=None,
+              wrap=False, line_height=1.2, font=Font.FONTAWESOME_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
@@ -8965,6 +8965,8 @@ def draw_text(input_value: str, height=None,
     
     
     ds = draw_state
+    
+    cursor_pos = imgui.get_cursor_screen_pos()  # ← cursor_pos = (13.5, 13.5)
 
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
@@ -10733,18 +10735,16 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
-            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)
-                  or pressed(glfw.KEY_TAB)) and _ac_cands and not ctrl:
+            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _ac_cands and not ctrl:
+                # Tab is deliberately NOT an accept key here - it belongs to the
+                # FIM ghost text accept (fim.py). This popup accepts on Enter.
                 chosen = _ac_cands[min(_ac_idx, len(_ac_cands) - 1)]
                 anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
                 # Replace the half-typed identifier [anchor, caret) with the
-                # pick. Tab additionally overwrites the rest of the word under
-                # the caret (IntelliJ semantics); Enter inserts, leaving it.
+                # pick as Enter inserts, leaving the rest of the word under the
+                # caret intact. (Tab is no longer a popup-accept key - it
+                # drives the FIM ghost, so the old Tab-overtype is gone.)
                 _replace_to = ds.text_cursor_pos
-                if pressed(glfw.KEY_TAB):
-                    while _replace_to < len(text) and (text[_replace_to].isalnum()
-                                                       or text[_replace_to] == '_'):
-                        _replace_to += 1
 
                 _ins, _coff, _extra = _ac_pick_insert(ds, chosen,
                                                       following=text[_replace_to:_replace_to + 64],
@@ -10772,14 +10772,14 @@ def draw_text(input_value: str, height=None,
                 changed = True
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
-                _fired.discard(glfw.KEY_TAB)
 
         # --- FIM ghost text: accept / dismiss (fim_state) --- reads LAST frame's
         # ghost (what the user is looking at). Runs after the suggestion popup's
-        # handlers - that popup owns Tab while open - and before the indent /
-        # caret handlers, consuming its keys the same way. Tab = the visible
-        # chunk (Ctrl+Tab = everything buffered), Ctrl+Right = one word, Esc
-        # disc the the buffer (not dismiss - Esc keeps doing other jobs).
+        # handlers and before the indent / caret handlers, consuming its keys
+        # the same way. Tab = the current chunk (Ctrl+Tab = everything
+        # buffered), Ctrl+Right = one word. Esc = drop the buffer (not
+        # dismiss - Esc keeps its old jobs). Tab drives the ghost even when
+        # the completion popup is also open (the popup accepts on Enter).
         _fim_ghost_prev = getattr(ds, '_fim_ghost', None)
         if (fim_state is not None and _fim_ghost_prev is not None and _fim_ghost_prev.text
                 and not is_search_box and not single_line):
@@ -10788,8 +10788,7 @@ def draw_text(input_value: str, height=None,
                 ds._fim_ghost = None
             else:
                 _fim_mode = None
-                if (pressed(glfw.KEY_TAB) and not shift
-                        and not getattr(ds, '_ac_open', False)):
+                if pressed(glfw.KEY_TAB) and not shift:
                     _fim_mode = "all" if ctrl else "chunk"
                 elif pressed(glfw.KEY_RIGHT) and ctrl and not shift:
                     _fim_mode = "word"

@@ -1,9 +1,12 @@
+import ctypes
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple
 
 import imgui
+import numpy as np
 
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 
@@ -54,7 +57,18 @@ class FontSpec:
     merge: bool = False
     glyph_ranges: Optional[Tuple[int, ...]] = None
     extra_spacing: float = 0.0
+    # HORIZONTAL oversampling (vertical is always 1, see prewarm). MUST stay
+    # 3: the renderer's LCD text shader (split_overlay_renderer.py) reads
+    # the atlas as a subpixel bitmap - every glyph quad spans exactly
+    # `oversample` atlas texels per sub width, and the shader samples at
+    # -1/0/+1 texels for the R/G/B subpixel coverages. stb's box prefilter
+    # over those 3 texels is FreeType's 'light' LCD filter. Any other value
+    # puts the R/B samples off the subpixel centres.
     oversample: int = 3
+    # Replace stb's raw bitmaps with FreeType auto-hinted LCD renders
+    # (see FontManager.hint_atlas). Off for decorative sizes where hinting
+    # buys nothing; sizes above HINT_MAX_SIZE px are skipped regardless.
+    hint: bool = True
 
 
 _JETBRAINS_MONO = str(_RESOURCES / "JetBrainsMono-Regular.ttf")
@@ -83,14 +97,13 @@ class Font(RelaxedEnum):
     DEJAVU_SANS_50 = FontSpec(_DEJAVU_SANS, 50.0)
     DEJAVU_SANS_22 = FontSpec(_DEJAVU_SANS, 22.0)
 
-
     JETBRAINS_MONO_30 = FontSpec(_JETBRAINS_MONO, 30.0)
     JETBRAINS_MONO_13 = FontSpec(_JETBRAINS_MONO, 13.0)
     JETBRAINS_MONO_14 = FontSpec(_JETBRAINS_MONO, 14.0)
     JETBRAINS_MONO_15 = FontSpec(_JETBRAINS_MONO, 15.0)
     JETBRAINS_MONO_16 = FontSpec(_JETBRAINS_MONO, 16.0, glyph_ranges=_MONO_TUI_RANGE)
     JETBRAINS_MONO_18 = FontSpec(_JETBRAINS_MONO, 18.0)
-    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 20, glyph_ranges=_MONO_TUI_RANGE)
+    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 18.5, glyph_ranges=_MONO_TUI_RANGE)
     FONTAWESOME_MONO_19 = _fa_merge(16.0)
 
     JETBRAINS_MONO_20 = FontSpec(_JETBRAINS_MONO, 20.0)
@@ -128,6 +141,24 @@ def detect_auto_scale(window=None) -> float:
         return 1.5 if (mode.size.width >= 3840 or mode.size.height >= 2160) else 1.0
     except Exception:
         return 1.0
+
+
+# Fonts baked larger than this (px, after UI scale) keep stb's bitmaps:
+# hinting is a small-size legibility aid and the FreeType hint costs ~1 ms
+# per glyph row-set, so the 40/50 px display faces are not worth it.
+HINT_MAX_SIZE = 32.0
+
+
+def _expand_ranges(ranges: Tuple[int, ...]):
+    """imgui glyph-range list (lo, hi, lo, hi, ..., 0) -> codepoints."""
+    out = []
+    it = iter(ranges)
+    for lo in it:
+        if lo == 0:
+            break
+        hi = next(it, 0)
+        out.extend(range(lo, hi + 1))
+    return out
 
 
 class FontManager:
@@ -173,18 +204,12 @@ class FontManager:
         return True
 
     def _oversample(self, spec: FontSpec) -> int:
-        """Oversampling for a spec at the current scale.
-
-        Oversampling buys SUBPIXEL positioning accuracy, so what matters is
-        samples per glyph relative to glyph size — scaling the glyph up
-        already delivers that. Left exactly at the authored value for scale
-        <= 1 (so 1.0 bakes the atlas it always did) and walked down as the
-        scale grows, because atlas AREA goes as oversample squared: holding
-        it at 3 turns a 64 MB atlas into 256 MB at 2x for no visible gain.
-        """
-        if self.scale <= 1.0:
-            return spec.oversample
-        return min(spec.oversample, max(1, round(spec.oversample / self.scale)))
+        """Horizontal oversampling for a spec — the authored value at EVERY
+        scale. It used to walk down as the UI scale grew (atlas area), but
+        the LCD text shader needs exactly 3 atlas texels per screen pixel
+        regardless of scale, and with oversample_v pinned to 1 the atlas
+        cost is linear in it (3x, not 9x)."""
+        return spec.oversample
 
     def prewarm(self):
         for font in Font:
@@ -207,9 +232,15 @@ class FontManager:
                 cfg = imgui.FontConfig(**merge_cfg)
             else:
                 over = self._oversample(spec)
+                # oversample_v stays 1 (imgui's own default): glyph Y is
+                # never sub-pixel positioned (RenderText floors pos.y), so
+                # vertical oversampling only smears the baseline, x-height and
+                # crossbars by ~1/N px - the "slightly soft text" look. It
+                # also keeps the atlas rows 1:1 with screen rows, which the
+                # LCD shader's horizontal-only taps rely on.
                 cfg = imgui.FontConfig(
                     oversample_h=over,
-                    oversample_v=over,
+                    oversample_v=1,
                     pixel_snap_h=True,
                 )
             try:
@@ -231,3 +262,149 @@ class FontManager:
 
     def get(self, font: Font):
         return self._handles.get(font)
+
+    # ------------------------------------------------------------------
+    # FreeType hinting pass
+    # ------------------------------------------------------------------
+    # stb_truetype (imgui's rasterizer) has no hinter: a 1.3 px stem or an
+    # x-height at 8.25 px lands wherever the outline puts it and smears over
+    # two pixel rows. FreeType's light autohinter grid-fits the outline
+    # VERTICALLY (baseline, x-height, crossbars snap to pixel rows) before
+    # rasterizing, and its LCD render mode emits 3 subpixel coverages per
+    # pixel - exactly the layout the LCD text shader already reads from the
+    # 3x-oversampled stb atlas (split_overlay_renderer.py). So the pass
+    # keeps imgui's glyph geometry (quads, advances, UVs) unchanged and just
+    # swaps the TEXELS: for every glyph whose hinted bitmap fits its stb
+    # rect it writes the FreeType coverage there; the few that grow a row
+    # under hinting (arrows, accent marks, `i`/`j`/`t` at ~10 px em) keep
+    # stb's bitmap. Harmony-mode FreeType pads each LCD bitmap by a zero
+    # pixel per side; clipping that to the rect is lossless.
+    #
+    # Glyph rects are not exposed by pyimgui, so they are PROBED: one
+    # throwaway imgui frame per font draws every codepoint with add_text and
+    # the quad + UV come back out of the draw data (4 vertices per glyph).
+    # Must run between frames (renderer init, FontManager.rebuild).
+
+    _FT_LOAD = None  # resolved lazily: freetype may be absent
+
+    def _ft_face(self, path: str):
+        import freetype
+        faces = self.__dict__.setdefault("_ft_faces", {})
+        face = faces.get(path)
+        if face is None:
+            face = freetype.Face(path)
+            faces[path] = face
+        return face
+
+    def _probe_glyph_rects(self, handle, cps, tex_w: int, tex_h: int):
+        """{cp: (qx0, qy0, qx1, qy1, tx0, ty0, tx1, ty1)} — quad in px
+        relative to the add_text pen, texel rect in the atlas. Codepoints
+        that emit no quad (spaces) are absent; imgui's fallback glyph shows
+        up as repeated rects, deduped by the caller."""
+        io = self.io
+        saved = (io.display_size, io.delta_time)
+        io.display_size = (4096.0, 4096.0)
+        io.delta_time = 1.0 / 60.0
+        out = {}
+        try:
+            imgui.new_frame()
+            dl = imgui.get_background_draw_list()
+            imgui.push_font(handle)
+            order = []
+            cell = 64
+            for i, cp in enumerate(cps):
+                x = float((i % 60) * cell)
+                y = float((i // 60) * cell)
+                n0 = dl.vtx_buffer_size
+                dl.add_text(x, y, 0xFFFFFFFF, chr(cp))
+                if dl.vtx_buffer_size == n0 + 4:
+                    order.append((cp, n0, x, y))
+            imgui.pop_font()
+            imgui.render()
+            dd = imgui.get_draw_data()
+            lists = dd.commands_lists
+            if not lists:
+                return out
+            cl = lists[0]
+            buf = ctypes.string_at(cl.vtx_buffer_data, cl.vtx_buffer_size * imgui.VERTEX_SIZE)
+            vs = imgui.VERTEX_SIZE
+            import struct
+            for cp, n0, x, y in order:
+                v0 = struct.unpack_from("ffff", buf, n0 * vs)
+                v2 = struct.unpack_from("ffff", buf, (n0 + 2) * vs)
+                out[cp] = (v0[0] - x, v0[1] - y, v2[0] - x, v2[1] - y,
+                           int(round(v0[2] * tex_w)), int(round(v0[3] * tex_h)),
+                           int(round(v2[2] * tex_w)), int(round(v2[3] * tex_h)))
+        finally:
+            io.display_size, io.delta_time = saved
+        return out
+
+    def hint_atlas(self, width: int, height: int, pixels: bytes):
+        """Return RGBA32 atlas bytes with FreeType light-hinted LCD glyphs
+        written into imgui's rects, or None when freetype is unavailable.
+        Stats land on `self.hint_stats` as {font name: (hinted, fallback)}."""
+        try:
+            import freetype
+        except ImportError:
+            if not getattr(self, "_ft_warned", False):
+                self._ft_warned = True
+                print("FontManager: freetype-py not installed; text stays unhinted "
+                      "(pip install freetype-py)")
+            return None
+        load_flags = (freetype.FT_LOAD_TARGET_LIGHT | freetype.FT_LOAD_FORCE_AUTOHINT
+                      | freetype.FT_LOAD_NO_BITMAP)
+        atlas = np.frombuffer(pixels, np.uint8).reshape(height, width, 4).copy()
+        alpha = atlas[..., 3]
+        stats = {}
+        for font in Font:
+            spec = font.value
+            handle = self._handles.get(font)
+            if spec.merge or not spec.hint or handle is None:
+                continue
+            size = max(self.MIN_SIZE, spec.size * self.scale)
+            if size > HINT_MAX_SIZE:
+                continue
+            cps = _expand_ranges(spec.glyph_ranges or _UI_RANGE)
+            rects = self._probe_glyph_rects(handle, cps, width, height)
+            face = self._ft_face(spec.path)
+            box = face.ascender - face.descender           # hhea, font units
+            scale = size / box                              # == stbtt_ScaleForPixelHeight
+            baseline = math.floor(face.ascender * scale + 1)  # imgui: IM_FLOOR(ascent + 1)
+            face.set_char_size(0, int(round(size * face.units_per_EM / box * 64)), 72, 72)
+            seen = set()
+            hinted = fallback = 0
+            for cp, (qx0, qy0, qx1, qy1, tx0, ty0, tx1, ty1) in rects.items():
+                if (tx0, ty0) in seen:
+                    continue                                # fallback-glyph repeats
+                seen.add((tx0, ty0))
+                if face.get_char_index(cp) == 0:
+                    continue
+                face.load_char(chr(cp), load_flags)
+                g = face.glyph
+                g.render(freetype.FT_RENDER_MODE_LCD)
+                bm = g.bitmap
+                rows, bw, pitch = bm.rows, bm.width, abs(bm.pitch)
+                if rows == 0 or bw == 0:
+                    continue
+                rect_w, rect_h = tx1 - tx0, ty1 - ty0
+                r0 = baseline - g.bitmap_top - int(round(qy0))
+                if r0 < 0 or r0 + rows > rect_h:
+                    fallback += 1                           # hinting grew it a row
+                    continue
+                c0 = 3 * (g.bitmap_left - int(round(qx0)))  # subpixel column of bitmap col 0
+                j0, j1 = max(0, -c0), min(bw, rect_w - c0)
+                if j1 <= j0:
+                    fallback += 1
+                    continue
+                raw = ctypes.string_at(bm._FT_Bitmap.buffer, rows * pitch)
+                src = np.frombuffer(raw, np.uint8).reshape(rows, pitch)[:, :bw]
+                alpha[ty0:ty1, tx0:tx1] = 0
+                alpha[ty0 + r0:ty0 + r0 + rows, tx0 + c0 + j0:tx0 + c0 + j1] = src[:, j0:j1]
+                hinted += 1
+            stats[font.name] = (hinted, fallback)
+        self.hint_stats = stats
+        total_h = sum(h for h, _ in stats.values())
+        total_f = sum(f for _, f in stats.values())
+        print(f"FontManager: FreeType-hinted {total_h} glyphs across {len(stats)} fonts "
+              f"({total_f} kept stb bitmaps)")
+        return atlas.tobytes()

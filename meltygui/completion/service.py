@@ -620,6 +620,16 @@ def content_lines(buffer: str) -> int:
     return sum(1 for p in _segments(buffer) if p.strip())
 
 
+def at_line_end(text: str, cursor: int) -> bool:
+    """True when nothing but whitespace follows the caret on its own line —
+    the FIM trigger condition (don't generate in the MIDDLE of a line).
+    Trailing spaces and the rest of the file below are ignored."""
+    rest = text[cursor:]
+    nl = rest.find("\n")
+    line_rest = rest if nl < 0 else rest[:nl]
+    return line_rest.strip() == ""
+
+
 _WORD_RE = re.compile(r"[^\S\n]*(?:\n[^\S\n]*|[A-Za-z0-9_]+|[^\sA-Za-z0-9_]+)")
 
 
@@ -870,7 +880,11 @@ class FimState:
         if not active:
             if key != self._key:
                 self._key = key
-                if typed and self._dismissed_key != key:
+                # Only generate on typing, at a site the user hasn't seen,
+                # and (when only_at_line_end is on) with nothing but space
+                # after the cursor on this line - no mid-line completions.
+                if (typed and self._dismissed_key != key
+                        and (not Toggles.Fim.only_at_line_end or at_line_end(text, cursor))):
                     self._schedule(text, cursor, view, Toggles.Fim.debounce_s, now)
             elif self._fire_armed(text, cursor, view, now):
                 pending = True

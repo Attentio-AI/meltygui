@@ -12,6 +12,14 @@ armed. While armed the tool owns the mouse: full-screen BLOCKING left-button
 subscriptions at a priority above every window and blocker, so the press
 that starts the box can't land on whatever sits under the cursor. Esc (or
 the hotkey again) cancels.
+
+The crosshair + camera are the CURSOR IMAGE while armed (glfw.create_cursor
+from a PIL render, hotspot at the crosshair centre), not overlay drawing:
+anything drawn in a frame uses the frame-start mouse sample and shows a
+frame later, while the compositor moves the cursor plane with zero latency
+— overlay crosshairs visibly trailed the pointer. The cursor plane is the
+one thing that can sit exactly where the pointer is. Only the drag box
+(anchored at the press) is drawn on the overlay.
 """
 
 import glfw
@@ -24,15 +32,56 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 # Above every window / blocker (the live lab's blocking handlers use 1024).
 _PRIORITY_DELTA = 4096
 _MIN_BOX_PX = 3          # smaller than this on release = a click, not a box
-_LINE_COLOR = (1.0, 1.0, 1.0, 0.22)
-_ICON = "\uf030"        # FA camera icon drawn beside the cursor (no text)
+_ICON = "\uf030"        # FA camera (baked into the cursor image)
 _BOX_COLOR = (0.35, 0.75, 1.0, 1.0)
 _FILL_COLOR = (0.35, 0.75, 1.0, 0.12)
+_CURSOR_SIZE, _CURSOR_HOT, _CURSOR_ARM, _CURSOR_GAP = 64, 20, 16, 3
 
 
 class RegionScreenshot:
     armed = False
     start = None        # (x, y) in points where the drag began; None = no box yet
+    cursor = None       # *cursor* (built once, render thread)
+    cursor_set = False  # our cursor is the window's current cursor
+
+
+def _build_cursor_image():
+    """Crosshair (gap around the hotspot, dark halo under a white hairline)
+    with the FA camera glyph below-right — the same glyph Actions.screenshot
+    wears. Returns (PIL image, hotspot)."""
+    from PIL import Image, ImageDraw, ImageFont
+    from src.lsd.gl_gui.fonts import _RESOURCES
+    size, hot, arm, gap = _CURSOR_SIZE, _CURSOR_HOT, _CURSOR_ARM, _CURSOR_GAP
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    for col, w in (((0, 0, 0, 140), 3), ((255, 255, 255, 230), 1)):
+        for seg in ((hot - arm, hot, hot - gap, hot), (hot + gap, hot, hot + arm, hot),
+                    (hot, hot - arm, hot, hot - gap), (hot, hot + gap, hot, hot + arm)):
+            d.line(seg, fill=col, width=w)
+    font = ImageFont.truetype(str(_RESOURCES / "fontawesome-webfont.ttf"), 22)
+    gx, gy = hot + 9, hot + 7
+    d.text((gx + 1, gy + 1), _ICON, font=font, fill=(0, 0, 0, 150))
+    d.text((gx, gy), _ICON, font=font, fill=(255, 255, 255, 235))
+    return img, hot
+
+
+def _set_tool_cursor(on):
+    """Swap the window cursor to the crosshair/camera image (on) or back to
+    the default (off). GLFW calls belong on the event-pumping thread — the
+    render thread — which is where draw() runs."""
+    if RegionScreenshot.cursor_set == on:
+        return
+    window = glfw.get_current_context()
+    if window is None:
+        return
+    try:
+        if on and RegionScreenshot.cursor is None:
+            img, hot = _build_cursor_image()
+            RegionScreenshot.cursor = glfw.create_cursor(img, hot, hot)
+        glfw.set_cursor(window, RegionScreenshot.cursor if on else None)
+        RegionScreenshot.cursor_set = on
+    except Exception as e:
+        print(f"region_screenshot: cursor swap failed: {e}")
 
 
 def arm():
@@ -100,10 +149,13 @@ def draw(draw_state):
     """Per-frame body (from draw_main): claim the mouse, track the box, paint
     the crosshair/box on the overlay, and fire the capture on release."""
     if not RegionScreenshot.armed:
+        _set_tool_cursor(False)     # back to the default after cancel / esc
         return
     if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
         cancel()
+        _set_tool_cursor(False)
         return
+    _set_tool_cursor(True)
 
     io = imgui.get_io()
     full = (0.0, 0.0, float(io.display_size.x), float(io.display_size.y))
@@ -124,23 +176,12 @@ def draw(draw_state):
     if drag is None and RegionScreenshot.start is not None and not imgui.is_mouse_down(0):
         RegionScreenshot.start = None   # button went up without the drag activating
 
-    overlay = imgui.get_overlay_draw_list()
-    overlay.channels_set_current(Core.melty.max_layer - 1)
-    line = imgui.get_color_u32_rgba(*_LINE_COLOR)
-    overlay.add_line(full[0], my, full[2], my, line, 1.0)
-    overlay.add_line(mx, full[1], mx, full[3], line, 1.0)
-
     if RegionScreenshot.start is not None:
+        overlay = imgui.get_overlay_draw_list()
+        overlay.channels_set_current(Core.melty.max_layer - 1)
         sx, sy = RegionScreenshot.start
         x0, y0, x1, y1 = min(sx, mx), min(sy, my), max(sx, mx), max(sy, my)
         overlay.add_rect_filled(x0, y0, x1, y1, imgui.get_color_u32_rgba(*_FILL_COLOR))
         overlay.add_rect(x0, y0, x1, y1, imgui.get_color_u32_rgba(*_BOX_COLOR), 0.0, 0, 1.0)
-    # A camera glyph rides the cursor (below-right, flipping to stay on
-    # screen) - a useful hint that the tool is armed.
-    ts = imgui.calc_text_size(_ICON)
-    ix = mx + 10 if mx + 10 + ts.x < full[2] else mx - 10 - ts.x
-    iy = my + 10 if my + 10 + ts.y < full[3] else my - 10 - ts.y
-    overlay.add_text(ix + 1, iy + 1, imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.6), _ICON)
-    overlay.add_text(ix, iy, imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.9), _ICON)
-    # The crosshair rides the cursor: keep frames coming while armed.
-    request_render()
+        # The box's moving edge tracks the cursor: keep frames coming.
+        request_render()

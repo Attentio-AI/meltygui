@@ -165,6 +165,7 @@ class AccountStore(dict):
         acct[field] = value
         if reprobe:
             acct["_status"] = None       # stale - re-probe
+            acct.pop("_validated", None)  # credential changed → re-verify with Test
             _drop_sessions_for(acct)     # live sessions hold the old credential
         self.save()
         accounts_changed()
@@ -322,41 +323,59 @@ class AnthropicKind(AccountKind):
         d = Path(os.environ.get("ANTHROPIC_CONFIG_DIR") or (Path.home() / ".config" / "anthropic"))
         return (d / "credentials").is_dir() and any((d / "credentials").glob("*.json"))
 
-    def probe(self, acct):
+    def _source(self, acct):
         key = acct.get("api_key") or ""
-        source = None
         if key:
-            source = f"key …{key[-4:]}"
-        elif is_default(acct) and os.environ.get("ANTHROPIC_API_KEY"):
-            source = "env ANTHROPIC_API_KEY"
-        elif is_default(acct) and os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-            source = "env ANTHROPIC_AUTH_TOKEN"
-        elif is_default(acct) and self._profile_present():
-            source = "ant auth profile"
+            return f"key …{key[-4:]}"
+        if is_default(acct) and os.environ.get("ANTHROPIC_API_KEY"):
+            return "env ANTHROPIC_API_KEY"
+        if is_default(acct) and os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            return "env ANTHROPIC_AUTH_TOKEN"
+        if is_default(acct) and self._profile_present():
+            return "ant auth profile"
+        return None
+
+    def probe(self, acct):
+        # Passive probe: NO network (and no `import anthropic`). Just report
+        # whether a credential exists - the studio should not fire a web
+        # request or import the SDK at startup just to show status. The
+        # "Test" button (below) does the one real network check on demand.
+        source = self._source(acct)
         if source is None:
             return ("needs_login", "no credentials — paste an API key")
+        if acct.get("_validated"):
+            return ("ready", f"{source} · verified")
+        return ("ready", source)
+
+    def validate(self, acct):
+        """The Test button: the ONLY Anthropic web request — list one model
+        to confirm the key works. Imports the SDK lazily."""
+        source = self._source(acct) or "?"
         try:
             import anthropic
             kw = {"timeout": 15.0, "max_retries": 0}
-            if key:
-                kw["api_key"] = key
+            if acct.get("api_key"):
+                kw["api_key"] = acct["api_key"]
             if acct.get("base_url"):
                 kw["base_url"] = acct["base_url"]
             client = anthropic.Anthropic(**kw)
-            page = client.models.list(limit=1)
-            n = len(page.data) if hasattr(page, "data") else 0
+            client.models.list(limit=1)
             client.close()
-            return ("ready", f"{source} · ok" if n else f"{source} · ok (no models?)")
+            acct["_validated"] = True
+            acct["_status"] = ("ready", f"{source} · verified")
         except ImportError:
-            return ("error", "anthropic package not installed")
+            acct["_status"] = ("error", "anthropic package not installed")
         except Exception as e:
+            acct["_validated"] = False
             msg = getattr(e, "message", None) or str(e)
-            return ("error", f"{source} · {msg[:90]}")
+            acct["_status"] = ("error", f"{source} · {msg[:90]}")
+        accounts_changed()
 
     def actions(self, acct):
         return [Button("Paste key", lambda a: _paste_into(a, "api_key"), primary=True),
                 Button("Edit", _toggle_edit),
-                Button(None, refresh, icon=ICON_REFRESH, tip="Test the key"),
+                Button("Test", lambda a: _run_bg(a, lambda: self.validate(a), reprobe=False),
+                       tip="Verify the key (one web request)", enabled=self._source(acct) is not None),
                 Button("Clear", lambda a: accounts.set_field(a["id"], "api_key", ""),
                        enabled=bool(acct.get("api_key")))]
 
@@ -376,24 +395,34 @@ class CopilotKind(AccountKind):
         return fim.session_for(CopilotSession, kw, create=create)
 
     def probe(self, acct):
+        # Passive probe: NO language-server spawn and NO web request. Node +
+        # install are filesystem checks; sign-in state is read from a token
+        # file on disk. The LS is spawned only when the user clicks Sign in
+        # or when FIM actually asks Copilot for a completion - so opening the
+        # accounts window (even at startup) costs nothing.
         from src.lsd.gl_gui.fim_providers import copilot as cp
         if cp.find_node() is None:
             return ("error", "node ≥ 20.8 not found")
         if not cp.server_installed():
             return ("needs_login", "language server not installed — Install")
+        # If a session is already running (FIM used it, or the user signed in),
+        # trust its status instead of the on-disk file.
         try:
-            sess = self._session(acct)
-        except Exception as e:
-            return ("error", str(e)[:90])
-        user = sess.check_status()
-        st = sess.status()
-        if st[0] == "needs_login":
-            return ("needs_login", f"sign in: code {st[1]}")
+            sess = self._session(acct, create=False)
+        except Exception:
+            sess = None
+        if sess is not None and sess.alive():
+            st = sess.status()
+            if st[0] == "needs_login":
+                return ("needs_login", f"sign in: code {st[1]}")
+            if sess.user:
+                return ("ready", f"signed in as {sess.user}")
+            if st[0] == "error":
+                return ("needs_login", st[1] or "not signed in")
+        user = cp.cached_login_user(acct.get("config_dir"))
         if user:
             return ("ready", f"signed in as {user}")
-        if st[0] == "error":
-            return ("needs_login", st[1] or "not signed in")
-        return ("unknown", "")
+        return ("needs_login", "not signed in — Sign in")
 
     def actions(self, acct):
         from src.lsd.gl_gui.fim_providers import copilot as cp
@@ -531,7 +560,11 @@ def refresh(acct):
     threading.Thread(target=run, daemon=True, name=f"acct-probe-{acct['id']}").start()
 
 
-def _run_bg(acct, fn):
+def _run_bg(acct, fn, reprobe=True):
+    """Run `fn()` on a worker with the row's busy flag set. `reprobe` re-runs
+    the passive probe afterwards (default) — pass False when `fn` already set
+    the status itself (e.g. validate), so the trailing probe doesn't clobber
+    it."""
     acct["_busy"] = True
     accounts_changed()
 
@@ -542,7 +575,10 @@ def _run_bg(acct, fn):
             acct["_status"] = ("error", str(e)[:90])
         finally:
             acct["_busy"] = False
-        refresh(acct)
+        if reprobe:
+            refresh(acct)
+        else:
+            accounts_changed()
 
     threading.Thread(target=run, daemon=True, name=f"acct-action-{acct['id']}").start()
 
@@ -606,7 +642,7 @@ def _fmt_gb(n):
     return f"{n / 1e9:.1f} GB"
 
 
-@window(input_value=accounts, tint=(0.95, 0.707, 0.23), icon="",
+@window(input_value=accounts, tint=(0.93, 0.775, 0.46), icon="",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True)
