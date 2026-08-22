@@ -1075,13 +1075,18 @@ class TextFileCodec(TypeCodec):
 
 def _resolve_plain_file(input_value, draw_state, **kwargs):
     """Shared resolve for read-only plain-file codecs (images, binaries):
-    is_writable_file gate, file watch, (input, mtime) address cache — the same
-    shape as TextFileCodec.resolve_address."""
+    is_writable_file gate and the (input, mtime) address cache — the same
+    shape as TextFileCodec.resolve_address MINUS the FileWatch registration.
+    These files never join the inotify watch: registering MD5s the whole
+    file as a change baseline (a full read of every opened image) and
+    schedules the file's directory as its own inotify INSTANCE (watchdog
+    opens one per scheduled dir; the per-user cap is 128, shared with every
+    other app). External changes are still noticed — code_file_io stats
+    mtime/size every body run (CodeState.is_file_stale) and, for a
+    read-only codec, reloads outright."""
     path = Path(str(input_value))
     if not is_writable_file(path) or not path.is_file():
         return None
-    if draw_state is not None:
-        FileWatch.register_draw_state(draw_state, path)
     try:
         mtime = path.stat().st_mtime
     except OSError:

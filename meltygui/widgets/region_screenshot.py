@@ -3,8 +3,8 @@ Actions.screenshot arms it; a crosshair follows the cursor on the overlay
 draw list; click-drag a box; on release the pixels inside the box are read
 from the main framebuffer (GL_BACK, after the frame is fully composited — the
 deferred capture queue in screenshot.py), saved as a PNG under the configured
-shot dir, and opened in the code editor exactly like a global-search file
-hit (open_in_editor → the file's ImageCodec tab).
+shot dir, added to the code editor as a tab (its ImageCodec view) WITHOUT
+switching to it, and its path is put on the clipboard.
 
 State is module-level (one tool, never more than one capture in flight);
 `draw(draw_state)` runs from draw_main every frame and is a no-op unless
@@ -24,7 +24,8 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 # Above every window / blocker (the live lab's blocking handlers use 1024).
 _PRIORITY_DELTA = 4096
 _MIN_BOX_PX = 3          # smaller than this on release = a click, not a box
-_LINE_COLOR = (1.0, 1.0, 1.0, 0.75)
+_LINE_COLOR = (1.0, 1.0, 1.0, 0.22)
+_ICON = "\uf030"        # FA camera icon drawn beside the cursor (no text)
 _BOX_COLOR = (0.35, 0.75, 1.0, 1.0)
 _FILL_COLOR = (0.35, 0.75, 1.0, 0.12)
 
@@ -53,10 +54,29 @@ def toggle():
 
 def _open_captured(path):
     """screenshot.py's on_captured: runs on the render thread inside
-    post_frame — defer the editor open to between frames, like any other
-    external window mutation."""
-    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
-    Melty.post_to_render(lambda: open_in_editor(path))
+    post_frame — defer the editor work to between frames, like any other
+    external window mutation. The shot becomes an editor TAB without
+    stealing the selection (OpenFiles.open_file only — not open_in_editor,
+    whose jump_to_path the editor adopts as its active tab): the user is
+    mid-work in whatever they were screenshotting. The tab bars repaint so
+    the new tab shows. The saved file's PATH also goes on the clipboard
+    (text, via GLFW's clipboard — the studio is the focused Wayland client,
+    so this is the one clipboard write that always lands)."""
+    from src.lsd.gl_gui.view.playground.open_files import editor_window_ds
+
+    def _land():
+        open_files = getattr(getattr(Melty.vis, "root", None), "open_files", None)
+        if open_files is not None:
+            open_files.open_file(path)
+            # The tab list changed under the editors' bodies: force both
+            # instances through their blit cache so the new tab appears.
+            for inst in (0, 1):
+                win = editor_window_ds(inst)
+                if win is not None and Melty.cache is not None and win._tile_id is not None:
+                    Melty.cache.invalidate_up(win._tile_id, force=True, max_depth=4)
+        imgui.set_clipboard_text(str(path))
+        request_render()
+    Melty.post_to_render(_land)
 
 
 def _finish(x0, y0, x1, y1):
@@ -115,14 +135,12 @@ def draw(draw_state):
         x0, y0, x1, y1 = min(sx, mx), min(sy, my), max(sx, mx), max(sy, my)
         overlay.add_rect_filled(x0, y0, x1, y1, imgui.get_color_u32_rgba(*_FILL_COLOR))
         overlay.add_rect(x0, y0, x1, y1, imgui.get_color_u32_rgba(*_BOX_COLOR), 0.0, 0, 1.0)
-        label = f"{int(x1 - x0)} × {int(y1 - y0)}"
-    else:
-        label = f"{int(mx)}, {int(my)}  —  drag to capture, Esc to cancel"
-    ts = imgui.calc_text_size(label)
-    lx = mx + 12 if mx + 12 + ts.x < full[2] else mx - 12 - ts.x
-    ly = my + 12 if my + 12 + ts.y < full[3] else my - 12 - ts.y
-    overlay.add_rect_filled(lx - 3, ly - 1, lx + ts.x + 3, ly + ts.y + 1,
-                            imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.6), 3.0)
-    overlay.add_text(lx, ly, imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.95), label)
+    # A camera glyph rides the cursor (below-right, flipping to stay on
+    # screen) - a useful hint that the tool is armed.
+    ts = imgui.calc_text_size(_ICON)
+    ix = mx + 10 if mx + 10 + ts.x < full[2] else mx - 10 - ts.x
+    iy = my + 10 if my + 10 + ts.y < full[3] else my - 10 - ts.y
+    overlay.add_text(ix + 1, iy + 1, imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.6), _ICON)
+    overlay.add_text(ix, iy, imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.9), _ICON)
     # The crosshair rides the cursor: keep frames coming while armed.
     request_render()

@@ -606,7 +606,7 @@ def _fmt_gb(n):
     return f"{n / 1e9:.1f} GB"
 
 
-@window(input_value=accounts, tint=(0.71, 0.72, 0.74), icon="",
+@window(input_value=accounts, tint=(0.95, 0.707, 0.23), icon="",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True)

@@ -7165,13 +7165,14 @@ def _extract_decorators(decorators):
 
 
 @register
-def dict_to_cst_funcdef(value: dict, dangerous_reorder=False) -> cst.FunctionDef:
+def dict_to_cst_funcdef(value: dict, dangerous_reorder=True) -> cst.FunctionDef:
     """Patch decorators, parameter defaults, and body assignments.
 
     "decorators" sub-dict patches decorator kwargs.
     "parameters" sub-dict patches param defaults; its key order is the
-    signature order (see _reorder_params — positional reorders need
-    dangerous_reorder=True, since they change what call sites mean).
+    signature order (see _reorder_params). Positional reorders change what
+    positional call sites mean; they are honoured by default — the user
+    asked for the order — and dangerous_reorder=False drops them.
     "locals" sub-dict patches body assignments.
     """
     old_node = value.get("__cst__")
@@ -7875,9 +7876,10 @@ def _reorder_params(params_node: cst.Parameters, value: dict,
     Reorders within each group (posonly / regular / kwonly) only — a param
     never crosses a `/` or `*` boundary. Keyword-only params are always safe
     to move (call sites must pass them by name) and reorder in both modes.
-    Reordering positional params changes what positional call sites mean, so
-    it's gated on dangerous_reorder — flag off, the reorder is silently
-    dropped and the next forward parse snaps the dict back to source order.
+    Reordering positional params changes what positional call sites mean;
+    dangerous_reorder (on by default at the registry dispatch) lets them
+    move — flag off, the reorder is silently dropped and the next forward
+    parse snaps the dict back to source order.
     Even in dangerous mode an order that would put a no-default param after a
     defaulted one (a SyntaxError) is refused. Params not in the dict
     (self/cls, *args/**kwargs) keep their slots."""
@@ -9509,7 +9511,11 @@ def _register_index_watch():
                         if getattr(f, "__name__", "") != "_on_watch_event"]
         listeners.append(_on_watch_event)
         marker = _SRC_PREFIX + "::recursive"
-        if marker not in FileWatch._watched_dirs:
+        if hasattr(FileWatch, "watch_recursive"):
+            # One inotify instance for the whole src tree; per-dir emitters
+            # under it are retired (FileWatch.watch_recursive).
+            FileWatch.watch_recursive(_SRC_PREFIX)
+        elif marker not in FileWatch._watched_dirs:   # older melty.py loaded
             FileWatch.observer.schedule(FileWatch.handler, _SRC_PREFIX,
                                         recursive=True)
             FileWatch._watched_dirs.add(marker)

@@ -136,7 +136,18 @@ from watchdog.events import FileSystemEventHandler
 class FileWatch:
     observer = Observer()
     handler = FileSystemEventHandler()
+    # Every directory events are expected from (by any means) - what the
+    # debug logs call "scheduled"; NOT one emitter each: see watch_dir.
     _watched_dirs = set()
+    # Recursive roots (watch_recursive) and the per-dir emitters (watch_dir)
+    # this class actually scheduled on the observer. watchdog's inotify
+    # backend opens a separate inotify INSTANCE per scheduled watch, and the
+    # kernel caps instances per user (fs.inotify.max_user_instances, 128 by
+    # default - shared with every other app). A per-dir emitter under a
+    # recursive root is pure waste (duplicate events + an instance), so
+    # watch_dir skips it and watch_recursive retires any it supersedes.
+    _recursive_roots = set()
+    _dir_watches = {}          # dirpath → ObservedWatch (own emitters only)
     path_to_draw_states = {}   # path → set of draw_states
     draw_state_to_path = {}
     _ds_hashes = {}            # draw_state → hash (per-view, not per-path)
@@ -162,6 +173,58 @@ class FileWatch:
     project_tracked = set()
 
     @classmethod
+    def _covered(cls, dirpath):
+        """Is `dirpath` (resolved str) under one of the recursive roots?"""
+        for root in cls._recursive_roots:
+            if dirpath == root or dirpath.startswith(root + os.sep):
+                return True
+        return False
+
+    @classmethod
+    def watch_dir(cls, dirpath):
+        """Make sure events arrive for files in `dirpath` (resolved str):
+        a no-op when a recursive root already covers it, else one
+        non-recursive emitter. Returns False if the observer refused
+        (typically EMFILE — the instance cap)."""
+        dirpath = str(dirpath)
+        if dirpath in cls._watched_dirs:
+            return True
+        if cls._covered(dirpath):
+            cls._watched_dirs.add(dirpath)
+            return True
+        try:
+            cls._dir_watches[dirpath] = cls.observer.schedule(
+                cls.handler, dirpath, recursive=False)
+        except OSError as e:
+            print(f"FileWatch: cannot watch {dirpath}: {e}")
+            return False
+        cls._watched_dirs.add(dirpath)
+        return True
+
+    @classmethod
+    def watch_recursive(cls, root):
+        """One recursive emitter over `root` (resolved str) — a single
+        inotify instance for the whole tree — retiring any per-dir emitters
+        it now covers (their dirs stay in _watched_dirs: still watched)."""
+        root = str(root).rstrip(os.sep) or os.sep
+        if root in cls._recursive_roots:
+            return True
+        try:
+            cls.observer.schedule(cls.handler, root, recursive=True)
+        except OSError as e:
+            print(f"FileWatch: cannot watch {root} recursively: {e}")
+            return False
+        cls._recursive_roots.add(root)
+        for d, watch in list(cls._dir_watches.items()):
+            if cls._covered(d):
+                try:
+                    cls.observer.unschedule(watch)
+                except Exception:
+                    pass
+                cls._dir_watches.pop(d, None)
+        return True
+
+    @classmethod
     def watch_project_files(cls, root=None):
         """Register every project .py file the way a code view's
         register_draw_state does — schedule its directory on the observer and
@@ -185,12 +248,8 @@ class FileWatch:
             pys = [f for f in filenames if f.endswith(".py")]
             if not pys:
                 continue
-            if dirpath not in cls._watched_dirs:
-                try:
-                    cls.observer.schedule(cls.handler, dirpath, recursive=False)
-                    cls._watched_dirs.add(dirpath)
-                except OSError:
-                    continue
+            if not cls.watch_dir(dirpath):
+                continue
             for f in pys:
                 resolved = os.path.join(dirpath, f)
                 cls.project_tracked.add(resolved)
@@ -364,10 +423,7 @@ class FileWatch:
         if cls.output_debug_diff:
             cls._file_contents[resolved] = cls._read_text(resolved)
 
-        parent = str(path.resolve().parent)
-        if parent not in cls._watched_dirs:
-            cls.observer.schedule(cls.handler, parent, recursive=False)
-            cls._watched_dirs.add(parent)
+        cls.watch_dir(os.path.dirname(resolved))
 
     @classmethod
     def dispatch_event_for(cls, draw_state):
@@ -612,13 +668,14 @@ class Melty:
     converter_flags_by_type = {}
     converter_flags = {}
     # FIM code completion registries (fim.py): provider functions, named
-    # profiles, context sources, and the pooled live sessions. In Melty so
-    # hotswap's registry reconcile keeps the function names pointing at the
-    # right functions (see _FUNC_REGISTRY_NAMES in file_converters).
+    # profiles, context sources. On Melty so hotswap's registry reconcile
+    # keeps the function dicts pointing at the live functions (see
+    # _FUNC_REGISTRY_NAMES in file_converters). The live SESSION POOL is NOT
+    # here - it lives on `sys._lsd_fim_sessions` so it survives an entire-process
+    # restart (the re-spawn / re-login); see fim._sessions.
     _fim_providers = {}
     _fim_profiles = {}
     _fim_context_sources = {}
-    _fim_sessions = {}
 
     # Bumped on every REAL scroll_offset change (new_setattr in
     # invalidation_decoration); bumps the DrawState._ancestor_scroll memo so

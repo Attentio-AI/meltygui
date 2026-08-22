@@ -4654,8 +4654,8 @@ def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
     return return_val
 
 
-@render_func(is_default_for=numpy.uint32, show_bg=True, use_cache=False, show_add_delete=False, z_offset=2,
-             fill_height=True, selectable=True,
+@render_func(is_default_for=numpy.uint32, show_bg=False, use_cache=False, show_add_delete=False, z_offset=2,
+             fill_height=True, selectable=False,
              indent_size=0, min_width=35, min_height=35, wrap=False, disable_scroll=True,
              zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,

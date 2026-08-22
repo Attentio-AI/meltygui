@@ -1029,6 +1029,86 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
     return source
 
 
+def _permute_slots(sdict, order):
+    """Refill the slots of `sdict`'s keys that appear in `order` with those
+    same keys sorted by `order`; every other key (dunder bookkeeping, params
+    the panel doesn't show, comment keys) keeps its slot. Slot permutation,
+    the same rule every CST writer applies on save (_reorder_params /
+    _reorder_call_kwargs / _reorder_class_body / _reformat_override_comment),
+    so the dict's new order is exactly what the source will read. In place
+    via clear/update, which a bubbling parse dict bubbles to its host as a
+    change. False when fewer than two keys are involved or nothing moves."""
+    present = [k for k in dict.keys(sdict) if k in order]
+    if len(present) < 2:
+        return False
+    wanted = sorted(present, key=order.__getitem__)
+    if wanted == present:
+        return False
+    refill = iter(wanted)
+    items = []
+    for k, v in dict.items(sdict):
+        if k in order:
+            nk = next(refill)
+            items.append((nk, dict.__getitem__(sdict, nk)))
+        else:
+            items.append((k, v))
+    sdict.clear()
+    sdict.update(items)
+    return True
+
+
+def reorder_anywhere(keys, draw_state, class_to_show=None):
+    """Write a new ORDER of the view's params — `keys`, the complete key order
+    the params panel was dragged into — to every code-backed source that
+    stores two or more of them: the signature's parameter list, a caller's
+    or decorator's kwargs, a class body, a mode entry's kwargs, an override
+    comment. Each is an ordered store in its own right, so each one follows
+    the panel's relative order (slot permutation: a source holding a SUBSET
+    of the params neither gains nor loses keys) and they all agree after the
+    drag — the signature among them, which is where the panel's own order
+    derives from. Only parse-node dicts qualify: the adapter rows (instance
+    attr, draw_state, codec) are snapshots over live objects with no
+    persisted order. Returns the source names written, in priority order."""
+    from src.lsd.gl_gui.view.core_conversion.bubbling import _BubblingDictMixin
+    srcs = _sources_for(draw_state, class_to_show)
+    order = {k: i for i, k in enumerate(keys)}
+    writable = set(srcs["writable"])
+    written = []
+    for sname, sdict in srcs["sources"].items():
+        if sname not in writable or not isinstance(sdict, _BubblingDictMixin):
+            continue
+        if _permute_slots(sdict, order):
+            written.append(sname)
+    # Deferred writer-side hotswap, like set_anywhere. One stamp per
+    # draw_state, so arm lowest-priority first and let the signature (the
+    # first registered, the one the panel's order reads back from) win.
+    for sname in reversed(written):
+        _arm_recompile(draw_state, srcs["sources"], sname, srcs["kinds"].get(sname))
+    return written
+
+
+def _pending_param_order(draw_state):
+    """The view function's parameter order as the PENDING source has it: the
+    signature parse held by this view's code host (`_sa_cm_state`, there once
+    anything has collected the view's sources). A reorder rewrites that parse
+    at once while the live function only follows after the save + hotswap
+    trip, so ordering the proxy by it shows the drag's result immediately
+    instead of snapping back for the trip's duration. None when no host is
+    in reach — the live signature order stands."""
+    cm_state = getattr(draw_state, "_sa_cm_state", None)
+    host = getattr(cm_state, "render_func_dict", None)
+    if host is None:
+        return None
+    try:
+        params = host.deep.parameters()
+    except Exception:
+        return None
+    if not isinstance(params, dict):
+        return None
+    return [k for k in dict.keys(params)
+            if isinstance(k, str) and not k.startswith("__")]
+
+
 def view_param_names(draw_state):
     """The render view's own input parameters, in signature order — what
     `locate_params` iterates.
@@ -1195,10 +1275,40 @@ class ParamProxy(dict):
         # supplier for its 'header' sub-dict. Same read/write semantics
         # either way (the header draws against the same draw_state/kwargs).
         self._names_fn = names_fn
+        # Warm the view's code hosts now (one registry walk; the hosts parse
+        # in the background): a reorder only reaches sources that are parsed
+        # when the drop lands, and without this the first drag on a fresh
+        # panel would be the call that first creates the signature host and
+        # the comment would move while the header (the panel's own order)
+        # stayed put. Guarded: a proxy can be minted for a view whose sources
+        # haven't been collected (no view func yet), it's a plain snapshot.
+        try:
+            _sources_for(draw_state)
+        except Exception:
+            pass
         self.refresh()
 
     def _names(self):
-        return (self._names_fn or view_param_names)(self._ds)
+        names = (self._names_fn or view_param_names)(self._ds)
+        # Live-signature names go in the PENDING signature's order when a code
+        # host holds one (see _pending_param_order); ones the host doesn't
+        # know (header params) keep their relative order at the end.
+        pending = _pending_param_order(self._ds)
+        if pending:
+            pos = {k: i for i, k in enumerate(pending)}
+            names.sort(key=lambda n: pos.get(n, len(pos)))
+        return names
+
+    def reorder_keys(self, keys):
+        """drag_drop.Reorder's collection hook: `keys` is this proxy's
+        complete new key order. The order lives in the view's code sources,
+        so it is written there (reorder_anywhere) and the snapshot follows
+        on refresh — the pending signature parse already reads back in the
+        new order. True when any source moved."""
+        written = reorder_anywhere(list(keys), self._ds)
+        if written:
+            self.refresh()
+        return bool(written)
 
     def _specialize(self, name, value):
         """Re-wrap a plain parsed value in the signature default's subtype

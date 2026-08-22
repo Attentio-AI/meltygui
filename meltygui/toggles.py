@@ -1826,8 +1826,9 @@ class Actions:
     def screenshot():
         """Arm the region screenshot tool (also Ctrl+Shift+3): a crosshair
         follows the cursor; click-drag a box; on release the framebuffer
-        pixels inside it are saved as a PNG (Toggles.screenshots) and opened
-        in the code editor. Esc cancels."""
+        pixels inside it are saved as a PNG (Toggles.screenshots), opened in
+        the code editor, and the file path is copied to the clipboard. Esc
+        cancels."""
         from src.lsd.gl_gui.view.playground.region_screenshot import arm
         arm()
 

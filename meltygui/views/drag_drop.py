@@ -1330,6 +1330,21 @@ class Reorder(CollectionMutation):
             items.insert(idx, pair)
             if idx == cur:
                 return False, coll, None    # dropped back where it was
+            # A collection whose order LIVES elsewhere (ParamProxy: the user's
+            # code sources) takes the complete new key order through its
+            # reorder_keys hook instead of the in-place clear/update. The
+            # inverse is the complete PRE-drop order (ReorderKeys), not a
+            # positional Reorder: the hook may have moved only some of the
+            # stores (a comment, while the signature wasn't parsed yet), in
+            # which case the collection's own order is unchanged and a
+            # positional inverse would be a no-op that leaves those stores
+            # reordered.
+            hook = getattr(coll, "reorder_keys", None)
+            if callable(hook):
+                before = [k for k in dict.keys(coll)]
+                if not hook([k for k, _ in items]):
+                    return False, coll, None
+                return True, coll, ReorderKeys(before)
             coll.clear()
             coll.update(items)
             return True, coll, Reorder(self.key, cur if cur < idx else cur + 1)
@@ -1344,6 +1359,39 @@ class Reorder(CollectionMutation):
                 return False, coll, None
             return True, coll, Reorder(idx, self.key if self.key < idx else self.key + 1)
         return False, coll, None
+
+
+@dataclass(frozen=True)
+class ReorderKeys(CollectionMutation):
+    """Put a dict's keys in `keys` order — the COMPLETE order, as the
+    reorder_keys hook takes it (the inverse a hook-owned Reorder records).
+    Through the hook when the collection has one, else a plain in-place
+    permutation; keys the order doesn't name keep their slots."""
+    keys: tuple
+
+    def __init__(self, keys):
+        object.__setattr__(self, "keys", tuple(keys))
+
+    def apply(self, coll):
+        if not isinstance(coll, dict):
+            return False, coll, None
+        before = [k for k in dict.keys(coll)]
+        hook = getattr(coll, "reorder_keys", None)
+        if callable(hook):
+            if not hook(list(self.keys)):
+                return False, coll, None
+            return True, coll, ReorderKeys(before)
+        order = {k: i for i, k in enumerate(self.keys)}
+        present = [k for k in before if k in order]
+        wanted = sorted(present, key=order.__getitem__)
+        if wanted == present:
+            return False, coll, None
+        refill = iter(wanted)
+        items = [((nk := next(refill)), coll[nk]) if k in order else (k, coll[k])
+                 for k in before]
+        coll.clear()
+        coll.update(items)
+        return True, coll, ReorderKeys(before)
 
 
 @dataclass(frozen=True)

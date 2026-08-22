@@ -482,7 +482,22 @@ def restart_session(profile_name: str):
             st._session_error = None
 
 
+def detach_sessions_for_restart():
+    """Keep every pooled session alive across an in-process restart: zero
+    its refcount (the current generation's FimStates are about to be
+    dropped with their module) and stamp it idle-now, so the next
+    generation re-acquires it within the idle window rather than
+    re-spawning. Closes nothing."""
+    now = time.monotonic()
+    for sess in list(_sessions().values()):
+        sess._refs = 0
+        sess._idle_since = now
+
+
 def shutdown_all_sessions():
+    """Close and drop EVERY pooled session (real teardown). Not used on the
+    restart path — see FimState.shutdown_all — only where a genuine full
+    close is wanted."""
     pool = _sessions()
     for key, sess in list(pool.items()):
         pool.pop(key, None)
@@ -1117,12 +1132,20 @@ class FimState:
 
     @classmethod
     def shutdown_all(cls):
+        """Called from Melty.cleanup — which runs on an in-process RESTART,
+        not just real exit. So it does NOT close the pooled sessions (they
+        live on `sys` and are reused next generation): it only cancels the
+        current generation's in-flight requests and detaches the sessions so
+        the next generation re-acquires them instead of re-spawning /
+        re-logging-in. Sessions are closed only by the idle sweep, an
+        explicit restart_session / credential change (drop_sessions), or the
+        Copilot LS self-terminating on process exit."""
         for state in list(_live_states):
             try:
-                state.release()
+                state.invalidate("shutdown")   # cancel in-flight, keep the session
             except Exception:
                 pass
-        shutdown_all_sessions()
+        detach_sessions_for_restart()
 
 
 # ──────────────────────────────────────────────────────────────────────────

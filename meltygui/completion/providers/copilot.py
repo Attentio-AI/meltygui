@@ -354,6 +354,9 @@ class CopilotSession(FimSession):
         elif method == "window/logMessage":
             pass
 
+    def alive(self):
+        return self.rpc is not None and self.rpc.alive
+
     def status(self):
         if self.rpc is None or not self.rpc.alive:
             return ("error", "language server exited")
