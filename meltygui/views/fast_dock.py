@@ -15,10 +15,12 @@ tile is a cached blit — external changes (a window closed via its own X, a new
 registration, a tint edit elsewhere) are caught by fast_dock_sync(), called
 once per frame from the always-rendering root.
 """
+import colorsys
+
 import imgui
 
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import WindowManager
+from src.lsd.gl_gui.toggles import Toggles, WindowManager
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -108,6 +110,19 @@ def _mix(style_manager, tint, value, factor, saturation):
     c = tint if (isinstance(tint, tuple) and len(tint) >= 3) else DEFAULT_TINT
     return style_manager.make_color_rgb(c[0], c[1], c[2], value=value,
                                         factor=factor, saturation_scale=saturation)
+
+
+def _floor_value(rgb, min_value):
+    """`rgb` with its hsv value raised to at least `min_value` (hue and
+    saturation kept). Same floor as open_files._tab_text_color's
+    min_brightness: a dark window tint otherwise scales the open row's text
+    toward black."""
+    if min_value <= 0.0:
+        return rgb
+    h, s, v = colorsys.rgb_to_hsv(*rgb[:3])
+    if v >= min_value:
+        return rgb
+    return colorsys.hsv_to_rgb(h, s, min(min_value, 1.0)) + tuple(rgb[3:])
 
 
 @render_func(use_cache=True, selectable=False, show_add_delete=False, is_tree=False,
@@ -268,6 +283,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
         bg = _mix(style_manager, tint, bg_value + (hover_bg_boost if hov else 0.0), factor, sat)
         tx = _mix(style_manager, tint, text_value + (hover_text_boost if hov else 0.0), factor, text_saturation)
         if open_:
+            tx = _floor_value(tx, Toggles.FastDock.active_text_min_brightness)
             # Shadow under the open row's name button - a standalone depth
             # mark (rows aren't draw_states the compositor can see). Clipped
             # to the dock's rect: partially scrolled rows still draw here.

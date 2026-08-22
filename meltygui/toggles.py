@@ -236,10 +236,13 @@ class Tint:
         hue_delta = 0.00
         saturation_factor = 0.75
         value_factor = 4.10
+        # Live guards - see Toggles.TextEditor.gutter_text_min/max_brightness.
+        min_value = Toggles.TextEditor.gutter_text_min_brightness
+        max_value = max(Toggles.TextEditor.gutter_text_max_brightness, min_value)
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
-                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+                      min(max(active_hsv[2] * value_factor, min_value), max_value))
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
@@ -939,6 +942,15 @@ class Toggles:
         gutter_saturation = 1.046
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         gutter_value = 0.325
+        # Gutter TEXT (line numbers) hsv-value guards, applied in
+        # Tint.line_number_tint AFTER its value scale: the floor keeps the
+        # numbers legible on a dark theme tint, the ceiling stops a bright
+        # one from pushing them to full white over the body text. Hue and
+        # saturation kept. The floor wins if they cross.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        gutter_text_min_brightness = 0.45
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        gutter_text_max_brightness = 0.8
 
         # Code editor body background — draw_code_editor forwards these into
         # its draw_text panes as the show_bg saturation multiplier and the
@@ -988,11 +1000,11 @@ class Toggles:
         def_symbol_glow = True
         # Intensity of the emitted light per token chip (on top of
         # def_symbol_alpha and any per-hop propagation scale).
-        def_symbol_glow_intensity = 1.186
+        def_symbol_glow_intensity = -0.04
         # Falloff skirt radius for token-chip light, px. Deliberately its
         # own knob - token halos want a far shorter throw than the
         # line-band def_line_blur_radius.
-        def_symbol_glow_radius = 0.045
+        def_symbol_glow_radius = 65.532
 
         def_line_blur_radius = 126
         # Alpha multiplier for the blurred band only - feathering spreads
@@ -1202,6 +1214,19 @@ class Toggles:
         # keeps its top-left in view and overflows the far edge. Read live.
         edge_margin = 20
 
+    @defaults(tint=(0.103, 0.341, 0.617))
+    class FastDock:
+        # Floor on the hsv VALUE of an OPEN (active) row's name/icon text in
+        # the Fast Dock, applied AFTER the theme mix (fast_dock.draw_fast_dock
+        # -> _floor_value). The row text is the window's tint pushed through
+        # make_color_rgb, so a dark window tint scaled toward black and the
+        # open row read no brighter than a closed one; the floor lifts just
+        # the value (hue and saturation kept) so every active row stays
+        # legible. Closed rows and the summon button are untouched. 0
+        # disables. Read live.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        active_text_min_brightness = 0.55
+
     # [icon=""]
     @defaults(tint=(0.427, 0.541, 0.616))
     class ContextMenu:
@@ -1351,31 +1376,37 @@ class Toggles:
         # The bg pair feeds flat_button's theme-mix pipeline (value /
         # saturation_scale of make_color_rgb).
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        tab_active_bg_brightness = 0.14
+        tab_active_bg_brightness = 0.51
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        tab_active_bg_saturation = 9.213
+        tab_active_bg_saturation = 1.184
         # Hard cap the active-tab bg is clamped to AFTER the hsv transform —
         # raise it along with tab_active_bg_brightness or the brightness
         # knob tops out here.
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
-        tab_active_bg_max_brightness = 0.14
+        tab_active_bg_max_brightness = 0.31
         # The text pairs are FULL-RANGE hsv multipliers applied directly to
         # each tab's tint (open_files._tab_text_color → flat_button
         # text_color): brightness scales hsv value (0 = black, 1 = the
         # tint's own value, higher pushes toward full-bright), saturation
         # scales hsv saturation (0 = greyscale, 1 = the tint's own).
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        tab_active_text_brightness = 1.335
+        tab_active_text_brightness = 1.111
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        tab_active_text_saturation = 0.314
+        tab_active_text_saturation = 0.420
+        # Floor on the ACTIVE tab label's hsv value AFTER the brightness
+        # scale (same floor as the inactive one below) — a dark file tint
+        # otherwise scales the selected tab's text toward black against its
+        # bright bg.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        tab_inactive_text_brightness = 0.269
+        tab_active_text_min_brightness = 0.83
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_inactive_text_brightness = 0.390
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        tab_inactive_text_saturation = 0.602
+        tab_inactive_text_saturation = 0.522
         # Floor on the inactive-tab label's hsv value AFTER the brightness
         # scale — dark tints stay legible instead of scaling toward black.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        tab_inactive_text_min_brightness = 0.149
+        tab_inactive_text_min_brightness = 0.387
         # in_diff_mode gap folding (open_files._diff_gap_folds): unchanged
         # context lines kept visible on each side of a change block; the
         # rest of the gap folds away, so collapse-all skims the changes
@@ -1424,7 +1455,7 @@ class Toggles:
     @defaults(tint=(0.652, 0.672, 0.733))
     class TerminalSettings:
         # Minimum logical terminal size, in pixels - independent of the window size.
-        min_height = 506.5
+        min_height = 605.7
         min_width = 94.154
 
     @defaults(tint=(0.478, 0.265, 0.265))
@@ -1584,7 +1615,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
     show_fps = True
 
     show_filled_tiles = False
@@ -1619,13 +1650,13 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.085
+    brightness = 0.133
     # [tint=(0.458, 0.474, 0.5)]
-    contrast = 1.116
+    contrast = 1.213
 
     debug_z_depth = False
     filters = True
-    filter_brightness = False
+    filter_brightness = True
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
@@ -1731,7 +1762,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 0.886
+    glow_strength = 0.45
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),

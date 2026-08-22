@@ -391,7 +391,11 @@ class FontManager:
                 if r0 < 0 or r0 + rows > rect_h:
                     fallback += 1                           # hinting grew it a row
                     continue
-                c0 = 3 * (g.bitmap_left - int(round(qx0)))  # subpixel column of bitmap col 0
+                # Subpixel column of bitmap col #0. imgui's quad x0 is in
+                # THIRDS of a pixel (stb's 3x bitmap box), so place at
+                # subpixel precision - rounding c0 to a whole pixel puts
+                # glyphs +-1/3 px from their neighbours (uneven spacing).
+                c0 = int(round(3 * (g.bitmap_left - qx0)))
                 j0, j1 = max(0, -c0), min(bw, rect_w - c0)
                 if j1 <= j0:
                     fallback += 1

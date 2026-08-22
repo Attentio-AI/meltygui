@@ -462,7 +462,10 @@ class OllamaKind(AccountKind):
     def _client(acct):
         import httpx
         host = (acct.get("host") or "http://localhost:11434").rstrip("/")
-        return httpx.Client(base_url=host, timeout=10.0)
+        # Short connect timeout: a down local server fails in ~1s instead of
+        # hanging the probe thread. (Probes always run on a worker, never the
+        # render thread - so a fast failure keeps status snappy.)
+        return httpx.Client(base_url=host, timeout=httpx.Timeout(4.0, connect=1.0))
 
     def probe(self, acct):
         from src.lsd.gl_gui.fim_providers import ollama as om
@@ -474,7 +477,10 @@ class OllamaKind(AccountKind):
             acct["_models"] = []
             return ("error", f"{host} · {str(e)[:60]}")
         acct["_models"] = models
-        acct["_gpus"] = om.gpu_inventory()
+        try:
+            acct["_gpus"] = om.gpu_inventory()   # best-effort GPU information for the device menu
+        except Exception:
+            acct["_gpus"] = []
         loaded = [m for m in models if m["loaded"]]
         fim_like = [m["name"] for m in models
                     if any(k in m["name"] for k in ("coder", "codellama", "starcoder", "codestral", "deepseek-coder"))]
@@ -642,7 +648,7 @@ def _fmt_gb(n):
     return f"{n / 1e9:.1f} GB"
 
 
-@window(input_value=accounts, tint=(0.93, 0.775, 0.46), icon="",
+@window(input_value=accounts, tint=(0.91, 0.53, 0.09), icon="",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True)

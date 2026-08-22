@@ -2449,8 +2449,7 @@ def draw_symbol_usage(input_value):
 
 @render_func(is_default_for=(dict, MutableMapping, defaultdict, tuple, list, GeneralParse,
                              CallParse, ClassParse, EnumParse, FunctionParse, _BubblingDict, _DeepPath),
-             use_cache=True, tint=(0.139, 0.111, 0.093),
-             header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
+             use_cache=True, header_same_line=False, show_bg=True, show_instance_vars=False, align_header=False,
              manual_content_height=True, shadow=True, selectable=False, bg_offset=-0.8,
              wrap=False, with_header=draw_header, indent_size=3, searchable=True, child_kwargs=None)
 def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=None,
@@ -5526,7 +5525,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # -- Constants ---------------------------------
     min_value = -0.272
     depth_wrap = 300
-    depth_scale = 2.713
+    depth_scale = 6.241
 
     # [tint=(2,1,1)]
     corner_radius = rounding
@@ -5535,7 +5534,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     stroke_width = 4.0
     # How depth maps to color intensity
     intensity_factor = 0.021
-    intensity_offset = 3.137
+    intensity_offset = 10.018
 
     some_var = [32, 18, 19]
     # Outline color tuning
@@ -5670,7 +5669,7 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
            left_mouse_down=False,
            color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None,
            show_button_bg=True,
-           factor=1.0, tint_value=0.16, text_value=1.023, saturation=1.2, text_saturation=0.8, text_align="center",
+           factor=1.0, tint_value=0.16, text_value=0.694, saturation=1.2, text_saturation=1.2, text_align="center",
            search_match=False, search_current=False, tint=None, rounding=None, corner_radius=6.0, text_pad=15,
            max_bg_brightness=0.25):
     if color is not None:

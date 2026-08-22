@@ -3737,7 +3737,9 @@ DEFAULT_TOKEN_VIEWS = {
 # live_view() call sites get an anchor marker + nested value window (the first
 # type-keyed overlay entry). Import from its own module so the widgets and
 # their live_view imports stay out of this file.
-from src.lsd.gl_gui.view.core_views.live_view_views import install_token_views as _install_live_view_tv
+from src.lsd.gl_gui.view.core_views.live_view_views import (
+    install_token_views as _install_live_view_tv,
+    flush_selected_markers as _flush_selected_markers)
 _install_live_view_tv(DEFAULT_TOKEN_VIEWS)
 
 
@@ -3803,13 +3805,17 @@ def _lv_line_map(parse_source, buffer_text):
 
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None, buffer_text=None,
-                          sel_lo=None, sel_hi=None, fold_line_map=None):
+                          sel_lo=None, sel_hi=None, fold_line_map=None,
+                          sel_caret=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
     so span line 1 sits at origin_y. Runs after the text body. `root`/`line_offset`/
     `jump_to` ride along so a renderer can resolve file-absolute context (the
-    live_view overlay maps its node span back to a file line)."""
+    live_view overlay maps its node span back to a file line). `sel_caret` is
+    the selection's moving end: the live_view overlays queue every token
+    inside the selection and `flush_selected_markers` (called once after the
+    walk) lets only the one nearest the caret preview."""
     if not token_views or not isinstance(code_tree, dict):
         return
     type_specs = [(k, v) for k, v in token_views.items() if isinstance(k, type)]
@@ -3920,6 +3926,13 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     if _tvms >= 4.0:
         _ptrace("tv_overlay walk", ms=round(_tvms, 1), nodes=_tvw[0],
                 pruned=_tvw[1], calls=_tvw[2])
+    # Live-view selection election: the overlays QUEUED every token inside
+    # the selection; flush them now - still inside the cursor-neutral bracket
+    # - with exactly ONE elected to preview a value window.
+    try:
+        _flush_selected_markers(draw_state=ds, sel_caret=sel_caret)
+    except Exception as e:
+        print(f"live_view: selected-marker flush failed: {e!r}")
     imgui.set_cursor_screen_pos(_save_cur)
 
 
@@ -13152,13 +13165,18 @@ def draw_text(input_value: str, height=None,
         # Value widgets show their window only while SELECTED: hand the
         # focused editor's non-empty selection down as (line, col) bounds
         # (1-indexed lines, shift-corrected cols); a blank editor passes None.
-        _sel_lo = _sel_hi = None
+        # The caret (the selection's MOVING end) rides along too: of the
+        # widgets inside the selection only the one nearest it - the last
+        # one selected - shows its window (live_view_views.flush_selected()).
+        _sel_lo = _sel_hi = _sel_caret = None
         if Melty.text_focused_ds is ds and _has_selection(ds):
             _s0, _s1 = _sel_range(ds)
             _l0, _c0 = _index_to_line_col(text, _s0)
             _l1, _c1 = _index_to_line_col(text, _s1)
             _sel_lo = (_l0 + 1, _c0 - _tv_shift)
             _sel_hi = (_l1 + 1, _c1 - _tv_shift)
+            _lc, _cc = _index_to_line_col(text, ds.text_cursor_pos)
+            _sel_caret = (_lc + 1, _cc - _tv_shift)
         # Folds collapsed? pass the FULL buffer to the parse→buffer diff
         # bridge (the display text has one deletion per collapsed fold, and
         # the single-region diff maps everything between the first and last
@@ -13181,7 +13199,8 @@ def draw_text(input_value: str, height=None,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to,
                               buffer_text=_tv_buf, sel_lo=_sel_lo,
-                              sel_hi=_sel_hi, fold_line_map=_tv_fold_lm)
+                              sel_hi=_sel_hi, fold_line_map=_tv_fold_lm,
+                              sel_caret=_sel_caret)
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------

@@ -36,7 +36,11 @@ class OllamaSession(FimSession):
         self.account = account
         host = host or account_field("ollama", account, "host") or "http://localhost:11434"
         self.host = host.rstrip("/")
-        self.client = httpx.Client(base_url=self.host, timeout=timeout_s)
+        # Short CONNECT timeout so a down/unreachable server fails fast instead
+        # of blocking a gui thread for the long read timeout; generation
+        # itself keeps the long read timeout.
+        self.client = httpx.Client(base_url=self.host,
+                                   timeout=httpx.Timeout(timeout_s, connect=2.0))
         self._status = ("ready",)
 
     def status(self):
@@ -141,17 +145,19 @@ def runner_placement() -> dict:
 
 
 def device_label(device, gpus=None) -> str:
+    """Label for a device setting. `gpus` is the CACHED inventory (or None) —
+    this NEVER queries hardware, so it is safe on the render thread. Without
+    an inventory a GPU shows as a bare "GPUn" until a probe fills the names."""
     if not device or device == "auto":
         return "auto"
     if device == "cpu":
         return "CPU"
     if device.startswith("gpu:"):
-        gpus = gpus if gpus is not None else gpu_inventory()
         try:
             i = int(device[4:])
         except ValueError:
             return device
-        for g in gpus:
+        for g in (gpus or ()):
             if g["ollama_index"] == i:
                 return f"GPU{i} {g['short']}"
         return f"GPU{i}"
@@ -159,8 +165,9 @@ def device_label(device, gpus=None) -> str:
 
 
 def device_choices(gpus=None) -> list:
-    gpus = gpus if gpus is not None else gpu_inventory()
-    return ["auto"] + [f"gpu:{g['ollama_index']}" for g in gpus] + ["cpu"]
+    """Device options from the CACHED inventory (or None) — no hardware
+    query. Falls back to auto/cpu only until a probe supplies the GPUs."""
+    return ["auto"] + [f"gpu:{g['ollama_index']}" for g in (gpus or ())] + ["cpu"]
 
 
 # ──────────────────────────────────────────────────────────────────────────

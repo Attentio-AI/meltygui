@@ -429,6 +429,76 @@ def _token_in_selection(line, start_col, end_col, sel_lo, sel_hi):
     return sel_lo <= (line, start_col) and (line, end_col) <= sel_hi
 
 
+def _draw_marker_at(editor_ds, pos, cursor_inside, token_span, token,
+                    **marker_kwargs):
+    """Draw a live-view marker at screen `pos` — unless its token lies inside
+    the editor selection, in which case it is QUEUED on the editor and drawn
+    by `flush_selected_markers` after the overlay walk. Only ONE selected
+    token previews its value window at a time (the last one selected), and
+    which one can only be decided once every selected token of the frame is
+    known — deferring the calls keeps that decision lag-free (no frame where
+    two previews show) and keeps all marker state inside the marker body.
+    `token_span` = (buffer line, start_col, end_col) in the selection's
+    coordinates; `token` is the marker's positional input_value."""
+    if cursor_inside and editor_ds is not None:
+        fc = Core.melty.frame_count
+        if getattr(editor_ds, "_lv_sel_frame", None) != fc:
+            editor_ds._lv_sel_frame = fc
+            editor_ds._lv_sel_pending = []
+        editor_ds._lv_sel_pending.append(
+            (token_span, pos, token, marker_kwargs))
+        return
+    imgui.set_cursor_screen_pos(pos)
+    draw_live_view_marker(token, cursor_inside=cursor_inside,
+                          editor_ds=editor_ds, **marker_kwargs)
+
+
+def _last_selected(pending, sel_caret):
+    """Index into `pending` of the LAST-selected token: the one nearest the
+    caret end of the selection. The caret is the moving end of every
+    selection gesture (shift+arrows, drag, shift+click), so the token it
+    sits nearest is the one the selection most recently grew over — and
+    when the selection shrinks back off a token, the remaining nearest one
+    takes over. Stateless, so it needs no memory of entry order. "Nearest" is
+    in DOCUMENT order: on the caret's line the closer edge, on a line above
+    the later token, on a line below the earlier one (a column gap only
+    means something on the caret's own line). A missing caret falls to the
+    last token in document order."""
+    if sel_caret is None:
+        return max(range(len(pending)),
+                   key=lambda i: pending[i][0][:2])
+    cl, cc = sel_caret
+
+    def _key(i):
+        line, c0, c1 = pending[i][0]
+        if line == cl:
+            return (0, min(abs(c0 - cc), abs(c1 - cc)))
+        if line < cl:
+            return (cl - line, -c1)     # above the caret: later = nearer
+        return (line - cl, c0)          # below the caret: earlier = nearer
+    return min(range(len(pending)), key=_key)
+
+
+def flush_selected_markers(draw_state=None, sel_caret=None, **kwargs):
+    """text_editor calls this once after the overlay walk (inside its
+    cursor-neutral bracket): draw the tokens `_draw_marker_at`
+    queued for this frame, passing cursor_inside=True to the elected one only
+    — the others render exactly as if the caret had left them, closing any
+    preview they were showing. The queue is dropped here whatever happens:
+    its entries carry the captured values (tensors), so a lingering queue
+    would pin a run's generation."""
+    pending = getattr(draw_state, "_lv_sel_pending", None) if draw_state else None
+    if draw_state is not None:
+        draw_state._lv_sel_pending = None
+    if not pending:
+        return
+    winner = _last_selected(pending, sel_caret)
+    for i, (_span, pos, token, mk) in enumerate(pending):
+        imgui.set_cursor_screen_pos(pos)
+        draw_live_view_marker(token, cursor_inside=(i == winner),
+                              editor_ds=draw_state, **mk)
+
+
 def _marker_idle_skip(editor_ds, name, x, y, w, h, captured, cursor_inside,
                       store_obj, key_path, buffer_line, auto_open):
     """True when marker `name` is provably a NO-OP this frame, letting the
@@ -557,18 +627,19 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             key_path in snap, cursor_inside, store_obj, key_path,
             (_sl or span.start_line) - 1, True):
         return
-    imgui.set_cursor_screen_pos(_frozen_pos if _frozen_pos is not None
-                                else (x - pad, y - pad))
-    draw_live_view_marker("/".join(map(str, key_path)),
-                          value=snap.get(key_path),
-                          captured=key_path in snap,
-                          store_obj=store_obj, key_path=key_path,
-                          width=token_cells * char_w + 2 * pad,
-                          height=line_px + 2 * pad,
-                          cursor_inside=cursor_inside,
-                          editor_ds=draw_state,
-                          buffer_line=(_sl or span.start_line) - 1,
-                          name=_mname)
+    _draw_marker_at(draw_state,
+                    _frozen_pos if _frozen_pos is not None
+                    else (x - pad, y - pad),
+                    cursor_inside,
+                    (_sl, span.start_col, span.start_col + token_cells),
+                    "/".join(map(str, key_path)),
+                    value=snap.get(key_path),
+                    captured=key_path in snap,
+                    store_obj=store_obj, key_path=key_path,
+                    width=token_cells * char_w + 2 * pad,
+                    height=line_px + 2 * pad,
+                    buffer_line=(_sl or span.start_line) - 1,
+                    name=_mname)
 
 
 def _ds_in_window(ds, win_ds, max_hops=64):
@@ -1650,9 +1721,6 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _soc[3] += 1
         # Frozen-anchor path: the marker draws at its previous position so
         # its pinned window doesn't chase the true off-screen coords.
-        imgui.set_cursor_screen_pos(
-            _frozen_pos if _frozen_pos is not None
-            else (origin_x + start_col * char_w - pad, _my - pad))
         # Auto-open the VOLUMES (3-D tensors → orbiting voxel windows) only
         # when live_auto_open_volumes is enabled - off by default: with loop
         # accumulation stacking per-layer tensors into volumes, a run would
@@ -1665,13 +1733,16 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # comment source from it and splats it 1:1 onto the popup window's
         # draw_state (not onto the marker's own wrapper - show_bg=True with a
         # dark tint would draw an opaque bg over the very symbol it boxes).
-        draw_live_view_marker(
+        _draw_marker_at(
+            draw_state,
+            _frozen_pos if _frozen_pos is not None
+            else (origin_x + start_col * char_w - pad, _my - pad),
+            cursor_inside, (_ml, start_col, end_col),
             "/".join(map(str, key_path)), value=value,
             captured=True, store_obj=fn, key_path=key_path,
             width=max(1, end_col - start_col) * char_w + 2 * pad,
             height=line_px + 2 * pad,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
-            cursor_inside=cursor_inside, editor_ds=draw_state,
             buffer_line=_ml - 1, name=_snm, auto_open=_sao,
             def_node=node)
     # TEMP perf: one line per slow enough pass (keys=store size for this
