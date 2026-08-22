@@ -1045,7 +1045,7 @@ def draw_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")
 
 
-@window(tint=(0.03, 0.03, 0.07), input_value=session_instance)
+@window(tint=(0.03, 0.03, 0.04), input_value=session_instance)
 @render_func
 def draw_session_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "session_screen")
