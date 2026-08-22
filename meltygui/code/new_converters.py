@@ -1942,6 +1942,35 @@ def run_recompile(source, code_state, draw_state, start=False, name="recompile")
             request_render()
         code_state.recompile_result = result
 
+def _codec_view(codec, value, caller_view):
+    """Which view renders a codec's loaded `value` inside code_file_io.
+
+    The codec decides the data TYPE; the type decides the view — so a new
+    file type is one codec whose load() returns something with a default
+    renderer, and nothing else has to learn about it. In order:
+
+      1. A RenderHost capture (render_host_view hands its
+         `_internal_view_func` as view_func): ALWAYS kept. It materializes
+         the value into host["value"] for the host's consumers (the code
+         editor reads the dict) and draws with the host's own renderer.
+         Overriding it with the codec's view skipped materialization — an
+         image host never filled and the editor sat on "Loading…" forever.
+      2. `codec.view_func` — the explicit override (a type without a default
+         renderer, or a pinned non-default one).
+      3. A str renders in whatever text view the caller wired (the mode-
+         pinned draw_text_from_code_cache, RenderFuncs.draw_text, …).
+      4. Anything else routes by type through draw_any (is_default_for)."""
+    from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+    if isinstance(getattr(caller_view, "__self__", None), RenderHost):
+        return caller_view
+    if getattr(codec, "view_func", None) is not None:
+        return codec.view_func
+    if isinstance(value, str):
+        return caller_view
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
+    return draw_any
+
+
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║  editable_source - the whole round-trip, one function                        ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
@@ -1985,12 +2014,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.text(f"No codec for type: {type(input_value).__name__}")
             return False, None
 
-        # A codec whose output isn't editor text (ImageCodec → UITexture,
-        # BinaryFileCodec → plain summary) names its own view; it wins over the
-        # mode-pinned text view (FILE_TREE pins draw_text_from_code_cache, which
-        # would try to PARSE the loaded value as Python).
-        if getattr(codec, "view_func", None) is not None:
-            view_func = codec.view_func
+        # (Which view renders the loaded value is decided at the call site in
+        # _codec_view - once the value's type is known.)
 
         # resolve_address runs every frame; min_ms keeps the code-state cache
         # hits silent while a cold resolve (whole-file getsourcelines tokenize)
@@ -2115,6 +2140,17 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 # str_host queues into PendingSave every edit).
                 draw_state.invalidate(note=Note(name="pending-sync", tint=(1, 0.6, 0.2)))
                 request_render()
+
+        # A read-only codec (images, binaries) has nothing local to lose: an
+        # external write just reloads. no self-write check, no "changed on
+        # disk" stamp, no conflict (there can be no pending edit).
+        if file_stale and not codec.editable:
+            load = True
+            code_state._loaded_externally = not self_write
+            code_state._pending_save = False
+            code_state.mark_file_current()
+            file_stale = False
+            conflict = False
 
         if file_stale and not code_state._pending_save:
             if auto_load_edits and self_write:
@@ -2358,10 +2394,16 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             #     # the code_file_io's available width too, exactly as the NEW_CODE
             #     # columns path passes width alongside height.
             #     child_kwargs.setdefault("width", draw_state.content_width)
-            edited, value = view_func(input_value=code_state.text_cache,
-                                      external_change=trigger, draw=trigger,
-                                      **child_kwargs)
+            view = _codec_view(codec, code_state.text_cache, view_func)
+            edited, value = view(input_value=code_state.text_cache,
+                                 external_change=trigger, draw=trigger,
+                                 **child_kwargs)
 
+            # A read-only codec's view can surface a change (a gesture, a
+            # host echo) but nothing flows back to the file - the loaded value
+            # stays authoritative and no save is ever armed.
+            if edited and not codec.editable:
+                edited = False
             if edited:
                 code_state.text_cache = value
                 code_state.mark_file_current()
@@ -2401,7 +2443,7 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         #      includes completed-but-superseded runs), on the reported `saved`
         #      frame, and by the verified self-write absorb above for any frame
         #      that runs between them.
-        explicit_save = save_hotkey or save
+        explicit_save = codec.editable and (save_hotkey or save)
         # During a conflict (external write + pending local edit) the debounced
         # auto-save is OFF - only an explicit save (Keep mine / Save / Ctrl+S)
         # writes, and it writes with force past the codec's span guard. An

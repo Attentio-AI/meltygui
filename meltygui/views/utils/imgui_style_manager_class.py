@@ -4,6 +4,21 @@ import colorsys
 from src.lsd.gl_gui.global_style import GlobalStyle
 
 
+def cap_brightness(r, g, b, max_b):
+    """Cap PERCEIVED brightness (0.299r + 0.587g + 0.114b) at max_b — the
+    legibility guard for widget fills that carry light text. Scales the
+    channels, so hue and saturation survive (the max-side of the editor's
+    _brightness_clamp; kept local because toggles.py imports this module).
+    max_b <= 0 disables."""
+    if max_b <= 0:
+        return r, g, b
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    if lum > max_b:
+        k = max_b / lum
+        return r * k, g * k, b * k
+    return r, g, b
+
+
 class ImGuiStyleManager:
     def __init__(self):
         self.saved_colors = None
@@ -378,6 +393,19 @@ class ImGuiStyleManager:
             modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
+        # Widget fills (buttons, frame backgrounds = text edits + drag/slider
+        # tracks, check.)) sit under the light COLOR_TEXT, so their
+        # brightness is capped (Toggles.Style.widget_max_brightness): a bright
+        # tint otherwise lifts them to the text's brightness and the widgets
+        # go blank. Function-level import: toggles.py imports this module.
+        from src.lsd.gl_gui.toggles import Toggles
+        widget_max_b = Toggles.Style.widget_max_brightness
+
+        def make_widget_color(input):
+            cr, cg, cb, ca = make_color(input)
+            cr, cg, cb = cap_brightness(cr, cg, cb, widget_max_b)
+            return (cr, cg, cb, ca)
+
         glb_cst = GlobalStyle.main_const
 
         colors[imgui.COLOR_TEXT] = make_color(glb_cst["widget"]["text"])  # Nearly white text
@@ -403,14 +431,14 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_RESIZE_GRIP_ACTIVE] = make_color(glb_cst["widget"]["resize_active"])
 
         # Buttons
-        colors[imgui.COLOR_BUTTON] = make_color(glb_cst["widget"]["button"])
-        colors[imgui.COLOR_BUTTON_HOVERED] = make_color(glb_cst["widget"]["button_hovered"])
-        colors[imgui.COLOR_BUTTON_ACTIVE] = make_color(glb_cst["widget"]["button_active"])
+        colors[imgui.COLOR_BUTTON] = make_widget_color(glb_cst["widget"]["button"])
+        colors[imgui.COLOR_BUTTON_HOVERED] = make_widget_color(glb_cst["widget"]["button_hovered"])
+        colors[imgui.COLOR_BUTTON_ACTIVE] = make_widget_color(glb_cst["widget"]["button_active"])
 
         # Frame backgrounds
-        colors[imgui.COLOR_FRAME_BACKGROUND] = make_color(glb_cst["frame"]["frame_bg"])
-        colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_color(glb_cst["frame"]["frame_hovered"])
-        colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_color(glb_cst["frame"]["frame_active"])
+        colors[imgui.COLOR_FRAME_BACKGROUND] = make_widget_color(glb_cst["frame"]["frame_bg"])
+        colors[imgui.COLOR_FRAME_BACKGROUND_HOVERED] = make_widget_color(glb_cst["frame"]["frame_hovered"])
+        colors[imgui.COLOR_FRAME_BACKGROUND_ACTIVE] = make_widget_color(glb_cst["frame"]["frame_active"])
 
         colors[imgui.COLOR_CHECK_MARK] = make_color(glb_cst["widget"]["check_mark"])
         colors[imgui.COLOR_TEXT_SELECTED_BACKGROUND] = make_color(glb_cst["widget"]["text_selected_bg"])
@@ -423,8 +451,8 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_SEPARATOR] = make_color(glb_cst["frame"]["separator"])
 
         # Sliders, scrollbars
-        colors[imgui.COLOR_SLIDER_GRAB] = make_color(glb_cst["widget"]["slider_grab"])
-        colors[imgui.COLOR_SLIDER_GRAB_ACTIVE] = make_color(glb_cst["widget"]["slider_grab_active"])
+        colors[imgui.COLOR_SLIDER_GRAB] = make_widget_color(glb_cst["widget"]["slider_grab"])
+        colors[imgui.COLOR_SLIDER_GRAB_ACTIVE] = make_widget_color(glb_cst["widget"]["slider_grab_active"])
         colors[imgui.COLOR_SCROLLBAR_GRAB] = make_color(glb_cst["widget"]["scrollbar_grab"])
         colors[imgui.COLOR_SCROLLBAR_GRAB_HOVERED] = make_color(glb_cst["widget"]["scrollbar_grab_hovered"])
         colors[imgui.COLOR_SCROLLBAR_GRAB_ACTIVE] = make_color(glb_cst["widget"]["scrollbar_grab_active"])

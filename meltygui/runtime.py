@@ -18,6 +18,7 @@ from rtree import index as rtree_index
 
 from src.lsd.gl_gui.notifications import draw_notifications, notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
+from src.lsd.gl_gui.shaped import best_match
 from src.lsd.gl_gui.mode_defaults import register_defaults
 from src.lsd.gl_gui.utils import glfw_utils
 from src.lsd.gl_gui.view.attribute_churn import AttributeChurnMonitor
@@ -610,6 +611,14 @@ class Melty:
     _converter_to_type = {}
     converter_flags_by_type = {}
     converter_flags = {}
+    # FIM code completion registries (fim.py): provider functions, named
+    # profiles, context sources, and the pooled live sessions. In Melty so
+    # hotswap's registry reconcile keeps the function names pointing at the
+    # right functions (see _FUNC_REGISTRY_NAMES in file_converters).
+    _fim_providers = {}
+    _fim_profiles = {}
+    _fim_context_sources = {}
+    _fim_sessions = {}
 
     # Bumped on every REAL scroll_offset change (new_setattr in
     # invalidation_decoration); bumps the DrawState._ancestor_scroll memo so
@@ -744,6 +753,15 @@ class Melty:
     default_funcs_by_name = defaultdict(lambda: None)
 
     default_lenses_by_type = defaultdict(lambda: None)
+
+    # Shape-refined routing (`shaped.Shaped` keys → wrapper). Consulted AFTER
+    # the attribute-level registries and BEFORE the by-name / type ones: a
+    # shape is a refinement of a type, so `Shaped("Tensor", (None, None))`
+    # outranks the plain `"Tensor"` entry but a `tint: draw_x` annotation
+    # still wins. Plain dicts (not defaultdicts) because the hotswap registry
+    # reconcile in file_converters snapshots/restores them with the others.
+    default_funcs_by_shape = {}
+    default_lenses_by_shape = {}
 
     # Every @render_func wrapper, keyed by its own name (e.g. "draw_type").
     # Auto-populated by the decorator; the RenderFuncs accessor below resolves
@@ -932,9 +950,15 @@ class Melty:
         return text
 
     @classmethod
-    def get_default_view_function(cls, draw_state=None, real_type=None, collection_type=None, attrib_key=None):
+    def get_default_view_function(cls, draw_state=None, real_type=None, collection_type=None, attrib_key=None,
+                                  value=None):
+        # `value` feeds the shape-refined tier (Shaped keys): a shape is a
+        # property of the VALUE, not the type, so the by-type lookups below
+        # can't see it. None is still a legitimate value - it simply has no
+        # shape and skips that tier.
         if draw_state is not None:
-            real_type = draw_state._kwargs.get("real_type", type(draw_state._input_value))
+            value = draw_state._input_value
+            real_type = draw_state._kwargs.get("real_type", type(value))
             collection_type = draw_state._kwargs.get("type_collection", type(draw_state._collection))
             attrib_key = draw_state._kwargs.get("key", draw_state._kwargs.get("name", None))
 
@@ -955,6 +979,18 @@ class Melty:
                 return candidate
 
         default_by_name = cls.default_funcs_by_name[attrib_key]
+        if default_by_name is not None:
+            return default_by_name
+
+        # Shape tier: `Shaped(of, shape, dtype)` entries registered through
+        # is_default_for. Sits between the name and type tiers (see the
+        # registry comment). best_match extracts the value's shape at most
+        # once and only when an entry's `of` matched the type.
+        if value is not None and cls.default_funcs_by_shape:
+            default_by_shape = best_match(cls.default_funcs_by_shape.items(), value, real_type)
+            if default_by_shape is not None:
+                return default_by_shape
+
         default_by_type = cls.default_funcs_by_type[real_type]
         default_by_type_str = cls.default_funcs_by_name[real_type.__name__]
 
@@ -965,15 +1001,24 @@ class Melty:
                 break
             default_by_type = cls.default_funcs_by_type[t]
 
-        if default_by_name is not None:
-            default_view_function = default_by_name
-        elif default_by_type_str is not None:
+        if default_by_type_str is not None:
             default_view_function = default_by_type_str
 
         elif default_by_type is not None:
             default_view_function = default_by_type
 
         return default_view_function
+
+    @classmethod
+    def get_default_lens_function(cls, driven_value):
+        """The `is_lens_for` lens for a driven value. Same order as views:
+        the shape-refined `Shaped` entries outrank the exact-type registry."""
+        lens_func = None
+        if driven_value is not None and cls.default_lenses_by_shape:
+            lens_func = best_match(cls.default_lenses_by_shape.items(), driven_value)
+        if lens_func is None:
+            lens_func = cls.default_lenses_by_type.get(type(driven_value))
+        return lens_func
 
     # Single source of truth for a draw_state's presence in the rtree.
     #
@@ -2898,6 +2943,11 @@ class Melty:
             GLState.on_window_deleted(ds)
         except Exception:
             pass
+        try:
+            from src.lsd.gl_gui.fim import FimState
+            FimState.on_window_deleted(ds)
+        except Exception:
+            pass
 
     @classmethod
     def refresh_nested_windows(cls, draw_state):
@@ -3963,6 +4013,11 @@ class Melty:
             GLState.shutdown_all()
         except Exception as e:
             print(f"[melty] gl_state shutdown failed: {e}")
+        try:
+            from src.lsd.gl_gui.fim import FimState
+            FimState.shutdown_all()
+        except Exception as e:
+            print(f"[melty] fim shutdown failed: {e}")
         cls.filter.cleanup()
         cls.texture_manager.clear()
         Background.shutdown()

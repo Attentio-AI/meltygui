@@ -25,6 +25,7 @@ from src.lsd.gl_gui.view.core_conversion.address import to_address, Address
 from src.lsd.gl_gui.view.core_conversion.path_finder import PendingState
 from src.lsd.gl_gui.model.core_model.draw_state import DrawState, Hotkey, DragMode, Anchor, Pin, TileMode, AttrDict, TOP_ANCHORS, LEFT_ANCHORS, ExpandMode
 from src.lsd.gl_gui.model.core_model.core_enums import PendingAction
+from src.lsd.gl_gui.shaped import Shaped
 from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
 from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm, search_walk
@@ -601,8 +602,9 @@ def render_func(*args, **o_kwargs):
                 lens_func = drives[1]
             else:
                 driven_value = drives
-                if type(driven_value) in Melty.default_lenses_by_type:
-                    lens_func = Melty.default_lenses_by_type[type(driven_value)]
+                # Shape-reflection (Shaper) lenses first, then the real-type
+                # registry - same order as view routing.
+                lens_func = Melty.get_default_lens_function(driven_value)
 
             if lens_func is not None:
                 kwargs['input_value'] = input_value
@@ -5086,7 +5088,11 @@ def render_func(*args, **o_kwargs):
 
     def add_default(register_type):
         o_kwargs.pop('is_default_for', None)
-        if not isinstance((register_type), str):
+        if isinstance(register_type, Shaped):
+            # Shape-refined entry, keyed by the (hashable) Shaped itself so
+            # the hotswap reconcile treats it like any other key → wrapper.
+            Melty.default_funcs_by_shape[register_type] = wrapper
+        elif not isinstance((register_type), str):
             Melty.default_funcs_by_type[register_type] = wrapper
             Melty.default_funcs_by_name[register_type.__name__] = wrapper
         else:
@@ -5096,17 +5102,21 @@ def render_func(*args, **o_kwargs):
     if isinstance(is_default_for, (tuple, list)):
         for a_type in is_default_for:
             add_default(a_type)
-    elif isinstance(is_default_for, type):
+    elif isinstance(is_default_for, (type, str, Shaped)):
         add_default(is_default_for)
-    elif isinstance(is_default_for, str):
-        add_default(is_default_for)
+
+    def add_lens(register_type):
+        if isinstance(register_type, Shaped):
+            Melty.default_lenses_by_shape[register_type] = wrapper
+        else:
+            Melty.default_lenses_by_type[register_type] = wrapper
 
     is_lens_for = o_kwargs.pop('is_lens_for', None)
     if isinstance(is_lens_for, (tuple, list)):
         for a_type in is_lens_for:
-            Melty.default_lenses_by_type[a_type] = wrapper
+            add_lens(a_type)
     else:
-        Melty.default_lenses_by_type[is_lens_for] = wrapper
+        add_lens(is_lens_for)
 
     interrupt_type = o_kwargs.pop('interrupt_source_for', None)
     if interrupt_type is not None:

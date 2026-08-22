@@ -6487,7 +6487,7 @@ def _patch_leading_override(node, value):
             # rather than leave an empty `# []`.
             del lines[start:end]
             return node.with_changes(leading_lines=lines)
-        if current != original:
+        if _override_changed(current, original):
             lines[start:end] = _rebuild_comment_block(
                 _reformat_override_comment(joined, current), run)
             return node.with_changes(leading_lines=lines)
@@ -6651,17 +6651,30 @@ _REMOVE_COMMENT = object()
 
 
 def _format_override_comment(overrides):
-    """Render an overrides dict back into a '# [k=v, ...]' comment string."""
+    """Render an overrides dict back into a '# [k=v, ...]' comment string,
+    pairs in dict order — the comment IS that order."""
     parts = [f"{k}={_format_override_value(v)}" for k, v in overrides.items()
              if not _is_dunder(k)]
     return "# [" + ", ".join(parts) + "]"
 
 
+def _override_changed(current, original):
+    """Whether `current` (the edited pairs) differs from `original` (the pairs
+    parsed from the comment) — by VALUE or by ORDER. An override comment is an
+    ordered set of pairs, so a pure reorder is an edit that must rewrite it;
+    dict `!=` alone is order-blind and let reorders evaporate on save."""
+    return current != original or list(current) != list(original)
+
+
 def _reformat_override_comment(original_text, overrides):
-    """Render an updated overrides dict, preserving `original_text`'s line
-    structure: each key stays on the line it came from, a dropped key leaves
-    its line (a line losing every key disappears), and brand-new keys append
-    to the last line. A single-line comment stays single-line."""
+    """Render an updated overrides dict in ITS key order, preserving
+    `original_text`'s line structure by slot: the comment's key positions are
+    slots pinned to their lines, the surviving keys fill those slots in the
+    dict's order (so a reorder moves keys between lines while each line keeps
+    its pair count), a dropped key vacates its slot (a line losing every key
+    disappears), and a brand-new key lands beside its predecessor in the dict
+    (a key appended to the end rides the last line, an insert mid-dict its
+    neighbour's line). A single-line comment stays single-line."""
     pairs = {k: v for k, v in overrides.items() if not _is_dunder(k)}
     lines = original_text.split("\n")
     original = _parse_override_comment(original_text)
@@ -6672,7 +6685,7 @@ def _reformat_override_comment(original_text, overrides):
     # key value from pushing a later key onto an earlier line; a key that
     # can't be matched falls to the last line. Mis-attribution only ever
     # shifts formatting - values always regenerate from `overrides`.
-    per_line = [[] for _ in lines]
+    slots = []      # line of each surviving key's slot, in SOURCE order
     li = pos = 0
     for key in original:
         pat = re.compile(rf"(?<!\w){re.escape(key)}\s*=")
@@ -6683,8 +6696,17 @@ def _reformat_override_comment(original_text, overrides):
                 break
             li, pos = li + 1, 0
         if key in pairs:
-            per_line[min(li, len(lines) - 1)].append(key)
-    per_line[-1].extend(k for k in pairs if k not in original)
+            slots.append(min(li, len(lines) - 1))
+    # Walk the DICT order: the i-th surviving key takes the i-th slot's line
+    # (slots are non-decreasing, so lines stay monotone on the walk and
+    # within-line order is the dict's), a new key its predecessor's line.
+    per_line = [[] for _ in lines]
+    slot_iter = iter(slots)
+    line = 0
+    for key in pairs:
+        if key in original:
+            line = next(slot_iter)
+        per_line[line].append(key)
     rendered = [", ".join(f"{k}={_format_override_value(pairs[k])}" for k in keys)
                 for keys in per_line if keys]
     if len(rendered) == 1:
@@ -6802,7 +6824,7 @@ def _collect_comment_edits(edits, text_map=None):
             original = _parse_override_comment(str(k))
             if original is None:
                 continue
-            if current != original:
+            if _override_changed(current, original):
                 # {} → remove the comment line(s) entirely (not `# []`).
                 text_map[str(k)] = (_reformat_override_comment(str(k), current)
                                     if current else _REMOVE_COMMENT)

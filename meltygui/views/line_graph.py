@@ -45,6 +45,7 @@ import OpenGL.GL as gl
 from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.shader_func import shader_func
+from src.lsd.gl_gui.shaped import Shaped
 from src.lsd.gl_gui.toggles import SwooshMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -347,9 +348,14 @@ def _draw_axes_overlay(draw_list, img_pos, width, height, n_samples, y_range,
 
 # ── the view ───────────────────────────────────────────────────────────────
 
-@render_func(show_bg=True, selectable=True, auto_resize=False, min_width=269,
-             with_header=draw_header, bg_offset=0, min_height=293,
-             disable_scroll=True, use_cache=True)
+@render_func(
+    # Shape-routed: 1-D and 2-D tensors come here, 3-D+ go to draw_voxels
+    # (via `Shaped("Tensor", (None, None, None, None))`). The plain "Tensor"
+    # name entry on draw_voxels stays as fallback for anything unshaped.
+    is_default_for=(Shaped("Tensor", (None,)), Shaped("Tensor", (None, None))),
+    show_bg=True, selectable=True, auto_resize=False, min_width=269,
+    with_header=draw_header, bg_offset=0, min_height=293,
+    disable_scroll=True, use_cache=True)
 def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False,
                     draw_state=None,
                     # ── camera: zoom/pan in the shader. cam_* and zoom_* names

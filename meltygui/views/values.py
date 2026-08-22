@@ -24,6 +24,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
+from src.lsd.gl_gui.shaped import Shaped
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, \
     ExpandMode
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -45,7 +46,6 @@ from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, con
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow
-from src.lsd.gl_gui.view.core_views.codec_register import registry as FILE_CODECS
 from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names
 from src.lsd.gl_gui.view.core_views.anywhere import SourcePriority, _source_priority, _sources_for, \
     _driving_source, _setting_source, default_write_source, get_value_for_source, get_source_for, \
@@ -1046,7 +1046,7 @@ _symbol_hits_memo = (None, None)
 # Bumped when SearchHit's args / the Code hit layout changes: the memos are
 # module globals that survive a hotswap, so the version in the memo signature
 # is what forces a rebuild instead of serving pre-change hits.
-_HIT_SCHEMA = 4
+_HIT_SCHEMA = 5
 
 
 @search_index(kind="Code")
@@ -1158,32 +1158,93 @@ def _short_unique_paths(paths):
 # the scorer's per-provider corpus memo hold.
 _file_hits_memo = (None, None)
 
+# Asset-file walk memo: (monotonic time, root, extensions, tuple of paths).
+# The tuple is returned AS IS while unchanged so file_index's signature (and
+# hence its hits' identity) holds across re-walks that found nothing new.
+_asset_files_memo = (0.0, None, None, ())
+_ASSET_WALK_TTL = 30.0    # seconds between directory walks (text_index._WALK_TTL)
+
+
+def _asset_file_paths(root, exts):
+    """Every file under `root` whose extension is in `exts`, sorted. Prunes
+    the trigram index's skip set plus anything venv-like / site-packages (a
+    backup venv ships hundreds of library test images) — dot-dirs are NOT
+    skipped wholesale: .melty/screenshots is the most-opened image folder."""
+    from src.lsd.gl_gui.text_index import _SKIP_DIRS
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames
+                       if d not in _SKIP_DIRS and "venv" not in d
+                       and d != "site-packages"]
+        for fn in filenames:
+            if os.path.splitext(fn)[1].lower() in exts:
+                out.append(Path(dirpath, fn))
+    out.sort()
+    return out
+
+
+def _asset_files():
+    """The project's asset files (every extension a non-text codec claims —
+    new_codecs.asset_extensions), re-walked at most every _ASSET_WALK_TTL
+    seconds. Root = the PROJECT (parent of src/): screenshots and paper
+    figures live beside src, not in it."""
+    global _asset_files_memo
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _SRC_PREFIX
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import asset_extensions
+    root = str(Path(_SRC_PREFIX).parent)
+    exts = frozenset(asset_extensions())
+    built_at, m_root, m_exts, paths = _asset_files_memo
+    now = time.monotonic()
+    if m_root == root and m_exts == exts and now - built_at < _ASSET_WALK_TTL:
+        return paths
+    fresh = tuple(_asset_file_paths(root, exts))
+    if fresh != paths:
+        paths = fresh
+    _asset_files_memo = (now, root, exts, paths)
+    return paths
+
 
 @search_index(kind="Code")
 def file_index():
-    """Every loaded src file, labelled by its src-relative path, in the Code
-    category (a file hit is the ROOT of its symbols' tree). Activating a hit
-    opens the file in the in-app code editor. Same loaded-module universe as
-    the symbol index (_src_mod_map)."""
+    """Every loaded src file, labelled by its src-relative path, PLUS every
+    asset file a non-text codec claims (images, …; _asset_files), labelled
+    by its project-relative path -- all in the Code category (a file hit is
+    the ROOT of its symbols' tree; assets have no symbols). Activating a hit
+    opens the file in the in-app code editor, which renders whatever the
+    file's codec loads. Python universe = the loaded modules (_src_mod_map);
+    asset universe = a periodic project walk."""
     global _file_hits_memo
-    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map, _SRC_PREFIX
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import extension_to_codec
     mod_map = _src_mod_map()
-    mod_sig = (tuple(mod_map), _HIT_SCHEMA)
+    assets = _asset_files()
+    mod_sig = (tuple(mod_map), assets, _HIT_SCHEMA)
     memo_sig, memo_hits = _file_hits_memo
     if memo_sig == mod_sig:
         return memo_hits
     base = _category_tint("Files")
+    project = Path(_SRC_PREFIX).parent
     hits = []
-    shorts = _short_unique_paths(list(mod_map))
-    for order, path in enumerate(mod_map):
-        label = path.as_posix().split("/src/", 1)[-1]
+    paths = list(mod_map) + [p for p in assets if p not in mod_map]
+    shorts = _short_unique_paths(paths)
+    for order, path in enumerate(paths):
+        if path in mod_map:
+            label = path.as_posix().split("/src/", 1)[-1]
+            icon = _SYM_ICONS["file"]
+        else:
+            try:
+                label = path.relative_to(project).as_posix()
+            except ValueError:
+                label = path.as_posix()
+            codec = extension_to_codec.get(path.suffix.lower())
+            icon = getattr(codec, "icon", None) or _SYM_ICONS["file"]
         # The file's own FileMeta tint (the colour its editor tab wears),
         # live -- a callable so that a repaint follows an edit.
         tint = (lambda p=path, b=base: _file_meta_tint(p) or b)
         hits.append(SearchHit(label, tint,
                               lambda p=path: _jump_to_symbol_def(None, p),
                               kind=CODE_CATEGORY, match=path.name,
-                              icon=_SYM_ICONS["file"],
+                              icon=icon,
                               sym=CodeSym(path, "", "file", order, None, shorts[path])))
     _file_hits_memo = (mod_sig, hits)
     return hits
@@ -4109,6 +4170,16 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             GlobalSearch._focus_requested = True
         request_render()
 
+    # Ctrl+Shift+3: the region screenshot tool (utils.screenshot) - same
+    # non_blocking root handler shape as Ctrl+Shift+F. Pressed again while
+    # armed, it cancels. The tool's per-frame body (crosshair, drag box,
+    # capture on release) runs right after, so the arming press paints the
+    # crosshair this same frame.
+    from src.lsd.gl_gui.view.playground import region_screenshot
+    if draw_state.on_action("non_blocking_ctrl_shift_3_down", priority_delta=512):
+        region_screenshot.toggle()
+    region_screenshot.draw(draw_state)
+
     # Ctrl+Enter: recompile ALL pending edits - the per-editor Ctrl+Enter in
     # code_file_io was retired in favor of this. Same root-handler pattern as
     # Ctrl+Shift+F above (non_blocking, so it fires even while the view is
@@ -4555,20 +4626,28 @@ def draw_melty_windows(vis):
 
 @render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, z_offset=1, selectable=False,
              show_bg=True, auto_resize=True, with_header=draw_header)
-def draw_pending_texture(input_value: PendingTexture, draw_state):
+def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
         return False, input_value
 
-    max_size = 300
-    if input_value.tex_width > input_value.tex_height:
-        width = max_size
-        height = int(max_size * input_value.tex_height / input_value.tex_width)
+    # Sized by the caller (an editor pane passes width+height): fill the box
+    # - draw_texture fits the image inside it with zoom/pan. Otherwise (a
+    # folder-tree leaf) a 300px thumbnail at the image's resolution.
+    fill_w, fill_h = kwargs.get("width"), kwargs.get("height")
+    if fill_w and fill_h:
+        size_kwargs = {"width": max(35, fill_w - 4), "height": max(35, fill_h - 4)}
     else:
-        height = max_size
-        width = int(max_size * input_value.tex_width / input_value.tex_height)
+        max_size = 300
+        if input_value.tex_width > input_value.tex_height:
+            width = max_size
+            height = int(max_size * input_value.tex_height / input_value.tex_width)
+        else:
+            height = max_size
+            width = int(max_size * input_value.tex_width / input_value.tex_height)
+        size_kwargs = {"initial": {"width": width, "height": height}}
 
-    return_val = draw_texture(input_value.texture_id, initial={"width": width, "height": height},
+    return_val = draw_texture(input_value.texture_id, **size_kwargs,
                               name=f"{draw_state.id}_inner", auto_resize=False,
                               show_header=False, use_cache=True, wrap=False, tint=(0.11, 0.29, 0.52))
 
@@ -6534,7 +6613,11 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
 
 
 @render_func(is_default_for=(
-'tint', 'help_yellow_tint', 'color', 'context_select_tint', "text_color", "gradient_color", "outline_color"),
+'tint', 'help_yellow_tint', 'color', 'context_select_tint', "text_color", "gradient_color", "outline_color",
+    # Any 3- or 4-tuple of numbers with a float in it is a colour (promoted
+    # dtype: `(0, 0, 0, 0.1)` works, an all-int `(1, 2, 3)` doesn't). The
+    # name entries above also catch plain tints like `tint=(0, 0, 0)`.
+    Shaped(tuple, (3,), float), Shaped(tuple, (4,), float)),
              has_popup=True,
              indent_size=2, is_tree=False, align_header=True, header_same_line=True, wrap=True,
              show_name=True, selectable=False, max_width=100, min_width=33, use_cache=False, with_header=draw_header)
@@ -10850,7 +10933,7 @@ def draw_any(input_value: any = None, view_func=None, mode: any = None, chain=No
 
     if view_func is None:
         new_default = Core.melty.get_default_view_function(real_type=real_type, collection_type=collection_type,
-                                                           attrib_key=key)
+                                                           attrib_key=key, value=input_value)
         if new_default is None:
             new_default = draw_collection
         if view_func is None:

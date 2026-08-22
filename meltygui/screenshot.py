@@ -190,9 +190,52 @@ def request_view_capture(draw_state, requested_frame, reopen_menu_ds=None,
     _nudge()
 
 
+_region_pending = []
+
+
+def request_region_capture(left, top, w, h, requested_frame, name="screenshot",
+                           on_captured=None):
+    """Queue a deferred framebuffer capture of an arbitrary on-screen box
+    (window points) — the region screenshot tool's drag rectangle. Serviced
+    by process_take_screenshot_flags after `_SETTLE_FRAMES`, so the frame the
+    box was drawn on (crosshair / selection overlay) has cleared before the
+    pixels are read. `on_captured(path)` runs on the render thread once the
+    PNG is written. Call on the render thread."""
+    _region_pending.append({
+        "rect": (left, top, w, h), "requested_frame": requested_frame,
+        "name": name, "on_captured": on_captured,
+    })
+    _nudge()
+
+
+def _process_region_captures(window):
+    if not _region_pending:
+        return
+    from src.lsd.gl_gui.melty import Melty
+    still = []
+    for req in _region_pending:
+        if Melty.frame_count - int(req["requested_frame"]) < _SETTLE_FRAMES:
+            still.append(req)
+            continue
+        path = None
+        try:
+            path = _capture_points(window, *req["rect"], req["name"])
+        except Exception as e:
+            print(f"Screenshot (region) failed: {e}")
+        if path is not None and req.get("on_captured") is not None:
+            try:
+                req["on_captured"](path)
+            except Exception as e:
+                print(f"Screenshot on_captured callback failed: {e}")
+    _region_pending[:] = still
+    if still:
+        _nudge()
+
+
 def process_take_screenshot_flags(window):
-    """Service deferred per-view screenshots queued from the context menu. Call
-    from the render thread (post_frame), with the GL context current.
+    """Service deferred per-view screenshots queued from the context menu (and
+    the region tool's drag boxes — _process_region_captures). Call from the
+    render thread (post_frame), with the GL context current.
 
     The context-menu screenshot button fronts the window, queues the view via
     request_view_capture, and closes the menu -- all during one frame's draw. We
@@ -200,6 +243,7 @@ def process_take_screenshot_flags(window):
     the closed menu has cleared, then grab the view's rect and reopen the menu.
     Pumps frames while waiting.
     """
+    _process_region_captures(window)
     if not _view_pending:
         return
     from src.lsd.gl_gui.melty import Melty
@@ -280,14 +324,21 @@ def _capture_rect(window, ds, name):
     """Read draw_state `ds`'s on-screen rect from GL_BACK and save it as a PNG
     named after `name`. The draw_state supplies the rect (left/top/width/height
     in window points); shared by the window and per-view capture paths."""
+    left, top, w, h = ds.left, ds.top, ds.width, ds.height
+    if not w or not h:
+        raise ValueError(f"{name!r} has no size ({w}x{h}); is it open?")
+    return _capture_points(window, left, top, w, h, name)
+
+
+def _capture_points(window, left, top, w, h, name):
+    """Read the on-screen rect (left/top/width/height in WINDOW POINTS) from
+    GL_BACK and save it as a PNG named after `name`. The one framebuffer
+    reader: window / view captures pass a draw_state's box, the region tool
+    passes the user's drag box."""
     import glfw
     import numpy as np
     import OpenGL.GL as gl
     from PIL import Image
-
-    left, top, w, h = ds.left, ds.top, ds.width, ds.height
-    if not w or not h:
-        raise ValueError(f"{name!r} has no size ({w}x{h}); is it open?")
 
     fb_w, fb_h = glfw.get_framebuffer_size(window)
     win_w, win_h = glfw.get_window_size(window)

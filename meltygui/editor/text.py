@@ -25,6 +25,7 @@ from src.lsd.gl_gui.view.jump_to import draw_jump_to
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.toggles import Swoosh
+from src.lsd.gl_gui.fim import FimState
 
 
 def _hex(h):
@@ -1122,6 +1123,78 @@ def _ensure_signature_help(ds, text, open_paren, cursor, address=None):
     ds._ac_sig_done_key = key
     ds._ac_sig_future = None
     return ds._ac_sig_data
+
+
+# Keys whose buffer edits never trigger a FIM generation (fim.py): deleting,
+# indenting and breaking a line are structure, not content.
+_FIM_NON_TRIGGER_KEYS = frozenset({glfw.KEY_BACKSPACE, glfw.KEY_DELETE, glfw.KEY_TAB,
+                                   glfw.KEY_ENTER, glfw.KEY_KP_ENTER})
+
+
+def _fim_poll(ds, fim_state, text, address, profile, typed=False):
+    """Drive the editor's FimState for this frame (fim.py): build the
+    EditorView (cheap — whole-file work is lazy) and poll. `typed` = the
+    buffer changed this frame (only typing triggers a request). Provider /
+    context errors surface ONCE per distinct message as a notification."""
+    from src.lsd.gl_gui.toggles import Toggles
+    try:
+        from src.lsd.gl_gui.fim_context import editor_view
+        view = editor_view(text, ds.text_cursor_pos, address)
+        ghost = fim_state.poll(text, ds.text_cursor_pos, view=view,
+                               profile=profile or "", ds=ds, typed=bool(typed))
+    except Exception:
+        if Toggles.Fim.debug_print:
+            import traceback
+            traceback.print_exc()
+        return None
+    err = fim_state.error
+    if err and err != getattr(ds, '_fim_err_shown', None):
+        ds._fim_err_shown = err
+        try:
+            from src.lsd.gl_gui.notifications import notify
+            notify(f"FIM: {err}", tint=(1.0, 0.65, 0.4, 1.0), tag="fim")
+        except Exception:
+            pass
+    return ghost
+
+
+def _draw_fim_ghost(ds, ghost, text, origin_x, origin_y, line_px, vcols=None):
+    """Ghost text for the FIM chunk: the first segment inline after the
+    caret (dim), any further lines in a translucent box under the caret
+    line (no layout change — folds/heights untouched), and a faint `+N`
+    when more is buffered beyond this chunk. A pending request with no
+    complete line yet shows a single dim ellipsis."""
+    dl = imgui.get_window_draw_list()
+    col = imgui.get_color_u32_rgba(0.66, 0.70, 0.78, 0.55)
+    hint = imgui.get_color_u32_rgba(0.66, 0.70, 0.78, 0.32)
+    x, y = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
+    if not ghost.text:
+        dl.add_text(x + 2, y, hint, "…")
+        return
+    segs = ghost.text.split("\n")
+    first = segs[0]
+    if first:
+        dl.add_text(x, y, col, first)
+    end_x = x + imgui.calc_text_size(first).x if first else x
+    end_y = y
+    rest = segs[1:]
+    if rest and rest[-1] == "":
+        rest = rest[:-1]
+    if rest:
+        ch = _mono_char_w()
+        w = max(len(ln) for ln in rest) * ch + 12
+        h = len(rest) * line_px + 6
+        bx, by = origin_x, y + line_px
+        bg = imgui.get_color_u32_rgba(0.11, 0.12, 0.15, 0.92)
+        border = imgui.get_color_u32_rgba(0.30, 0.33, 0.42, 0.7)
+        dl.add_rect_filled(bx - 4, by, bx + w, by + h, bg, 4.0)
+        dl.add_rect(bx - 4, by, bx + w, by + h, border, 4.0)
+        for i, ln in enumerate(rest):
+            dl.add_text(bx, by + 3 + i * line_px, col, ln)
+        end_x = bx + len(rest[-1]) * ch
+        end_y = by + 3 + (len(rest) - 1) * line_px
+    if ghost.more_lines:
+        dl.add_text(end_x + 8, end_y, hint, f"+{ghost.more_lines}")
 
 
 def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcols=None):
@@ -8873,7 +8946,8 @@ def draw_text(input_value: str, height=None,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
               autocomplete=True, unique=0,
               show_widgets=True, show_root_backgrounds=True,
-              highlight_token_matches=True, roster_live_hold=True):
+              highlight_token_matches=True, roster_live_hold=True,
+              fim="", fim_state: FimState = None):
     """`show_widgets=False` hides every inline token widget (run/eye buttons,
     number drags, bool switches, icon pickers -- the token_views layer).
     `highlight_token_matches=False` turns off the caret-rest same-token wash
@@ -8888,7 +8962,10 @@ def draw_text(input_value: str, height=None,
     file (global-search rows): its def tints resolve against the roster's
     pending table instead of installing the buffer as the file's live
     override (see roster_tints.collect_def_tints)."""
+    
+    
     ds = draw_state
+
     # --- Perf instrumentation (typing latency) --------------------------------
     # Section marks: each _pf(label) closes the section since the previous mark.
     # One summary line per edited frame — plus any frame >= 8ms — goes to the
@@ -10697,6 +10774,38 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_KP_ENTER)
                 _fired.discard(glfw.KEY_TAB)
 
+        # --- FIM ghost text: accept / dismiss (fim_state) --- reads LAST frame's
+        # ghost (what the user is looking at). Runs after the suggestion popup's
+        # handlers - that popup owns Tab while open - and before the indent /
+        # caret handlers, consuming its keys the same way. Tab = the visible
+        # chunk (Ctrl+Tab = everything buffered), Ctrl+Right = one word, Esc
+        # disc the the buffer (not dismiss - Esc keeps doing other jobs).
+        _fim_ghost_prev = getattr(ds, '_fim_ghost', None)
+        if (fim_state is not None and _fim_ghost_prev is not None and _fim_ghost_prev.text
+                and not is_search_box and not single_line):
+            if pressed(glfw.KEY_ESCAPE):
+                fim_state.dismiss()
+                ds._fim_ghost = None
+            else:
+                _fim_mode = None
+                if (pressed(glfw.KEY_TAB) and not shift
+                        and not getattr(ds, '_ac_open', False)):
+                    _fim_mode = "all" if ctrl else "chunk"
+                elif pressed(glfw.KEY_RIGHT) and ctrl and not shift:
+                    _fim_mode = "word"
+                if _fim_mode is not None:
+                    _ins = fim_state.accept(_fim_mode)
+                    if _ins:
+                        _pos = ds.text_cursor_pos
+                        text = text[:_pos] + _ins + text[_pos:]
+                        ds.text_cursor_pos = _pos + len(_ins)
+                        ds.text_selection_start = ds.text_cursor_pos
+                        ds.text_selection_end = ds.text_cursor_pos
+                        ds.text_cursor_blink_time = time.time()
+                        changed = True
+                        _fired.discard(glfw.KEY_TAB)
+                        _fired.discard(glfw.KEY_RIGHT)
+
         # --- Usage-jump picker: navigation & accept --- same key model as the
         # suggestion popup above: while open, Esc/arrows/Enter drive the picker
         # and are consumed before the caret handlers see them.
@@ -11480,6 +11589,21 @@ def draw_text(input_value: str, height=None,
         # don't want a subprocess completion job fired per keystroke in a
         # one-liner.
         _pf("kbd:ac")
+        # --- FIM ghost text: reconcile the buffer against this frame's final
+        # edit, schedule/continue requests, and stash what the render below
+        # (and next frame's accept handler) should show.
+        if (fim_state is not None and not is_search_box and not single_line
+                and not is_diff and completion_source is None):
+            # "typed" = the buffer changed by CONTENT typing. Backspace /
+            # Delete / Tab / Enter edit the buffer too but never start a
+            # generation (they only reconcile or abort a showing ghost).
+            # Read from the raw frame keys - handlers discard consumed keys
+            # from `_fired` (an accepted Tab is gone by now).
+            _fim_typed = changed and not any(k in _FIM_NON_TRIGGER_KEYS for k, _m in _frame_keys)
+            ds._fim_ghost = _fim_poll(ds, fim_state, text, jump_to, fim, typed=_fim_typed)
+        else:
+            ds._fim_ghost = None
+        _pf("kbd:fim")
         if ac_enabled and completion_source is None:
             _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
             _sig_req = getattr(ds, '_ac_sig_request_paren', -1)
@@ -13546,6 +13670,12 @@ def draw_text(input_value: str, height=None,
             if t is not None:
                 _ac_tints[n] = t
         _ac_tints = _ac_tints or None
+    # Draw FIM ghost text (fim.py): the visible chunk under the caret, extra
+    # lines in an anchor below, drawn while the mono font is still pushed.
+    _fim_ghost = getattr(ds, '_fim_ghost', None) if is_focused else None
+    if _fim_ghost is not None and (_fim_ghost.text or _fim_ghost.pending):
+        _draw_fim_ghost(ds, _fim_ghost, text, origin_x, origin_y, line_px, vcols)
+
     _ac_anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
 
     _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px, vcols=vcols)

@@ -47,8 +47,10 @@ import numpy as np
 import OpenGL.GL as gl
 
 from src.lsd.gl_gui.gl_state import GLState, GLTexture, gl_limits, texture3d_fit, tight_unpack
+from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.shader_func import shader_func
+from src.lsd.gl_gui.shaped import Shaped
 from src.lsd.gl_gui.text_texture import bake_text, bake_texts
 from src.lsd.gl_gui.toggles import SwooshMode
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace
@@ -56,8 +58,8 @@ from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.view.core_views.core_render import render_func, release_input_refs
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
-from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_tab_bar, draw_dropdown
+from src.lsd.gl_gui.view.core_views.headers import draw_header, flat_button
+from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_bg, draw_dropdown
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.toggles import Swoosh
@@ -929,6 +931,140 @@ def _collection_dim_labels(col):
     return [_clean_dim_name(x, i) for i, x in enumerate(raw_names or ())]
 
 
+# Dim-tab geometry, authored at ui_scale 1.0 (scaled through Melty.px at
+# draw time). Tighter than draw_tab_bar's 30px tabs / 15px text pad / imgui
+# item-spacing gap, which made the dim rows the tallest thing in the panel.
+DIM_TAB_HEIGHT = 26
+DIM_TAB_TEXT_PAD = 11
+DIM_TAB_GAP = 3
+DIM_TAB_BAND_PAD = 3
+DIM_TAB_COLOR = (0.5, 0.5, 0.5)
+
+
+def _draw_dim_tabs(draw_state, options, labels, selected, multi):
+    """The dim tab strip: one flat_button per option, laid out by hand
+    (wrapping at draw_state.content_width) over the same draw_bg band
+    draw_tab_bar's wrapper painted (bg_offset=-3, rounding 5), with the tab
+    bar's look — active = filled rect + shadow, inactive = label only, hover
+    brightens — but DIM_TAB_* geometry. No nested render_func: the buttons
+    paint straight into this view's draw list and claim their clicks through
+    this view's draw_state.on_action, so the row costs one wrapper instead
+    of two. Returns (changed, selected) with `selected` a list of option
+    values; multi toggles, single replaces."""
+    tab_h = Melty.px(DIM_TAB_HEIGHT)
+    pad = Melty.px(DIM_TAB_TEXT_PAD)
+    gap = Melty.px(DIM_TAB_GAP)
+    band_pad = Melty.px(DIM_TAB_BAND_PAD)
+    x0, y0 = imgui.get_cursor_screen_pos()
+    content_width = draw_state.content_width if draw_state is not None else 0
+    x_limit = x0 + content_width if content_width > 0 else None
+    # Layout first (pure math over the label widths) so the band can be
+    # painted UNDER the buttons without carrying last frame's extent on the
+    # draw_state the way the tab / show_bg path does.
+    rects = []
+    x, y = x0 + band_pad, y0 + band_pad
+    for label in labels:
+        w = imgui.calc_text_size(label).x + pad
+        if rects and x_limit is not None and x + w + band_pad > x_limit:
+            x, y = x0 + band_pad, y + tab_h + gap
+        rects.append((x, y, w))
+        x += w + gap
+    right = max(rx + rw for rx, _, rw in rects) + band_pad
+    bottom = rects[-1][1] + tab_h + band_pad
+    draw_bg(left=x0, top=y0, width=right - x0, height=bottom - y0,
+            rounding=5, bg_offset=-3, depth=Melty.shadow_depth, opacity=1.0,
+            selected=False, pressed=False, nested_bg=False,
+            style_manager=Melty.style_manager)
+    changed = False
+    selected = list(selected)
+    for i, (opt, label, (x, y, w)) in enumerate(zip(options, labels, rects)):
+        imgui.set_cursor_screen_pos((x, y))
+        active = opt in selected
+        # Same params draw_tab_bar hands flat_button for an untinted tab
+        # (new_value=0.15, factor=1.2): active keeps flat_button's full
+        # text/saturation, inactive is alpha=0 with the muted text.
+        if active:
+            clicked = flat_button(label, draw_state, view_id=f"dim_tab_{i}",
+                                  width=w, height=tab_h, color=DIM_TAB_COLOR,
+                                  factor=1.2, tint_value=0.15 + 0.23 - 0.03)
+        else:
+            clicked = flat_button(label, draw_state, view_id=f"dim_tab_{i}",
+                                  width=w, height=tab_h, color=DIM_TAB_COLOR,
+                                  factor=1.2, alpha=0.0, tint_value=0.15,
+                                  saturation=0.3, text_value=1.0)
+        if clicked:
+            changed = True
+            if multi:
+                if active:
+                    selected.remove(opt)
+                else:
+                    selected.append(opt)
+            else:
+                selected = [opt]
+    # Register the whole band (pads included) with the layout so the row's
+    # measured extent covers it, and leave the cursor below it.
+    imgui.set_cursor_screen_pos((x0, y0))
+    imgui.dummy(right - x0, bottom - y0)
+    return changed, selected
+
+
+# Axis params that must name unique dims: `_resolve_axes` (and the line
+# renderer's `_resolve_line_axes`) collapse a duplicate to unset and re-derive
+# it. Picking a dim another axis row already holds therefore SWAPS the two -
+# the legacy voxel_renderer behavior - instead of silently knocking the other
+# axis back to its derived default. sort_dim / nf_chop / nf_along stay out:
+# duplicing an axis is their whole point.
+SWAP_DIM_KEYS = frozenset({"x_dim", "y_dim", "z_dim", "line_dim"})
+
+
+def _sibling_dim_keys(draw_state):
+    """Keys of the OTHER draw_tensor_dim rows in the panel this row renders
+    in, found by walking the render tree (the parent's _view_children index,
+    where every rendered child self-registers) rather than the collection:
+    what is actually rendering as a dim picker right now, whatever the
+    collection stores. Read-only over the siblings — no value ever moves
+    through another row's draw_state."""
+    parent = draw_state._parent if draw_state is not None else None
+    if parent is None or parent is draw_state:      # a root ds parents itself
+        return []
+    keys = []
+    for sib in parent._view_children.values():
+        if sib is None or sib is draw_state or sib._parent is not parent:
+            continue
+        # By name, not identity: a hotswap re-mints the function object but
+        # a sibling rendered before the swap still carries the old one.
+        if getattr(sib._view_func, "__name__", None) != "draw_tensor_dim":
+            continue
+        key = (sib._kwargs or {}).get("key")
+        if key is not None:
+            keys.append(key)
+    return keys
+
+
+def _swap_sibling_dim(draw_state, kwargs, old, new):
+    """This row just moved from `old` to `new`: if a sibling AXIS row holds
+    `new`, hand it `old` so the two axes swap. The hand-off is the same
+    write draw_collection performs when that row returns changed —
+    `collection[key] = value` on the panel's ParamProxy (→ set_anywhere) —
+    so the sibling's value takes the normal route whether or not that row
+    renders this frame, and nothing is posted on its draw_state."""
+    if new < 0:
+        return                              # "off" can be shared freely
+    key = (draw_state._kwargs or {}).get("key") if draw_state is not None else None
+    if key not in SWAP_DIM_KEYS:
+        return
+    col = _row_collection(draw_state, kwargs)
+    if col is None:
+        return
+    for sib_key in _sibling_dim_keys(draw_state):
+        if sib_key not in SWAP_DIM_KEYS or sib_key not in col:
+            continue
+        v = col.get(sib_key)
+        if isinstance(v, int) and not isinstance(v, bool) and int(v) == new:
+            col[sib_key] = TensorDim(old)
+            return
+
+
 @render_func(is_default_for=("TensorDim", "TensorDims"), show_bg=False, is_tree=False,
              header_same_line=True, with_header=draw_header)
 def draw_tensor_dim(input_value=None, draw_state=None, unique=0, **kwargs):
@@ -936,12 +1072,15 @@ def draw_tensor_dim(input_value=None, draw_state=None, unique=0, **kwargs):
     shared by every dim-typed param. A TensorDim renders single-select with
     a leading "off" tab that maps to -1 (unset: sort disabled, nf/axis dims
     derived), so sort_dim and nf_chop/nf_along reuse it as-is. A TensorDims
-    renders the same tabs multi-select (mean_dims). The names come
-    from the sibling `dim_names` entry of the collection this row renders
-    in (the params panel's locate_params proxy); with no names in reach it
-    falls back to a plain int edit. Returns the SAME type it was given so
-    the value keeps routing here (a plain int/tuple would drop back to the
-    generic renderer next frame)."""
+    renders the same tabs multi-select (mean_dims). The tabs are this view's
+    own flat_buttons (`_draw_dim_tabs`), not a nested draw_tab_bar. Picking
+    a dim a sibling AXIS row already holds swaps the two (`_swap_sibling_dim`,
+    SWAP_DIM_KEYS). The names
+    come from the sibling `dim_names` entry of the collection this row
+    renders in (the params panel's locate_params proxy); with no names in
+    reach it falls back to a plain int edit. Returns the SAME type it was
+    given so the value keeps routing here (a plain int/tuple would drop back
+    to the generic renderer next frame)."""
     multi = isinstance(input_value, tuple)
     col = _row_collection(draw_state, kwargs)
     labels = _collection_dim_labels(col)
@@ -958,11 +1097,9 @@ def draw_tensor_dim(input_value=None, draw_state=None, unique=0, **kwargs):
     n = len(labels)
     if multi:
         cur = [int(v) for v in input_value if isinstance(v, int)]
-        changed, selected = draw_tab_bar(
-            [d for d in cur if 0 <= d < n],
-            collection=list(range(n)), names=labels,
-            name=f"dims##{unique}", wrap=True, z_offset=-1, rounding=5,
-            as_toggles=True, bg_offset=-3)
+        changed, selected = _draw_dim_tabs(
+            draw_state, list(range(n)), labels,
+            [d for d in cur if 0 <= d < n], multi=True)
         if changed:
             return True, TensorDims(sorted(int(s) for s in selected))
         return False, input_value
@@ -971,12 +1108,12 @@ def draw_tensor_dim(input_value=None, draw_state=None, unique=0, **kwargs):
     cur = int(input_value) if input_value is not None else -1
     if not (0 <= cur < n):
         cur = -1
-    changed, selected = draw_tab_bar(
-        [cur], collection=[-1] + list(range(n)), names=["off"] + labels,
-        name=f"dims##{unique}", wrap=True, z_offset=-1, rounding=5,
-        as_toggles=False, bg_offset=-3)
+    changed, selected = _draw_dim_tabs(
+        draw_state, [-1] + list(range(n)), ["off"] + labels, [cur], multi=False)
     if changed:
-        return True, TensorDim(int(selected[0]) if selected else -1)
+        new = int(selected[0]) if selected else -1
+        _swap_sibling_dim(draw_state, kwargs, cur, new)
+        return True, TensorDim(new)
     return False, input_value
 
 
@@ -1955,7 +2092,14 @@ def _voxels_cleanup(draw_state):
             setattr(draw_state, k, None)
 
 
-@render_func(is_default_for=("GLTexture", "Tensor"), show_bg=True, selectable=True,
+@render_func(is_default_for=("GLTexture",
+                             # 3-D+ tensors by shape; 1-D/2-D route to
+                             # draw_line_graph. The bare "Tensor" name stays
+                             # as the fallback for 0-D / anything unmatched
+                             # (the error card is the right place for those).
+                             Shaped("Tensor", (None, None, None, ...)),
+                             "Tensor"),
+             show_bg=True, selectable=True,
              auto_resize=False, min_width=269, with_header=draw_header,
              bg_offset=0, min_height=293, disable_scroll=True, use_cache=True,
              on_cleanup=_voxels_cleanup)

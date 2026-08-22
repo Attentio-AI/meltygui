@@ -256,6 +256,11 @@ class ImGuiBackend:
         # these; the text editor keeps reading its arrows from frame_key_events.
         glfw.KEY_LEFT: "left_arrow",
         glfw.KEY_RIGHT: "right_arrow",
+        # Main-row digits - Ctrl+Shift+3 (region screenshot) subscribes via
+        # on_action("ctrl_shift_3")"); numeric keys feed as "key_<code>".
+        glfw.KEY_0: "0", glfw.KEY_1: "1", glfw.KEY_2: "2", glfw.KEY_3: "3",
+        glfw.KEY_4: "4", glfw.KEY_5: "5", glfw.KEY_6: "6", glfw.KEY_7: "7",
+        glfw.KEY_8: "8", glfw.KEY_9: "9",
         # Numpad - Blender-style viewport hotkeys (voxel views) live on these.
         glfw.KEY_KP_0: "kp_0",
         glfw.KEY_KP_1: "kp_1",

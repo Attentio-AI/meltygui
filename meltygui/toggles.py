@@ -1137,6 +1137,21 @@ class Toggles:
         resize_border = 6
         resize_corner = 18
 
+    @defaults(tint=(0.635, 0.728, 0.725))
+    class Style:
+        # Ceiling on the PERCEIVED brightness (0.299r + 0.587g + 0.114b) of
+        # the imgui widget fills the style manager derives from the window
+        # tint — buttons, frame backgrounds (text edits, drag/slider tracks)
+        # and slider grabs — applied in ImGuiStyleManager.set_imgui_tint
+        # right after the hsv transform. Those fills sit under light text,
+        # so a bright background tint (v -> 1) lifted them to the text's
+        # brightness and the widgets read blank; the cap SCALES the channels
+        # (hue and saturation kept) instead of washing toward gray. Text,
+        # check-mark and window/header colors are not capped. Read live on
+        # every set_imgui_tint call. 0 disables.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        widget_max_brightness = 0.3
+
     @defaults(tint=(0.103, 0.341, 0.617))
     class WindowSettings:
         # Sticky resize: re-anchor the window top at the drag-start point each
@@ -1395,6 +1410,70 @@ class Toggles:
         # [tint=(0.0, 0.56, 0.872), show_tint=True]
         draw_bvh = False
 
+    @defaults(tint=(0.16, 0.132, 0.194))
+    class Fim:
+        # Fill-in-the-middle code completion (ghost text) in code editors -
+        # fim.py. Providers register with @fim_provider; `profile` names a
+        # provider or a fim_profile() variant (fim_providers/profiles.py);
+        # an editor can override it with draw_text(fim="...").
+        enabled = True
+        profile = "ollama"
+
+        # Idle time after the last keystroke before a request is sent.
+        debounce_s = 0.25
+
+        # Ghost text is shown one CHUNK at a time: this many newline-
+        # separated lines (a partial rest-of-line counts as one). Tab
+        # accepts the chunk and the next one appears instantly from the
+        # buffered completion - small chunks add more steering options.
+        chunk_lines = 1
+
+        # Length of ONE provider request (tokens). The buffer refills with
+        # a continuation request when it runs low, so this is the fetch
+        # granularity, not a cap on how far repeated Tabs can go.
+        max_tokens = 256
+
+        # Fetch the continuation while the current chunk is still showing
+        # so the next Tab never waits.
+        prefetch = True
+
+        # Token budget for the context block (definitions, enclosing code,
+        # enclosing types, last-run values). Split ~60/25/15 across the
+        # stable / run / volatile tiers.
+        context_tokens = 4000
+
+
+
+        # A definition longer than this is truncated (its signature line
+        # is kept as the budget-degrade form).
+        definition_max_lines = 80
+
+        # Lines above and below the caret the per-request scans look at
+        # (referenced definitions, runtime values). Bounds context assembly
+        # on large-file buffers - a 14k-line span is not scanned end to end.
+        scan_lines = 120
+
+        # Re-derive the stable context after this many seconds even when
+        # its key (file, pending gen, enclosing def) hasn't moved.
+        stable_refresh_s = 2.0
+
+        # Most last-run values to annotate (nearest the caret first).
+        live_values_max = 40
+        # Also report min/mean/max for tensors - a GPU reduce per value.
+        live_value_stats = False
+
+        # Close a provider session (language client / Copilot LS process) that
+        # no editor has used for this long.
+        session_idle_s = 600.0
+
+        # How long Ollama keeps a model resident after a request / a Load
+        # from Internet Accounts (Ollama duration string; 0 = disable).
+        ollama_keep_alive = "30m"
+
+        # Print provider/context tracebacks.
+        debug_print = False
+
+
     @defaults(tint=(0.63, 0.44, 0.2))
     class GC:
         # Deliberate collector scheduling (gc_manager.tick in Melty.end_frame):
@@ -1439,6 +1518,7 @@ class Toggles:
         # references them (store key / draw / attr / frame / module).
         # A few seconds of gc walk, OOM-time only.
         oom_holder_report = True
+        
 
     @defaults(tint=(0.378, 0.286, 0.201))
     class Collection:
@@ -1740,6 +1820,16 @@ class Actions:
     @staticmethod
     def new_render_func(name="draw_other"):
         pass
+
+    @defaults(icon="\uf030")
+    @staticmethod
+    def screenshot():
+        """Arm the region screenshot tool (also Ctrl+Shift+3): a crosshair
+        follows the cursor; click-drag a box; on release the framebuffer
+        pixels inside it are saved as a PNG (Toggles.screenshots) and opened
+        in the code editor. Esc cancels."""
+        from src.lsd.gl_gui.view.playground.region_screenshot import arm
+        arm()
 
     @staticmethod
     def claude_terminal():

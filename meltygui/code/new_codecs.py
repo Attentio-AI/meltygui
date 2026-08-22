@@ -23,7 +23,6 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 
 from src.lsd.gl_gui.melty import Melty, FileWatch
 from src.lsd.gl_gui.perf_trace import trace_rl as _ptrace_rl
-from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.shader_library.shader_manager.texture_manager import PIL_TO_GL_FORMAT, PendingTexture
 
 # No GL imports here: ImageCodec.load only DECODES (background thread); the GL
@@ -266,10 +265,21 @@ class Codec:
     # it is the source COLOR-CODE, consumed explicitly by provenance views
     # (the context menu's draw_param_matrix), not an optional wash.
     render_kwargs = {}
-    # A codec whose loaded data is not editor text (e.g. ImageCodec's
-    # PendingImage) names its preferred view here; code_file_io prefers it over
-    # the mode-pinned text view. None = use whatever view the codec wired.
+    # Optional view override for this codec's loaded data. None (the default)
+    # means "use the type": a str lands in the text view the caller wired,
+    # anything else goes through draw_any to the type's default renderer
+    # (is_default_for) - so a codec whose load() returns a type that already
+    # has a view needs nothing here. Set it only for a type without a default
+    # view or to pin a non-default one. See code_file_io's _set_view.
     view_func = None
+    # Whether edits to the loaded value round-trip to the file. False (images,
+    # mainly - anything save() refuses) makes code_file_io ignore view edits
+    # (no dirty / save runner) and reload external changes immediately instead
+    # of parking on the merge/conflict banner: nothing local can be saved.
+    editable = True
+    # Tab glyph (unicode) for files of this type - the editor's tab bar
+    # falls back to it if the file's FileMeta entry carries no icon.
+    icon = None
 
     @staticmethod
     def show_code_buttons(address):
@@ -1090,12 +1100,15 @@ class ImageCodec(Codec):
     """Image Path → PendingTexture. load() runs on code_file_io's background
     thread, so it only DECODES (PIL, safe off-thread) and returns a
     PendingTexture; core_render's wrapper calls pending_upload() on the GL
-    thread the first frame it renders, and draw_pending_texture (this codec's
-    view_func) draws the uploaded texture with zoom/pan. Read-only: save()
-    refuses, so the editor's auto-save loop can never write an image back."""
+    thread the first frame it renders, and draw_pending_texture (the type's
+    default renderer) draws the uploaded texture with zoom/pan. Read-only
+    (editable=False): view edits never dirty the host and save() refuses."""
 
     name = "Image"
-    view_func = RenderFuncs.draw_pending_texture
+    # PendingTexture has a default renderer (draw_pending_texture is
+    # register_default_for_type), so no draw_func: type routing finds it.
+    editable = False
+    icon = "\uf03e"   # FA image
     resolve_address = staticmethod(_resolve_plain_file)
 
     # claims() runs in the render thread (codec_for_path is re-ried ever
@@ -1161,7 +1174,9 @@ class BinaryFileCodec(Codec):
     and writing it back would replace the file with its own hexdump."""
 
     name = "Binary File"
-    view_func = RenderFuncs.draw_text
+    # The summary is a str, so the caller's text view renders it - but it is
+    # a VIEW of the bytes, never written back.
+    editable = False
     resolve_address = staticmethod(_resolve_plain_file)
 
     PREVIEW_BYTES = 256
@@ -1220,3 +1235,13 @@ def codec_for_path(path):
         # acceptable: the file still renders, just as the binary summary.
         return BinaryFileCodec
     return TextFileCodec
+
+
+def asset_extensions():
+    """Registered extensions whose codec loads something OTHER than editor
+    text — images today, a .npy codec tomorrow. This is the non-Python file
+    set global search's Code tab lists beside the loaded modules: register
+    a codec with `ext=` and its files become searchable/openable, nothing
+    else to wire. Lowercase, dotted (".png"), as the registry stores them."""
+    return {ext for ext, codec in extension_to_codec.items()
+            if codec is not TextFileCodec}

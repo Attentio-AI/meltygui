@@ -1263,7 +1263,13 @@ def _redirect_class_registrations(old_cls: type, new_cls: type) -> None:
 _FUNC_REGISTRY_NAMES = ("default_funcs_by_type", "default_funcs_by_name",
                         "type_interrupts", "_converters",
                         "annotated_window_classes",
-                        "render_funcs_by_name", "default_lenses_by_type")
+                        "render_funcs_by_name", "default_lenses_by_type",
+                        # Shaped-keyed (shaped.py); same key → wrapper shape
+                        # as the others, so the reconcile needs nothing extra.
+                        "default_funcs_by_shape", "default_lenses_by_shape",
+                        # FIM registries (fim.py): @fim_provider /
+                        # @fim_context_source re-run on recompile too.
+                        "_fim_providers", "_fim_context_sources")
 
 # Registries KEYED BY the wrapper object (reverse of the above). The re-run
 # decorator files the fresh entry under the throwaway key; move it onto the

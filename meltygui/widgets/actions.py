@@ -84,6 +84,24 @@ def _seed_params(fn):
     return params
 
 
+def activate_action(fn):
+    """A search hit's activation: an action with parameters opens the
+    ActionRunner to fill them in; a parameterless one (screenshot,
+    claude_terminal) just RUNS — there is nothing to ask, and a popup with
+    only a Run button was a dead click."""
+    if not inspect.signature(fn).parameters:
+        try:
+            result = fn()
+        except Exception as e:
+            notify(f"Actions.{fn.__name__} failed: {e}", tag="actions")
+        else:
+            notify(f"Actions.{fn.__name__} -> {result!r}" if result is not None
+                   else f"Actions.{fn.__name__} ran", tag="actions")
+        request_render()
+        return
+    open_action_runner(fn)
+
+
 def open_action_runner(fn):
     """Point the ActionRunner window at `fn` and summon it next to the search
     window (the same come-to-you placement window hits use)."""
@@ -202,7 +220,7 @@ def action_index():
         except Exception:
             src_path = None
         hits.append(SearchHit(
-            _sig_label(name, fn), tint, (lambda f=fn: open_action_runner(f)),
+            _sig_label(name, fn), tint, (lambda f=fn: activate_action(f)),
             kind="Actions", match=name, icon=icon,
             # Shift+click: open the action's def in the editor (same jump the
             # symbol index does - co_firstlineno, resolved off-thread).
