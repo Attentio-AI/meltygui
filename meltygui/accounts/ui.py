@@ -608,10 +608,12 @@ def _toggle_edit(acct):
     _toggle(acct, "_edit")
 
 
-def _refresh_stale(acct, max_age=120.0):
-    st = acct.get("_status")
-    at = acct.get("_probed_at", 0.0)
-    if (st is None or time.monotonic() - at > max_age) and not acct.get("_probing"):
+def _refresh_stale(acct):
+    """Probe an account ONCE (when its status is first unknown). No timer-
+    based re-probe: the window must not fire a recurring web request every
+    couple of minutes just for being open — the user refreshes on demand
+    (Refresh button / a credential edit clears _status)."""
+    if acct.get("_status") is None and not acct.get("_probing"):
         refresh(acct)
 
 
@@ -648,7 +650,7 @@ def _fmt_gb(n):
     return f"{n / 1e9:.1f} GB"
 
 
-@window(input_value=accounts, tint=(0.91, 0.53, 0.09), icon="",
+@window(input_value=accounts, tint=(0.72, 0.71, 0.67), icon="",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True)

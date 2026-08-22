@@ -15,14 +15,10 @@ the UI can name them and show where a loaded model sits.
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import threading
 import time
 
 from src.lsd.gl_gui.fim import FimRequest, FimResult, FimSession, fim_provider
-
-_NVIDIA_SMI = shutil.which("nvidia-smi") or "/usr/bin/nvidia-smi"
 
 
 class OllamaSession(FimSession):
@@ -71,77 +67,54 @@ def device_options(device) -> dict:
     return {}
 
 
-def _run(args, timeout=5.0):
-    """Short subprocess via posix_spawn (full path, close_fds=False)."""
-    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, close_fds=False)
-
-
 _inventory_cache = [0.0, None]
 
 
 def gpu_inventory(max_age=3.0) -> list:
-    """[{ollama_index, smi_index, uuid, name, short, used_mib, total_mib,
-    bus}] in OLLAMA (CUDA runtime) order. nvidia-smi supplies names, memory
-    and PCI bus ids; PyCUDA supplies the CUDA enumeration order by bus id.
-    Without PyCUDA the nvidia-smi order is assumed (and flagged)."""
+    """[{ollama_index, name, short, used_mib, total_mib}] in OLLAMA (CUDA
+    runtime) order — read from torch.cuda, which shares the process's
+    already-initialized CUDA runtime (same device order Ollama's llama.cpp
+    sees) and is thread-safe. Deliberately NOT pycuda: a bare
+    `pycuda.driver.init()` on a probe thread can race the render thread's
+    CUDA/GL context creation at boot and hang the load. No subprocess
+    either — no nvidia-smi. Best-effort; cached briefly."""
     now = time.monotonic()
     if _inventory_cache[1] is not None and now - _inventory_cache[0] < max_age:
         return _inventory_cache[1]
     gpus = []
     try:
-        out = _run([_NVIDIA_SMI, "--query-gpu=index,uuid,name,memory.used,memory.total,pci.bus_id",
-                    "--format=csv,noheader,nounits"]).stdout
-        for line in out.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 6:
-                continue
-            name = parts[2].replace("NVIDIA ", "").replace("GeForce ", "")
-            gpus.append({"smi_index": int(parts[0]), "uuid": parts[1], "name": name,
-                         "short": name.replace(" NVL", "").replace("RTX ", ""),
-                         "used_mib": int(float(parts[3])), "total_mib": int(float(parts[4])),
-                         "bus": parts[5].lower()})
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                p = torch.cuda.get_device_properties(i)
+                try:
+                    free, total = torch.cuda.mem_get_info(i)
+                except Exception:
+                    free, total = 0, int(getattr(p, "total_memory", 0))
+                name = p.name.replace("NVIDIA ", "").replace("GeForce ", "")
+                gpus.append({"ollama_index": i, "name": name,
+                             "short": name.replace(" NVL", "").replace("RTX ", ""),
+                             "used_mib": int((total - free) / 1048576),
+                             "total_mib": int(total / 1048576), "order": "cuda"})
     except Exception:
         gpus = []
-    order = None
-    try:
-        import pycuda.driver as cuda
-        cuda.init()
-        order = [cuda.Device(i).pci_bus_id().lower() for i in range(cuda.Device.count())]
-    except Exception:
-        order = None
-    if order:
-        by_bus = {g["bus"][-12:]: g for g in gpus}
-        ordered = []
-        for i, bus in enumerate(order):
-            g = by_bus.get(bus[-12:])
-            if g is not None:
-                g = dict(g, ollama_index=i, order="cuda")
-                ordered.append(g)
-        for g in gpus:
-            if not any(o["uuid"] == g["uuid"] for o in ordered):
-                ordered.append(dict(g, ollama_index=len(ordered), order="smi"))
-        gpus = ordered
-    else:
-        gpus = [dict(g, ollama_index=g["smi_index"], order="smi") for g in gpus]
     _inventory_cache[0] = now
     _inventory_cache[1] = gpus
     return gpus
 
 
-def runner_placement() -> dict:
-    """{gpu uuid: used MiB} for every Ollama runner process on the GPUs —
-    where the loaded models actually sit."""
-    out = {}
-    try:
-        txt = _run([_NVIDIA_SMI, "--query-compute-apps=pid,process_name,used_memory,gpu_uuid",
-                    "--format=csv,noheader,nounits"]).stdout
-        for line in txt.strip().splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 4 and "ollama" in parts[1]:
-                out[parts[3]] = out.get(parts[3], 0) + int(float(parts[2]))
-    except Exception:
-        pass
-    return out
+def _gpu_for_vram(gpus, size_vram) -> dict | None:
+    """The GPU a model of `size_vram` bytes most likely sits on — the one
+    whose used memory best matches (torch mem_get_info, no per-process
+    attribution needed). Good enough for one resident model."""
+    want = size_vram / 1048576
+    best, best_d = None, None
+    for g in gpus:
+        if g["used_mib"] >= 0.4 * want:
+            d = abs(g["used_mib"] - want)
+            if best_d is None or d < best_d:
+                best, best_d = g, d
+    return best
 
 
 def device_label(device, gpus=None) -> str:
@@ -182,15 +155,7 @@ def list_models(client) -> list:
         running = {m["name"]: m for m in (client.get("/api/ps", timeout=5.0).json().get("models") or [])}
     except Exception:
         running = {}
-    place = runner_placement() if running else {}
     gpus = gpu_inventory() if running else []
-    where = None
-    if place:
-        names = []
-        for g in gpus:
-            if g["uuid"] in place:
-                names.append(f"GPU{g['ollama_index']} {g['short']} ({place[g['uuid']] / 1024:.1f} GB)")
-        where = " + ".join(names) if names else None
     out = []
     for t in tags:
         name = t.get("name", "?")
@@ -199,7 +164,11 @@ def list_models(client) -> list:
         vram = int(r.get("size_vram") or 0) if r else 0
         w = None
         if loaded:
-            w = "CPU" if vram == 0 else (where or "GPU")
+            if vram == 0:
+                w = "CPU"
+            else:
+                g = _gpu_for_vram(gpus, vram)
+                w = f"GPU{g['ollama_index']} {g['short']}" if g else "GPU"
         out.append({"name": name, "size": int(t.get("size") or 0), "loaded": loaded,
                     "size_vram": vram, "expires_at": (r or {}).get("expires_at"), "where": w,
                     "family": ((t.get("details") or {}).get("family") or "")})
