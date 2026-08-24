@@ -192,8 +192,8 @@ class CompareChange(Change):
             return
         open_files.compare_request = (self.instance,
                                       self.old if undo else self.new)
-        from src.lsd.gl_gui.view.playground.open_files import editor_window_ds
-        win = editor_window_ds(self.instance)
+        from src.lsd.gl_gui.view.playground.open_files import editor_window_draw_state
+        win = editor_window_draw_state(self.instance)
         if win is not None:
             win.closed = False
             Core.melty.move_window_to_front(win)
@@ -464,7 +464,7 @@ class NavUndo:
         if path is None:
             return
         from src.lsd.gl_gui.view.playground.open_files import (
-            open_in_editor, editor_window_ds)
+            open_in_editor, editor_window_draw_state)
         from src.lsd.gl_gui.model.app_model import OpenFiles
         if path.startswith(OpenFiles.GIT_DIFF_PREFIX):
             # Pseudo-path - never route through open_in_editor (open_file
@@ -480,7 +480,7 @@ class NavUndo:
                 open_files.jump_to_instance = inst
                 # The summon + past-the-blank invalidate open_in_editor does -
                 # the tab selection is adopted inside the editor body.
-                win = editor_window_ds(inst)
+                win = editor_window_draw_state(inst)
                 if win is not None:
                     win.closed = False
                     Core.melty.move_window_to_front(win)
@@ -493,7 +493,7 @@ class NavUndo:
         # open_in_editor - which assumes the originating window is already
         # front. A replay can't guarantee that, so summon/raise it here first.
         # Instance window missing (never drawn) → fall back to the primary.
-        win = editor_window_ds(inst) if inst else None
+        win = editor_window_draw_state(inst) if inst else None
         if win is not None:
             win.closed = False
             Core.melty.move_window_to_front(win)

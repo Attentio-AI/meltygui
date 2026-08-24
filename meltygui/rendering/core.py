@@ -4058,7 +4058,7 @@ def render_func(*args, **o_kwargs):
                     current_cursor = imgui.get_cursor_screen_pos()
                     imgui.set_cursor_screen_pos((current_cursor[0] + outline_margin,
                                                  min(draw_state.abs_top + draw_state.height - draw_state.footer_height,
-                                                     draw_state.abs_top + draw_state._observed_content_height)))
+                                                     draw_state.abs_top + draw_state.observed_content_height)))
 
                     push_id(str(unique) + "footer")
                     imgui.begin_group()
@@ -5066,7 +5066,7 @@ def render_func(*args, **o_kwargs):
 
                     draw_state._return_value = return_value
                     end_cursor = imgui.get_cursor_screen_pos()
-                    draw_state._observed_content_height = int(end_cursor[1] - start_cursor[1])
+                    draw_state.observed_content_height = int(end_cursor[1] - start_cursor[1])
 
                     Melty.silence_invalidate = True
 

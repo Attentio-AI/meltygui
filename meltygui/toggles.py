@@ -108,7 +108,6 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
-    @defaults(tint=(0.851, 0.906, 0.845))
     def checkbox_outline():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
@@ -1419,6 +1418,15 @@ class Toggles:
         # rest of the gap folds away, so collapse-all skims the changes
         # without scrolling.
         diff_fold_context = 2
+        # Tab tint for a file whose FileMeta carries none — the tab bar, the
+        # compare files column, and the editor toolbar buttons all key off it.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_tint_fallback = (0.485, 0.61, 0.76)
+        # ColumnLayout padding the compare column renders with (cell content
+        # is inset by this from its dividers on both sides). The layout
+        # reframe math (open_files._cmp_layout_reframe) keys on the SAME
+        # value - change them together by changing only this.
+        compare_padding = 14.0
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
@@ -1617,13 +1625,24 @@ class Toggles:
 
     # Master switch for the always-on debug chrome painted over the app: the
     # red/white texture-init tile counter in the top-left (LSDStudio's render
-    # loop) and the notification / "Live" value columns in the top-right
+    # loop) and the notification / "Live" value bands along the right edge
     # (notifications.draw_notifications, gated in Melty.draw). Off = a clean
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
     developer_mode = True
     show_fps = True
+
+    # The notification overlay (notifications.draw_notifications, gated by
+    # developer_mode above): categories stack vertically along the right
+    # edge, each in its own fixed-height scrolling band. Read live.
+    @defaults(tint=(0.85, 0.64, 0.13))
+    class Notifications:
+        # Vertical space one category's band gets (title included). Entries
+        # beyond it scroll: wheel over the band, sticky at the newest end,
+        # "N new" badge while scrolled back.
+        # [tint=(0.85, 0.64, 0.13), show_tint=True]
+        category_height = 300
 
     show_filled_tiles = False
     gl_check_error = False
@@ -1645,7 +1664,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = True    # TEMP: on to capture the ~1300ms jump shortly after boot
+    symbol_perf_log = False    # TEMP: enabled to capture the 1300ms frame shortly after boot
     attrib_churn_log = False
     debug_threads = False
 

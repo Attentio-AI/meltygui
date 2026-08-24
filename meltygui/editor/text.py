@@ -59,6 +59,19 @@ COLORS = {
     'icon': _hex('#56b6c2'),  # Font Awesome / PUA glyph (cyan, distinct from strings)
 }
 
+class _LoadingSentinel(str):
+    """draw_text(LOADING): the caller's real buffer is still loading —
+    render the instant-restore stand-in from the TextEditorState viewport
+    snapshot instead of nothing. A str subclass (not None) because the
+    render_func wrapper serves its input cache for a None input_value
+    without running the body; the value is deliberately unequal to any
+    real buffer so input-change detection always fires on the swap-in."""
+    __slots__ = ()
+
+
+LOADING = _LoadingSentinel("\x00__lsd_loading__\x00")
+
+
 KEYWORDS = {'def', 'class', 'if', 'else', 'elif', 'for', 'while',
             'return', 'import', 'from', 'with', 'as', 'try', 'except',
             'finally', 'raise', 'yield', 'pass', 'break', 'continue',
@@ -8979,7 +8992,44 @@ def draw_text(input_value: str, height=None,
     
     
     ds = draw_state
-    
+
+    # ── Instant restore (input_value==LOADING) ─────────────────────────────
+    # A caller whose real buffer is still loading (draw_code_editor's
+    # loading_frame) passes the LOADING sentinel: rebuild a same-shape
+    # stand-in from the persisted viewport snapshot (TextEditorState - see
+    # its restore_ fields): blank lines up to the visible band, the band's
+    # captured text, blank lines after. Same line count → same content
+    # height → the persisted scroll lands unmoved, so this editor's first
+    # frame shows the code the last one did, before any disk read. The real
+    # text swaps in through the normal content-change path when it loads;
+    # edits to the stand-in are discarded (changed forced back at the
+    # return). The snapshot capture at the tail skips restore, so the
+    # stand-in never overwrites the real snapshot. (A sentinel, not None:
+    # the render_func() serves its input cache for None without actually
+    # running this body.)
+    restore_active = isinstance(input_value, _LoadingSentinel)
+    _restore_caret = None
+    if restore_active:
+        # The stand-in is display-SHAPED (line count) but not length-faithful
+        # - mostly bare newlines. The persisted caret (a char offset into the
+        # REAL buffer) would clamp to the stand-in's short tail - the file's
+        # LAST line - and the caret-rest would slam the display scroll to
+        # EOF (and permanently corrupt the caret). Caret state is frozen
+        # across stand-in frames: stashed here, put back at the return, so
+        # both caret-followers sit restore frames out (they're mid-body,
+        # before the put-back).
+        _restore_caret = (ds.text_cursor_pos, ds.text_selection_start,
+                          ds.text_selection_end)
+        if text_editor_state is not None and text_editor_state.restore_text:
+            _before = max(0, int(text_editor_state.restore_first_line))
+            _snap_lines = text_editor_state.restore_text.count("\n") + 1
+            _after = max(0, int(text_editor_state.restore_total_lines)
+                         - _before - _snap_lines)
+            input_value = ("\n" * _before + text_editor_state.restore_text
+                           + "\n" * _after)
+        else:
+            input_value = ""
+
     cursor_pos = imgui.get_cursor_screen_pos()  # ← cursor_pos = (13.5, 13.5)
 
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -9027,9 +9077,16 @@ def draw_text(input_value: str, height=None,
     # further down (which harmlessly re-binds the same name).
     from src.lsd.gl_gui.toggles import Toggles
     _fold_key_of = None
+    # not restore_active: the loading stand-in is ALREADY display-shaped
+    # (the snapshot captured fold-spliced display text), so fold processing
+    # on it is meaningless - worse, the per-frame key⟷tuple round-trip
+    # ("harvested back to keys before the build") projects the seeded
+    # restore_fold_keys onto the placeholder's foldless ranges and harvests
+    # back an EMPTY set, destroying the persisted fold state before the
+    # real text even lands. The fold layer sits the stand-in frames out.
     if (scope_collapse and not fold_ranges and syntax_highlight
             and Toggles.TextEditor.scope_fold_ranges
-            and not code_diff_mode
+            and not code_diff_mode and not restore_active
             and not single_line and not is_search_box):
         _sc = getattr(ds, '_scope_rng_cache', None)
         # Keyed on text identity AND _FOLD_SEED_VER: a hotswap that changed
@@ -9080,7 +9137,7 @@ def draw_text(input_value: str, height=None,
         # Diff-gap ranges know nothing about the lexer - keep lite
         # string delimiters out of the hidden segments (see the helper).
         fold_ranges = _string_neutral_ranges(ds, input_value, fold_ranges)
-    if fold_ranges and not single_line and not is_search_box:
+    if fold_ranges and not restore_active and not single_line and not is_search_box:
         if _fold_key_of is not None:
             # Collapse state is stored as line-independent KEYS (ds._fold_keys
             # / _fold_search_exp_keys); the range-tuple sets every editor
@@ -9092,6 +9149,22 @@ def draw_text(input_value: str, height=None,
             # draw_state for the external writers (fold_project_jump).
             _fold_range_of = {k: r for r, k in _fold_key_of.items()}
             ds._fold_key_of = _fold_key_of
+            # Session restore: a brandless draw_state (keys and tuples both
+            # unset) gets the persisted fold keys captured last session
+            # (TextEditorState.restore_fold_keys - the snapshot block at the
+            # tail writes them). The keys are line-independent, so they
+            # project onto wherever those folds live in the loaded text; on
+            # a restore stand-in they project to nothing (already-spliced
+            # display text) and re-project correctly when the real buffer
+            # lands. Stamping _fold_seed_ver keeps the default_collapsed
+            # union below from re-collapsing folds the user had expanded -
+            # the restored set (even an EMPTY one) IS the user's state.
+            if (getattr(ds, '_fold_keys', None) is None
+                    and getattr(ds, '_fold_collapsed', None) is None
+                    and text_editor_state is not None
+                    and text_editor_state.restore_fold_keys is not None):
+                ds._fold_keys = set(text_editor_state.restore_fold_keys)
+                ds._fold_seed_ver = _FOLD_SEED_VER
             if (getattr(ds, '_fold_keys', None) is None
                     and getattr(ds, '_fold_collapsed', None) is not None):
                 # Legacy tuple-based state (pre-key session): adopt once.
@@ -9888,6 +9961,39 @@ def draw_text(input_value: str, height=None,
     else:
         line_offset = 0
         gutter_w = 0.0
+
+    # Instant-restore gutter: the loading stand-in arrives with neither
+    # line_numbers nor jump_to, so the gutter vanished for the loading beat
+    # and the code column jumped by gutter_w on the swap-in. Reproduce last
+    # frame's gutter exactly - same digit count (the width) and the same
+    # per-row NUMBERS AND CHEVRONS (restore_gutter_rows: the band's gutter
+    # as painted). The sequential restore_line_offset numbering is only the
+    # fallback for a pre-rows snapshot - sequential numbers lie below every
+    # collapsed fold and carry no fold arrows, so the gutter visibly
+    # snapped (213 → 304) the frame the real buffer landed.
+    _restore_hdr = None
+    if (restore_active and text_editor_state is not None
+            and text_editor_state.restore_gutter_digits > 0):
+        show_gutter = True
+        line_offset = int(text_editor_state.restore_line_offset)
+        gutter_digits = int(text_editor_state.restore_gutter_digits)
+        gutter_w = gutter_digits * char_w + 12.0
+        _rr = text_editor_state.restore_gutter_rows
+        if _rr:
+            # Band rows carry their captured number / chevron; the visible
+            # padding rows around the band show nothing (the paint treats
+            # rows past len(line_numbers) - and None entries - as numberless).
+            _rb = max(0, int(text_editor_state.restore_first_line))
+            line_numbers = [None] * _rb
+            _restore_hdr = {}
+            for _rn in _rr:
+                if _rn is not None and _rn < 0:
+                    # chevron row: range None (a stand-in fold can't toggle
+                    # - the paint skips the badge rect), -2 = collapsed.
+                    _restore_hdr[len(line_numbers)] = (None, _rn == -2)
+                    line_numbers.append(None)
+                else:
+                    line_numbers.append(_rn)
 
     # Live-marker open/close column: when the live view has registered
     # markers on this editor (per-line registry stamped by
@@ -11823,7 +11929,8 @@ def draw_text(input_value: str, height=None,
     # Only kicks in when the cursor moved this frame, so middle-drag pans
     # are not snapped back. Brings the cursor into view on a single line.
     visible_width = text_visible_width
-    if ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0:
+    if (ds.text_cursor_pos != ds.text_prev_cursor_pos and visible_width > 0
+            and not restore_active):
         cursor_logical_x = _colx(ds.text_cursor_pos)
         edge_padding = 20.0
         if cursor_logical_x - ds.text_h_scroll < edge_padding:
@@ -11912,7 +12019,7 @@ def draw_text(input_value: str, height=None,
     # the box put, the same overflow reapplies every keystroke, creeping the
     # host view up a line per typed character.
     if (ds.text_cursor_pos != ds.text_prev_cursor_pos and line_px
-            and not is_search_box):
+            and not is_search_box and not restore_active):
         cursor_line, _ = _index_to_line_col(text, ds.text_cursor_pos)
         # LIVE origin, not the body-start origin_y: the Ctrl+B usage jump runs
         # EARLIER in this editor body (the picker jump is later, which is why
@@ -13322,6 +13429,11 @@ def draw_text(input_value: str, height=None,
     ds._fold_badge_rects = []
     _fold_hdr = ({f[1]: (f[0], f[2]) for f in _fold_folds}
                  if _fold_folds else {})
+    if _restore_hdr:
+        # Stand-in frames: chevrons replayed throughout the gutter (the fold
+        # layer sits restore frames below, so _fold_folds is empty). Range is
+        # None - draw-only, no badge rect, nothing to toggle.
+        _fold_hdr = _restore_hdr
     if show_gutter and gutter_w > 0:
         gutter_bg = (*Tint.line_number_bg()[:3], 1.0)  # dark tinted gray
         num_color = imgui.get_color_u32_rgba(*Tint.line_number_tint()[:3], 1.0)
@@ -13440,7 +13552,8 @@ def draw_text(input_value: str, height=None,
                     draw_list.add_triangle_filled(_gcx - 4.0, _gcy - 2.5,
                                                   _gcx + 4.0, _gcy - 2.5,
                                                   _gcx, _gcy + 3.5, _gcc)
-                ds._fold_badge_rects.append((_gr, _rng_g))
+                if _rng_g is not None:   # None = no replay, paint-only
+                    ds._fold_badge_rects.append((_gr, _rng_g))
             else:
                 draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
             _mlist = _lv_marks.get(line_idx)
@@ -14187,6 +14300,71 @@ def draw_text(input_value: str, height=None,
         _sp = getattr(ds, '_err_stale_pair', (None, None))
         if not (error is _sp[0] and code_tree is _sp[1]):
             ds._err_stale = False                  # a fresh parse landed
+
+    # ── Viewport snapshot (for instant-restore source) ────────────────────
+    # Capture what this editor SHOWED: the visible display-line band and the
+    # text, persisted by text_editor_state (@exclude'd so these per-scroll
+    # writes must never invalidate). Band math mirrors _window()'s. Display
+    # space on purpose: with a fold collapsed the snapshot is what was ON
+    # SCREEN, and the restored stand-in reproduces the look, not the folds
+    # (they re-derive when the real buffer lands). Skipped when WE are the
+    # stand-in, and for one-line boxes.
+    if (text_editor_state is not None and not restore_active
+            and not single_line and not is_search_box and line_px):
+        try:
+            _clip = draw_state.abs_clip_rect
+            _sn_n = text.count("\n") + 1
+            _sv0 = max(0, min(int((_clip[1] + bar_height - top) / line_px) - 3,
+                              _sn_n - 1))
+            _sv1 = max(_sv0, min(int((_clip[3] - top) / line_px) + 3, _sn_n - 1))
+            _soffs = _line_offsets_cached(text)
+            _ss = _soffs[_sv0]
+            _se = (_soffs[_sv1 + 1] - 1) if _sv1 + 1 < len(_soffs) else len(text)
+            text_editor_state.restore_first_line = _sv0
+            text_editor_state.restore_total_lines = _sn_n
+            text_editor_state.restore_text = text[_ss:_se]
+            # Gutter shape (digits decide the number column's X) and the fold
+            # keys (line-independent collapse identities - the ONLY place
+            # fold state survives a session; ds._fold_keys itself never
+            # serializes). None keys = fold layer disabled for this buffer.
+            text_editor_state.restore_gutter_digits = (
+                int(gutter_digits) if gutter_w > 0 else 0)
+            text_editor_state.restore_line_offset = int(line_offset)
+            # The band's gutter EXACTLY as painted this frame: number per
+            # row (line_numbers is already fold-remapped display-space),
+            # -1/-2 for a fold-header chevron (expanded/collapsed), None
+            # for a numberless row. The stand-in replays these so the
+            # gutter doesn't change when the real buffer lands.
+            if gutter_w > 0:
+                _sgr = []
+                for _ri in range(_sv0, _sv1 + 1):
+                    _sfh = _fold_hdr.get(_ri)
+                    if _sfh is not None:
+                        _sgr.append(-2 if _sfh[1] else -1)
+                    elif line_numbers is not None:
+                        _sn = (line_numbers[_ri]
+                               if _ri < len(line_numbers) else None)
+                        _sgr.append(int(_sn) if _sn is not None else None)
+                    else:
+                        _sgr.append(int(line_offset) + _ri + 1)
+                text_editor_state.restore_gutter_rows = _sgr
+            else:
+                text_editor_state.restore_gutter_rows = None
+            _sfk = getattr(ds, '_fold_keys', None)
+            text_editor_state.restore_fold_keys = (
+                None if _sfk is None else list(_sfk))
+        except Exception:
+            pass   # a snapshot failure cannot take down the editor
+    if restore_active:
+        changed = False   # stand-in edits are discarded, never propagated
+        # Caret state frozen across the stand-in (see the restore branch):
+        # the body's clamp against the short stand-in is undone, and prev is
+        # synced so the first REAL-text frame sees no caret "move" - the
+        # follow must not yank the restored scroll toward the caret.
+        if _restore_caret is not None:
+            (ds.text_cursor_pos, ds.text_selection_start,
+             ds.text_selection_end) = _restore_caret
+            ds.text_prev_cursor_pos = ds.text_cursor_pos
 
     _pf("errbox+tail")
     # Emit the per-section breakdown for every edited frame (typing latency is the

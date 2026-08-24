@@ -3132,9 +3132,23 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             # re-renders between the pulse frame and the host's next draw.
             dict_host.child_kwargs.pop("run_jedi", None)
 
-        if len(_str_host.values()) > 0:
+        held_values = list(_str_host.values())
+        from_host = len(held_values) > 0
+        # Short-circuit the first-parse wait: the code_dict pair materializes
+        # through the full cst→dict chain, and until it lands this editor
+        # rendered NOTHING - that gap IS the perceived load time of a code
+        # buffer ("editor: waiting for first parse" above). The codec-loaded
+        # buffer (input_value) is available the frame load_file lands, so draw
+        # it immediately: the colors come from the tokenizer and def-hints
+        # from the text mode roster, both text-based; code_dict extras
+        # (usage links) join when the parse arrives and dict_host's
+        # notify_on_change repaints this editor. Edits during this brief window
+        # are discarded - the host isn't there to receive them, the same
+        # contract as a read-only code-diff tab.
+        buffer_text = (held_values[0] if from_host
+                       else input_value if isinstance(input_value, str) else None)
+        if buffer_text is not None:
             _t_dt0 = time.monotonic()
-            buffer_text = list(_str_host.values())[0]
             changed, value, ds = RenderFuncs.draw_text(buffer_text, code_dict=code_dict,
                                                        code_tree=cache_error, error=error,
                                                        import_fixes=import_fixes,
@@ -3179,7 +3193,7 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
                 Melty._text_focus_grant_frame = Melty.frame_count
                 ds.invalidate()
                 request_render()
-            if changed:
+            if changed and from_host:
                 _key0 = list(_str_host.keys())[0]
                 _held0 = _str_host[_key0]
                 if _held0 == value:

@@ -6,12 +6,12 @@ import threading as _threading
 import time
 from collections import deque, defaultdict
 from contextlib import contextmanager as _contextmanager
-from itertools import islice
 
 import glfw
 import imgui
 
 from src.lsd.gl_gui.fonts import Font
+from src.lsd.gl_gui.toggles import Toggles
 
 # Use the system's locale time format (e.g. 12-hour AM/PM if configured)
 # for %X instead of the default "C" locale 24-hour clock.
@@ -287,13 +287,15 @@ def _entry_height(label, content, content_width, line_height, padding):
 
 def _draw_column_entry(draw_list, column_left, content_width, line_height, padding,
                        bg_bottom, label, label_color, content, content_color, opacity=1.0,
-                       hit_rects=None, copy_text=None, jump=None):
+                       hit_rects=None, copy_text=None, jump=None, clip=None):
     """Draw one stacked entry: a left-aligned `label` (time / tag name) followed
     by the wrapped, tinted `content`. `label_color`/`content_color` are RGBA
     tuples; `opacity` scales every alpha so the whole toast fades with age.
     When `hit_rects` is given, appends (rect, copy_text, jump) so the caller
     can make the entry click-to-copy (or click-to-jump when `jump` is a
-    (path, line)). Returns the next bg_bottom (above this one)."""
+    (path, line)); `clip` (a scroll viewport rect) clamps the hit rect so the
+    scrolled-out part of an entry can't swallow clicks. Returns the next
+    bg_bottom (above this one)."""
     label_size = imgui.calc_text_size(label)
     content_x = column_left + label_size.x + padding
 
@@ -319,7 +321,10 @@ def _draw_column_entry(draw_list, column_left, content_width, line_height, paddi
     draw_list.add_rect_filled(*rect, imgui.get_color_u32_rgba(0, 0, 0, opacity), rounding=2)
 
     if hit_rects is not None:
-        hit_rects.append((rect, content if copy_text is None else copy_text, jump))
+        hit_rect = rect if clip is None else (max(rect[0], clip[0]), max(rect[1], clip[1]),
+                                              min(rect[2], clip[2]), min(rect[3], clip[3]))
+        if hit_rect[0] < hit_rect[2] and hit_rect[1] < hit_rect[3]:
+            hit_rects.append((hit_rect, content if copy_text is None else copy_text, jump))
 
     # label on the first line, then the wrapped, left-aligned content
     draw_list.add_text(column_left, content_top, label_u32, label)
@@ -338,14 +343,131 @@ def _draw_column_title(draw_list, x, y, color, title, hit_rects=None, copy_text=
         hit_rects.append(((x, y, x + size.x, y + size.y), copy_text, None))
 
 
-# Collapsed columns show only this many of the newest toasts; hovering the
-# overlay reveals the full list.
-_COLLAPSED_COUNT = 2
+def _draw_scrolled_column(draw_list, io, tag, rows, column_left, content_width,
+                          line_height, padding, viewport_top, viewport_bottom,
+                          hit_rects, badge_rects, show_badge=True):
+    """Draw one category's rows inside a fixed-height scrolling viewport.
 
-# Top edge of the overlay as last drawn while EXPANDED (not when collapsed).
-# The hover test latches on it: once expanded, the mouse can travel up over
-# the revealed entries without the list snapping back. Hotswap-safe.
-_expanded_top = globals().get("_expanded_top")
+    `rows` is newest-first: (label, label_color, content, content_color,
+    created_at, copy_text, jump). Newest sits at the viewport bottom. Scroll
+    is per-`tag` and STICKY at the newest end: offset 0 follows new rows as
+    they arrive; a scrolled-back column instead holds its place (the offset
+    grows with the content) and shows a clickable "N new" badge (see
+    _handle_badge_click) counting rows newer than the last pinned view."""
+    # [tint=(0.95, 0.61, 0.07)]
+    wheel_lines_per_tick = 3
+    # [tint=(0.36, 0.68, 0.89)]
+    thumb_width = 3
+    # [tint=(0.72, 0.53, 0.94)]
+    thumb_min_height = 24.0
+
+    viewport = (column_left - padding, viewport_top,
+                column_left + content_width + padding, viewport_bottom)
+    viewport_height = viewport_bottom - viewport_top
+    heights = [_entry_height(label, content, content_width, line_height, padding)
+               for label, _lc, content, _cc, _t, _cp, _j in rows]
+    content_height = sum(heights)
+    max_offset = max(0.0, content_height - viewport_height)
+
+    state = _scroll_state.get(tag)
+    if state is None:
+        state = _scroll_state[tag] = {"offset": 0.0, "height": 0.0, "seen_time": 0.0}
+
+    # A scrolled-back view holds still while new rows grow the column's content.
+    growth = content_height - state["height"]
+    if state["offset"] > 0 and growth > 0:
+        state["offset"] += growth
+    state["height"] = content_height
+
+    hovered = (viewport[0] <= io.mouse_pos.x <= viewport[2]
+               and viewport[1] <= io.mouse_pos.y <= viewport[3])
+    if hovered and io.mouse_wheel:
+        # wheel-up = back toward older rows
+        state["offset"] += io.mouse_wheel * line_height * wheel_lines_per_tick
+    state["offset"] = min(max(state["offset"], 0.0), max_offset)
+    offset = state["offset"]
+
+    newest_time = max((created_at for _l, _lc, _c, _cc, created_at, _cp, _j in rows),
+                      default=0.0)
+    if offset <= 0:
+        state["seen_time"] = newest_time
+    unseen = (sum(1 for _l, _lc, _c, _cc, created_at, _cp, _j in rows
+                  if created_at > state["seen_time"]) if offset > 0 else 0)
+
+    # Stack rows upward from the bottom, shifted DOWN by the scroll offset so
+    # older rows come into view; the clip rect swallows any overhang.
+    draw_list.push_clip_rect(viewport[0], viewport[1], viewport[2], viewport[3], True)
+    bg_bottom = viewport_bottom + offset
+    for (label, label_color, content, content_color, created_at,
+         copy_text, jump), height in zip(rows, heights):
+        entry_top = bg_bottom - (height - padding)
+        if entry_top > viewport_bottom:      # newest rows scrolled out below
+            bg_bottom -= height
+            continue
+        if bg_bottom < viewport_top:         # everything further up is out too
+            break
+        opacity = _fade_opacity(created_at)
+        bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
+                                       line_height, padding, bg_bottom,
+                                       label, label_color, content, content_color, opacity,
+                                       hit_rects=hit_rects, copy_text=copy_text,
+                                       jump=jump, clip=viewport)
+    draw_list.pop_clip_rect()
+
+    # Slim scroll thumb on the column's right side while it overflows.
+    if max_offset > 0 and (hovered or offset > 0):
+        thumb_height = max(thumb_min_height,
+                           viewport_height * viewport_height / content_height)
+        travel = viewport_height - thumb_height
+        thumb_bottom = viewport_bottom - (offset / max_offset) * travel
+        draw_list.add_rect_filled(viewport[2] - thumb_width, thumb_bottom - thumb_height,
+                                  viewport[2], thumb_bottom,
+                                  imgui.get_color_u32_rgba(1, 1, 1, 0.25), rounding=1)
+
+    if show_badge and unseen:
+        _draw_new_badge(draw_list, tag, unseen, column_left, content_width,
+                        line_height, padding, viewport_bottom, badge_rects)
+
+
+def _draw_new_badge(draw_list, tag, unseen, column_left, content_width,
+                    line_height, padding, viewport_bottom, badge_rects):
+    """Small "N new" pill at the bottom of a scrolled-back column; clicking it
+    (see _handle_badge_click) jumps the column back to the sticky end."""
+    # [tint=(0.95, 0.61, 0.07)]
+    arrow_width = 6
+    # [tint=(0.36, 0.68, 0.89)]
+    pill_extra_width = 6
+
+    text = f"{unseen} new"
+    text_size = imgui.calc_text_size(text)
+    pill_width = text_size.x + arrow_width + padding * 4 + pill_extra_width
+    pill_height = line_height + padding * 2
+    x0 = column_left + (content_width - pill_width) / 2
+    y1 = viewport_bottom - padding * 2
+    y0 = y1 - pill_height
+    yellow = imgui.get_color_u32_rgba(1, 1, 0, 1)
+    draw_list.add_rect_filled(x0, y0, x0 + pill_width, y1,
+                              imgui.get_color_u32_rgba(0, 0, 0, 0.9),
+                              rounding=pill_height / 2)
+    draw_list.add_rect(x0, y0, x0 + pill_width, y1, yellow,
+                       rounding=pill_height / 2, thickness=1.0)
+    text_x = x0 + padding * 2 + 2
+    draw_list.add_text(text_x, y0 + padding, yellow, text)
+    # down-pointing triangle after the text ("new toasts are below")
+    arrow_x = text_x + text_size.x + 4
+    arrow_y = y0 + pill_height / 2
+    draw_list.add_triangle_filled(arrow_x, arrow_y - 3, arrow_x + arrow_width, arrow_y - 3,
+                                  arrow_x + arrow_width / 2, arrow_y + 3, yellow)
+    badge_rects.append(((x0, y0, x0 + pill_width, y1), tag))
+
+
+# Per-tag scroll state, keyed by column title. "offset" is pixels scrolled
+# back from the newest end - 0 means pinned to the end, so new toasts
+# auto-scroll into view (sticky). "height" is last frame's content height,
+# used to hold a scrolled-back view still while new toasts grow the column.
+# "seen_time" is the newest created_at that was on screen while pinned;
+# anything newer feeds the "N new" badge. Hotswap-safe.
+_scroll_state = globals().get("_scroll_state") or {}
 
 
 def _file_tint(path):
@@ -363,6 +485,22 @@ def _file_tint(path):
 # a brief visual confirmation. Guarded so a hotswap re-exec keeps the value.
 _copy_flash = globals().get("_copy_flash")
 _COPY_FLASH_SECONDS = 0.6
+
+
+def _handle_badge_click(badge_rects):
+    """A click on a column's "N new" badge jumps that column back to the
+    sticky end (offset 0), where the seen-marker resets on the next frame.
+    Returns True when a badge consumed the click."""
+    if not badge_rects or not imgui.is_mouse_clicked(0):
+        return False
+    mouse = imgui.get_io().mouse_pos
+    for (x0, y0, x1, y1), tag in badge_rects:
+        if x0 <= mouse.x <= x1 and y0 <= mouse.y <= y1:
+            state = _scroll_state.get(tag)
+            if state is not None:
+                state["offset"] = 0.0
+            return True
+    return False
 
 
 def _handle_entry_click(hit_rects):
@@ -414,8 +552,19 @@ def draw_notifications():
         imgui.push_font(font_handle)
 
     try:
+        # [tint=(0.36, 0.68, 0.89)]
         padding = 2
+        # [tint=(0.95, 0.61, 0.07)]
         column_width = 300                          # also the toast max width
+        # Bottom strip of each band that its title text sits in.
+        # [tint=(0.72, 0.53, 0.94)]
+        title_strip = 30
+        # Gap between the bands and the window's right edge.
+        # [tint=(0.42, 0.79, 0.42)]
+        edge_margin = 10
+        # Per-category band height - a Toggles knob, applied live.
+        category_height = Toggles.Notifications.category_height
+
         content_width = column_width - padding * 2  # left-aligned content box
         line_height = imgui.get_text_line_height()
         title_color = imgui.get_color_u32_rgba(1, 1, 0, 1)
@@ -426,77 +575,64 @@ def draw_notifications():
         live_entries = [(tag + " ", value_str)
                         for tag, (value_str, _c, _t, _a) in NotificationCenter.live_values.items()]
 
-        # Hover test against the collapsed footprint only of the entries that are
-        # always visible. Expansion grows upward, away from the cursor, so the
-        # mouse stays inside the zone while expanded and it can't flicker.
         n_columns = len(tagged_columns) + (1 if live_entries else 0)
         if n_columns == 0:
             return
-        max_height = 0
-        for _tag, notifications in tagged_columns:
-            max_height = max(max_height, sum(
-                _entry_height(n.time_label, n.label, content_width, line_height, padding)
-                for n in islice(notifications, _COLLAPSED_COUNT)))
-        if live_entries:
-            max_height = max(max_height, sum(
-                _entry_height(label, value_str, content_width, line_height, padding)
-                for label, value_str in live_entries))
-        global _expanded_top
-        overlay_left = display_size.x - (column_width * n_columns) - 10 - padding
-        overlay_top = display_size.y - 30 - padding - max_height
-        # Once expanded, keep the footprint of the EXPANDED list as the hover
-        # zone so mousing up over the revealed part doesn't collapse it.
-        if _expanded_top is not None:
-            overlay_top = min(overlay_top, _expanded_top)
-        hovered = (io.mouse_pos.x >= overlay_left and io.mouse_pos.y >= overlay_top)
-        limit = None if hovered else _COLLAPSED_COUNT
+
+        # Categories stack VERTICALLY along the right edge: the first tag's
+        # history in the bottom-right corner, each further category in its own
+        # fixed-height band above it, "Live" topmost. Within each band the title
+        # is at the bottom with the scrolling viewport above it.
+        column_left = display_size.x - column_width - edge_margin
         hit_rects = []
-        drawn_top = display_size.y
+        badge_rects = []
 
-        for c_idx, (tag, notifications) in enumerate(tagged_columns):
-            column_left = display_size.x - (column_width * (c_idx + 1)) - 10
+        def band_rect(band_index):
+            """(title_top, viewport_top, viewport_bottom) of the band_index-th
+            category_height band, counted upward from the window's bottom."""
+            band_bottom = display_size.y - band_index * category_height
+            title_top = band_bottom - title_strip
+            return title_top, band_bottom - category_height, title_top - padding
 
-            # tag title pinned at the bottom of the column; clicking it copies
-            # the tag's whole history, not just the entries on screen.
-            _draw_column_title(draw_list, column_left, display_size.y - 30, title_color, tag,
+        for band_index, (tag, notifications) in enumerate(tagged_columns):
+            title_top, viewport_top, viewport_bottom = band_rect(band_index)
+
+            # tag title pinned at the bottom of the band; clicking it copies
+            # the band's whole history, not just the entries on screen.
+            _draw_column_title(draw_list, column_left, title_top, title_color, tag,
                                hit_rects, "\n".join(n.copy_text for n in notifications))
 
-            # stack toasts upward from just above the tag title (newest at bottom)
-            bg_bottom = display_size.y - 30 - padding
-            for n in islice(notifications, limit):
-                opacity = _fade_opacity(n.created_at)
+            rows = []
+            for n in notifications:
                 # Entries that jump to a file take that file's editor tint.
                 tint = (_file_tint(n.jump[0]) if n.jump is not None else None) or n.tint
-                bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
-                                               line_height, padding, bg_bottom,
-                                               n.time_label, tint, n.label, tint, opacity,
-                                               hit_rects=hit_rects, copy_text=n.copy_text,
-                                               jump=n.jump)
-            drawn_top = min(drawn_top, bg_bottom)
+                rows.append((n.time_label, tint, n.label, tint, n.created_at,
+                             n.copy_text, n.jump))
+            _draw_scrolled_column(draw_list, io, tag, rows, column_left, content_width,
+                                  line_height, padding, viewport_top, viewport_bottom,
+                                  hit_rects, badge_rects)
 
-        # dedicated "Live" column to the left of the tagged notification columns;
-        # each entry is a tag's current value, tinted, updated in place over time.
+        # dedicated "Live" band above the tagged notification bands - each row
+        # is one tag's current value, tinted, updated in place over time - so
+        # it scrolls like the others but skips the "new" badge (in-place
+        # updates would keep it lit permanently).
         if live_entries:
-            c_idx = len(tagged_columns)
-            column_left = display_size.x - (column_width * (c_idx + 1)) - 10
+            title_top, viewport_top, viewport_bottom = band_rect(len(tagged_columns))
             label_color = (0.6, 0.6, 0.6, 1)
 
-            _draw_column_title(draw_list, column_left, display_size.y - 30, title_color, "Live",
+            _draw_column_title(draw_list, column_left, title_top, title_color, "Live",
                                hit_rects, "\n".join(f"{label}{value_str}"
                                                     for label, value_str in live_entries))
 
-            bg_bottom = display_size.y - 30 - padding
-            for tag, (value_str, color, _time_label, created_at) in NotificationCenter.live_values.items():
-                opacity = _fade_opacity(created_at)
-                bg_bottom = _draw_column_entry(draw_list, column_left, content_width,
-                                               line_height, padding, bg_bottom,
-                                               tag + " ", label_color, value_str, color, opacity,
-                                               hit_rects=hit_rects)
-            drawn_top = min(drawn_top, bg_bottom)
+            rows = [(live_tag + " ", label_color, value_str, color, created_at, None, None)
+                    for live_tag, (value_str, color, _time_label, created_at)
+                    in NotificationCenter.live_values.items()]
+            _draw_scrolled_column(draw_list, io, "Live", rows, column_left, content_width,
+                                  line_height, padding, viewport_top, viewport_bottom,
+                                  hit_rects, badge_rects, show_badge=False)
 
-        _expanded_top = drawn_top if hovered else None
-
-        _handle_entry_click(hit_rects)
+        if not _handle_badge_click(badge_rects):
+            _handle_entry_click(hit_rects)
         _draw_copy_flash(draw_list)
     finally:
         if font_handle is not None:

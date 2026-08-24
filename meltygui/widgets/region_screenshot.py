@@ -114,7 +114,7 @@ def _open_captured(path):
     the new tab shows. The saved file's PATH also goes on the clipboard
     (text, via GLFW's clipboard — the studio is the focused Wayland client,
     so this is the one clipboard write that always lands)."""
-    from src.lsd.gl_gui.view.playground.open_files import editor_window_ds
+    from src.lsd.gl_gui.view.playground.open_files import editor_window_draw_state
 
     def _land():
         open_files = getattr(getattr(Melty.vis, "root", None), "open_files", None)
@@ -123,7 +123,7 @@ def _open_captured(path):
             # The tab list changed under the editors' bodies: force both
             # instances through their blit cache so the new tab appears.
             for inst in (0, 1):
-                win = editor_window_ds(inst)
+                win = editor_window_draw_state(inst)
                 if win is not None and Melty.cache is not None and win._tile_id is not None:
                     Melty.cache.invalidate_up(win._tile_id, force=True, max_depth=4)
         imgui.set_clipboard_text(str(path))

@@ -133,6 +133,10 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     text_saturation = 0.8
     live_tint = (0.409, 0.1, 0.1)                         # the bolt on live windows
 
+    # ---- icons (glyph literals so the editor renders them as a picker) ----
+    target_icon = f""                                    # summon button
+    live_icon = f""                                      # live-row bolt
+
     # ---- geometry, authored at ui_scale 1.0 and scaled once per frame ----
     # The dock draws straight to the draw list, so nothing here follows the
     # scale the way a laid-out widget does - every one of these goes through
@@ -140,8 +144,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # them.
     px = Melty.px
     # [tint=(0.939, 0.453, 0.245)]
-    row_height = px(31.0)
-    row_gap = px(4.0)
+    row_height = px(25.0)
+    row_gap = px(2.0)
     row_stride = row_height + row_gap
     # [tint=(0.35, 0.85, 0.94)]
     name_x = px(20.0)                                     # rows' left inset (the live bolt sits in it)
@@ -334,7 +338,6 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
                        corner_radius=corner, clip=clip)
             draw_list.add_rect_filled(target_left, row_top, target_right, row_bottom,
                                       _color_u32(target_bg_color), rounding=corner)
-            target_icon = f""
             target_icon_size = imgui.calc_text_size(target_icon)
             draw_list.add_text(target_left + (target_width - target_icon_size[0]) / 2.0 + text_nudge_x,
                                row_top + (row_height - target_icon_size[1]) / 2.0 + text_nudge_y,
@@ -342,7 +345,6 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
 
         # ---- live indicator ----
         if window_draw_state.live:
-            live_icon = f""
             live_icon_size = imgui.calc_text_size(live_icon)
             draw_list.add_text(origin_x + (name_x - live_icon_size[0]) / 2.0,
                                row_top + (row_height - live_icon_size[1]) / 2.0 + text_nudge_y,

@@ -101,6 +101,9 @@ class TabState(DictConversion):
         self.tab_icons = {}
 
 
+@exclude("restore_first_line", "restore_total_lines", "restore_text",
+         "restore_gutter_digits", "restore_line_offset", "restore_fold_keys",
+         "restore_gutter_rows")
 class TextEditorState(DictConversion):
     """Per-editor persisted UI state for draw_text (injected via
     `text_editor_state: TextEditorState = None` — the TabState pattern:
@@ -118,6 +121,42 @@ class TextEditorState(DictConversion):
         # Auto Execute checkbox reads/writes this directly (the
         # params_windows_open pattern); persisted with the editor state.
         self.params_auto_execute = {}
+        # Viewability snapshot for the instant-restore placeholder: what this
+        # editor SHOWED last frame - the visible band's first (display)
+        # line, its text, and the buffer's total line count. draw_text
+        # writes these at the end of every real draw and, when called with
+        # input_value=None (buffer still loading, e.g. draw_text_editor's
+        # loading branch), rebuilds a same-shape stand-in from them: blank
+        # lines up to the band, the band's text, blank lines below - same
+        # line count → same content height → the persisted scroll stays
+        # unmoved, and the first frame of a session shows the code the last
+        # one did. @exclude: pure passive state (all renders stamp
+        # them mid-session), so their per-scroll writes must not invalidate.
+        self.restore_first_line = 0
+        self.restore_total_lines = 0
+        self.restore_text = ""
+        # Gutter shape for the stand-in: digit count (0 = no gutter - the
+        # width decides where the code column starts, so a missing gutter
+        # made the text shift left↔right on the swap-in) and the sequential
+        # numbering offset (the number on buffer line 0 minus 1).
+        self.restore_gutter_digits = 0
+        self.restore_line_offset = 0
+        # Per-display-row gutter of the snapshot band, exactly as painted -
+        # ints are line NUMBERS (fold-remapped, so they skip across
+        # collapsed folds), -1/-2 denote a fold-header chevron row
+        # (expanded/collapsed), None a numberless row. Without this the
+        # stand-in numbered rows sequentially from restore_line_offset -
+        # wrong below every collapsed fold, and chevron-less - so the
+        # buffer visibly snapped when the real text landed.
+        self.restore_gutter_rows = None
+        # This editor's collapsed folds as their LINE-INDEPENDENT keys
+        # (ds._fold_keys - scope qualnames / header texts, designed to
+        # survive folds). ds._fold_keys is an underscore slot and not
+        # serialized, so fold state used to RESET to default_collapsed
+        # every session. draw_text seeds the fresh draw seed from this
+        # instead. None = never captured (let defaults seed); [] = captured
+        # with everything expanded (defaults must NOT re-collapse).
+        self.restore_fold_keys = None
 
 
 @no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)
@@ -266,7 +305,7 @@ class TileMode(Enum):
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count", "z_pos",
-         "text_search_current", "text_search_count")
+         "text_search_current", "text_search_count", "observed_content_height")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "", "child_selected", "bg_color",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
@@ -286,6 +325,10 @@ class DrawState(DictConversion):
     # serialized; to_dict only walks the default instance's fields).
     _anc_scroll_key = None
     _anc_scroll_cache = (0, 0)
+
+    # Hot reload fallback: live instances predating the persisted rename read
+    # this, the wrapper's post-body stamp writes the instance attr.
+    observed_content_height = 0
 
     def __init__(self):
         super().__init__()
@@ -650,7 +693,12 @@ class DrawState(DictConversion):
         self._all_pending = {"save_pending":None, "load_pending":None}
         self._load_pending_for = 0
         self._content_rect = (100,30)
-        self._observed_content_height = 0
+        # PERSISTED (non-underscore, @exclude'd): the wrapper's post-body
+        # observation. Serialized so a restored view's abs_content_height -
+        # and with it needs_scroll and the persisted scroll state - is right
+        # on a session's FIRST frame, before the view (or its loading
+        # stand-in) has rendered once.
+        self.observed_content_height = 0
         self._last_expanded = None
         self.expanded_rect = (0, 0, 0, 0)
         self._collapsed_rect = (0, 0, 0, 0)
@@ -925,13 +973,18 @@ class DrawState(DictConversion):
     @property
     def abs_content_height(self):
         if self.frame_count < 2:
-            return 0
+            # Serve the PERSISTED measurement while this session hasn't
+            # re-measured yet: a restored view then scrolls to its persisted
+            # scroll_offset on the very first frame, before its content (or
+            # a loading stand-in) renders. Returns 0 only for never-measured
+            # views, matching the old behavior for genuinely new ones.
+            return int(self.observed_content_height)
 
         content_height = 0
         f = Core.melty.frame_count
         max_bottom = 0
         min_top = float('inf')
-        key = (f, self.height, self._parent.abs_clip_rect, self._observed_content_height)
+        key = (f, self.height, self._parent.abs_clip_rect, self.observed_content_height)
         is_scroll_view = not self._kwargs.get("disable_scroll", True)
         if self._abs_content_height_key == key:
             return self._abs_content_height_cache
@@ -967,7 +1020,7 @@ class DrawState(DictConversion):
         # if is_scroll_view:
         #     content_height = max(content_height, self.height)
 
-        return int(self._observed_content_height)
+        return int(self.observed_content_height)
 
     @property
     def abs_layer(self):
