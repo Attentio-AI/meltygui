@@ -1174,8 +1174,8 @@ def _fim_poll(ds, fim_state, text, address, profile, typed=False):
 
 def _draw_fim_ghost(ds, ghost, text, origin_x, origin_y, line_px, vcols=None):
     """Ghost text for the FIM chunk: the first segment inline after the
-    caret (dim), any further lines in a translucent box under the caret
-    line (no layout change — folds/heights untouched), and a faint `+N`
+    caret (dim), any further lines drawn dim over the lines below the caret
+    (no box, no layout change — folds/heights untouched), and a faint `+N`
     when more is buffered beyond this chunk. A pending request with no
     complete line yet shows a single dim ellipsis."""
     dl = imgui.get_window_draw_list()
@@ -1195,18 +1195,14 @@ def _draw_fim_ghost(ds, ghost, text, origin_x, origin_y, line_px, vcols=None):
     if rest and rest[-1] == "":
         rest = rest[:-1]
     if rest:
+        # Further segments float over the lines below the caret on the plain
+        # line grid - no box, no background - so they read as dim overtype.
         ch = _mono_char_w()
-        w = max(len(ln) for ln in rest) * ch + 12
-        h = len(rest) * line_px + 6
         bx, by = origin_x, y + line_px
-        bg = imgui.get_color_u32_rgba(0.11, 0.12, 0.15, 0.92)
-        border = imgui.get_color_u32_rgba(0.30, 0.33, 0.42, 0.7)
-        dl.add_rect_filled(bx - 4, by, bx + w, by + h, bg, 4.0)
-        dl.add_rect(bx - 4, by, bx + w, by + h, border, 4.0)
         for i, ln in enumerate(rest):
-            dl.add_text(bx, by + 3 + i * line_px, col, ln)
+            dl.add_text(bx, by + i * line_px, col, ln)
         end_x = bx + len(rest[-1]) * ch
-        end_y = by + 3 + (len(rest) - 1) * line_px
+        end_y = by + (len(rest) - 1) * line_px
     if ghost.more_lines:
         dl.add_text(end_x + 8, end_y, hint, f"+{ghost.more_lines}")
 

@@ -286,7 +286,7 @@ class InputHandler:
         # the shape that was SHOWING when that input's drag was captured
         # (sticky until release); and this frame's resolved shape (None =
         # nothing asked, the last shape).
-        self._view_cursor: dict[Any, int] = {}
+        self._view_cursor: dict[Any, tuple] = {}   # view_id -> (shape, rect | None)
         self._drag_cursor: dict[str, Any] = {}
         self.cursor_shape = None
 
@@ -308,13 +308,17 @@ class InputHandler:
         self._blocker_views.clear()
         self._view_cursor.clear()
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False, cursor=None):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False, cursor=None, cursor_rect=None):
         """Register hovered view. Priority 0 = topmost.
 
         cursor=<imgui MOUSE_CURSOR_*> names the pointer shape to show while
         this view is the topmost cursor-carrying hovered view (resolved in
-        process_frame, same blocker/z rules as events). An empty
-        `subscribed` list is allowed: a cursor-only registration.
+        process_frame, same blocker/z rules as events). cursor_rect=(l, t, r, b)
+        is the screen rect the shape covers: process_frame re-tests it against
+        the LATEST pointer position, so a registration made at the start of a
+        slow frame drops the moment the pointer has left (None = trust the
+        hover test that registered it). An empty `subscribed` list is
+        allowed: a cursor-only registration.
 
         Multiple calls with the same view_id will merge subscriptions,
         using the lowest (best) priority.
@@ -331,7 +335,7 @@ class InputHandler:
         if blocker:
             self._blocker_views.add(view_id)
         if cursor is not None:
-            self._view_cursor[view_id] = cursor
+            self._view_cursor[view_id] = (cursor, cursor_rect)
         # Stamped even on a cursor-only (empty subscribed) registration: the
         # blocker pass keeps a blocker's OWN tile by this map.
         _view_id_to_tile_id[view_id] = tile_id
@@ -933,12 +937,24 @@ class InputHandler:
                     shape = c
                     break
         else:
+            # Registrations are from the previous draw pass (hit-tested at
+            # that frame's pointer). Re-check each shape's rect with the
+            # pointer as it is NOW - the draw just ran - so the shape can
+            # never outlive the pointer leaving its rect by a slow frame.
+            # (A view the pointer has newly entered shows its shape once it
+            # registers next frame; never sticking beats one frame of arrow.)
             vc = self._view_cursor
+            pointer_x, pointer_y = self._cursor_x, self._cursor_y
             for v, _, _ in self._hovered:
-                c = vc.get(v)
-                if c is not None:
-                    shape = c
-                    break
+                entry = vc.get(v)
+                if entry is None:
+                    continue
+                c, rect = entry
+                if rect is not None and not (rect[0] <= pointer_x <= rect[2]
+                                             and rect[1] <= pointer_y <= rect[3]):
+                    continue
+                shape = c
+                break
         self.cursor_shape = shape
 
         return result, result_by_type

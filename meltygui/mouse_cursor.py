@@ -52,6 +52,7 @@ _GLFW_SHAPE = {
 
 _cursors = {}        # shape -> GLFWcursor* (None = the GLFW default arrow)
 _applied = ARROW     # shape last pushed to GLFW; None = unknown, re-push
+_applied_immediate = False   # the last push was from imgui.set_mouse_cursor
 _external = False    # another owner has set its own cursor image
 
 
@@ -77,30 +78,46 @@ def note_external_cursor(on):
     """Another owner (region_screenshot's crosshair) has set (`on`) or
     released the window cursor. While on, `apply` leaves the cursor alone;
     on release the next frame re-pushes ours (GLFW is at the default then)."""
-    global _external, _applied
+    global _external, _applied, _applied_immediate
     _external = bool(on)
     if not on:
         _applied = None
+        _applied_immediate = False
 
 
-def apply(window):
-    """Push this frame's resolved cursor shape to GLFW. Render thread only,
-    after the frame's imgui calls (imgui's shape is read here)."""
-    global _applied
+def apply(window, early=False):
+    """Push the resolved cursor shape to GLFW. Render thread only.
+
+    Called TWICE per frame. `early=True` from Melty.begin_frame right after
+    the input handler resolved `cursor_shape` against the freshest pointer
+    position — BEFORE the draw pass, so a slow frame (draw_text re-rendering)
+    can't hold an I-beam the pointer has already left; the shape leads the
+    frame instead of trailing it. `early=False` from the render tail, where
+    imgui's immediate shapes (titlebar edges, corner resize) are known. An
+    immediate shape is re-asserted every frame it applies, so while the tail
+    is showing one the early push leaves it alone — otherwise the two would
+    alternate. (What this can't fix: the render thread is also the GLFW
+    event thread, so nothing moves the shape while a frame is mid-draw.)"""
+    global _applied, _applied_immediate
     if _external:
         return
     if imgui.get_io().config_flags & imgui.CONFIG_NO_MOUSE_CURSOR_CHANGE:
         return
     shape = imgui.get_mouse_cursor()
-    if shape == ARROW or shape == imgui.MOUSE_CURSOR_NONE:
+    immediate = shape != ARROW and shape != imgui.MOUSE_CURSOR_NONE
+    if not immediate:
         from src.lsd.gl_gui.melty import Melty
         shape = Melty.event_handler.cursor_shape
         if shape is None:
             shape = ARROW
+    if early and _applied_immediate:
+        return
     if shape == _applied:
+        _applied_immediate = immediate
         return
     try:
         glfw.set_cursor(window, _glfw_cursor(shape))
     except Exception as e:
         print(f"mouse_cursor: set_cursor failed for shape {shape}: {e}")
     _applied = shape
+    _applied_immediate = immediate

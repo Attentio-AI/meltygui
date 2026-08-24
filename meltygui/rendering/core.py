@@ -2869,7 +2869,17 @@ def render_func(*args, **o_kwargs):
             draw_state._melty_cursor = (0, 0)  # column -> (x, y)
 
             _wtC = time.perf_counter()   # TEMP perf: pre-cache is done
-            if Melty.cache.mark_start_offscreen(draw_state=draw_state):
+            _render_body = Melty.cache.mark_start_offscreen(draw_state=draw_state)
+            if not _render_body and _has_imgui:
+                # Blit-cache hit: the body below is skipped, and with it every
+                # on_action it would have made (the text editor's I-beam, tab
+                # ctrl+enter, ...). Re-issue last render's record so a cached
+                # tile keeps its subscriptions - same fix as the pre-gate
+                # register_hovered above, for body-level subs.
+                draw_state.replay_body_actions()
+            if _render_body:
+                # Fresh record for this render's body-level on_action calls.
+                draw_state._body_actions = (Melty.frame_count, [])
                 draw_state._melty_content_height = 0
 
                 if style_manager is not None:
@@ -3913,10 +3923,13 @@ def render_func(*args, **o_kwargs):
 
                     # Remove event names from wanted params that aren't in kwargs
                     event_names = [e for e in event_names if e in kwargs]
+                    _content_cursor = kwargs.get("mouse_cursor")
                     Melty.event_handler.register_hovered(tile_id, event_names, priority - 3, tile_id,
                                                          selected=draw_state.selected,
                                                          blocker=closable,
-                                                         cursor=kwargs.get("mouse_cursor"))
+                                                         cursor=_content_cursor,
+                                                         cursor_rect=(draw_state.get_content_rect()
+                                                                      if _content_cursor is not None else None))
 
                 ###########################################################
                 kwargs['next_kwargs'] = kwargs

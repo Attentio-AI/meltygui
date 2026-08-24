@@ -1875,6 +1875,14 @@ class Melty:
 
         cls.events, cls.events_by_type = cls.event_handler.process_frame()
 
+        # Pointer shape: the frame about to draw, pushed NOW against the
+        # freshest pointer position rather than after the (possibly slow)
+        # draw pass; the render tail pushes again against imgui's immediate
+        # shapes. See mouse_cursor.apply.
+        if cls.glfw_window is not None:
+            from src.lsd.gl_gui import mouse_cursor
+            mouse_cursor.apply(cls.glfw_window, early=True)
+
         # Apply a Ctrl+Enter "click the selected search result" injection queued
         # last frame - now, before any view renders, so the view reads it via
         # the per-view event merge. Add two names so it reaches whichever the

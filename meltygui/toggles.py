@@ -239,6 +239,8 @@ class Tint:
         # Live guards - see Toggles.TextEditor.gutter_text_min/max_brightness.
         min_value = Toggles.TextEditor.gutter_text_min_brightness
         max_value = max(Toggles.TextEditor.gutter_text_max_brightness, min_value)
+        
+
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
@@ -1222,10 +1224,16 @@ class Toggles:
         # make_color_rgb, so a dark window tint scaled toward black and the
         # open row read no brighter than a closed one; the floor lifts just
         # the value (hue and saturation kept) so every active row stays
-        # legible. Closed rows and the summon button are untouched. 0
-        # disables. Read live.
+        # legible. The summon button is untouched. 0 disables. Read live.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         active_text_min_brightness = 0.55
+        # Same floor for CLOSED (inactive) rows. Their text mix is already
+        # dim by design (closed_text_value in draw_fast_dock), so a dark
+        # window tint took it below reading contrast against the dock
+        # background. Keep this under active_text_min_brightness or open and
+        # closed rows stop reading as different states. 0 disables. Read live.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        inactive_text_min_brightness = 0.35
 
     # [icon=""]
     @defaults(tint=(0.427, 0.541, 0.616))
@@ -1304,6 +1312,11 @@ class Toggles:
         # Per-category cap for the horizontal layout's columns (replaces
         # all_tab_per_category there - columns have the vertical room).
         all_tab_horizontal_per_category = 15
+        # Where the window may reappear on Ctrl+Shift+S: its top edge is
+        # pushed down to at least this fraction of the display height. The
+        # window remembers its last spot otherwise - 0.5 = never above the
+        # middle of the screen, 0.0 = reopen it where it was closed.
+        summon_min_top_fraction = 0.5
         # Seconds a keystroke must sit unchanged before a search pass runs
         # (the exact pass and the full-text trigram pass share this; tab
         # switches and load-all skip this - no text changed). Typing pays

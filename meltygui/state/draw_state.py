@@ -470,6 +470,10 @@ class DrawState(DictConversion):
         self.child_selected = None
         self.just_shadow = False
         self._event_names = set()
+        # Body-level on_action registrations from the last real render, replayed
+        # by the wrapper for blit-cache hits: (frame_count, [entries]). See
+        # on_action / replay_body_actions.
+        self._body_actions = None
 
         self._queued_windows = []
         self.drag_window_pos_x = None
@@ -867,6 +871,9 @@ class DrawState(DictConversion):
     # `set_anywhere(...)` call it replaces, and the value only gets there
     # through the source save + hotswap, which invalidates on its own.
     LOCATE_PREFIX = "locate_"
+    # Class-level default lets draw_states alive from before a hotswap (whose
+    # __init__ never saw the field) read None instead of raising.
+    _body_actions = None
 
     def __getattr__(self, name):
         # Reached only when normal lookup failed. `locate_params` and any
@@ -1908,6 +1915,91 @@ class DrawState(DictConversion):
             return False
         return True
 
+    def _action_base_priority(self, z_pos=None):
+        """on_action's default priority: the wrapper's z ordering inverted
+        (0 = topmost). `z_pos=None` reads Melty's live layer/depth — what a
+        call from inside this view's body sees."""
+        max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
+        if z_pos is None:
+            z_pos = Core.melty.active_layer * Core.melty.max_depth + Core.melty.depth
+        return max_layer_depth - z_pos
+
+    def _register_action(self, view_id, event_names, registered_priority, rect, cursor,
+                         debug_priority=0, debug_delta=0):
+        """The registration half of on_action: hover-test `rect` (None = this
+        view's bbox) and subscribe. Shared by the live call and the cache-hit
+        replay so both obey the same z-order / blocker rules."""
+        if not self.hover_eligible(rect):
+            return
+        cursor_rect = None
+        if cursor is not None:
+            # The input handler re-tests this rect against the LATEST pointer
+            # position when it changes the shape (gl_gui/mouse_cursor.py), so
+            # a slow frame can't hold the I-beam after the pointer has left.
+            cursor_rect = self.abs_clamped_rect
+            if rect is not None and cursor_rect is not None:
+                cursor_rect = (max(rect[0], cursor_rect[0]), max(rect[1], cursor_rect[1]),
+                               min(rect[2], cursor_rect[2]), min(rect[3], cursor_rect[3]))
+            elif rect is not None:
+                cursor_rect = tuple(rect)
+        Core.melty.event_handler.register_hovered(view_id, event_names,
+                                                  priority=registered_priority,
+                                                  tile_id=self._tile_id, cursor=cursor,
+                                                  cursor_rect=cursor_rect)
+
+        overlay = imgui.get_overlay_draw_list()
+        overlay.channels_set_current(Core.melty.max_layer - 1)
+        if Toggles.InputHandlerToggles.show_debug:
+            for name in event_names:
+                self._event_names.add(name)
+
+            ds = self
+            color = (1,1,1)
+            text = f"zpos:{self.layer} priority:{debug_priority} priority_delta:{debug_delta} | {str(self._event_names)}"
+            invalidation_rect = (ds.abs_left, ds.abs_top,
+                                 ds.abs_left + (ds.width or 0),
+                                 ds.abs_top + (ds.height or 0))
+            text_size = imgui.calc_text_size(text)
+            overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
+                                    invalidation_rect[0] + ds.width,
+                                    invalidation_rect[1] + text_size.y,
+                                    imgui.get_color_u32_rgba(*color[:3],
+                                                             1))
+
+            overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
+                             imgui.get_color_u32_rgba(*(0, 0, 0),
+                                                      1),
+                             text)
+
+            overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2],
+                             invalidation_rect[3],
+                             imgui.get_color_u32_rgba(*color[:3],
+                                                      1),
+                             thickness=1.0)
+
+    def replay_body_actions(self):
+        """Blit-cache hit: the body did not run, so re-issue every on_action
+        it made on its last real render (see on_action). Rects re-anchor to
+        the LIVE abs position (the cached property lags a blit-served drag)
+        and priorities to the current z_pos, then go through the normal
+        hover / blocker gauntlet — a covered or un-hovered rect registers
+        nothing, exactly as the live call would."""
+        record = self._body_actions
+        if not record or not record[1]:
+            return
+        if self.just_shadow or not Core.melty.inside_clip(draw_state=self):
+            return
+        base = self._action_base_priority(z_pos=self.z_pos)
+        left, top = self._abs_left(), self._abs_top()
+        for view_suffix, event_names, offset, relative_rect, cursor in record[1]:
+            view_id = self._tile_id if view_suffix is None else str(self._tile_id) + "_" + str(view_suffix)
+            rect = None
+            if relative_rect is not None:
+                rect = (left + relative_rect[0], top + relative_rect[1],
+                        left + relative_rect[2], top + relative_rect[3])
+            self._register_action(view_id, list(event_names), base + offset, rect, cursor,
+                                  debug_priority=base + offset)
+
     @property
     def priority(self):
         max_layer_depth = (Core.melty.max_depth *
@@ -1948,6 +2040,16 @@ class DrawState(DictConversion):
             setattr(self, f, v)
 
     def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None):
+        """Subscribe this view to `event_names` (or, with an empty list, just
+        tag `rect` with a pointer `cursor` shape) for this frame.
+
+        Called from a view BODY it is recorded on the draw_state as well
+        (`_body_actions`), because the wrapper skips the body on a blit-cache
+        hit and InputHandler forgets every subscription each frame — without
+        the record a cached tile could not latch a drag or keep its I-beam
+        (`replay_body_actions` re-issues the record on a hit). Recording only
+        happens for the frame the wrapper opened the record in, so pre-gate
+        calls on cached frames never pile up."""
         if self.parent_window is None and not self.closable:
             priority_delta -= 1
 
@@ -1955,6 +2057,7 @@ class DrawState(DictConversion):
             return None
         if self.just_shadow:
             return None
+        view_suffix = view_id
         if view_id is None:
             view_id = self._tile_id
         else:
@@ -1965,45 +2068,26 @@ class DrawState(DictConversion):
             event_names = [event_names]
             single_event = True
 
-        if self.hover_eligible(rect):
-            if priority is None:
-                max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
-                layer_and_depth = Core.melty.active_layer * Core.melty.max_depth + Core.melty.depth
-                priority = max_layer_depth - layer_and_depth
+        if priority is None:
+            priority = self._action_base_priority()
+        registered_priority = priority - priority_delta
 
-            Core.melty.event_handler.register_hovered(view_id, event_names,
-                                                      priority=priority - priority_delta,
-                                                      tile_id=self._tile_id, cursor=cursor)
+        record = self._body_actions
+        if record is not None and record[0] == Core.melty.frame_count:
+            # Priority is kept as an offset from this view's z_pos and the rect
+            # relative to its abs position: both are re-derived on replay, so a
+            # view that moved (blit-served drag) or changed layer replays right.
+            if rect is None:
+                relative_rect = None
+            else:
+                left, top = self.abs_left, self.abs_top
+                relative_rect = (rect[0] - left, rect[1] - top, rect[2] - left, rect[3] - top)
+            record[1].append((view_suffix, tuple(event_names),
+                              registered_priority - self._action_base_priority(z_pos=self.z_pos),
+                              relative_rect, cursor))
 
-            overlay = imgui.get_overlay_draw_list()
-            overlay.channels_set_current(Core.melty.max_layer - 1)
-            if Toggles.InputHandlerToggles.show_debug:
-                for name in event_names:
-                    self._event_names.add(name)
-
-                ds = self
-                color = (1,1,1)
-                text = f"zpos:{self.layer} priority:{priority} priority_delta:{priority_delta} | {str(self._event_names)}"
-                invalidation_rect = (ds.abs_left, ds.abs_top,
-                                     ds.abs_left + (ds.width or 0),
-                                     ds.abs_top + (ds.height or 0))
-                text_size = imgui.calc_text_size(text)
-                overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
-                                        invalidation_rect[0] + ds.width,
-                                        invalidation_rect[1] + text_size.y,
-                                        imgui.get_color_u32_rgba(*color[:3],
-                                                                 1))
-
-                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
-                                 imgui.get_color_u32_rgba(*(0, 0, 0),
-                                                          1),
-                                 text)
-
-                overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2],
-                                 invalidation_rect[3],
-                                 imgui.get_color_u32_rgba(*color[:3],
-                                                          1),
-                                 thickness=1.0)
+        self._register_action(view_id, event_names, registered_priority, rect, cursor,
+                              debug_priority=priority, debug_delta=priority_delta)
 
         if single_event:
             if view_id in Core.melty.events:

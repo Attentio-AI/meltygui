@@ -633,6 +633,8 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
         s_changed, s_val = imgui.slider_int(f"{label}##slice{d}", cur,
                                             0, source_shape[d] - 1)
         imgui.pop_item_width()
+        
+        imgui.set_item_allow_overlap()
         if s_changed and int(s_val) != cur:
             new_slices = list(slices) + [0] * (len(source_shape) - len(slices))
             new_slices[d] = int(s_val)

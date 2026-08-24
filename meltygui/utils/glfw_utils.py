@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import io
+import shutil
+import subprocess
 import pprint
 import inspect
 import threading
@@ -41,6 +43,67 @@ def clamp_ui_scale(value) -> float:
     if v != v or v < UI_SCALE_MIN or v > UI_SCALE_MAX:
         return 1.0
     return v
+
+
+# ── Native cursor size and theme ───────────────────────────
+
+# Full path on purpose: a bare name makes subprocess fall back to fork() of
+# the CUDA/GL/torch address space (see claude_terminals) - posix_spawn needs
+# an absolute path and close_fds=False.
+_GSETTINGS = shutil.which("gsettings") or "/usr/bin/gsettings"
+_DESKTOP_INTERFACE_SCHEMA = "org.gnome.desktop.interface"
+
+
+def _gsettings_get(key):
+    """`gsettings get org.gnome.desktop.interface <key>` as its raw stdout
+    (stripped), None if the tool is missing, fails or times out."""
+    if not os.path.exists(_GSETTINGS):
+        return None
+    try:
+        result = subprocess.run([_GSETTINGS, "get", _DESKTOP_INTERFACE_SCHEMA, key],
+                                capture_output=True, text=True, timeout=3,
+                                close_fds=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def export_desktop_cursor_env():
+    """Make GLFW's native cursors the DESKTOP's size and theme.
+
+    On Wayland GLFW sizes every cursor it shows — the arrow it pushes on
+    pointer-enter as much as the shapes gl_gui/mouse_cursor.py sets — from
+    XCURSOR_SIZE / XCURSOR_THEME, read ONCE by the first glfw.init() in the
+    process (wl_init.c loadCursorTheme: 16 px when unset). GNOME Wayland
+    sessions export neither, so the studio's cursors came out at the theme
+    image nearest 16 px (22 px Bibata) while the desktop draws 32. This reads
+    GNOME's own settings and exports them; anything already in the
+    environment wins (a user's export is an intent). Must run before the
+    FIRST glfw.init() of the process: GLFW init is process-wide, the
+    launcher's init_gui does it and the studio's later init is a no-op.
+    Returns {var: value} of what it exported (empty = nothing to do).
+    """
+    exported = {}
+    if not os.environ.get("WAYLAND_DISPLAY"):
+        return exported     # X11: GLFW asks Xcursor, which GNOME configures itself
+    if not os.environ.get("XCURSOR_SIZE"):
+        raw = _gsettings_get("cursor-size")
+        try:
+            size = int(raw) if raw is not None else 0
+        except ValueError:
+            size = 0
+        if size > 0:
+            os.environ["XCURSOR_SIZE"] = str(size)
+            exported["XCURSOR_SIZE"] = str(size)
+    if not os.environ.get("XCURSOR_THEME"):
+        raw = _gsettings_get("cursor-theme")
+        theme = raw.strip("'\"") if raw else ""
+        if theme:
+            os.environ["XCURSOR_THEME"] = theme
+            exported["XCURSOR_THEME"] = theme
+    return exported
 
 
 def _is_user_code(filepath):

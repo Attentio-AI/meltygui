@@ -3186,8 +3186,13 @@ def draw_type(input_value: type, **kwargs):
 
 
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
-             with_header=None, bg_offset=4, auto_resize=False)
-def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
+             with_header=None, bg_offset=4, auto_resize=False,
+             # The wrapper's scrollbar would drag the search box and the tabs
+             # along with the rows; the body scrolls the ROWS region itself
+             # (GlobalSearch.rows_scroll, fed by the scroll_y_changed param).
+             disable_scroll=True)
+def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False,
+                       scroll_y_changed=None, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching hits
     from the registered search indexes (GLOBAL_SEARCH_INDEXES). A query or
     tab change only KICKS the debounced background worker (_kick_search) —
@@ -3354,20 +3359,23 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     items, fallback = _items_for(active)
 
     def _vis(items):
-        """(vis_rows, n_vis, n_over) for the active tab. The horizontal All
-        tab is capped PER COLUMN (in _all_tab_items), so the flat max_visible
-        cap must not also truncate its trailing columns; show_all ("load all"
-        picked) lifts the cap everywhere. A truncated tab gets a trailing
-        _LoadAllRow sentinel standing in for the hidden tail."""
-        if input_value.show_all or (horiz and active == ALL_CATEGORY):
-            n = len(items)
-        else:
-            n = min(len(items), max_visible)
-        over = len(items) - n
-        rows = list(items[:n])
-        if over > 0:
-            rows.append(_LoadAllRow(over))
-        return rows, n, over
+        """(rows, n_vis, n_over) for the active tab: EVERY row — the rows
+        region scrolls (see the rows_scroll block below), so nothing is
+        truncated for display any more; max_visible only sizes the window.
+        n_vis counts the real rows; n_over is 1 when a trailing _LoadAllRow
+        follows them. That sentinel offers to lift the QUERY caps (the
+        per-category limit the worker ran with) while they're still in force
+        and some category filled its quota — the list may then be missing
+        hits. The horizontal All tab never gets one: its columns are capped
+        per category with their own show-more rows, and its layout loop only
+        places n_vis rows."""
+        rows = list(items)
+        capped = (not input_value.show_all
+                  and not (horiz and active == ALL_CATEGORY)
+                  and any(len(v) >= input_value._search_limit for v in by_kind.values()))
+        if capped:
+            rows.append(_LoadAllRow(0))
+        return rows, len(items), int(capped)
 
     vis_items, n_vis, n_over = _vis(items)
     n_rows = len(vis_items)
@@ -3375,6 +3383,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     if input_value._snap_sel:
         input_value._snap_sel = False
         input_value.selected = _first_pick(vis_items, matched, ranked)
+        # Fresh selection (new query / tab): back to the top, then keep the
+        # highlight in view.
+        input_value.rows_scroll = 0.0
+        input_value._follow_sel = True
 
     def _load_all():
         """Activate the _LoadAllRow: recompute the results with the
@@ -3425,11 +3437,14 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             vis_items, n_vis, n_over = _vis(items)
             n_rows = len(vis_items)
             input_value.selected = _first_pick(vis_items, matched, ranked)
+            input_value.rows_scroll = 0.0
+            input_value._follow_sel = True
             request_render()
         vstep = sum(1 for k, _m in keys if k == glfw.KEY_DOWN) \
                 - sum(1 for k, _m in keys if k == glfw.KEY_UP)
         if vstep and n_rows:
             input_value.selected = (input_value.selected + vstep) % n_rows
+            input_value._follow_sel = True  # scroll the list to keep it in view
             request_render()
         _enter_mods = [m for k, m in keys
                        if k in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)]
@@ -3510,6 +3525,12 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # slight blue tint so it reads the same over every category's row tint.
     sel_color = imgui.get_color_u32_rgba(0.88, 0.93, 1.0, 1.0)
     sel_thickness = 1.5
+    # Scroll scrollbar: a slim gutter at the rows' right edge while they
+    # overflow the window (rows narrow by SCROLLBAR_W + SCROLLBAR_GAP then).
+    SCROLLBAR_W, SCROLLBAR_GAP = 4.0, 4.0
+    scrollbar_min_grab_h = 18.0
+    scrollbar_track_color = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.05)
+    scrollbar_grab_color = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.22)
 
     w = (draw_state.content_width - 10) if draw_state and draw_state.content_width else 200
     sm = Melty.style_manager
@@ -3613,10 +3634,14 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             row_layout.append((col_x[k], col_y[k], col_w))
             col_y[k] += ROW_H + ROW_GAP
         content_bottom = max(col_y.values(), default=rows_top)
+        fit_bottom = content_bottom  # rows are capped per category already
     else:
         _ly = rows_top
         _g = None
+        fit_bottom = None  # where the max_vis-th row ends: the auto-fit height
         for i in range(n_rows):
+            if i == max_visible:
+                fit_bottom = _ly  # everything from here scrolls through view
             # A trailing _LoadAllRow (index n_vis) never opens a group label.
             if row_groups and i < n_vis and row_groups[i] != _g:
                 _g = row_groups[i]
@@ -3625,22 +3650,28 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             row_layout.append((x0, _ly, w))
             _ly += ROW_H + ROW_GAP
         content_bottom = _ly
+        if fit_bottom is None:
+            fit_bottom = content_bottom
     content_h = content_bottom - y0
     # Height auto-fit: whenever the CONTENTS change (new query, async text
     # hits landing, a category switch), size the window to fit them. The
     # height is written directly - the wrapper's measured item_rect can't
     # shrink a fixed-size window (children fill against the current height),
     # and we know the exact content extent here anyway: everything above the
-    # dummy (window padding + search box, y0 - abs_top) plus the rows dummy,
-    # plus a bottom pad. Width is never touched - it stays user-sized, and
-    # the signature deliberately ignores wrap changes changes from a width
-    # drag (chip_block_h feeds the height only when contents changed it).
+    # rows (top padding + chip box, y0 - abs_top) plus the rows region plus a
+    # bottom pad. The window fits max_visible rows (every row after "load
+    # all", up to most of the display); rows past its bottom SCROLL in
+    # the rows region below so they are never truncated. Width is never
+    # touched; it stays user-sized, and the signature deliberately ignores
+    # wrap-driven changes from a width drag (chip_block_h feeds the height
+    # only when contents changed too).
     fit_sig = (q, active, n_vis, n_over, fallback, len(label_draws), horiz)
     if fit_sig != input_value._fit_sig:
         input_value._fit_sig = fit_sig
-        new_h = int((y0 - draw_state._abs_top()) + content_h + 10.0)
+        fit_h = (content_bottom if input_value.show_all else fit_bottom) - y0
+        new_h = int((y0 - draw_state._abs_top()) + fit_h + 10.0)
         # A loaded-all list can hold hundreds of rows - cap the auto-fit at
-        # most of the display and let the window scroll through the rest.
+        # most of the display and let the user scroll through the rest.
         disp_h = imgui.get_io().display_size.y
         if disp_h > 0:
             new_h = min(new_h, int(disp_h * 0.8))
@@ -3649,7 +3680,46 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             draw_state._source["height"] = "global search content auto-fit"
             draw_state.invalidate()
             request_render()
-    imgui.dummy(w, content_h)
+    # ---- rows scroll. The rows region is [rows_top, view_bottom): the
+    # window's content bottom (the fit's 10 px pad above the edge, or
+    # wherever the user resized it to). rows_scroll lifts every row / label
+    # by that many px; the wheel (scroll_y_changed) moves it with the
+    # wrapper's speed rule, a highlight change (_follow_sel) scrolls the
+    # highlighted row into view, and it is clamped to the overflow every
+    # frame so stale values self-heal when the rows change. The layout was
+    # built unshifted above so the fit math works in world space; it is
+    # shifted here, once, so every consumer below - group blocks, rows,
+    # embedded row labels, hit-tests, click subs - get the same
+    # coordinates. ----
+    _win_h = (draw_state.height if draw_state.height is not None
+              else int((y0 - draw_state._abs_top()) + content_h + 10.0))
+    view_bottom = draw_state._abs_top() + _win_h - 10.0
+    rows_view_h = max(0.0, view_bottom - rows_top)
+    rows_content_h = content_bottom - rows_top
+    max_scroll = max(0.0, rows_content_h - rows_view_h)
+    if scroll_y_changed is not None:
+        # A wheel tick never jumps more than max_increment_fraction of the
+        # viewport (the wrapper's rule), so a short list can't jump past.
+        _speed = min(Toggles.ScrollSettings.scroll_speed,
+                     Toggles.ScrollSettings.max_increment_fraction * max(1.0, rows_view_h))
+        input_value.rows_scroll -= scroll_y_changed.value * _speed
+    if input_value._follow_sel:
+        input_value._follow_sel = False
+        if row_layout and 0 <= input_value.selected < len(row_layout):
+            _sel_y = row_layout[input_value.selected][1]
+            if _sel_y - input_value.rows_scroll < rows_top:
+                input_value.rows_scroll = _sel_y - rows_top
+            elif _sel_y + ROW_H - input_value.rows_scroll > view_bottom:
+                input_value.rows_scroll = _sel_y + ROW_H - view_bottom
+    input_value.rows_scroll = max(0.0, min(float(input_value.rows_scroll), max_scroll))
+    _scroll = input_value.rows_scroll
+    # Full-width rows leave the scrollbar scrollbar free while the rows overflow.
+    row_w = w - (SCROLLBAR_W + SCROLLBAR_GAP) if max_scroll > 0 else w
+    if _scroll or row_w != w:
+        row_layout = [(bx, by - _scroll, row_w if bw == w else bw)
+                      for bx, by, bw in row_layout]
+        label_draws = [(lx, ly - _scroll, g) for lx, ly, g in label_draws]
+    imgui.dummy(w, max(0.0, view_bottom - y0))
     after_rows = imgui.get_cursor_screen_pos()
 
     # ---- category chips: count per category. The ACTIVE one is a filled
@@ -3684,10 +3754,22 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                     _mix(_category_tint(active), 1.15, sat=text_saturation),
                     f"No {active} Found")
     _counts = store.counts if store is not None else {}
+    # Everything from here to the scrollbar is the ROWS REGION: clipped to
+    # it (a row scrolled half under the chips doesn't paint over them -
+    # Melty.push_clip, never imgui's, which corrupts the tiles), and every
+    # loop skips what lies outside it entirely. Only ~a viewport's worth of
+    # rows make draw calls no matter how long the list is.
+    Melty.push_clip((x0, rows_top, x0 + w, view_bottom))
+
+    def _off_rows(top, bottom):
+        return bottom < rows_top or top > view_bottom
+
     # Group or column labels (precomputed with the row layout) - small and
     # dark in the group's colour ("Top" falls through _category_tint to
     # white).
     for _lx, _ly, _g in label_draws:
+        if _off_rows(_ly, _ly + GROUP_H):
+            continue
         if small_font is not None:
             imgui.push_font(small_font)
         dl.add_text(_lx + 8, _ly + 2.0,
@@ -3709,11 +3791,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             j += 1
         if j == i + 1 or not _hit_own_tint(hit):
             continue  # no children, or no tint of its own -> no block
-        gt = hit.tint() if callable(hit.tint) else hit.tint
         gx, gy, gw = row_layout[i]
         _lx, ly, _lw = row_layout[j - 1]
         if row_layout[j - 1][0] != gx:
             continue  # spans a column break (horizontal All tab)
+        if _off_rows(gy, ly + ROW_H):
+            continue  # scrolled out of the rows region
+        gt = hit.tint() if callable(hit.tint) else hit.tint
         # The block starts just after the row's own icon (the icon stays on
         # the surface, outside the block) and casts a shadow, one step higher
         # per nesting level so an inner block lifts off its outer one.
@@ -3725,16 +3809,20 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                            _mix(gt, group_bg_value + d * group_bg_step), rounding=4.0)
     for idx, hit in enumerate(vis_items):
         bx, ry, bw = row_layout[idx]
+        if _off_rows(ry, ry + ROW_H):
+            continue  # scrolled out of the rows region: no draw, no click test
         sel = (idx == input_value.selected)
         hov = hover_ok and bx <= mx <= bx + bw and ry <= my <= ry + ROW_H
         hot = sel or hov
         if isinstance(hit, _LoadAllRow):
-            # The truncation sentinel: a selectable row where the "+ n more"
-            # label used to sit; activating it loads the whole results set.
+            # The query-cap sentinel (rows scroll, so nothing is hidden for
+            # display - count > 0 comes from an older caller): a selectable
+            # text at the list's end; activating it loads the whole result set.
             dl.add_text(bx + ICON_COL + 8, ry + (ROW_H - line_h) / 2.0,
                         imgui.get_color_u32_rgba(*((0.9, 0.9, 0.9) if hot
                                                    else (0.55, 0.55, 0.55)), 1.0),
-                        f"+ {hit.count} more — load all")
+                        (f"+ {hit.count} more — load all" if hit.count
+                         else "load all results"))
             if sel:
                 dl.add_rect(bx + ICON_COL, ry, bx + bw, ry + ROW_H, sel_color,
                             rounding=4.0, thickness=sel_thickness)
@@ -3870,17 +3958,9 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 text_x += imgui.calc_text_size(_cpre)[0]
             _sw = imgui.calc_text_size(_csuf)[0] if _csuf else 0.0
             _cw = max(60.0, bx + bw - 8 - _sw - (12.0 if _csuf else 0.0) - text_x)
-            # Offscreen row: skip the draw_text call entirely (each one-line
-            # editor body costs real wrapper time - with many rows scrolled
-            # out of the window band it added up) and reserve the space with
-            # a dummy so layout/measure stay identical. _cr_drawn=True keeps
-            # the `parts` fallback from double-drawing the row.
-            _win_top = draw_state.abs_top
-            _win_bot = _win_top + (draw_state.height or 0)
-            if ry + ROW_H <= _win_top or ry >= _win_bot:
-                imgui.set_cursor_screen_pos((text_x, ry))
-                imgui.dummy(_cw, ROW_H)
-                continue
+            # (hits outside the rows region never reach here - the cull at
+            # the loop top skips them, embed included: each one-line editor
+            # tile costs real wrapper time.)
             _cdict, _chost = _row_code_hosts(_cp)
             imgui.set_cursor_screen_pos((text_x, ry))
             try:
@@ -4029,6 +4109,23 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             _activate_hit(hit, store)
             if not hit.keep_open:
                 _dismiss_global_search()
+    # ---- rows scrollbar: track + grab in the gutter the rows left free,
+    # drawn over the rows; a click on the track jumps the grab there (the
+    # wheel and the arrow keys do the rest). ----
+    if max_scroll > 0 and rows_view_h > 0:
+        _track_x = x0 + w - SCROLLBAR_W
+        _grab_h = max(scrollbar_min_grab_h, rows_view_h * rows_view_h / rows_content_h)
+        _grab_y = rows_top + (rows_view_h - _grab_h) * (_scroll / max_scroll)
+        dl.add_rect_filled(_track_x, rows_top, _track_x + SCROLLBAR_W, view_bottom,
+                           scrollbar_track_color, rounding=2.0)
+        dl.add_rect_filled(_track_x, _grab_y, _track_x + SCROLLBAR_W, _grab_y + _grab_h,
+                           scrollbar_grab_color, rounding=2.0)
+        if (click is not None and _track_x - SCROLLBAR_GAP <= click[0] <= x0 + w
+                and rows_top <= click[1] <= view_bottom):
+            _t = (click[1] - rows_top - _grab_h / 2.0) / max(1.0, rows_view_h - _grab_h)
+            input_value.rows_scroll = max(0.0, min(1.0, _t)) * max_scroll
+            request_render()
+    Melty.pop_clip()
     # Value widgets moved the cursor; put it back where the dummy left it so
     # the enclosing layout is unaffected.
     imgui.set_cursor_screen_pos(after_rows)
@@ -4068,6 +4165,12 @@ class GlobalSearch:
     _search_limit = 60  # per-category limit of the current results (lifted by load-all)
     selected = 0  # index (in on-screen order) of the arrow-key highlight
     _snap_sel = False  # one-shot: move `selected` off Code context rows next frame
+    # Fraction the result rows are scrolled up by. Body-managed (the wrapper's
+    # scroll is disabled so the query and chips stay put): the wheel over the
+    # window moves it, a highlight change scrolls it into view
+    # (_follow_sel), and fresh rows reset it. Clamped every frame.
+    rows_scroll = 0.0
+    _follow_sel = False  # one-shot: scroll `selected` into the rows viewport
     _store_adopted = None  # the GlobalSearchStore whose persisted query/_kind we adopted
     show_all = False  # "load all" picked: query + display caps lifted until the query changes
     _fit_sig = None  # last contents signature the height was auto-fit to
@@ -4289,6 +4392,16 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 GlobalSearch.window_ds.invalidate()
         else:
             gs = Core.melty.open_window("GlobalSearch")
+            # Bottom-half rule: wherever the window reappears - the cursor
+            # for a never-placed one, its remembered place otherwise - its top
+            # edge never lands above Toggles.GlobalSearch.summon_min_top_fraction
+            # of the display, so the results always open on the lower half
+            # of the screen. summon_window's own edge clamp still keeps the
+            # whole window on-screen, so a taller-than-half window settles a
+            # little above the line rather than hanging off the top.
+            _disp_h = imgui.get_io().display_size.y
+            _min_top = (_disp_h * Toggles.GlobalSearch.summon_min_top_fraction
+                        if _disp_h > 0 else 0.0)
             # "Never used" = no size yet (never rendered) OR window_pos still
             # at the (0, 0) default. a draw_state that didn't survive a past
             # session reloads at the top-left default, and opening it there is
@@ -4299,7 +4412,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             if gs is not None and (not gs.width or not _wp
                                    or tuple(_wp) == (0, 0)):
                 mx, my = imgui.get_mouse_pos()
-                Core.melty.summon_window(gs, mx, my - 65)
+                Core.melty.summon_window(gs, mx, max(my - 65, _min_top))
+            elif gs is not None:
+                _gx = gs.abs_left if gs.abs_left is not None else _wp[0]
+                _gy = gs.abs_top if gs.abs_top is not None else _wp[1]
+                if _gy < _min_top:
+                    Core.melty.summon_window(gs, _gx, _min_top)
             GlobalSearch._focus_requested = True
         request_render()
 

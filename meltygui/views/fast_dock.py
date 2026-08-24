@@ -116,7 +116,7 @@ def _floor_value(rgb, min_value):
 
 
 @render_func(use_cache=True, selectable=False, show_add_delete=False, is_tree=False,
-             show_name=False, searchable=True, shadow=True, tint=(0.24, 0.75, 0.68))
+             show_name=False, searchable=True, shadow=True)
 def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=False,
                    left_mouse_down=False, search_text="", **kwargs):
     # input_value is Melty.registered_windows - a plain defaultdict - so there
@@ -125,8 +125,8 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # ---- styling ----
     open_bg_value, open_text_value = 0.16, 1.357          # name button, window open
     open_factor, open_saturation = 0.659, 1.315
-    closed_bg_value, closed_text_value = 0.045, 0.341     # name button, window closed
-    closed_factor, closed_saturation = 0.90, 1.091
+    closed_bg_value, closed_text_value = 0.045, 0.463     # name button, window closed
+    closed_factor, closed_saturation = 0.50, 0.974
     target_bg_value, target_text_value = 0.103, 1.269     # summon button
     target_factor, target_saturation = 0.799, 0.764
     hover_bg_boost, hover_text_boost = 0.05, 1.5
@@ -300,15 +300,22 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
         text_color = _mix(style_manager, tint,
                           text_value + (hover_text_boost if name_hovered else 0.0),
                           factor, text_saturation)
+        # Legibility floor on the text's hsv value: a dark window tint would
+        # otherwise scale it toward black. Change the floors in Toggles.FastDock.
+        text_color = _floor_value(text_color, Toggles.FastDock.active_text_min_brightness if is_open
+                                  else Toggles.FastDock.inactive_text_min_brightness)
         if is_open:
-            text_color = _floor_value(text_color, Toggles.FastDock.active_text_min_brightness)
             # Shadow under the open row's name button - a standalone depth
             # mark (rows aren't draw_states the compositor can see). Clipped
             # to the dock's rect: partially scrolled rows still draw here.
             add_shadow((name_left, row_top, name_right - name_left, row_height), offset=11,
                        corner_radius=corner, clip=clip)
-        draw_list.add_rect_filled(name_left, row_top, name_right, row_bottom,
-                                  _color_u32(bg_color), rounding=corner)
+            
+        # [tint=(0.444, 0.427, 0.393, 1.0), show_tint=True]
+        show_inactive_bg = False
+        if is_open or show_inactive_bg:
+            draw_list.add_rect_filled(name_left, row_top, name_right, row_bottom,
+                                      _color_u32(bg_color), rounding=corner)
 
         if is_match:
             highlight_rects.append((row_top, row_bottom, is_current))
