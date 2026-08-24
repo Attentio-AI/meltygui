@@ -180,4 +180,7 @@ def claude_fim(req: FimRequest, session: ClaudeSession, model="claude-opus-5",
     if final is not None and getattr(final, "stop_reason", None) == "refusal":
         return FimResult("", provider="claude")
     text = clean_completion("".join(acc), suffix)
-    return FimResult(text, provider="claude")
+    # Only "max_tokens" means the model was cut off (continue on Tab). "end_sequence"
+    # / "stop_sequence" is a natural finish - don't auto-emit another suggestion.
+    truncated = getattr(final, "stop_reason", None) == "max_tokens"
+    return FimResult(text, provider="claude", truncated=truncated)

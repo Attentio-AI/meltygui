@@ -280,6 +280,10 @@ class FimResult:
     alternatives: tuple = ()         # other candidates' full text
     token: Any = None                # arbitrary, handed back to the provider's _on_accept
     provider: str = ""
+    truncated: bool = False           # the model hit the token limit (more to come) or
+                                     # finished on a stop token. Only a truncated
+                                     # completion is auto-continued when the buffer
+                                     # drains - its natural stop is the end.
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1076,7 +1080,10 @@ class FimState:
             self.alternatives = tuple(result.alternatives) if result is not None else ()
             self._vtext = self._vtext[:origin] + text
             self._vcursor = min(self._vcursor, len(self._vtext))
-            if not text:
+            # A continuation is fetched ONLY when the model was cut off by the
+            # token limit (truncated). A natural stop-text end - or an empty
+            # reply - is the end: don't queue another request behind it.
+            if not text or not getattr(result, "truncated", False):
                 self._exhausted = True
         fn, _ = self._provider()
         hook = getattr(fn, "_on_shown", None)

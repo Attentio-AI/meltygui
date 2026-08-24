@@ -25,6 +25,7 @@ one thing that can sit exactly where the pointer is. Only the drag box
 import glfw
 import imgui
 
+from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -80,6 +81,8 @@ def _set_tool_cursor(on):
             RegionScreenshot.cursor = glfw.create_cursor(img, hot, hot)
         glfw.set_cursor(window, RegionScreenshot.cursor if on else None)
         RegionScreenshot.cursor_set = on
+        # Keep the per-frame shape push (mouse_cursor.apply) from our image.
+        mouse_cursor.note_external_cursor(on)
     except Exception as e:
         print(f"region_screenshot: cursor swap failed: {e}")
 

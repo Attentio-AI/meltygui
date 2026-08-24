@@ -8,9 +8,12 @@ kind "ollama"). The account also carries the DEVICE the model should live
 on (`device`: "auto" | "cpu" | "gpu:N" in Ollama's own GPU numbering) —
 every request passes it as llama.cpp options (`main_gpu` / `num_gpu: 0`),
 which is how Ollama decides placement (verified 2026-08-22: main_gpu=2 put
-the model on the H100). Ollama numbers GPUs in CUDA-runtime order, NOT
-nvidia-smi order; `gpu_inventory()` joins the two through PCI bus ids so
-the UI can name them and show where a loaded model sits.
+the model on the H100). Ollama numbers GPUs in CUDA-runtime order —
+`gpu_inventory()` reads that order (names + live memory) from `torch.cuda`,
+which shares the process's already-initialized CUDA runtime and is thread-
+safe, so the probe never spins up a second CUDA context (a bare
+`pycuda.driver.init()` on a probe thread could race the render thread's GL
+context at boot and hang the load) and never shells out to nvidia-smi.
 """
 from __future__ import annotations
 
@@ -234,7 +237,7 @@ def ollama_fim(req: FimRequest, session: OllamaSession, model="qwen2.5-coder:7b"
     acc = []
     try:
         try:
-            _generate(session, payload, req, acc)
+            reason = _generate(session, payload, req, acc)
         except _Unsupported as e:
             # Not a FIM model - retry prefix-only (and with thinking off for a
             # reasoning model, whose output would otherwise all be thinking).
@@ -242,22 +245,25 @@ def ollama_fim(req: FimRequest, session: OllamaSession, model="qwen2.5-coder:7b"
             # provider still works; the status says so.
             if "insert" in e.what:
                 payload.pop("suffix", None)
+            reason = None
             if "insert" in e.what or "think" in e.what:
                 payload["think"] = False
                 try:
-                    _generate(session, payload, req, acc)
+                    reason = _generate(session, payload, req, acc)
                 except _Unsupported as e2:
                     if "think" not in e2.what:
                         raise
                     payload.pop("think", None)
-                    _generate(session, payload, req, acc)
+                    reason = _generate(session, payload, req, acc)
             session._status = ("ready", f"{model}: no FIM support, prefix-only")
-            return FimResult("".join(acc), provider="ollama")
+            return FimResult("".join(acc), provider="ollama", truncated=(reason == "length"))
     except Exception as e:
         session._status = ("error", str(e))
         raise
     session._status = ("ready",)
-    return FimResult("".join(acc), provider="ollama")
+    # done_reason "length" = hit num_predict (more to come → continue on Tab);
+    # "stop" = the model emitted an end token (done, don't auto-continue).
+    return FimResult("".join(acc), provider="ollama", truncated=(reason == "length"))
 
 
 class _Unsupported(RuntimeError):
@@ -268,10 +274,12 @@ class _Unsupported(RuntimeError):
 
 def _generate(session, payload, req, acc):
     """Stream one /api/generate call into `acc` (list of pieces), emitting
-    the running text. Raises _Unsupported for the model-capability errors
-    ("does not support insert/thinking") so the caller can adapt."""
+    the running text. Returns the final `done_reason` ("stop" | "length" |
+    None). Raises _Unsupported for the model-capability errors ("does not
+    support insert/thinking") so the caller can adapt."""
     acc.clear()
     saw_thinking = False
+    done_reason = None
     with session.client.stream("POST", "/api/generate", json=payload) as resp:
         if resp.status_code != 200:
             body = resp.read().decode("utf-8", "replace")[:300]
@@ -299,9 +307,11 @@ def _generate(session, payload, req, acc):
                 acc.append(piece)
                 req.emit("".join(acc))
             if msg.get("done"):
+                done_reason = msg.get("done_reason")
                 break
     if saw_thinking and not acc and "think" not in payload and not req.cancelled.is_set():
         # A reasoning model spent the entire budget thinking (happens when the
         # suffix is empty, so Ollama didn't reject the insert) - retry with
         # thinking off so the tokens go to the completion.
         raise _Unsupported("thinking consumed the budget")
+    return done_reason

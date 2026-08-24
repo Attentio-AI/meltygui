@@ -108,6 +108,7 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
+    @defaults(tint=(0.851, 0.906, 0.845))
     def checkbox_outline():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
         active_hsv = style_manager.hsv
@@ -1304,10 +1305,16 @@ class Toggles:
         # Per-category cap for the horizontal layout's columns (replaces
         # all_tab_per_category there - columns have the vertical room).
         all_tab_horizontal_per_category = 15
+        # Seconds a keystroke must sit unchanged before a search pass runs
+        # (the exact pass and the full-text trigram pass share this; tab
+        # switches and load-all skip this - no text changed). Typing pays
+        # nothing on the render thread: the passes run on a background
+        # worker (_kick_search) and repaint when their hits arrive.
+        input_debounce_s = 0.15
         # Seconds the query must sit unchanged before the typo-tolerant
-        # (fuzzy) CodeSearch runs. Typing only pays the 0.2 ms exact pass;
-        # fuzzy hits arrive afterwards as a trailing stream, never moving
-        # the rows already shown.
+        # (fuzzy) Code pass runs (measured from the keystroke, so the worker
+        # sleeps the remainder of input_debounce_s). Fuzzy hits arrive as
+        # a trailing section, never moving the hits already shown.
         fuzzy_debounce_s = 0.2
 
     @defaults(tint=(0.47, 0.463, 0.417))
@@ -1615,7 +1622,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     show_filled_tiles = False

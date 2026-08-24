@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 import imgui
 
+from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -328,7 +329,8 @@ def window_edge_pass(window):
         rect = (x - EDGE_GRAB_WIDTH / 2, win_y,
                 x + EDGE_GRAB_WIDTH / 2, win_y + window.height)
         drag = window.on_action("left_mouse_drag", view_id=f"win_edge_{k}",
-                                rect=rect, priority_delta=1)
+                                rect=rect, priority_delta=1,
+                                cursor=mouse_cursor.RESIZE_EW)
         if not drag:
             continue
         active = k
@@ -442,7 +444,7 @@ def edge_under_cursor(window, cursor_x_window, cursor_y_abs, left=False):
     Returns the nearest edge dict strictly to the RIGHT of the cursor among
     the rows whose visible band vertically contains the cursor — i.e. the
     right edge of the INNERMOST column under the cursor. With ``left=True``
-    (the ctrl+right-drag top-left corner resize) it's the nearest edge
+    (the left+right-drag top-left corner resize) it's the nearest edge
     strictly to the LEFT instead. Every window registers its own frame edges
     (``window.id`` entry, full-window span), so a window with NO columns — or
     a drag in the outermost column — lands on the window's frame edge on
@@ -646,7 +648,8 @@ class ColumnLayout:
                     self.edge_hovered = True
                 drag = draw_state.on_action("left_mouse_drag",
                                             view_id=f"col_edge_{k}",
-                                            rect=rect, priority_delta=1)
+                                            rect=rect, priority_delta=1,
+                                            cursor=mouse_cursor.RESIZE_EW)
 
                 if not drag:
                     continue

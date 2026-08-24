@@ -1,6 +1,7 @@
 import difflib
 import inspect
 import time
+import threading
 import traceback
 import types
 import zlib
@@ -15,6 +16,7 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
+from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.events.input_handler import ALL_ACTIONS
 from src.lsd.gl_gui.render_funcs import RenderFuncs
@@ -1776,8 +1778,12 @@ def render_func(*args, **o_kwargs):
                 draw_state.window_pos = (0, 0)
 
             # The right-drag (corner_drag) drives the resize block below: a
-            # plain right-drag drags the BOTTOM-RIGHT corner, ctrl+right-drag
-            # drags the TOP-LEFT corner instead. Initialised to None so the
+            # plain right-drag drags the BOTTOM-RIGHT corner, left+right-drag
+            # (left button held too) drags the TOP-LEFT corner instead - the
+            # left press is a CHORD there (input_handler.feed_down: pressed
+            # while right is held it dispatches nothing, is_down reads it), so
+            # it can be pressed/released freely mid-drag to switch corners.
+            # Initialised as None so the
             # window-move press block further down can still check whether a
             # right-drag resize is in flight (auto-resize windows have no
             # resize handle, so corner_drag stays None for them).
@@ -1789,13 +1795,14 @@ def render_func(*args, **o_kwargs):
                 from src.lsd.gl_gui.view.core_views import columns as _columns
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
-                                                   rect=corner_rect, priority_delta=1)
+                                                   rect=corner_rect, priority_delta=1,
+                                                   cursor=mouse_cursor.RESIZE_NWSE)
 
                 corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
-                # A right-drag always resizes; ctrl only selects WHICH corner
-                # (read per frame in the drag block below - tapping ctrl
-                # mid-drag flips corners live, with a baseline rebase there
-                # to the handoff seamless).
+                # A right-drag always resizes; the held LEFT button only
+                # selects the corner (read per frame in the drag block below
+                # - pressing/releasing left mid-drag flips corners live, with
+                # a baseline rebase there keeping the handoff seamless).
                 if handle_drag is None and corner_drag is not None:
                     handle_drag = corner_drag
 
@@ -1839,26 +1846,34 @@ def render_func(*args, **o_kwargs):
                         draw_state._initial_window_pos_resize = None
 
                 if handle_drag and not auto_resize:
+                    # Both corners lie on the NWSE diagonal. The (imgui)
+                    # shape as the right-drag has a grab rect to hang a
+                    # subscription cursor on, and this block runs every frame
+                    # of the drag.
+                    imgui.set_mouse_cursor(mouse_cursor.RESIZE_NWSE)
                     # Which corner this drag is currently dragging, read from
-                    # .ctrl per frame: plain right-drag (and the corner
-                    # handle) drags the BOTTOM-RIGHT corner, ctrl+right-drag
-                    # drags the TOP-LEFT corner - left column edge + window
-                    # top, same collision rules. Tapping ctrl mid-drag flips
-                    # the corner live: both modes state size/pos as
+                    # the LEFT button's level state per frame: plain
+                    # right-drag (and the corner handle) drags the
+                    # BOTTOM-RIGHT corner, left+right-drag drags the TOP-LEFT
+                    # corner - left column edge + window top, same collision
+                    # rules. The left press is a chord (never dispatched, see
+                    # input_handler.feed_down), so is_down is the only trace
+                    # of it. Pressing/releasing left mid-drag flips the
+                    # corner live: both modes state size/pos as
                     # baseline ± total_d, so on a flip the baseline is
                     # rebased around the CURRENT size/pos/total and the two
                     # formulas hand off with zero jump; the column edge is
                     # re-latched for the new side against the CURRENT cursor
                     # (the gesture-start latch below uses the press point).
-                    ctrl_now = bool(handle_drag is corner_drag
-                                    and getattr(handle_drag, "ctrl", False))
+                    top_left_now = bool(handle_drag is corner_drag
+                                        and Melty.event_handler.is_down("left_mouse"))
                     from_top_left = getattr(draw_state, "_resize_from_top_left", None)
                     if from_top_left is None:
-                        from_top_left = ctrl_now
-                        draw_state._resize_from_top_left = ctrl_now
-                    elif ctrl_now != from_top_left:
-                        from_top_left = ctrl_now
-                        draw_state._resize_from_top_left = ctrl_now
+                        from_top_left = top_left_now
+                        draw_state._resize_from_top_left = top_left_now
+                    elif top_left_now != from_top_left:
+                        from_top_left = top_left_now
+                        draw_state._resize_from_top_left = top_left_now
                         if from_top_left:
                             # size = init + total from here on; pos follows
                             # bottom-fixed = init_pos + (init_size - size).
@@ -1934,10 +1949,10 @@ def render_func(*args, **o_kwargs):
                                 + (draw_state._initial_window_size[1] - new_h))
 
                     if passed_width is None:
-                        # A right-drag (corner_drag) retargets the width from a
-                        # COLUMN edge latched once on drag starts: plain drag
-                        # uses the edge to the cursor's RIGHT, ctrl (top-left
-                        # mode) the edge to its LEFT. The bottom-right edge
+                        # A right-drag (corner_drag) retargets the width to a
+                        # COLUMN edge latched once at drag start: plain drag
+                        # takes the edge to the cursor's RIGHT, left held
+                        # (top-left-d) the edge to its LEFT. The bottom-right corner
                         # HANDLE (left-drag) always resizes the window frame
                         # directly. The latched edge - typically the window's
                         # own frame edge - is queued onto the window's
@@ -2224,10 +2239,14 @@ def render_func(*args, **o_kwargs):
                     # here lost the press to any child that subscribed to it, which
                     # is exactly the inconsistency this replaces.
 
-                    # (ctrl+right-drag used to move the window here; it now
-                    # drags the top-right corner in the resize block above, so
-                    # window moves are left-drag only.)
-                    move_drag = on_drag
+                    # Window moves are left-drag only (left+right-drag drags
+                    # the top-left corner in the resize handler above). While a
+                    # right-drag resize is in flight the left button is its
+                    # corner chord, never a move - the handler swallows the
+                    # chorded press, so on_drag can't normally arrive here at
+                    # the same time as corner_drag; discard anyway so a lost
+                    # release doesn't make the two fight over window_pos.
+                    move_drag = on_drag if corner_drag is None else None
 
                     if move_drag and not imgui_active:
                         if draw_state._initial_window_pos is None:
@@ -3896,7 +3915,8 @@ def render_func(*args, **o_kwargs):
                     event_names = [e for e in event_names if e in kwargs]
                     Melty.event_handler.register_hovered(tile_id, event_names, priority - 3, tile_id,
                                                          selected=draw_state.selected,
-                                                         blocker=closable)
+                                                         blocker=closable,
+                                                         cursor=kwargs.get("mouse_cursor"))
 
                 ###########################################################
                 kwargs['next_kwargs'] = kwargs
@@ -5312,7 +5332,18 @@ def render_func_kwarg_names():
         _rf_kwarg_names_cache = sorted(names - _RF_KWARG_EXCLUDE)
     return _rf_kwarg_names_cache
 
-render_func_kwarg_names()
+# Warm the cache off the launch-critical path: inspect.getsource on the
+# ~4700-line wrapper plus the AST walk is ~a third of the whole project-import
+# cascade when run inline here - and an immediate thread just timeshares the
+# GIL with the remaining imports (measured: no help). The 1s delay lets the
+# cascade finish first; this scan then lands long before any human can open a
+# context menu. It is idempotent and only sets the module global, so a
+# consumer that arrives first simply computes inline - never wrong, never
+# blocked. Hotswap reexec arms a fresh timer; the recompute is by design
+# (the cache resets so code edits show up).
+_rf_warm_timer = threading.Timer(1.0, render_func_kwarg_names)
+_rf_warm_timer.daemon = True
+_rf_warm_timer.start()
 
 
 def begin_window(unique_id, *args, **kwargs):

@@ -21,7 +21,7 @@ editable fields, its action buttons and any extra rows (a device-code card,
 the Ollama model list).
 
 Layout: every row measures its buttons FIRST; if the text would be left
-less than MIN_TEXT_W the buttons wrap onto a second line inside the row
+less than min_text_width the buttons wrap onto a second line inside the row
 (the row grows), otherwise status text is ellipsized to what's left — so
 nothing ever overlaps at any window width.
 """
@@ -42,41 +42,9 @@ from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
+# Where the store lives on disk - a data file, not a styling knob; shared
+# by the store methods, the footer row, and the tests' monkeypatch.
 ACCOUNTS_PATH = Path.home() / ".lsd" / "accounts.json"
-
-# Row metrics at ui_scale 1.0 (scaled through Melty.px per frame).
-ROW_H = 34.0
-ROW_GAP = 6.0
-PAD_X = 10.0
-CORNER = 6.0
-BTN_H = 24.0
-BTN_PAD_X = 10.0
-BTN_GAP = 6.0
-SUB_H = 30.0          # secondary rows (field editors, device-code card, model rows)
-KIND_HEAD_H = 26.0
-MIN_TEXT_W = 150.0    # below this the buttons wrap to their own line
-TEXT_INSET = 30.0     # label x inset (after the status lamp)
-
-# Glyphs verified against resources/fontawesome-webfont.ttf (FA 4.x subset).
-ICON_TRASH = ""
-ICON_REFRESH = ""
-ICON_EJECT = ""
-ICON_CHEVRON_R = ""
-ICON_CHEVRON_D = ""
-ICON_PLUS = ""
-ICON_KEY = ""
-ICON_PASTE = ""
-ICON_POWER = ""
-ICON_CHIP = ""
-
-STATE_TINTS = {
-    "ready": (0.35, 0.85, 0.45),
-    "busy": (0.85, 0.75, 0.35),
-    "needs_login": (0.95, 0.65, 0.25),
-    "warning": (0.95, 0.7, 0.3),
-    "error": (0.95, 0.35, 0.35),
-    "unknown": (0.55, 0.58, 0.65),
-}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -101,92 +69,102 @@ class AccountStore(dict):
             try:
                 if ACCOUNTS_PATH.exists():
                     data = json.loads(ACCOUNTS_PATH.read_text())
-                    for acct in data.get("accounts", []):
-                        if isinstance(acct, dict) and acct.get("id") and acct.get("kind") in KINDS:
-                            self[acct["id"]] = acct
+                    for entry in data.get("accounts", []):
+                        if isinstance(entry, dict) and entry.get("id") and entry.get("kind") in KINDS:
+                            self[entry["id"]] = entry
                 self.error = None
-            except Exception as e:
-                self.error = f"accounts.json: {e}"
+            except Exception as error:
+                self.error = f"accounts.json: {error}"
             self.loaded = True
         # default accounts so every kind has a row to act on: the id is the
         # kind name ("anthropic", "copilot", "ollama"); sessions asking for
         # account="default" resolve to it (see `account`).
         for kind in KINDS.values():
-            if not any(a.get("kind") == kind.name for a in self.values()):
+            if not any(entry.get("kind") == kind.name for entry in self.values()):
                 self.add(kind.name, account_id=kind.name, save=False)
-            for a in self.of_kind(kind.name):
-                for f in kind.fields:
-                    a.setdefault(f.name, f.default)
+            for entry in self.of_kind(kind.name):
+                for field in kind.fields:
+                    entry.setdefault(field.name, field.default)
         return self
 
     def save(self):
         with self._lock:
-            data = {"accounts": [{k: v for k, v in a.items() if not k.startswith("_")}
-                                 for a in self.values()]}
+            data = {"accounts": [{key: value for key, value in entry.items()
+                                  if not key.startswith("_")}
+                                 for entry in self.values()]}
             try:
                 ACCOUNTS_PATH.parent.mkdir(parents=True, exist_ok=True)
                 tmp = ACCOUNTS_PATH.with_suffix(".json.tmp")
-                with open(tmp, "w") as f:
-                    f.write(json.dumps(data, indent=2))
+                with open(tmp, "w") as file:
+                    file.write(json.dumps(data, indent=2))
                 os.chmod(tmp, stat.S_IRUSR | stat.S_IWUSR)
                 os.replace(tmp, ACCOUNTS_PATH)
                 self.error = None
-            except Exception as e:
-                self.error = f"accounts.json: {e}"
+            except Exception as error:
+                self.error = f"accounts.json: {error}"
 
     def add(self, kind_name, account_id=None, save=True, **fields):
         kind = KINDS[kind_name]
         if account_id is None:
-            n = 2
-            while f"{kind_name}-{n}" in self:
-                n += 1
-            account_id = f"{kind_name}-{n}"
-        acct = {"id": account_id, "kind": kind_name,
-                "label": fields.pop("label", None) or kind.default_label(account_id)}
-        for f in kind.fields:
-            acct[f.name] = fields.get(f.name, f.default)
-        self[account_id] = acct
+            suffix = 2
+            while f"{kind_name}-{suffix}" in self:
+                suffix += 1
+            account_id = f"{kind_name}-{suffix}"
+        entry = {"id": account_id, "kind": kind_name,
+                 "label": fields.pop("label", None) or kind.default_label(account_id)}
+        for field in kind.fields:
+            entry[field.name] = fields.get(field.name, field.default)
+        self[account_id] = entry
         if save:
             self.save()
         accounts_changed()
-        return acct
+        return entry
 
     def remove(self, account_id):
-        acct = self.pop(account_id, None)
-        if acct is not None:
-            _drop_sessions_for(acct)
+        entry = self.pop(account_id, None)
+        if entry is not None:
+            _drop_sessions_for(entry)
             self.save()
             accounts_changed()
 
     def set_field(self, account_id, field, value, reprobe=True):
-        acct = self.get(account_id)
-        if acct is None or acct.get(field) == value:
+        entry = self.get(account_id)
+        if entry is None or entry.get(field) == value:
             return
-        acct[field] = value
+        entry[field] = value
         if reprobe:
-            acct["_status"] = None       # stale - re-probe
-            acct.pop("_validated", None)  # credential changed → re-verify with Test
-            _drop_sessions_for(acct)     # live sessions hold the old credential
+            entry["_status"] = None        # stale → re-probe
+            entry.pop("_validated", None)  # credential changed → re-verify with Test
+            _drop_sessions_for(entry)      # live sessions hold the old credential
         self.save()
         accounts_changed()
 
     def of_kind(self, kind_name):
-        return sorted((a for a in self.values() if a.get("kind") == kind_name),
-                      key=lambda a: (a["id"] != kind_name, a["id"]))
+        return sorted((entry for entry in self.values() if entry.get("kind") == kind_name),
+                      key=lambda entry: (entry["id"] != kind_name, entry["id"]))
 
 
 accounts = AccountStore()
 
+# Hotswap-safe: keep the live store object (and its file) across re-exec.
+# Sits right after the fresh instance so everything below - the KINDS default
+# fill and the @window registration included - binds the LIVE store, never
+# the throwaway one this re-exec just built.
+_previous_store = Melty.__dict__.get("_internet_accounts_store")
+if _previous_store is not None and _previous_store is not accounts:
+    accounts = _previous_store
+Melty._internet_accounts_store = accounts
 
-def is_default(acct) -> bool:
-    return acct.get("id") == acct.get("kind")
+
+def is_default(account) -> bool:
+    return account.get("id") == account.get("kind")
 
 
-def session_account_id(acct) -> str:
+def session_account_id(account) -> str:
     """The `account=` value a session uses for this account — "default" for
     a kind's default entry, so the UI and the providers' default profiles
     pool the SAME session."""
-    return "default" if is_default(acct) else acct["id"]
+    return "default" if is_default(account) else account["id"]
 
 
 def account(kind_name, account_id="default"):
@@ -196,18 +174,18 @@ def account(kind_name, account_id="default"):
         accounts.load()
     if account_id in ("default", None, ""):
         account_id = kind_name
-    acct = accounts.get(account_id)
-    if acct is not None and acct.get("kind") == kind_name:
-        return acct
+    entry = accounts.get(account_id)
+    if entry is not None and entry.get("kind") == kind_name:
+        return entry
     return None
 
 
 def account_field(kind_name, account_id, field, default=None):
-    acct = account(kind_name, account_id)
-    if acct is None:
+    entry = account(kind_name, account_id)
+    if entry is None:
         return default
-    v = acct.get(field)
-    return v if v not in (None, "") else default
+    value = entry.get(field)
+    return value if value not in (None, "") else default
 
 
 def accounts_changed():
@@ -218,22 +196,22 @@ def accounts_changed():
         pass
     try:
         from src.lsd.gl_gui.fim import _wake
-        _wake(_window_ds)
+        _wake(_window_draw_state)
     except Exception:
         pass
 
 
-_window_ds = None
+_window_draw_state = None   # draw_internet_accounts' draw_state - the wake target
 
 
-def _drop_sessions_for(acct):
+def _drop_sessions_for(account_entry):
     """Close pooled FIM sessions built on this account so the next request
     re-acquires with the new credential."""
-    ids = {acct.get("id"), session_account_id(acct)}
+    ids = {account_entry.get("id"), session_account_id(account_entry)}
     try:
         from src.lsd.gl_gui import fim
-        fim.drop_sessions(lambda s: getattr(s, "account", None) in ids
-                          and getattr(s, "KIND", None) == acct.get("kind"))
+        fim.drop_sessions(lambda session: getattr(session, "account", None) in ids
+                          and getattr(session, "KIND", None) == account_entry.get("kind"))
     except Exception:
         pass
 
@@ -257,11 +235,11 @@ class Field:
 class Button:
     """One action on a row. `icon` draws a square icon-only button (with
     `tip` as the hover hint); `label` a text button."""
-    __slots__ = ("label", "fn", "primary", "icon", "tip", "enabled", "danger")
+    __slots__ = ("label", "on_click", "primary", "icon", "tip", "enabled", "danger")
 
-    def __init__(self, label, fn, primary=False, icon=None, tip="", enabled=True, danger=False):
+    def __init__(self, label, on_click, primary=False, icon=None, tip="", enabled=True, danger=False):
         self.label = label
-        self.fn = fn
+        self.on_click = on_click
         self.primary = primary
         self.icon = icon
         self.tip = tip
@@ -288,22 +266,24 @@ class AccountKind:
     def default_label(self, account_id):
         return self.label if account_id == self.name else f"{self.label} ({account_id})"
 
-    def status(self, acct):
-        """(state, text) from the cached probe; state ∈ STATE_TINTS."""
-        st = acct.get("_status")
-        if st is None:
+    def status(self, account):
+        """(state, text) from the cached probe; state is one of the
+        state_tints keys in draw_internet_accounts ("ready", "busy",
+        "needs_login", "warning", "error", "unknown")."""
+        status = account.get("_status")
+        if status is None:
             return ("unknown", "…")
-        return st
+        return status
 
-    def probe(self, acct):
+    def probe(self, account):
         """Worker thread: return (state, text). May touch the network."""
         return ("unknown", "")
 
-    def actions(self, acct):
+    def actions(self, account):
         """[Button] — buttons on the row, left to right."""
         return []
 
-    def sub_rows(self, acct):
+    def sub_rows(self, account):
         """Extra rows under the account: ("code", (user_code, url)) |
         ("model", model dict) | ("note", text)."""
         return []
@@ -313,139 +293,148 @@ class AccountKind:
 class AnthropicKind(AccountKind):
     name = "anthropic"
     label = "Anthropic"
-    icon = ""
+    icon = f""
     tint = (0.85, 0.55, 0.35)
     fields = (Field("api_key", "API key", secret=True, placeholder="sk-ant-…"),
               Field("base_url", "Base URL", placeholder="(default)"))
 
     @staticmethod
     def _profile_present():
-        d = Path(os.environ.get("ANTHROPIC_CONFIG_DIR") or (Path.home() / ".config" / "anthropic"))
-        return (d / "credentials").is_dir() and any((d / "credentials").glob("*.json"))
+        config_dir = Path(os.environ.get("ANTHROPIC_CONFIG_DIR")
+                          or (Path.home() / ".config" / "anthropic"))
+        return (config_dir / "credentials").is_dir() and any((config_dir / "credentials").glob("*.json"))
 
-    def _source(self, acct):
-        key = acct.get("api_key") or ""
+    def _source(self, account):
+        key = account.get("api_key") or ""
         if key:
             return f"key …{key[-4:]}"
-        if is_default(acct) and os.environ.get("ANTHROPIC_API_KEY"):
+        if is_default(account) and os.environ.get("ANTHROPIC_API_KEY"):
             return "env ANTHROPIC_API_KEY"
-        if is_default(acct) and os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+        if is_default(account) and os.environ.get("ANTHROPIC_AUTH_TOKEN"):
             return "env ANTHROPIC_AUTH_TOKEN"
-        if is_default(acct) and self._profile_present():
+        if is_default(account) and self._profile_present():
             return "ant auth profile"
         return None
 
-    def probe(self, acct):
+    def probe(self, account):
         # Passive probe: NO network (and no `import anthropic`). Just report
         # whether a credential exists - the studio should not fire a web
         # request or import the SDK at startup just to show status. The
         # "Test" button (below) does the one real network check on demand.
-        source = self._source(acct)
+        source = self._source(account)
         if source is None:
             return ("needs_login", "no credentials — paste an API key")
-        if acct.get("_validated"):
+        if account.get("_validated"):
             return ("ready", f"{source} · verified")
         return ("ready", source)
 
-    def validate(self, acct):
+    def validate(self, account):
         """The Test button: the ONLY Anthropic web request — list one model
         to confirm the key works. Imports the SDK lazily."""
-        source = self._source(acct) or "?"
+        source = self._source(account) or "?"
         try:
             import anthropic
-            kw = {"timeout": 15.0, "max_retries": 0}
-            if acct.get("api_key"):
-                kw["api_key"] = acct["api_key"]
-            if acct.get("base_url"):
-                kw["base_url"] = acct["base_url"]
-            client = anthropic.Anthropic(**kw)
+            client_kwargs = {"timeout": 15.0, "max_retries": 0}
+            if account.get("api_key"):
+                client_kwargs["api_key"] = account["api_key"]
+            if account.get("base_url"):
+                client_kwargs["base_url"] = account["base_url"]
+            client = anthropic.Anthropic(**client_kwargs)
             client.models.list(limit=1)
             client.close()
-            acct["_validated"] = True
-            acct["_status"] = ("ready", f"{source} · verified")
+            account["_validated"] = True
+            account["_status"] = ("ready", f"{source} · verified")
         except ImportError:
-            acct["_status"] = ("error", "anthropic package not installed")
-        except Exception as e:
-            acct["_validated"] = False
-            msg = getattr(e, "message", None) or str(e)
-            acct["_status"] = ("error", f"{source} · {msg[:90]}")
+            account["_status"] = ("error", "anthropic package not installed")
+        except Exception as error:
+            account["_validated"] = False
+            message = getattr(error, "message", None) or str(error)
+            account["_status"] = ("error", f"{source} · {message[:90]}")
         accounts_changed()
 
-    def actions(self, acct):
-        return [Button("Paste key", lambda a: _paste_into(a, "api_key"), primary=True),
+    def actions(self, account):
+        return [Button("Paste key", lambda account: _paste_into(account, "api_key"), primary=True),
                 Button("Edit", _toggle_edit),
-                Button("Test", lambda a: _run_bg(a, lambda: self.validate(a), reprobe=False),
-                       tip="Verify the key (one web request)", enabled=self._source(acct) is not None),
-                Button("Clear", lambda a: accounts.set_field(a["id"], "api_key", ""),
-                       enabled=bool(acct.get("api_key")))]
+                Button("Test",
+                       lambda account: _run_in_background(
+                           account, lambda: self.validate(account), reprobe=False),
+                       tip="Verify the key (one web request)",
+                       enabled=self._source(account) is not None),
+                Button("Clear", lambda account: accounts.set_field(account["id"], "api_key", ""),
+                       enabled=bool(account.get("api_key")))]
 
 
 @account_kind
 class CopilotKind(AccountKind):
     name = "copilot"
     label = "GitHub Copilot"
-    icon = ""
+    icon = f""
     tint = (0.45, 0.6, 0.85)
-    fields = (Field("config_dir", "Config dir", placeholder="(default ~/.config — shared with the IDE plugins)"),)
+    fields = (Field("config_dir", "Config dir",
+                    placeholder="(default ~/.config — shared with the IDE plugins)"),)
 
-    def _session(self, acct, create=True):
+    def _session(self, account, create=True):
         from src.lsd.gl_gui import fim
         from src.lsd.gl_gui.fim_providers.copilot import CopilotSession
-        kw = {"account": session_account_id(acct)}
-        return fim.session_for(CopilotSession, kw, create=create)
+        session_kwargs = {"account": session_account_id(account)}
+        return fim.session_for(CopilotSession, session_kwargs, create=create)
 
-    def probe(self, acct):
+    def probe(self, account):
         # Passive probe: NO language-server spawn and NO web request. Node +
         # install are filesystem checks; sign-in state is read from a token
         # file on disk. The LS is spawned only when the user clicks Sign in
         # or when FIM actually asks Copilot for a completion - so opening the
         # accounts window (even at startup) costs nothing.
-        from src.lsd.gl_gui.fim_providers import copilot as cp
-        if cp.find_node() is None:
+        from src.lsd.gl_gui.fim_providers import copilot
+        if copilot.find_node() is None:
             return ("error", "node ≥ 20.8 not found")
-        if not cp.server_installed():
+        if not copilot.server_installed():
             return ("needs_login", "language server not installed — Install")
         # If a session is already running (FIM used it, or the user signed in),
         # trust its status instead of the on-disk file.
         try:
-            sess = self._session(acct, create=False)
+            session = self._session(account, create=False)
         except Exception:
-            sess = None
-        if sess is not None and sess.alive():
-            st = sess.status()
-            if st[0] == "needs_login":
-                return ("needs_login", f"sign in: code {st[1]}")
-            if sess.user:
-                return ("ready", f"signed in as {sess.user}")
-            if st[0] == "error":
-                return ("needs_login", st[1] or "not signed in")
-        user = cp.cached_login_user(acct.get("config_dir"))
+            session = None
+        if session is not None and session.alive():
+            state, text = session.status()
+            if state == "needs_login":
+                return ("needs_login", f"sign in: code {text}")
+            if session.user:
+                return ("ready", f"signed in as {session.user}")
+            if state == "error":
+                return ("needs_login", text or "not signed in")
+        user = copilot.cached_login_user(account.get("config_dir"))
         if user:
             return ("ready", f"signed in as {user}")
         return ("needs_login", "not signed in — Sign in")
 
-    def actions(self, acct):
-        from src.lsd.gl_gui.fim_providers import copilot as cp
+    def actions(self, account):
+        from src.lsd.gl_gui.fim_providers import copilot
         out = []
-        if not cp.server_installed():
-            out.append(Button("Install", lambda a: _run_bg(a, lambda: cp.install_server()), primary=True))
+        if not copilot.server_installed():
+            out.append(Button("Install",
+                              lambda account: _run_in_background(account, copilot.install_server),
+                              primary=True))
             return out
-        st = acct.get("_status") or ("unknown", "")
-        if st[0] == "ready":
-            out.append(Button("Sign out", lambda a: _run_bg(a, lambda: self._session(a).sign_out())))
+        state = (account.get("_status") or ("unknown", ""))[0]
+        if state == "ready":
+            out.append(Button("Sign out", lambda account: _run_in_background(
+                account, lambda: self._session(account).sign_out())))
         else:
-            out.append(Button("Sign in", lambda a: _run_bg(a, lambda: self._session(a).sign_in()), primary=True))
+            out.append(Button("Sign in", lambda account: _run_in_background(
+                account, lambda: self._session(account).sign_in()), primary=True))
         out.append(Button("Edit", _toggle_edit))
-        out.append(Button(None, refresh, icon=ICON_REFRESH, tip="Refresh"))
+        out.append(Button(None, refresh, icon=f"", tip="Refresh"))
         return out
 
-    def sub_rows(self, acct):
+    def sub_rows(self, account):
         try:
-            sess = self._session(acct, create=False)
+            session = self._session(account, create=False)
         except Exception:
-            sess = None
-        if sess is not None and sess.login is not None:
-            return [("code", sess.login)]
+            session = None
+        if session is not None and session.login is not None:
+            return [("code", session.login)]
         return []
 
 
@@ -453,168 +442,174 @@ class CopilotKind(AccountKind):
 class OllamaKind(AccountKind):
     name = "ollama"
     label = "Ollama"
-    icon = ""
+    icon = f""
     tint = (0.5, 0.75, 0.6)
     fields = (Field("host", "Host", default="http://localhost:11434"),
               Field("device", "Device", default="auto", hidden=True))
 
     @staticmethod
-    def _client(acct):
+    def _client(account):
         import httpx
-        host = (acct.get("host") or "http://localhost:11434").rstrip("/")
+        host = (account.get("host") or "http://localhost:11434").rstrip("/")
         # Short connect timeout: a down local server fails in ~1s instead of
         # hanging the probe thread. (Probes always run on a worker, never the
         # render thread - so a fast failure keeps status snappy.)
         return httpx.Client(base_url=host, timeout=httpx.Timeout(4.0, connect=1.0))
 
-    def probe(self, acct):
-        from src.lsd.gl_gui.fim_providers import ollama as om
-        host = (acct.get("host") or "http://localhost:11434").rstrip("/")
+    def probe(self, account):
+        from src.lsd.gl_gui.fim_providers import ollama
+        host = (account.get("host") or "http://localhost:11434").rstrip("/")
         try:
-            with self._client(acct) as c:
-                models = om.list_models(c)
-        except Exception as e:
-            acct["_models"] = []
-            return ("error", f"{host} · {str(e)[:60]}")
-        acct["_models"] = models
+            with self._client(account) as client:
+                models = ollama.list_models(client)
+        except Exception as error:
+            account["_models"] = []
+            return ("error", f"{host} · {str(error)[:60]}")
+        account["_models"] = models
         try:
-            acct["_gpus"] = om.gpu_inventory()   # best-effort GPU information for the device menu
+            account["_gpus"] = ollama.gpu_inventory()   # best-effort GPU names for the device menu
         except Exception:
-            acct["_gpus"] = []
-        loaded = [m for m in models if m["loaded"]]
-        fim_like = [m["name"] for m in models
-                    if any(k in m["name"] for k in ("coder", "codellama", "starcoder", "codestral", "deepseek-coder"))]
+            account["_gpus"] = []
+        loaded = [model for model in models if model["loaded"]]
+        fim_like = [model["name"] for model in models
+                    if any(key in model["name"]
+                           for key in ("coder", "codellama", "starcoder", "codestral", "deepseek-coder"))]
         text = f"{len(models)} models"
         if loaded:
-            text += f" · {len(loaded)} loaded on " + ", ".join(sorted({m['where'] or '?' for m in loaded}))
+            text += f" · {len(loaded)} loaded on " + ", ".join(
+                sorted({model['where'] or '?' for model in loaded}))
         if not fim_like:
             text += " · no FIM model (pull qwen2.5-coder)"
         return ("ready", text)
 
-    def actions(self, acct):
-        from src.lsd.gl_gui.fim_providers import ollama as om
-        open_ = bool(acct.get("_models_open"))
-        dev = acct.get("device") or "auto"
-        return [Button(None, lambda a: _toggle(a, "_models_open"),
-                       icon=ICON_CHEVRON_D if open_ else ICON_CHEVRON_R, tip="Models"),
-                Button(f"{ICON_CHIP} {om.device_label(dev, acct.get('_gpus'))}", self._cycle_device,
-                       tip="Device models load onto (click to cycle)"),
+    def actions(self, account):
+        from src.lsd.gl_gui.fim_providers import ollama
+        models_open = bool(account.get("_models_open"))
+        device = account.get("device") or "auto"
+        return [Button(None, lambda account: _toggle(account, "_models_open"),
+                       icon=f"" if models_open else f"", tip="Models"),
+                Button(f" {ollama.device_label(device, account.get('_gpus'))}",
+                       self._cycle_device, tip="Device models load onto (click to cycle)"),
                 Button("Edit", _toggle_edit),
-                Button(None, refresh, icon=ICON_REFRESH, tip="Refresh")]
+                Button(None, refresh, icon=f"", tip="Refresh")]
 
-    def _cycle_device(self, acct):
-        from src.lsd.gl_gui.fim_providers import ollama as om
-        choices = om.device_choices(acct.get("_gpus"))
-        cur = acct.get("device") or "auto"
-        nxt = choices[(choices.index(cur) + 1) % len(choices)] if cur in choices else choices[0]
-        accounts.set_field(acct["id"], "device", nxt, reprobe=False)
+    def _cycle_device(self, account):
+        from src.lsd.gl_gui.fim_providers import ollama
+        choices = ollama.device_choices(account.get("_gpus"))
+        current = account.get("device") or "auto"
+        next_device = (choices[(choices.index(current) + 1) % len(choices)]
+                       if current in choices else choices[0])
+        accounts.set_field(account["id"], "device", next_device, reprobe=False)
 
-    def sub_rows(self, acct):
-        if not acct.get("_models_open"):
+    def sub_rows(self, account):
+        if not account.get("_models_open"):
             return []
-        models = acct.get("_models")
+        models = account.get("_models")
         if models is None:
             return [("note", "loading…")]
         if not models:
             return [("note", "no models — `ollama pull qwen2.5-coder:7b`")]
-        return [("model", m) for m in models]
+        return [("model", model) for model in models]
 
-    def model_actions(self, acct, m):
-        from src.lsd.gl_gui.fim_providers import ollama as om
-        dev = acct.get("device") or "auto"
-        target = om.device_label(dev, acct.get("_gpus"))
+    def model_actions(self, account, model):
+        from src.lsd.gl_gui.fim_providers import ollama
+        device = account.get("device") or "auto"
+        target = ollama.device_label(device, account.get("_gpus"))
 
-        def load(a, name=m["name"]):
+        def load(account, name=model["name"]):
             from src.lsd.gl_gui.toggles import Toggles
-            _run_bg(a, lambda: self._with_client(a, lambda c: om.load_model(
-                c, name, a.get("device") or "auto", Toggles.Fim.ollama_keep_alive)))
+            _run_in_background(account, lambda: self._with_client(
+                account, lambda client: ollama.load_model(
+                    client, name, account.get("device") or "auto", Toggles.Fim.ollama_keep_alive)))
 
-        def unload(a, name=m["name"]):
-            _run_bg(a, lambda: self._with_client(a, lambda c: om.unload_model(c, name)))
+        def unload(account, name=model["name"]):
+            _run_in_background(account, lambda: self._with_client(
+                account, lambda client: ollama.unload_model(client, name)))
 
-        out = [Button(("Move" if m["loaded"] else "Load") + f" → {target}", load, primary=not m["loaded"])]
-        if m["loaded"]:
-            out.append(Button(None, unload, icon=ICON_EJECT, tip="Unload"))
+        out = [Button(("Move" if model["loaded"] else "Load") + f" → {target}", load,
+                      primary=not model["loaded"])]
+        if model["loaded"]:
+            out.append(Button(None, unload, icon=f"", tip="Unload"))
         return out
 
-    def _with_client(self, acct, fn):
-        with self._client(acct) as c:
-            return fn(c)
+    def _with_client(self, account, fn):
+        with self._client(account) as client:
+            return fn(client)
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Actions / probes
 # ──────────────────────────────────────────────────────────────────────────
 
-def refresh(acct):
+def refresh(account):
     """Probe one account on a worker and repaint when it answers."""
-    if acct.get("_probing"):
+    if account.get("_probing"):
         return
-    acct["_probing"] = True
-    kind = KINDS[acct["kind"]]
+    account["_probing"] = True
+    kind = KINDS[account["kind"]]
 
     def run():
         try:
-            acct["_status"] = kind.probe(acct)
-        except Exception as e:
-            acct["_status"] = ("error", str(e)[:90])
+            account["_status"] = kind.probe(account)
+        except Exception as error:
+            account["_status"] = ("error", str(error)[:90])
         finally:
-            acct["_probing"] = False
-            acct["_probed_at"] = time.monotonic()
+            account["_probing"] = False
+            account["_probed_at"] = time.monotonic()
         accounts_changed()
 
-    threading.Thread(target=run, daemon=True, name=f"acct-probe-{acct['id']}").start()
+    threading.Thread(target=run, daemon=True, name=f"acct-probe-{account['id']}").start()
 
 
-def _run_bg(acct, fn, reprobe=True):
+def _run_in_background(account, fn, reprobe=True):
     """Run `fn()` on a worker with the row's busy flag set. `reprobe` re-runs
     the passive probe afterwards (default) — pass False when `fn` already set
     the status itself (e.g. validate), so the trailing probe doesn't clobber
     it."""
-    acct["_busy"] = True
+    account["_busy"] = True
     accounts_changed()
 
     def run():
         try:
             fn()
-        except Exception as e:
-            acct["_status"] = ("error", str(e)[:90])
+        except Exception as error:
+            account["_status"] = ("error", str(error)[:90])
         finally:
-            acct["_busy"] = False
+            account["_busy"] = False
         if reprobe:
-            refresh(acct)
+            refresh(account)
         else:
             accounts_changed()
 
-    threading.Thread(target=run, daemon=True, name=f"acct-action-{acct['id']}").start()
+    threading.Thread(target=run, daemon=True, name=f"acct-action-{account['id']}").start()
 
 
-def _paste_into(acct, field):
+def _paste_into(account, field_name):
     try:
-        txt = (imgui.get_clipboard_text() or "").strip()
+        text = (imgui.get_clipboard_text() or "").strip()
     except Exception:
-        txt = ""
-    if txt:
-        accounts.set_field(acct["id"], field, txt)
-        refresh(acct)
+        text = ""
+    if text:
+        accounts.set_field(account["id"], field_name, text)
+        refresh(account)
 
 
-def _toggle(acct, key):
-    acct[key] = not acct.get(key)
+def _toggle(account, key):
+    account[key] = not account.get(key)
     accounts_changed()
 
 
-def _toggle_edit(acct):
-    _toggle(acct, "_edit")
+def _toggle_edit(account):
+    _toggle(account, "_edit")
 
 
-def _refresh_stale(acct):
+def _refresh_stale(account):
     """Probe an account ONCE (when its status is first unknown). No timer-
     based re-probe: the window must not fire a recurring web request every
     couple of minutes just for being open — the user refreshes on demand
     (Refresh button / a credential edit clears _status)."""
-    if acct.get("_status") is None and not acct.get("_probing"):
-        refresh(acct)
+    if account.get("_status") is None and not account.get("_probing"):
+        refresh(account)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -626,38 +621,42 @@ def _mix(style_manager, tint, value, factor, saturation):
                                         factor=factor, saturation_scale=saturation)
 
 
-def _u32(c, a=1.0):
-    return imgui.get_color_u32_rgba(c[0], c[1], c[2], a)
+def _color_u32(color, alpha=1.0):
+    return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
 
 
-def _fit(text, max_w):
-    """`text` ellipsized to `max_w` pixels in the current font."""
-    if max_w <= 0:
+def _ellipsize(text, max_width):
+    """`text` ellipsized to `max_width` pixels in the current font."""
+    if max_width <= 0:
         return ""
-    if imgui.calc_text_size(text)[0] <= max_w:
+    if imgui.calc_text_size(text)[0] <= max_width:
         return text
-    lo, hi = 0, len(text)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if imgui.calc_text_size(text[:mid] + "…")[0] <= max_w:
-            lo = mid
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if imgui.calc_text_size(text[:mid] + "…")[0] <= max_width:
+            low = mid
         else:
-            hi = mid - 1
-    return (text[:lo] + "…") if lo > 0 else ""
+            high = mid - 1
+    return (text[:low] + "…") if low > 0 else ""
 
 
-def _fmt_gb(n):
-    return f"{n / 1e9:.1f} GB"
+def _format_gb(size_bytes):
+    return f"{size_bytes / 1e9:.1f} GB"
 
 
-@window(input_value=accounts, tint=(0.72, 0.71, 0.67), icon="",
+@window(input_value=accounts, tint=(0.72, 0.71, 0.67), icon=f"",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
-             is_tree=False, show_name=True, shadow=True)
-def draw_internet_accounts(input_value, draw_state, style_manager=None,
-                           left_mouse_down=False, **kwargs):
-    global _window_ds
-    _window_ds = draw_state
+             is_tree=False, show_name=True, shadow=True,
+             is_default_for="AccountStore", tint=(0.62, 0.47, 0.88))
+def draw_internet_accounts(
+        # [tint=(0.85, 0.75, 0.05)]
+        input_value: AccountStore,
+        draw_state, style_manager=None,
+        non_blocking_left_mouse_down=False, **kwargs):
+    global _window_draw_state
+    _window_draw_state = draw_state
     store = input_value
     if not store.loaded:
         store.load()
@@ -665,258 +664,321 @@ def draw_internet_accounts(input_value, draw_state, style_manager=None,
     # ---- styling (fast_dock recipe) ----
     row_bg_value, row_text_value = 0.06, 0.95
     factor, saturation = 0.90, 1.0
-    btn_bg_value, btn_text_value = 0.13, 1.25
+    button_bg_value, button_text_value = 0.13, 1.25
     primary_bg_value = 0.22
     hover_bg_boost, hover_text_boost = 0.05, 0.5
     text_saturation = 0.8
 
+    # Status lamp colours (and the status text that inherits them), by
+    # probe state — add a state here when a kind's probe grows one.
+    # [tint=(0.35, 0.9, 0.45)]
+    state_tints = {
+        "ready": (0.35, 0.85, 0.45),
+        "busy": (0.85, 0.75, 0.35),
+        "needs_login": (0.95, 0.65, 0.25),
+        "warning": (0.95, 0.7, 0.3),
+        "error": (0.95, 0.35, 0.35),
+        "unknown": (0.55, 0.58, 0.65),
+    }
+
+    # ---- row geometry, authored at ui_scale 1.0 and scaled once per frame ----
     px = Melty.px
-    row_h, row_gap = px(ROW_H), px(ROW_GAP)
-    pad_x, corner = px(PAD_X), px(CORNER)
-    btn_h, btn_pad_x, btn_gap = px(BTN_H), px(BTN_PAD_X), px(BTN_GAP)
-    sub_h, head_h = px(SUB_H), px(KIND_HEAD_H)
-    min_text_w, text_inset = px(MIN_TEXT_W), px(TEXT_INSET)
+    # [tint=(0.939, 0.453, 0.245)]
+    row_height = px(34.0)
+    row_gap = px(6.0)
+    pad_x = px(10.0)
+    corner = px(6.0)
+    button_height = px(24.0)
+    button_pad_x = px(10.0)
+    button_gap = px(6.0)
+    sub_row_height = px(30.0)         # secondary rows (field editors, device code card, model rows)
+    kind_header_height = px(26.0)
+    # Below this much text room the buttons wrap onto their own line inside
+    # the row (the row grows) — raise it and narrow windows wrap sooner.
+    # [tint=(0.994, 0.872, 0.0)]
+    min_text_width = px(150.0)
+    # [tint=(0.35, 0.85, 0.94)]
+    text_inset = px(30.0)             # label x inset (after the status lamp)
     text_nudge_y = px(-1.0)
 
     if style_manager is None:
         style_manager = Melty.style_manager
-    dl = imgui.get_window_draw_list()
-    x0, y0 = imgui.get_cursor_screen_pos()
-    cw = draw_state.content_width or (draw_state.width or 300)
-    mx, my = imgui.get_mouse_pos()
+    draw_list = imgui.get_window_draw_list()
+    origin_x, origin_y = imgui.get_cursor_screen_pos()
+    content_width = draw_state.content_width or (draw_state.width or 300)
+    mouse_x, mouse_y = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
-    ev = left_mouse_down
-    click = (ev.x, ev.y) if (ev and hasattr(ev, "x")) else None
+    press = non_blocking_left_mouse_down
+    # [tint=(0.62, 0.47, 0.95)]
+    click = (press.x, press.y) if (press and hasattr(press, "x")) else None
     clip = getattr(draw_state, "abs_clip_rect", None)
-    th = imgui.get_text_line_height()
-    lx0, lx1 = x0 + pad_x, x0 + cw - pad_x
+    line_height = imgui.get_text_line_height()
+    row_left, row_right = origin_x + pad_x, origin_x + content_width - pad_x
+    # True whenever a button handler or a field edit mutated the store this
+    # frame - it is the view's `changed` return (style guide rule 10).
+    pressed = [False]
 
-    def visible(ry0, ry1):
-        return clip is None or not (ry1 < clip[1] or ry0 > clip[3])
+    def visible(top, bottom):
+        return clip is None or not (bottom < clip[1] or top > clip[3])
 
-    def btn_w(b):
-        if b.icon is not None and b.label is None:
-            return btn_h
-        return imgui.calc_text_size(b.label)[0] + 2 * btn_pad_x
+    def button_width(button):
+        if button.icon is not None and button.label is None:
+            return button_height
+        return imgui.calc_text_size(button.label)[0] + 2 * button_pad_x
 
-    def buttons_w(btns):
-        return sum(btn_w(b) for b in btns) + btn_gap * max(0, len(btns) - 1)
+    def buttons_width(buttons):
+        return (sum(button_width(button) for button in buttons)
+                + button_gap * max(0, len(buttons) - 1))
 
-    def draw_buttons(btns, right, by, tint, acct, hint_slot):
+    def draw_buttons(buttons, right, top, tint, account, hint_slot):
         """Right-aligned button strip ending at `right`. Runs click handlers."""
-        bx1 = right
-        for b in reversed(btns):
-            w = btn_w(b)
-            bx0 = bx1 - w
-            by0, by1 = by, by + btn_h
-            enabled = b.enabled and not (acct or {}).get("_busy")
-            hov = enabled and hover_ok and bx0 <= mx <= bx1 and by0 <= my <= by1
-            bgv = (primary_bg_value if b.primary else btn_bg_value) + (hover_bg_boost if hov else 0.0)
-            btint = (0.85, 0.35, 0.35) if b.danger else tint
-            bg = _mix(style_manager, btint, bgv if enabled else btn_bg_value * 0.5, factor, saturation)
-            tx = _mix(style_manager, btint,
-                      (btn_text_value + (hover_text_boost if hov else 0.0)) if enabled else 0.45,
-                      factor, text_saturation)
-            if enabled and visible(by0, by1):
-                add_shadow((bx0, by0, w, btn_h), offset=8 if b.primary else 4,
+        strip_right = right
+        for button in reversed(buttons):
+            width = button_width(button)
+            left = strip_right - width
+            bottom = top + button_height
+            enabled = button.enabled and not (account or {}).get("_busy")
+            hovered = (enabled and hover_ok
+                       and left <= mouse_x <= strip_right and top <= mouse_y <= bottom)
+            bg_value = ((primary_bg_value if button.primary else button_bg_value)
+                        + (hover_bg_boost if hovered else 0.0))
+            button_tint = (0.85, 0.35, 0.35) if button.danger else tint
+            bg_color = _mix(style_manager, button_tint,
+                            bg_value if enabled else button_bg_value * 0.5, factor, saturation)
+            text_color = _mix(style_manager, button_tint,
+                              (button_text_value + (hover_text_boost if hovered else 0.0))
+                              if enabled else 0.45,
+                              factor, text_saturation)
+            if enabled and visible(top, bottom):
+                add_shadow((left, top, width, button_height), offset=8 if button.primary else 4,
                            corner_radius=corner, clip=clip)
-            dl.add_rect_filled(bx0, by0, bx1, by1, _u32(bg), rounding=corner)
-            if b.icon is not None and b.label is None:
-                ts = imgui.calc_text_size(b.icon)
-                dl.add_text(bx0 + (w - ts[0]) / 2.0, by0 + (btn_h - ts[1]) / 2.0 + text_nudge_y,
-                            _u32(tx), b.icon)
-                if hov and b.tip:
-                    hint_slot[0] = b.tip
+            draw_list.add_rect_filled(left, top, strip_right, bottom,
+                                      _color_u32(bg_color), rounding=corner)
+            if button.icon is not None and button.label is None:
+                icon_size = imgui.calc_text_size(button.icon)
+                draw_list.add_text(left + (width - icon_size[0]) / 2.0,
+                                   top + (button_height - icon_size[1]) / 2.0 + text_nudge_y,
+                                   _color_u32(text_color), button.icon)
             else:
-                ts = imgui.calc_text_size(b.label)
-                dl.add_text(bx0 + btn_pad_x, by0 + (btn_h - ts[1]) / 2.0 + text_nudge_y, _u32(tx), b.label)
-                if hov and b.tip:
-                    hint_slot[0] = b.tip
-            if enabled and click is not None and bx0 <= click[0] <= bx1 and by0 <= click[1] <= by1:
+                label_size = imgui.calc_text_size(button.label)
+                draw_list.add_text(left + button_pad_x,
+                                   top + (button_height - label_size[1]) / 2.0 + text_nudge_y,
+                                   _color_u32(text_color), button.label)
+            if hovered and button.tip:
+                hint_slot[0] = button.tip
+            if (enabled and click is not None
+                    and left <= click[0] <= strip_right and top <= click[1] <= bottom):
                 try:
-                    b.fn(acct)
-                except Exception as e:
-                    if acct is not None:
-                        acct["_status"] = ("error", str(e)[:90])
+                    button.on_click(account)
+                except Exception as error:
+                    if account is not None:
+                        account["_status"] = ("error", str(error)[:90])
+                pressed[0] = True
                 request_render()
-            bx1 = bx0 - btn_gap
-        return bx1 + btn_gap          # left edge of the strip
+            strip_right = left - button_gap
+        return strip_right + button_gap          # left edge of the strip
 
     # ---- layout pass ----
-    # (kind, acct, y, row_h, buttons, wrap, subs) - these are final
+    # (kind, account, y, row height, buttons, wrap, subs) - heights are final
     # here so the scroll dummy and the hit-tests agree.
-    y = y0
+    y = origin_y
+    # [tint=(0.989, 0.17, 0.497)]
     layout = []
     for kind in KINDS.values():
-        layout.append(("head", kind, None, y, head_h, None, False, []))
-        y += head_h + px(2)
-        for acct in store.of_kind(kind.name):
-            btns = list(kind.actions(acct))
-            if not is_default(acct):
-                btns.append(Button(None, lambda a: store.remove(a["id"]), icon=ICON_TRASH,
-                                   tip="Remove account", danger=True))
-            label = acct.get("label") or kind.default_label(acct["id"])
-            label_w = imgui.calc_text_size(label)[0]
-            text_avail = (lx1 - px(6)) - (lx0 + text_inset) - buttons_w(btns) - btn_gap
-            wrap = text_avail < max(min_text_w, label_w + px(40))
-            rh = row_h + (btn_h + px(6) if wrap else 0)
+        layout.append(("head", kind, None, y, kind_header_height, None, False, []))
+        y += kind_header_height + px(2)
+        for account_entry in store.of_kind(kind.name):
+            buttons = list(kind.actions(account_entry))
+            if not is_default(account_entry):
+                buttons.append(Button(None, lambda account: store.remove(account["id"]),
+                                      icon=f"", tip="Remove account", danger=True))
+            label = account_entry.get("label") or kind.default_label(account_entry["id"])
+            label_width = imgui.calc_text_size(label)[0]
+            text_avail = ((row_right - px(6)) - (row_left + text_inset)
+                          - buttons_width(buttons) - button_gap)
+            wrap = text_avail < max(min_text_width, label_width + px(40))
+            height = row_height + (button_height + px(6) if wrap else 0)
             subs = []
-            if acct.get("_edit"):
-                subs.extend(("field", f) for f in kind.fields if not f.hidden)
-            subs.extend(kind.sub_rows(acct))
-            layout.append(("acct", kind, acct, y, rh, btns, wrap, subs))
-            y += rh + len(subs) * sub_h + (px(4) if subs else 0) + row_gap
+            if account_entry.get("_edit"):
+                subs.extend(("field", field) for field in kind.fields if not field.hidden)
+            subs.extend(kind.sub_rows(account_entry))
+            layout.append(("account", kind, account_entry, y, height, buttons, wrap, subs))
+            y += height + len(subs) * sub_row_height + (px(4) if subs else 0) + row_gap
         y += px(4)
     footer_y = y
-    total_h = (footer_y - y0) + row_h
-    top_inset = (y0 + draw_state.scroll_offset[1]) - draw_state.abs_top
-    imgui.dummy(cw, max(1.0, total_h + max(0.0, top_inset)))
+    total_height = (footer_y - origin_y) + row_height
+    top_inset = (origin_y + draw_state.scroll_offset[1]) - draw_state.abs_top
+    imgui.dummy(content_width, max(1.0, total_height + max(0.0, top_inset)))
 
+    # [tint=(0.939, 0.836, 0.595)]
     hint = [None]
 
     for item in layout:
-        what, kind, acct, ry0, rh, btns, wrap, subs = item
+        what, kind, account_entry, row_top, height, buttons, wrap, subs = item
         tint = kind.tint
         if what == "head":
-            if visible(ry0, ry0 + rh):
-                tx = _mix(style_manager, tint, 1.0, factor, text_saturation)
-                dl.add_text(lx0 + px(2), ry0 + (rh - th) / 2.0, _u32(tx, 0.85),
-                            f"{kind.icon}  {kind.label}")
-                draw_buttons([Button(f"{ICON_PLUS} account", lambda a, k=kind: store.add(k.name))],
-                             lx1, ry0 + (rh - btn_h) / 2.0, tint, None, hint)
+            if visible(row_top, row_top + height):
+                text_color = _mix(style_manager, tint, 1.0, factor, text_saturation)
+                draw_list.add_text(row_left + px(2), row_top + (height - line_height) / 2.0,
+                                   _color_u32(text_color, 0.85), f"{kind.icon}  {kind.label}")
+                draw_buttons([Button(f" account",
+                                     lambda _account, kind=kind: store.add(kind.name))],
+                             row_right, row_top + (height - button_height) / 2.0, tint, None, hint)
             continue
 
-        _refresh_stale(acct)
-        ry1 = ry0 + rh
-        st = kind.status(acct)
-        if acct.get("_busy") or acct.get("_probing"):
-            st = ("busy", st[1] if st[0] != "unknown" else "…")
-        if visible(ry0, ry1):
-            hov_row = hover_ok and lx0 <= mx <= lx1 and ry0 <= my <= ry1
-            bg = _mix(style_manager, tint, row_bg_value + (0.02 if hov_row else 0.0), factor, saturation)
-            tx = _mix(style_manager, tint, row_text_value, factor, text_saturation)
-            add_shadow((lx0, ry0, lx1 - lx0, rh), offset=2, corner_radius=corner, clip=clip)
-            dl.add_rect_filled(lx0, ry0, lx1, ry1, _u32(bg), rounding=corner)
+        _refresh_stale(account_entry)
+        row_bottom = row_top + height
+        state, status_text = kind.status(account_entry)
+        if account_entry.get("_busy") or account_entry.get("_probing"):
+            state, status_text = "busy", (status_text if state != "unknown" else "…")
+        # Hoisted above the visibility gate: the model sub-rows below read
+        # these even when their parent row is scrolled offscreen.
+        lamp_color = state_tints.get(state, state_tints["unknown"])
+        text_color = _mix(style_manager, tint, row_text_value, factor, text_saturation)
+        if visible(row_top, row_bottom):
+            row_hovered = (hover_ok and row_left <= mouse_x <= row_right
+                           and row_top <= mouse_y <= row_bottom)
+            bg_color = _mix(style_manager, tint, row_bg_value + (0.02 if row_hovered else 0.0),
+                            factor, saturation)
+            add_shadow((row_left, row_top, row_right - row_left, height), offset=2,
+                       corner_radius=corner, clip=clip)
+            draw_list.add_rect_filled(row_left, row_top, row_right, row_bottom,
+                                      _color_u32(bg_color), rounding=corner)
             # status lamp, recessed
-            dot_c = STATE_TINTS.get(st[0], STATE_TINTS["unknown"])
-            dot_r = px(4.5)
-            dcx, dcy = lx0 + px(14), ry0 + row_h / 2.0
-            add_shadow((dcx - dot_r, dcy - dot_r, 2 * dot_r, 2 * dot_r), offset=-2,
-                       corner_radius=dot_r, clip=clip)
-            dl.add_circle_filled(dcx, dcy, dot_r, _u32(dot_c), 16)
+            lamp_radius = px(4.5)
+            lamp_x, lamp_y = row_left + px(14), row_top + row_height / 2.0
+            add_shadow((lamp_x - lamp_radius, lamp_y - lamp_radius, 2 * lamp_radius, 2 * lamp_radius),
+                       offset=-2, corner_radius=lamp_radius, clip=clip)
+            draw_list.add_circle_filled(lamp_x, lamp_y, lamp_radius, _color_u32(lamp_color), 16)
             # buttons: on the row line, or wrapped onto their own line
             if wrap:
-                strip_left = lx1 - px(6)
-                draw_buttons(btns, lx1 - px(6), ry0 + row_h + px(2), tint, acct, hint)
+                strip_left = row_right - px(6)
+                draw_buttons(buttons, row_right - px(6), row_top + row_height + px(2),
+                             tint, account_entry, hint)
             else:
-                strip_left = draw_buttons(btns, lx1 - px(6), ry0 + (row_h - btn_h) / 2.0, tint, acct, hint)
+                strip_left = draw_buttons(buttons, row_right - px(6),
+                                          row_top + (row_height - button_height) / 2.0,
+                                          tint, account_entry, hint)
             # label + status text, fitted to the space left of the strip
-            label = acct.get("label") or kind.default_label(acct["id"])
-            text_x = lx0 + text_inset
-            text_right = strip_left - btn_gap - px(4)
-            ty = ry0 + (row_h - th) / 2.0 + text_nudge_y
-            label_fit = _fit(label, text_right - text_x)
-            dl.add_text(text_x, ty, _u32(tx), label_fit)
-            sx = text_x + imgui.calc_text_size(label_fit)[0] + px(12)
-            status_fit = _fit(st[1], text_right - sx)
+            label = account_entry.get("label") or kind.default_label(account_entry["id"])
+            text_x = row_left + text_inset
+            text_right = strip_left - button_gap - px(4)
+            text_y = row_top + (row_height - line_height) / 2.0 + text_nudge_y
+            label_fit = _ellipsize(label, text_right - text_x)
+            draw_list.add_text(text_x, text_y, _color_u32(text_color), label_fit)
+            status_x = text_x + imgui.calc_text_size(label_fit)[0] + px(12)
+            status_fit = _ellipsize(status_text, text_right - status_x)
             if status_fit:
-                dl.add_text(sx, ty, _u32(dot_c, 0.9), status_fit)
+                draw_list.add_text(status_x, text_y, _color_u32(lamp_color, 0.9), status_fit)
 
         # ---- sub rows ----
-        sy = ry1 + px(4)
+        sub_top = row_bottom + px(4)
         for sub in subs:
-            sy0, sy1 = sy, sy + sub_h
-            sx0, sx1 = lx0 + text_inset, lx1 - px(6)
+            sub_bottom = sub_top + sub_row_height
+            sub_left, sub_right = row_left + text_inset, row_right - px(6)
             if sub[0] == "field":
-                f = sub[1]
-                if visible(sy0, sy1):
-                    lab = _mix(style_manager, tint, 0.7, factor, text_saturation)
-                    dl.add_text(sx0, sy0 + (sub_h - th) / 2.0 + text_nudge_y, _u32(lab, 0.85), f.label)
-                    fx0 = sx0 + px(110)
-                    fw = max(px(120), sx1 - fx0)
-                    _draw_field(acct, f, fx0, sy0 + (sub_h - px(26)) / 2.0, fw, px(26), tint)
+                field = sub[1]
+                if visible(sub_top, sub_bottom):
+                    label_color = _mix(style_manager, tint, 0.7, factor, text_saturation)
+                    draw_list.add_text(sub_left,
+                                       sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
+                                       _color_u32(label_color, 0.85), field.label)
+                    field_left = sub_left + px(110)
+                    field_width = max(px(120), sub_right - field_left)
+                    if _draw_field(account_entry, field, field_left,
+                                   sub_top + (sub_row_height - px(26)) / 2.0, field_width, px(26)):
+                        pressed[0] = True
             elif sub[0] == "code":
                 code, url = sub[1]
-                if visible(sy0, sy1):
-                    add_shadow((sx0, sy0, sx1 - sx0, sub_h), offset=11, corner_radius=corner, clip=clip)
-                    cbg = _mix(style_manager, tint, 0.16, factor, saturation)
-                    dl.add_rect_filled(sx0, sy0, sx1, sy1, _u32(cbg), rounding=corner)
+                if visible(sub_top, sub_bottom):
+                    add_shadow((sub_left, sub_top, sub_right - sub_left, sub_row_height),
+                               offset=11, corner_radius=corner, clip=clip)
+                    card_bg_color = _mix(style_manager, tint, 0.16, factor, saturation)
+                    draw_list.add_rect_filled(sub_left, sub_top, sub_right, sub_bottom,
+                                              _color_u32(card_bg_color), rounding=corner)
 
-                    def _open(a, u=url):
+                    def open_browser(account, url=url):
                         from src.lsd.gl_gui.fim_providers.copilot import open_url
-                        open_url(u)
+                        open_url(url)
 
-                    def _copy(a, c=code):
+                    def copy_code(account, code=code):
                         try:
-                            imgui.set_clipboard_text(c)
+                            imgui.set_clipboard_text(code)
                         except Exception:
                             pass
 
-                    cb = [Button("Copy code", _copy), Button("Open browser", _open, primary=True)]
-                    left = draw_buttons(cb, sx1 - px(6), sy0 + (sub_h - btn_h) / 2.0, tint, acct, hint)
-                    msg = _fit(f"Enter code  {code}  at {url}", left - btn_gap - (sx0 + px(10)))
-                    dl.add_text(sx0 + px(10), sy0 + (sub_h - th) / 2.0 + text_nudge_y,
-                                _u32((1.0, 0.95, 0.85)), msg)
+                    code_buttons = [Button("Copy code", copy_code),
+                                    Button("Open browser", open_browser, primary=True)]
+                    strip_left = draw_buttons(code_buttons, sub_right - px(6),
+                                              sub_top + (sub_row_height - button_height) / 2.0,
+                                              tint, account_entry, hint)
+                    message = _ellipsize(f"Enter code  {code}  at {url}",
+                                         strip_left - button_gap - (sub_left + px(10)))
+                    draw_list.add_text(sub_left + px(10),
+                                       sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
+                                       _color_u32((1.0, 0.95, 0.85)), message)
             elif sub[0] == "note":
-                if visible(sy0, sy1):
-                    dl.add_text(sx0 + px(6), sy0 + (sub_h - th) / 2.0 + text_nudge_y,
-                                _u32((0.7, 0.72, 0.8), 0.8), sub[1])
+                if visible(sub_top, sub_bottom):
+                    draw_list.add_text(sub_left + px(6),
+                                       sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
+                                       _color_u32((0.7, 0.72, 0.8), 0.8), sub[1])
             elif sub[0] == "model":
-                m = sub[1]
-                if visible(sy0, sy1):
-                    mbg = _mix(style_manager, tint, 0.09 if m["loaded"] else 0.04, factor, saturation)
-                    add_shadow((sx0, sy0, sx1 - sx0, sub_h), offset=2 if m["loaded"] else 1,
-                               corner_radius=corner, clip=clip)
-                    dl.add_rect_filled(sx0, sy0, sx1, sy1, _u32(mbg), rounding=corner)
-                    mb = kind.model_actions(acct, m)
-                    left = draw_buttons(mb, sx1 - px(6), sy0 + (sub_h - btn_h) / 2.0, tint, acct, hint)
-                    lamp = STATE_TINTS["ready"] if m["loaded"] else STATE_TINTS["unknown"]
-                    dl.add_circle_filled(sx0 + px(12), sy0 + sub_h / 2.0, px(3.5), _u32(lamp), 12)
-                    name_x = sx0 + px(24)
-                    tyy = sy0 + (sub_h - th) / 2.0 + text_nudge_y
-                    name_fit = _fit(m["name"], min(px(260), left - btn_gap - name_x))
-                    dl.add_text(name_x, tyy, _u32(tx), name_fit)
-                    ix = name_x + imgui.calc_text_size(name_fit)[0] + px(10)
-                    info = _fmt_gb(m["size"])
-                    if m["loaded"]:
-                        info += f" · loaded on {m['where'] or '?'}"
-                    info_fit = _fit(info, left - btn_gap - px(4) - ix)
+                model = sub[1]
+                if visible(sub_top, sub_bottom):
+                    model_bg_color = _mix(style_manager, tint, 0.09 if model["loaded"] else 0.04,
+                                          factor, saturation)
+                    add_shadow((sub_left, sub_top, sub_right - sub_left, sub_row_height),
+                               offset=2 if model["loaded"] else 1, corner_radius=corner, clip=clip)
+                    draw_list.add_rect_filled(sub_left, sub_top, sub_right, sub_bottom,
+                                              _color_u32(model_bg_color), rounding=corner)
+                    model_buttons = kind.model_actions(account_entry, model)
+                    strip_left = draw_buttons(model_buttons, sub_right - px(6),
+                                              sub_top + (sub_row_height - button_height) / 2.0,
+                                              tint, account_entry, hint)
+                    model_lamp = state_tints["ready"] if model["loaded"] else state_tints["unknown"]
+                    draw_list.add_circle_filled(sub_left + px(12), sub_top + sub_row_height / 2.0,
+                                                px(3.5), _color_u32(model_lamp), 12)
+                    name_x = sub_left + px(24)
+                    text_y = sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y
+                    name_fit = _ellipsize(model["name"],
+                                          min(px(260), strip_left - button_gap - name_x))
+                    draw_list.add_text(name_x, text_y, _color_u32(text_color), name_fit)
+                    info_x = name_x + imgui.calc_text_size(name_fit)[0] + px(10)
+                    info = _format_gb(model["size"])
+                    if model["loaded"]:
+                        info += f" · loaded on {model['where'] or '?'}"
+                    info_fit = _ellipsize(info, strip_left - button_gap - px(4) - info_x)
                     if info_fit:
-                        dl.add_text(ix, tyy, _u32((0.72, 0.75, 0.82), 0.85), info_fit)
-            sy = sy1
+                        draw_list.add_text(info_x, text_y,
+                                           _color_u32((0.72, 0.75, 0.82), 0.85), info_fit)
+            sub_top = sub_bottom
 
     # ---- footer: file hints / notes / errors ----
-    if visible(footer_y, footer_y + row_h):
+    if visible(footer_y, footer_y + row_height):
         note = hint[0] or f"{ACCOUNTS_PATH}"
         if store.error:
             note += f"   ·   {store.error}"
-        dl.add_text(lx0, footer_y + (row_h - th) / 2.0, _u32((0.6, 0.62, 0.7), 0.6),
-                    _fit(note, lx1 - lx0))
+        draw_list.add_text(row_left, footer_y + (row_height - line_height) / 2.0,
+                           _color_u32((0.6, 0.62, 0.7), 0.6),
+                           _ellipsize(note, row_right - row_left))
 
-    return False, input_value
+    return pressed[0], input_value
 
 
-def _draw_field(acct, f, x, y, w, h, tint):
+def _draw_field(account, field, left, top, width, height):
     """An editable field: a single-line draw_text row (the editor, so focus,
-    selection and paste all work)."""
+    selection and paste all work). Returns True when the edit changed the
+    stored value."""
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
-    key = f"acct_{acct['id']}_{f.name}"
-    val = acct.get(f.name) or ""
-    imgui.set_cursor_screen_pos((x, y))
-    changed, new = draw_text(val, name=key, single_line=True, width=w, height=h,
-                             show_widgets=False, show_root_backgrounds=False,
-                             show_header=False, show_file_header=False, show_jump_bar=False,
-                             shadow=False, use_cache=True, temp=True, autocomplete=False,
-                             syntax_highlight=False, line_numbers=False, fim="")
-    if changed and isinstance(new, str) and new != val:
-        accounts.set_field(acct["id"], f.name, new.strip())
-
-
-# Hotswap-safe: keep the store object (and its file) across re-exec.
-try:
-    _prev = Melty.__dict__.get("_internet_accounts_store")
-except Exception:
-    _prev = None
-if _prev is not None and _prev is not accounts:
-    accounts = _prev
-Melty._internet_accounts_store = accounts
+    key = f"acct_{account['id']}_{field.name}"
+    value = account.get(field.name) or ""
+    imgui.set_cursor_screen_pos((left, top))
+    changed, new_value = draw_text(value, name=key, single_line=True, width=width, height=height,
+                                   show_widgets=False, show_root_backgrounds=False,
+                                   show_header=False, show_file_header=False, show_jump_bar=False,
+                                   shadow=False, use_cache=True, temp=True, autocomplete=False,
+                                   syntax_highlight=False, line_numbers=False, fim="")
+    if changed and isinstance(new_value, str) and new_value != value:
+        accounts.set_field(account["id"], field.name, new_value.strip())
+        return True
+    return False

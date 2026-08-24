@@ -1,5 +1,6 @@
 import ctypes
 import math
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -69,12 +70,18 @@ class FontSpec:
     # (see FontManager.hint_atlas). Off for decorative sizes where hinting
     # buys nothing; sizes above HINT_MAX_SIZE px are skipped regardless.
     hint: bool = True
+    # Baked at boot by prewarm(). Everything else lazy-loads: the first
+    # get() queues the font and Melty.apply_ui_scale bakes it between
+    # frames. Keep this limited to what the FIRST FRAME needs - every eager
+    # font is baked inside boot's critical path (stb rasterize + FreeType
+    # hint; the full 17-entry atlas cost 230ms).
+    eager: bool = False
 
 
 _JETBRAINS_MONO = str(_RESOURCES / "JetBrainsMono-Regular.ttf")
 
 
-def _fa_merge(size: float) -> FontSpec:
+def _fa_merge(size: float, eager: bool = False) -> FontSpec:
     """FontAwesome icon spec to fold into the preceding base font.
 
     Sized at ~0.78x the host glyph size (matching the 14/18 ratio of the
@@ -86,16 +93,19 @@ def _fa_merge(size: float) -> FontSpec:
         merge=True,
         glyph_ranges=_FA_ICON_RANGE,
         extra_spacing=2.0,
+        eager=eager,
     )
 
 
 class Font(RelaxedEnum):
     # Order matters: a `merge=True` font is folded into the most recently
     # added non-merged font, so primary fonts must come before their merges.
-    DEJAVU_SANS_18 = FontSpec(_DEJAVU_SANS, 18.0)
-    FONTAWESOME_14 = _fa_merge(14.0)
+    # eager=True marks the first-frame fonts (imgui's main font - the first
+    # entry - and the editor face); everything else bakes on first get().
+    DEJAVU_SANS_18 = FontSpec(_DEJAVU_SANS, 18.0, eager=True)
+    FONTAWESOME_14 = _fa_merge(14.0, eager=True)
     DEJAVU_SANS_50 = FontSpec(_DEJAVU_SANS, 50.0)
-    DEJAVU_SANS_22 = FontSpec(_DEJAVU_SANS, 22.0)
+    # DEJAVU_SANS_22 = FontSpec(_DEJAVU_SANS, 22.0)
 
     JETBRAINS_MONO_30 = FontSpec(_JETBRAINS_MONO, 30.0)
     JETBRAINS_MONO_13 = FontSpec(_JETBRAINS_MONO, 13.0)
@@ -103,8 +113,9 @@ class Font(RelaxedEnum):
     JETBRAINS_MONO_15 = FontSpec(_JETBRAINS_MONO, 15.0)
     JETBRAINS_MONO_16 = FontSpec(_JETBRAINS_MONO, 16.0, glyph_ranges=_MONO_TUI_RANGE)
     JETBRAINS_MONO_18 = FontSpec(_JETBRAINS_MONO, 18.0)
-    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 18.5, glyph_ranges=_MONO_TUI_RANGE)
-    FONTAWESOME_MONO_19 = _fa_merge(16.0)
+    JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 18.5, glyph_ranges=_MONO_TUI_RANGE,
+                                 eager=True)
+    FONTAWESOME_MONO_19 = _fa_merge(16.0, eager=True)
 
     JETBRAINS_MONO_20 = FontSpec(_JETBRAINS_MONO, 20.0)
     JETBRAINS_MONO_22 = FontSpec(_JETBRAINS_MONO, 22.0)
@@ -112,6 +123,23 @@ class Font(RelaxedEnum):
     FONTAWESOME_MONO_40 = _fa_merge(31.0)
     JETBRAINS_MONO_50 = FontSpec(_JETBRAINS_MONO, 50.0)
     FONTAWESOME_MONO_50 = _fa_merge(39.0)
+
+
+# imgui folds a merge=True spec into the most recently added non-merged font,
+# so a base font and its contiguous merge entries must always bake TOGETHER
+# and in enum order. The lazy-load unit is therefore a GROUP - get() on any
+# member queues the whole group.
+def _build_groups():
+    groups = []
+    for font in Font:
+        if font.value.merge and groups:
+            groups[-1].append(font)
+        else:
+            groups.append([font])
+    return {font: tuple(group) for group in groups for font in group}
+
+
+_GROUP_OF = _build_groups()
 
 
 def detect_auto_scale(window=None) -> float:
@@ -182,9 +210,14 @@ class FontManager:
         self.io = io
         self.scale = float(scale)
         self._handles: dict = {}
+        # Fonts baked into the current atlas (load failures included, stamped
+        # None in _handles so they never re-queue) / fonts get() queued for
+        # the next between-frames bake (flush_pending).
+        self._loaded: set = set()
+        self._pending: set = set()
 
     def rebuild(self, scale: float, impl=None) -> bool:
-        """Re-bake every font at `scale` and hand the new atlas to the
+        """Re-bake every LOADED font at `scale` and hand the new atlas to the
         renderer. No-op (False) when the scale is unchanged.
 
         MUST run between frames — outside imgui.new_frame()/render() — since
@@ -196,9 +229,24 @@ class FontManager:
         if scale == self.scale and self._handles:
             return False
         self.scale = scale
-        self._handles.clear()
-        self.io.fonts.clear()
-        self.prewarm()
+        self._loaded |= self._pending
+        self._pending.clear()
+        self._bake(self._loaded)
+        if impl is not None:
+            impl.refresh_font_texture()
+        return True
+
+    def flush_pending(self, impl=None) -> bool:
+        """Bake every font get() queued since the last flush — one atlas
+        re-bake covers everything the previous frame touched. No-op (False)
+        when nothing is pending. Same between-frames contract and same
+        dangling-handle consequence as rebuild; Melty.apply_ui_scale is the
+        call site and does the handle re-gets + tile invalidation."""
+        if not self._pending:
+            return False
+        self._loaded |= self._pending
+        self._pending.clear()
+        self._bake(self._loaded)
         if impl is not None:
             impl.refresh_font_texture()
         return True
@@ -212,7 +260,29 @@ class FontManager:
         return spec.oversample
 
     def prewarm(self):
+        """Bake the eager (first-frame) fonts only. Everything else loads
+        lazily: get() on an unbaked font queues its group and returns None —
+        exactly what callers already handle for a failed load (render with
+        the current font this frame) — and Melty.apply_ui_scale bakes the
+        queue between frames. Baking all 17 enum entries up front cost
+        ~230ms of boot (stb rasterize + FreeType hint of a 4096² atlas);
+        the eager set is a fraction of that."""
+        self._loaded |= {font for font in Font if font.value.eager}
+        for font in list(self._loaded):
+            self._loaded.update(_GROUP_OF[font])
+        self._bake(self._loaded)
+
+    def _bake(self, include):
+        """Clear the atlas and re-add every font in `include`, in enum order
+        (a merge follower must directly follow its base — enum order plus the
+        _GROUP_OF closure at every queue site guarantee both are present and
+        adjacent). Between frames only; every previously returned handle is
+        dangling afterwards."""
+        self._handles.clear()
+        self.io.fonts.clear()
         for font in Font:
+            if font not in include:
+                continue
             spec = font.value
             size = max(self.MIN_SIZE, spec.size * self.scale)
             if spec.merge:
@@ -261,6 +331,26 @@ class FontManager:
                 self._handles[font] = None
 
     def get(self, font: Font):
+        """Handle for `font`, or None — for a failed load AND for a font not
+        baked yet. An unbaked font's group is queued here and baked between
+        frames (flush_pending, driven by Melty.apply_ui_scale), so callers
+        keep their existing None handling: skip push_font this frame, the
+        real handle arrives next frame and the flush invalidates every
+        cached tile. A failed font sits in _handles as None and never
+        re-queues."""
+        if font in self._handles:
+            return self._handles[font]
+        group = _GROUP_OF.get(font)
+        if group is not None:
+            self._pending.update(group)
+        return None
+
+    def peek(self, font: Font):
+        """Handle for `font` if it is baked, else None — WITHOUT queueing a
+        lazy load. For long-lived handle caches (Melty.large_font) that must
+        refresh after every re-bake but should never force an unused font
+        into the atlas: at boot the eager get(DEJAVU_SANS_50) queued a font
+        nothing drew, costing a whole extra re-bake + tile invalidation."""
         return self._handles.get(font)
 
     # ------------------------------------------------------------------
@@ -343,6 +433,7 @@ class FontManager:
         """Return RGBA32 atlas bytes with FreeType light-hinted LCD glyphs
         written into imgui's rects, or None when freetype is unavailable.
         Stats land on `self.hint_stats` as {font name: (hinted, fallback)}."""
+        start_time = time.time()
         try:
             import freetype
         except ImportError:
@@ -411,4 +502,7 @@ class FontManager:
         total_f = sum(f for _, f in stats.values())
         print(f"FontManager: FreeType-hinted {total_h} glyphs across {len(stats)} fonts "
               f"({total_f} kept stb bitmaps)")
+        end_time = time.time()
+        print(f"FontManager: hinting pass took {end_time - start_time:.3f} s")
+        print(f"wall time {end_time}")
         return atlas.tobytes()

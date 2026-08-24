@@ -124,6 +124,7 @@ def draw_type_name(input_value, **kwargs):
             imgui.text(f"{input_value.__name__}")
     except Exception as e:
         imgui.text(f"Error displaying type: {e}")
+    
 
 def _collection_match_keys(input_value, keys, excluded, show_excluded):
     """The (index, lowercased key string) pairs draw_collection renders and
@@ -1538,8 +1539,9 @@ _TEXT_PER_FILE_LIMIT = 200  # per-file content hit cap (index default is 5)
 
 def _kick_text_search(q):
     """Start a background full-text search when the query changed. Debounced by
-    a generation counter: the thread sleeps briefly, and a newer keystroke's
-    generation abandons the older thread both before and after the search."""
+    a generation counter: the thread sleeps out the shared input debounce, and
+    a newer keystroke's generation abandons the older thread both before and
+    after the search."""
     if q == GlobalSearch._text_query:
         return
     GlobalSearch._text_query = q
@@ -1552,7 +1554,7 @@ def _kick_text_search(q):
         return
 
     def _run():
-        time.sleep(0.18)
+        time.sleep(Toggles.GlobalSearch.input_debounce_s)
         if GlobalSearch._text_gen != gen:
             return
         try:
@@ -1586,31 +1588,132 @@ def _kick_text_search(q):
     threading.Thread(target=_run, daemon=True, name="global-text-search").start()
 
 
-def _kick_fuzzy_search(q):
-    """Arm the debounced FUZZY pass for `q` (the typo-tolerant word matcher,
-    2-25 ms of pure-Python edit distance over the Code corpus -- never paid
-    per keystroke). A sleeper thread waits Toggles.GlobalSearch.fuzzy_debounce_s,
-    and if no newer query superseded it, marks the generation ready and
-    wakes the render loop; draw_global_search then runs the scorer ON THE
-    GL THREAD (a thread would hold the GIL for the same milliseconds and
-    stall rendering just the same -- the GIL-convoy lesson). The hits land
-    in GlobalSearch.fuzzy_results, drawn as a TRAILING section below every
-    fast-pass row, so the rows already on screen never move."""
-    GlobalSearch._fuzzy_gen += 1
-    gen = GlobalSearch._fuzzy_gen
+# Serializes the search workers: the provider hit lists and the scorer's
+# corpus rows are memoized in plain module globals, so two overlapping
+# workers must never rebuild them concurrently. Never taken on the render
+# thread (every caller is a _kick_search worker), so a slow pass can't
+# stall a frame through it.
+_search_worker_lock = threading.Lock()
+
+
+def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
+                 snap_selection=True):
+    """Start the background search worker for `q` on the `active_kind` tab.
+    Nothing scorer-shaped runs on the render thread any more: a keystroke
+    only bumps the generation here and returns, and the frame draws the
+    previous results until the worker's land and repaint.
+
+    One daemon thread per kick runs both scorer passes in order, abandoning
+    at every step when a newer kick superseded its generation:
+      1. sleep Toggles.GlobalSearch.input_debounce_s so the keystroke burst
+         settles (skipped for tab switches / load-all — no text changed),
+      2. the EXACT pass — the substring scorer itself is ~0.2 ms, but the
+         provider rebuilds it can trigger (the symbol sweep, the project
+         asset walk, _src_mod_map's realpath storm) are the real reason
+         this left the render thread — landing results + scores,
+      3. the FUZZY typo pass once the remainder of fuzzy_debounce_s has
+         elapsed, first letting the async text/local hits land on tabs that
+         show them so the trailing section fills in one step; its hits land
+         in GlobalSearch.fuzzy_results, drawn strictly BELOW the fast rows.
+    The GIL-convoy risk of a CPU-bound worker (why the fuzzy pass used to
+    run ON the GL thread instead) is handled inside global_search_results:
+    the fuzzy loop parks via _park_while_frame whenever a frame is mid-draw.
+
+    `new_query` resets the highlight / file expansions when the results LAND
+    (never at kick time — they'd act on the outgoing rows);
+    `snap_selection=False` (load-all) keeps the highlight where it is so it
+    lands on the first newly revealed row; `immediate` skips both debounces
+    (an explicit pick is paid right now)."""
+    GlobalSearch._search_gen += 1
+    gen = GlobalSearch._search_gen
+    # The outgoing query's typo tail must not trail the incoming rows.
     GlobalSearch.fuzzy_results = []
-    GlobalSearch._fuzzy_done = False
-    if len(q) < 3:  # the scorer doesn't fuzz short queries anyway
-        return
+    store = _ensure_search_store()  # resolved at call: Melty.vis is render-thread state
+    kinds = None if active_kind == ALL_CATEGORY else {active_kind}
+    text_tab = active_kind in (ALL_CATEGORY, "Text", CODE_CATEGORY)
+    delay = 0.0 if (immediate or not new_query) else Toggles.GlobalSearch.input_debounce_s
+
+    def _stale():
+        return GlobalSearch._search_gen != gen
 
     def _run():
-        time.sleep(Toggles.GlobalSearch.fuzzy_debounce_s)
-        if GlobalSearch._fuzzy_gen != gen:
+        if delay > 0:
+            time.sleep(delay)
+        if _stale():
             return
-        GlobalSearch._fuzzy_ready_gen = gen
+        scores = {}
+        search_kinds = kinds
+        with _search_worker_lock:
+            if _stale():
+                return
+            try:
+                res = (global_search_results(q, store, limit=limit, kinds=search_kinds,
+                                             scores=scores, tier="exact")
+                       if len(q) >= 2
+                       else _recent_hits(store, limit=limit, kinds=search_kinds))
+                if not res and search_kinds is not None and len(q) >= 2:
+                    # The active tab matched nothing: fall back to the FULL
+                    # search so the borrowed-categories tree (see _items_for)
+                    # has rows to show. Paid only in the empty case.
+                    search_kinds = None
+                    res = global_search_results(q, store, limit=limit, kinds=None,
+                                                scores=scores, tier="exact")
+            except Exception:
+                traceback.print_exc()
+                return
+            if _stale():
+                return
+            GlobalSearch._scores = scores
+            GlobalSearch._search_kinds = search_kinds
+            GlobalSearch._search_limit = limit
+            GlobalSearch.results = res
+            if new_query:
+                GlobalSearch.selected = 0  # jump back to the top match
+                GlobalSearch.expanded_files = set()  # per-file "+ n more" collapses again
+            if snap_selection:
+                GlobalSearch._snap_sel = True  # unskipping Code context rows
         _repaint_global_search()
 
-    threading.Thread(target=_run, daemon=True, name="global-fuzzy-search").start()
+        # ---- the debounced typo tier ----
+        if len(q) < 3:
+            return  # the scorer doesn't fuzz short queries anyway
+        if not immediate:
+            time.sleep(max(0.0, Toggles.GlobalSearch.fuzzy_debounce_s - delay))
+        if _stale():
+            return
+        # On tabs that also show the async text/local hits, let those land
+        # first so the trailing section fills in one step (locals then typo
+        # hits) instead of the locals shoving the typo rows down a moment
+        # later. Deadline-guarded: a text search that never started (the
+        # window closed mid-flight) must not pin this thread.
+        deadline = time.monotonic() + 3.0
+        while (text_tab and GlobalSearch._text_done_query != q
+               and time.monotonic() < deadline):
+            if _stale():
+                return
+            time.sleep(0.02)
+        with _search_worker_lock:
+            if _stale():
+                return
+            try:
+                # Scores merge into the same map the exact pass filled (hit
+                # ids are distinct) so the Code view tiers both hits.
+                fuzzy = global_search_results(q, store, limit=limit,
+                                              kinds=search_kinds, scores=scores,
+                                              tier="fuzzy")
+            except Exception:
+                traceback.print_exc()
+                return
+            if _stale():
+                return
+            GlobalSearch.fuzzy_results = fuzzy
+            if fuzzy and not GlobalSearch.results and not GlobalSearch.local_results:
+                # Nothing was on screen to match: let the highlight land on
+                # the best typo hit instead of the dummy (context) row.
+                GlobalSearch._snap_sel = True
+        _repaint_global_search()
+
+    threading.Thread(target=_run, daemon=True, name="global-search").start()
 
 
 # --- Toggles category -------------------------------------------------------
@@ -1919,10 +2022,9 @@ def toggle_index():
     nested groups, labelled by dotted path (`TextEditor.enable_spell_check`).
     Activating a hit edits it in place and leaves the search open."""
     global _toggle_hits_memo
-    # Warm the shared host so the parse is ready by the time a row is picked,
-    # and register the search window as its consumer - that keeps it alive
-    # while the search is open and lets the idle sweep reclaim it after.
-    _toggles_dict_host().notify_on_change(GlobalSearch.window_ds)
+    # No host warm-up here: this runs in the background search worker, and
+    # RenderHost creation/registration is main-thread work - the search
+    # window's body will drives the shared Toggles host instead.
     paths = _setting_paths(Toggles)
     sig = tuple(paths)
     memo_sig, memo_hits = _toggle_hits_memo
@@ -2092,12 +2194,13 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
     """Query every registered search index and return the hits matching `q`,
     best-first — the global-search result list.
 
-    `tier` splits the work between the two search passes draw_global_search
-    runs: "exact" = substring / prefix hits only (~0.2 ms over the whole Code
-    corpus -- the per-keystroke pass), "fuzzy" = ONLY the word-aware typo
-    matches, skipping every key an exact pass already claimed (2-25 ms of
-    pure-Python edit distance -- the debounced pass), "all" = both in one
-    list (offline callers / tests).
+    `tier` splits the work between the two passes _kick_search's background
+    worker runs: "exact" = substring / prefix hits only (~0.2 ms over the
+    whole Code corpus -- the fast pass, first to land after the input
+    debounce), "fuzzy" = ONLY the word-aware typo matches, skipping every key
+    an exact pass already claimed (2-25 ms of pure-Python edit distance --
+    the later, longer-debounced pass), "all" = both in one list (offline
+    callers / tests).
 
     Matching runs against the hit's `match` key when it has one (a file's
     BASENAME, so partial file names hit and the directory prefix doesn't
@@ -2122,12 +2225,26 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
     use_fuzzy = len(q) >= 3 and tier != "exact"
     if tier == "fuzzy" and not use_fuzzy:
         return []
+    # The fuzzy tier runs on the background search worker (_kick_search), and
+    # its pure-Python milliseconds would GIL-convoy the render thread if they
+    # overlapped a frame, so it parks at frame boundaries every few hundred
+    # rows (no-op off-frame and on the main/GL threads, so offline callers
+    # and tests are unaffected). The input-recency back-off of _yield_to_ui
+    # is deliberately NOT used: fuzzy already ran its debounce, and waiting
+    # out another quiet window would just delay the typo hits.
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
+    park_every = 256  # # rows between parking checks on the fuzzy tier
+    scanned = 0
     q_words = _split_words(q)
     q_chars = frozenset(q)
     scored = []
     seen = set()
     for provider in _providers_for(kinds):
         for low, key, key_chars, hit, full, key_words in _provider_corpus(provider):
+            if tier == "fuzzy":
+                scanned += 1
+                if scanned % park_every == 0:
+                    _park_while_frame()
             if low in seen:
                 continue
             if q in key or q in full:
@@ -2467,6 +2584,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     dropdown to pick from; a single entry binds the + directly with no
     chevron. A bare list of types is accepted and keyed by __name__.
     """
+    
+    
 
     if excluded is None:
         excluded = set()
@@ -3004,8 +3123,10 @@ def draw_type(input_value: type, **kwargs):
              with_header=None, bg_offset=4, auto_resize=False)
 def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, left_mouse_down=False, **kwargs):
     """Renders the GlobalSearch window: the search box plus the matching hits
-    from the registered search indexes (GLOBAL_SEARCH_INDEXES). Results are
-    recomputed only when the query changes."""
+    from the registered search indexes (GLOBAL_SEARCH_INDEXES). A query or
+    tab change only KICKS the debounced background worker (_kick_search) —
+    every scorer pass runs off the render thread, the previous rows keep
+    drawing meanwhile, and the landings repaint this window."""
     # The persistent usage store uses AppModel so they serialize with app
     # state. Resolve the studio root from Core.melty.vis (set at
     # Melty.init), same as every other view that needs the root; the vis
@@ -3023,6 +3144,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # Expose our own window draw_state + honour a focus request from draw_main's
     # Ctrl+Shift+F shortcut (one-shot: grab the box's text focus this frame).
     input_value.window_ds = draw_state
+    # Warm the shared Toggles cst-dict host so the dict is ready by the time
+    # the Toggles row is picked, and register this window as its consumer -
+    # that keeps it alive while the search is open and lets the idle sweep
+    # reclaim it after. Lives here (not in toggle_dict) because host
+    # creation/registration is main-thread work and the providers now run
+    # on the background search worker.
+    _toggles_dict_host().notify_on_change(draw_state)
     _focus = input_value._focus_requested
     input_value._focus_requested = False
     # return_extras gives the box's draw_state so we can tell when it holds text
@@ -3044,84 +3172,26 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
 
     q = (input_value.query or "").strip().lower()
 
-    def _scope():
-        """Provider scope for the active chip: only ITS category's providers
-        run (None = every provider, for the All tab). Text is async and has
-        no provider -- its chip scopes to nothing here."""
-        a = input_value.active_kind
-        return None if a == ALL_CATEGORY else {a}
-
-    def _search(limit=60):
-        """The FAST pass: exact substring / prefix hits only (~0.2 ms over
-        the Code corpus), run synchronously on every query change. The
-        typo-tolerant tier is the separate debounced pass (_run_fuzzy)."""
-        kinds = _scope()
-        scores = {}
-        res = (global_search_results(q, store, limit=limit, kinds=kinds, scores=scores, tier="exact")
-               if len(q) >= 2 else _recent_hits(store, limit=limit, kinds=kinds))
-        if not res and kinds is not None and len(q) >= 2:
-            # The active tab matched nothing: fall back to the FULL search so
-            # the borrowed-categories view (see _items_for) has rows to show.
-            # Paid only in the common case.
-            kinds = None
-            res = global_search_results(q, store, limit=limit, kinds=None, scores=scores, tier="exact")
-        input_value._scores = scores
-        input_value._search_kinds = kinds
-        input_value._search_limit = limit
-        return res
-
-    def _run_fuzzy():
-        """The SLOW pass: the word-aware typo matcher over the same scope and
-        limit the fast pass settled on, skipping everything it already
-        listed. Scores merge into the same map (ids are distinct) so the
-        Code tree tiers the hits; the hits themselves stay OUT of
-        input_value.results -- they draw as a trailing section."""
-        input_value._fuzzy_done = True
-        if len(q) < 3:
-            input_value.fuzzy_results = []
-            return
-        scores = input_value._scores if isinstance(input_value._scores, dict) else {}
-        input_value._scores = scores
-        input_value.fuzzy_results = global_search_results(
-            q, store, limit=input_value._search_limit, kinds=input_value._search_kinds,
-            scores=scores, tier="fuzzy")
-        if input_value.fuzzy_results and not input_value.results \
-                and not input_value.local_results:
-            # Nothing was on screen to protect: let the highlight land on
-            # the best typo hit instead of the first (context) row.
-            input_value._snap_sel = True
-        request_render()
-
     # Recompute on a query OR scope change (Tab / chip / All): results hold
-    # only the active tab's hits, so a chip re-queries just that tab.
+    # only the active tab's hits, so a switch re-queries just that tab. The
+    # kick is ALL that happens on this thread - the worker debounces (query
+    # changes only; a tab switch skips the wait), runs the exact pass, then
+    # the fuzzy typo tier, and each landing repaints this window. Until
+    # then the previous rows keep drawing. An empty box lands the
+    # most-selected hits over again instead of nothing.
     scope_key = (q, input_value.active_kind)
     if scope_key != input_value._last_scope:
         new_query = q != input_value._last_query
         input_value._last_query = q
         input_value._last_scope = scope_key
         input_value.show_all = False  # a new query starts back at the top view
-        # Empty box: show the most-selected hits over time instead of nothing.
-        input_value.results = _search()
-        _kick_fuzzy_search(q)  # typo tier lands later, below the rows
-        if new_query:
-            input_value.selected = 0  # reset highlight to the top match on a new query
-            input_value.expanded_files = set()  # per-file "+ n more" collapses again
-        input_value._snap_sel = True  # ...skipping Code context rows
+        _kick_search(q, input_value.active_kind, new_query=new_query)
     # Full-text hits arrive async from the trigram index (no-op while q is
     # unchanged); they land on input_value.text_results and repaint us. Only
     # kicked when a tab that shows them is up (All / Text).
     text_tab = input_value.active_kind in (ALL_CATEGORY, "Text", CODE_CATEGORY)
     if text_tab:
         _kick_text_search(q)
-    # The fuzzy pass runs here, on the GL thread, when its debounce has
-    # elapsed for the CURRENT generation -- and, on tabs that also show the
-    # async local-symbol hits, after those have landed for this query, so the
-    # trailing section fills in one step (locals + typo hits) instead of
-    # the locals shoving the typo rows down a moment later.
-    if (not input_value._fuzzy_done
-            and input_value._fuzzy_ready_gen == input_value._fuzzy_gen
-            and (not text_tab or input_value._text_done_query == q)):
-        _run_fuzzy()
 
     # The query's own hits by identity: any Code row not in here is a context
     # row (an ancestor shown for perspective) -- drawn dim, and skipped when
@@ -3243,13 +3313,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     def _load_all():
         """Activate the _LoadAllRow: recompute the results with the
         per-category limit lifted AND drop the display cap, this query only
-        (a new query resets to the capped view). The highlight stays where it
-        is, so it lands on the first newly revealed row."""
+        (a new query resets to the capped view). An explicit pick, so the
+        worker skips both debounces (exact + fuzzy paid right now, just off
+        this thread); the highlight stays where it is, so it lands on the
+        first newly revealed row when the uncapped rows arrive."""
         input_value.show_all = True
-        input_value.results = _search(limit=10 ** 9)
-        # Lift the fuzzy tier's cap too -- an explicit pick, so it's paid
-        # right now rather than on another debounce.
-        _run_fuzzy()
+        _kick_search(q, input_value.active_kind, limit=10 ** 9,
+                     immediate=True, snap_selection=False)
         request_render()
 
     # While the box holds text focus: Tab / Shift+Tab pick the category (the
@@ -3924,12 +3994,10 @@ class GlobalSearch:
     _text_query = None  # last query handed to _kick_text_search
     _text_gen = 0  # generation counter that debounces/cancels text search
     _text_done_query = None  # query whose text/local results have LANDED
-    # The debounced typo-tolerant pass (see _kick_fuzzy_search): its results
-    # draw as a trailing section below the exact-pass rows.
+    # The debounced error-tolerant pass (phase 3 of _kick_search's worker):
+    # its hits draw as a trailing section below the first-pass rows.
     fuzzy_results = []
-    _fuzzy_gen = 0  # bumped per query; the sleeper's ticket
-    _fuzzy_ready_gen = -1  # generation whose debounce has expired
-    _fuzzy_done = False  # fuzzy_results computed for the current generation
+    _search_gen = 0  # incremented per _kick_search; the worker's ticket at every step
     _search_kinds = None  # provider scope the current results were computed with
     _search_limit = 60  # per-category limit of the current results (lifted by load-all)
     selected = 0  # index (in on-screen order) of the arrow-key highlight
@@ -5813,54 +5881,74 @@ def draw_none(input_value: NoneType):
 
 @render_func(is_default_for=(bool), use_cache=True,
              is_tree=False, min_width=83, shadow=False,
-             with_header=draw_header, temp=True)
-def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=359,
+             with_header=draw_header, temp=True, 
+             # Give the @render_func a unique tint. Note how in the editor this function has a bg tint 
+             # pulled from the render_func! Please note, the supplied tint may be muted and darkened by
+             # melty at the frameworks discretion when used as a background. 
+             tint=(0.0, 0.527, 0.817))
+def draw_bool(
+              # Important inputs to functions can be given tints!
+              # [tint=(0.85, 0.75, 0.05)] 
+              input_value: bool, 
+              draw_state, left_mouse_clicked=None, max_width=359,
               max_height=100, min_height=20, header_same_line=True,
               selectable=False, left_mouse_drag=None, left_mouse_held=False, align_header=True,
               left_mouse_down=False):
+    
+    # Use melty #[ comments liberally. Constants in the func should always have tints
+    # As a generally rule, local constants are preferred to constants referenced elsewhere.
+    # Melty is designed to make this code easy to edit. Scatter constants are actually discouraged
+    # by melty. Put constants as close to their usage as possible.
+    
+    # [tint=(0.939, 0.453, 0.245)]
     left_margin = 3
-    box_h = 21
+    
+    # [tint=(0.994, 0.872, 0.0), show_tint=True]
     text_inset = 11
+    
+    # [tint=(0.939, 0.836, 0.595, 1.0), show_tint=True]
     cursor_start = imgui.get_cursor_pos_x()
 
     if input_value:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), 1.0)
         text_color = (*Tint.checkbox_text_true(), 1.0)
+        # icons are available as a dropdown! Use f"{}"  is encouraged
         icon = f""
     else:
         bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
         text_color = (*Tint.checkbox_text(), 0.45)
         icon = f""
 
+    # [tint=(0.989, 0.17, 0.497), show_tint=True]
     label = f"{icon} {input_value}"
     icon_w = imgui.calc_text_size(icon)[0]
     label_w = imgui.calc_text_size(label)[0]
 
-    # content_width carries a min_width floor (core_render), so when a long
-    # unpadded header eats the row below min_width it overstates the space
-    # actually left - the float-right logic would push the box past the row's
-    # right edge. Measure the true leftover from the header to the row edge
-    # (10 = the row's right content margin) and take the smaller for the cell.
     leftover = draw_state.abs_left + draw_state.width - 10 - cursor_start
     cell_width = min(draw_state.content_width, leftover)
 
-    # The box hugs the content rather than expanding to fill the cell. When even
-    # the label won't fit the available space we collapse to a square that shows
-    # just the icon. `width` is the box's right edge measured from the cell left,
-    # matching the original cursor-relative geometry below.
+
     avail = min(draw_state.width - 18, cell_width)
     full_width = left_margin + text_inset * 2 + label_w
     compact = full_width > avail
+    
     if compact:
         width = 30
     else:
         width = full_width
 
     imgui.dummy(width, 21)
+    
+    # draw list should not be abbrivated ds
     draw_list = imgui.get_window_draw_list()
-
     outline_color = imgui.get_color_u32_rgba(*Tint.checkbox_outline(), 1.0)
 
+    # This is an example of a comment I don't really like. Documenting what something 
+    # does is fine but if that's needed it usually means the code is written poorly.
+    # Ideally the code should be easy enough that it's obvious what it does.
+    # Comments that explain how to change the code, placed precisely in places that
+    # may plausiblly be changed in the future is highly discouraged. 
+    
     # Align the box to the right edge of the value cell: the leftover space
     # between the content width and the box's own width becomes the left offset.
     # When the box is wider than the cell this goes negative, pinning the right
@@ -5869,9 +5957,12 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
     right_offset = cell_width - width
     box_left = imgui.get_cursor_pos_x() + left_margin + right_offset
     box_right = imgui.get_cursor_pos_x() + width + right_offset
+    
+    # abs_top and abs_left should be used when the top/left of the view port is needed
     box_top = draw_state.abs_top
     box_bottom = draw_state.abs_top + draw_state.content_height
 
+    # Draw list is always prefered for perforance
     draw_list.add_rect_filled(box_left, box_top, box_right, box_bottom,
                               rounding=4, col=bg_color)
     draw_list.add_rect(box_left, box_top, box_right, box_bottom,
@@ -5891,6 +5982,7 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
 
     if compact:
         # Center just the icon inside the square (which spans [left_margin, width]).
+        # Don't abriviate variables names. Use full box_width
         box_w = width - left_margin
         imgui.same_line(left_margin + (box_w - icon_w) / 2.0 + right_offset + 1)
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
@@ -5899,9 +5991,10 @@ def draw_bool(input_value: bool, draw_state, left_mouse_clicked=None, max_width=
         imgui.same_line(text_inset + left_margin + right_offset)
         imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + 2)
         imgui.text_colored(label, *text_color)
-
+    
+    # Melty click events are preferable to imgui ones. left_mouse_down, left_mouse_clicked, left_mouse_drag etc 
+    # Are injected automatically when those arguments are present in a @render_func signature.
     if box_hovered and imgui.is_mouse_clicked(0):
-        request_render()
         return True, not input_value
     else:
         return False, input_value
@@ -6959,6 +7052,34 @@ if _RUN_RESULT_HOLDERS is None:
     _RUN_RESULT_HOLDERS = _weakref.WeakSet()
 
 
+# Runner draw_states with a threaded run IN FLIGHT - draw_function's
+# single-flight policy. Process-living and NOT serialized: this latch used
+# to be `draw_state.misc["_run_busy"]`, and it rides in custom.pkl with
+# the draw_state, so a restart while a run was in flight (2026-08-23: the
+# Pending Saves recompile) reloaded the runner as "busy" in every later
+# session - locked forever, every new run refused as "already running".
+_RUN_BUSY = globals().get("_RUN_BUSY")
+if _RUN_BUSY is None:
+    import weakref as _weakref
+    _RUN_BUSY = _weakref.WeakSet()
+
+
+def is_run_busy(draw_state) -> bool:
+    return draw_state in _RUN_BUSY
+
+
+def run_busy_begin(draw_state) -> bool:
+    """Claim the runner for a run. False if one is already in flight."""
+    if draw_state in _RUN_BUSY:
+        return False
+    _RUN_BUSY.add(draw_state)
+    return True
+
+
+def run_busy_end(draw_state) -> None:
+    _RUN_BUSY.discard(draw_state)
+
+
 def _release_run_results():
     for ds in list(_RUN_RESULT_HOLDERS):
         try:
@@ -7045,11 +7166,14 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
 
         sees_this = 0
 
+    # A pkl written while the old misc-latch was active reloads as busy -
+    # scrub it; the latch is _RUN_BUSY now (never persisted).
+    draw_state.misc.pop("_run_busy", None)
+
     def _run():
         if run_in_thread:
-            if draw_state.misc.get("_run_busy"):
+            if not run_busy_begin(draw_state):
                 return  # single-flight: one run per runner at a time
-            draw_state.misc["_run_busy"] = True
             # Snapshot params so a mid-run edit can't give the worker a
             # half-updated dict; never run a @render_func WRAPPER off-thread
             # (it mutates process-global Melty stacks - see run_in_background),
@@ -7069,7 +7193,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
                     print_colored_traceback(*sys.exc_info())
                     _respond_to_cuda_oom(e, input_value.__name__)
                 finally:
-                    draw_state.misc.pop("_run_busy", None)
+                    run_busy_end(draw_state)
                     # invalidate_up_current reads the live render stack - only
                     # valid mid-render on the GL thread. Off-thread completion
                     # marks the runner's subtree by tile id (force: the result
@@ -7103,7 +7227,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             print_colored_traceback(*sys.exc_info())
             _respond_to_cuda_oom(e, input_value.__name__)
 
-    busy = run_in_thread and draw_state.misc.get("_run_busy")
+    busy = run_in_thread and is_run_busy(draw_state)
     # One-offed run request (draw_function_live's Ctrl+Enter - the
     # hotkey IS the Run button): always popped, so it can't replay on later
     # frames; dropped while busy, matching a click during a threaded run.
@@ -7135,7 +7259,7 @@ def draw_function(input_value, name, draw_state, unique, auto_run=None, wrap=Fal
             draw_state.result = None
             draw_state.misc.pop("_result_frame", None)
 
-    if run_in_thread and draw_state.misc.get("_run_busy"):
+    if run_in_thread and is_run_busy(draw_state):
         imgui.same_line(spacing=10)
         imgui.text_colored("", 0.55, 0.75, 1.0, 1.0)
         imgui.new_line()
@@ -9091,6 +9215,8 @@ def _ancestor_call_line(target_ds, ancestor_ds):
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
                       search_active=False,
                       enter_key_down=None, tab_state: TabState = None, **kwargs):
+    if input_value is None:
+        return False, None
     context_menu_offset = input_value.context_menu_offset
     # imgui.text(type(input_value._input_value).__name__)
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))

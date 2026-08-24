@@ -125,6 +125,12 @@ class _InputState:
     # True when the current press is the SECOND down of a double-click (set in
     # feed_down). Lets a drag off this press dispatch as DOUBLE_DRAGGED.
     is_double_press: bool = False
+    # True when this press is a CHORD - a mouse button pressed while the other
+    # button is still held (see feed_down). A chorded press is level state
+    # only: is_down() reads it, nothing is dispatched for it (no DOWN, no drag
+    # events, no HELD, no CLICKED/UP on release). Panel window resize reads
+    # is_down("left_mouse") during a right-drag to pick the corner.
+    chord: bool = False
 
 
 _parse_cache: dict[str, tuple[str, str, bool, bool]] = {}  # (input_id, action, inverted, non_blocking)
@@ -250,7 +256,8 @@ class InputHandler:
     __slots__ = (
         '_states', '_hovered', '_prev_hovered', '_pending', '_cursor_x', '_cursor_y',
         '_modifiers', '_last_dx', '_last_dy', '_drag_capture', '_drag_activated',
-        '_down_origins', '_blocker_views', '_pending_clicks'
+        '_down_origins', '_blocker_views', '_pending_clicks',
+        '_view_cursor', '_drag_cursor', 'cursor_shape'
     )
 
     def __init__(self):
@@ -274,6 +281,14 @@ class InputHandler:
         # double-click window expires with no double; cancelled when a 2nd press
         # (is_double_press) or a DOUBLE_CLICKED for that input arrives.
         self._pending_clicks: dict[str, tuple] = {}
+        # Mouse-cursor shapes (see gl_gui/mouse_cursor.py). view_id -> shape
+        # registered this frame via register_hovered(cursor=); input_id ->
+        # the shape that was SHOWING when that input's drag was captured
+        # (sticky until release); and this frame's resolved shape (None =
+        # nothing asked, the last shape).
+        self._view_cursor: dict[Any, int] = {}
+        self._drag_cursor: dict[str, Any] = {}
+        self.cursor_shape = None
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -291,9 +306,15 @@ class InputHandler:
         self._last_dx = 0.0
         self._last_dy = 0.0
         self._blocker_views.clear()
+        self._view_cursor.clear()
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False, cursor=None):
         """Register hovered view. Priority 0 = topmost.
+
+        cursor=<imgui MOUSE_CURSOR_*> names the pointer shape to show while
+        this view is the topmost cursor-carrying hovered view (resolved in
+        process_frame, same blocker/z rules as events). An empty
+        `subscribed` list is allowed: a cursor-only registration.
 
         Multiple calls with the same view_id will merge subscriptions,
         using the lowest (best) priority.
@@ -309,6 +330,11 @@ class InputHandler:
         """
         if blocker:
             self._blocker_views.add(view_id)
+        if cursor is not None:
+            self._view_cursor[view_id] = cursor
+        # Stamped even on a cursor-only (empty subscribed) registration: the
+        # blocker pass keeps a blocker's OWN tile by this map.
+        _view_id_to_tile_id[view_id] = tile_id
 
         # Parse new subscriptions
         new_subs = set()
@@ -374,6 +400,53 @@ class InputHandler:
         y = self._cursor_y if y is None else y
 
         state = self._state(input_id)
+        state.chord = False
+
+        # MOUSE BUTTON CHORDS. The default resize is a right-drag; holding the
+        # LEFT button too switches it to the top-left corner (core_render's
+        # corner_drag_mode reads is_down("left_mouse") per frame). For that
+        # handoff to be seamless the second button must be inert as an event
+        # source - a left press landing mid-right-drag would otherwise start
+        # a text selection / item pickup / window move under the cursor:
+        #  - left pressed while right is held → the left press is a chord:
+        #    level state only, nothing dispatched for it, its release silent.
+        #  - right pressed while left is held but NOT yet dragging (both
+        #    buttons pressed together, left arriving a few ms first) → the
+        #    left press becomes the chord retroactively (its capture and any
+        #    still-queued events are withdrawn) and the right press proceeds as
+        #    a normal right-drag start with the left already down.
+        #  - right pressed while a LEFT DRAG is already active (window corner,
+        #    column edge, selection) → the right press is the chord: swallowed,
+        #    so it can't trigger a second gesture on top of the first.
+        if input_id == "left_mouse":
+            other = self._states.get("right_mouse")
+            if other is not None and other.is_down:
+                state.is_down = True
+                state.chord = True
+                state.down_time = t
+                state.down_x = x
+                state.down_y = y
+                state.is_double_press = False
+                return
+        elif input_id == "right_mouse":
+            other = self._states.get("left_mouse")
+            if other is not None and other.is_down and not other.chord:
+                if self._drag_activated.get("left_mouse", False):
+                    state.is_down = True
+                    state.chord = True
+                    state.down_time = t
+                    state.down_x = x
+                    state.down_y = y
+                    state.is_double_press = False
+                    return
+                other.chord = True
+                other.is_double_press = False
+                self._drag_capture.pop("left_mouse", None)
+                self._drag_activated.pop("left_mouse", None)
+                self._down_origins.pop("left_mouse", None)
+                self._pending = [e for e in self._pending
+                                 if e.input_id != "left_mouse"]
+
         # A "double press" is the SECOND down of a double-click: it's a
         # recent click (click_count=1, within DOUBLE_CLICK_WINDOW of the last
         # release) landing near the prior press. Recorded so a drag off this
@@ -400,6 +473,13 @@ class InputHandler:
         state = self._state(input_id)
         was_down = state.is_down
         state.is_down = False
+
+        if state.chord:
+            # Releasing a chorded button: level state only - no UP, no click
+            # (and no click_count / last_up_time bookkeeping, so it can't seed
+            # a double-click either).
+            state.chord = False
+            return
 
         self._emit(input_id, EventAction.UP, x, y, t=t)
 
@@ -685,6 +765,8 @@ class InputHandler:
                 if capture_views:
                     drag_capture[event.input_id] = (capture_views[0], drag_action)
                     drag_activated[event.input_id] = False
+                    # The shape showing at the press sticks through the drag.
+                    self._drag_cursor[event.input_id] = self.cursor_shape
 
                 # Record all currently hovered views as origin for this input
                 down_origins[event.input_id] = {v for v, _, _ in self._hovered}
@@ -695,6 +777,7 @@ class InputHandler:
                 cap = drag_capture.pop(event.input_id, None)
                 was_activated = drag_activated.pop(event.input_id, False)
                 down_origins.pop(event.input_id, None)
+                self._drag_cursor.pop(event.input_id, None)
                 if cap is not None and was_activated:
                     captured_view, drag_action = cap
                     rel_action = (EventAction.DOUBLE_DRAG_RELEASED
@@ -835,6 +918,28 @@ class InputHandler:
                     add_event(v, k, ev)
             if pending_clicks:
                 request_render()
+
+        # --- Mouse-cursor shape (gl_gui/mouse_cursor.py) ---
+        # A captured drag pins the shape that was showing at its press -
+        # and mutes hover shapes afterwards (dragging a window across an
+        # icon must not flash the I-beam). Otherwise the topmost hovered
+        # view carrying a cursor wins; _hovered is priority-sorted and
+        # already blocker-pruned, so a covered view never shows its shape.
+        shape = None
+        if drag_capture:
+            for input_id in drag_capture:
+                c = self._drag_cursor.get(input_id)
+                if c is not None:
+                    shape = c
+                    break
+        else:
+            vc = self._view_cursor
+            for v, _, _ in self._hovered:
+                c = vc.get(v)
+                if c is not None:
+                    shape = c
+                    break
+        self.cursor_shape = shape
 
         return result, result_by_type
 

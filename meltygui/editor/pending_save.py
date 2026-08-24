@@ -1208,6 +1208,8 @@ class PendingSave:
         import time
         from src.lsd.gl_gui.melty import Melty
         from src.lsd.gl_gui.utils.glfw_utils import request_render
+        from src.lsd.gl_gui.view.core_views.new_core_view import (
+            is_run_busy, run_busy_begin, run_busy_end)
 
         def _find_runner():
             try:
@@ -1240,27 +1242,36 @@ class PendingSave:
                 ds = _find_runner()
                 if ds is not None:
                     break
-        if ds is not None:
-            if ds.misc.get("_run_busy"):
-                return "recompile already running — try again shortly"
-            ds.misc["_run_busy"] = True
-            Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
-            request_render()
+        # The busy latch is draw_function's long-lifetime _RUN_BUSY (not
+        # serialized - the misc flag once persisted into ds.pkl and reloaded
+        # every session as "True"). Armed INSIDE the try so nothing between
+        # arming and the finally (the invalidate below once sat outside it)
+        # can leave the runner busy for good.
+        if ds is not None and is_run_busy(ds):
+            return "recompile already running — try again shortly"
         try:
-            summary = cls.recompile_all()
-        except Exception as e:
-            summary = f"recompile FAILED: {type(e).__name__}: {e}"
             if ds is not None:
-                ds.misc["_run_error"] = summary
-        else:
-            if ds is not None:
-                ds.result = summary
-                ds.misc["_result_frame"] = Melty.frame_count
-                ds.misc.pop("_run_error", None)
+                run_busy_begin(ds)
+                Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
+                request_render()
+            try:
+                summary = cls.recompile_all()
+            except Exception as e:
+                summary = f"recompile FAILED: {type(e).__name__}: {e}"
+                if ds is not None:
+                    ds.misc["_run_error"] = summary
+            else:
+                if ds is not None:
+                    ds.result = summary
+                    ds.misc["_result_frame"] = Melty.frame_count
+                    ds.misc.pop("_run_error", None)
         finally:
             if ds is not None:
-                ds.misc.pop("_run_busy", None)
-                Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
+                run_busy_end(ds)
+                try:
+                    Melty.cache.invalidate_up(ds._tile_id, force=True, max_depth=6)
+                except Exception as e:
+                    print(f"recompile_all_ui: invalidate after run failed: {e!r}")
             request_render()
         return summary
 
@@ -1279,7 +1290,7 @@ def draw_pending_saves():
     # recompile_status) instead of parking forever.
     RenderFuncs.draw_function(PendingSave.recompile_all, name="recompile_all", icon="",
                               tint=(0,0,0,1), show_bg=False, run_in_thread=True,
-                              result_fade_frames=30)
+                              result_fade_frames=30, temp=True)
 
     # Result of the last external-change absorb (recompile_all's merge pass).
     # Persistent, no fading if a save rewrote the file - the per-file

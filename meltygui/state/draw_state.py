@@ -1894,7 +1894,7 @@ class DrawState(DictConversion):
         for f, v in snapshot.items():
             setattr(self, f, v)
 
-    def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None):
+    def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None):
         if self.parent_window is None and not self.closable:
             priority_delta -= 1
 
@@ -1920,7 +1920,7 @@ class DrawState(DictConversion):
 
             Core.melty.event_handler.register_hovered(view_id, event_names,
                                                       priority=priority - priority_delta,
-                                                      tile_id=self._tile_id)
+                                                      tile_id=self._tile_id, cursor=cursor)
 
             overlay = imgui.get_overlay_draw_list()
             overlay.channels_set_current(Core.melty.max_layer - 1)

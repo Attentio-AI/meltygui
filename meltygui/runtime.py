@@ -1605,14 +1605,25 @@ class Melty:
         """
         cls.resolve_ui_scale()
 
-        if cls.font_mgr is None or cls.font_mgr.scale == cls.ui_scale:
+        if cls.font_mgr is None:
             return
-        if not cls.font_mgr.rebuild(cls.ui_scale, impl):
+        if cls.font_mgr.scale != cls.ui_scale:
+            if not cls.font_mgr.rebuild(cls.ui_scale, impl):
+                return
+        # Lazy fonts: bake whatever last-frame's get()s queued (fonts
+        # are seeded minimally at boot - see FontManager.prewarm). Same
+        # between-frames slot and same aftermath as a scale rebuild: the
+        # atlas repacked, so old handles dangle and every tile is stale.
+        elif not cls.font_mgr.flush_pending(impl):
             return
         # Handles grabbed once at boot now point into the freed atlas.
-        cls.large_font = cls.font_mgr.get(Font.DEJAVU_SANS_50)
+        # peek, not get: a get here would bake DEJAVU_SANS_50 after every
+        # flush and force it into the atlas even when nothing draws it (its
+        # only push site is test_applet). Consumers of large_font get None
+        # until something actually get()s the font.
+        cls.large_font = cls.font_mgr.peek(Font.DEJAVU_SANS_50)
         if cls.vis is not None and hasattr(cls.vis, "fa_font"):
-            cls.vis.fa_font = cls.font_mgr.get(Font.FONTAWESOME_14)
+            cls.vis.fa_font = cls.font_mgr.peek(Font.FONTAWESOME_14)
         if cls.cache is not None:
             cls.cache.invalidate_all()
 
@@ -2747,13 +2758,14 @@ class Melty:
 
     @classmethod
     def is_wrapped(cls):
-        if len(cls.wrap_stack) == 0:
+        if len(cls.wrap_stack) == 0:        
             return False
         else:
             return cls.wrap_stack[-1]
 
     @classmethod
     def draw(cls, draw_state, cursor_pos=None, detached=False):
+
 
         if draw_state is None:
             return
@@ -3287,7 +3299,8 @@ class Melty:
 
         # Drag-focus mode (Swoosh.drag_focus): which windows are mid-gesture
         # this frame. A window move subscribes ("left_mouse_drag",
-        # "window_move"); a ctrl+right drag / corner resize subscribes
+        # "window_move"); a right-drag corner resize (bottom-right, or
+        # top-left with the left button held as a chord) subscribes
         # ("right_mouse_drag", "corner_drag"). on_action composes the view_id
         # as f"{tile_id}_{view_id}", so the set of windows currently being
         # dragged is read straight off this frame's event map - no extra state
@@ -3947,6 +3960,13 @@ class Melty:
         # it's safe to touch Melty/imgui state.
         from src.lsd.gl_gui.mcp_eval import process_evals
         process_evals()
+
+        # Push this frame's resolved pointer shape to GLFW: imgui's own
+        # request (titlebar edges, widgets) first, else the topmost hover
+        # subscription's cursor= (gl_gui/mouse_cursor.py). Same thread as
+        # every other GLFW call here.
+        from src.lsd.gl_gui import mouse_cursor
+        mouse_cursor.apply(window)
 
         _ps_t6 = _pp()
         glfw.swap_buffers(window)

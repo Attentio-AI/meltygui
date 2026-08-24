@@ -17,6 +17,7 @@ from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, add_glow, 
 from src.lsd.gl_gui.view.core_views.core_render import render_func, SCROLLBAR_MARGIN
 from src.lsd.gl_gui.view.core_views.headers import draw_header, draw_footer
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight_multi
+from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui.melty import Melty, SearchTerm
 from src.lsd.gl_gui.perf_trace import trace as _ptrace
 from src.lsd.gl_gui.fonts import Font
@@ -11694,15 +11695,25 @@ def draw_text(input_value: str, height=None,
     # inside collapsed folds must be found and counted, and the fold section
     # already auto-expanded when it hides the CURRENT match. Cached
     # by (text identity, term) - shared with the fold section's lookup.
+    # Late-bound on edit frames (same pattern as _view_usage_spans): with no
+    # collapsed fold the full buffer IS `text`, the buffer the glyph pass
+    # draws this frame - keyboard handling above reassigns it, while _fold_full
+    # stays the frame-start buffer. Matching _fold_full left every highlight
+    # after the caret off by the typed/deleted characters for the edit frame.
+    # With a fold collapsed the match stays frame-start (_fold_off projects
+    # against the frame-start layout) and the resulting display coords are
+    # splice-shifted across this run's edit below.
+    _match_base = _fold_full if _fold_segments else text
     _smc = getattr(ds, '_search_match_cache', None)
-    if (_smc is not None and _smc[0] is _fold_full
+    if (_smc is not None and _smc[0] is _match_base
             and _smc[1] == str(search_term)):
         search_matches = _smc[2]
     else:
-        search_matches = _find_matches(_fold_full, search_term)
-        ds._search_match_cache = (_fold_full, str(search_term), search_matches)
+        search_matches = _find_matches(_match_base, search_term)
+        ds._search_match_cache = (_match_base, str(search_term), search_matches)
     # Display-coord projection for highlight/scroll; a match still hidden
-    # inside a collapsed fold projects to None and it isn't drawn.
+    # inside a collapsed fold projects to None and just isn't drawn. Slot
+    # alignment with search_matches is kept (current_local indexes into it).
     if _fold_segments and search_matches:
         _sm_disp = []
         for _sm_s, _sm_e in search_matches:
@@ -11713,6 +11724,22 @@ def draw_text(input_value: str, height=None,
                 _p1 = _fold_off(_sm_e)
                 _sm_disp.append((_p0, _p1 if _p1 is not None
                                  else _p0 + (_sm_e - _sm_s)))
+        if _disp_sp is not None:
+            # Edit frame with a fold collapsed: the projections above are
+            # frame-start - shift them across this run's splice so the
+            # highlights track the glyphs (same remap as the usage washes,
+            # done by hand here because _display_splice_shift drops entries
+            # and the None slots must survive for index alignment).
+            _sp_p, _sp_oe, _sp_d = _disp_sp[0], _disp_sp[1], _disp_sp[2]
+            for _i, _m in enumerate(_sm_disp):
+                if _m is None:
+                    continue
+                if _m[0] >= _sp_oe:
+                    _sm_disp[_i] = (_m[0] + _sp_d, _m[1] + _sp_d)
+                elif _m[1] > _sp_p:
+                    # Touches the edited region: the text under it changed -
+                    # hide for this frame; next frame the rescan re-finds it.
+                    _sm_disp[_i] = None
     else:
         _sm_disp = search_matches
 
@@ -11749,9 +11776,10 @@ def draw_text(input_value: str, height=None,
     # (is_search_box) must never self-count, so it clears any matcher - its text
     # IS the query, so a matcher inside would always self-match (phantom +1).
     if not is_search_box:
-        _match_text = _fold_full   # count hidden-in-fold matches too
+        # _match_base: the full buffer (hidden-in-fold matches count too),
+        # post-shift when this body run edited it - see the match section above.
         ds._search_matcher = (
-            lambda term, sess, _t=_match_text: sess.claim(len(_find_matches(_t, term))))
+            lambda term, sess, _t=_match_base: sess.claim(len(_find_matches(_t, term))))
     else:
         ds._search_matcher = None
 
@@ -11944,8 +11972,20 @@ def draw_text(input_value: str, height=None,
     # While a click-drag is in flight the wrapper clip removes that reserve,
     # so widen the body clip to match and let glyphs run under the bar.
     if Melty.on_drag:
-        rect_max_x += scroll_bar_width + SCROLLBAR_MARGIN
+        rect_max_x += scroll_bar_width
     rect_max_y = draw_state.abs_clip_rect[3]
+
+    # Native I-beam over the text body (gutter, jump bar and scrollbar keep
+    # the arrow). Cursor-only subscription - no events - so it escapes the
+    # click subs' z-order/blocker rules and sticks through a selection drag.
+    # priority_delta=3 lands this AT the view's wrapper registration
+    # (core_render registers event params at `priority - 3`): the blocker
+    # pass keeps only entries at/above the enclosing closable window's own
+    # `priority - 3`, and a delta-0 entry from a wrapper child sits below
+    # that and would be pruned by its own window.
+    draw_state.on_action([], view_id="text_cursor",
+                         rect=(rect_min_x, rect_min_y, rect_max_x, rect_max_y),
+                         priority_delta=3, cursor=mouse_cursor.TEXT)
 
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)
 

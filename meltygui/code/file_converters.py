@@ -9,6 +9,7 @@ I/O callbacks (load_text, load_file_bytes, etc.) are used as load_data
 parameters on forward converters. Save handlers (recompile_fn, etc.)
 are used as save_data parameters on reverse converters.
 """
+import ast
 import builtins
 from src.lsd.gl_gui.notifications import lag_traced
 
@@ -801,12 +802,12 @@ def _recompile_class(cls: type, source: str, filename: str) -> None:
     # re-hotswaps this clone back over cls, keeping methods/attrs in place.
     _prev_cls = _snapshot_class(cls)
 
-    _hotswap_class(cls, new_cls)
+    _hotswap_class(cls, new_cls, src_map=_attr_source_map(dedented), qualname=cls.__name__)
     _redirect_class_registrations(cls, new_cls)
     Melty.cache.invalidate_up_by_obj(cls, max_depth=10)
 
     def _restore(c=cls, snap=_prev_cls):
-        _hotswap_class(c, snap)
+        _hotswap_class(c, snap, force=True)
         _redirect_class_registrations(c, snap)
         Melty.cache.invalidate_up_by_obj(c, max_depth=10)
     # Class bodies compile at buffer-relative line numbers (the editor shows the
@@ -857,6 +858,9 @@ def _recompile_module(module: types.ModuleType, source: str,
     _swapped_funcs = []
     _swapped_classes = []
     new_code_ids = set()
+    src_map = _attr_source_map(source)
+    module_baseline = old_attrs.get("__hotswap_attr_src__")
+    live_by_name = {}
     try:
         # annotation_scope: module bodies hold @window classes whose field
         # annotations CALL render funcs - same interception _recompile_class
@@ -923,12 +927,13 @@ def _recompile_module(module: types.ModuleType, source: str,
                 if both_wrapped:
                     invalidate_address_cache(old_raw)
                 _swapped_funcs.append(old_obj)
+                live_by_name[name] = old_obj
 
             elif isinstance(old_obj, type) and isinstance(new_obj, type):
                 _snap = _snapshot_class(old_obj)
 
                 def _restore_cls(o=old_obj, s=_snap):
-                    _hotswap_class(o, s)
+                    _hotswap_class(o, s, force=True)
                     _redirect_class_registrations(o, s)
                     invalidate_address_cache(o)
                 _member_restores.append(_restore_cls)
@@ -942,11 +947,24 @@ def _recompile_module(module: types.ModuleType, source: str,
                 # what the binding ends up as regardless, so moving it up is
                 # free and closes the window for every hotswappable class.
                 module.__dict__[name] = old_obj
-                _hotswap_class(old_obj, new_obj)
+                _hotswap_class(old_obj, new_obj, src_map=src_map, qualname=name)
                 _redirect_class_registrations(old_obj, new_obj)
                 invalidate_address_cache(old_obj)
                 new_code_ids |= _class_code_objects(new_obj)
                 _swapped_classes.append(old_obj)
+                live_by_name[name] = old_obj
+
+            elif (not (name.startswith("__") and name.endswith("__"))
+                  and not isinstance(old_obj, (types.FunctionType, type, types.ModuleType))
+                  and not isinstance(new_obj, (types.FunctionType, type, types.ModuleType))):
+                # Module-level data binding (`registry = {}`, `host = RenderHost(...)`,
+                # `event_handler = EventHandler()`): same rule as class attrs -
+                # an unchanged source expression keeps the live object.
+                if _keep_live_attr(module_baseline, name, old_obj, new_obj, src_map.get("")):
+                    module.__dict__[name] = old_obj
+
+        _stamp_attr_src(module, src_map.get("", {}))
+        _repoint_attribute_bindings(module, source, live_by_name)
     except Exception as e:
         # Roll back to old attributes on error
         module.__dict__.update(old_attrs)
@@ -987,8 +1005,166 @@ _ENUM_INTERNALS = frozenset({
 })
 
 
-def _hotswap_class(old_cls: type, new_cls: type) -> None:
-    """Patch an existing class in place with new methods and attributes."""
+
+# ---------------------------------------------------------------------------
+# Hotswap state preservation.
+#
+# Hotswap applies SOURCE edits and preserves RUNTIME state. A class body (or a
+# module body) re-executed by a hotswap yields every data attribute's new
+# value value and copying those over the live class is exactly what caused
+# `Melty.cache` to wipe on a melty.py swap (classy-singleton, all runtime
+# state is in attributes) and emptied `PendingSave.pending_saves`. The rule
+# that separates an edit from runtime drift is the attribute's SOURCE
+# EXPRESSION: unchanged text → keep the live value; changed text → apply the
+# new one. The previous compile's expressions are the baseline, stamped as
+# `__hotswap_attr_src__` on each class / module by `stamp_hotswap_baselines`
+# at boot (latent_descent.main, background thread) and refreshed after every
+# swap. Without a baseline (a module imported after the boot stamp, first
+# swap) a compiled None / empty container over a populated live value is
+# taken as runtime-filled state and kept; everything else applies.
+# ---------------------------------------------------------------------------
+
+def _norm_expr(text):
+    return "".join(text.split()) if isinstance(text, str) else text
+
+
+def _attr_source_map(source: str) -> dict:
+    """{qualname: {attr: expr_text}} for the module body ("" key) and every
+    class body in `source` (nested classes under their dotted qualname). Only
+    direct body assignments count; classes inside functions are skipped.
+    Expression text is whitespace-normalized so a dedented class span and the
+    whole module compare equal."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    out = {}
+
+    def _collect(body, key):
+        m = out.setdefault(key, {})
+        for node in body:
+            if isinstance(node, ast.Assign):
+                seg = _norm_expr(ast.get_source_segment(source, node.value))
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        m[target.id] = seg
+            elif (isinstance(node, ast.AnnAssign) and node.value is not None
+                  and isinstance(node.target, ast.Name)):
+                m[node.target.id] = _norm_expr(ast.get_source_segment(source, node.value))
+            elif isinstance(node, ast.ClassDef):
+                _collect(node.body, f"{key}.{node.name}" if key else node.name)
+
+    _collect(tree.body, "")
+    return out
+
+
+def _keep_live_attr(baseline, name, old_val, new_val, attr_src) -> bool:
+    """True when a plain data attribute keeps its LIVE value across a swap:
+    its source expression is unchanged against the baseline, or (no baseline)
+    the compiled value is the empty shape of runtime-populated state."""
+    if attr_src is not None and baseline is not None and name in attr_src and name in baseline:
+        return baseline[name] == attr_src[name]
+    return ((new_val is None or _is_empty_value(new_val))
+            and not (old_val is None or _is_empty_value(old_val)))
+
+
+def _stamp_attr_src(obj, attrs) -> None:
+    try:
+        if isinstance(obj, types.ModuleType):
+            obj.__dict__["__hotswap_attr_src__"] = dict(attrs)
+        else:
+            type.__setattr__(obj, "__hotswap_attr_src__", dict(attrs))
+    except Exception:
+        pass
+
+
+def stamp_module_baseline(module: types.ModuleType, source: str = None) -> None:
+    """Record the current source expressions of the module's data bindings
+    and of every class defined in it (nested included) as the hotswap
+    baseline. `source` defaults to the module's file on disk."""
+    if source is None:
+        f = getattr(module, "__file__", None)
+        if not f:
+            return
+        source = Path(f).read_text(encoding="utf-8")
+    src_map = _attr_source_map(source)
+    _stamp_attr_src(module, src_map.get("", {}))
+    for qual, attrs in src_map.items():
+        if not qual:
+            continue
+        obj = module
+        for part in qual.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                break
+        if isinstance(obj, type) and getattr(obj, "__module__", None) == module.__name__:
+            _stamp_attr_src(obj, attrs)
+
+
+def stamp_hotswap_baselines(delay: float = 0.0) -> int:
+    """Boot-time baseline stamp for every loaded project module (both the
+    `src.lsd.*` and `lsd.*` identities). Disk reads + ast only, so it runs on
+    a background thread; `delay` lets startup imports land first. Returns the
+    number of modules stamped."""
+    import sys as _sys
+    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
+    if delay:
+        time.sleep(delay)
+    n = 0
+    for mod in list(_sys.modules.values()):
+        f = getattr(mod, "__file__", None)
+        if not f or not f.endswith(".py") or not is_editable_source(f):
+            continue
+        try:
+            stamp_module_baseline(mod)
+            n += 1
+        except Exception:
+            continue
+    return n
+
+
+def _repoint_attribute_bindings(module: types.ModuleType, source: str, live_by_name: dict) -> None:
+    """Module-level `holder.attr = Name` statements re-ran during the exec and
+    bound the THROWAWAY object (melty.py: `Core.melty = Melty`). Re-point each
+    at the live object the module dict holds for that name."""
+    if not live_by_name:
+        return
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if not isinstance(value, ast.Name) or value.id not in live_by_name:
+            continue
+        live = live_by_name[value.id]
+        for target in targets:
+            if not isinstance(target, ast.Attribute):
+                continue
+            try:
+                holder = eval(compile(ast.Expression(target.value), "<hotswap>", "eval"),
+                              module.__dict__)
+                if getattr(holder, target.attr, None) is not live:
+                    setattr(holder, target.attr, live)
+            except Exception:
+                continue
+
+
+def _hotswap_class(old_cls: type, new_cls: type, src_map: dict = None,
+                   qualname: str = None, force: bool = False) -> None:
+    """Patch an existing class in place with new methods and attributes.
+
+    Plain data attributes follow the state-preservation rule above
+    (`_keep_live_attr`, keyed by `src_map[qualname]`); `force=True` (rollback
+    to a snapshot) writes every member unconditionally. Nested classes are
+    patched recursively so their identity survives too."""
+    attr_src = src_map.get(qualname) if (src_map and qualname) else None
+    baseline = vars(old_cls).get("__hotswap_attr_src__") if not force else None
     _is_enum = isinstance(old_cls, EnumMeta)
     # NOTE: do NOT invalidate the address cache here.  The caller
     # (recompile_cls_fn) handles cache updates via update_address_cache.
@@ -1059,11 +1235,27 @@ def _hotswap_class(old_cls: type, new_cls: type) -> None:
                 setattr(old_cls, name, new_val)
             except (AttributeError, TypeError):
                 pass
+        elif (isinstance(old_val, type) and isinstance(new_val, type)
+              and old_val is not new_val
+              and getattr(new_val, "__qualname__", "").startswith(new_cls.__qualname__ + ".")):
+            # Nested class: patch in place (identity + runtime state survive)
+            # and move its re-run decorator registrations onto the live one.
+            _hotswap_class(old_val, new_val, src_map=src_map,
+                           qualname=f"{qualname}.{name}" if qualname else None,
+                           force=force)
+            _redirect_class_registrations(old_val, new_val)
         else:
+            if old_val is new_val:
+                continue
+            if not force and _keep_live_attr(baseline, name, old_val, new_val, attr_src):
+                continue
             try:
                 setattr(old_cls, name, new_val)
             except (AttributeError, TypeError):
                 pass
+
+    if attr_src is not None and not force:
+        _stamp_attr_src(old_cls, attr_src)
 
     # AFTER the attribute loop: an edited enum __init__ (Mode's, which derives
     # `unwrapped` from the value) is patched above, and the member state copied
