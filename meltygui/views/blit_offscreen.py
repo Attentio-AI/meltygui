@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import random
+import sys
 import traceback
 from collections import deque, defaultdict
 from copy import copy
@@ -90,6 +91,10 @@ def _bump_note(t, site):
     `_bump_trace_armed = True` on its draw_state (the tabs instrumentation in
     new_converters does this for the structured pane). ~one getattr when
     unarmed; remove with the rest of the debug lines when the hunt closes."""
+    # Always remember the LAST bump reason (one attr store); the slow
+    # capture-pass trace reads it per captured tile, so a burst of big-tile
+    # recaptures names its own trigger in the perf log.
+    t._last_bump = site
     try:
         ds = getattr(t, "draw_state", None)
         if ds is not None and getattr(ds, "_bump_trace_armed", False):
@@ -1640,7 +1645,28 @@ class TileCacheMasked:
         #     return
 
         if note is None:
-            note = Note(name="Unnamed invalidate", reason="", tint=(1, 0, 0, 0.1),
+            # Stamp the CALLER into the name: the capture-tiles trace showed
+            # the focused editor's tile re-capturing every frame with reason
+            # "Unnamed invalidate" - useless for finding who. One _getframe
+            # walk per unnamed invalidate (~µs, not per-pixel) names the line;
+            # skip our own invalidate_parent methods.
+            try:
+                caller = sys._getframe(1)
+                # Walk past the forwarding shims (DrawState.invalidate*,
+                # our invalidate_parent) to the frame that actually decided
+                # to invalidate.
+                hops = 0
+                while (caller is not None and hops < 4
+                       and caller.f_code.co_name in (
+                           "invalidate", "invalidate_up", "invalidate_parent",
+                           "invalidate_by_obj", "invalidate_up_by_obj")):
+                    caller = caller.f_back
+                    hops += 1
+                site = (f"{caller.f_code.co_filename.rsplit('/', 1)[-1]}"
+                        f":{caller.f_lineno}" if caller is not None else "?")
+            except Exception:
+                site = "?"
+            note = Note(name=f"Unnamed invalidate {site}", reason="", tint=(1, 0, 0, 0.1),
                         frame=Melty.frame_count, draw_state=draw_state)
 
         note.draw_state = draw_state
@@ -5014,6 +5040,21 @@ class TileCacheMasked:
                           p5_full_mask=round((_cp_t5 - _cp_t4) * 1000.0, 1),
                           tail=round(_cp_tot - (_cp_t5 - _cp_t0) * 1000.0, 1),
                           tiles=len(local_pending), masks=len(local_mask_rects))
+                    # Name the tiles this slow pass re-captured, with the
+                    # reason each was last invalidated (_bump_note stamps
+                    # _last_bump) - the "who re-bumped and why" answer for a
+                    # burst of slow frames is straight in the log.
+                    who = []
+                    for _pt in local_pending[:8]:
+                        _pds = getattr(_pt, "draw_state", None)
+                        _pw, _ph = getattr(_pt, "size", (0, 0)) or (0, 0)
+                        # _last_bump lives on the TILE (Pending wraps it)
+                        _ptile = getattr(_pt, "tile", None)
+                        who.append(f"{getattr(_pds, 'name', None)}"
+                                   f"[{int(_pw)}x{int(_ph)}]"
+                                   f"<{getattr(_ptile, '_last_bump', '?')}>")
+                    if who:
+                        _cptr("capture pass tiles", tiles=" | ".join(who))
                 except Exception:
                     pass
             self._detect_occluder_changes(self._mask_rects)

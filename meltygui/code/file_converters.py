@@ -1028,6 +1028,29 @@ def _norm_expr(text):
     return "".join(text.split()) if isinstance(text, str) else text
 
 
+def _segment(lines, node):
+    """ast.get_source_segment's byte-offset slicing over a PRE-SPLIT line
+    list. The stdlib helper re-splits the ENTIRE source on every call
+    (`_splitlines_no_ff`), making the boot baseline pass O(assignments ×
+    file size) — measured as seconds of GIL-held CPU on the
+    hotswap-baselines thread, convoying the render thread's per-GL-call
+    GIL reacquisitions into the post-boot 1000ms frame burst."""
+    try:
+        if node.end_lineno is None or node.end_col_offset is None:
+            return None
+        lineno = node.lineno - 1
+        end_lineno = node.end_lineno - 1
+        col_offset = node.col_offset
+        end_col_offset = node.end_col_offset
+    except AttributeError:
+        return None
+    if end_lineno == lineno:
+        return lines[lineno].encode()[col_offset:end_col_offset].decode()
+    first = lines[lineno].encode()[col_offset:].decode()
+    last = lines[end_lineno].encode()[:end_col_offset].decode()
+    return "".join([first, *lines[lineno + 1:end_lineno], last])
+
+
 def _attr_source_map(source: str) -> dict:
     """{qualname: {attr: expr_text}} for the module body ("" key) and every
     class body in `source` (nested classes under their dotted qualname). Only
@@ -1038,19 +1061,23 @@ def _attr_source_map(source: str) -> dict:
         tree = ast.parse(source)
     except SyntaxError:
         return {}
+    try:
+        lines = ast._splitlines_no_ff(source)   # exact get_source_segment lines
+    except AttributeError:                      # private helper moved/renamed
+        lines = source.splitlines(keepends=True)
     out = {}
 
     def _collect(body, key):
         m = out.setdefault(key, {})
         for node in body:
             if isinstance(node, ast.Assign):
-                seg = _norm_expr(ast.get_source_segment(source, node.value))
+                seg = _norm_expr(_segment(lines, node.value))
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         m[target.id] = seg
             elif (isinstance(node, ast.AnnAssign) and node.value is not None
                   and isinstance(node.target, ast.Name)):
-                m[node.target.id] = _norm_expr(ast.get_source_segment(source, node.value))
+                m[node.target.id] = _norm_expr(_segment(lines, node.value))
             elif isinstance(node, ast.ClassDef):
                 _collect(node.body, f"{key}.{node.name}" if key else node.name)
 
@@ -1078,16 +1105,8 @@ def _stamp_attr_src(obj, attrs) -> None:
         pass
 
 
-def stamp_module_baseline(module: types.ModuleType, source: str = None) -> None:
-    """Record the current source expressions of the module's data bindings
-    and of every class defined in it (nested included) as the hotswap
-    baseline. `source` defaults to the module's file on disk."""
-    if source is None:
-        f = getattr(module, "__file__", None)
-        if not f:
-            return
-        source = Path(f).read_text(encoding="utf-8")
-    src_map = _attr_source_map(source)
+def _apply_attr_map(module: types.ModuleType, src_map: dict) -> None:
+    """Stamp a precomputed _attr_source_map onto a module and its classes."""
     _stamp_attr_src(module, src_map.get("", {}))
     for qual, attrs in src_map.items():
         if not qual:
@@ -1101,25 +1120,56 @@ def stamp_module_baseline(module: types.ModuleType, source: str = None) -> None:
             _stamp_attr_src(obj, attrs)
 
 
+def stamp_module_baseline(module: types.ModuleType, source: str = None) -> None:
+    """Record the current source expressions of the module's data bindings
+    and of every class defined in it (nested included) as the hotswap
+    baseline. `source` defaults to the module's file on disk."""
+    if source is None:
+        f = getattr(module, "__file__", None)
+        if not f:
+            return
+        source = Path(f).read_text(encoding="utf-8")
+    _apply_attr_map(module, _attr_source_map(source))
+
+
 def stamp_hotswap_baselines(delay: float = 0.0) -> int:
     """Boot-time baseline stamp for every loaded project module (both the
     `src.lsd.*` and `lsd.*` identities). Disk reads + ast only, so it runs on
     a background thread; `delay` lets startup imports land first. Returns the
-    number of modules stamped."""
+    number of modules stamped.
+
+    Dual-identity twins share one read + parse (grouped by __file__), and a
+    short sleep between files keeps this CPU-bound pass from GIL-convoying
+    the render thread's per-GL-call reacquisitions — this thread was the
+    invisible source of the post-boot 1000ms frame burst (stall watchdog,
+    08-24), amplified by get_source_segment's quadratic re-split (fixed in
+    _segment)."""
     import sys as _sys
     from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
+    from src.lsd.gl_gui.perf_trace import span as _pt_span
     if delay:
         time.sleep(delay)
-    n = 0
+    by_file = {}
     for mod in list(_sys.modules.values()):
         f = getattr(mod, "__file__", None)
         if not f or not f.endswith(".py") or not is_editable_source(f):
             continue
-        try:
-            stamp_module_baseline(mod)
-            n += 1
-        except Exception:
-            continue
+        by_file.setdefault(f, []).append(mod)
+    n = 0
+    with _pt_span("hotswap baselines stamp", files=len(by_file)):
+        for f, mods in by_file.items():
+            try:
+                source = Path(f).read_text(encoding="utf-8")
+                src_map = _attr_source_map(source)
+            except Exception:
+                continue
+            for mod in mods:
+                try:
+                    _apply_attr_map(mod, src_map)
+                    n += 1
+                except Exception:
+                    continue
+            time.sleep(0.002)
     return n
 
 

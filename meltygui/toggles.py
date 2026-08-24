@@ -1645,7 +1645,7 @@ class Toggles:
     # meaningful unit of work (parse, graph compute, warmer pass, drag wait,
     # attach) writes a timestamped, thread-labeled line to
     # /tmp/lsd_symbol_perf.log (perf_trace.py). Near-zero cost when off.
-    symbol_perf_log = False   # TEMP: on while debugging param-edit → editor wake chain
+    symbol_perf_log = True    # TEMP: on to capture the ~1300ms jump shortly after boot
     attrib_churn_log = False
     debug_threads = False
 

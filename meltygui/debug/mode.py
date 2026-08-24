@@ -49,6 +49,16 @@ class ModeOverrides:
 
 @window
 class Mode(Enum):
+    def __reduce_ex__(self, protocol):
+        # Pickle BY NAME. Enum's default pickles by VALUE, and the values are
+        # ModeOverrides dicts full of live functions/classes - unpicklable, so
+        # any structure holding a resolved Mode member (a cst-dict parse of a
+        # span saying `mode=Mode.X`) silently failed to serialize and disabled
+        # the cst-dict cache for that file (full cold parse every session).
+        # getattr(Mode, name) at load also drives hotswap's enum member
+        # reconcile: the loading session's live member is returned.
+        return (getattr, (self.__class__, self._name_))
+
     def get_config_for(self, input_value=None, the_type=None):
         if input_value is not None:
             the_type = type(input_value)

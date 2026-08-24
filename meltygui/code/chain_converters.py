@@ -453,9 +453,24 @@ def _harvest_live_span_parses():
             cs = host_code_state(sh)
             addr = getattr(cs, "address", None)
             if (addr is None or getattr(addr, "path", None) is None
-                    or getattr(cs, "_pending_save", False)
                     or getattr(cs, "_save_refused", False)):
                 continue
+            # _pending_save is stale here BY TIMING, not by state: the
+            # apply_all_saves that runs just before this harvest already wrote
+            # the pending edits, but the flag is normally cleared when the file
+            # watcher reports the self-write - an event that never gets
+            # called during shutdown. Trust the queue instead: only a save
+            # that SURVIVED apply_all_saves (SaveConflict, still pending)
+            # and disk does not hold this buffer. Skipping on the flag made
+            # every actively-edited file miss the cache on every boot - the
+            # recurring multi-second cold parse of exactly the file being
+            # worked on.
+            if getattr(cs, "_pending_save", False):
+                from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+                _path = str(addr.path)
+                if any(str(getattr(a, "path", None)) == _path
+                       for a in PendingSave.pending_saves):
+                    continue
             wds = getattr(dh, "_wrapper_draw_state", None)
             ms = next((v for v in (getattr(wds, "misc", None) or {}).values()
                        if isinstance(v, ModesState)), None)

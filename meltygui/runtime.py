@@ -1628,6 +1628,37 @@ class Melty:
             cls.cache.invalidate_all()
 
     @classmethod
+    def focused_key_pending(cls):
+        """True when the focused text view must re-run THIS frame to catch
+        keyboard input: a non-modifier key event is queued, or one is held.
+
+        Press EDGES from the callback queue (frame_key_events) come FIRST,
+        level state second. Under load a key is pressed AND released inside
+        one slow frame — both arrive in the same wait_events batch — so
+        glfw.get_key already reads RELEASE by the time begin_frame runs, the
+        focused editor never re-ran, and end_frame cleared the queued
+        keystroke unseen: typed characters vanished whenever the app lagged.
+        The queue keeps every press (same fix begin_frame's popover block
+        got). The glfw.get_key level scan stays as the HELD-key fallback:
+        GLFW REPEAT is sparse or absent (Wayland), so a key held across
+        frames must keep re-rendering for the editor's imgui-synthesized
+        auto-repeat to sample.
+
+        Bare modifiers count in NEITHER path — no edge, no text — a held
+        Shift during a camera pan force-redrew the focused editor's whole
+        parent window per frame (120 → 40fps); a modifier+key combo still
+        triggers via the non-modifier key itself."""
+        for k, _m in cls.frame_key_events:
+            if not (glfw.KEY_LEFT_SHIFT <= k <= glfw.KEY_RIGHT_SUPER):
+                return True
+        for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
+            if glfw.KEY_LEFT_SHIFT <= k <= glfw.KEY_RIGHT_SUPER:
+                continue
+            if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
+                return True
+        return False
+
+    @classmethod
     def begin_frame(cls):
         cls._sync_gl_error_checking()
         cls.unique_stack = []
@@ -1761,31 +1792,20 @@ class Melty:
                    tint=(1, 1, 0.4), tag="InvalidateTracker")
             request_render()
 
-        if not any(k == glfw.KEY_ESCAPE for k, _ in cls.frame_key_events):
-            for k in range(32, 349):  # GLFW_KEY_SPACE through GLFW_KEY_LAST
-                # A bare held MODIFIER (340-347: shift/ctrl/alt/super) is not
-                # input the editor needs to catch - no edge, no text - but the
-                # level check fired every frame one was down, so a shift-middle
-                # camera-click force-redrew the focused editor's whole sibling
-                # once per frame (120 → 40fps). A modifier+key combo still
-                # invalidates via the non-modifier key itself.
-                if glfw.KEY_LEFT_SHIFT <= k <= glfw.KEY_RIGHT_SUPER:
-                    continue
-                if glfw.get_key(cls.glfw_window, k) == glfw.PRESS:
-                    if focused is not None:
-                        # Editor-anchored: invalidate_up on the FOCUSED view
-                        # re-runs its own subtree (token views catch the key
-                        # edge) and its invalidate() leg force-marks every
-                        # ancestor on the parent-key path, so the cached window
-                        # still re-descends into the editor. Targeting the
-                        # parent WINDOW here instead force-swept the window's
-                        # ENTIRE subtree - the autocomplete code-dict pane
-                        # included, a 16-20ms rebuild - on every frame any key
-                        # was held (level check, not edge).
-                        note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
-                        cls.cache.invalidate_up(focused._tile_id, force=True, note=note)
-                        request_render()
-                        break
+        if focused is not None and not any(k == glfw.KEY_ESCAPE
+                                           for k, _ in cls.frame_key_events):
+            if cls.focused_key_pending():
+                # Owner-anchored: invalidate_up on the FOCUSED editor re-runs
+                # its own subtree (token views catch the key edge) and the
+                # invalidate() climb force-marks every ancestor on the
+                # parent-key path, so the cached window still re-descends
+                # into the editor. Targeting the parent WINDOW here instead
+                # force-swept the window's ENTIRE subtree - the structured
+                # code-dict pane included, a ~16-20ms rebuild - on every
+                # frame any key was held.
+                note = Note(name="Melty, on glfw key press", tint=(1, 0.5, 0), rect=(0, 0, 100, 20))
+                cls.cache.invalidate_up(focused._tile_id, force=True, note=note)
+                request_render()
 
         # Open dropdown popover: re-run its owning view on the EVENTS it responds to
         # rather than every frame - (a) a navigation key is down (Esc/arrows/Enter,

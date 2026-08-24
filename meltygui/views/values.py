@@ -265,10 +265,6 @@ def _word_edits(w, tw, budget):
                 best = d
     return best
 
-
-
-
-
 def _assign_words(qws, twords, budget):
     """Min total cost of every query word claiming a distinct target word
     (any order), or None. Tiny backtracking -- a handful of words a side."""
@@ -324,7 +320,6 @@ def _segment_match(q, twords, budget):
 
     rec(0, 0)
     return best[0]
-
 
 def _word_match(q, qws, twords, budget):
     """Total edit cost of query `q` (lowercased; `qws` its words) against a
@@ -500,6 +495,7 @@ def _file_lines(path):
 
 
 _file_lines_memo = {}  # str(path) -> (key, lines)
+
 
 
 def _symbol_source_info(obj, path):
@@ -1458,7 +1454,7 @@ _TQ, _SQ = '"' * 3, "'" * 3  # the two triple-quote delimiters
 _STR_TOK_RE = re.compile(_TQ + "|" + _SQ + "|\"|'|#")
 
 
-def _local_symbol_hits(rows, q):
+def _local_symbol_hits(rows, q, cancelled=None):
     """The Code tab's LOCAL layer from full-text `line` rows: every line
     whose CODE (not comment/string) contains the query as part of an
     identifier becomes one local-symbol hit -- the identifier -- parented on
@@ -1470,13 +1466,28 @@ def _local_symbol_hits(rows, q):
     loaded modules (no file hit) are skipped too -- the Code universe is the
     loaded-module set. Local hits rank BELOW every scored Code hit (they are
     appended after the results), so a definition always takes the default
-    highlight over its uses."""
+    highlight over its uses.
+
+    Runs on the text-search thread and is CPU-heavy for a common word (a
+    tokenize per row over up to _TEXT_SEARCH_LIMIT rows is tens of ms), so
+    every few dozen rows it parks at frame boundaries (the GIL-convoy rule)
+    and checks `cancelled` -- a True return abandons the scan and returns
+    None, which the caller must treat as "superseded, land nothing"."""
     from src.lsd.gl_gui.view.core_views.text_editor import tokenize
     from src.lsd.gl_gui.text_index import _DEF_RE
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
     look = _code_hit_lookup()
     seen = set()
     out = []
-    for row in rows:
+    # One resolve per distinct path STRING, not per row: rows repeat only a
+    # few dozen files, and Path.resolve() is ~30 syscalls each - last way it
+    # was ~25 ms of pure walk time over a full 1500-row result.
+    resolved = {}
+    for i, row in enumerate(rows):
+        if i % 64 == 0:
+            if cancelled is not None and cancelled():
+                return None
+            _park_while_frame()
         if row.get("kind") != "line" or not str(row["rel"]).endswith(".py"):
             continue
         text = row["text"]
@@ -1499,11 +1510,14 @@ def _local_symbol_hits(rows, q):
         st = text.lstrip()
         if st.startswith("import ") or (st.startswith("from ") and " import " in st):
             continue  # an import binding, not a use
-        path = Path(row["path"])
-        try:
-            path = path.resolve()
-        except OSError:
-            pass
+        path = resolved.get(row["path"])
+        if path is None:
+            path = Path(row["path"])
+            try:
+                path = path.resolve()
+            except OSError:
+                pass
+            resolved[row["path"]] = path
         if row["line"] in _in_string_lines(path):
             continue  # inside a docstring / multi-line string: prose
         scope = tuple(row.get("scope") or ())
@@ -1554,18 +1568,30 @@ def _kick_text_search(q):
         return
 
     def _run():
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
         time.sleep(Toggles.GlobalSearch.input_debounce_s)
         if GlobalSearch._text_gen != gen:
             return
         try:
             from src.lsd.gl_gui import text_index
+            # Park first: the trigram search + the hit building below are
+            # CPU chunks on this thread, and any chunk overlapping a frame
+            # GIL-convoys it - run them between frames instead. cancelled:
+            # the search is ~140 ms warm on a common word, every ms of it
+            # dead work when a newer keystroke bumps the generation, so
+            # search() aborts (returning None) within one file of the bump.
+            _park_while_frame()
             rows = text_index.search(q, limit=_TEXT_SEARCH_LIMIT,
-                                     per_file=_TEXT_PER_FILE_LIMIT)
+                                     per_file=_TEXT_PER_FILE_LIMIT,
+                                     cancelled=lambda: GlobalSearch._text_gen != gen)
+            if rows is None:
+                return  # superseded mid-scan; the newer generation does its own
         except Exception:
             traceback.print_exc()
             rows = []
         if GlobalSearch._text_gen != gen:
             return
+        _park_while_frame()
         # Bare `name.py:line` locations, full paths only where this result
         # set has two files sharing a basename - then we spell it out.
         rels_by_name = {}
@@ -1575,7 +1601,15 @@ def _kick_text_search(q):
             _text_hit(row, show_path=len(rels_by_name[os.path.basename(row["rel"])]) > 1)
             for row in rows]
         try:
-            GlobalSearch.local_results = _local_symbol_hits(rows, q)
+            # cancelled: a newer keystroke's gen aborts the scan (a
+            # tokenize() row is tens of ms on a common word's 1500 rows,
+            # all dead work once the query changed). None = superseded:
+            # land nothing, the newer generation's thread does its own.
+            locals_ = _local_symbol_hits(
+                rows, q, cancelled=lambda: GlobalSearch._text_gen != gen)
+            if locals_ is None:
+                return
+            GlobalSearch.local_results = locals_
         except Exception:
             traceback.print_exc()
             GlobalSearch.local_results = []
@@ -1617,7 +1651,11 @@ def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
          in GlobalSearch.fuzzy_results, drawn strictly BELOW the fast rows.
     The GIL-convoy risk of a CPU-bound worker (why the fuzzy pass used to
     run ON the GL thread instead) is handled inside global_search_results:
-    the fuzzy loop parks via _park_while_frame whenever a frame is mid-draw.
+    the fuzzy loop parks via _park_while_frame whenever a frame is mid-draw,
+    and `cancelled=_stale` aborts a scan within a chunk the moment a newer
+    keystroke bumps the generation — a common word's fuzzy pass is up to
+    ~70 ms of CPU, all of it dead work once the query changed, and letting
+    it finish was the residual typing hitch.
 
     `new_query` resets the highlight / file expansions when the results LAND
     (never at kick time — they'd act on the outgoing rows);
@@ -1648,7 +1686,7 @@ def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
                 return
             try:
                 res = (global_search_results(q, store, limit=limit, kinds=search_kinds,
-                                             scores=scores, tier="exact")
+                                             scores=scores, tier="exact", cancelled=_stale)
                        if len(q) >= 2
                        else _recent_hits(store, limit=limit, kinds=search_kinds))
                 if not res and search_kinds is not None and len(q) >= 2:
@@ -1657,7 +1695,7 @@ def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
                     # has rows to show. Paid only in the empty case.
                     search_kinds = None
                     res = global_search_results(q, store, limit=limit, kinds=None,
-                                                scores=scores, tier="exact")
+                                                scores=scores, tier="exact", cancelled=_stale)
             except Exception:
                 traceback.print_exc()
                 return
@@ -1698,9 +1736,12 @@ def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
             try:
                 # Scores merge into the same map the exact pass filled (hit
                 # ids are distinct) so the Code view tiers both hits.
+                # cancelled=_stale: a keystroke aborts the scan within a
+                # second; a common word's fuzzy pass is up to ~70 ms of CPU,
+                # all of it dead the moment the query changes.
                 fuzzy = global_search_results(q, store, limit=limit,
                                               kinds=search_kinds, scores=scores,
-                                              tier="fuzzy")
+                                              tier="fuzzy", cancelled=_stale)
             except Exception:
                 traceback.print_exc()
                 return
@@ -2158,7 +2199,12 @@ def _recent_hits(store, limit=60, kinds=None):
         return _popular_hits(store, limit, kinds)
     order = {k: i for i, k in enumerate(recent)}
     found = {}
+    # Runs on the background search worker; the first call after boot is what
+    # triggers the cold provider rebuilds (symbol sweep, asset walk), so park
+    # at frame boundaries between providers like global_search_results does.
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
     for provider in _providers_for(kinds):
+        _park_while_frame()
         for _low, _key, _cs, hit, _full, _ws in _provider_corpus(provider):
             i = order.get(f"{hit.kind}:{hit.label}")
             if i is not None and i not in found:
@@ -2175,7 +2221,9 @@ def _popular_hits(store, limit=60, kinds=None):
         return []
     counts = store.counts
     ranked = []
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
     for provider in _providers_for(kinds):
+        _park_while_frame()  # background worker: see the note in _recent_hits
         for _low, _key, _cs, hit, _full, _ws in _provider_corpus(provider):
             c = counts.get(f"{hit.kind}:{hit.label}", 0)
             if c > 0:
@@ -2190,17 +2238,25 @@ def _popular_hits(store, limit=60, kinds=None):
     return out
 
 
-def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier="all"):
+def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier="all",
+                          cancelled=None):
     """Query every registered search index and return the hits matching `q`,
     best-first — the global-search result list.
 
     `tier` splits the work between the two passes _kick_search's background
-    worker runs: "exact" = substring / prefix hits only (~0.2 ms over the
+    worker runs: "exact" = substring / prefix hits only (~0.5 ms over the
     whole Code corpus -- the fast pass, first to land after the input
     debounce), "fuzzy" = ONLY the word-aware typo matches, skipping every key
-    an exact pass already claimed (2-25 ms of pure-Python edit distance --
-    the later, longer-debounced pass), "all" = both in one list (offline
-    callers / tests).
+    an exact pass already claimed (pure-Python edit distance: a few ms for a
+    specific query, up to ~70 ms for a short common word like "draw" whose
+    char-prune rejects almost nothing -- the later, longer-debounced pass),
+    "all" = both in one list (offline callers / tests).
+
+    `cancelled` (a nullary callable) makes the pass ABANDONABLE mid-scan:
+    checked every parking interval, and a True return gives back [] at once.
+    The worker passes its generation staleness here so a new keystroke stops
+    the now-pointless scan within a chunk (~1 ms) instead of letting up to
+    70 ms of dead compute GIL-convoy the keystroke's frame.
 
     Matching runs against the hit's `match` key when it has one (a file's
     BASENAME, so partial file names hit and the directory prefix doesn't
@@ -2225,25 +2281,35 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
     use_fuzzy = len(q) >= 3 and tier != "exact"
     if tier == "fuzzy" and not use_fuzzy:
         return []
-    # The fuzzy tier runs on the background search worker (_kick_search), and
-    # its pure-Python milliseconds would GIL-convoy the render thread if they
-    # overlapped a frame, so it parks at frame boundaries every few hundred
-    # rows (no-op off-frame and on the main/GL threads, so offline callers
-    # and tests are unaffected). The input-recency back-off of _yield_to_ui
-    # is deliberately NOT used: fuzzy already ran its debounce, and waiting
-    # out another quiet window would just delay the typo hits.
+    # Every tier here runs on the background search worker (_kick_search), and
+    # CPU-bound background milliseconds GIL-convoy the render thread if they
+    # overlap a frame - so this parks at frame boundaries: once per provider
+    # (covering the slow REBUILDS a call can trigger - the symbol sweep,
+    # the asset walk), and every few dozen rows on the slow fuzzy tier, so a
+    # frame starting mid-scan waits out up most 1 ms of word-matching before
+    # the worker parks. The same cadence checks `cancelled`, so a superseded
+    # scan stops right away instead of finishing dead work. _park_while_frame
+    # is a no-op off-frame and on the worker/GL threads, so offline callers
+    # and tests are unaffected. The input-recency back-off of _yield_to_gl is
+    # deliberately NOT used: the worker already ran its match, and waiting
+    # out another quiet window would just delay the hits.
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
-    park_every = 256  # # rows between parking checks on the fuzzy tier
+    park_every = 64  # fuzzy rows between park/cancel checks (~1 ms of matching)
     scanned = 0
     q_words = _split_words(q)
     q_chars = frozenset(q)
     scored = []
     seen = set()
     for provider in _providers_for(kinds):
+        if cancelled is not None and cancelled():
+            return []
+        _park_while_frame()
         for low, key, key_chars, hit, full, key_words in _provider_corpus(provider):
             if tier == "fuzzy":
                 scanned += 1
                 if scanned % park_every == 0:
+                    if cancelled is not None and cancelled():
+                        return []
                     _park_while_frame()
             if low in seen:
                 continue
@@ -5238,6 +5304,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
     # cursor_bottom = imgui.get_cursor_screen_pos()[1]
     # ------------------ end spacing -----------
     cursor_bottom = cursor_top + max(2.0, flow_spacing)
+
 
     if tag == "bottom":
         # span = cursor_bottom - cursor_top

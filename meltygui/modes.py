@@ -55,6 +55,19 @@ class _LazyMode:
             raise AttributeError(item)
         return getattr(self._resolve(), item)
 
+    def __reduce__(self):
+        # Default pickling is broken here BY the lying __class__ property:
+        # object.__reduce_ex__ returns __newobj__(type(self), ...) but pickle's
+        # sanity check compares that against self.__class__ - the resolved
+        # Mode enum class - and raises "args[0] from __newobj__ args has the
+        # wrong class". Every parse holding a mode= reference was therefore
+        # unpicklable, which silently disabled the cst-dump cache for those
+        # files (a multi-second cold parse per session - voxel_playground,
+        # new_converters, live_view_views, ...). Reduce BY NAME to a fresh
+        # unresolved handle; resolution happens on first use in the loading
+        # file's module world. Also unbreaks copy.deepcopy (same machinery).
+        return (_LazyMode, (self._name,))
+
     def __eq__(self, other):
         if isinstance(other, _LazyMode):
             other = other._resolve()

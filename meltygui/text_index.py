@@ -612,7 +612,22 @@ def candidate_paths(query: str, exts=(".py",)) -> list:
     return out
 
 
-def search(query: str, limit=200, per_file=_PER_FILE_CAP):
+def _park_ui():
+    """Park this (background) thread while the render thread is mid-frame —
+    libcst_conversion._park_while_frame, reached through sys.modules so
+    text_index gains no import edge on the conversion stack (and offline
+    callers that never loaded it just don't park). Why: search() is a CPU
+    chunk (~140 ms warm for a common word — a lower()+scan per candidate
+    file), and a CPU-bound background thread GIL-convoys every frame it
+    overlaps; parking at file boundaries keeps keystroke frames smooth."""
+    m = sys.modules.get("src.lsd.gl_gui.view.core_conversion.libcst_conversion")
+    if m is not None:
+        park = getattr(m, "_park_while_frame", None)
+        if park is not None:
+            park()
+
+
+def search(query: str, limit=200, per_file=_PER_FILE_CAP, cancelled=None):
     """Case-insensitive search over the src root, pending edits included.
     Returns hit dicts {kind, path, rel, line, text, tint} in three kinds,
     listed in this order:
@@ -626,7 +641,14 @@ def search(query: str, limit=200, per_file=_PER_FILE_CAP):
     falls back to FileMeta / category tints). Overlay (dirty/new) files are
     served live and shadow their stale segment entries. `per_file` caps the
     content hits reported per file (default _PER_FILE_CAP). Call from a
-    background thread: the first call builds the index."""
+    background thread: the first call builds the index.
+
+    `cancelled` (a nullary callable) makes the scan ABANDONABLE: checked at
+    file boundaries, and a True return abandons the search and returns None
+    (not a partial list — the caller must land nothing). The global-search
+    text pass hands its generation staleness here so a new keystroke stops
+    a now-pointless scan within one file instead of finishing ~140 ms of
+    dead work that would GIL-convoy the keystroke's frame."""
     ql = query.lower()
     qb = ql.encode("utf-8", "replace")
     if len(qb) < 3:
@@ -662,6 +684,9 @@ def search(query: str, limit=200, per_file=_PER_FILE_CAP):
     # ── overlay files: live symbol table + content scan (freshest wins) ──
     scanned = {}
     for ap in overlay:
+        if cancelled is not None and cancelled():
+            return None
+        _park_ui()
         text = _current_text(ap)
         rel = os.path.relpath(ap, root)
         scanned[ap] = None
@@ -679,7 +704,11 @@ def search(query: str, limit=200, per_file=_PER_FILE_CAP):
 
     # ── segment symbol tables (overlay files shadowed above) ──
     if seg is not None:
-        for rel, syms in zip(seg.paths, seg.symbols):
+        for i, (rel, syms) in enumerate(zip(seg.paths, seg.symbols)):
+            if i % 64 == 0:
+                if cancelled is not None and cancelled():
+                    return None
+                _park_ui()
             if len(sym_hits) >= _SYMBOL_HIT_CAP * 10:
                 break                       # raw pool; ranked + trimmed below
             if rel not in overlay_rel:
@@ -694,6 +723,11 @@ def search(query: str, limit=200, per_file=_PER_FILE_CAP):
         for fid in _candidates(seg, qb)[:_CAND_CAP]:
             if len(line_hits) >= limit:
                 break
+            # Per-file boundary: the lower()+scan below is the search's cost
+            # center, so this is where cancellation and frame-parking bite.
+            if cancelled is not None and cancelled():
+                return None
+            _park_ui()
             fid = int(fid)
             ap = os.path.join(root, seg.paths[fid])
             if ap in scanned:

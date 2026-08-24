@@ -840,15 +840,13 @@ def draw_internet_accounts(
                            and row_top <= mouse_y <= row_bottom)
             bg_color = _mix(style_manager, tint, row_bg_value + (0.02 if row_hovered else 0.0),
                             factor, saturation)
-            add_shadow((row_left, row_top, row_right - row_left, height), offset=2,
-                       corner_radius=corner, clip=clip)
             draw_list.add_rect_filled(row_left, row_top, row_right, row_bottom,
                                       _color_u32(bg_color), rounding=corner)
             # status lamp, recessed
             lamp_radius = px(4.5)
             lamp_x, lamp_y = row_left + px(14), row_top + row_height / 2.0
             add_shadow((lamp_x - lamp_radius, lamp_y - lamp_radius, 2 * lamp_radius, 2 * lamp_radius),
-                       offset=-2, corner_radius=lamp_radius, clip=clip)
+                       offset=-1, corner_radius=lamp_radius, clip=clip)
             draw_list.add_circle_filled(lamp_x, lamp_y, lamp_radius, _color_u32(lamp_color), 16)
             # buttons: on the row line, or wrapped onto their own line
             if wrap:

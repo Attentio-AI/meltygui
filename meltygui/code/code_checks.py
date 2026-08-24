@@ -1483,7 +1483,6 @@ def _span_spec_for_live(obj, fname):
         return None
     return _object_spec(obj, fname)
 
-
 def _check_dotted_call_span(call, func, scope, path):
     """Span-mode signature check for a dotted call (`imgui.dummy(...)`,
     `mod.helper(...)`): the base name resolves through the module file's
@@ -1554,6 +1553,7 @@ def _check_call_span(call, scope, path, file_binds):
     imp = table["imports"].get(name)
     if imp is not None:
         mod = sys.modules.get(imp[0])
+
         try:
             obj = vars(mod).get(imp[1], _MISS) if mod is not None else _MISS
         except TypeError:

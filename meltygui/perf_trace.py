@@ -193,3 +193,88 @@ class span:
         except Exception:
             pass
         return False
+
+
+# ── Stall watchdog: what is the render thread blocked on? ──────────────────────
+# Wall≫cpu slow frames (the post-boot 1000ms+ bursts) mean the render thread
+# is WAITING - lock, GIL, GL/present backpressure - and the per-phase spans
+# can't pin on what. This daemon samples Melty's clock; when it sits still
+# past `threshold_s` while the render thread is mid-frame (NOT parked in
+# glfw wait_events - an idle studio is not a stall), it dumps every thread's
+# current call stack to the log. One dump per stall, re-armed when the frame
+# counter moves; a second dump is forced if the stall passes 3x threshold.
+# Cost when healthy: one attribute read per poll (20Hz). Same toggle as trace.
+
+def _render_thread():
+    gs = (sys.modules.get("src.lsd.gl_gui.gl_state")
+          or sys.modules.get("lsd.gl_gui.gl_state"))
+    return getattr(gs, "_gl_thread", None) if gs is not None else None
+
+
+def _dump_all_stacks(reason: str):
+    import traceback
+    frames = sys._current_frames()
+    render_t = _render_thread()
+    for t in threading.enumerate():
+        frame = frames.get(t.ident)
+        if frame is None:
+            continue
+        stack = traceback.extract_stack(frame)[-10:]
+        chain = " <- ".join(
+            f"{fs.filename.rsplit('/', 1)[-1]}:{fs.lineno} {fs.name}"
+            for fs in reversed(stack))
+        label = "render" if t is render_t else t.name
+        trace(f"STALL {reason} [{label}] {chain}")
+
+
+def _stall_watchdog(threshold_s: float, poll_s: float):
+    last_count = -1
+    still_since = time.monotonic()
+    dumped = 0
+    while True:
+        time.sleep(poll_s)
+        try:
+            if not _enabled():
+                continue
+            count = _frame()
+            now = time.monotonic()
+            if count != last_count:
+                last_count = count
+                still_since = now
+                dumped = 0
+                continue
+            stalled_s = now - still_since
+            want = 1 if stalled_s >= threshold_s else 0
+            if want and stalled_s >= threshold_s * 3:
+                want = 2
+            if dumped >= want:
+                continue
+            render_t = _render_thread()
+            frame = sys._current_frames().get(render_t.ident) if render_t else None
+            if frame is None:
+                continue
+            # Parked between frames = idle, not a stall. wait_events blocks
+            # there; poll_events/sleep cover some launcher-style loops.
+            names = set()
+            f = frame
+            while f is not None and len(names) < 12:
+                names.add(f.f_code.co_name)
+                f = f.f_back
+            if {"wait_events", "poll_events"} & names:
+                still_since = now
+                continue
+            dumped = want
+            _dump_all_stacks(f"{stalled_s:.2f}s frame={count}")
+        except Exception:
+            pass  # the watchdog must never hurt the app
+
+
+def ensure_stall_watchdog(threshold_s: float = 0.35, poll_s: float = 0.05):
+    """Idempotent, process-lifetime (sys-guarded like the log handle — an
+    in-process studio restart adopts the running one instead of stacking)."""
+    if getattr(sys, "_lsd_stall_watchdog", None) is not None:
+        return
+    t = threading.Thread(target=_stall_watchdog, args=(threshold_s, poll_s),
+                         name="stall-watchdog", daemon=True)
+    sys._lsd_stall_watchdog = t
+    t.start()
