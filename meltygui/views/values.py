@@ -378,9 +378,14 @@ def _word_match(q, qws, twords, budget):
 # siblings (dict insertion order of the module/class body -- cheap, and it
 # tracks source order without touching the file); `kind` is
 # "file" / "class" / "function".
+# `terms` (optional) = the frozenset of query TERM indices (see _query_terms)
+# a per-query hit matched -- text / local-symbol hits stamp theirs; provider
+# hits are shared across queries and carry it in the scorer's `scores` map
+# instead. `_hit_terms` reads both. None = unknown, treated as the whole
+# (single-term) query.
 SearchHit = namedtuple("SearchHit",
-                       "label tint activate kind match state keep_open set_state icon parts goto code_row file sym",
-                       defaults=("", None, None, False, None, None, None, None, None, None, None))
+                       "label tint activate kind match state keep_open set_state icon parts goto code_row file sym terms",
+                       defaults=("", None, None, False, None, None, None, None, None, None, None, None))
 # `display` is the row's short label: a symbol's own name, a file's shortest
 # path SUFFIX that is unique among the indexed files (bare name when no other
 # file shares it) -- the label keeps the full path for identity and keys.
@@ -390,6 +395,51 @@ CODE_CATEGORY = "Code"
 # The combined meta-category: every category's best hits interleaved
 # (see _all_tab_items). Always a selector chip; never a hit's `kind`.
 ALL_CATEGORY = "All"
+
+
+# --- Multi-term queries -------------------------------------------------------
+# Whitespace splits a query into TERMS, each searched on its own, and the
+# results MERGED: a hit that matches more of the terms ranks ahead than one
+# that matches fewer, and the either/or tail follows. So "brightness
+# contrast" lists both Toggles first, and "draw_text imgui.dummy" puts
+# the scopes that hold BOTH first. Term order never matters. Every stage
+# reads the query split: the provider scorer (global_search_results -- one
+# score per term, coverage first), the full-text pass (_kick_text_search --
+# one trigram search per term, rows aggregated by line), the local-symbol
+# layer (_local_symbol_hits -- the hit counts whichever term hit the
+# line) and the Code tree (_code_tree_rows -- a scope's coverage is the
+# union over its subtree, so a method that USES both terms leads).
+def _query_terms(q):
+    """The query's search terms, in typing order, duplicates dropped. A
+    query without whitespace is its own single term, untouched, so every
+    length rule of the single-term path still holds ("dr" still lists the
+    prefix hits). Terms shorter than `min_term_chars` are dropped: a lone
+    character matches everything as a substring, and mid-typing it is just
+    the next term's first letter -- "brightness c" reads as "brightness"
+    until "co" lands. When every term is too short the whole query stands
+    as one term (matching nothing, like today)."""
+    min_term_chars = 2
+    if " " not in q and "\t" not in q:
+        return (q,)
+    out = []
+    for term in q.split():
+        if len(term) >= min_term_chars and term not in out:
+            out.append(term)
+    return tuple(out) if out else (q,)
+
+
+_ONE_TERM = frozenset((0,))
+
+
+def _hit_terms(hit, scores=None):
+    """The query-term indices a hit covers: the scorer's score entry when it
+    has one (provider hits), else the hit's own `terms` (text / local hits),
+    else {0} -- a single-term world where every hit covers the whole query."""
+    sc = scores.get(id(hit)) if scores else None
+    if sc is not None and len(sc) > 2 and sc[2] is not None:
+        return sc[2]
+    terms = getattr(hit, "terms", None)
+    return terms if terms is not None else _ONE_TERM
 
 
 def _search_cats(extra_kinds=()):
@@ -733,6 +783,11 @@ def _code_tree_rows(hits, scores=None, expanded=()):
 
     weight = {}
     tier = {}
+    own_terms = {}
+    coverage = {}
+    ordered_memo = {}
+    nested_memo = {}
+    fit_memo = {}
 
     def w(n):
         k = id(n)
@@ -750,15 +805,107 @@ def _code_tree_rows(hits, scores=None, expanded=()):
             tier[k] = min([own] + [t(c) for c in n[1].values()])
         return tier[k]
 
+    def own(n):
+        """The query terms (see _query_terms) the node's OWN hit matched: a
+        direct hit's terms; for a CONTEXT row, the terms the scorer gave
+        that same hit where it is listed -- the fast rows' `draw_text` def
+        is the trailing tree's context row over the `input_value` uses
+        inside it, and its name still matched term 0 there. A context row
+        the scorer never scored covers nothing."""
+        k = id(n)
+        if k not in own_terms:
+            if n[3]:
+                own_terms[k] = _hit_terms(n[0], scores)
+            else:
+                sc = scores.get(id(n[0])) if scores else None
+                own_terms[k] = (sc[2] if sc is not None and len(sc) > 2 and sc[2]
+                                else frozenset())
+        return own_terms[k]
+
+    def cov(n):
+        """The terms the subtree covers between its nodes: a def matched by
+        "draw_text" whose body has an "imgui.dummy" call site covers both.
+        Single-term queries: {0} everywhere, so the sort key is inert."""
+        k = id(n)
+        if k not in coverage:
+            coverage[k] = own(n).union(*[cov(c) for c in n[1].values()])
+        return coverage[k]
+
+    def ordered_chain(n, floor=-1):
+        """Longest root-to-leaf chain of terms through the subtree whose
+        indices ASCEND with depth, each node contributing at most one of
+        its own terms above `floor`: query order = scope order, so
+        "draw_text input_value" reads as a draw_text scope with input_value
+        inside it (chain 2) and outranks a def that merely uses both
+        (chain 1) at equal coverage."""
+        k = (id(n), floor)
+        if k not in ordered_memo:
+            kids = list(n[1].values())
+            best = max([ordered_chain(c, floor) for c in kids], default=0)
+            for term in own(n):
+                if term > floor:
+                    best = max(best, 1 + max([ordered_chain(c, term) for c in kids],
+                                             default=0))
+            ordered_memo[k] = best
+        return ordered_memo[k]
+
+    def nested_chain(n, used=frozenset()):
+        """The same chain in ANY term order -- a scope whose name matches
+        one term and whose body holds another still beats a flat scope
+        that only uses both; the ordered chain breaks the tie first."""
+        k = (id(n), used)
+        if k not in nested_memo:
+            kids = list(n[1].values())
+            best = max([nested_chain(c, used) for c in kids], default=0)
+            for term in own(n) - used:
+                best = max(best, 1 + max([nested_chain(c, used | {term}) for c in kids],
+                                         default=0))
+            nested_memo[k] = best
+        return nested_memo[k]
+
+    _NO_FIT = (float("inf"), 0, 0)
+
+    def fit(n):
+        """How tightly the best NAME match in the subtree fits its term --
+        the scorer's own (distance, prefix, key length) rule, taken over
+        every scored node below: at equal coverage and chains, the
+        `draw_text` scope beats `draw_text_from_code_cache`. Subtrees with
+        no scored name (usage rows only) fit worst."""
+        k = id(n)
+        if k not in fit_memo:
+            best = _NO_FIT
+            sc = scores.get(id(n[0])) if scores else None
+            if sc is not None and own(n):
+                hit = n[0]
+                best = (sc[0], sc[1], len(hit.match or hit.label))
+            fit_memo[k] = min([best] + [fit(c) for c in n[1].values()])
+        return fit_memo[k]
+
+    # Single-term query (every chain is 1 wherever there is a hit): skip
+    # the chain walks -- this runs per frame over up to ~1500 rows -- and
+    # keep the name-fit key inert so the single-term order is untouched.
+    multi = len(frozenset().union(*[cov(r) for r in roots.values()])) > 1
+    if not multi:
+        ordered_chain = nested_chain = lambda n, _s=None: 0
+        fit = lambda n: _NO_FIT
+
     def order_children(children, rank_key):
-        """Siblings: EXACT-tier subtrees first (an exact call site outranks a
-        typo-distance def), then DIRECT hits ahead of context-only subtrees
-        (higher scope wins -- a matched def before a function that merely
-        calls it, however often that function was picked), then most-used,
-        then definition order / rank. When the scope has exact matches,
-        non-exact siblings are capped at FUZZY_PER_SCOPE."""
-        kids = sorted(children, key=lambda c: (t(c), not c[3], -w(c), rank_key(c)))
-        if kids and t(kids[0]) == 0:
+        """Siblings: subtrees covering MORE query terms first (the whole
+        point of a multi-term query -- a scope holding both terms before
+        one holding either), then the terms NESTED in query order (a
+        draw_text scope with input_value inside), then nested in any
+        order, then the tightest scored NAME (`draw_text` before
+        `draw_text_from_code_cache`; multi-term only), then EXACT-tier
+        subtrees (an exact call site outranks a typo-distance def), then
+        DIRECT hits ahead of context-only subtrees (higher scope wins -- a
+        matched def before a function that merely calls it, however often
+        that function was picked), then most-used, then definition order /
+        rank. When the scope has exact matches, non-exact siblings are
+        capped at FUZZY_PER_SCOPE."""
+        kids = sorted(children, key=lambda c: (-len(cov(c)), -ordered_chain(c),
+                                               -nested_chain(c), fit(c), t(c), not c[3],
+                                               -w(c), rank_key(c)))
+        if kids and min(t(c) for c in kids) == 0:
             out, extra = [], 0
             for c in kids:
                 if t(c) > 0:
@@ -1371,7 +1518,46 @@ def _text_hit(row, show_path=False):
         label = f"{rel}:{line}: {disp[:90]}"
     return SearchHit(label, tint,
                      (lambda p=row["path"], l=line: _jump_to_text_hit(p, l)),
-                     kind="Text", match=text, parts=parts, code_row=code_row)
+                     kind="Text", match=text, parts=parts, code_row=code_row,
+                     terms=_row_terms(row))
+
+
+def _row_terms(row):
+    """The query-term indices a text-index row hit (stamped by
+    _merge_term_rows); a row from a single search covers term 0."""
+    terms = row.get("terms")
+    return frozenset(terms) if terms else _ONE_TERM
+
+
+# Text-index row kinds' display order within a coverage band (files,
+# then symbol names, then content lines -- the order text_index.search
+# lists them under one term).
+_ROW_KIND_ORDER = {"file": 0, "symbol": 1, "line": 2}
+
+
+def _merge_term_rows(per_term, limit=None):
+    """Merge the per-term text-index row lists of a multi-term query into
+    one: a row per (kind, path, line), stamped with the set of term indices
+    that hit it (`row["terms"]`), rows hit by MORE terms first, then file /
+    symbol / line kind, each term's own order kept within a band (stable
+    sort). `limit` trims the tail -- the coverage sort means a row every
+    term hit always survives it. A single list passes through with every
+    row stamped {0}."""
+    merged = {}
+    order = []
+    for ti, rows in enumerate(per_term):
+        for row in rows:
+            key = (row["kind"], row["path"], row["line"])
+            ent = merged.get(key)
+            if ent is None:
+                ent = merged[key] = dict(row, terms={ti})
+                order.append(key)
+            else:
+                ent["terms"].add(ti)
+    out = [merged[k] for k in order]
+    if len(per_term) > 1:
+        out.sort(key=lambda r: (-len(r["terms"]), _ROW_KIND_ORDER.get(r["kind"], 3)))
+    return out if limit is None else out[:limit]
 
 
 _LOCAL_TINT = (0.38, 0.68, 0.72)  # local-symbol rows' base colour (Text-ish tint)
@@ -1468,6 +1654,14 @@ def _local_symbol_hits(rows, q, cancelled=None):
     appended after the results), so a definition always takes the default
     highlight over its uses.
 
+    Multi-term queries (see _query_terms): a row is checked against the
+    terms that HIT it (`row["terms"]`, stamped by _merge_term_rows; every
+    term when unstamped), and the hit carries those terms so the Code tree
+    can rank a scope that uses several of them first. A dotted term
+    ("imgui.dummy") looks for its LAST name in the identifiers -- the
+    tokenizer splits attribute chains, and the text index already verified
+    the whole chain is on the line.
+
     Runs on the text-search thread and is CPU-heavy for a common word (a
     tokenize per row over up to _TEXT_SEARCH_LIMIT rows is tens of ms), so
     every few dozen rows it parks at frame boundaries (the GIL-convoy rule)
@@ -1477,6 +1671,10 @@ def _local_symbol_hits(rows, q, cancelled=None):
     from src.lsd.gl_gui.text_index import _DEF_RE
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
     look = _code_hit_lookup()
+    terms = _query_terms(q)
+    # Per term: the identifier needle to look for (the last dotted name,
+    # the whole term when it has no dots / ends in one).
+    needles = [(term.rsplit(".", 1)[-1] or term) for term in terms]
     seen = set()
     out = []
     # One resolve per distinct path STRING, not per row: rows repeat only a
@@ -1495,11 +1693,15 @@ def _local_symbol_hits(rows, q, cancelled=None):
             toks = list(tokenize(text))
         except Exception:
             continue
+        row_terms = row.get("terms")
+        row_needles = ([needles[i] for i in sorted(row_terms) if i < len(needles)]
+                       if row_terms else needles)
         ident = None
         for tok, ck in toks:
             if ck in ("comment", "string", "string_doc"):
                 continue
-            if q in tok.lower() and re.fullmatch(r"[A-Za-z_]\w*", tok):
+            if (any(needle in tok.lower() for needle in row_needles)
+                    and re.fullmatch(r"[A-Za-z_]\w*", tok)):
                 ident = tok
                 break
         if ident is None:
@@ -1540,7 +1742,8 @@ def _local_symbol_hits(rows, q, cancelled=None):
                              (lambda p=path, l=line: _jump_to_text_hit(p, l)),
                              kind=CODE_CATEGORY, match=ident,
                              code_row=(path, line, "", code, str(line)),
-                             sym=CodeSym(path, qn, "local", line, parent, ident)))
+                             sym=CodeSym(path, qn, "local", line, parent, ident),
+                             terms=_row_terms(row)))
     return out
 
 
@@ -1561,7 +1764,13 @@ def _kick_text_search(q):
     GlobalSearch._text_query = q
     GlobalSearch._text_gen += 1
     gen = GlobalSearch._text_gen
-    if len(q) < 3:  # below the trigram minimum
+    # One trigram search per term (see _query_terms), merged by line with
+    # the rows every term hit first; a term under the trigram minimum is
+    # skipped but keeps its INDEX (the local layer / Code tree read term
+    # indices), so the search list is index-aligned with the query.
+    terms = _query_terms(q)
+    searches = [(i, term) for i, term in enumerate(terms) if len(term) >= 3]
+    if not searches:  # below the trigram minimum
         GlobalSearch.text_results = []
         GlobalSearch.local_results = []
         GlobalSearch._text_done_query = q
@@ -1581,11 +1790,18 @@ def _kick_text_search(q):
             # dead work when a newer keystroke bumps the generation, so
             # search() aborts (returning None) within one file of the bump.
             _park_while_frame()
-            rows = text_index.search(q, limit=_TEXT_SEARCH_LIMIT,
-                                     per_file=_TEXT_PER_FILE_LIMIT,
-                                     cancelled=lambda: GlobalSearch._text_gen != gen)
-            if rows is None:
-                return  # superseded mid-scan; the newer generation does its own
+            per_term = [[] for _t in terms]
+            for i, term in searches:
+                rows = text_index.search(term, limit=_TEXT_SEARCH_LIMIT,
+                                         per_file=_TEXT_PER_FILE_LIMIT,
+                                         cancelled=lambda: GlobalSearch._text_gen != gen)
+                if rows is None:
+                    return  # superseded mid-scan; the newer generation lands its own
+                per_term[i] = rows
+            # The merged list keeps the single-term cap: the local layer
+            # tokenizes every line, and coverage-first means the rows every
+            # term hit never run off the end.
+            rows = _merge_term_rows(per_term, limit=_TEXT_SEARCH_LIMIT)
         except Exception:
             traceback.print_exc()
             rows = []
@@ -1648,7 +1864,8 @@ def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
       3. the FUZZY typo pass once the remainder of fuzzy_debounce_s has
          elapsed, first letting the async text/local hits land on tabs that
          show them so the trailing section fills in one step; its hits land
-         in GlobalSearch.fuzzy_results, drawn strictly BELOW the fast rows.
+         in GlobalSearch.fuzzy_results, merged into the same rows / Code
+         tree as the fast hits (_merge_tiers).
     The GIL-convoy risk of a CPU-bound worker (why the fuzzy pass used to
     run ON the GL thread instead) is handled inside global_search_results:
     the fuzzy loop parks via _park_while_frame whenever a frame is mid-draw,
@@ -2272,13 +2489,29 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
     (a set of category names) scopes the query to those categories'
     providers — the active tab's — so a Toggles search never scores the
     thousands of symbol labels; None runs every provider (the All tab).
-    `scores`, if a dict, is filled with id(hit) -> (dist, prefix) for the
-    returned hits (dist 0 = exact) so callers can tier other result sources
-    (the async local-symbol hits) against them."""
-    # Edit budget for the fuzzy matcher: ~1 typo per 4 chars, min 1; short
-    # queries (< 3 chars) are exact-only -- too little signal to fuzz.
-    budget = max(1, len(q) // 4)
-    use_fuzzy = len(q) >= 3 and tier != "exact"
+    `scores`, if a dict, is filled with id(hit) -> (dist, prefix, terms) for
+    the returned hits (dist 0 = exact; terms = the frozenset of query-term
+    indices the hit matched) so callers can tier other result sources (the
+    async local-symbol hits) against them.
+
+    Multi-term queries (whitespace-split, see _query_terms) score every
+    term on its own -- exact substring, else the word matcher with the
+    term's own budget -- and a hit is listed when ANY term matches.
+    Coverage leads the ranking: hits matching more terms come before hits
+    matching fewer (regardless of typo distance -- the whole point of
+    naming two things is to find where both are), then the summed distance
+    and the usual tiers. The exact pass lists a key when any term is an
+    exact substring (coverage = the exact terms only, so the fast pass stays
+    substring-cheap); the fuzzy pass skips every key the exact pass claimed
+    and fuzzes the rest; "all" does both on every term, so a key with one
+    exact and one typo term reads full coverage there."""
+    terms = _query_terms(q)
+    # Per term: (term, words, char set, edit budget, fuzz-able). Budget for
+    # the word matcher: ~1 typo per 4 chars, min 1; short terms (< 3 chars)
+    # are exact-only, too little signal to fuzz.
+    term_info = [(term, _split_words(term), frozenset(term), max(1, len(term) // 4),
+                  len(term) >= 3) for term in terms]
+    use_fuzzy = tier != "exact" and any(info[4] for info in term_info)
     if tier == "fuzzy" and not use_fuzzy:
         return []
     # Every tier here runs on the background search worker (_kick_search), and
@@ -2296,8 +2529,7 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _park_while_frame
     park_every = 64  # fuzzy rows between park/cancel checks (~1 ms of matching)
     scanned = 0
-    q_words = _split_words(q)
-    q_chars = frozenset(q)
+    n_terms = len(terms)
     scored = []
     seen = set()
     for provider in _providers_for(kinds):
@@ -2313,45 +2545,59 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
                     _park_while_frame()
             if low in seen:
                 continue
-            if q in key or q in full:
-                if tier == "fuzzy":
-                    continue  # the exact pass already listed it
-                dist = 0
-            elif use_fuzzy:
-                # Cheap prune: more query chars missing from the key than the
-                # budget can handle -> no word assignment can succeed.
-                if len(q_chars - key_chars) > budget:
-                    continue
-                dist = _word_match(q, q_words, key_words, budget)
-                if dist is None:
-                    continue
-                # Word-assignment matches tier above exact substrings even at
-                # zero edits ("draw_t" -> draw_info_tab via draw _tab is a partial
-                # match, not the substring hit draw_texture is): 0.5 + edits.
-                dist += 0.5
-            else:
+            # Exact substrings first, every term (cheap): the exact pass
+            # lists on any, and the fuzzy pass skips a key the exact pass
+            # already listed.
+            matched = {}  # term index -> distance
+            for ti, (term, _words, _chars, _budget, _fuzz) in enumerate(term_info):
+                if term in key or term in full:
+                    matched[ti] = 0
+            if matched and tier == "fuzzy":
+                continue  # the exact pass already listed it
+            if use_fuzzy:
+                for ti, (term, t_words, t_chars, budget, fuzz) in enumerate(term_info):
+                    if ti in matched or not fuzz:
+                        continue
+                    # Cheap filter: more term chars missing from the key than
+                    # the budget can explain -> no word assignment can succeed.
+                    if len(t_chars - key_chars) > budget:
+                        continue
+                    dist = _word_match(term, t_words, key_words, budget)
+                    if dist is None:
+                        continue
+                    # Word-assignment matches tier BELOW exact substrings
+                    # even at zero edits ("draw_t" -> draw_info_tab via
+                    # t~tab is a word match, not the substring hit
+                    # draw_texture is): 0.5 + edits.
+                    matched[ti] = dist + 0.5
+            if not matched:
                 continue
             seen.add(low)
             # PREFIX matches - the key is a perfect match up to the current
             # character index - form a tier above other exact-substring hits,
             # so with popularity applied within tiers, the top hit is the
             # most-used result whose name starts with what's been typed.
-            prefix = 0 if (key.startswith(q) or full.startswith(q)) else 1
-            scored.append((dist, prefix, len(key), hit))
-    # Popularity tier: within a (distance, prefix) tier, results picked often
-    # over time (GlobalSearchStore counts) rank ahead of never-picked ones.
+            # Per-term: any matched term starting the key counts.
+            prefix = 0 if any(key.startswith(terms[ti]) or full.startswith(terms[ti])
+                              for ti in matched) else 1
+            dist = sum(matched.values())
+            missing = n_terms - len(matched)  # coverage, best: 0 = every term matched
+            scored.append((missing, dist, prefix, len(key), hit, frozenset(matched)))
+    # Popularity boost: within a (coverage, distance, prefix) tier, results
+    # picked often over time (GlobalSearchStore counts) rank ahead of
+    # never-picked ones.
     counts = store.counts if store is not None else {}
-    scored.sort(key=lambda t: (t[0], t[1],
-                               -counts.get(f"{t[3].kind}:{t[3].label}", 0),
-                               t[2], t[3].label))
+    scored.sort(key=lambda t: (t[0], t[1], t[2],
+                               -counts.get(f"{t[4].kind}:{t[4].label}", 0),
+                               t[3], t[4].label))
     out, per_kind = [], {}
-    for _dist, _prefix, _len, hit in scored:
+    for _missing, _dist, _prefix, _len, hit, _terms in scored:
         c = per_kind.get(hit.kind, 0)
         if c < limit:
             per_kind[hit.kind] = c + 1
             out.append(hit)
             if scores is not None:
-                scores[id(hit)] = (_dist, _prefix)
+                scores[id(hit)] = (_dist, _prefix, _terms)
     return out
 
 
@@ -3185,6 +3431,33 @@ def draw_type(input_value: type, **kwargs):
         imgui.text(f"Error rendering type {input_value}: {e}")
 
 
+def _merge_tiers(results, text_results, local_results, fuzzy_results, q):
+    """(by_kind, fast_by_kind, ranked) for the search rows: every landed
+    tier merged per category -- the exact pass first, then the Text rows,
+    the Code tab's local-symbol (call-site) hits and the debounced typo
+    hits -- so a category draws ONE list / ONE Code tree however the tiers
+    landed: a file block holds its def hits and their call sites together
+    instead of a second `text_editor.py` block appearing under the first
+    when the usages land (the tree re-sorts on each landing; the highlight
+    follows its row by identity, see draw_global_search). fast_by_kind is
+    the exact pass alone: it decides the fallback view and the load-all
+    cap, the two things a late landing must not flip. `ranked` is the
+    default-highlight preference: fast hits, then the async tiers. Text /
+    async tiers only count from 3 chars (the trigram / fuzzy minimum)."""
+    fast_by_kind = {}
+    for hit in results:
+        fast_by_kind.setdefault(hit.kind, []).append(hit)
+    by_kind = {k: list(v) for k, v in fast_by_kind.items()}
+    ranked = list(results)
+    if len(q) >= 3:
+        if text_results:
+            by_kind["Text"] = list(text_results)
+        for hit in list(local_results) + list(fuzzy_results):
+            by_kind.setdefault(hit.kind, []).append(hit)
+            ranked.append(hit)
+    return by_kind, fast_by_kind, ranked
+
+
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
              with_header=None, bg_offset=4, auto_resize=False,
              # The wrapper's scrollbar would drag the search box and the tabs
@@ -3272,28 +3545,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     matched.update(id(h) for h in input_value.local_results)
     matched.update(id(h) for h in input_value.fuzzy_results)
 
-    # Group ranked hits by category; only the ACTIVE category's results render
-    # (one at a time), picked by the selector chip under the box. by_kind
-    # holds the FAST pass only: it decides the chip bar and the layout of
-    # everything drawn on the query-change frame. The async tiers -- the
-    # Code tab's local-symbol hits (exact, from the text index) and the
-    # debounced typo hits -- go in `trailing`, drawn as their OWN category
-    # (own tree / rows, context rows repeated) strictly BELOW the fast rows,
-    # so nothing already on screen changes position or order when they land.
-    by_kind = {}
-    for hit in input_value.results:
-        by_kind.setdefault(hit.kind, []).append(hit)
-    if len(q) >= 3 and input_value.text_results:
-        by_kind["Text"] = list(input_value.text_results)
-    trailing = {}
-    if len(q) >= 3:
-        for hit in list(input_value.local_results) + list(input_value.fuzzy_results):
-            trailing.setdefault(hit.kind, []).append(hit)
-    # The default-highlight preference order: fast rows, then the trailing
-    # tiers in their own order.
-    ranked = list(input_value.results)
-    for k in trailing:
-        ranked.extend(trailing[k])
+    # Group ranked hits by category; only the ACTIVE category's rows render
+    # (one at a time), picked by the selector row under the box. by_kind
+    # holds every landed tier merged (see _merge_tiers): a Code file is ONE
+    # block with its def hits and their call sites inside, however the
+    # tiers landed. fast_by_kind (the exact tier alone) keeps the two
+    # decisions that must not flip when a late tier lands: the fallback
+    # view and the load-all cap.
+    by_kind, fast_by_kind, ranked = _merge_tiers(
+        input_value.results, input_value.text_results, input_value.local_results,
+        input_value.fuzzy_results, q)
     cats = _search_cats(by_kind)
     # The active category is STICKY - it never auto-switches, so the chips
     # remember where you put it.
@@ -3317,15 +3578,6 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                               keep_order=blank,
                                               scores=getattr(input_value, "_scores", None),
                                               expanded=input_value.expanded_files)
-        # The async tiers append AFTER the interleave, under their own
-        # category label (vertical: a single "Code" group at the bottom;
-        # horizontal: the bottom of that category's column) -- append-only
-        # either way.
-        for k, hits in trailing.items():
-            exp = _expand_rows(k, hits, getattr(input_value, "_scores", None),
-                               input_value.expanded_files)
-            all_rows = all_rows + exp
-            all_groups = list(all_groups or []) + [k] * len(exp)
 
     def _items_for(kind):
         """(rows, is_fallback) for a category: its own hits, or — when it
@@ -3339,21 +3591,18 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         highlight index (input_value.selected) address rows directly."""
         if kind == ALL_CATEGORY:
             return all_rows, False
-        own = by_kind.get(kind) or []
         _scs = getattr(input_value, "_scores", None)
         _exp = input_value.expanded_files
         # Whether this is the fallback view is decided by the FAST pass
-        # alone (tr async tiers only ever append below), so the highlight can't
-        # flip from borrowed rows to own rows when a trailing tier lands.
-        if own or not input_value.results:
-            rows = _expand_rows(kind, own, _scs, _exp)
-            rows.extend(_expand_rows(kind, trailing.get(kind) or [], _scs, _exp))
-            return rows, False
+        # alone, so the view can't flip from borrowed rows to own rows when
+        # a late tier lands (its hits merge into whichever tab is up).
+        if fast_by_kind.get(kind) or not input_value.results:
+            return _expand_rows(kind, by_kind.get(kind) or [], _scs, _exp), False
         grouped = []
-        for k in dict.fromkeys(h.kind for h in input_value.results):
+        # best-ranked category first (results order), then any category
+        # only an async tier filled
+        for k in dict.fromkeys([h.kind for h in input_value.results] + list(by_kind)):
             grouped.extend(_expand_rows(k, by_kind[k], _scs, _exp))
-        for k, hits in trailing.items():
-            grouped.extend(_expand_rows(k, hits, _scs, _exp))
         return grouped, True
 
     items, fallback = _items_for(active)
@@ -3372,13 +3621,29 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         rows = list(items)
         capped = (not input_value.show_all
                   and not (horiz and active == ALL_CATEGORY)
-                  and any(len(v) >= input_value._search_limit for v in by_kind.values()))
+                  and any(len(v) >= input_value._search_limit for v in fast_by_kind.values()))
         if capped:
             rows.append(_LoadAllRow(0))
         return rows, len(items), int(capped)
 
     vis_items, n_vis, n_over = _vis(items)
     n_rows = len(vis_items)
+    # The highlight follows its ROW, not its index: a late tier merges
+    # into the tree and reorders it (a def's call sites arrive under it, a
+    # file pick moves up), so when the ROWS moved under an unmoved
+    # highlight (`selected` still where last frame left it, but a different
+    # row there now) re-find last frame's row by identity and keep it in
+    # view. A highlight moved from outside (tier landing's reset, a test) is
+    # trusted as is. Sentinel rows (+ n more, load all, show more) are
+    # rebuilt every frame and track the highlight instead.
+    sel = input_value._sel_row
+    if (sel is not None and n_rows and input_value.selected == sel[1]
+            and (sel[1] >= n_rows or vis_items[sel[1]] is not sel[0])):
+        for i, r in enumerate(vis_items):
+            if r is sel[0]:
+                input_value.selected = i
+                input_value._follow_sel = True
+                break
     input_value.selected = (input_value.selected % n_rows) if n_rows else 0
     if input_value._snap_sel:
         input_value._snap_sel = False
@@ -3580,10 +3845,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             cnt = (sum(1 for r in all_rows if not isinstance(r, _ShowMoreRow)
                        and not _is_context_row(r, matched))
                    if k == ALL_CATEGORY
-                   else len(by_kind.get(k, ())) + len(trailing.get(k, ())))
+                   else len(by_kind.get(k, ())))
             lbl = f"{k} {cnt}"
-        elif active == ALL_CATEGORY and (k in by_kind or k in trailing):
-            lbl = f"{k} {len(by_kind.get(k, ())) + len(trailing.get(k, ()))}"
+        elif active == ALL_CATEGORY and k in by_kind:
+            lbl = f"{k} {len(by_kind.get(k, ()))}"
         else:
             lbl = k
         chip_w = imgui.calc_text_size(lbl)[0] + 2 * CHIP_PAD
@@ -4129,6 +4394,10 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # Value widgets moved the cursor; put it back where the dummy left it so
     # the enclosing layout is unaffected.
     imgui.set_cursor_screen_pos(after_rows)
+    # Remember the row under the highlight (after the key / click above
+    # moved it) so next frame's re-find keeps it through a new landing.
+    input_value._sel_row = ((vis_items[input_value.selected], input_value.selected)
+                            if 0 <= input_value.selected < len(vis_items) else None)
     if store is not None:
         if getattr(store, "query", None) != input_value.query:
             store.query = input_value.query
@@ -4148,8 +4417,8 @@ class GlobalSearch:
     window_ds = None  # this window's own draw_state (for the show shortcut)
     _focus_requested = False
     _last_query = None
-    _last_scope = None  # (query, active_kind) the scores were computed for
-    _scores = None  # dict(hit) -> (match, prefix) for the current results (exact = 0)
+    _last_scope = None  # (query, active_kind) the results were computed for
+    _scores = None  # id(hit) -> (dist, prefix, file) for the current results (score = 0)
     expanded_files = set()  # Code-tree files whose "+ n more" was opened (reset per query)
     results = []  # cached [SearchHit] for the current query
     text_results = []  # async [SearchHit] from the tracy full-text index
@@ -4164,6 +4433,7 @@ class GlobalSearch:
     _search_kinds = None  # provider scope the current results were computed with
     _search_limit = 60  # per-category limit of the current results (lifted by load-all)
     selected = 0  # index (in on-screen order) of the arrow-key highlight
+    _sel_row = None  # (row object, index) under the highlight last frame -- re-found by identity if the rows reorder
     _snap_sel = False  # one-shot: move `selected` off Code context rows next frame
     # Fraction the result rows are scrolled up by. Body-managed (the wrapper's
     # scroll is disabled so the query and chips stay put): the wheel over the

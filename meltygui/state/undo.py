@@ -24,10 +24,16 @@ class Change:
     snapshot at the group's current end, used by redo so re-applying lands the
     caret after the redone text. `t` is the wall-clock time of the last edit
     folded in; `direction` is 'insert'/'delete'/'replace'/None (None for non-text
-    values)."""
+    values). Typing runs (UndoManager._can_coalesce) also track `edit_end` —
+    the buffer offset where the run currently ends, the caret edge the next
+    keystroke must touch to fold in — and `edge_char`, the last character the
+    run inserted or removed in typing order (the word-step test reads it).
+    `sealed` closes a change to further folding: a standalone edit (paste,
+    Enter, a replaced selection) is born sealed, and UndoStack.seal_top seals
+    whatever sits on top after an undo/redo."""
 
     def __init__(self, draw_state, old, new, ui=None, t=0.0, direction=None, ui_after=None,
-                 group_id=0, frame=0):
+                 group_id=0, frame=0, edit_end=None, edge_char="", sealed=False):
         self.draw_state = draw_state
         self.old = old
         self.new = new
@@ -35,6 +41,9 @@ class Change:
         self.ui_after = ui_after
         self.t = t
         self.direction = direction
+        self.edit_end = edit_end
+        self.edge_char = edge_char
+        self.sealed = sealed
         # Undo group: changes from one user action (e.g. multiple views reacting to
         # the same edit, recorded within a frame or two) share a group_id and are
         # undone/redone together. `frame` is the frame_count the change last
@@ -100,6 +109,20 @@ class UndoStack:
             group.append(self.history.pop())
         return group
 
+    def seal_top(self):
+        """Close the newest group to further folding. Called after every
+        undo/redo: the next keystroke is a fresh step, never a continuation
+        of the step the replay just exposed or restored (typing right after
+        an undo must not grow the older word — IntelliJ flushes its command
+        merger the same way)."""
+        if not self.history:
+            return
+        gid = self.history[-1].group_id
+        for change in reversed(self.history):
+            if change.group_id != gid:
+                break
+            change.sealed = True
+
     def undo(self):
         group = self._pop_group()
         if not group:
@@ -107,6 +130,7 @@ class UndoStack:
         self.redo_stack.append(group)
         for change in group:
             change.apply(undo=True)
+        self.seal_top()
 
     def redo(self):
         if not self.redo_stack:
@@ -120,6 +144,7 @@ class UndoStack:
         # left it, so the last applied is the newest.
         for change in reversed(group):
             change.apply(undo=False)
+        self.seal_top()
 
 
 class NavChange(Change):
@@ -317,15 +342,22 @@ class UndoManager:
     history = stack.history
     redo_stack = stack.redo_stack
 
-    # Undo coalescing: consecutive edits to the same draw_state fold into the last
-    # group instead of adding a new entry, so undo reverts a whole burst at once
-    # rather than one character at a time. A group is committed (a fresh entry
-    # starts) on any of: a pause longer than COALESCE_WINDOW seconds, a different
-    # draw_state, a non-contiguous edit (the new edit doesn't start where the group
-    # end - e.g. after an undo or a cursor jump), a direction flip between
-    # inserting and deleting, or a word break (a non-space typed right after a
-    # space/newline). Non-text values (floats/ints) coalesce on time + contiguity
-    # only: a drag becomes one undo.
+    # Text coalescing mirrors IntelliJ's undo merge (see _can_coalesce, knobs
+    # in Tweak.CodeEditor.max_word_wrap and undo_typing_max_chars). Each
+    # keystroke folds into the previous step only while the value stays
+    # contiguous in VALUE (the step's `new` is this edit's `old` - an undo or
+    # an external write breaks it) and in POSITION (the edit lands on the
+    # run's caret edge - typing somewhere else breaks it), keeps its
+    # insert/delete direction, and doesn't start a new word (a non-space
+    # right after whitespace; backspace runs mirror it). There is deliberately
+    # NO pause timeout for text - a step stores what was typed in one place,
+    # however slowly - but nothing folds across an undo/redo (UndoStack.seal_top).
+    # Edits that aren't keystroke-sized (a newline, more than
+    # undo_typing_max_chars characters, a replaced selection) are standalone
+    # steps: paste, Enter + auto-indent, Tab, completions, comment/un etc.
+    # Non-text values (floats/ints) keep the timer: a held widget streams a
+    # value per frame, and COALESCE_WINDOW + _imgui_is_active make the drag
+    # one undo.
     COALESCE_WINDOW = 0.6
 
     # Cross-view grouping: one user action can make several different views record
@@ -364,36 +396,57 @@ class UndoManager:
         cls.stack.redo()
 
     @classmethod
-    def _can_coalesce(cls, last, draw_state, old, new, now, direction):
+    def _can_coalesce(cls, last, draw_state, old, new, now, edit):
         """Whether this edit (old -> new) should fold into `last` instead of
-        starting a new group. `direction` is the edit kind for text (None
-        otherwise)."""
-        if last is None:
+        starting a new step. `edit` is the _TypingEdit for keystroke-sized
+        text edits; None for non-text values and for standalone text edits."""
+        if last is None or last.draw_state is not draw_state or last.sealed:
             return False
-        if last.draw_state is not draw_state:
-            return False
+        if isinstance(old, str):
+            if edit is None:                            # paste / Enter / replace
+                return False
+            return cls._typing_continues(last, old, edit) is not None
         if now - last.t > cls.COALESCE_WINDOW:          # pause -> commit group
             return False
+        # Non-text (numbers/tuples): one for a continuous drag - a held
+        # widget streams a value every frame. Exact value-contiguity is the
+        # wrong test here: a drag_float returns float32-precision values
+        # (3.828000068664551) that read back next frame as a clean 3.828, so
+        # `last.new == old` on every frame and each frame becomes its own
+        # undo step. The reliable "one gesture" signal is the widget being
+        # actively dragged; discrete clicks/taps aren't held, so they
+        # stay discrete undo steps.
+        return bool(getattr(draw_state, "_imgui_is_active", False))
 
-        if direction is None:
-            # Non-text (numbers/tuples): fold only a continuous gesture - a held
-            # widget streams a value every frame. Exact value-contiguity is the
-            # wrong test here: a drag widget streams float32-precision values
-            # (3.828000068664551) that read back next frame as a clean 3.828, so
-            # `last.new == old` fails every frame and each frame becomes its own
-            # undo step. The reliable "continuous gesture" signal is the widget being
-            # actively dragged; discrete clicks/toggles aren't active, so they
-            # become separate undo steps.
-            return bool(getattr(draw_state, "_imgui_is_active", False))
-
-        # Text: exact value-contiguity is meaningful (detects undo / cursor jump).
-        if last.new != old:
-            return False
-        if last.direction != direction:                 # insert<->delete flip
-            return False
-        if direction == "insert" and _starts_new_word(old, new):
-            return False                                # word boundary -> commit group
-        return True
+    @classmethod
+    def _typing_continues(cls, last, old, edit):
+        """The text rule: `edit` extends the typing run `last` holds. Value
+        contiguity (an undo / external write in between shows as a mismatch),
+        same direction, position contiguity (the edit touches the run's caret
+        edge — an insert right at it, a Backspace ending at it or a Delete
+        starting at it), and no new word starting inside `edge_char + typed`
+        (typed in typing order, so a Backspace run reads its removed text
+        reversed). Returns None to start a new step, else the resolved
+        buffer offset the edit really happened at (the diff's span is the
+        rightmost of its equivalent placements — deleting one 'l' of "ll"
+        reads at the second 'l' — and `_span_reaches` slides it back to the
+        run's edge)."""
+        if last.new != old or last.direction != edit.kind or last.edit_end is None:
+            return None
+        if edit.kind == "insert":
+            if not _span_reaches(old, edit, last.edit_end):
+                return None
+            pos, typed = last.edit_end, edit.text
+        elif _span_reaches(old, edit, last.edit_end - len(edit.text)):   # Backspace
+            pos, typed = last.edit_end - len(edit.text), edit.text[::-1]
+        elif _span_reaches(old, edit, last.edit_end):                    # Delete key
+            pos, typed = last.edit_end, edit.text
+        else:
+            return None                                     # edited elsewhere
+        from src.lsd.gl_gui.toggles import Toggles
+        if Toggles.CodeEditor.undo_word_steps and _word_starts(last.edge_char + typed):
+            return None
+        return pos
 
     @classmethod
     def record(cls, draw_state, old, new):
@@ -427,23 +480,34 @@ class UndoManager:
 
         now = time.time()
         frame = Core.melty.frame_count
-        direction = _edit_direction(old, new) if (isinstance(old, str) and isinstance(new, str)) else None
+        is_text = isinstance(old, str) and isinstance(new, str)
+        edit = _typing_edit(old, new) if is_text else None
+        if edit is not None:
+            direction = edit.kind
+        else:
+            direction = _edit_direction(old, new) if is_text else None
         # Post-edit caret: record() runs in the wrapper frame (after the body), so
         # the draw_state's caret now reflects the result of this edit. Redo needs it.
         ui_after = draw_state.capture_undo_state() if hasattr(draw_state, "capture_undo_state") else None
 
-        # Burst fold: find the most recent change for this draw_state still inside
-        # the coalesce window. Searching back (not just history[-1]) is what lets a
-        # burst keep folding even when another view's change landed on top between
-        # keystrokes in the alternating-views case.
+        # Fold target: the change for THIS draw_state in the TOP group. Only the
+        # top group: any other user action landing on the stack (another page's
+        # step, a non-text change) closes the typing run, as in Excel. Views
+        # responding to the SAME keystroke share its group (GROUP_FRAME_WINDOW), so
+        # a cascade landing between two keystrokes doesn't fold them - searching
+        # the group rather than just history[-1] is what keeps that in happening.
         target = None
+        top_gid = cls.history[-1].group_id if cls.history else None
         for c in reversed(cls.history):
-            if now - c.t > cls.COALESCE_WINDOW:
-                break                                    # older than window; deque is time-ordered
+            if c.group_id != top_gid:
+                break
             if c.draw_state is draw_state:
                 target = c
                 break
-        if target is not None and cls._can_coalesce(target, draw_state, old, new, now, direction):
+        if target is not None and cls._can_coalesce(target, draw_state, old, new, now, edit):
+            if edit is not None:
+                pos = cls._typing_continues(target, old, edit)
+                target.edit_end, target.edge_char = _run_edge(edit, pos, target.edit_end)
             target.new = new
             target.t = now
             target.ui_after = ui_after
@@ -467,8 +531,24 @@ class UndoManager:
         if gid is None:
             gid = cls.stack.new_group_id()
 
+        if edit is not None:
+            # A run's first edit: the diff's span is ambiguous next to repeated
+            # characters, so trust the post-edit caret when it names one of the
+            # equivalent placements (rendered display text can put the caret in
+            # other coordinates - then it's none and the diff's own stands).
+            caret = ui_after.get("text_cursor_pos") if ui_after else None
+            pos = edit.pos
+            if isinstance(caret, int):
+                want = caret - len(edit.text) if edit.kind == "insert" else caret
+                if _span_reaches(old, edit, want):
+                    pos = want
+            edit_end, edge_char = _run_edge(edit, pos, None)
+        else:
+            edit_end, edge_char = None, ""
         change = Change(draw_state, old, new, ui=getattr(draw_state, "_undo_pre", None),
-                        t=now, direction=direction, ui_after=ui_after, group_id=gid, frame=frame)
+                        t=now, direction=direction, ui_after=ui_after, group_id=gid, frame=frame,
+                        edit_end=edit_end, edge_char=edge_char,
+                        sealed=is_text and edit is None)   # paste / delete / replace: own step
         cls.history.append(change)
 
         # while len(cls.history) > cls.MAX_HISTORY:
@@ -808,13 +888,14 @@ def _edit_direction(old, new):
 
 
 def _diff_span(old, new):
-    """Minimal differing span as (prefix_len, inserted_text). Strips the common
-    prefix and suffix so `inserted` is the run that `new` adds over `old`.
+    """Minimal differing span as (prefix_len, removed_text, inserted_text).
+    Strips the common prefix and suffix so `removed` is the run `old` loses
+    and `inserted` the run `new` adds at offset `prefix_len`.
 
     Chunked: equal 4KB slices skip at C memcmp speed, per-char refinement only
     inside the first mismatching chunk. The original per-char Python walk was
-    O(buffer) per FOLDED INSERT — record() runs it via _starts_new_word on
-    every consecutive-insert keystroke, and on a ~166KB buffer that was a
+    O(buffer) per FOLDED INSERT — record() runs it via _typing_edit on
+    every keystroke, and on a ~166KB buffer that was a
     measured ~20ms slice of the edited-frame wrapper epilogue (held-Enter
     bursts; alternating insert/delete never reached it, which is why the cost
     came and went between sessions)."""
@@ -842,18 +923,85 @@ def _diff_span(old, new):
         while s < e and old[lo - 1 - s] == new[ln - 1 - s]:
             s += 1
         break
-    return p, new[p:ln - s]
+    return p, old[p:lo - s], new[p:ln - s]
 
 
-def _starts_new_word(old, new):
-    """True when this insert begins a new word — a non-space inserted immediately
-    after a space/newline — which commits the current group so each word is its
-    own undo step (typing 'hello world ' -> two groups)."""
-    p, inserted = _diff_span(old, new)
-    if not inserted or inserted[0].isspace():
+class _TypingEdit:
+    """A keystroke-sized text edit: `kind` 'insert' or 'delete', `pos` the
+    buffer offset it starts at (in `old`), `text` the run inserted or removed
+    in BUFFER order (a Backspace run is read reversed where typing order
+    matters)."""
+
+    __slots__ = ("kind", "pos", "text")
+
+    def __init__(self, kind, pos, text):
+        self.kind = kind
+        self.pos = pos
+        self.text = text
+
+
+def _typing_edit(old, new):
+    """Classify a text edit as typing, or None for a standalone step. Typing
+    is a pure insert or a pure delete of at most
+    Toggles.CodeEditor.undo_typing_max_chars characters with no newline in
+    it. Everything else is its own undo step, like the separate editor
+    commands they come from in IntelliJ: Enter (+ auto-indent), Tab, a
+    paste, a completion, a comment toggle, a selection typed over or cut."""
+    from src.lsd.gl_gui.toggles import Toggles
+    pos, removed, inserted = _diff_span(old, new)
+    if removed and inserted:
+        return None
+    text = inserted or removed
+    if not text or "\n" in text or len(text) > Toggles.CodeEditor.undo_typing_max_chars:
+        return None
+    return _TypingEdit("insert" if inserted else "delete", pos, text)
+
+
+def _span_reaches(old, edit, pos):
+    """Whether `edit`, whose diff span sits at `edit.pos`, could equally have
+    happened at `pos`. The common-prefix diff reports the RIGHTMOST
+    equivalent placement: inserting 'l' before the 'l' of "helo" reads as an
+    insert after it, deleting the first 'l' of "hello" as deleting the
+    second. Sliding the span left by one is equivalent whenever the character
+    it slides over equals the run's last (cyclically, for a multi-character
+    run), so the check walks back from edit.pos to `pos` — O(shift), and the
+    shift is the length of the repeated-character run."""
+    if pos == edit.pos:
+        return True
+    if pos < 0 or pos > edit.pos:
         return False
-    char_before = old[p - 1] if p > 0 else ""
-    return char_before != "" and char_before.isspace()
+    text = edit.text
+    length = len(text)
+    for j in range(edit.pos - pos):
+        if old[edit.pos - 1 - j] != text[-1 - (j % length)]:
+            return False
+    return True
+
+
+def _run_edge(edit, pos, prev_end):
+    """Where a typing run ends once `edit` (resolved to buffer offset `pos`)
+    joins it — (edit_end, edge_char). `edit_end` is the caret offset after
+    the edit (an insert ends past its text; a delete leaves the caret at its
+    start either way). `edge_char` is the last character typed in typing
+    order: an insert's last, a Delete-key run's last removed, a Backspace
+    run's FIRST removed (it removes backwards). A run's first delete has no
+    edge to compare against and reads as Backspace, the common case."""
+    if edit.kind == "insert":
+        return pos + len(edit.text), edit.text[-1]
+    backspace = prev_end is None or pos + len(edit.text) == prev_end
+    return pos, (edit.text[0] if backspace else edit.text[-1])
+
+
+def _word_starts(run):
+    """True when a new word starts anywhere inside `run` — a non-space right
+    after whitespace — which closes the current step so each word is its own
+    undo (typing 'hello world' -> 'hello ' | 'world'; backspacing it from the
+    end -> ' world' | 'hello'). `run` is the step's edge char followed by the
+    new keystrokes in typing order."""
+    for i in range(1, len(run)):
+        if run[i - 1].isspace() and not run[i].isspace():
+            return True
+    return False
 
 
 # The primitive value editors - the genuine leaves of the render tree. Their

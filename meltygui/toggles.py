@@ -1376,6 +1376,22 @@ class Toggles:
         nav_caret_coalesce_s = 0.6
         nav_caret_step_lines = 10
 
+        # ── Text undo steps (UndoManager.record, IntelliJ-style) ──
+        # Typing folds into one Ctrl+Z step while it stays in one place ( one
+        # editor, keystrokes landing on the selection's caret edge, same
+        # insert/delete direction) and, with undo_word_steps, until a new
+        # word starts with a non-space typed character after whitespace: "hello
+        # world" undoes as "world" then "hello"; a Backspace run mirrors this
+        # (" world" then "hello"). No pause ever commits a step, and nothing
+        # folds across an undo/redo. An edit that is not keystroke-sized -
+        # inserts or removes a line (Enter + auto-indent), more than
+        # undo_typing_max_chars characters at once (paste, tab, a completion,
+        # a comment toggle) or replaces a selection - is always its own step.
+        # Raise undo_typing_max_chars if fast typing on a slow frame splits
+        # words too often (a frame's keystrokes arrive as one edit).
+        undo_word_steps = True
+        undo_typing_max_chars = 3
+
         # ── Compare-split ribbons (open_files._draw_compare_ribbons) ──
         # Block colors by kind. Read live per frame.
         ribbon_insert_tint = (0.315, 0.928, 0.294)   # lines only in the buffer
@@ -1388,6 +1404,10 @@ class Toggles:
         # A conflict region whose pending side already equals the external
         # side (taken with the arrow, or edited to match) - no longer red.
         ribbon_resolved_tint = (0.55, 0.85, 0.55)
+        # A DECLINED side's band (its ✗ marker set): grey, and the 4th
+        # component scales the band's fill/edge alpha down - a rejected
+        # change should recede, not glow.
+        ribbon_declined_tint = (0.55, 0.58, 0.62, 0.45)
         # Shared fill alpha for the block washes AND the seam band - same fill
         # so highlight → band → highlight reads as ONE continuous shape.
         ribbon_fill_alpha = 0.10
@@ -1622,12 +1642,11 @@ class Toggles:
         anthropic_profile = "lsd"
         # Give up waiting for the browser redirect after this long.
         anthropic_login_timeout_s = 300.0
-        # Claude plan usage panel (Anthropic row): while it is OPEN and the
-        # window is visible, re-fetch the limits every usage_refresh_s (one
-        # GET /api/oauth/usage each) and repaint every usage_tick_s so the
-        # reset countdowns live. Closed panel / hidden window = no requests.
-        usage_refresh_s = 120.0
-        usage_tick_s = 30.0
+        # Claude plan usage panel (Anthropic row): NO background poll (it
+        # rate-limited the endpoint, 08-25). One GET /api/oauth/usage when
+        # the panel opens, when a REPAINT finds the numbers older than
+        # usage_refresh_s, and from the Refresh button. No panel = nothing.
+        usage_refresh_s = 300.0
         # Hard floor between two usage requests for one account, whatever
         # asks (a redraw, the poller, an identity change) - only the Refresh
         # button goes under it. A 429 backs off for its Retry-After, else
@@ -1638,6 +1657,18 @@ class Toggles:
         # The Claude Code executable the "Use in Claude Code" button runs
         # (`claude auth login --email ...`); empty = PATH / the usual installs.
         claude_code_bin = ""
+        # Sign-in pages open as a PLACED popup: a chromeless Chromium --app
+        # window forced into Xwayland (positioning works there) and parked
+        # beside the pointer by xdotool (fim_providers/oauth_popup.py); a
+        # dedicated profile ~/.lsd/oauth-browser keeps the Google session
+        # between sign-ins. Off / no Chromium / no xdotool → plain xdg-open.
+        use_oauth_popup = True
+        oauth_popup_browser = ""
+        oauth_popup_size = (520, 760)
+        # A toast (tag "anthropic") + log line for EVERY Anthropic API
+        # request the studio makes - usage fetches, FIM completions, Test,
+        # sign-in token exchanges, retries (fim_providers/anthropic_requests.py).
+        notify_requests = True
 
 
     @defaults(tint=(0.63, 0.44, 0.2))

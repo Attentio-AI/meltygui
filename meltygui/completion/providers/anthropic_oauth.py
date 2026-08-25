@@ -224,6 +224,8 @@ def exchange_code(base_url: str, client_id: str, code: str, verifier: str, redir
     WITHOUT an anthropic-beta header — that is the authorization_code
     grant's route (`state` is required on this leg too: it is the bound
     CSRF check across both legs)."""
+    from src.lsd.gl_gui.fim_providers.anthropic_requests import notify_request
+    notify_request("POST /v1/oauth/token", "browser sign-in code exchange")
     body = urllib.parse.urlencode({"grant_type": "authorization_code", "code": code,
                                    "code_verifier": verifier, "client_id": client_id,
                                    "redirect_uri": redirect_uri, "state": state}).encode()
@@ -335,6 +337,7 @@ class LoginFlow:
         self.result = None
         self.done = False
         self.started_at = None
+        self._popup = None
         self._server = None
         self._thread = None
         self._code = None
@@ -367,8 +370,13 @@ class LoginFlow:
         return self.url
 
     def open_in_browser(self) -> bool:
-        from src.lsd.gl_gui.fim_providers.copilot import open_url
-        return bool(self.url) and open_url(self.url)
+        if not self.url:
+            return False
+        from src.lsd.gl_gui.fim_providers import oauth_popup
+        popup = oauth_popup.open_auth_popup(self.url)   # falls back to xdg-open itself
+        if popup is not None:
+            self._popup = popup
+        return True
 
     def cancel(self):
         self._cancelled.set()
@@ -415,6 +423,8 @@ class LoginFlow:
             except Exception as error:
                 self.error = f"sign-in failed: {error}"
         self.done = True
+        if self._popup is not None:
+            self._popup.close()                 # the flow is over - take the popup with it
         self._notify()
 
     def _notify(self):

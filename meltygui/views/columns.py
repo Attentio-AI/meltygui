@@ -48,35 +48,95 @@ class Columns(dict):
 # ---------------------------------------------------------------------------
 
 
-def resolve_column_widths(column_widths, n_cols, content_width):
+def _column_floor(column_mins, i):
+    """Minimum width of column ``i``: its ``column_mins`` entry when given
+    (None / 0 / a short list fall through), else MIN_COLUMN_WIDTH."""
+    if column_mins and i < len(column_mins) and column_mins[i]:
+        return float(column_mins[i])
+    return float(MIN_COLUMN_WIDTH)
+
+
+def _column_cap(column_maxes, i, floor):
+    """Maximum width of column ``i``: its ``column_maxes`` entry when given
+    (never below the column's ``floor`` — a cap under the minimum reads as
+    the minimum), else None: unbounded."""
+    if column_maxes and i < len(column_maxes) and column_maxes[i]:
+        return max(float(column_maxes[i]), float(floor))
+    return None
+
+
+def resolve_column_widths(column_widths, n_cols, content_width,
+                          column_mins=None, column_maxes=None):
     """Pixel width per column for ``n_cols`` columns in ``content_width``.
 
     Entries are pixels; None (or a missing entry — the list may be shorter
     than the column count) takes an equal share of whatever the sized columns
-    leave over. Widths never drop below MIN_COLUMN_WIDTH.
+    leave over. Widths never drop below the column's minimum
+    (``column_mins`` per column, else MIN_COLUMN_WIDTH) and never pass its
+    cap (``column_maxes`` per column, None = unbounded): a flex column
+    whose equal share would overshoot its cap takes the cap, and the
+    remaining flex columns split what it left on the table.
     """
     available = max(0.0, float(content_width))
     spec = list(column_widths)[:n_cols] if column_widths else []
     spec += [None] * (n_cols - len(spec))
+    mins = [_column_floor(column_mins, i) for i in range(n_cols)]
+    maxes = [_column_cap(column_maxes, i, mins[i]) for i in range(n_cols)]
 
-    fixed_total = sum(max(float(w), MIN_COLUMN_WIDTH)
-                      for w in spec if w is not None)
-    flex_count = sum(1 for w in spec if w is None)
-    share = (max(MIN_COLUMN_WIDTH, (available - fixed_total) / flex_count)
-             if flex_count else 0.0)
+    def bounded(i, w):
+        w = max(float(w), mins[i])
+        return w if maxes[i] is None else min(w, maxes[i])
 
-    return [share if w is None else max(float(w), MIN_COLUMN_WIDTH)
-            for w in spec]
+    widths = [None if w is None else bounded(i, w) for i, w in enumerate(spec)]
+    remaining = available - sum(w for w in widths if w is not None)
+    pool = [i for i, w in enumerate(widths) if w is None]
+    while pool:
+        # Equal share is floored at the largest min in the pool; any pool
+        # column capped under that share takes its cap and drops out, the
+        # rest re-split the remainder.
+        share = max(max(mins[i] for i in pool), remaining / len(pool))
+        capped = [i for i in pool if maxes[i] is not None and maxes[i] < share]
+        if not capped:
+            for i in pool:
+                widths[i] = share
+            break
+        for i in capped:
+            widths[i] = maxes[i]
+            remaining -= maxes[i]
+        pool = [i for i in pool if i not in capped]
+    return widths
 
 
-def _seed_edges(column_widths, n_cols, content_width, base=0.0):
+def _seed_edges(column_widths, n_cols, content_width, base=0.0,
+                column_mins=None, column_maxes=None):
     """Fresh edge dicts for n_cols columns: n_cols+1 lines accumulated from
     ``base`` (window coordinates)."""
-    widths = resolve_column_widths(column_widths, n_cols, content_width)
+    widths = resolve_column_widths(column_widths, n_cols, content_width,
+                                   column_mins=column_mins,
+                                   column_maxes=column_maxes)
     edges = [{"x": float(base)}]
     for w in widths:
         edges.append({"x": edges[-1]["x"] + w})
     return edges
+
+
+def _edge_min(edges, m):
+    """Minimum span between edges[m-1] and edges[m]: the "min" a
+    ColumnLayout stamped on the RIGHT edge of that column (column_mins),
+    else the flat MIN_COLUMN_WIDTH. The flat solve sorts every edge by x
+    and consecutive edges always bound exactly one column of some view, so
+    a per-edge floor slots straight into the contact physics."""
+    return float(edges[m].get("min") or MIN_COLUMN_WIDTH)
+
+
+def _edge_max(edges, m):
+    """Maximum span between edges[m-1] and edges[m]: the "max" a
+    ColumnLayout stamped on the RIGHT edge of that column (column_maxes),
+    else None — unbounded. _edge_min's counterpart for the PULL side of a
+    drag: a column at its cap can't open any further, so its far edge is
+    carried along instead (see _drag_edge)."""
+    cap = edges[m].get("max")
+    return float(cap) if cap else None
 
 
 def _clamp_interior(edges):
@@ -86,16 +146,33 @@ def _clamp_interior(edges):
     wider window, a width change that ran while the row wasn't registered
     — would otherwise stay there for good: it sorts past the frame edge in
     the flat solve (never pushed) and its grab handle sits off-window where
-    no drag can reach it. In-frame, in-order edges are untouched."""
+    no drag can reach it. In-frame, in-order edges are untouched.
+
+    Then the caps: a column persisted WIDER than its maximum (a cap added
+    since, a frame widened while the row wasn't registered) pulls its right
+    edge in, the overflow rolling rightward through capped neighbours until
+    an uncapped column absorbs it; the LAST column can't move the frame, so
+    it pulls its LEFT edge out through the same chain a drag runs, walled
+    at both frame edges — a frame wider than every cap put together leaves
+    the last column over its cap (the frame is the authority; it never
+    fights the width) and the pass is idempotent from then on."""
     count = len(edges)
     for m in range(count - 2, 0, -1):
-        limit = edges[m + 1]["x"] - MIN_COLUMN_WIDTH
+        limit = edges[m + 1]["x"] - _edge_min(edges, m + 1)
         if edges[m]["x"] > limit:
             edges[m]["x"] = float(limit)
     for m in range(1, count - 1):
-        floor = edges[m - 1]["x"] + MIN_COLUMN_WIDTH
+        floor = edges[m - 1]["x"] + _edge_min(edges, m)
         if edges[m]["x"] < floor:
             edges[m]["x"] = float(floor)
+    for m in range(1, count - 1):
+        cap = _edge_max(edges, m)
+        if cap is not None and edges[m]["x"] - edges[m - 1]["x"] > cap:
+            edges[m]["x"] = edges[m - 1]["x"] + cap
+    cap = _edge_max(edges, count - 1) if count > 2 else None
+    if cap is not None and edges[-1]["x"] - edges[-2]["x"] > cap:
+        _drag_edge(edges, count - 2, edges[-1]["x"] - cap,
+                   walls=frozenset({id(edges[0]), id(edges[-1])}))
 
 
 def _ensure_window_state(window):
@@ -120,44 +197,96 @@ def _all_edges(window):
 def _drag_edge(edges, k, target, walls=frozenset()):
     """Move edge k of the sorted list to `target`. Edges are independent
     objects: no other edge moves unless the moving edge (or one it already
-    carried) closes to MIN_COLUMN_WIDTH — then it is carried, and the chain
-    stops at the first edge with slack. Pulling away never drags anything
-    along; only contact pushes.
+    carried) makes CONTACT — two kinds, one per side of the moving edge:
+
+      PUSH, ahead: the column in front closes to its minimum (_edge_min)
+      and its far edge is shoved on ahead.
+      PULL, behind: the column it leaves behind opens to its maximum
+      (_edge_max) and its far edge is dragged along behind.
+
+    Either chain runs edge by edge — a pushed edge closes the next column,
+    a pulled edge opens the next — and stops at the first column with
+    slack; consecutive capped columns therefore travel as one, exactly as
+    consecutive min-packed columns do. A column with no cap never pulls.
 
     ``walls`` is a set of edge ids the cascade must NOT move. Contact stops
     dead at a wall: the *dragged* edge itself is clamped so the pile packs
-    against the wall at MIN_COLUMN_WIDTH spacing instead of the chain
-    shoving the wall along. Used by _solve_collisions to keep one FRAME
-    edge from pushing the other (breaks the foreign-width feedback loop —
-    see there); interior divider drags pass no walls, so a divider can
-    still push a frame edge and slide/grow the window 1:1 with the
+    against the wall at its minimums (push side) or stretches to its
+    summed caps (pull side) instead of the chain shoving the wall along.
+    Used by _solve_collisions to keep one FRAME edge from moving the other
+    (breaks the foreign-width feedback loop — see there; its mirror image
+    is a fully-capped row, which refuses a foreign widening the same way);
+    interior divider drags pass no walls, so a divider can still push or
+    pull a frame edge and slide/grow/shrink the window 1:1 with the
     cursor."""
     old = edges[k]["x"]
     if target == old:
         return
     if target > old:
+        # Wall clamps first: ahead through the minimums, behind through the
+        # caps (the pull chain can only reach a wall over capped columns).
         for m in range(k + 1, len(edges)):
             if id(edges[m]) in walls:
-                target = min(target, edges[m]["x"] - (m - k) * MIN_COLUMN_WIDTH)
+                target = min(target, edges[m]["x"]
+                             - sum(_edge_min(edges, j)
+                                   for j in range(k + 1, m + 1)))
+                break
+        for m in range(k - 1, -1, -1):
+            if _edge_max(edges, m + 1) is None:
+                break
+            if id(edges[m]) in walls:
+                target = min(target, edges[m]["x"]
+                             + sum(_edge_max(edges, j)
+                                   for j in range(m + 1, k + 1)))
                 break
         edges[k]["x"] = float(target)
-        for m in range(k + 1, len(edges)):
+        for m in range(k + 1, len(edges)):            # push ahead
             if id(edges[m]) in walls:
                 break
-            need = edges[m - 1]["x"] + MIN_COLUMN_WIDTH
+            need = edges[m - 1]["x"] + _edge_min(edges, m)
+            if edges[m]["x"] >= need:
+                break
+            edges[m]["x"] = need
+        for m in range(k - 1, -1, -1):                # pull behind
+            if id(edges[m]) in walls:
+                break
+            cap = _edge_max(edges, m + 1)
+            if cap is None:
+                break
+            need = edges[m + 1]["x"] - cap
             if edges[m]["x"] >= need:
                 break
             edges[m]["x"] = need
     else:
         for m in range(k - 1, -1, -1):
             if id(edges[m]) in walls:
-                target = max(target, edges[m]["x"] + (k - m) * MIN_COLUMN_WIDTH)
+                target = max(target, edges[m]["x"]
+                             + sum(_edge_min(edges, j)
+                                   for j in range(m + 1, k + 1)))
+                break
+        for m in range(k + 1, len(edges)):
+            if _edge_max(edges, m) is None:
+                break
+            if id(edges[m]) in walls:
+                target = max(target, edges[m]["x"]
+                             - sum(_edge_max(edges, j)
+                                   for j in range(k + 1, m + 1)))
                 break
         edges[k]["x"] = float(target)
-        for m in range(k - 1, -1, -1):
+        for m in range(k - 1, -1, -1):                # push ahead
             if id(edges[m]) in walls:
                 break
-            need = edges[m + 1]["x"] - MIN_COLUMN_WIDTH
+            need = edges[m + 1]["x"] - _edge_min(edges, m + 1)
+            if edges[m]["x"] <= need:
+                break
+            edges[m]["x"] = need
+        for m in range(k + 1, len(edges)):            # pull behind
+            if id(edges[m]) in walls:
+                break
+            cap = _edge_max(edges, m)
+            if cap is None:
+                break
+            need = edges[m - 1]["x"] + cap
             if edges[m]["x"] <= need:
                 break
             edges[m]["x"] = need
@@ -344,8 +473,11 @@ def window_edge_pass(window):
     # collision pass instead of fighting the resize latch. Raise-only,
     # re-stamped every frame (the wrapper rewrites min_width from resolved
     # contents every frame).
+    _flat = _all_edges(window)
     need = snap_int(left["x"]
-                    + MIN_COLUMN_WIDTH * max(1, len(_all_edges(window)) - 1))
+                    + max(MIN_COLUMN_WIDTH,
+                          sum(float(e.get("min") or MIN_COLUMN_WIDTH)
+                              for e in _flat if e is not left)))
     if (window.min_width or 0) < need:
         window.min_width = need
 
@@ -360,6 +492,13 @@ def window_edge_pass(window):
         drag = window.on_action("left_mouse_drag", view_id=f"win_edge_{k}",
                                 rect=rect, priority_delta=1,
                                 cursor=mouse_cursor.RESIZE_EW)
+        press = window.on_action("left_mouse_down", view_id=f"win_edge_{k}",
+                                 rect=rect, priority_delta=1)
+        if press:
+            # Resize press, before any edge motion: freeze views snap their
+            # clean pre-drag capture this frame (mark_start_offscreen).
+            from src.lsd.gl_gui.melty import Melty
+            Melty.resize_press_frame = Melty.frame_count
         if not drag:
             continue
         active = k
@@ -545,7 +684,7 @@ class ColumnLayout:
     def __init__(self, draw_state, n_cols, column_edges=None,
                  column_widths=None, left_edge=None, right_edge=None,
                  resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9),
-                 padding_y=None):
+                 padding_y=None, column_mins=None, column_maxes=None):
         self.draw_state = draw_state
         self.n_cols = n_cols
         n_lines = self.n_lines = n_cols + 1
@@ -558,6 +697,15 @@ class ColumnLayout:
         # (default: same as padding) - a bandless host (the code editor's
         # compare split) keeps the horizontal padding around its dividers
         # without pushing the cells down below the row origin.
+        # ``column_mins`` - per-column minimum widths (None entries fall
+        # back to MIN_COLUMN_WIDTH), stamped as "min" on each column's
+        # RIGHT edge so the column collision solve, the frame-fit clamp and
+        # the window's min-width floor all honour them (see _edge_min).
+        # ``column_maxes`` - per-column maximum widths (None = unbounded),
+        # stamped as "max" the same way: a column at its cap drags its far
+        # edge along instead of opening further, capped neighbours travel
+        # as one, and a persisted over-cap column is packed back down on
+        # construction (see _edge_max / _drag_edge / _clamp_interior).
         self.padding = float(padding)
         self.padding_y = float(padding if padding_y is None else padding_y)
         self.border_color = border_color
@@ -602,9 +750,13 @@ class ColumnLayout:
             # ~0) stays TRANSIENT: render with it this frame, don't persist,
             # so a later frame re-seeds at the new extent instead of
             # locking up an all-minimum-width pile.
-            seed_valid = extent > n_cols * float(MIN_COLUMN_WIDTH)
-            extent = max(extent, n_cols * float(MIN_COLUMN_WIDTH))
-            edges = _seed_edges(column_widths, n_cols, extent, base=base)
+            min_total = sum(_column_floor(column_mins, i)
+                            for i in range(n_cols))
+            seed_valid = extent > min_total
+            extent = max(extent, min_total)
+            edges = _seed_edges(column_widths, n_cols, extent, base=base,
+                                column_mins=column_mins,
+                                column_maxes=column_maxes)
         owned = [True] * n_lines
         if left_edge is not None:
             edges[0] = left_edge
@@ -612,6 +764,21 @@ class ColumnLayout:
         if right_edge is not None:
             edges[-1] = right_edge
             owned[-1] = False
+        # Per-column minimums and maximums ride the edge dicts (re-stamped
+        # every construction, so a hotswapped value applies live; columns
+        # without one keep the flat MIN_COLUMN_WIDTH floor / no cap).
+        for i in range(n_cols):
+            floor = (column_mins[i] if column_mins and i < len(column_mins)
+                     else None)
+            if floor:
+                edges[i + 1]["min"] = float(floor)
+            else:
+                edges[i + 1].pop("min", None)
+            cap = _column_cap(column_maxes, i, _column_floor(column_mins, i))
+            if cap is not None:
+                edges[i + 1]["max"] = cap
+            else:
+                edges[i + 1].pop("max", None)
         # Interior dividers always stay inside the frame - see
         # _clamp_interior. (Pixel widths otherwise: a frame resize only
         # affects the divider it touches.)
@@ -658,6 +825,15 @@ class ColumnLayout:
                                             view_id=f"col_edge_{k}",
                                             rect=rect, priority_delta=1,
                                             cursor=mouse_cursor.RESIZE_EW)
+                press = draw_state.on_action("left_mouse_down",
+                                             view_id=f"col_edge_{k}",
+                                             rect=rect, priority_delta=1)
+                if press:
+                    # Resize press, before any drag motion: freeze hosts
+                    # snap their clean pre-drag capture this frame
+                    # (mark_start_offscreen).
+                    from src.lsd.gl_gui.melty import Melty
+                    Melty.resize_press_frame = Melty.frame_count
 
                 if not drag:
                     continue

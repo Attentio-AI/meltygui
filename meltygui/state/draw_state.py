@@ -474,6 +474,10 @@ class DrawState(DictConversion):
         # by the wrapper for blit-cache hits: (frame_count, [entries]). See
         # on_action / replay_body_actions.
         self._body_actions = None
+        # Rect-scoped event PARAMS from the last real render (event_rect):
+        # {param_name: [rect relative to (abs_left, abs_top), ...]}. The
+        # wrapper consumes and clears it before each body run.
+        self._event_rects = None
 
         self._queued_windows = []
         self.drag_window_pos_x = None
@@ -874,6 +878,7 @@ class DrawState(DictConversion):
     # Class-level default lets draw_states alive from before a hotswap (whose
     # __init__ never saw the field) read None instead of raising.
     _body_actions = None
+    _event_rects = None
 
     def __getattr__(self, name):
         # Reached only when normal lookup failed. `locate_params` and any
@@ -2099,6 +2104,35 @@ class DrawState(DictConversion):
             for event_name in Core.melty.events[view_id]:
                 return_events[event_name] = Core.melty.events[view_id][event_name]
         return return_events
+
+    def event_rect(self, event_names, rect):
+        """Narrow a declared event PARAM to `rect` (screen coords) — the hit
+        area the wrapper registers it over, instead of the whole content
+        rect. Call it from the view body every run, next to the geometry
+        that defines the rect; several calls for the same name union their
+        rects. Outside the rects the param is simply not subscribed, so a
+        press/drag there falls through to whatever sits behind this view in
+        z-order — the enclosing window's move handle, a parent's scroll —
+        with no forwarding code. draw_text scopes `left_mouse_drag` to its
+        text rows this way so the gutter and the space below the last line
+        drag the window. Rects are stored relative to the view origin (a
+        blit-served window drag moves the view without re-running the body)
+        and re-anchored at registration; the wrapper reads the record of the
+        LAST body run when it registers the params for this one, then
+        clears it, so a run that stops declaring lifts the scope. Not the
+        tool for an EXTRA sub-rect the body wants events from — that is
+        `on_action(event, view_id=…, rect=…)`."""
+        if isinstance(event_names, str):
+            event_names = (event_names,)
+        left, top = self.abs_left, self.abs_top
+        if left is None or top is None:
+            return
+        relative_rect = (rect[0] - left, rect[1] - top, rect[2] - left, rect[3] - top)
+        record = self._event_rects
+        if record is None:
+            record = self._event_rects = {}
+        for name in event_names:
+            record.setdefault(name, []).append(relative_rect)
 
     def is_bounding_hovered(self):
         if (self._imgui_is_active or self._imgui_is_edited or self._imgui_is_item_hovered or self._imgui_popover_open):

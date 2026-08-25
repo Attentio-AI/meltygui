@@ -1932,6 +1932,12 @@ def render_func(*args, **o_kwargs):
                     # branch below never runs and the stale baseline /
                     # edge-target from the old gesture made the new one leap
                     # (old_baseline + new_total, and total_dx - stale_x0).
+                    #
+                    # Also the freeze_resize clean-capture trigger: a press
+                    # on a resize handle, before any drag has started -
+                    # freeze views snap their clean pre-drag capture this
+                    # frame (mark_start_offscreen).
+                    Melty.resize_press_frame = Melty.frame_count
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
                     draw_state._resize_from_top_left = None
@@ -2425,7 +2431,18 @@ def render_func(*args, **o_kwargs):
             # if draw_state._output_value_cache is UNSET_VALUE and not old_convert_path:
             #     draw_state._external_change = True
 
-            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not draw_state._external_change
+            # _external_change (git watcher wake, FileWatch, MergeFiles.wake,
+            # ExternalChanges, PendingSave) does not switch the cache off: it
+            # refuses the cache HIT inside mark_start_offscreen, so the body
+            # renders live THROUGH the tile path and the window still marks its
+            # depth (mask_mark_view in mark_end_offscreen) and the fresh
+            # render is captured. With use_cache off for the frame the window
+            # skipped its tile context entirely: no depth mark (its shadow
+            # dropped and its cached children cast onto rank-0 background
+            # above it, the mangled merge-window / code-editor shadows
+            # after an external edit) and no capture (the next frame shows
+            # the stale tile).
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state._bypass_cache = kwargs.get("draw", False)
             draw_state.use_cache = use_cache
             # Opt-in (off by default): during window mouse-dragging the view's
@@ -2953,6 +2970,12 @@ def render_func(*args, **o_kwargs):
             if _render_body:
                 # Fresh record for this render's body-level on_action calls.
                 draw_state._body_actions = (Melty.frame_count, [])
+                # Rect-scoped event params (draw_state.event_rect): take the
+                # LAST body run's declarations for this run's registration
+                # lookup and clear the slot, so the body re-declares each run
+                # and a run that stops declaring lifts the scope.
+                _event_rects = draw_state._event_rects
+                draw_state._event_rects = None
                 draw_state._melty_content_height = 0
 
                 if style_manager is not None:
@@ -3996,6 +4019,20 @@ def render_func(*args, **o_kwargs):
 
                     # Remove event names from wanted params that aren't in kwargs
                     event_names = [e for e in event_names if e in kwargs]
+                    if _event_rects:
+                        # A param the body scoped with event_rect registers only
+                        # while the pointer is within one of its rects (stored
+                        # relative to the view creation to re-anchor to the LIVE
+                        # window, as replay_body_actions needs); elsewhere it is
+                        # left unsubscribed so the click/drag falls through to
+                        # the view behind (the window's move button, ...).
+                        _er_left, _er_top = draw_state._abs_left(), draw_state._abs_top()
+                        event_names = [
+                            e for e in event_names
+                            if e not in _event_rects
+                            or any(draw_state.hover_eligible((_er_left + r[0], _er_top + r[1],
+                                                              _er_left + r[2], _er_top + r[3]))
+                                   for r in _event_rects[e])]
                     _content_cursor = kwargs.get("mouse_cursor")
                     Melty.event_handler.register_hovered(tile_id, event_names, priority - 3, tile_id,
                                                          selected=draw_state.selected,

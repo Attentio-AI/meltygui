@@ -208,8 +208,7 @@ def accounts_changed():
         pass
 
 
-_window_draw_state = None   # draw_internet_accounts' draw_state - the wake target
-_window_last_draw = 0.0     # monotonic time the window body last ran (the idle poller's "visible" proof)
+_window_draw_state = None   # draw_internet_accounts' draw_state — the wake target
 
 
 def _drop_sessions_for(account_entry):
@@ -625,7 +624,6 @@ class AnthropicKind(AccountKind):
                 fetched_at is None
                 or time.monotonic() - fetched_at > Toggles.InternetAccounts.usage_refresh_s):
             self.fetch_usage(account)
-        self._schedule_usage_tick(account)
         rows = account.get("_usage_rows") or []
         out = [("usage", row) for row in rows]
         if account.get("_usage_error"):
@@ -642,54 +640,14 @@ class AnthropicKind(AccountKind):
             out.append(("stamp", stamp))
         return out
 
-    # -- live updates ----------------------------------------------------------
-    # There is no push event for usage, so an OPEN panel polls: a chain of
-    # one-shot threading.Timers (never a long-lived thread: a chain simply
-    # dies when its account dict is no longer the live store's, so an
-    # in-process restart leaves nothing behind) that re-fetches every
-    # usage_refresh_s and repaints every usage_tick, so "resets in ..." ticks.
-    # Visibility is proven by the window itself: each tick invalidates it,
-    # and a visible window runs its body (stamping _window_last_draw); a
-    # hidden / discarded / closed one doesn't, so the chain ends and the
-    # next real draw re-arms it through _usage_rows.
-
     @staticmethod
     def _usage_window_visible(period):
-        window = _window_draw_state
-        if window is None or getattr(window, "closed", False):
-            return False
-        return time.monotonic() - _window_last_draw < 2.0 * period + 5.0
-
-    def _schedule_usage_tick(self, account):
-        if account.get("_usage_timer") is not None:
-            return
-        from src.lsd.gl_gui.toggles import Toggles
-        period = max(1.0, min(Toggles.InternetAccounts.usage_tick_s,
-                              Toggles.InternetAccounts.usage_refresh_s))
-
-        def tick():
-            account["_usage_timer"] = None
-            kind = KINDS.get(account.get("kind"))        # the LIVE kind (hotswap re-registers it)
-            live_store = Melty.__dict__.get("_internet_accounts_store")
-            if (kind is None or live_store is None or live_store.get(account.get("id")) is not account
-                    or not account.get("_usage_open") or not kind._usage_window_visible(period)):
-                return                                    # panel closed / window hidden / stale generation
-            login = kind._claude_login_for(account)
-            if login is None or not kind._owns_claude_login(account, login):
-                return                                    # the login moved to another row (a switch)
-            fetched_at = account.get("_usage_fetched_at")
-            if (not account.get("_usage_loading")
-                    and (fetched_at is None
-                         or time.monotonic() - fetched_at >= Toggles.InternetAccounts.usage_refresh_s)):
-                kind.fetch_usage(account)                 # repaints when the numbers land
-            else:
-                accounts_changed()                        # countdown repaint
-            kind._schedule_usage_tick(account)
-
-        timer = threading.Timer(period, tick)
-        timer.daemon = True
-        account["_usage_timer"] = timer
-        timer.start()
+        """POLLING REMOVED (08-25: the usage endpoint rate-limits). This stub
+        stays one hotswap generation so a timer chain armed by the previous
+        code ends quietly on its next tick (it checks this before anything
+        else). The panel now fetches on open, on a draw that finds the data
+        older than usage_refresh_s, and on Refresh — never on a timer."""
+        return False
 
     def validate(self, account):
         """The Test button: the ONLY Anthropic web request — list one model
@@ -698,7 +656,9 @@ class AnthropicKind(AccountKind):
         source = self._source(account) or "?"
         try:
             import anthropic
-            client_kwargs = {"timeout": 15.0, "max_retries": 0}
+            from src.lsd.gl_gui.fim_providers.anthropic_requests import sdk_middleware
+            client_kwargs = {"timeout": 15.0, "max_retries": 0,
+                             "middleware": [sdk_middleware()]}
             client_kwargs.update(self.client_kwargs(account))
             client = anthropic.Anthropic(**client_kwargs)
             client.models.list(limit=1)
@@ -1084,9 +1044,10 @@ def _copy_text(text):
 
 
 def _open_url(url):
-    """System browser, without fork()ing the studio (copilot.open_url)."""
-    from src.lsd.gl_gui.fim_providers.copilot import open_url
-    open_url(url)
+    """A sign-in page: the placed Xwayland popup (oauth_popup), which falls
+    back to plain xdg-open by itself."""
+    from src.lsd.gl_gui.fim_providers import oauth_popup
+    oauth_popup.open_auth_popup(url)
 
 
 def _toggle(account, key):
@@ -1165,9 +1126,8 @@ def draw_internet_accounts(
         input_value: AccountStore,
         draw_state, panel_state: AccountsPanelState = None, style_manager=None,
         non_blocking_left_mouse_down=False, **kwargs):
-    global _window_draw_state, _window_last_draw
+    global _window_draw_state
     _window_draw_state = draw_state
-    _window_last_draw = time.monotonic()
     store = input_value
     if not store.loaded:
         store.load()

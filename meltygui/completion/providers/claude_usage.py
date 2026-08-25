@@ -160,6 +160,8 @@ def fetch_usage(token: str, url: str = USAGE_URL, timeout_s: float = 15.0) -> di
     """GET the usage payload with the claude.ai OAuth token (Bearer + the
     oauth beta header). RuntimeError with the status on failure
     (UsageRateLimited on 429)."""
+    from src.lsd.gl_gui.fim_providers.anthropic_requests import notify_request
+    notify_request("GET /api/oauth/usage")
     request = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
                       "Accept": "application/json", "User-Agent": "latent-descent"})
@@ -421,13 +423,20 @@ class ClaudeCodeLogin:
         executable = self.executable or find_claude()
         if not executable:
             raise RuntimeError("claude (Claude Code) not found — install it or set Toggles.InternetAccounts.claude_code_bin")
-        env = dict(os.environ)
+        from src.lsd.gl_gui.fim_providers.anthropic_requests import notify_request
+        from src.lsd.gl_gui.fim_providers import oauth_popup
+        notify_request("claude auth login", f"Claude Code's own requests · {self.email}")
+        # Claude Code opens the browser itself (xdg-open) - the shim on its
+        # PATH turns that into the placed popup, then place_async parks it.
+        env = oauth_popup.shim_env(os.environ)
         if self.config_dir:
             env["CLAUDE_CONFIG_DIR"] = str(self.config_dir)
         self._process = subprocess.Popen(
             [executable, "auth", "login", "--email", self.email],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             close_fds=False, env=env)
+        if oauth_popup.popup_available():
+            oauth_popup.place_async()
         threading.Thread(target=self._pump, daemon=True, name="claude-auth-login").start()
 
     def _pump(self):
@@ -451,6 +460,9 @@ class ClaudeCodeLogin:
             self.error = (failures[-1] if failures else (self.output[-1] if self.output else f"claude exited with {code}"))
             self.error = self.error.replace("Paste code here if prompted >", "").strip() or f"claude exited with {code}"
         self.done = True
+        from src.lsd.gl_gui.fim_providers import oauth_popup
+        if oauth_popup.popup_available():
+            oauth_popup.close_popups()          # the shim's popup isn't our child - close by class
         self._notify()
 
     def submit_code(self, code: str):
@@ -468,8 +480,9 @@ class ClaudeCodeLogin:
     def open_in_browser(self) -> bool:
         if not self.url:
             return False
-        from src.lsd.gl_gui.fim_providers.copilot import open_url
-        return open_url(self.url)
+        from src.lsd.gl_gui.fim_providers import oauth_popup
+        oauth_popup.open_auth_popup(self.url)   # falls back to xdg-open otherwise
+        return True
 
     def cancel(self):
         if self._process is not None and self._process.poll() is None:

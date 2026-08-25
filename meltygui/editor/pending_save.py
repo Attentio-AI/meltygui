@@ -553,7 +553,16 @@ class PendingSave:
         edits = []
         for addr, (codec, kwargs) in list(cls.pending_saves.items()):
             data = kwargs.get("data")
-            if not isinstance(data, str) or data == cls.originals.get(addr):
+            if not isinstance(data, str):
+                continue
+            # This no-op skip is for SPAN entries only (data == load-time
+            # original - nothing at stake). A WHOLE-FILE entry compares
+            # against a different reference point (its original is the
+            # sync frame at QUEUE time, the studio base here is CURRENT
+            # sync frame): after a resolve advanced the base, a "no-op"
+            # whole-file is still the flushable pending truth - skipping
+            # it reported DISK's text as the studio's.
+            if addr.start is not None and data == cls.originals.get(addr):
                 continue
             try:
                 if _P(addr.path).resolve() != rp:

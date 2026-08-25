@@ -96,7 +96,6 @@ def _bump_note(t, site):
     except Exception:
         pass
 
-
 def _tile_alloc(t) -> Tuple[int, int]:
     # getattr: tolerates Tile instances created before alloc_size existed
     # (hotswap onto a live session).
@@ -3372,7 +3371,7 @@ class TileCacheMasked:
         if not self.enabled:
             return True
 
-        if not draw_state.use_cache or draw_state._external_change:
+        if not draw_state.use_cache:
             return True
 
         input_value = draw_state._input_value
@@ -3475,15 +3474,18 @@ class TileCacheMasked:
             # stamped a wrong-colour column into the texture). So a drag
             # goes through three states, keyed on draw_state._bar_overlay /
             # _freeze_clean:
-            #   1. drag START (first frame the size changes while the mouse
-            #      is down): the bar switches to the OVERLAY list (never
-            #      captured - it renders after PASS 3) and the view renders
-            #      live ONCE, dirtied here so mark_end captures it: a clean
-            #      draw state with no bar in it, copied 1:1 into the tile's
-            #      logical rect. The copy is mask-gated (nothing outside the
-            #      view's new geometry), so it replaces ONLY the texels the
-            #      view covers this frame - the rest of the texture, the
-            #      earlier-era content beyond the logical rect, is untouched.
+            #   1. drag START - ideally a PRESS on a resize handle
+            #      (Melty.resize_press_frame, stamped by the edge/corner
+            #      handles before any edge drag), while this view's rect
+            #      is STILL UNCHANGED: the bar hides for the frame and the
+            #      view renders live ONCE, dirtied here so mark_end captures
+            #      it: a clean draw_text covering the ENTIRE tile rect, so
+            #      no stale bar can survive uncovered inside it. Fallback,
+            #      when press and first motion are compressed on one frame:
+            #      the first size-mismatch frame, captured 1:1 at the view's
+            #      own rect (mask-gated: a shrink then leaves the uncovered
+            #      strip's old texels - including a baked bar - in view;
+            #      the press path exists precisely to avoid that).
             #   2. mid-drag: the tile is served frozen at its full resident
             #      extent (content_size), the bar drawn live on the overlay
             #      at the live edge.
@@ -3502,8 +3504,11 @@ class TileCacheMasked:
                     # between the-render and cache-hit draws).
                     use_image = False
                     frozen = True
-                elif t.size != (size[0], size[1]):
-                    # State 1: one clean live render this frame.
+                elif (t.size != (size[0], size[1])
+                      or Melty.resize_press_frame == Melty.frame_count):
+                    # State 1: one clean live render this frame - at the
+                    # press (if frame, full coverage) or, compressed,
+                    # at the first mismatched frame.
                     draw_state._bar_overlay = True
                     draw_state._freeze_clean = True
                     use_image = False
@@ -3512,6 +3517,26 @@ class TileCacheMasked:
                     t.dirty = self._is_dirty(t)
                     _bump_note(t, "freeze clean capture")
 
+            # External-change wake (draw_state._external_change: the git
+            # provider's _wake_consumers, FileWatch, MergeFiles.wake,
+            # ExternalChanges, PendingSave): the body must run live THIS
+            # frame - through the tile path, never around it. Refuse the
+            # blit (and a frozen serve) and dirty the tile for this frame,
+            # the freeze clean-capture pattern above, so mark_end_offscreen
+            # marks the window's mask and enqueues the fresh render for
+            # capture. Skipping the tile context instead (the old use_cache
+            # = False bypass) dropped the window's mask mark for the frame -
+            # its shadow vanished and its cached children, still stamping
+            # theirs, cast onto rank-0 background inside it - and left the
+            # stale tile to serve the frame after.
+            if draw_state._external_change:
+                use_image = False
+                frozen = False
+                if t is not None:
+                    t.last_invalidated_frame = max(t.last_invalidated_frame,
+                                                   self._frame_id)
+                    t.dirty = self._is_dirty(t)
+                    _bump_note(t, "external change")
 
             if use_image or frozen:
                 # Blit-served: wrapper runs, body (and whole subtree)
@@ -3627,9 +3652,6 @@ class TileCacheMasked:
             return
 
         if draw_state is not None and (not draw_state.use_cache):
-            return
-
-        if draw_state is not None and (draw_state._external_change):
             return
 
         if len(self._stack) > 0:

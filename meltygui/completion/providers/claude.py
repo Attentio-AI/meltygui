@@ -82,7 +82,9 @@ class ClaudeSession(FimSession):
         if not has_credentials(account):
             raise RuntimeError("no Anthropic sign-in or API key — Internet Accounts → Sign in")
         import anthropic
-        kw = {"timeout": timeout_s, "max_retries": 1}
+        from src.lsd.gl_gui.fim_providers.anthropic_requests import sdk_middleware
+        kw = {"timeout": timeout_s, "max_retries": 1,
+              "middleware": [sdk_middleware()]}   # announces every request (except retry)
         kw.update(account_client_kwargs(account))
         if base_url:
             kw["base_url"] = base_url

@@ -12169,16 +12169,29 @@ def draw_text(input_value: str, height=None,
         rect_max_x += scroll_bar_width
     rect_max_y = draw_state.abs_clip_rect[3]
 
-    # Native I-beam over the text body (gutter, jump bar and scrollbar keep
-    # the arrow). Cursor-only subscription - no events - so it escapes the
-    # click subs' z-order/blocker rules and sticks through a selection drag.
+    # The text ROWS: from the gutter's right edge and the first drawn line's
+    # top to the bottom of the last one (with edges once the text scrolls
+    # past them). The selection subscription lives here and nowhere else - a
+    # left_mouse_drag on the gutter or in the empty space above the first / below
+    # the last line is left unsubscribed (event_rect), so it falls through to
+    # the enclosing window's move handle and drags the WINDOW.
+    # left_mouse_down remains view-wide: a press on the gutter still toggles
+    # folds / opens the usage picker / places the caret, and a press below
+    # the last line puts the caret at the end.
+    text_rows_rect = (rect_min_x, max(rect_min_y, origin_y), rect_max_x,
+                      min(rect_max_y, origin_y + (text.count('\n') + 1) * line_px))
+    draw_state.event_rect(("left_mouse_drag", "left_mouse_held"), text_rows_rect)
+
+    # Native I-beam over the text rows (gutter, jump bar, scrollbar and the
+    # window-drag space above the text keep the arrow). Cursor-only
+    # subscription - no events - so it ignores the click subs' z-order /
+    # blocker rules and sticks through a selection drag.
     # priority_delta=3 lands this AT the view's wrapper registration
     # (core_render registers event params at `priority - 3`): the blocker
     # pass keeps only entries at/above the enclosing closable window's own
     # `priority - 3`, and a delta-0 entry from a wrapper child sits below
     # that and would be pruned by its own window.
-    draw_state.on_action([], view_id="text_cursor",
-                         rect=(rect_min_x, rect_min_y, rect_max_x, rect_max_y),
+    draw_state.on_action([], view_id="text_cursor", rect=text_rows_rect,
                          priority_delta=3, cursor=mouse_cursor.TEXT)
 
     draw_list.push_clip_rect(rect_min_x, rect_min_y, rect_max_x, rect_max_y, True)

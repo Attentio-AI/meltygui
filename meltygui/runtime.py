@@ -784,6 +784,12 @@ class Melty:
     last_invalid = deque(maxlen=10)
 
     channels_split = False
+    # Frame stamp of the most recent press on a resize affordance (column
+    # edge handles, window frame edges and corner) - set BEFORE any edge
+    # motion has been applied. draw_resize views read it in
+    # mark_start_offscreen to snap a clean pre-drag capture while their
+    # state is still unchanged (full tile coverage - nothing stale survives).
+    resize_press_frame = -1
     is_melty_window = False
     melty_window_stack = []
     default_font = None
