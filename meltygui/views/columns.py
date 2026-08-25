@@ -940,6 +940,20 @@ class ColumnLayout:
         return max(0.0, self._bound_right(idx) - self._bound_left(idx)
                    - 2 * self.padding)
 
+    def cell_rect(self, idx, height=None):
+        """The screen-space (x, y, w, h) content box `cell(idx, height)`
+        clips to — for a caller decorating a cell from OUTSIDE it, e.g. a
+        card shadow (cast beyond the box, it would be scissored away by
+        the cell's own clip)."""
+        pad = self.padding
+        pad_y = self.padding_y
+        x0 = snap_int(self.win_x + self._bound_left(idx) + pad)
+        y0 = snap_int(self.top + pad_y)
+        clip_h = height if height is not None else (self.draw_state.height
+                                                    or MIN_ROW_HEIGHT)
+        y1 = snap_int(self.top) + snap_int(clip_h) - snap_int(pad_y)
+        return x0, y0, snap_int(self.inner_width(idx)), y1 - y0
+
     @contextmanager
     def cell(self, idx, height=None):
         """Position the cursor at column idx's content origin (inset by
@@ -951,15 +965,10 @@ class ColumnLayout:
         pad_y = self.padding_y
         left_b = self._bound_left(idx)
         inner_w = self.inner_width(idx)
-        x0 = snap_int(self.win_x + left_b + pad)
-        y0 = snap_int(self.top + pad_y)
+        x0, y0, box_w, box_h = self.cell_rect(idx, height)
         imgui.set_cursor_screen_pos((self.win_x + left_b + pad,
                                      self.top + pad_y))
-        clip_h = height if height is not None else (self.draw_state.height
-                                                    or MIN_ROW_HEIGHT)
-        Core.melty.push_clip((x0, y0, x0 + snap_int(inner_w),
-                              snap_int(self.top) + snap_int(clip_h)
-                              - snap_int(pad_y)))
+        Core.melty.push_clip((x0, y0, x0 + box_w, y0 + box_h))
         # The group makes the cell origin the LINE START of everything
         # inside: without it only the first item sits at x0 because imgui's
         # newline returns the cursor to the imgui window's content x, so a

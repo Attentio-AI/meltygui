@@ -1429,6 +1429,11 @@ class Toggles:
         # (washes + seam band, add_shadow semantics: positive lifts it off
         # the editor surface, negative carves a hole). 0 disables.
         ribbon_shadow_offset = 0.397
+        # Card shadow under each of the Merge Files column's five cells
+        # (files spread over their whole band, panes below their chevron
+        # row - add_shadow semantics: positive lifts the card off the
+        # column, negative sinks it). 0 disables.
+        merge_column_shadow_offset = 2.0
         # Take-arrow chips riding the swooshes (pull a block from the
         # reference pane into the buffer): flat_buttons colored by the
         # block's ribbon tint - hover boost and text color come from

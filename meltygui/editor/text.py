@@ -8999,9 +8999,9 @@ def draw_text(input_value: str, height=None,
     studio's hold for the file; either also lets the file path come from
     `file_key` when there is no `jump_to`."""
     
-    
     ds = draw_state
 
+    
     # ── Instant restore (input_value==LOADING) ─────────────────────────────
     # A caller whose real buffer is still loading (draw_code_editor's
     # loading_frame) passes the LOADING sentinel: rebuild a same-shape
@@ -9237,6 +9237,7 @@ def draw_text(input_value: str, height=None,
                     ds._fold_search_exp.discard(_rng)
                     ds.invalidate()
                     request_render()
+
                     break
         # Keyboard folding — Ctrl+Minus/Equal collapse/expand the scope at
         # the caret (repeated presses walk outward: Ctrl+- folds the next
