@@ -1,6 +1,9 @@
 """Internet Accounts — one window to manage every login the studio's
-network features use (Anthropic API key, GitHub Copilot device-flow sign-in,
-Ollama host + model placement), modelled on fast_dock: rows are plain
+network features use (Anthropic browser sign-in — the OAuth login `ant auth
+login` does, see fim_providers/anthropic_oauth.py — or a pasted API key,
+GitHub Copilot device-flow sign-in, Ollama host + model placement; the Anthropic row also
+shows the Claude plan's usage limits, read through Claude Code's login),
+modelled on fast_dock: rows are plain
 draw-list rects/text with manual hit-testing, hover boosts + clicks resolve
 inside the body while the view is hovered (the wrapper repaints every frame
 then), and the idle tile is a cached blit that background probes repaint
@@ -20,10 +23,13 @@ renders whatever is registered — the kind supplies its status probe, its
 editable fields, its action buttons and any extra rows (a device-code card,
 the Ollama model list).
 
-Layout: every row measures its buttons FIRST; if the text would be left
-less than min_text_width the buttons wrap onto a second line inside the row
-(the row grows), otherwise status text is ellipsized to what's left — so
-nothing ever overlaps at any window width.
+Layout: every row measures its buttons FIRST (`strip_layout`); if the text
+would be left less than min_text_width, or the strip is wider than the row,
+the buttons wrap onto as many right-aligned lines as they need under the
+text (`pack_buttons`; the row grows — card and model sub-rows do the same),
+otherwise status text is ellipsized to what's left. Kind headers, notes and
+field labels ellipsize; a usage row drops its bar, then its reset text,
+then narrows its label — so nothing overlaps at any window width.
 """
 from __future__ import annotations
 
@@ -37,6 +43,7 @@ from pathlib import Path
 import imgui
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -284,8 +291,10 @@ class AccountKind:
         return []
 
     def sub_rows(self, account):
-        """Extra rows under the account: ("code", (user_code, url)) |
-        ("model", model dict) | ("note", text)."""
+        """Extra rows under the account: ("card", (message, [Button…])) —
+        a highlighted strip with its own buttons (a device code, a
+        browser sign-in in progress) | ("model", model dict) |
+        ("note", text)."""
         return []
 
 
@@ -295,19 +304,74 @@ class AnthropicKind(AccountKind):
     label = "Anthropic"
     icon = f""
     tint = (0.85, 0.55, 0.35)
-    fields = (Field("api_key", "API key", secret=True, placeholder="sk-ant-…"),
-              Field("base_url", "Base URL", placeholder="(default)"))
+    fields = (Field("api_key", "API key", secret=True,
+                    placeholder="sk-ant-… (optional — Sign in needs no key)"),
+              Field("profile", "Login profile", placeholder="(lsd)"),
+              Field("base_url", "Base URL", placeholder="(default)"),
+              Field("claude_code_login", "Claude Code login", default="~/.claude/.credentials.json",
+                    placeholder="~/.claude/.credentials.json — the plan's usage limits are read through it"))
+
+    # -- Credential sources ------------------------------------------------
+    # Precedence, highest first: a pasted key → the browser sign-in (the
+    # account's SDK profile) → env vars → an active `ant auth login`
+    # profile. Only the default account reads the env / active profile.
 
     @staticmethod
     def _profile_present():
-        config_dir = Path(os.environ.get("ANTHROPIC_CONFIG_DIR")
-                          or (Path.home() / ".config" / "anthropic"))
-        return (config_dir / "credentials").is_dir() and any((config_dir / "credentials").glob("*.json"))
+        """An ACTIVE `ant auth login` profile a bare Anthropic() picks up on
+        its own. The account's own sign-in is `login_info`, not this."""
+        from src.lsd.gl_gui.fim_providers.anthropic_oauth import active_profile_present
+        return active_profile_present()
+
+    @staticmethod
+    def profile_name(account) -> str:
+        """The SDK profile this account signs in to: its `profile` field,
+        else Toggles.InternetAccounts.anthropic_profile ("lsd") for the
+        default account and "<that>-<account id>" for extra ones."""
+        from src.lsd.gl_gui.toggles import Toggles
+        name = (account.get("profile") or "").strip()
+        if name:
+            return name
+        base = Toggles.InternetAccounts.anthropic_profile
+        return base if is_default(account) else f"{base}-{account['id']}"
+
+    def login_info(self, account, fresh=False):
+        """anthropic_oauth.read_profile() of the account's profile, cached
+        on the account (`_login_info`) so the per-frame button layout never
+        touches the disk; probes, sign-in and sign-out refresh it."""
+        if fresh or "_login_info" not in account:
+            from src.lsd.gl_gui.fim_providers import anthropic_oauth
+            account["_login_info"] = anthropic_oauth.read_profile(self.profile_name(account))
+        return account["_login_info"]
+
+    def client_kwargs(self, account):
+        """`anthropic.Anthropic(**kwargs)` for this account — the pasted
+        `api_key` wins, else the signed-in `profile`, else nothing (the
+        SDK's own env / active-profile chain); plus `base_url`. No SDK
+        import — shared with the FIM provider (claude.account_client_kwargs)."""
+        out = {}
+        key = account.get("api_key") or ""
+        info = self.login_info(account)
+        if info is None:
+            # A sign-in may have landed since the last probe (one stat, and
+            # this runs at session construction, never per-frame).
+            info = self.login_info(account, fresh=True)
+        if key:
+            out["api_key"] = key
+        elif info is not None:
+            out["profile"] = self.profile_name(account)
+        if account.get("base_url"):
+            out["base_url"] = account["base_url"]
+        return out
 
     def _source(self, account):
+        from src.lsd.gl_gui.fim_providers import anthropic_oauth
         key = account.get("api_key") or ""
         if key:
             return f"key …{key[-4:]}"
+        info = self.login_info(account)
+        if info is not None:
+            return anthropic_oauth.summary(info)
         if is_default(account) and os.environ.get("ANTHROPIC_API_KEY"):
             return "env ANTHROPIC_API_KEY"
         if is_default(account) and os.environ.get("ANTHROPIC_AUTH_TOKEN"):
@@ -316,29 +380,135 @@ class AnthropicKind(AccountKind):
             return "ant auth profile"
         return None
 
+    def status(self, account):
+        flow = account.get("_login")
+        if flow is not None and not flow.done:
+            return ("busy", "waiting for the browser…")
+        return super().status(account)
+
     def probe(self, account):
         # Passive probe: NO network (and no `import anthropic`). Just report
         # whether a credential exists - the studio should not fire a web
         # request or import the SDK at startup just to show status. The
         # "Test" button (below) does the one real network check on demand.
+        from src.lsd.gl_gui.fim_providers import claude_usage
+        self.login_info(account, fresh=True)
+        for sibling in accounts.of_kind(self.name):
+            if sibling is not account:
+                self.login_info(sibling, fresh=True)   # ownership of a shared Claude Code login reads their emails
+        account["_claude_login"] = claude_usage.read_login(self._claude_code_login_path(account))
         source = self._source(account)
         if source is None:
-            return ("needs_login", "no credentials — paste an API key")
-        if account.get("_validated"):
-            return ("ready", f"{source} · verified")
-        return ("ready", source)
+            return ("needs_login", "not signed in")
+        return ("ready", f"{source} · verified" if account.get("_validated") else source)
+
+    # -- Claude plan usage (through Claude Code's login) ----------------------
+    # The plan's rate-limit windows (session, weekly all-models, weekly
+    # per-model - Fable - etc) and extra-usage spend come from GET
+    # /api/oauth/usage, which only answers a claude.ai token: the Console
+    # sign-in above is an API-org token and is refused ("Usage limits are
+    # not applicable to API organizations"), so the row reads Claude Code's
+    # OWN login file - read-only, never refreshed by the studio, a stale
+    # token says "open Claude Code first". See fim_providers/claude_usage.py.
+
+    def _claude_code_login_path(self, account):
+        return str(Path(account.get("claude_code_login") or self.fields[-1].default).expanduser())
+
+    def _owns_claude_login(self, account, login):
+        """One Claude Code login file = one claude.ai account, and every
+        Anthropic row points at the same default file — so rows sharing a
+        file must not ALL paint its numbers (work + personal rows showing
+        one account's bars twice). The file goes to the row whose sign-in
+        email is the login's account email; when none matches, to the
+        first row sharing that path (the default account)."""
+        path = self._claude_code_login_path(account)
+        sharing = [entry for entry in accounts.of_kind(self.name)
+                   if self._claude_code_login_path(entry) == path]
+        if len(sharing) <= 1:
+            return True
+        email = (login.get("email") or "").lower()
+        if email:
+            matching = [entry for entry in sharing
+                        if ((self.login_info(entry) or {}).get("email") or "").lower() == email]
+            if matching:
+                return matching[0] is account
+        return sharing[0] is account
+
+    def refresh_all(self, account):
+        account["_usage_fetched_at"] = None       # the open panel re-fetches on its next frame
+        refresh(account)
+
+    def fetch_usage(self, account):
+        """One GET /api/oauth/usage on a worker; rows land in `_usage_rows`,
+        the compact summary in `_usage_summary` (the status re-probes to
+        show it), an error in `_usage_error` (a note under the bars)."""
+        from src.lsd.gl_gui.fim_providers import claude_usage
+        if account.get("_usage_loading"):
+            return
+        login = claude_usage.read_login(self._claude_code_login_path(account))
+        account["_claude_login"] = login
+        account["_usage_fetched_at"] = time.monotonic()
+        if login is None or login["expired"]:
+            account["_usage_rows"] = None
+            account["_usage_error"] = ("sign in to Claude Code to view usage" if login is None
+                                       else "Claude Code login expired — run claude")
+            accounts_changed()
+            return
+        account["_usage_loading"] = True
+        accounts_changed()
+
+        def run():
+            try:
+                rows = claude_usage.parse_usage(claude_usage.fetch_usage(login["token"]))
+                account["_usage_rows"] = rows
+                account["_usage_error"] = None
+                account["_usage_summary"] = claude_usage.summary(rows)
+            except Exception as error:
+                account["_usage_error"] = str(error)[:120]
+            finally:
+                account["_usage_loading"] = False
+                account["_usage_fetched_at"] = time.monotonic()
+            accounts_changed()
+
+        threading.Thread(target=run, daemon=True, name=f"claude-usage-{account['id']}").start()
+
+    def _usage_rows(self, account):
+        """The open panel's rows; fetches on open and once the numbers are
+        older than Toggles.InternetAccounts.usage_stale_s."""
+        if not account.get("_usage_open"):
+            return []
+        from src.lsd.gl_gui.toggles import Toggles
+        from src.lsd.gl_gui.fim_providers import claude_usage
+        login = account.get("_claude_login")
+        if login is None and "_claude_login" not in account:
+            login = account["_claude_login"] = claude_usage.read_login(self._claude_code_login_path(account))
+        if login is not None and not self._owns_claude_login(account, login):
+            # Another row is the login's account (or the default row for the
+            # shared file): say whose numbers are, and how this row gets
+            # its own. Claude Code keeps one login per config dir.
+            return [("note", "sign in to Claude Code to view usage")]
+        fetched_at = account.get("_usage_fetched_at")
+        if not account.get("_usage_loading") and (
+                fetched_at is None
+                or time.monotonic() - fetched_at > Toggles.InternetAccounts.usage_stale_s):
+            self.fetch_usage(account)
+        rows = account.get("_usage_rows") or []
+        out = [("usage", row) for row in rows]
+        if account.get("_usage_error"):
+            out.append(("note", account["_usage_error"]))
+        elif not rows:
+            out.append(("note", "loading usage…" if account.get("_usage_loading") else "no usage data"))
+        return out
 
     def validate(self, account):
         """The Test button: the ONLY Anthropic web request — list one model
-        to confirm the key works. Imports the SDK lazily."""
+        to confirm the credential works. Imports the SDK lazily. On a
+        sign-in this also exercises the SDK's own token refresh."""
         source = self._source(account) or "?"
         try:
             import anthropic
             client_kwargs = {"timeout": 15.0, "max_retries": 0}
-            if account.get("api_key"):
-                client_kwargs["api_key"] = account["api_key"]
-            if account.get("base_url"):
-                client_kwargs["base_url"] = account["base_url"]
+            client_kwargs.update(self.client_kwargs(account))
             client = anthropic.Anthropic(**client_kwargs)
             client.models.list(limit=1)
             client.close()
@@ -352,16 +522,116 @@ class AnthropicKind(AccountKind):
             account["_status"] = ("error", f"{source} · {message[:90]}")
         accounts_changed()
 
+    # -- browser sign-in ---------------------------------------------------
+
+    def sign_in(self, account):
+        """The Sign in button: open the Console consent page in the browser
+        and wait for its redirect (anthropic_oauth.LoginFlow on a worker);
+        clicked again while one is open it just re-opens the browser."""
+        from src.lsd.gl_gui.fim_providers import anthropic_oauth
+        flow = account.get("_login")
+        if flow is not None and not flow.done:
+            flow.open_in_browser()
+            return
+        flow = anthropic_oauth.LoginFlow(
+            self.profile_name(account), base_url=account.get("base_url") or None,
+            on_change=lambda flow: self._login_changed(account, flow))
+        account["_login"] = flow
+        account.pop("_validated", None)
+        try:
+            flow.start()
+        except Exception as error:
+            account["_login"] = None
+            account["_status"] = ("error", f"sign-in: {error}"[:90])
+        accounts_changed()
+
+    def _login_changed(self, account, flow):
+        """Worker thread: the flow finished — profile written, or an error."""
+        if flow.done and account.get("_login") is flow:
+            account["_login"] = None
+            if flow.error:
+                state = "needs_login" if "cancelled" in flow.error else "error"
+                account["_status"] = (state, flow.error[:90])
+                self.login_info(account, fresh=True)
+            else:
+                account["_status"] = None         # → the passive re-probe reads the new login
+                self._reprobe_siblings(account)
+                _drop_sessions_for(account)       # sessions that failed for want of a credential
+        accounts_changed()
+
+    def _reprobe_siblings(self, account):
+        """A sign-in change on one row can move a shared Claude Code login's
+        usage to another row — clear the siblings' status so they re-probe."""
+        for sibling in accounts.of_kind(self.name):
+            if sibling is not account:
+                sibling["_status"] = None
+
+    def cancel_sign_in(self, account):
+        flow = account.get("_login")
+        account["_login"] = None
+        if flow is not None:
+            flow.cancel()
+        account["_status"] = ("needs_login", "sign-in cancelled")
+        accounts_changed()
+
+    def sign_out(self, account):
+        """Forget the browser sign-in: removes the profile's credentials
+        file (its org/workspace config stays, so a re-login skips the
+        pickers) and drops the live sessions built on it."""
+        from src.lsd.gl_gui.fim_providers import anthropic_oauth
+        anthropic_oauth.sign_out(self.profile_name(account))
+        account.pop("_validated", None)
+        account["_status"] = None
+        self.login_info(account, fresh=True)
+        self._reprobe_siblings(account)
+        _drop_sessions_for(account)
+        accounts_changed()
+
     def actions(self, account):
-        return [Button("Paste key", lambda account: _paste_into(account, "api_key"), primary=True),
-                Button("Edit", _toggle_edit),
-                Button("Test",
-                       lambda account: _run_in_background(
-                           account, lambda: self.validate(account), reprobe=False),
-                       tip="Verify the key (one web request)",
-                       enabled=self._source(account) is not None),
-                Button("Clear", lambda account: accounts.set_field(account["id"], "api_key", ""),
-                       enabled=bool(account.get("api_key")))]
+        usage_open = bool(account.get("_usage_open"))
+        usage = Button(None, lambda account: _toggle(account, "_usage_open"),
+                       icon=f"" if usage_open else f"",
+                       tip="Claude plan usage limits (read through Claude Code's login)")
+        refresh_button = Button(None, self.refresh_all, icon=f"",
+                                tip="Refresh (re-reads the logins and the usage)")
+        flow = account.get("_login")
+        if flow is not None and not flow.done:
+            return [usage, Button("Cancel", self.cancel_sign_in, danger=True),
+                    Button("Edit", _toggle_edit), refresh_button]
+        has_key = bool(account.get("api_key"))
+        signed_in = self.login_info(account) is not None
+        test = Button("Test",
+                      lambda account: _run_in_background(
+                          account, lambda: self.validate(account), reprobe=False),
+                      tip="Verify the credential (one web request)",
+                      enabled=self._source(account) is not None)
+        if has_key:
+            middle = [Button("Edit", _toggle_edit), test,
+                      Button("Clear", lambda account: accounts.set_field(account["id"], "api_key", ""),
+                             tip="Forget the pasted key")]
+        elif signed_in:
+            middle = [Button("Sign out", self.sign_out, tip="Forget this browser sign-in"),
+                      Button("Edit", _toggle_edit), test]
+        else:
+            middle = [Button("Sign in", self.sign_in, primary=True,
+                             tip="Sign in with your Anthropic account (Google works) — opens your browser"),
+                      Button("Paste key", lambda account: _paste_into(account, "api_key"),
+                             tip="Or paste an API key from the clipboard"),
+                      Button("Edit", _toggle_edit), test]
+        return [usage] + middle + [refresh_button]
+
+    def sub_rows(self, account):
+        out = []
+        flow = account.get("_login")
+        if flow is not None and not flow.done and flow.url:
+            url = flow.url
+            buttons = [Button("Copy link", lambda account, url=url: _copy_text(url),
+                              tip="Copy the sign-in link"),
+                       Button("Open browser", lambda account, flow=flow: flow.open_in_browser(),
+                              primary=True, tip="Open the sign-in page again")]
+            out.append(("card", ("finish signing in in the browser tab", buttons)))
+        out.extend(self._usage_rows(account))
+        return out
 
 
 @account_kind
@@ -389,7 +659,7 @@ class CopilotKind(AccountKind):
         if copilot.find_node() is None:
             return ("error", "node ≥ 20.8 not found")
         if not copilot.server_installed():
-            return ("needs_login", "language server not installed — Install")
+            return ("needs_login", "not installed")
         # If a session is already running (FIM used it, or the user signed in),
         # trust its status instead of the on-disk file.
         try:
@@ -401,13 +671,13 @@ class CopilotKind(AccountKind):
             if state == "needs_login":
                 return ("needs_login", f"sign in: code {text}")
             if session.user:
-                return ("ready", f"signed in as {session.user}")
+                return ("ready", session.user)
             if state == "error":
                 return ("needs_login", text or "not signed in")
         user = copilot.cached_login_user(account.get("config_dir"))
         if user:
-            return ("ready", f"signed in as {user}")
-        return ("needs_login", "not signed in — Sign in")
+            return ("ready", user)
+        return ("needs_login", "not signed in")
 
     def actions(self, account):
         from src.lsd.gl_gui.fim_providers import copilot
@@ -434,7 +704,10 @@ class CopilotKind(AccountKind):
         except Exception:
             session = None
         if session is not None and session.login is not None:
-            return [("code", session.login)]
+            code, url = session.login
+            buttons = [Button("Copy code", lambda account, code=code: _copy_text(code)),
+                       Button("Open browser", lambda account, url=url: _open_url(url), primary=True)]
+            return [("card", (f"Enter code  {code}  at {url}", buttons))]
         return []
 
 
@@ -594,6 +867,19 @@ def _paste_into(account, field_name):
         refresh(account)
 
 
+def _copy_text(text):
+    try:
+        imgui.set_clipboard_text(text)
+    except Exception:
+        pass
+
+
+def _open_url(url):
+    """System browser, without fork()ing the studio (copilot.open_url)."""
+    from src.lsd.gl_gui.fim_providers.copilot import open_url
+    open_url(url)
+
+
 def _toggle(account, key):
     account[key] = not account.get(key)
     accounts_changed()
@@ -645,7 +931,22 @@ def _format_gb(size_bytes):
     return f"{size_bytes / 1e9:.1f} GB"
 
 
-@window(input_value=accounts, tint=(0.72, 0.71, 0.67), icon=f"",
+class AccountsPanelState(DictConversion):
+    """Which per-account panels are open — the usage limits (▾), Ollama's
+    model list, the Edit fields — persisted with the window's draw_state
+    (injected as `panel_state: AccountsPanelState = None`, the TabState
+    pattern) so the window reopens the way it was left. The kinds keep
+    toggling the account dicts' runtime keys (`_usage_open`, …); the window
+    restores those from here on a fresh store (boot / restart) and mirrors
+    them back after every frame. `open` maps "<account id><key>" → True."""
+    PANEL_KEYS = ("_usage_open", "_models_open", "_edit")
+
+    def __init__(self):
+        super().__init__()
+        self.open = {}
+
+
+@window(input_value=accounts, tint=(0.35, 0.34, 0.31), icon=f"",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True,
@@ -653,13 +954,20 @@ def _format_gb(size_bytes):
 def draw_internet_accounts(
         # [tint=(0.85, 0.75, 0.05)]
         input_value: AccountStore,
-        draw_state, style_manager=None,
+        draw_state, panel_state: AccountsPanelState = None, style_manager=None,
         non_blocking_left_mouse_down=False, **kwargs):
     global _window_draw_state
     _window_draw_state = draw_state
     store = input_value
     if not store.loaded:
         store.load()
+    if panel_state is not None:
+        # A fresh account dict (boot / open / reload) has no runtime
+        # panel flags yet - restore the persisted ones.
+        for account_entry in store.values():
+            for key in AccountsPanelState.PANEL_KEYS:
+                if key not in account_entry:
+                    account_entry[key] = bool(panel_state.open.get(f"{account_entry['id']}{key}"))
 
     # ---- styling (fast_dock recipe) ----
     row_bg_value, row_text_value = 0.06, 0.95
@@ -680,6 +988,15 @@ def draw_internet_accounts(
         "error": (0.95, 0.35, 0.35),
         "unknown": (0.55, 0.58, 0.65),
     }
+    # Usage-bar fill by the endpoint's severity (Claude subscription rows)
+    # — the lamp palette, so "warning" reads the same everywhere.
+    # [tint=(0.95, 0.7, 0.3)]
+    severity_tints = {
+        "normal": state_tints["ready"],
+        "warning": state_tints["warning"],
+        "critical": state_tints["error"],
+        "exceeded": state_tints["error"],
+    }
 
     # ---- row geometry, authored at ui_scale 1.0 and scaled once per frame ----
     px = Melty.px
@@ -692,6 +1009,7 @@ def draw_internet_accounts(
     button_pad_x = px(10.0)
     button_gap = px(6.0)
     sub_row_height = px(30.0)         # secondary rows (field editors, device code card, model rows)
+    strip_line_height = button_height + px(6)   # one wrapped line of buttons (row and sub-row height)
     kind_header_height = px(26.0)
     # Below this much text room the buttons wrap onto their own line inside
     # the row (the row grows) — raise it and narrow windows wrap sooner.
@@ -729,6 +1047,32 @@ def draw_internet_accounts(
     def buttons_width(buttons):
         return (sum(button_width(button) for button in buttons)
                 + button_gap * max(0, len(buttons) - 1))
+
+    def pack_buttons(buttons, max_width):
+        """The strip as right-aligned LINES, each no wider than max_width —
+        a narrow window gets two or three lines of buttons instead of a
+        strip running off the row's left edge. (A single button wider than
+        the row still takes a line of its own.)"""
+        lines, line, width = [], [], 0.0
+        for button in buttons:
+            extra = button_width(button) + (button_gap if line else 0.0)
+            if line and width + extra > max_width:
+                lines.append(line)
+                line, width = [button], button_width(button)
+            else:
+                line.append(button)
+                width += extra
+        if line:
+            lines.append(line)
+        return lines
+
+    def strip_layout(buttons, strip_max, text_avail, min_text):
+        """(lines, wrap) for a row whose buttons share the line with text:
+        wrap when the strip needs more than one line or would leave the
+        text less than `min_text`."""
+        lines = pack_buttons(buttons, strip_max)
+        wrap = len(lines) > 1 or text_avail < min_text
+        return lines, wrap
 
     def draw_buttons(buttons, right, top, tint, account, hint_slot):
         """Right-aligned button strip ending at `right`. Runs click handlers."""
@@ -792,18 +1136,32 @@ def draw_internet_accounts(
             if not is_default(account_entry):
                 buttons.append(Button(None, lambda account: store.remove(account["id"]),
                                       icon=f"", tip="Remove account", danger=True))
-            label = account_entry.get("label") or kind.default_label(account_entry["id"])
-            label_width = imgui.calc_text_size(label)[0]
             text_avail = ((row_right - px(6)) - (row_left + text_inset)
                           - buttons_width(buttons) - button_gap)
-            wrap = text_avail < max(min_text_width, label_width + px(40))
-            height = row_height + (button_height + px(6) if wrap else 0)
+            lines, wrap = strip_layout(buttons, (row_right - px(6)) - (row_left + px(6)),
+                                       text_avail, min_text_width)
+            height = row_height + (len(lines) * strip_line_height if wrap else 0)
             subs = []
             if account_entry.get("_edit"):
                 subs.extend(("field", field) for field in kind.fields if not field.hidden)
             subs.extend(kind.sub_rows(account_entry))
-            layout.append(("account", kind, account_entry, y, height, buttons, wrap, subs))
-            y += height + len(subs) * sub_row_height + (px(4) if subs else 0) + row_gap
+            # Sub-rows with a button strip (card, model) grow the same way:
+            # (sub, height, button lines, wrap) - the painter reads them.
+            sub_strip_max = (row_right - px(12)) - (row_left + text_inset + px(6))
+            sub_items = []
+            for sub in subs:
+                sub_height, sub_lines, sub_wrap = sub_row_height, None, False
+                if sub[0] in ("card", "model"):
+                    sub_buttons = (sub[1][1] if sub[0] == "card"
+                                   else kind.model_actions(account_entry, sub[1]))
+                    sub_lines, sub_wrap = strip_layout(
+                        sub_buttons, sub_strip_max,
+                        sub_strip_max - buttons_width(sub_buttons) - button_gap, min_text_width)
+                    if sub_wrap:
+                        sub_height += len(sub_lines) * strip_line_height
+                sub_items.append((sub, sub_height, sub_lines, sub_wrap))
+            layout.append(("account", kind, account_entry, y, height, lines, wrap, sub_items))
+            y += height + sum(item[1] for item in sub_items) + (px(4) if sub_items else 0) + row_gap
         y += px(4)
     footer_y = y
     total_height = (footer_y - origin_y) + row_height
@@ -814,16 +1172,19 @@ def draw_internet_accounts(
     hint = [None]
 
     for item in layout:
-        what, kind, account_entry, row_top, height, buttons, wrap, subs = item
+        what, kind, account_entry, row_top, height, lines, wrap, sub_items = item
         tint = kind.tint
         if what == "head":
             if visible(row_top, row_top + height):
                 text_color = _mix(style_manager, tint, 1.0, factor, text_saturation)
-                draw_list.add_text(row_left + px(2), row_top + (height - line_height) / 2.0,
-                                   _color_u32(text_color, 0.85), f"{kind.icon}  {kind.label}")
-                draw_buttons([Button(f" account",
-                                     lambda _account, kind=kind: store.add(kind.name))],
-                             row_right, row_top + (height - button_height) / 2.0, tint, None, hint)
+                strip_left = draw_buttons([Button(None, lambda _account, kind=kind: store.add(kind.name),
+                                                  icon=f"", tip="Add account")],
+                                          row_right, row_top + (height - button_height) / 2.0,
+                                          tint, None, hint)
+                header_x = row_left + px(2)
+                draw_list.add_text(header_x, row_top + (height - line_height) / 2.0,
+                                   _color_u32(text_color, 0.85),
+                                   _ellipsize(f"{kind.icon}  {kind.label}", strip_left - button_gap - header_x))
             continue
 
         _refresh_stale(account_entry)
@@ -848,91 +1209,138 @@ def draw_internet_accounts(
             add_shadow((lamp_x - lamp_radius, lamp_y - lamp_radius, 2 * lamp_radius, 2 * lamp_radius),
                        offset=-1, corner_radius=lamp_radius, clip=clip)
             draw_list.add_circle_filled(lamp_x, lamp_y, lamp_radius, _color_u32(lamp_color), 16)
-            # buttons: on the row line, or wrapped onto their own line
+            # buttons: on the row line, or wrapped onto their own line(s)
             if wrap:
                 strip_left = row_right - px(6)
-                draw_buttons(buttons, row_right - px(6), row_top + row_height + px(2),
-                             tint, account_entry, hint)
+                for index, line in enumerate(lines):
+                    draw_buttons(line, row_right - px(6),
+                                 row_top + row_height + px(2) + index * strip_line_height,
+                                 tint, account_entry, hint)
             else:
-                strip_left = draw_buttons(buttons, row_right - px(6),
+                strip_left = draw_buttons(lines[0], row_right - px(6),
                                           row_top + (row_height - button_height) / 2.0,
                                           tint, account_entry, hint)
-            # label + status text, fitted to the space left of the strip
-            label = account_entry.get("label") or kind.default_label(account_entry["id"])
+            # status text (the account's email / host / user), fitted to the
+            # space left of the strip - the kind header above names the service.
             text_x = row_left + text_inset
             text_right = strip_left - button_gap - px(4)
             text_y = row_top + (row_height - line_height) / 2.0 + text_nudge_y
-            label_fit = _ellipsize(label, text_right - text_x)
-            draw_list.add_text(text_x, text_y, _color_u32(text_color), label_fit)
-            status_x = text_x + imgui.calc_text_size(label_fit)[0] + px(12)
-            status_fit = _ellipsize(status_text, text_right - status_x)
+            status_fit = _ellipsize(status_text, text_right - text_x)
             if status_fit:
-                draw_list.add_text(status_x, text_y, _color_u32(lamp_color, 0.9), status_fit)
+                draw_list.add_text(text_x, text_y, _color_u32(lamp_color, 0.9), status_fit)
 
         # ---- sub rows ----
         sub_top = row_bottom + px(4)
-        for sub in subs:
-            sub_bottom = sub_top + sub_row_height
+        for sub, sub_height, sub_lines, sub_wrap in sub_items:
+            sub_bottom = sub_top + sub_height
             sub_left, sub_right = row_left + text_inset, row_right - px(6)
+
+            def draw_sub_strip(sub_top=sub_top, sub_lines=sub_lines, sub_wrap=sub_wrap):
+                """The sub-row's buttons: beside its text, or on wrapped
+                lines under it. Returns the text's right limit."""
+                if sub_wrap:
+                    for index, line in enumerate(sub_lines):
+                        draw_buttons(line, sub_right - px(6),
+                                     sub_top + sub_row_height - px(2) + index * strip_line_height,
+                                     tint, account_entry, hint)
+                    return sub_right - px(10)
+                return draw_buttons(sub_lines[0], sub_right - px(6),
+                                    sub_top + (sub_row_height - button_height) / 2.0,
+                                    tint, account_entry, hint) - button_gap
+
             if sub[0] == "field":
                 field = sub[1]
                 if visible(sub_top, sub_bottom):
                     label_color = _mix(style_manager, tint, 0.7, factor, text_saturation)
+                    # The label column shrinks with the row so the editor keeps a usable width.
+                    label_width = min(px(110), max(px(50), (sub_right - sub_left) * 0.35))
                     draw_list.add_text(sub_left,
                                        sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
-                                       _color_u32(label_color, 0.85), field.label)
-                    field_left = sub_left + px(110)
-                    field_width = max(px(120), sub_right - field_left)
+                                       _color_u32(label_color, 0.85),
+                                       _ellipsize(field.label, label_width - px(6)))
+                    field_left = sub_left + label_width
+                    field_width = max(px(60), sub_right - field_left)
                     if _draw_field(account_entry, field, field_left,
                                    sub_top + (sub_row_height - px(26)) / 2.0, field_width, px(26)):
                         pressed[0] = True
-            elif sub[0] == "code":
-                code, url = sub[1]
+            elif sub[0] == "card":
+                # A highlighted strip with its own buttons: the kind supplies
+                # (message, [buttons...]) - Copilot's device code, the Anthropic
+                # sign-in waiting for the browser.
+                message, card_buttons = sub[1]
                 if visible(sub_top, sub_bottom):
-                    add_shadow((sub_left, sub_top, sub_right - sub_left, sub_row_height),
+                    add_shadow((sub_left, sub_top, sub_right - sub_left, sub_height),
                                offset=11, corner_radius=corner, clip=clip)
                     card_bg_color = _mix(style_manager, tint, 0.16, factor, saturation)
                     draw_list.add_rect_filled(sub_left, sub_top, sub_right, sub_bottom,
                                               _color_u32(card_bg_color), rounding=corner)
-
-                    def open_browser(account, url=url):
-                        from src.lsd.gl_gui.fim_providers.copilot import open_url
-                        open_url(url)
-
-                    def copy_code(account, code=code):
-                        try:
-                            imgui.set_clipboard_text(code)
-                        except Exception:
-                            pass
-
-                    code_buttons = [Button("Copy code", copy_code),
-                                    Button("Open browser", open_browser, primary=True)]
-                    strip_left = draw_buttons(code_buttons, sub_right - px(6),
-                                              sub_top + (sub_row_height - button_height) / 2.0,
-                                              tint, account_entry, hint)
-                    message = _ellipsize(f"Enter code  {code}  at {url}",
-                                         strip_left - button_gap - (sub_left + px(10)))
+                    text_right = draw_sub_strip()
+                    message_fit = _ellipsize(message, text_right - (sub_left + px(10)))
                     draw_list.add_text(sub_left + px(10),
                                        sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
-                                       _color_u32((1.0, 0.95, 0.85)), message)
+                                       _color_u32((1.0, 0.95, 0.85)), message_fit)
+            elif sub[0] == "usage":
+                # One rate-limit window: label - bar (fill = severity tint,
+                # width = percent) - percent - reset countdown / spend amount.
+                # As the row narrows the bar disappears first, then the reset /
+                # spend text, then the label column shrinks - nothing overlaps.
+                row = sub[1]
+                if visible(sub_top, sub_bottom):
+                    from src.lsd.gl_gui.fim_providers.claude_usage import reset_text
+                    text_y = sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y
+                    fill_color = severity_tints.get(row["severity"], state_tints["unknown"])
+                    label_color = (text_color if row["active"]
+                                   else _mix(style_manager, tint, 0.75, factor, text_saturation))
+                    label_x = sub_left + px(6)
+                    available = (sub_right - px(8)) - label_x
+                    bar_height = px(10)
+                    percent_label = f"{row['percent']:.0f}%"
+                    percent_width = imgui.calc_text_size(percent_label)[0]
+                    right_text = row["detail"] or reset_text(row["resets_at"])
+                    right_width = imgui.calc_text_size(right_text)[0] if right_text else 0.0
+                    # [tint=(0.75, 0.55, 0.9)]
+                    label_width = min(px(150), max(px(60), available - percent_width - px(18)))
+                    rest = available - label_width - px(10) - percent_width - px(8)
+                    if right_text and rest < right_width + px(12):
+                        right_text, right_width = "", 0.0
+                    draw_list.add_text(label_x, text_y, _color_u32(label_color),
+                                       _ellipsize(row["label"], label_width))
+                    bar_left = label_x + label_width + px(10)
+                    bar_right = (sub_right - px(8) - right_width - (px(12) if right_text else 0.0)
+                                 - percent_width - px(8))
+                    bar_top = sub_top + (sub_row_height - bar_height) / 2.0
+                    if bar_right - bar_left >= px(40):
+                        track_color = _mix(style_manager, tint, 0.02, factor, saturation)
+                        add_shadow((bar_left, bar_top, bar_right - bar_left, bar_height),
+                                   offset=-1, corner_radius=bar_height / 2.0, clip=clip)
+                        draw_list.add_rect_filled(bar_left, bar_top, bar_right, bar_top + bar_height,
+                                                  _color_u32(track_color), rounding=bar_height / 2.0)
+                        fill_right = bar_left + (bar_right - bar_left) * min(100.0, row["percent"]) / 100.0
+                        if fill_right > bar_left + px(2):
+                            draw_list.add_rect_filled(bar_left, bar_top, fill_right, bar_top + bar_height,
+                                                      _color_u32(fill_color, 0.95), rounding=bar_height / 2.0)
+                        draw_list.add_text(bar_right + px(8), text_y, _color_u32(fill_color), percent_label)
+                    else:
+                        draw_list.add_text(bar_left, text_y, _color_u32(fill_color), percent_label)
+                    if right_text:
+                        draw_list.add_text(sub_right - px(8) - right_width, text_y,
+                                           _color_u32((0.72, 0.75, 0.82), 0.85), right_text)
             elif sub[0] == "note":
                 if visible(sub_top, sub_bottom):
                     draw_list.add_text(sub_left + px(6),
                                        sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
-                                       _color_u32((0.7, 0.72, 0.8), 0.8), sub[1])
+                                       _color_u32((0.7, 0.72, 0.8), 0.8),
+                                       _ellipsize(sub[1], (sub_right - px(6)) - (sub_left + px(6))))
             elif sub[0] == "model":
                 model = sub[1]
                 if visible(sub_top, sub_bottom):
                     model_bg_color = _mix(style_manager, tint, 0.09 if model["loaded"] else 0.04,
                                           factor, saturation)
-                    add_shadow((sub_left, sub_top, sub_right - sub_left, sub_row_height),
+                    add_shadow((sub_left, sub_top, sub_right - sub_left, sub_height),
                                offset=2 if model["loaded"] else 1, corner_radius=corner, clip=clip)
                     draw_list.add_rect_filled(sub_left, sub_top, sub_right, sub_bottom,
                                               _color_u32(model_bg_color), rounding=corner)
-                    model_buttons = kind.model_actions(account_entry, model)
-                    strip_left = draw_buttons(model_buttons, sub_right - px(6),
-                                              sub_top + (sub_row_height - button_height) / 2.0,
-                                              tint, account_entry, hint)
+                    strip_left = draw_sub_strip() + button_gap
                     model_lamp = state_tints["ready"] if model["loaded"] else state_tints["unknown"]
                     draw_list.add_circle_filled(sub_left + px(12), sub_top + sub_row_height / 2.0,
                                                 px(3.5), _color_u32(model_lamp), 12)
@@ -959,6 +1367,16 @@ def draw_internet_accounts(
         draw_list.add_text(row_left, footer_y + (row_height - line_height) / 2.0,
                            _color_u32((0.6, 0.62, 0.7), 0.6),
                            _ellipsize(note, row_right - row_left))
+
+    # ---- persist the panel toggles ----
+    # The account dicts' runtime flags are this frame's truth (the kinds'
+    # buttons toggle them); mirror them into panel_state, which persists.
+    if panel_state is not None:
+        open_panels = {f"{account_entry['id']}{key}": True
+                       for account_entry in store.values()
+                       for key in AccountsPanelState.PANEL_KEYS if account_entry.get(key)}
+        if open_panels != panel_state.open:
+            panel_state.open = open_panels
 
     return pressed[0], input_value
 

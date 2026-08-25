@@ -1921,7 +1921,7 @@ class DrawState(DictConversion):
         call from inside this view's body sees."""
         max_layer_depth = Core.melty.max_depth * Core.melty.max_depth + Core.melty.max_depth
         if z_pos is None:
-            z_pos = Core.melty.active_layer * Core.melty.max_depth + Core.melty.depth
+            z_pos = Core.melty.paint_rank * Core.melty.max_depth + Core.melty.depth
         return max_layer_depth - z_pos
 
     def _register_action(self, view_id, event_names, registered_priority, rect, cursor,
@@ -2004,7 +2004,7 @@ class DrawState(DictConversion):
     def priority(self):
         max_layer_depth = (Core.melty.max_depth *
                            Core.melty.max_layer + Core.melty.max_depth)
-        layer_and_depth = (Core.melty.active_layer *
+        layer_and_depth = (Core.melty.paint_rank *
                            Core.melty.max_depth + Core.melty.depth)
         return max_layer_depth - layer_and_depth
 

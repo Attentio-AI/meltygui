@@ -9,6 +9,7 @@ import glfw
 import imgui
 from imgui.core import _DrawList
 
+from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, add_to_collection
 from src.lsd.gl_gui.model.core_model.core_enums import ProfileMode
@@ -336,9 +337,15 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         return False
     # `event` picks the trigger: the default full click, or "left_mouse_down"
     # for press-reactive controls (tab switches) that should feel immediate.
+    # cursor=ARROW: a button always shows the plain pointer, whatever shape
+    # the view it sits in carries (inline buttons in draw_text sit inside
+    # the text body's I-beam rect). priority_delta=4 outranks the body's
+    # own cursor registrations (draw_text's is at 3), and being an
+    # on_action from the owner's body it is replayed on its cache hits.
     return draw_state.on_action(event, view_id=view_id,
                                 rect=(x, y, x + w, y + h),
-                                priority_delta=4) is not None
+                                priority_delta=4,
+                                cursor=mouse_cursor.ARROW) is not None
 
 
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",

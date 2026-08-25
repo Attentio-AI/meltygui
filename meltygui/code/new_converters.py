@@ -2190,9 +2190,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
                 imgui.same_line(spacing=4)
                 if RenderFuncs.button("Merge…", width=100, height=top_line_height,
                                       name=f"openmerge{unique}")[0]:
-                    from src.lsd.gl_gui.view.core_views.new_core_view import Core
-                    Core.melty.open_window("merge_files")
-                    request_render()
+                    from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
+                    MergeFiles.open(address.path)
                 imgui.same_line()
                 if RenderFuncs.button("Load", width=100, height=top_line_height, name=f"reload{unique}")[0]:
                     load = True
@@ -2214,9 +2213,8 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.same_line(spacing=4)
             if RenderFuncs.button("Merge…", width=100, height=top_line_height,
                                   name=f"openmerge{unique}")[0]:
-                from src.lsd.gl_gui.view.core_views.new_core_view import Core
-                Core.melty.open_window("merge_files")
-                request_render()
+                from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
+                MergeFiles.open(address.path)
             imgui.same_line()
             if RenderFuncs.button("Load theirs", width=110, height=top_line_height, name=f"reload{unique}")[0]:
                 load = True

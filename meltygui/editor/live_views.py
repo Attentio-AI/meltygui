@@ -94,6 +94,7 @@ def _split_line_key(seg):
         return label, 0
 
 
+
 def _stable_key_name(key_path, all_keys=None):
     """Identity form of a store key path for VIEW NAMES — the LINE NUMBER is
     STRIPPED: `line:12#r` reads as `r`. The name is hashed into the render

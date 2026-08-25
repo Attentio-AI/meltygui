@@ -21,6 +21,8 @@ import ctypes
 import glfw
 import imgui
 
+from src.lsd.gl_gui import mouse_cursor
+
 # ---------------------------------------------------------------------------
 # X11 backend: _NET_WM_MOVERESIZE via ctypes → libX11
 # ---------------------------------------------------------------------------
@@ -252,11 +254,14 @@ def _edge_at(mx, my, w, h, border, corner):
     return None
 
 
+# One directional shape per edge/corner (right edge |>, left edge <|, each
+# corner its own), not the shared directional arrows. Pushed via
+# mouse_cursor.request - these shapes are past imgui's control.
 _EDGE_CURSOR = {
-    _SIZE_TOP: "MOUSE_CURSOR_RESIZE_NS", _SIZE_BOTTOM: "MOUSE_CURSOR_RESIZE_NS",
-    _SIZE_LEFT: "MOUSE_CURSOR_RESIZE_EW", _SIZE_RIGHT: "MOUSE_CURSOR_RESIZE_EW",
-    _SIZE_TOPLEFT: "MOUSE_CURSOR_RESIZE_NWSE", _SIZE_BOTTOMRIGHT: "MOUSE_CURSOR_RESIZE_NWSE",
-    _SIZE_TOPRIGHT: "MOUSE_CURSOR_RESIZE_NESW", _SIZE_BOTTOMLEFT: "MOUSE_CURSOR_RESIZE_NESW",
+    _SIZE_TOP: mouse_cursor.RESIZE_N, _SIZE_BOTTOM: mouse_cursor.RESIZE_S,
+    _SIZE_LEFT: mouse_cursor.RESIZE_W, _SIZE_RIGHT: mouse_cursor.RESIZE_E,
+    _SIZE_TOPLEFT: mouse_cursor.RESIZE_NW, _SIZE_BOTTOMRIGHT: mouse_cursor.RESIZE_SE,
+    _SIZE_TOPRIGHT: mouse_cursor.RESIZE_NE, _SIZE_BOTTOMLEFT: mouse_cursor.RESIZE_SW,
 }
 
 
@@ -406,9 +411,7 @@ def draw_titlebar(window):
     if not maximized and over_button is None:
         edge = _edge_at(mx, my, disp_w, disp_h, border, corner)
     if edge is not None:
-        cursor = getattr(imgui, _EDGE_CURSOR[edge], None)
-        if cursor is not None:
-            imgui.set_mouse_cursor(cursor)
+        mouse_cursor.request(_EDGE_CURSOR[edge])
         if imgui.is_mouse_clicked(0):
             _begin_moveresize(window, edge)
             return
@@ -489,9 +492,7 @@ def draw_titlebar(window):
             direction = ((_SIZE_BOTTOMRIGHT if grab_right else _SIZE_BOTTOMLEFT)
                          if grab_bottom else
                          (_SIZE_TOPRIGHT if grab_right else _SIZE_TOPLEFT))
-            cursor = getattr(imgui, _EDGE_CURSOR[direction], None)
-            if cursor is not None:
-                imgui.set_mouse_cursor(cursor)
+            mouse_cursor.request(_EDGE_CURSOR[direction])
             _apply_rdrag_resize(window, px, py)
 
     # --- paint the buttons (topmost, after all the logic) ------------------

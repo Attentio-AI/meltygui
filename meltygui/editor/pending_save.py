@@ -637,10 +637,19 @@ class PendingSave:
         return str(t).replace("\r\n", "\n").replace("\r", "\n")
 
     @classmethod
-    def resolve_external(cls, path, prefer=None, allow_merge=None):
+    def resolve_external(cls, path, prefer=None, allow_merge=None,
+                         whole_text=None):
         """Resolve ONE tracked external change into per-span pending entries
         and return its result line (None when there's nothing to do —
         untracked path, or drift that healed back to the baseline).
+
+        whole_text: the caller's WHOLE-FILE pending buffer (the merge
+        window's pending pane — the studio's current text of the file with
+        every accepted change spliced in). When given, the file resolves on
+        the whole-file path with that text as "mine" (prefer='mine' queues
+        it verbatim as the result; 'theirs' takes disk; None + allow_merge
+        3-way merges it against the sync frame), and the per-span entries
+        it already contains are dropped for the one whole-file entry.
 
         allow_merge gates the per-span 3-way merge for OVERLAPPING spans:
         only an explicit merge action (the Merge buttons) passes True;
@@ -739,15 +748,16 @@ class PendingSave:
                 (addr, codec, kwargs, data))
 
         module = _resolve_module(path)
-        if module is None or whole:
+        if module is None or whole or whole_text is not None:
             # Plain files (no live module → no span hotswap, whole-file is
-            # fine) and legacy whole-file entries keep the old whole-file
-            # merge. recompile_all refuses whole-module hotswaps from
-            # non-disk text, so the legacy merge can no longer mangle live
-            # coordinates for modules.
+            # available), whole-file entries (the code editor's buffer, the merge
+            # window's pane) and an explicit whole_text take the whole-file
+            # merge. The base is the SYNC frame - the text pending derived
+            # from - so a second merge after an absorb doesn't re-apply
+            # already-absorbed hunks.
             return cls._resolve_external_wholefile(
-                rp, name, path, module, base_n, disk_n, disk,
-                entries + whole, prefer, allow_merge)
+                rp, name, path, module, sync_n, disk_n, disk,
+                entries + whole, prefer, allow_merge, mine=whole_text)
 
         return cls._resolve_external_spans(
             rp, name, path, module, sync_n, disk_n, disk, entries, prefer,
@@ -756,10 +766,12 @@ class PendingSave:
     @classmethod
     def _resolve_external_wholefile(cls, rp, name, path, module, base_n,
                                     disk_n, disk, absorbed, prefer,
-                                    allow_merge):
-        """The pre-span whole-file merge, kept for plain (non-module) files
-        and legacy whole-file entries. base/mine/theirs are whole texts; the
-        result is ONE whole-file pending entry."""
+                                    allow_merge, mine=None):
+        """The whole-file merge: plain (non-module) files, whole-file entries
+        (the code editor's buffer) and the merge window's pane (`mine`, the
+        caller's whole-file text). base/mine/theirs are whole texts; the
+        result is ONE whole-file pending entry fingerprinted against the
+        disk it merged with."""
         from src.lsd.gl_gui.view.core_views.external_changes import ExternalChanges
         from src.lsd.gl_gui.view.core_conversion.new_codecs import (
             ModuleCodec, TextFileCodec, _span_fingerprint)
@@ -767,7 +779,9 @@ class PendingSave:
 
         _norm = cls._norm_text
         whole = [d for a, c, k, d in absorbed if a.start is None]
-        if whole:
+        if mine is not None:
+            mine = _norm(mine)
+        elif whole:
             mine = _norm(whole[-1])
         elif absorbed:
             # Splice bottom-up (highest start first) so an applied span

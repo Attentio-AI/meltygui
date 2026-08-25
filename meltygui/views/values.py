@@ -4875,8 +4875,8 @@ def draw_melty_windows(vis):
     end()
 
 
-@render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, z_offset=1, selectable=False,
-             show_bg=True, auto_resize=True, with_header=draw_header)
+@render_func(is_default_for=PendingTexture, use_cache=True, wrap=True, z_offset=0, selectable=False,
+             show_bg=False, auto_resize=True, with_header=draw_header)
 def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
     if input_value.texture_id is None:
         imgui.text(f"Uploading... {id(input_value)}")
@@ -4905,7 +4905,7 @@ def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
     return return_val
 
 
-@render_func(is_default_for=numpy.uint32, show_bg=False, use_cache=False, show_add_delete=False, z_offset=2,
+@render_func(is_default_for=numpy.uint32, show_bg=False, use_cache=False, show_add_delete=False, z_offset=0,
              fill_height=True, selectable=False,
              indent_size=0, min_width=35, min_height=35, wrap=False, disable_scroll=True,
              zoom_speed=0.3, with_header=draw_header, manual_content_height=True)

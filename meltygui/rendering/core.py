@@ -10,7 +10,7 @@ from copy import copy
 from enum import Enum
 from functools import wraps
 from math import ceil
-from typing import Any
+from typing import Any, get_type_hints
 
 import glfw
 import imgui
@@ -189,16 +189,29 @@ def column_max_height(column_parent):
 
 def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
                            bar_width=SCROLL_BAR_WIDTH_DEFAULT,
-                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT):
-    """Draw an interactive vertical scrollbar onto the overlay draw list.
+                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT,
+                           overlay=False):
+    """Draw an interactive vertical scrollbar on top of the view's content.
 
     Hover and drag are routed through ``draw_state.on_action`` against the
     grab's screen-space rect, so the scrollbar competes for the cursor like any
     other view. Dragging the grab mutates ``draw_state.scroll_offset`` in place;
     the wheel-scroll path in the wrapper still owns wheel input.
 
-    Painting to the overlay draw list (rather than the window list) keeps the
-    bar above the clipped, scrolled content it sits on top of.
+    overlay=False (default): painted on the WINDOW draw list, a few channels
+    up, from inside the body — so it is captured into the view's tile with
+    the rest of the content and the content gives up a gutter for it
+    (``SCROLLBAR_MARGIN`` in the wrapper).
+
+    overlay=True: painted on the foreground (overlay) draw list on the view's
+    window channel (``Melty.overlay_channel_for`` — stencil-masked by windows
+    above, clipped to the view's clip rect). The overlay list is rendered
+    AFTER the tile-capture passes (``Melty.end_frame``: render_except_overlay
+    → finalize_captures → render_overlay_only), so the bar is NEVER baked
+    into a tile: it can be drawn every frame — blit-cache hits and frozen
+    resize blits included — at the LIVE right edge, floating over content
+    that runs all the way to that edge. freeze_resize views use this (the
+    wrapper draws it right after ``mark_end_offscreen``, outside the body).
     """
     if max_scroll_y <= 0 or clip_height <= 0:
         return
@@ -208,8 +221,14 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         return
 
     # Viewport in screen space - the scroll region starts under the header.
-    view_left = draw_state.abs_left
-    view_top = draw_state.abs_top + draw_state.header_height
+    # The overlay bar reads the LIVE position: the cached abs_left/abs_top
+    # lag a blit-served drag by a frame and the bar would trail the view.
+    if overlay:
+        view_left = draw_state._abs_left()
+        view_top = draw_state._abs_top() + draw_state.header_height
+    else:
+        view_left = draw_state.abs_left
+        view_top = draw_state.abs_top + draw_state.header_height
     view_width = draw_state.width
     bar_offset = -1.0
 
@@ -280,12 +299,30 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         col_grab = imgui.get_color_u32_rgba(1, 1, 1, grab_alpha)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
-    dl = imgui.get_window_draw_list()
-    dl.channels_set_current(Melty.get_channel() + 4)
+    overlay_clip = None
+    if overlay:
+        dl = imgui.get_overlay_draw_list()
+        dl.channels_set_current(Melty.overlay_channel_for(draw_state))
+        # The overlay list has no window clip of its own; scissor the bar to
+        # what the view actually shows (a parent scroll / window edge), else
+        # it would float outside the clipped view.
+        overlay_clip = draw_state.abs_clip_rect
+        if overlay_clip is not None:
+            dl.push_clip_rect(*overlay_clip, True)
+    else:
+        dl = imgui.get_window_draw_list()
+        dl.channels_set_current(Melty.get_channel() + 4)
     # dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding=3.0)
     if grab_y2 > grab_y1:
         dl.add_rect_filled(track_x1, grab_y1, track_x2, grab_y2, col_grab, rounding=3.0)
         # dl.add_rect(track_x1, grab_y1, track_x2, grab_y2, col_border, rounding=3.0)
+    if overlay:
+        if overlay_clip is not None:
+            dl.pop_clip_rect()
+        # Back to the unmasked top channel - the overlay list's default
+        # (begin_frame); leaving it on a window channel would z-mask whatever
+        # global overlay draws next.
+        dl.channels_set_current(Melty.max_layer - 1)
 
 
 
@@ -499,6 +536,28 @@ def _str_change_span(old, new):
     return p, n_new - s
 
 
+def _rebase_resize_baselines(draw_state, drag, from_top_left):
+    """Re-latch the corner-resize baselines so the running formulas are
+    continuous at the CURRENT size / position / drag total:
+
+        size = init_size + sign * total          (sign = -1 top-left, +1 bottom-right)
+        pos  = init_pos  + (init_size - size)    (top-left: the far corner stays put)
+        pos  = init_pos                          (bottom-right: sticky re-anchors hold it)
+
+    Used when the corner flips mid-drag (left button pressed / released
+    during a right-drag) and when a resize (re)activates with a non-zero
+    total (press and first drag frame compressed together after a stall).
+    At a normal drag start total ≈ 0 and this is a no-op."""
+    sign = -1 if from_top_left else 1
+    draw_state._initial_window_size = (draw_state.width - sign * drag.total_dx,
+                                       draw_state.height - sign * drag.total_dy)
+    if from_top_left:
+        draw_state._initial_window_pos_resize = (draw_state.window_pos[0] - drag.total_dx,
+                                                 draw_state.window_pos[1] - drag.total_dy)
+    else:
+        draw_state._initial_window_pos_resize = (draw_state.window_pos[0], draw_state.window_pos[1])
+
+
 def render_func(*args, **o_kwargs):
     func = args[0] if args else None
     if not callable(func):
@@ -514,6 +573,20 @@ def render_func(*args, **o_kwargs):
     sig = inspect.signature(func)
     params = sig.parameters
     param_types = [params[p].annotation for p in params]
+    # A module under `from __future__ import annotations` (PEP 563) hands us
+    # STRINGS here, and the injected-state path (`set_default`'s misc type:
+    # `panel_state: PanelState = None`) needs the class to instantiate - so
+    # resolve string annotations against the function's globals. Only the
+    # string ones: a real class passes through untouched, and a name that
+    # doesn't resolve (lazy import) stays a string for now.
+    if any(isinstance(annotation, str) for annotation in param_types):
+        try:
+            resolved_hints = get_type_hints(func)
+        except Exception:
+            resolved_hints = {}
+        param_types = [resolved_hints.get(p, params[p].annotation)
+                       if isinstance(params[p].annotation, str) else params[p].annotation
+                       for p in params]
     name_to_param_type = {}
     for idx, param_name in enumerate(params):
         name_to_param_type[param_name] = param_types[idx]
@@ -1008,6 +1081,7 @@ def render_func(*args, **o_kwargs):
         #############################################
         ###### Layer rendering delay
         original_active_layer = Melty.active_layer
+        original_paint_rank = Melty.paint_rank
         draw_state._start_z_pos = min(Melty.z_pos, 3)
         if Melty.cache is not None:
             draw_state._parent_ctx = Melty.cache.get_current_parent()
@@ -1288,6 +1362,11 @@ def render_func(*args, **o_kwargs):
                 return return_value
         else:
             Melty.active_layer = active_layer if active_layer is not None else 4
+            if active_layer is None:
+                # Inline pass outside any dispatched window: the dispatch loop
+                # has no paint rank for this view, so its z rank is the same
+                # fallback layer. Inside a window the loop's rank takes.
+                Melty.paint_rank = 4
 
         # Handle untracked object invalidation
         if not hasattr(input_value, "__melty__"):
@@ -1633,7 +1712,9 @@ def render_func(*args, **o_kwargs):
             draw_state.depth = Melty.depth
             draw_state.layer = Melty.active_layer
 
-            Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
+            # Paint-order rank, not the bucket (Melty.paint_rank): a window
+            # drawn later must rank higher otherwise its hidden children lose input.
+            Melty.z_pos = (Melty.paint_rank * Melty.max_depth) + Melty.depth
             draw_state.z_pos = Melty.z_pos
 
             kwargs['depth'] = Melty.depth
@@ -1796,7 +1877,7 @@ def render_func(*args, **o_kwargs):
                 corner_rect = get_resize_handle(draw_state)
                 handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
                                                    rect=corner_rect, priority_delta=1,
-                                                   cursor=mouse_cursor.RESIZE_NWSE)
+                                                   cursor=mouse_cursor.RESIZE_SE)
 
                 corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
                 # A right-drag always resizes; the held LEFT button only
@@ -1846,11 +1927,6 @@ def render_func(*args, **o_kwargs):
                         draw_state._initial_window_pos_resize = None
 
                 if handle_drag and not auto_resize:
-                    # Both corners lie on the NWSE diagonal. The (imgui)
-                    # shape as the right-drag has a grab rect to hang a
-                    # subscription cursor on, and this block runs every frame
-                    # of the drag.
-                    imgui.set_mouse_cursor(mouse_cursor.RESIZE_NWSE)
                     # Which corner this drag is currently dragging, read from
                     # the LEFT button's level state per frame: plain
                     # right-drag (and the corner handle) drags the
@@ -1867,6 +1943,12 @@ def render_func(*args, **o_kwargs):
                     # (the gesture-start latch below uses the press point).
                     top_left_now = bool(handle_drag is corner_drag
                                         and Melty.event_handler.is_down("left_mouse"))
+                    # The corner's own directional shape (bottom-right ↘ vs
+                    # top-left ↖). Immediate: the right-drag has no grab rect
+                    # to hang a subscription cursor on, and this block runs
+                    # every frame of the drag - request() is per-frame.
+                    mouse_cursor.request(mouse_cursor.RESIZE_NW if top_left_now
+                                         else mouse_cursor.RESIZE_SE)
                     from_top_left = getattr(draw_state, "_resize_from_top_left", None)
                     if from_top_left is None:
                         from_top_left = top_left_now
@@ -1874,27 +1956,10 @@ def render_func(*args, **o_kwargs):
                     elif top_left_now != from_top_left:
                         from_top_left = top_left_now
                         draw_state._resize_from_top_left = top_left_now
-                        if from_top_left:
-                            # size = init + total from here on; pos follows
-                            # bottom-fixed = init_pos + (init_size - size).
-                            # At the flip instant size==current and the pos
-                            # term must equal current pos, so init_pos backs
-                            # out the total accumulated so far.
-                            draw_state._initial_window_size = (
-                                draw_state.width + handle_drag.total_dx,
-                                draw_state.height + handle_drag.total_dy)
-                            draw_state._initial_window_pos_resize = (
-                                draw_state.window_pos[0] - handle_drag.total_dx,
-                                draw_state.window_pos[1] - handle_drag.total_dy)
-                        else:
-                            # size = init - total; the sticky re-anchors pin
-                            # pos = init_pos, so init_pos is simply where the
-                            # window sits right now.
-                            draw_state._initial_window_size = (
-                                draw_state.width - handle_drag.total_dx,
-                                draw_state.height - handle_drag.total_dy)
-                            draw_state._initial_window_pos_resize = (
-                                draw_state.window_pos[0], draw_state.window_pos[1])
+                        # The two modes hand off with zero jump: every
+                        # baseline is rebased around the current
+                        # size/pos/total (see _rebase_resize_baselines).
+                        _rebase_resize_baselines(draw_state, handle_drag, from_top_left)
                         # Re-latch the width edge for the new side at the
                         # CURRENT cursor (the drag-start point may sit in a
                         # different column by now); x0 = total so the
@@ -1906,28 +1971,17 @@ def render_func(*args, **o_kwargs):
                         except Exception:
                             draw_state._resize_target_edge = None
                         draw_state._resize_target_edge_x0 = handle_drag.total_dx
-                    if draw_state._initial_window_size is None:
-                        # Rebase the size baseline by the drag delta so far so
-                        # size = init + total_d is continuous when resize
-                        # (re)activates mid-drag (press and first drag frame
-                        # compressed together after a stall). At a fresh drag
-                        # start total_d≈0, so this is a no-op.
-                        if from_top_left:
-                            draw_state._initial_window_size = (draw_state.width + handle_drag.total_dx,
-                                                               draw_state.height + handle_drag.total_dy)
-                        else:
-                            draw_state._initial_window_size = (draw_state.width - handle_drag.total_dx,
-                                                               draw_state.height - handle_drag.total_dy)
-                    if draw_state._initial_window_pos_resize is None:
-                        draw_state._initial_window_pos_resize = (draw_state.window_pos[0], draw_state.window_pos[1])
+                    if (draw_state._initial_window_size is None
+                            or draw_state._initial_window_pos_resize is None):
+                        # Resize (re-)activating mid-drag (press and first drag
+                        # frame compressed together after a stall): rebase so
+                        # the formulas are continuous from here.
+                        _rebase_resize_baselines(draw_state, handle_drag, from_top_left)
 
                     draw_state.expanded = True
-                    if from_top_left:
-                        size_w = draw_state._initial_window_size[0] - handle_drag.total_dx
-                        size_h = draw_state._initial_window_size[1] - handle_drag.total_dy
-                    else:
-                        size_w = draw_state._initial_window_size[0] + handle_drag.total_dx
-                        size_h = draw_state._initial_window_size[1] + handle_drag.total_dy
+                    resize_sign = -1 if from_top_left else 1
+                    size_w = draw_state._initial_window_size[0] + resize_sign * handle_drag.total_dx
+                    size_h = draw_state._initial_window_size[1] + resize_sign * handle_drag.total_dy
                     # True while this right-drag drives a column edge through
                     # the shared collision solver (set in the width block
                     # below). Hoisted so the sticky-x re-anchor further down
@@ -1985,30 +2039,17 @@ def render_func(*args, **o_kwargs):
                                     draw_state._resize_target_edge = _columns.edge_under_cursor(
                                         draw_state, sx, sy, left=from_top_left)
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
-                                    # TEMP edge debugging: what the right-drag latched.
-                                    try:
-                                        _fe_dbg = getattr(draw_state, "_frame_edges", None)
-                                        _tgt = draw_state._resize_target_edge
-                                        with open("/tmp/lsd_edge_debug.log", "a") as _f:
-                                            _rows = {
-                                                k: [round(e["x"], 1) for e in el]
-                                                for k, (ds_, el) in
-                                                getattr(draw_state, "_edge_views", {}).items()}
-                                            _f.write(
-                                                f"LATCH sx={sx:.1f} sy={sy:.1f} "
-                                                f"abs_left={draw_state.abs_left:.1f} "
-                                                f"abs_top={draw_state.abs_top:.1f} "
-                                                f"h={draw_state.height} "
-                                                f"drag_xy=({handle_drag.x:.1f},{handle_drag.y:.1f}) "
-                                                f"total=({handle_drag.total_dx:.1f},{handle_drag.total_dy:.1f}) "
-                                                f"edge={_tgt['x'] if _tgt else None} "
-                                                f"is_fe1={_tgt is (_fe_dbg[1] if _fe_dbg else None)} "
-                                                f"rows={_rows} "
-                                                f"win={getattr(draw_state, 'name', draw_state.id)}\n")
-                                    except Exception:
-                                        pass
                                 edge = draw_state._resize_target_edge
                                 if edge is not None:
+                                    # A latched COLUMN edge moves sideways: show
+                                    # <-> (the same shape its own left-drag
+                                    # handle carries), overriding the corner
+                                    # shape requested above. The window's OWN
+                                    # frame edge is the fallback resize target
+                                    # and keeps the corner shape.
+                                    frame_edges = getattr(draw_state, "_frame_edges", None) or ()
+                                    if not any(edge is frame_edge for frame_edge in frame_edges):
+                                        mouse_cursor.request(mouse_cursor.RESIZE_EW)
                                     inc = handle_drag.total_dx - draw_state._resize_target_edge_x0
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
                                     if inc:
@@ -2490,7 +2531,14 @@ def render_func(*args, **o_kwargs):
                 parent_wrap_left = draw_state.abs_left + snap_int(left_boundary)
                 available_width = int(parent_wrap_width - indent_x - 5)
             else:
-                available_width = (parent_wrap_width - x_offset - content_margin)
+                # content_margin is a right-side depth inset (2 px per stacked
+                # bg) that keeps nested content clear of the enclosing bg
+                # border. freeze_resize views run edge to edge - the scrollbar
+                # already floats over them on the overlay list - so they take
+                # none of it (a text-editor pane in a column cell otherwise
+                # clipped its glyphs 4-6 px before its own bg edge).
+                _depth_margin = 0.0 if draw_state.freeze_resize else content_margin
+                available_width = (parent_wrap_width - x_offset - _depth_margin)
 
             if len(Melty.fixed_size_stack) > 0:
                 if (draw_state.auto_resize and not closable and not
@@ -2589,7 +2637,11 @@ def render_func(*args, **o_kwargs):
                 can_scroll = (not kwargs.get("disable_scroll", False)
                               and (not draw_state.auto_resize
                                    or kwargs.get("max_height", None) is not None))
-                if can_scroll:
+                # freeze_resize views give up nothing: their content runs to
+                # the right edge and the bar floats over it on the overlay
+                # list (drawn live after mark_end_offscreen, never baked into
+                # the buffer - see draw_vertical_scrollbar(overlay=True)).
+                if can_scroll and not draw_state.freeze_resize:
                     _sb_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
                                    + SCROLLBAR_MARGIN)
                     draw_state.content_width = max(0, draw_state.content_width - _sb_reserve)
@@ -2864,7 +2916,7 @@ def render_func(*args, **o_kwargs):
 
             # Push search term to stack so child views can apply search converters
 
-            draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+            draw_state.depth_and_layer = (Melty.shadow_depth, Melty.paint_rank)
             _pushed_search = False
             draw_state._melty_cursor = (0, 0)  # column -> (x, y)
 
@@ -4309,6 +4361,26 @@ def render_func(*args, **o_kwargs):
             if use_cache:
                 Melty.cache.mark_end_offscreen()
 
+            if (_has_imgui and draw_state.freeze_resize and draw_state.scroll_visible
+                    and not draw_state.closed and not draw_state.just_shadow):
+                # freeze_resize: the scrollbar lives OUTSIDE the body and freeze
+                # tile - drawn here every frame (body tile, blit-cache hit or
+                # frozen resize blit alike) on the overlay list, on top of
+                # content that runs to the right edge. Mid frozen drag the
+                # width/height are live while the content is the stale tile,
+                # so the bar tracks the right edge and the grab re-fits the
+                # live viewport. Same max_scroll_y formula as draw_inner_main
+                # (published for the editor's non-auto scroll clamp).
+                _live_max_scroll_y = max(0, draw_state.abs_content_height
+                                         - draw_state.abs_clipped_height + 1)
+                draw_state._max_scroll_y = _live_max_scroll_y
+                draw_overlay_scrollbar(draw_state, _live_max_scroll_y,
+                                       draw_state.height - draw_state.footer_height,
+                                       bar_width=kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT),
+                                       bar_brightness=kwargs.get("scroll_bar_brightness",
+                                                                 SCROLL_BAR_BRIGHTNESS_DEFAULT),
+                                       overlay=True)
+
             if _has_imgui:
                 if closable:
                     Melty.pop_clip()
@@ -4548,6 +4620,7 @@ def render_func(*args, **o_kwargs):
                     draw_list.channels_merge()
 
             Melty.active_layer = original_active_layer
+            Melty.paint_rank = original_paint_rank
             Melty.shadow_depth = start_shadow_depth
 
             if mode_stacked:
@@ -4934,7 +5007,10 @@ def render_func(*args, **o_kwargs):
                                           include_windows=False)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
-            if not draw_state.closed:
+            # freeze_resize views draw scrollbar live on the overlay list after
+            # the cache gate closes (wrapper tail) - never from the tile, or
+            # it would bake into the tile and sit at the stale edge mid-drag.
+            if not draw_state.closed and not draw_state.freeze_resize:
                 draw_overlay_scrollbar(draw_state, max_scroll_y, draw_state.height - draw_state.footer_height,
                                        bar_width=kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT),
                                        bar_brightness=kwargs.get("scroll_bar_brightness",
@@ -4958,9 +5034,14 @@ def render_func(*args, **o_kwargs):
             # Reserve space at the right edge for the overlay scrollbar (grab
             # area + margins - see draw_overlay_scrollbar) so the content
             # wraps/clips before the bar instead of going under it.
-            scrollbar_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
-                                 + SCROLLBAR_MARGIN)
-          
+            # freeze_resize views: no reserve - content runs to the edge and
+            # the bar floats over it (overlay list, wrapper tail).
+            if draw_state.freeze_resize:
+                scrollbar_reserve = 0
+            else:
+                scrollbar_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
+                                     + SCROLLBAR_MARGIN)
+
             Melty.push_clip((draw_state.abs_left, draw_state.abs_top + header_height,
                              draw_state.abs_left + draw_state.width - scrollbar_reserve,
                              draw_state.abs_top + header_height + draw_state.height + 2))

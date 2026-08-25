@@ -61,15 +61,6 @@ MAX_TILE_DIM = 8000
 # TILE_BUCKET = 1 reverts the whole scheme to exact tile sizes.
 TILE_BUCKET = 32
 
-# freeze_resize tile blits: width (logical px; melty GL-scaled at use) of
-# the strip hidden along the content's right/bottom edges mid-drag - the last
-# live render baked the scrollbar gutter (right; hence wider) and bg edge
-# there, and those pixels would read like a drag seam when the view is
-# served frozen. The strips are only NOT DRAWN (the live bg shows through);
-# no texels are cleared, so 0 simply draws everything, baked gutter included.
-FREEZE_TRIM_RIGHT = 20
-FREEZE_TRIM_BOTTOM = 5
-
 
 def _bucket(v: int) -> int:
     return min(MAX_TILE_DIM, ((int(v) + TILE_BUCKET - 1) // TILE_BUCKET) * TILE_BUCKET)
@@ -2158,7 +2149,8 @@ class TileCacheMasked:
         owner's next fresh capture.
 
         rect is (x, y, w, h) in screen coords. layer defaults to
-        Melty.active_layer, depth to Melty.shadow_depth, both read at call
+        Melty.paint_rank (the paint-order rank, the same unit as
+        depth_and_layer), depth to Melty.shadow_depth, both read at call
         time. clip=True snapshots the LIVE clip rect now and scissors the
         mark with it at draw time; an explicit (x0, y0, x1, y1) tuple clips
         to that rect instead (e.g. a draw-list view's abs_clip_rect);
@@ -2168,7 +2160,7 @@ class TileCacheMasked:
         if w <= 0 or h <= 0:
             return
         if layer is None:
-            layer = Melty.active_layer
+            layer = Melty.paint_rank
         depth_defaulted = depth is None
         if depth_defaulted:
             depth = Melty.shadow_depth
@@ -2301,7 +2293,7 @@ class TileCacheMasked:
         if w <= 0 or h <= 0:
             return
         if layer is None:
-            layer = Melty.active_layer
+            layer = Melty.paint_rank
         depth_defaulted = depth is None
         if depth_defaulted:
             depth = Melty.shadow_depth
@@ -2456,7 +2448,7 @@ class TileCacheMasked:
         if w <= 0 or h <= 0 or intensity <= 0:
             return
         if layer is None:
-            layer = Melty.active_layer
+            layer = Melty.paint_rank
         depth_defaulted = depth is None
         if depth_defaulted:
             depth = Melty.shadow_depth
@@ -3273,64 +3265,6 @@ class TileCacheMasked:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
                 style_manager.set_imgui_tint(*_sv_tint)
 
-    def _frozen_content_pieces(self, t: Tile, draw_size):
-        """freeze_resize tiles, mid frozen drag: the last live render baked
-        the view's scrollbar gutter and bg edge at the LOGICAL (t.size)
-        right/bottom edges — for no-shrink tiles that edge can sit strictly
-        inside the resident content (content_size is the high-water
-        extent), so the content-edge trim in the frozen blit never reaches
-        it and it reads as a stamped seam mid-image. Return the drawn
-        content as tile-local (y-down) sub-rects that SKIP those strips —
-        a draw-time hole the live draw_freeze_bg shows through — instead
-        of clearing texels: every texel stays resident, so nothing has to
-        re-render when the drag releases at the captured size, and a
-        re-capture can never bake a cleared line back into the tile. Each
-        rect carries the imgui corner flags for whichever of the full
-        content's outer corners it owns, so rounding stays on the outside
-        edges only."""
-        dw, dh = draw_size
-        w, h = snap_int(t.size[0]), snap_int(t.size[1])
-        cs = getattr(t, "content_size", None) or t.size
-        cw, ch = snap_int(cs[0]), snap_int(cs[1])
-        trim_r = snap_int(Melty.px(FREEZE_TRIM_RIGHT))
-        trim_b = snap_int(Melty.px(FREEZE_TRIM_BOTTOM))
-        # A strip is interior (has a hole) only when preserved content
-        # extends past the logical edge; at cw == w the strip IS the
-        # content edge and the outer draw_size trim already removed it.
-        hole_r = cw > w and w > trim_r
-        hole_b = ch > h and h > trim_b
-        if not hole_r and not hole_b:
-            rects = [(0, 0, dw, dh)]
-        else:
-            yb = (h - trim_b) if hole_b else min(h, dh)
-            # Rows above the bottom strip, skipping the vertical gutter.
-            if hole_r:
-                rects = [(0, 0, w - trim_r, yb), (w, 0, dw, yb)]
-            else:
-                rects = [(0, 0, dw, yb)]
-            if hole_b:
-                # The strip, itself: only content right of the hole.
-                rects.append((w, yb, dw, h))
-            # Preserved rows below the logical bottom edge.
-            if dh > h:
-                rects.append((0, h, dw, dh))
-        out = []
-        for x0, y0, x1, y1 in rects:
-            x1, y1 = min(x1, dw), min(y1, dh)
-            if x1 <= x0 or y1 <= y0:
-                continue
-            flags = 0
-            if x0 == 0 and y0 == 0:
-                flags |= imgui.DRAW_ROUND_CORNERS_TOP_LEFT
-            if x1 == dw and y0 == 0:
-                flags |= imgui.DRAW_ROUND_CORNERS_TOP_RIGHT
-            if x0 == 0 and y1 == dh:
-                flags |= imgui.DRAW_ROUND_CORNERS_BOTTOM_LEFT
-            if x1 == dw and y1 == dh:
-                flags |= imgui.DRAW_ROUND_CORNERS_BOTTOM_RIGHT
-            out.append((x0, y0, x1, y1, flags))
-        return out
-
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
         view scrolls away from the position they were captured at. They are
@@ -3503,19 +3437,12 @@ class TileCacheMasked:
                 # extent, >= logical size for no-shrink tiles) - a clip to
                 # the live rect below crops it, so a grow/drag reveals
                 # preserved earlier-era pixels instead of background.
+                # Nothing is trimmed off the stale content: freeze views
+                # bake no outline (draw_freeze_bg) and no scrollbar (it floats
+                # in to the overlay list), so every resident texel is real
+                # content and draws edge to edge. (An earlier 20/5 px
+                # right/bottom trim left the baked gutter/outline mid-drag.)
                 draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
-                if frozen:
-                    # The content's right/bottom edge has the view's own
-                    # outline and scrollbar baked in; mid-drag that edge sits
-                    # inside the live rect and reads as a stamped seam. Trim
-                    # it off and let the live draw_bg show through the strip.
-                    # (During a shrink the strip is outside the live clip
-                    # anyway, so the trim only ever hides the baked edge.)
-                    # Horizontal trim is wider: the scrollbar gutter lives there.
-                    draw_size = (max(1, draw_size[0]
-                                     - snap_int(Melty.px(FREEZE_TRIM_RIGHT))),
-                                 max(1, draw_size[1]
-                                     - snap_int(Melty.px(FREEZE_TRIM_BOTTOM))))
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
                 # Top-anchored subrect of the (possibly bucket-padded)
                 # texture: content spans u [0, dw/aw], v [1 - dh/ah, 1].
@@ -3530,25 +3457,17 @@ class TileCacheMasked:
                     # views, so nothing baked in the tile interferes with it.
                     self.draw_freeze_bg(draw_state, a[0], a[1],
                                         size[0], size[1], live=False)
+                    # Whole resident content in one image, cropped to the
+                    # live rect by the clip - same draw as the cache-hit
+                    # path, but at the (possibly larger) content size.
                     dl.push_clip_rect(a[0], a[1],
                                       a[0] + size[0], a[1] + size[1], True)
-                    # Draw the image as sub-rects to skip the
-                    # scrollbar/outline strips baked at the logical (t.size)
-                    # edges - inside the resident content, where the
-                    # content-edge trim above can't reach them. The live bg
-                    # shows through the gaps; no texels are destroyed (see
-                    # _frozen_content_pieces).
-                    rounding = getattr(draw_state, "corner_radius", 6)
-                    for x0, y0, x1, y1, flags in self._frozen_content_pieces(
-                            t, draw_size):
-                        dl.add_image_rounded(
-                            t.tex,
-                            a=(a[0] + x0, a[1] + y0),
-                            b=(a[0] + x1, a[1] + y1),
-                            uv_a=(x0 / taw, 1.0 - y0 / tah),
-                            uv_b=(x1 / taw, 1.0 - y1 / tah),
-                            rounding=rounding if flags else 0.0,
-                            flags=flags)
+                    dl.add_image_rounded(t.tex,
+                                         a=a,
+                                         b=b,
+                                         uv_a=uv_a,
+                                         uv_b=uv_b,
+                                         rounding=getattr(draw_state, "corner_radius", 6))
                     dl.pop_clip_rect()
                 else:
                     dl.add_image_rounded(t.tex,
@@ -5086,7 +5005,7 @@ def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
     cast into it. A 4-tuple (top_left, top_right, bottom_left, bottom_right)
     gives each corner its own delta and eases the depth between them across
     the quad — e.g. offset=(0, 0, 0, 8) peels the bottom-right corner up.
-    layer/depth default to Melty.active_layer/Melty.shadow_depth at call
+    layer/depth default to Melty.paint_rank/Melty.shadow_depth at call
     time. Cheap enough to call every frame; see
     TileCacheMasked.add_shadow."""
     cache = Melty.cache

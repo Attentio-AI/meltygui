@@ -1164,6 +1164,7 @@ class Toggles:
         freetype_hinting = True
 
     # [icon=""]
+  
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:
         # Custom client-side titlebar: undecorated OS window so the UI sticks
@@ -1233,7 +1234,7 @@ class Toggles:
         # background. Keep this under active_text_min_brightness or open and
         # closed rows stop reading as different states. 0 disables. Read live.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        inactive_text_min_brightness = 0.35
+        inactive_text_min_brightness = 0.45
 
     # [icon=""]
     @defaults(tint=(0.427, 0.541, 0.616))
@@ -1354,12 +1355,31 @@ class Toggles:
         # Step back/forward with Ctrl+Shift+Left/Right or the Fast Dock's
         # arrow buttons.
         undo_navigation = True
+        # Also record the text caret (NavUndo.poll_caret): moves inside a
+        # draw_text (arrow keys, clicks) and tab focus hopping between
+        # draw_texts. Consecutive moves in one view fold into a single step
+        # while they come within nav_caret_coalesce_s seconds of each other
+        # AND stay within nav_caret_step_lines lines of where the step
+        # already ended (an arrow-key walk = one step; a far click = a new
+        # one). Typing never records (the edit stack does that caret), and
+        # jumps / tab switches keep recording as locations. Needs
+        # undo_navigation.
+        undo_navigation_caret = True
+        nav_caret_coalesce_s = 0.6
+        nav_caret_step_lines = 10
 
         # ── Compare-split ribbons (open_files._draw_compare_ribbons) ──
         # Block colors by kind. Read live per frame.
         ribbon_insert_tint = (0.315, 0.928, 0.294)   # lines only in the buffer
         ribbon_delete_tint = (0.737, 0.76, 0.767)   # lines only in the reference
         ribbon_replace_tint = (0.294, 0.675, 0.928) # changed in place
+        # Merge mode (merge_files) colors: a CONFLICT region - a pending edit
+        # and an external edit touch the same original row and disagree.
+        # Red on purpose: the eye must land here first.
+        ribbon_conflict_tint = (0.93, 0.25, 0.25)
+        # A conflict region whose pending side already equals the external
+        # side (taken with the arrow, or edited to match) - no longer red.
+        ribbon_resolved_tint = (0.55, 0.85, 0.55)
         # Shared fill alpha for the block washes AND the seam band - same fill
         # so highlight → band → highlight reads as ONE continuous shape.
         ribbon_fill_alpha = 0.10
@@ -1569,6 +1589,35 @@ class Toggles:
 
         # Print provider/context tracebacks.
         debug_print = False
+
+
+    @defaults(tint=(0.85, 0.55, 0.35))
+    class InternetAccounts:
+        # The Anthropic "Sign in" button (Internet Accounts.py →
+        # fim_providers/anthropic_oauth.py): the same OAuth login that
+        # `ant auth login` performs, written as an SDK profile the
+        # anthropic client reads and refreshes for itself.
+        #
+        # OAuth client the login runs as - the official CLI's public id,
+        # so the profile it mints is one `ant` and the SDKs share/refresh.
+        anthropic_oauth_client_id = "41077d10-94b8-4194-be48-d251e9eb21b4"
+        # Console that hosts the /oauth/authorize consent page.
+        anthropic_console_url = "https://platform.claude.com"
+        # Scopes requested at login (space separated).
+        anthropic_oauth_scope = "user:profile user:inference user:developer"
+        # SDK profile the sign-in writes: ~/.config/anthropic/{configs,
+        # credentials}/<name>.json. Named - not "default" and never made the
+        # active profile - so Claude Code / a bare Anthropic() elsewhere keep
+        # their own login; the studio passes profile= explicitly. Extra
+        # Anthropic accounts use "<name>-<account id>" unless their Login
+        # profile field says otherwise.
+        anthropic_profile = "lsd"
+        # Give up waiting for the browser redirect after this long.
+        anthropic_login_timeout_s = 300.0
+        # The subscription row: while its usage panel is open and the
+        # window is repainted, re-fetch the limits once they are older than
+        # this (one GET /api/oauth/usage). Closed panel = no requests.
+        usage_stale_s = 300.0
 
 
     @defaults(tint=(0.63, 0.44, 0.2))

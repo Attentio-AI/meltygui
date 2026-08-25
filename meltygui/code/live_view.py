@@ -1169,8 +1169,11 @@ def _discover_store_owners():
     (the `_sites` cache holds it via Site.store_obj) with its whole store —
     14 GB of stacks in one session, reachable from nothing nameable.
     Unfreezes first: gc_manager freezes the boot generation and
-    gc.get_objects() skips frozen objects. Cleanup / OOM-time cost only
-    (~0.5 s)."""
+    gc.get_objects() skips frozen objects. OOM-time only (opt-in via
+    release_all_live_stores(discover=True)): the walk is O(the process
+    heap) — ~0.5 s for one session, but the model_server process keeps
+    prior sessions' graphs, so it grows with every launch. Never run it
+    on the session-teardown path."""
     import gc
     try:
         gc.unfreeze()
@@ -1189,7 +1192,7 @@ def _discover_store_owners():
     return found
 
 
-def release_all_live_stores():
+def release_all_live_stores(discover=False):
     """Drop EVERY live-view store: values, loop accumulators (the per-run
     stacks — gigabytes), labels, watchers; close/release every marker and
     value window that watched them (GL textures included, via
@@ -1197,14 +1200,26 @@ def release_all_live_stores():
     live set IS the VRAM, and a partial run's stacks + every window's pinned
     generation must go before anything can run again. Markers re-publish
     and windows re-fill on the next run; nothing is lost that a run doesn't
-    recreate. Returns the number of keys dropped. Safe from any thread."""
+    recreate. Returns the number of keys dropped. Safe from any thread.
+
+    Owners come from the `_store_owners` registry, which is complete for
+    this module instance: `_publish` registers on EVERY publish, and
+    `run_capture` / `adopt_live_store` register too. `discover=True` adds
+    the `_discover_store_owners` gc walk as a belt-and-braces fallback —
+    O(the whole process heap), and the model_server process carries prior
+    sessions' graphs (see gc_manager._boot_collect_and_freeze), so at
+    session teardown that walk grew with every launch: the multi-second
+    hang after "Cleaning CUDA context". Melty.cleanup therefore uses the
+    registry alone; the OOM responder, a rare recovery where a missed
+    14 GB store costs more than the walk, still discovers."""
     dropped = 0
     owners = list(_store_owners)
-    known = {id(o) for o in owners}
-    for o in _discover_store_owners():
-        if id(o) not in known:
-            owners.append(o)
-            _register_store_owner(o)
+    if discover:
+        known = {id(o) for o in owners}
+        for o in _discover_store_owners():
+            if id(o) not in known:
+                owners.append(o)
+                _register_store_owner(o)
     for owner in owners:
         try:
             store = vars(owner).get("__live_values__")

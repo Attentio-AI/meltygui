@@ -9228,13 +9228,21 @@ def draw_text(input_value: str, height=None,
         # Keyboard folding — Ctrl+Minus/Equal collapse/expand the scope at
         # the caret (repeated presses walk outward: Ctrl+- folds the next
         # enclosing open scope, Ctrl+= opens the folds in the next
-        # enclosing scope), Ctrl+Shift+Minus/Equal every ROOT scope. The events are
-        # hover-routed like any event param but gated on text focus (same
-        # rationale as Ctrl+B: only the focused editor may act on its caret).
-        # Resolved here, before the display build, for the same reason as the
-        # badge above - this frame's layout depends on the toggle.
+        # enclosing scope), Ctrl+Shift+Minus/Equal every ROOT scope. With a
+        # SELECTION all four act only INSIDE it - on the folds whose HEADER
+        # line the selection covers (the badges it sweeps over): Ctrl+-/=
+        # fold/open the outermost of those (one level per press), the Shift
+        # pair is collapse/expand-all restricted to them; the selection
+        # survives the reflow so a follow-up press can act on it again. A
+        # selection over no header line switches to the caret rules. The
+        # events are hover-routed like any event param but gated on text
+        # focus (same rationale as Ctrl+B - only the focused editor may act
+        # on its caret). Resolved here, before the display build, for the
+        # same reason as the badge click - this frame's layout depends on
+        # the toggle.
         _fold_kb_all, _cp_full, _fstarts = False, None, None
         _fold_old_dline = None      # caret's display line BEFORE the toggle
+        _fold_sel_full = None       # (start, end) of a kept selection, FULL buffer
         if ((ctrl_minus_down or ctrl_equal_down or ctrl_shift_minus_down
              or ctrl_shift_equal_down)
                 and (Melty.text_focused_ds is ds
@@ -9244,24 +9252,85 @@ def draw_text(input_value: str, height=None,
             _rngs = _fold_normalize_ranges(input_value.count('\n') + 1,
                                            fold_ranges)
             _fstarts = _line_starts(input_value)
-            # The caret lives in DISPLAY coords - last frame's layout maps it
-            # back to full-buffer coords (identity when nothing is collapsed).
-            _cp = min(ds.text_cursor_pos or 0, len(input_value))
+            # The caret and selection live in DISPLAY coords - last frame's
+            # layout maps them back to full-buffer coords (identity when
+            # nothing is collapsed).
             _pc = getattr(ds, '_fold_cache', None)
+            _pdisp = _pd2b = None
             if (_pc is not None and _pc[0] is input_value
                     and _pc[2][3] is not None):
                 _pdisp, _pd2b = _pc[2][0], _pc[2][3]
-                _cp = min(_cp, len(_pdisp))
-                _col = _cp - (_pdisp.rfind('\n', 0, _cp) + 1)
-                _dl = _pdisp.count('\n', 0, _cp)
-                _cline = _pd2b[min(_dl, len(_pd2b) - 1)]
-                _cp_full = _fstarts[_cline] + _col
-                _fold_old_dline = _dl
-            else:
-                _cline = input_value.count('\n', 0, _cp)
-                _cp_full = _cp
-                _fold_old_dline = _cline    # no layout last frame
-            if ctrl_shift_minus_down or ctrl_shift_equal_down:
+
+            def _disp_to_full(_off):
+                """Display offset → (full offset, full line, display line)."""
+                if _pd2b is None:                # identity layout last frame
+                    _off = min(_off, len(input_value))
+                    _ln = input_value.count('\n', 0, _off)
+                    return _off, _ln, _ln
+                _off = min(_off, len(_pdisp))
+                _col = _off - (_pdisp.rfind('\n', 0, _off) + 1)
+                _dl = _pdisp.count('\n', 0, _off)
+                _ln = _pd2b[min(_dl, len(_pd2b) - 1)]
+                return _fstarts[_ln] + _col, _ln, _dl
+
+            _cp_full, _cline, _fold_old_dline = _disp_to_full(
+                ds.text_cursor_pos or 0)
+            # Selection folds: the folds whose header line the selection
+            # covers. Empty → the caret rules below, unchanged.
+            _sel_folds = None
+            if _has_selection(ds):
+                _sel_fs, _sel_ls, _ = _disp_to_full(ds.text_selection_start)
+                _sel_fe, _sel_le, _ = _disp_to_full(ds.text_selection_end)
+                _sel_lo, _sel_hi = min(_sel_ls, _sel_le), max(_sel_ls, _sel_le)
+                # An end sitting at column 0 (the drag ran onto the next
+                # line) doesn't cover that line.
+                if _sel_hi > _sel_lo and max(_sel_fs, _sel_fe) == _fstarts[_sel_hi]:
+                    _sel_hi -= 1
+                _sel_folds = [r for r in _rngs if _sel_lo <= r[0] <= _sel_hi]
+                if _sel_folds:
+                    _fold_sel_full = (_sel_fs, _sel_fe)
+                else:
+                    _sel_folds = None
+            if _sel_folds is not None:
+                # Outermost of the covered folds = those not nested in
+                # another covered fold (sorted, strictly nested - same walk
+                # as the root scan below).
+                _skip = set(_fold_default_col or ())
+                _outer, _open_end = [], -1
+                for _r in _sel_folds:
+                    if _r[0] > _open_end:
+                        _outer.append(_r)
+                        _open_end = _r[1]
+                if ctrl_shift_minus_down:
+                    # Collapse-all inside: the outermost plus every
+                    # default-collapsed run covered (nested ones too - the
+                    # same asymmetry as the whole-buffer variant).
+                    _targets = set(_outer) | (_skip & set(_sel_folds))
+                    ds._fold_collapsed.update(_targets)
+                elif ctrl_minus_down:
+                    _targets = set(_outer)
+                    ds._fold_collapsed.update(_targets)
+                elif ctrl_shift_equal_down:
+                    # Expand-all inside: everything covered except the
+                    # default-collapsed runs.
+                    _targets = {r for r in _sel_folds if r not in _skip}
+                    ds._fold_collapsed.difference_update(_targets)
+                else:
+                    # One level out: the VISIBLE collapsed covered folds -
+                    # those not hidden inside another collapsed covered
+                    # fold. Default-collapsed runs included: a selection
+                    # over one is the caret sitting ON it.
+                    _targets, _open_end = set(), -1
+                    for _r in _sel_folds:
+                        if _r in ds._fold_collapsed and _r[0] > _open_end:
+                            _targets.add(_r)
+                            _open_end = _r[1]
+                    ds._fold_collapsed.difference_update(_targets)
+                ds._fold_search_exp.difference_update(_targets)
+                _fold_kb_all = True
+                ds.invalidate()
+                request_render()
+            elif ctrl_shift_minus_down or ctrl_shift_equal_down:
                 # Root scopes = enclosing ranges not nested in another
                 # (sorted -> strict nesting only - a range starting past the
                 # open enclosing end is a new root).
@@ -9444,19 +9513,26 @@ def draw_text(input_value: str, height=None,
             # full-char offset into the NEW layout instead. A caret inside a
             # now-hidden line clamps to its covering fold header's end.
             if _fold_d2b is None:
-                ds.text_cursor_pos = _cp_full
+                def _full_to_disp(_off):
+                    return _off
             else:
                 _dstarts = _line_starts(_disp)
-                _b = bisect.bisect_right(_fstarts, _cp_full) - 1
-                _i = max(bisect.bisect_right(_fold_d2b, _b) - 1, 0)
-                if _fold_d2b[_i] == _b:
-                    ds.text_cursor_pos = (_dstarts[_i]
-                                          + (_cp_full - _fstarts[_b]))
-                else:
-                    ds.text_cursor_pos = (_dstarts[_i + 1] - 1
-                                          if _i + 1 < len(_dstarts)
-                                          else len(_disp))
-            ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
+
+                def _full_to_disp(_off):
+                    _b = bisect.bisect_right(_fstarts, _off) - 1
+                    _i = max(bisect.bisect_right(_fold_d2b, _b) - 1, 0)
+                    if _fold_d2b[_i] == _b:
+                        return _dstarts[_i] + (_off - _fstarts[_b])
+                    return (_dstarts[_i + 1] - 1 if _i + 1 < len(_dstarts)
+                            else len(_disp))
+            ds.text_cursor_pos = _full_to_disp(_cp_full)
+            if _fold_sel_full is not None:
+                # Selection-toped fold: the selection rides along so the
+                # next press can act on the same span again.
+                ds.text_selection_start = _full_to_disp(_fold_sel_full[0])
+                ds.text_selection_end = _full_to_disp(_fold_sel_full[1])
+            else:
+                ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
             # Anchor the VIEW to the caret: collapse/expand-all reflows the
             # whole layout, so a kept scroll offset lands somewhere random.
             # Stash (new display line, old display line, pre-expand scroll):
@@ -12074,7 +12150,9 @@ def draw_text(input_value: str, height=None,
     # content_width reserves up scroll_bar_width + margin for the scroll bar.
     # While a click-drag is in flight the wrapper clip removes that reserve,
     # so widen the body clip to match and let glyphs run under the bar.
-    if Melty.on_drag:
+    # freeze_resize panes never gave anything up: content_width already
+    # reaches the right edge and the bar floats over it (overlay list).
+    if Melty.on_drag and not getattr(draw_state, "freeze_resize", False):
         rect_max_x += scroll_bar_width
     rect_max_y = draw_state.abs_clip_rect[3]
 

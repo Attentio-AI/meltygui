@@ -31,31 +31,46 @@ Rules:
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9_+-]*\n(.*?)\n?```\s*$", re.S)
 
 
-def has_credentials(account="default") -> bool:
-    """True when Claude can be reached at all: an account key, an
-    ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN env var, or an `ant auth login`
-    profile on disk. Cheap — filesystem + env only, no import, no network."""
+def account_client_kwargs(account="default") -> dict:
+    """The `anthropic.Anthropic(...)` kwargs the Internet Accounts entry
+    `account` supplies: `api_key` (a pasted key), else `profile` (the
+    browser sign-in's SDK profile), plus `base_url`. {} when the entry has
+    neither — the SDK's own env / active-profile chain then applies. No
+    SDK import, no network."""
     try:
-        from src.lsd.gl_gui.view.playground.internet_accounts import account_field
-        if account_field("anthropic", account, "api_key"):
-            return True
+        from src.lsd.gl_gui.view.playground.internet_accounts import KINDS, account as account_entry
+        entry = account_entry("anthropic", account)
     except Exception:
-        pass
+        return {}
+    if entry is None:
+        return {}
+    return KINDS["anthropic"].client_kwargs(entry)
+
+
+def has_credentials(account="default") -> bool:
+    """True when Claude can be reached at all: an account key or browser
+    sign-in, an ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN env var, or an
+    ACTIVE `ant auth login` profile on disk (the one a bare client picks
+    up). Cheap — filesystem + env only, no import, no network."""
+    kwargs = account_client_kwargs(account)
+    if kwargs.get("api_key") or kwargs.get("profile"):
+        return True
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return True
-    d = os.environ.get("ANTHROPIC_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".config", "anthropic")
-    creds = os.path.join(d, "credentials")
+    from src.lsd.gl_gui.fim_providers.anthropic_oauth import active_profile_present
     try:
-        return os.path.isdir(creds) and any(f.endswith(".json") for f in os.listdir(creds))
+        return active_profile_present()
     except OSError:
         return False
 
 
 class ClaudeSession(FimSession):
     """One Anthropic client. Credentials come from the Internet Accounts
-    entry `account` (kind "anthropic": `api_key`, `base_url`); with no key
-    stored the SDK's normal resolution applies (ANTHROPIC_API_KEY /
-    ANTHROPIC_AUTH_TOKEN env, an `ant auth login` profile).
+    entry `account` (kind "anthropic"): a pasted `api_key`, else the
+    browser sign-in's SDK `profile` (the client refreshes its token by
+    itself), plus `base_url`; with neither stored the SDK's normal
+    resolution applies (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN env, the
+    active `ant auth login` profile).
 
     Claude is NOT loaded (no `import anthropic`, no client) unless a
     credential exists — construction raises early otherwise, so a studio
@@ -65,14 +80,10 @@ class ClaudeSession(FimSession):
     def __init__(self, account="default", base_url=None, timeout_s=30.0):
         self.account = account
         if not has_credentials(account):
-            raise RuntimeError("no Anthropic API key — add one in Internet Accounts")
+            raise RuntimeError("no Anthropic sign-in or API key — Internet Accounts → Sign in")
         import anthropic
-        from src.lsd.gl_gui.view.playground.internet_accounts import account_field
-        key = account_field("anthropic", account, "api_key")
-        base_url = base_url or account_field("anthropic", account, "base_url")
         kw = {"timeout": timeout_s, "max_retries": 1}
-        if key:
-            kw["api_key"] = key
+        kw.update(account_client_kwargs(account))
         if base_url:
             kw["base_url"] = base_url
         self.client = anthropic.Anthropic(**kw)

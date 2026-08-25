@@ -871,7 +871,7 @@ def _oom_cleanup(where):
     dropped = 0
     try:
         from src.lsd.gl_gui.view.core_conversion.live_view import release_all_live_stores
-        dropped = release_all_live_stores()
+        dropped = release_all_live_stores(discover=True)
     except Exception as e:
         print(f"[gc] oom: release_all_live_stores failed: {e!r}")
     for hook in list(OOM_RELEASE_HOOKS):

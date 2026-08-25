@@ -1,5 +1,6 @@
 import collections
 import time
+import weakref
 from enum import Enum
 
 import imgui
@@ -113,7 +114,11 @@ class UndoStack:
         group = self.redo_stack.pop()
         for change in reversed(group):   # restore original append order
             self.history.append(change)
-        for change in group:
+        # Replay in the order the changes were recorded (undo walked them
+        # newest-first). Two changes in one group that affect the same target
+        # (a tab switch and the caret placed by it) must end where the LATER one
+        # left it, so the last applied is the newest.
+        for change in reversed(group):
             change.apply(undo=False)
 
 
@@ -136,6 +141,92 @@ class NavChange(Change):
 
     def apply(self, undo):
         NavUndo._apply_location(self.old if undo else self.new)
+
+    def file_location(self, undo):
+        """The (path, line, instance) this side lands in (dock tooltips /
+        tints), or None."""
+        return self.old if undo else self.new
+
+
+class CaretLocation:
+    """Where the text caret sits: a focused draw_text and its caret /
+    selection offsets. `tile_id` is the identity used for equality and for
+    resolving the LIVE draw_state on replay (a rebuilt tile hands out a fresh
+    draw_state object for the same tile — the weakref is only the fallback).
+    `path`/`instance` are set when the view is a code-editor pane (the tab
+    to select and the editor window to raise on replay); `line` is the
+    FULL-buffer caret line for coalescing and the dock's target tooltip."""
+
+    __slots__ = ("draw_state_ref", "tile_id", "cursor", "selection_start",
+                 "selection_end", "path", "instance", "line")
+
+    def __init__(self, draw_state, cursor, selection_start, selection_end,
+                 path=None, instance=0, line=None):
+        self.draw_state_ref = weakref.ref(draw_state)
+        self.tile_id = draw_state._tile_id
+        self.cursor = cursor
+        self.selection_start = selection_start
+        self.selection_end = selection_end
+        self.path = path
+        self.instance = instance
+        self.line = line
+
+    @property
+    def key(self):
+        return (self.tile_id, self.cursor, self.selection_start,
+                self.selection_end)
+
+    def __eq__(self, other):
+        return isinstance(other, CaretLocation) and self.key == other.key
+
+    def __hash__(self):
+        return hash(self.key)
+
+    def draw_state(self):
+        """The live draw_state for this tile — the cache's current object
+        first (rebuilt tiles), the recorded one as fallback, None when the
+        view is gone."""
+        cache = getattr(Core.melty, "cache", None)
+        live = None
+        if cache is not None and self.tile_id is not None:
+            live = cache.key_to_draw_state.get(self.tile_id)
+        return live if live is not None else self.draw_state_ref()
+
+    def __repr__(self):
+        if self.path:
+            where = self.path.rsplit("/", 1)[-1]
+            return f"{where}:{self.line + 1}" if self.line is not None else where
+        draw_state = self.draw_state_ref()
+        name = str(getattr(draw_state, "name", "?") or "?").split("##")[0]
+        return f"{name}@{self.cursor}"
+
+
+class CaretChange(Change):
+    """A caret / text-focus step: `old`/`new` are CaretLocations — the
+    focused draw_text and where its caret sat. Consecutive small moves in the
+    same view fold into one change (NavUndo.record_caret), so an arrow-key
+    walk is one step back. No draw_state on the change itself: replay resolves
+    the LIVE view through the location (NavUndo._apply_caret) and writes the
+    caret + focus directly, summoning the view's tab / window first."""
+
+    def __init__(self, old_loc, new_loc, t=0.0, group_id=0, frame=0):
+        super().__init__(None, old_loc, new_loc, t=t, group_id=group_id,
+                         frame=frame)
+
+    @property
+    def display_name(self):
+        return "caret"
+
+    def apply(self, undo):
+        NavUndo._apply_caret(self.old if undo else self.new)
+
+    def file_location(self, undo):
+        location = self.old if undo else self.new
+        if location is None or not location.path:
+            return None
+        return (location.path,
+                None if location.line is None else location.line + 1,
+                location.instance)
 
 
 class WindowChange(Change):
@@ -392,10 +483,12 @@ class UndoManager:
 class NavUndo:
     """The navigation timeline — a separate UndoStack from text edits, so
     stepping back through WHERE you were never touches WHAT you typed.
-    Records location moves (editor tab switches, jump-tos) and window
-    open/close toggles. Driven by Ctrl+Shift+Left/Right (root handler in
-    new_core_view) and the Fast Dock back/forward buttons. Gated on
-    Toggles.CodeEditor.undo_navigation."""
+    Records location moves (editor tab switches, jump-tos), window
+    open/close toggles, and caret / text-focus steps (poll_caret, once per
+    frame from Melty.end_frame). Driven by Ctrl+Shift+Left/Right (root
+    handler in new_core_view) and the Fast Dock back/forward buttons. Gated
+    on Toggles.CodeEditor.undo_navigation (caret steps additionally on
+    undo_navigation_caret)."""
 
     stack = UndoStack("navigation")
 
@@ -404,6 +497,15 @@ class NavUndo:
     # record fresh entries.
     _restoring = False
 
+    # Caret detector state: where the focused draw_text's caret was at the
+    # last poll (a CaretLocation), and the frame up to which caret moves are
+    # NOT recorded - armed by every other record_* (a jump / tab switch moves
+    # the caret itself; the nav step already covers it), by the jump
+    # consumer in draw_code_editor (quiet_caret), and by undo/redo (a replay
+    # moves the caret too).
+    _last_caret = None
+    _caret_quiet_until = -1
+
     @classmethod
     def _recordable(cls):
         from src.lsd.gl_gui.toggles import Toggles
@@ -411,11 +513,22 @@ class NavUndo:
                 and Core.melty.frame_count >= UndoManager.settle_for)
 
     @classmethod
+    def quiet_caret(cls, frames=None):
+        """Don't record caret moves for the next `frames` frames (default
+        UndoManager.GROUP_FRAME_WINDOW): the move about to happen belongs to
+        a navigation step that is recorded (or replayed) on its own."""
+        if frames is None:
+            frames = UndoManager.GROUP_FRAME_WINDOW
+        cls._caret_quiet_until = max(cls._caret_quiet_until,
+                                     Core.melty.frame_count + frames)
+
+    @classmethod
     def record_location(cls, old_loc, new_loc):
         """Push a location step. Locations are (path, line, instance) tuples
         (line may be None; instance is which code-editor window — replay must
         land in the SAME window, not the primary). Each step is its own
         group."""
+        cls.quiet_caret()
         if not cls._recordable():
             return
         if old_loc == new_loc:
@@ -434,6 +547,7 @@ class NavUndo:
     @classmethod
     def record_compare(cls, instance, old_token, new_token):
         """Push a Compare-With selection step (editor dropdown / clear ×)."""
+        cls.quiet_caret()
         if not cls._recordable() or old_token == new_token:
             return
         cls.stack.push(CompareChange(instance, old_token, new_token,
@@ -445,12 +559,177 @@ class NavUndo:
     def record_window(cls, window_ds, closed_before, closed_after):
         """Push a window open/close step (the user toggled `closed` — dock row
         click, chrome ×)."""
+        cls.quiet_caret()
         if not cls._recordable() or closed_before == closed_after:
             return
         cls.stack.push(WindowChange(window_ds, closed_before, closed_after,
                                     t=time.time(),
                                     group_id=cls.stack.new_group_id(),
                                     frame=Core.melty.frame_count))
+
+    # ── Caret / text-focus detection ─────────────────────────────────────────
+
+    @classmethod
+    def poll_caret(cls):
+        """Once per frame (Melty.end_frame, after apply_move_to_front settled
+        text focus): compare the focused draw_text's caret with the last
+        poll and record a CaretChange when it moved — a caret move inside
+        one view, or text focus hopping to another view (the old side is
+        the view that HELD focus last, even if focus was cleared meanwhile).
+        Cheap on the steady state: one 4-tuple compare. Never records
+        during the quiet frames a jump / tab switch / replay armed, nor the
+        caret move of a text EDIT (the edit stack owns that — typing would
+        otherwise leave a nav step at every pause)."""
+        draw_state = Core.melty.text_focused_ds
+        if draw_state is None or getattr(draw_state, "is_search_box", False):
+            return
+        last = cls._last_caret
+        key = (draw_state._tile_id, draw_state.text_cursor_pos,
+               draw_state.text_selection_start, draw_state.text_selection_end)
+        if last is not None and last.key == key:
+            return
+        current = cls._caret_location(draw_state)
+        cls._last_caret = current
+        if last is None or not cls._recordable():
+            return
+        from src.lsd.gl_gui.toggles import Toggles
+        if not Toggles.CodeEditor.undo_navigation_caret:
+            return
+        frame = Core.melty.frame_count
+        if frame <= cls._caret_quiet_until:
+            return
+        if cls._edited_recently(draw_state, frame):
+            return
+        cls.record_caret(last, current)
+
+    @classmethod
+    def _caret_location(cls, draw_state):
+        """Snapshot `draw_state`'s caret as a CaretLocation. A code-editor pane (the
+        selected tab of an editor instance, per open_files._active_editors)
+        carries its path/instance so replay can re-select the tab, and its
+        FULL-buffer caret line (the caret offset lives in fold display
+        space). Other draw_texts count lines in their raw input when it's a
+        string; line None = coalesce on time alone."""
+        pos = draw_state.text_cursor_pos
+        path, instance, text = None, 0, None
+        from src.lsd.gl_gui.view.playground.open_files import _active_editors
+        for editor_instance, (editor_path, pane, held_text) in _active_editors.items():
+            if pane is draw_state:
+                path, instance, text = editor_path, editor_instance, held_text
+                break
+        line = None
+        if path is not None and isinstance(text, str):
+            from src.lsd.gl_gui.view.core_views.text_editor import fold_buffer_line_at
+            line = fold_buffer_line_at(draw_state, text, max(0, min(pos, len(text))))
+        else:
+            raw = getattr(draw_state, "_raw_input_value", None)
+            if isinstance(raw, str):
+                line = raw.count("\n", 0, max(0, min(pos, len(raw))))
+        return CaretLocation(draw_state, pos, draw_state.text_selection_start,
+                             draw_state.text_selection_end, path=path,
+                             instance=instance, line=line)
+
+    @classmethod
+    def _edited_recently(cls, draw_state, frame):
+        """Whether the edit stack recorded a change to `draw_state` within the last
+        GROUP_FRAME_WINDOW frames — i.e. this caret move came from typing /
+        deleting, not from navigating."""
+        seen = 0
+        for change in reversed(UndoManager.history):
+            if frame - change.frame > UndoManager.GROUP_FRAME_WINDOW:
+                break
+            if change.draw_state is draw_state:
+                return True
+            seen += 1
+            if seen >= 8:
+                break
+        return False
+
+    @classmethod
+    def record_caret(cls, old_loc, new_loc):
+        """Push a caret step, or fold it into the newest one: consecutive
+        moves in the SAME view within Toggles.CodeEditor.nav_caret_coalesce_s
+        seconds of each other that stay within nav_caret_step_lines lines of
+        where the step already ended advance that step's `new` (an arrow-key
+        walk is one step back), while `old` stays pinned to where the walk
+        began. A far move (a click elsewhere, Ctrl+End) or a pause starts a
+        new step; so does any move after an undo (a fold would keep a
+        diverged redo alive)."""
+        if old_loc == new_loc:
+            return
+        from src.lsd.gl_gui.toggles import Toggles
+        now = time.time()
+        frame = Core.melty.frame_count
+        top = cls.stack.history[-1] if cls.stack.history else None
+        if (isinstance(top, CaretChange) and not cls.stack.redo_stack
+                and top.new.tile_id == new_loc.tile_id == old_loc.tile_id
+                and now - top.t <= Toggles.CodeEditor.nav_caret_coalesce_s
+                and (top.new.line is None or new_loc.line is None
+                     or abs(top.new.line - new_loc.line)
+                     <= Toggles.CodeEditor.nav_caret_step_lines)):
+            top.new = new_loc
+            top.t = now
+            top.frame = frame
+            return
+        cls.stack.push(CaretChange(old_loc, new_loc, t=now,
+                                   group_id=cls.stack.new_group_id(),
+                                   frame=frame))
+
+    @classmethod
+    def _apply_caret(cls, location):
+        """Replay one side of a CaretChange: bring the view on screen (its
+        editor tab / window), put the caret back and hand it text focus.
+        The view's own caret-follow scroll brings the caret into view on its
+        next body run (text_cursor_pos != text_prev_cursor_pos)."""
+        draw_state = location.draw_state()
+        if draw_state is None:
+            return
+        from src.lsd.gl_gui.view.playground.open_files import (
+            _active_editors, editor_window_draw_state)
+        if location.path:
+            active = _active_editors.get(location.instance)
+            if active is None or active[0] != location.path:
+                # Another tab was selected in that editor instance: a line-less
+                # location replay selects it (and raises its window) without
+                # touching the caret - the write below is what lands it.
+                cls._apply_location((location.path, None, location.instance))
+            else:
+                win = editor_window_draw_state(location.instance)
+                if win is not None:
+                    win.closed = False
+                    Core.melty.move_window_to_front(win)
+        else:
+            # Reopen any closed window on the view's parent chain, then raise
+            # the innermost one (move_window_to_front raises its whole chain).
+            innermost = None
+            node, steps = draw_state.parent_window, 0
+            while node is not None and steps < 16:
+                if innermost is None:
+                    innermost = node
+                if node.closed:
+                    node.closed = False
+                    if Core.melty.cache is not None and node._tile_id is not None:
+                        Core.melty.cache.invalidate_up(node._tile_id, force=True,
+                                                       max_depth=4)
+                next_window = node.parent_window
+                if next_window is node:
+                    break
+                node, steps = next_window, steps + 1
+            if innermost is not None:
+                Core.melty.move_window_to_front(innermost)
+        draw_state.text_cursor_pos = location.cursor
+        draw_state.text_selection_start = location.selection_start
+        draw_state.text_selection_end = location.selection_end
+        draw_state.text_cursor_blink_time = time.time()
+        Core.melty.text_focused_ds = draw_state
+        Core.melty._text_focus_grant_frame = Core.melty.frame_count
+        # The replayed position is the new location - next poll must not read
+        # it back as a fresh move (quiet only all the frames in between).
+        cls._last_caret = location
+        cache = getattr(Core.melty, "cache", None)
+        if cache is not None and draw_state._tile_id is not None:
+            cache.invalidate_up(draw_state._tile_id, force=True)
+        request_render()
 
     @classmethod
     def _apply_location(cls, loc):
@@ -502,6 +781,7 @@ class NavUndo:
     @classmethod
     def undo(cls):
         cls._restoring = True
+        cls.quiet_caret()
         try:
             cls.stack.undo()
         finally:
@@ -510,6 +790,7 @@ class NavUndo:
     @classmethod
     def redo(cls):
         cls._restoring = True
+        cls.quiet_caret()
         try:
             cls.stack.redo()
         finally:

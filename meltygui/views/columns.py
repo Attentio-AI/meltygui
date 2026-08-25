@@ -79,6 +79,25 @@ def _seed_edges(column_widths, n_cols, content_width, base=0.0):
     return edges
 
 
+def _clamp_interior(edges):
+    """Pack out-of-frame interior edges back inside the far edges at
+    MIN_COLUMN_WIDTH spacing. Edges only ever move on drag CONTACT, so an
+    interior edge that lands OUTSIDE its frame — edges persisted from a
+    wider window, a width change that ran while the row wasn't registered
+    — would otherwise stay there for good: it sorts past the frame edge in
+    the flat solve (never pushed) and its grab handle sits off-window where
+    no drag can reach it. In-frame, in-order edges are untouched."""
+    count = len(edges)
+    for m in range(count - 2, 0, -1):
+        limit = edges[m + 1]["x"] - MIN_COLUMN_WIDTH
+        if edges[m]["x"] > limit:
+            edges[m]["x"] = float(limit)
+    for m in range(1, count - 1):
+        floor = edges[m - 1]["x"] + MIN_COLUMN_WIDTH
+        if edges[m]["x"] < floor:
+            edges[m]["x"] = float(floor)
+
+
 def _ensure_window_state(window):
     if getattr(window, "_edge_views", None) is None:
         window._edge_views = {}
@@ -177,22 +196,6 @@ def _solve_collisions(window):
         cursor_driven = len(item) > 2 and bool(item[2])
         flat.sort(key=lambda e: e["x"])
         k = next((i for i, e in enumerate(flat) if e is edge), None)
-        # TEMP edge-debug: snapshot the flat population per applied drag.
-        # 'F' marks the window's frame edges, '*' the dragged edge - if the
-        # contact push never reaches an F on the left, adoption is broken
-        # (the row's far edge isn't the frame edge object).
-        try:
-            with open("/tmp/lsd_edge_debug.log", "a") as _f:
-                snap = " ".join(
-                    f"{'*' if e is edge else ''}"
-                    f"{'F' if id(e) in frame_ids else ''}{e['x']:.0f}"
-                    for e in flat)
-                _f.write(f"drag k={k} target={target:.0f} "
-                         f"win={getattr(window, 'name', window.id)} "
-                         f"rows={list(window._edge_views.keys())} "
-                         f"flat=[{snap}]\n")
-        except Exception:
-            pass
         if k is None or target == edge["x"]:
             continue
         if cursor_driven:
@@ -200,8 +203,34 @@ def _solve_collisions(window):
         else:
             walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
         _drag_edge(flat, k, target, walls=walls)
+        if cursor_driven and id(edge) in frame_ids:
+            _hold_frame_min_width(window, edge)
         moved = True
     return moved
+
+
+def _hold_frame_min_width(window, dragged):
+    """A cursor-driven FRAME edge dragged past the window's min_width pushes
+    the OTHER frame edge along — the window slides (right edge dragged left)
+    or grows (left edge dragged right) — instead of stopping short of the
+    cursor. Without this the solve left the frame pair narrower than
+    min_width, the wrapper's `width = max(width, min_width)` re-stamp (after
+    the pass) widened it again, and the next pass's foreign-width invariant
+    dragged the cursor edge BACK every frame: the right edge yanked between
+    the cursor and min_width while the left edge kept sliding, width
+    ratcheting up mid-drag. Interior edges need no cascade: the pushed edge
+    only ever moves AWAY from them."""
+    fe = getattr(window, "_frame_edges", None)
+    if not fe:
+        return
+    left, right = fe
+    floor = float(window.min_width or 0)
+    if right["x"] - left["x"] >= floor:
+        return
+    if dragged is right:
+        left["x"] = right["x"] - floor
+    else:
+        right["x"] = left["x"] + floor
 
 
 def _drag_live():
@@ -352,15 +381,6 @@ def window_edge_pass(window):
 
     moved = _solve_collisions(window)
 
-    # TEMP edge-debug: rebase positions (only while something moved).
-    if moved:
-        try:
-            with open("/tmp/lsd_edge_debug.log", "a") as _f:
-                _f.write(f"  post-solve left={left['x']:.1f} "
-                         f"right={right['x']:.1f} width={window.width} "
-                         f"pos={window.window_pos}\n")
-        except Exception:
-            pass
 
     # Line the WINDOW up with its frame edges: the same rule cells use.
     d_left = left["x"]
@@ -565,22 +585,6 @@ class ColumnLayout:
             frame_edges = getattr(window, "_frame_edges", None)
             if frame_edges:
                 left_edge, right_edge = frame_edges
-        # For edge-debug: log the adoption outcome whenever it changes.
-        _adopt = (left_edge is not None
-                  and left_edge is (getattr(window, "_frame_edges", None) or [None])[0],
-                  _has_columns_ancestor(draw_state),
-                  getattr(window, "_frame_edges", None) is not None,
-                  window is draw_state)
-        if getattr(draw_state, "_edge_debug_adopt", None) != _adopt:
-            draw_state._edge_debug_adopt = _adopt
-            try:
-                with open("/tmp/lsd_edge_debug.log", "a") as _f:
-                    _f.write(f"ctor n_cols={n_cols} adopted_frame={_adopt[0]} "
-                             f"cols_ancestor={_adopt[1]} have_fe={_adopt[2]} "
-                             f"ds_is_window={_adopt[3]} "
-                             f"win={getattr(window, 'name', window.id)}\n")
-            except Exception:
-                pass
 
         stored = column_edges if isinstance(column_edges, list) else []
         ok = (len(stored) == n_lines and
@@ -608,6 +612,10 @@ class ColumnLayout:
         if right_edge is not None:
             edges[-1] = right_edge
             owned[-1] = False
+        # Interior dividers always stay inside the frame - see
+        # _clamp_interior. (Pixel widths otherwise: a frame resize only
+        # affects the divider it touches.)
+        _clamp_interior(edges)
         if seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
             # Stamp so auto-state persists the list; in-place x mutations on
             # the dicts persist without re-stamping.
@@ -776,9 +784,17 @@ class ColumnLayout:
         Core.melty.push_clip((x0, y0, x0 + snap_int(inner_w),
                               snap_int(self.top) + snap_int(clip_h)
                               - snap_int(pad_y)))
+        # The group makes the cell origin the LINE START of everything
+        # inside: without it only the first item sits at x0 because imgui's
+        # newline returns the cursor to the imgui window's content x, so a
+        # cell stacking multiple rows (eg compare split's inner column) drew
+        # every row after the first left of the cell's clip and lost its
+        # leading pixels (the row chevrons).
+        imgui.begin_group()
         try:
             yield inner_w
         finally:
+            imgui.end_group()
             Core.melty.pop_clip()
             bottom = imgui.get_cursor_screen_pos()[1]
             self._bottom = max(self._bottom, bottom + pad_y)

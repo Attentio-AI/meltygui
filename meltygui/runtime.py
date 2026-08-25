@@ -713,6 +713,23 @@ class Melty:
     layers = []
     active_layer = 0
     active_layer_stack = []
+    # Paint order rank of the window being drawn: the LAYER term of the z
+    # formula (z_pos = paint_rank * max_depth + depth), and so of every
+    # input event, blit mask rank and shadow depth derived from it.
+    # active_layer stays the layer BUCKET (+ in-bucket index) and keeps
+    # feeding draw_state.layer, the front-root test and drag-drop
+    # re-queueing. The rank is monotonic over the dispatch loop's paint order
+    # (next_paint_rank: max(bucket offset, previous rank + 1)), so a window
+    # painted later ALWAYS ranks higher. A bucket value alone can't promise
+    # that parent siblings are over idx + d_idx and the bucket a grandchild
+    # lands in (its abs_layer derives from the parent's paint_layer, not the
+    # parent's in-bucket index), and the bucket clamp at nested_layer_max - 1
+    # folds deep chains into one bucket - that way the parent's blocker
+    # outranked its own child in the input handler and the child never got
+    # an event (and its shadow read as inset). Equals active_layer whenever
+    # no bucket spills.
+    paint_rank = 0
+    _last_paint_rank = -1
     layer_inc = 1
 
     bg_depth = 0
@@ -1158,6 +1175,46 @@ class Melty:
         cls._bvh_id_to_ds.pop(draw_state._bvh_id, None)
 
     @classmethod
+    def bvh_evict_window(cls, window_ds):
+        """Drop the boxes of a window AND of every view indexed under it (any
+        draw_state whose parent_window chain reaches it) — for a window that
+        stops rendering WITHOUT closing.
+
+        The two lazy paths can't reach such a window: bvh_sync only runs when
+        a view renders, and bvh_query only evicts hits that are closed /
+        abs_closed. A nested window that is merely DISCARDED — dropped from
+        root_draw_states by apply_refresh_nested_windows on an editor tab
+        switch or file close, or released with a deleted root — is neither,
+        so its boxes stayed in the index for the whole session, front-most by
+        z_pos: an invisible window that won every hit test under it
+        (Melty.hovered_ds / bvh_hover_ids), so the views actually drawn there
+        never passed hover_eligible and never reached the input handler. The
+        2026-08-24 Code Editor "top-left is dead" was a discarded 1421x1322
+        live-value window (causal_mask) whose editor tab had been switched
+        away. Rids are kept: a window that comes back re-syncs on its next
+        render. Bumps _bvh_gen — unlike bvh_evict's lazy path these hits were
+        never filtered out of a query, so this frame's memo must drop."""
+        if window_ds is None:
+            return
+        evicted = 0
+        for ds in list(cls._bvh_id_to_ds.values()):
+            node = ds
+            for _ in range(32):
+                if node is None:
+                    break
+                if node is window_ds:
+                    cls.bvh_evict(ds)
+                    evicted += 1
+                    break
+                nxt = node.parent_window
+                if nxt is node:
+                    break
+                node = nxt
+        if evicted:
+            cls._bvh_gen += 1
+        return evicted
+
+    @classmethod
     def _resolve_channel_command_ranges(cls, overlay, idx_boundaries):
         """Partition the merged index buffer into per-channel index ranges.
 
@@ -1232,6 +1289,17 @@ class Melty:
             return min(cls.nested_layer_max - 1, parent_layer + layer_offset)
         return min(cls.nested_layer_max - 1,
                    cls.nested_layer_base + parent_layer + layer_offset)
+
+    @classmethod
+    def next_paint_rank(cls, bucket_value):
+        """Rank for the next window the dispatch loop paints (see
+        paint_rank): never below its bucket value, so ranks equal
+        active_layer while no bucket spills, and always above the window
+        painted before it. Reset (_last_paint_rank = -1) at the top of the
+        dispatch loop."""
+        rank = max(bucket_value, cls._last_paint_rank + 1)
+        cls._last_paint_rank = rank
+        return rank
 
     @classmethod
     def emphasize(cls, key, rect, tint=(1.0, 0.85, 0.3), auto_fade=True,
@@ -1968,6 +2036,7 @@ class Melty:
         Melty.bg_stack = [(0, 0, 0)]
 
         Melty.active_layer = 0
+        Melty.paint_rank = 0
         cls.frame_count += 1
         cls.blocker_hovered = False
 
@@ -3035,6 +3104,14 @@ class Melty:
                     cls.release_window_tree(child, unregister_nested)
             if unregister_nested:
                 cls.root_draw_states.pop(ds.id, None)
+        # Hit-test boxes go with the window: a released window no longer
+        # renders, so nothing else would ever sync its (and its content's)
+        # boxes out - and a DISCARDED one isn't closed, so bvh_query's lazy
+        # evict never fires for it either. See bvh_evict_window.
+        try:
+            cls.bvh_evict_window(ds)
+        except Exception:
+            pass
         try:
             from src.lsd.gl_gui.gl_state import GLState
             GLState.on_window_deleted(ds)
@@ -3132,6 +3209,12 @@ class Melty:
             request_render()
 
         cls.apply_move_to_front()
+
+        # Caret / text-focus navigation steps: text focus is settled for the
+        # frame now (apply_move_to_front may just have cleared it), so this
+        # is where the undo swaps the focused caret with last-frame's.
+        from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+        NavUndo.poll_caret()
 
         # Drain GL resources queued for deletion (released GLStates, shader
         # programs invalidated by an edit) - must run on the render thread with
@@ -3342,6 +3425,7 @@ class Melty:
                     if vid.endswith(suffix):
                         dragging_tiles.add(vid[:-len(suffix)])
 
+        cls._last_paint_rank = -1
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
             imgui.set_cursor_screen_pos((0, 0))
@@ -3360,6 +3444,7 @@ class Melty:
                     # unique is registered in the wrapper) is never drawn
                     # again - double-queuing must not cause double-drawing.
                     if draw_state.unique not in cls.seen_unique:
+                        Melty.paint_rank = cls.next_paint_rank(idx)
                         cls.draw(draw_state)
 
             Melty.depth = 0
@@ -3380,12 +3465,13 @@ class Melty:
                 #                            f"view_mask_{draw_state.id}", 4)
 
                 Melty.active_layer = idx + (d_idx)
+                Melty.paint_rank = cls.next_paint_rank(Melty.active_layer)
                 draw_state._nested_index = (d_idx)
-                Melty.z_pos = (Melty.active_layer * Melty.max_depth) + Melty.depth
+                Melty.z_pos = (Melty.paint_rank * Melty.max_depth) + Melty.depth
 
                 draw_state.layer = Melty.active_layer
                 draw_state.z_pos = Melty.z_pos
-                draw_state.depth_and_layer = (Melty.shadow_depth, Melty.active_layer)
+                draw_state.depth_and_layer = (Melty.shadow_depth, Melty.paint_rank)
                 draw_state._kwargs['active_layer'] = Melty.active_layer
 
                 child_highlight = None
@@ -3588,6 +3674,7 @@ class Melty:
         Melty.hovered_drawstate = Melty.hovered_drawstate_pending
         Melty.imgui_any_item_active = imgui.is_any_item_active()
         Melty.active_layer = 0
+        Melty.paint_rank = 0
         style = imgui.get_style()
 
         style.item_spacing = Melty.original_spacing
