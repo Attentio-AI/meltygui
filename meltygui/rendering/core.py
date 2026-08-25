@@ -189,29 +189,19 @@ def column_max_height(column_parent):
 
 def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
                            bar_width=SCROLL_BAR_WIDTH_DEFAULT,
-                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT,
-                           overlay=False):
-    """Draw an interactive vertical scrollbar on top of the view's content.
+                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT):
+    """Draw an interactive vertical scrollbar on top of the view's content,
+    on the window draw list a few channels up.
 
     Hover and drag are routed through ``draw_state.on_action`` against the
     grab's screen-space rect, so the scrollbar competes for the cursor like any
     other view. Dragging the grab mutates ``draw_state.scroll_offset`` in place;
     the wheel-scroll path in the wrapper still owns wheel input.
 
-    overlay=False (default): painted on the WINDOW draw list, a few channels
-    up, from inside the body — so it is captured into the view's tile with
-    the rest of the content and the content gives up a gutter for it
-    (``SCROLLBAR_MARGIN`` in the wrapper).
-
-    overlay=True: painted on the foreground (overlay) draw list on the view's
-    window channel (``Melty.overlay_channel_for`` — stencil-masked by windows
-    above, clipped to the view's clip rect). The overlay list is rendered
-    AFTER the tile-capture passes (``Melty.end_frame``: render_except_overlay
-    → finalize_captures → render_overlay_only), so the bar is NEVER baked
-    into a tile: it can be drawn every frame — blit-cache hits and frozen
-    resize blits included — at the LIVE right edge, floating over content
-    that runs all the way to that edge. freeze_resize views use this (the
-    wrapper draws it right after ``mark_end_offscreen``, outside the body).
+    Called from the wrapper body (draw_inner_main) for ordinary views — the
+    content gives up a gutter for it (``SCROLLBAR_MARGIN``) — and from
+    ``BlitCache.draw_freeze_scrollbar`` for cached freeze_resize views, where
+    blit_offscreen owns it and draws it after the tile image on every frame.
     """
     if max_scroll_y <= 0 or clip_height <= 0:
         return
@@ -221,14 +211,8 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         return
 
     # Viewport in screen space - the scroll region starts under the header.
-    # The overlay bar reads the LIVE position: the cached abs_left/abs_top
-    # lag a blit-served drag by a frame and the bar would trail the view.
-    if overlay:
-        view_left = draw_state._abs_left()
-        view_top = draw_state._abs_top() + draw_state.header_height
-    else:
-        view_left = draw_state.abs_left
-        view_top = draw_state.abs_top + draw_state.header_height
+    view_left = draw_state.abs_left
+    view_top = draw_state.abs_top + draw_state.header_height
     view_width = draw_state.width
     bar_offset = -1.0
 
@@ -299,30 +283,12 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         col_grab = imgui.get_color_u32_rgba(1, 1, 1, grab_alpha)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
-    overlay_clip = None
-    if overlay:
-        dl = imgui.get_overlay_draw_list()
-        dl.channels_set_current(Melty.overlay_channel_for(draw_state))
-        # The overlay list has no window clip of its own; scissor the bar to
-        # what the view actually shows (a parent scroll / window edge), else
-        # it would float outside the clipped view.
-        overlay_clip = draw_state.abs_clip_rect
-        if overlay_clip is not None:
-            dl.push_clip_rect(*overlay_clip, True)
-    else:
-        dl = imgui.get_window_draw_list()
-        dl.channels_set_current(Melty.get_channel() + 4)
+    dl = imgui.get_window_draw_list()
+    dl.channels_set_current(Melty.get_channel() + 4)
     # dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding=3.0)
     if grab_y2 > grab_y1:
         dl.add_rect_filled(track_x1, grab_y1, track_x2, grab_y2, col_grab, rounding=3.0)
         # dl.add_rect(track_x1, grab_y1, track_x2, grab_y2, col_border, rounding=3.0)
-    if overlay:
-        if overlay_clip is not None:
-            dl.pop_clip_rect()
-        # Back to the unmasked top channel - the overlay list's default
-        # (begin_frame); leaving it on a window channel would z-mask whatever
-        # global overlay draws next.
-        dl.channels_set_current(Melty.max_layer - 1)
 
 
 
@@ -2531,11 +2497,11 @@ def render_func(*args, **o_kwargs):
                 parent_wrap_left = draw_state.abs_left + snap_int(left_boundary)
                 available_width = int(parent_wrap_width - indent_x - 5)
             else:
-                # content_margin is a right-side depth inset (2 px per stacked
-                # bg) that keeps nested content clear of the enclosing bg
-                # border. freeze_resize views run edge to edge - the scrollbar
-                # already floats over them on the overlay list - so they take
-                # none of it (a text-editor pane in a column cell otherwise
+                # content_margin is a RIGHT-side depth inset (2 px per stacked
+                # bg) that keeps nested content short of the enclosing bg
+                # edge. freeze_resize views run edge to edge — the scrollbar
+                # is drawn outside them by blit_offscreen - so they take
+                # none of it (a code-editor pane in a column cell otherwise
                 # clipped its glyphs 4-6 px before its own bg edge).
                 _depth_margin = 0.0 if draw_state.freeze_resize else content_margin
                 available_width = (parent_wrap_width - x_offset - _depth_margin)
@@ -2638,9 +2604,9 @@ def render_func(*args, **o_kwargs):
                               and (not draw_state.auto_resize
                                    or kwargs.get("max_height", None) is not None))
                 # freeze_resize views give up nothing: their content runs to
-                # the right edge and the bar floats over it on the overlay
-                # list (drawn live after mark_end_offscreen, never baked into
-                # the buffer - see draw_vertical_scrollbar(overlay=True)).
+                # the right edge and the bar is drawn over it by
+                # blit_offscreen (BlitCache.draw_freeze_scrollbar, after the
+                # tile image on each frame).
                 if can_scroll and not draw_state.freeze_resize:
                     _sb_reserve = (kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT)
                                    + SCROLLBAR_MARGIN)
@@ -4359,27 +4325,10 @@ def render_func(*args, **o_kwargs):
                 draw_state._source["content_height"] = "draw_state._content_rect[1]"
 
             if use_cache:
+                # Cached freeze_resize views get their scrollbar drawn in
+                # here, after the body / the blitted tile frame
+                # (BlitCache.draw_freeze_scrollbar).
                 Melty.cache.mark_end_offscreen()
-
-            if (_has_imgui and draw_state.freeze_resize and draw_state.scroll_visible
-                    and not draw_state.closed and not draw_state.just_shadow):
-                # freeze_resize: the scrollbar lives OUTSIDE the body and freeze
-                # tile - drawn here every frame (body tile, blit-cache hit or
-                # frozen resize blit alike) on the overlay list, on top of
-                # content that runs to the right edge. Mid frozen drag the
-                # width/height are live while the content is the stale tile,
-                # so the bar tracks the right edge and the grab re-fits the
-                # live viewport. Same max_scroll_y formula as draw_inner_main
-                # (published for the editor's non-auto scroll clamp).
-                _live_max_scroll_y = max(0, draw_state.abs_content_height
-                                         - draw_state.abs_clipped_height + 1)
-                draw_state._max_scroll_y = _live_max_scroll_y
-                draw_overlay_scrollbar(draw_state, _live_max_scroll_y,
-                                       draw_state.height - draw_state.footer_height,
-                                       bar_width=kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT),
-                                       bar_brightness=kwargs.get("scroll_bar_brightness",
-                                                                 SCROLL_BAR_BRIGHTNESS_DEFAULT),
-                                       overlay=True)
 
             if _has_imgui:
                 if closable:
@@ -5007,10 +4956,13 @@ def render_func(*args, **o_kwargs):
                                           include_windows=False)
                 Melty.cache.invalidate_scrolled_in(draw_state, on_change=False)
 
-            # freeze_resize views draw scrollbar live on the overlay list after
-            # the cache gate closes (wrapper tail) - never from the tile, or
-            # it would bake into the tile and sit at the stale edge mid-drag.
-            if not draw_state.closed and not draw_state.freeze_resize:
+            # Cached freeze_resize views: blit_offscreen owns the scrollbar and
+            # draws it in mark_end_offscreen, after the body on live frames
+            # and after the clipped tile image on served/frozen frames
+            # (BlitCache.draw_freeze_scrollbar). With caching off there is
+            # no blit, so the body path draws it like any other view.
+            if not draw_state.closed and not (draw_state.freeze_resize
+                                              and draw_state.use_cache):
                 draw_overlay_scrollbar(draw_state, max_scroll_y, draw_state.height - draw_state.footer_height,
                                        bar_width=kwargs.get("scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT),
                                        bar_brightness=kwargs.get("scroll_bar_brightness",
@@ -5035,7 +4987,7 @@ def render_func(*args, **o_kwargs):
             # area + margins - see draw_overlay_scrollbar) so the content
             # wraps/clips before the bar instead of going under it.
             # freeze_resize views: no reserve - content runs to the edge and
-            # the bar floats over it (overlay list, wrapper tail).
+            # the bar is drawn over it by blit_offscreen.
             if draw_state.freeze_resize:
                 scrollbar_reserve = 0
             else:

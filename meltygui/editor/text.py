@@ -12151,7 +12151,7 @@ def draw_text(input_value: str, height=None,
     # While a click-drag is in flight the wrapper clip removes that reserve,
     # so widen the body clip to match and let glyphs run under the bar.
     # freeze_resize panes never gave anything up: content_width already
-    # reaches the right edge and the bar floats over it (overlay list).
+    # caps the right edge and blit_offscreen draws the bar over it.
     if Melty.on_drag and not getattr(draw_state, "freeze_resize", False):
         rect_max_x += scroll_bar_width
     rect_max_y = draw_state.abs_clip_rect[3]

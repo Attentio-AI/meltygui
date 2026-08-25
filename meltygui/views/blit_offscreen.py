@@ -3265,6 +3265,47 @@ class TileCacheMasked:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
                 style_manager.set_imgui_tint(*_sv_tint)
 
+    def draw_freeze_scrollbar(self, draw_state) -> None:
+        """Single owner of the scrollbar for cached freeze_resize views — the
+        counterpart of draw_freeze_bg. core_render's body path draws no bar
+        for these views; this runs from mark_end_offscreen on EVERY frame the
+        view is on screen: after the body on live frames (so the bar is
+        captured into the tile at the live edge, like the bg is) and after
+        the clip-cropped tile image on served frames (blit-cache hit or
+        frozen resize), where it is re-drawn at the LIVE edge with live
+        hover state and its grab on_actions re-issued — so a frozen pane's
+        bar tracks the drag and its grab re-fits the live viewport while
+        the content stays the stale tile. Drawn exactly as core_render draws
+        it for every other view: draw_overlay_scrollbar on the window draw
+        list, same geometry and knobs (scroll_bar_width / _brightness from
+        the view's resolved kwargs). Note the tile keeps the bar baked at
+        the edge it was captured at, so a frozen GROW drag also shows that
+        stale bar inside the content until release (nothing trims it —
+        Lukas 08-24)."""
+        if not getattr(draw_state, "freeze_resize", False):
+            return
+        if (not draw_state.scroll_visible or draw_state.closed
+                or draw_state.just_shadow or draw_state.height is None):
+            return
+        from src.lsd.gl_gui.view.core_views.core_render import (
+            draw_overlay_scrollbar, SCROLL_BAR_WIDTH_DEFAULT,
+            SCROLL_BAR_BRIGHTNESS_DEFAULT)
+        kwargs = getattr(draw_state, "_kwargs", None) or {}
+        bar_width = kwargs.get(
+            "scroll_bar_width",
+            getattr(draw_state, "scroll_bar_width", SCROLL_BAR_WIDTH_DEFAULT))
+        bar_brightness = kwargs.get(
+            "scroll_bar_brightness",
+            getattr(draw_state, "scroll_bar_brightness", SCROLL_BAR_BRIGHTNESS_DEFAULT))
+        # Same max_y the wrapper's scroll block computes; published for the
+        # editor's drag-auto-scroll clamp (draw_state._max_scroll_y).
+        max_scroll_y = max(0, draw_state.abs_content_height
+                           - draw_state.abs_clipped_height + 1)
+        draw_state._max_scroll_y = max_scroll_y
+        draw_overlay_scrollbar(draw_state, max_scroll_y,
+                               draw_state.height - draw_state.footer_height,
+                               bar_width=bar_width, bar_brightness=bar_brightness)
+
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
         view scrolls away from the position they were captured at. They are
@@ -3438,10 +3479,12 @@ class TileCacheMasked:
                 # the live rect below crops it, so a grow/drag reveals
                 # preserved earlier-era pixels instead of background.
                 # Nothing is trimmed off the stale content: freeze views
-                # bake no outline (draw_freeze_bg) and no scrollbar (it floats
-                # in to the overlay list), so every resident texel is real
-                # content and draws edge to edge. (An earlier 20/5 px
-                # right/bottom trim left the baked gutter/outline mid-drag.)
+                # bake no outline (draw_freeze_bg), so every resident texel
+                # draws edge to edge. (An earlier 20/5 px right/bottom trim
+                # left the baked gutter/outline on-drag.) The scrollbar is
+                # drawn over this image afterwards, in mark_end_offscreen
+                # (draw_freeze_scrollbar) - the clip here crops the image
+                # only.
                 draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
                 # Top-anchored subrect of the (possibly bucket-padded)
@@ -3543,6 +3586,11 @@ class TileCacheMasked:
 
         imgui.end_group()
         Melty.tile_id_stack.pop()
+
+        # Cached freeze_resize views: the scrollbar goes on top - over the
+        # body's pixels on a live frame, over the clip-cropped tile image
+        # on a served/frozen one - exactly as core_views draws it.
+        self.draw_freeze_scrollbar(ctx.draw_state)
 
         minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
 

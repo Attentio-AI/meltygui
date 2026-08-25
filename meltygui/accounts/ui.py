@@ -1161,7 +1161,9 @@ def draw_internet_accounts(
                         sub_height += len(sub_lines) * strip_line_height
                 sub_items.append((sub, sub_height, sub_lines, sub_wrap))
             layout.append(("account", kind, account_entry, y, height, lines, wrap, sub_items))
-            y += height + sum(item[1] for item in sub_items) + (px(4) if sub_items else 0) + row_gap
+            # The account's card: its header line AND its sub-rows
+            # (px(4) gap above them, px(4) pad below) - one block per account.
+            y += height + sum(item[1] for item in sub_items) + (px(8) if sub_items else 0) + row_gap
         y += px(4)
     footer_y = y
     total_height = (footer_y - origin_y) + row_height
@@ -1189,6 +1191,7 @@ def draw_internet_accounts(
 
         _refresh_stale(account_entry)
         row_bottom = row_top + height
+        block_bottom = row_bottom + (sum(item[1] for item in sub_items) + px(8) if sub_items else 0)
         state, status_text = kind.status(account_entry)
         if account_entry.get("_busy") or account_entry.get("_probing"):
             state, status_text = "busy", (status_text if state != "unknown" else "…")
@@ -1196,13 +1199,15 @@ def draw_internet_accounts(
         # these even when their parent row is scrolled offscreen.
         lamp_color = state_tints.get(state, state_tints["unknown"])
         text_color = _mix(style_manager, tint, row_text_value, factor, text_saturation)
-        if visible(row_top, row_bottom):
+        if visible(row_top, block_bottom):
+            # the account's card: header line + its sub-rows, hover over all of it
             row_hovered = (hover_ok and row_left <= mouse_x <= row_right
-                           and row_top <= mouse_y <= row_bottom)
+                           and row_top <= mouse_y <= block_bottom)
             bg_color = _mix(style_manager, tint, row_bg_value + (0.02 if row_hovered else 0.0),
                             factor, saturation)
-            draw_list.add_rect_filled(row_left, row_top, row_right, row_bottom,
+            draw_list.add_rect_filled(row_left, row_top, row_right, block_bottom,
                                       _color_u32(bg_color), rounding=corner)
+        if visible(row_top, row_bottom):
             # status lamp, recessed
             lamp_radius = px(4.5)
             lamp_x, lamp_y = row_left + px(14), row_top + row_height / 2.0
