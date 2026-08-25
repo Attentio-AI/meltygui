@@ -209,6 +209,7 @@ def accounts_changed():
 
 
 _window_draw_state = None   # draw_internet_accounts' draw_state - the wake target
+_window_last_draw = 0.0     # monotonic time the window body last ran (the idle poller's "visible" proof)
 
 
 def _drop_sessions_for(account_entry):
@@ -391,12 +392,11 @@ class AnthropicKind(AccountKind):
         # whether a credential exists - the studio should not fire a web
         # request or import the SDK at startup just to show status. The
         # "Test" button (below) does the one real network check on demand.
-        from src.lsd.gl_gui.fim_providers import claude_usage
         self.login_info(account, fresh=True)
         for sibling in accounts.of_kind(self.name):
             if sibling is not account:
                 self.login_info(sibling, fresh=True)   # ownership of a shared Claude Code login reads their emails
-        account["_claude_login"] = claude_usage.read_login(self._claude_code_login_path(account))
+        self._claude_login_for(account)
         source = self._source(account)
         if source is None:
             return ("needs_login", "not signed in")
@@ -413,6 +413,108 @@ class AnthropicKind(AccountKind):
 
     def _claude_code_login_path(self, account):
         return str(Path(account.get("claude_code_login") or self.fields[-1].default).expanduser())
+
+    def _claude_login_for(self, account):
+        """Claude Code's login for this row's file, through
+        claude_usage.cached_login (re-read only when the files change). When
+        the identity behind the file changes — a switch by the
+        Use-in-Claude-Code button or a `claude auth login` elsewhere — the
+        numbers this row cached belonged to the previous account: drop them
+        (`_forget_usage`), and ownership is re-decided on this very draw."""
+        from src.lsd.gl_gui.fim_providers import claude_usage
+        login = claude_usage.cached_login(self._claude_code_login_path(account))
+        previous = account.get("_claude_login")
+        known = "_claude_login" in account
+        account["_claude_login"] = login
+
+        # An identity CHANGE = a different email (both known), or - with no
+        # identity file at all - a different token. Never on a momentary
+        # blank (a read mid-rewrite of ~/.claude.json), and never on a
+        # same-account token refresh: both would blank the bars and refetch.
+        old_email = (previous or {}).get("email") or ""
+        new_email = (login or {}).get("email") or ""
+        changed = False
+        if old_email and new_email:
+            changed = old_email.lower() != new_email.lower()
+        elif not old_email and not new_email:
+            changed = (previous or {}).get("token") != (login or {}).get("token")
+        if known and changed:
+            self._forget_usage(account)
+        return login
+
+    def _forget_usage(self, account):
+        for key in ("_usage_rows", "_usage_summary", "_usage_fetched_wall", "_usage_error"):
+            account.pop(key, None)
+        account["_usage_fetched_at"] = None
+        timer = account.pop("_usage_timer", None)
+        if timer is not None:
+            timer.cancel()
+
+    # -- Changing Claude Code's login -------------------------------------------
+    # Claude Code holds ONE login per config dir; the Use-in-Claude-Code
+    # button runs its own `claude auth login --email <this row's email>`
+    # (claude_usage.ClaudeCodeLogin): the browser opens to the login page
+    # with the email filled in, Claude Code's loopback callback completes it,
+    # and its rewritten files flip the usage panel to this row on the next
+    # draw. The Console page's paste-a-code fallback is covered by the card's
+    # Paste code (clipboard → Claude Code's stdin).
+
+    def switch_claude_code(self, account):
+        from src.lsd.gl_gui.fim_providers import claude_usage
+        from src.lsd.gl_gui.toggles import Toggles
+        email = (self.login_info(account) or {}).get("email")
+        if not email:
+            return
+        current = account.get("_claude_switch")
+        if current is not None and not current.done:
+            current.open_in_browser()
+            return
+        path = Path(self._claude_code_login_path(account))
+        default_dir = Path(self.fields[-1].default).expanduser().parent
+        login = claude_usage.ClaudeCodeLogin(
+            email, executable=claude_usage.find_claude(Toggles.InternetAccounts.claude_code_bin),
+            config_dir=None if path.parent == default_dir else path.parent,
+            on_change=lambda flow: self._switch_changed(account, flow))
+        account["_claude_switch"] = login
+        account["_claude_switch_error"] = None
+        try:
+            login.start()
+        except Exception as error:
+            account["_claude_switch"] = None
+            account["_claude_switch_error"] = str(error)[:120]
+        accounts_changed()
+
+    def _switch_changed(self, account, flow):
+        """Worker thread: the URL arrived, or `claude auth login` finished."""
+        if flow.done and account.get("_claude_switch") is flow:
+            account["_claude_switch"] = None
+            if flow.ok:
+                # Claude Code rewrote its files: every row sharing them re-reads
+                # on its next draw; drop cached numbers now so nothing stale paints.
+                for entry in accounts.of_kind(self.name):
+                    self._forget_usage(entry)
+                    entry["_status"] = None
+            else:
+                account["_claude_switch_error"] = (flow.error or "sign-in failed")[:120]
+        accounts_changed()
+
+    def cancel_switch(self, account):
+        flow = account.pop("_claude_switch", None)
+        if flow is not None:
+            flow.cancel()
+        account["_claude_switch_error"] = None
+        accounts_changed()
+
+    def paste_switch_code(self, account):
+        """The Console page showed a code (browser couldn't reach the loopback
+        callback): clipboard → Claude Code's stdin."""
+        flow = account.get("_claude_switch")
+        try:
+            code = (imgui.get_clipboard_text() or "").strip()
+        except Exception:
+            code = ""
+        if flow is not None and code:
+            flow.submit_code(code)
 
     def _owns_claude_login(self, account, login):
         """One Claude Code login file = one claude.ai account, and every
@@ -435,25 +537,41 @@ class AnthropicKind(AccountKind):
         return sharing[0] is account
 
     def refresh_all(self, account):
-        account["_usage_fetched_at"] = None       # the open panel re-fetches on its next frame
+        """The Refresh button: re-read the logins and, for an open panel,
+        fetch now — the one caller allowed under the request floor / a
+        429 back-off (a person clicked)."""
+        account["_usage_backoff_until"] = 0.0
+        if account.get("_usage_open"):
+            self.fetch_usage(account, force=True)
         refresh(account)
 
-    def fetch_usage(self, account):
+    def fetch_usage(self, account, force=False):
         """One GET /api/oauth/usage on a worker; rows land in `_usage_rows`,
-        the compact summary in `_usage_summary` (the status re-probes to
-        show it), an error in `_usage_error` (a note under the bars)."""
+        the compact summary in `_usage_summary`, an error in `_usage_error`
+        (a note under the bars). Rate protection: never within
+        usage_min_interval_s of the previous request (except `force`, the
+        Refresh button) and never inside a 429 back-off window."""
         from src.lsd.gl_gui.fim_providers import claude_usage
+        from src.lsd.gl_gui.toggles import Toggles
         if account.get("_usage_loading"):
             return
-        login = claude_usage.read_login(self._claude_code_login_path(account))
-        account["_claude_login"] = login
-        account["_usage_fetched_at"] = time.monotonic()
+        now = time.monotonic()
+        last_request = account.get("_usage_last_request")
+        if not force and last_request is not None and now - last_request < Toggles.InternetAccounts.usage_min_interval_s:
+            account["_usage_fetched_at"] = last_request       # keep the poller on the floor, not on top
+            return
+        if not force and now < account.get("_usage_backoff_until", 0.0):
+            account["_usage_fetched_at"] = now
+            return
+        login = self._claude_login_for(account)
+        account["_usage_fetched_at"] = now
         if login is None or login["expired"]:
             account["_usage_rows"] = None
             account["_usage_error"] = ("sign in to Claude Code to view usage" if login is None
                                        else "Claude Code login expired — run claude")
             accounts_changed()
             return
+        account["_usage_last_request"] = now   # stamp only when a request actually launches
         account["_usage_loading"] = True
         accounts_changed()
 
@@ -463,8 +581,22 @@ class AnthropicKind(AccountKind):
                 account["_usage_rows"] = rows
                 account["_usage_error"] = None
                 account["_usage_summary"] = claude_usage.summary(rows)
+                account["_usage_fetched_wall"] = time.time()
+            except claude_usage.UsageRateLimited as error:
+                # back off: the server's Retry-After, or usage_backoff_s
+                # doubling per repeat (reset by a successful fetch)
+                streak = account.get("_usage_429_streak", 0) + 1
+                account["_usage_429_streak"] = streak
+                backoff = error.retry_after or min(
+                    Toggles.InternetAccounts.usage_backoff_s * (2 ** (streak - 1)),
+                    Toggles.InternetAccounts.usage_backoff_max_s)
+                account["_usage_backoff_until"] = time.monotonic() + backoff
+                account["_usage_error"] = f"rate limited — next try in {int(backoff // 60)} min"
             except Exception as error:
                 account["_usage_error"] = str(error)[:120]
+            else:
+                account["_usage_429_streak"] = 0
+                account["_usage_backoff_until"] = 0.0
             finally:
                 account["_usage_loading"] = False
                 account["_usage_fetched_at"] = time.monotonic()
@@ -474,14 +606,15 @@ class AnthropicKind(AccountKind):
 
     def _usage_rows(self, account):
         """The open panel's rows; fetches on open and once the numbers are
-        older than Toggles.InternetAccounts.usage_stale_s."""
+        older than Toggles.InternetAccounts.usage_refresh_s, and arms the
+        live-update ticker (`_schedule_usage_tick`)."""
         if not account.get("_usage_open"):
+            timer = account.pop("_usage_timer", None)
+            if timer is not None:
+                timer.cancel()
             return []
         from src.lsd.gl_gui.toggles import Toggles
-        from src.lsd.gl_gui.fim_providers import claude_usage
-        login = account.get("_claude_login")
-        if login is None and "_claude_login" not in account:
-            login = account["_claude_login"] = claude_usage.read_login(self._claude_code_login_path(account))
+        login = self._claude_login_for(account)
         if login is not None and not self._owns_claude_login(account, login):
             # Another row is the login's account (or the default row for the
             # shared file): say whose numbers are, and how this row gets
@@ -490,15 +623,73 @@ class AnthropicKind(AccountKind):
         fetched_at = account.get("_usage_fetched_at")
         if not account.get("_usage_loading") and (
                 fetched_at is None
-                or time.monotonic() - fetched_at > Toggles.InternetAccounts.usage_stale_s):
+                or time.monotonic() - fetched_at > Toggles.InternetAccounts.usage_refresh_s):
             self.fetch_usage(account)
+        self._schedule_usage_tick(account)
         rows = account.get("_usage_rows") or []
         out = [("usage", row) for row in rows]
         if account.get("_usage_error"):
             out.append(("note", account["_usage_error"]))
         elif not rows:
             out.append(("note", "loading usage…" if account.get("_usage_loading") else "no usage data"))
+        fetched_wall = account.get("_usage_fetched_wall")
+        if fetched_wall:
+            # "as of 21:42:10" — when these numbers were fetched, so a stale
+            # panel (hidden window, network trouble) is visibly stale.
+            stamp = "as of " + time.strftime("%H:%M:%S", time.localtime(fetched_wall))
+            if account.get("_usage_loading"):
+                stamp += " · refreshing…"
+            out.append(("stamp", stamp))
         return out
+
+    # -- live updates ----------------------------------------------------------
+    # There is no push event for usage, so an OPEN panel polls: a chain of
+    # one-shot threading.Timers (never a long-lived thread: a chain simply
+    # dies when its account dict is no longer the live store's, so an
+    # in-process restart leaves nothing behind) that re-fetches every
+    # usage_refresh_s and repaints every usage_tick, so "resets in ..." ticks.
+    # Visibility is proven by the window itself: each tick invalidates it,
+    # and a visible window runs its body (stamping _window_last_draw); a
+    # hidden / discarded / closed one doesn't, so the chain ends and the
+    # next real draw re-arms it through _usage_rows.
+
+    @staticmethod
+    def _usage_window_visible(period):
+        window = _window_draw_state
+        if window is None or getattr(window, "closed", False):
+            return False
+        return time.monotonic() - _window_last_draw < 2.0 * period + 5.0
+
+    def _schedule_usage_tick(self, account):
+        if account.get("_usage_timer") is not None:
+            return
+        from src.lsd.gl_gui.toggles import Toggles
+        period = max(1.0, min(Toggles.InternetAccounts.usage_tick_s,
+                              Toggles.InternetAccounts.usage_refresh_s))
+
+        def tick():
+            account["_usage_timer"] = None
+            kind = KINDS.get(account.get("kind"))        # the LIVE kind (hotswap re-registers it)
+            live_store = Melty.__dict__.get("_internet_accounts_store")
+            if (kind is None or live_store is None or live_store.get(account.get("id")) is not account
+                    or not account.get("_usage_open") or not kind._usage_window_visible(period)):
+                return                                    # panel closed / window hidden / stale generation
+            login = kind._claude_login_for(account)
+            if login is None or not kind._owns_claude_login(account, login):
+                return                                    # the login moved to another row (a switch)
+            fetched_at = account.get("_usage_fetched_at")
+            if (not account.get("_usage_loading")
+                    and (fetched_at is None
+                         or time.monotonic() - fetched_at >= Toggles.InternetAccounts.usage_refresh_s)):
+                kind.fetch_usage(account)                 # repaints when the numbers land
+            else:
+                accounts_changed()                        # countdown repaint
+            kind._schedule_usage_tick(account)
+
+        timer = threading.Timer(period, tick)
+        timer.daemon = True
+        account["_usage_timer"] = timer
+        timer.start()
 
     def validate(self, account):
         """The Test button: the ONLY Anthropic web request — list one model
@@ -600,6 +791,14 @@ class AnthropicKind(AccountKind):
                     Button("Edit", _toggle_edit), refresh_button]
         has_key = bool(account.get("api_key"))
         signed_in = self.login_info(account) is not None
+        switch = account.get("_claude_switch")
+        email = (self.login_info(account) or {}).get("email")
+        claude_login = self._claude_login_for(account)
+        use_in_claude_code = []
+        if email and (switch is None or switch.done) and (
+                claude_login is None or not self._owns_claude_login(account, claude_login)):
+            use_in_claude_code = [Button("Use in Claude Code", self.switch_claude_code,
+                                         tip="Sign Claude Code in as this account (replaces its current login)")]
         test = Button("Test",
                       lambda account: _run_in_background(
                           account, lambda: self.validate(account), reprobe=False),
@@ -618,7 +817,7 @@ class AnthropicKind(AccountKind):
                       Button("Paste key", lambda account: _paste_into(account, "api_key"),
                              tip="Or paste an API key from the clipboard"),
                       Button("Edit", _toggle_edit), test]
-        return [usage] + middle + [refresh_button]
+        return [usage] + middle + use_in_claude_code + [refresh_button]
 
     def sub_rows(self, account):
         out = []
@@ -630,6 +829,16 @@ class AnthropicKind(AccountKind):
                        Button("Open browser", lambda account, flow=flow: flow.open_in_browser(),
                               primary=True, tip="Open the sign-in page again")]
             out.append(("card", ("finish signing in in the browser tab", buttons)))
+        switch = account.get("_claude_switch")
+        if switch is not None and not switch.done:
+            buttons = [Button("Paste code", self.paste_switch_code,
+                              tip="If the page showed a code instead of finishing: copy it, then paste it here"),
+                       Button("Open browser", lambda account, switch=switch: switch.open_in_browser(),
+                              primary=True, enabled=bool(switch.url), tip="Open the login page again"),
+                       Button("Cancel", self.cancel_switch, danger=True)]
+            out.append(("card", (f"signing Claude Code in as {switch.email} — finish in the browser", buttons)))
+        elif account.get("_claude_switch_error"):
+            out.append(("note", "Claude Code sign-in failed: " + account["_claude_switch_error"]))
         out.extend(self._usage_rows(account))
         return out
 
@@ -956,8 +1165,9 @@ def draw_internet_accounts(
         input_value: AccountStore,
         draw_state, panel_state: AccountsPanelState = None, style_manager=None,
         non_blocking_left_mouse_down=False, **kwargs):
-    global _window_draw_state
+    global _window_draw_state, _window_last_draw
     _window_draw_state = draw_state
+    _window_last_draw = time.monotonic()
     store = input_value
     if not store.loaded:
         store.load()
@@ -1010,6 +1220,7 @@ def draw_internet_accounts(
     button_gap = px(6.0)
     sub_row_height = px(30.0)         # secondary rows (field editors, device code card, model rows)
     strip_line_height = button_height + px(6)   # one wrapped line of buttons (row and sub-row height)
+    stamp_row_height = px(18.0)       # the "as of 21:42:10" line under the usage bars
     kind_header_height = px(26.0)
     # Below this much text room the buttons wrap onto their own line inside
     # the row (the row grows) — raise it and narrow windows wrap sooner.
@@ -1151,7 +1362,9 @@ def draw_internet_accounts(
             sub_items = []
             for sub in subs:
                 sub_height, sub_lines, sub_wrap = sub_row_height, None, False
-                if sub[0] in ("card", "model"):
+                if sub[0] == "stamp":
+                    sub_height = stamp_row_height
+                elif sub[0] in ("card", "model"):
                     sub_buttons = (sub[1][1] if sub[0] == "card"
                                    else kind.model_actions(account_entry, sub[1]))
                     sub_lines, sub_wrap = strip_layout(
@@ -1179,14 +1392,11 @@ def draw_internet_accounts(
         if what == "head":
             if visible(row_top, row_top + height):
                 text_color = _mix(style_manager, tint, 1.0, factor, text_saturation)
-                strip_left = draw_buttons([Button(None, lambda _account, kind=kind: store.add(kind.name),
-                                                  icon=f"", tip="Add account")],
-                                          row_right, row_top + (height - button_height) / 2.0,
-                                          tint, None, hint)
-                header_x = row_left + px(2)
-                draw_list.add_text(header_x, row_top + (height - line_height) / 2.0,
-                                   _color_u32(text_color, 0.85),
-                                   _ellipsize(f"{kind.icon}  {kind.label}", strip_left - button_gap - header_x))
+                draw_list.add_text(row_left + px(2), row_top + (height - line_height) / 2.0,
+                                   _color_u32(text_color, 0.85), f"{kind.icon}  {kind.label}")
+                draw_buttons([Button(f" account",
+                                     lambda _account, kind=kind: store.add(kind.name))],
+                             row_right, row_top + (height - button_height) / 2.0, tint, None, hint)
             continue
 
         _refresh_stale(account_entry)
@@ -1330,6 +1540,13 @@ def draw_internet_accounts(
                     if right_text:
                         draw_list.add_text(sub_right - px(8) - right_width, text_y,
                                            _color_u32((0.72, 0.75, 0.82), 0.85), right_text)
+            elif sub[0] == "stamp":
+                if visible(sub_top, sub_bottom):
+                    stamp_fit = _ellipsize(sub[1], (sub_right - px(8)) - (sub_left + px(6)))
+                    stamp_width = imgui.calc_text_size(stamp_fit)[0]
+                    draw_list.add_text(sub_right - px(8) - stamp_width,
+                                       sub_top + (stamp_row_height - line_height) / 2.0 + text_nudge_y,
+                                       _color_u32((0.6, 0.62, 0.7), 0.7), stamp_fit)
             elif sub[0] == "note":
                 if visible(sub_top, sub_bottom):
                     draw_list.add_text(sub_left + px(6),

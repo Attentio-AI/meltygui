@@ -84,6 +84,11 @@ class SearchTerm(str):
         return base, None
 
 
+#comment
+new_int=1
+
+
+
 def search_walk(ds, term, session, max_depth=12):
     """Count a subtree's matches into `session` AND mark the current one — the
     single source of truth for both the find UI count and the selection.
@@ -201,6 +206,8 @@ class FileWatch:
         cls._watched_dirs.add(dirpath)
         return True
 
+
+
     @classmethod
     def watch_recursive(cls, root):
         """One recursive emitter over `root` (resolved str) — a single
@@ -316,6 +323,14 @@ class FileWatch:
         # view of its own) is still invalidated. Keyed the same as
         # path_to_draw_states - str(path.resolve) - so event.src_path matches.
         old_text = Melty.code_cache.pop(event.src_path, None)
+        # The disk has moved: tinting over disk / sync-frame tables
+        # (symbol_roster.World) key on this generation.
+        try:
+            from src.lsd.gl_gui.view.core_conversion.symbol_roster import (
+                bump_disk_generation)
+            bump_disk_generation()
+        except Exception:
+            pass
         # External-change tracking: the popped cache text is the last content
         # the studio READ - the diff baseline for an outside edit. Lazy import
         # (the gui stack can't be imported at melty load); exceptions swallowed

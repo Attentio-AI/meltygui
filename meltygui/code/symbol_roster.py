@@ -405,6 +405,7 @@ _STATE_DEFAULTS = {
     "consumers": dict,     # draw_state -> gen it last drew with (see register_consumer)
     "notify_timer": lambda: None,
     "universe_kicked": bool,
+    "disk_gen": int,      # bumps on every disk write / sync-frame move (see World)
 }
 
 
@@ -422,6 +423,82 @@ def _state():
 
 def generation():
     return _state()["gen"]
+
+
+def disk_generation():
+    """Generation of the NON-studio worlds (disk / sync frame): bumped by
+    FileWatch on every fs event and by ExternalChanges when a sync frame
+    advances. Tint caches over a World key on it — the studio generation
+    only moves for pending / live tables."""
+    return _state()["disk_gen"]
+
+
+def bump_disk_generation():
+    st = _state()
+    with st["lock"]:
+        st["disk_gen"] += 1
+
+
+# ── Worlds ───────────────────────────────────────────────────────────────────
+# The roster's default tables are the STUDIO's truth: pending text, shadowed
+# by a live editor's hold. A read-only view into some OTHER version of a file
+# - the merge window's external (disk) and original (sync-frame) panes -
+# must resolve its cross-file references against the same version of the
+# other file, or `Toggles.Foo` in b.py's disk text paints in the studio's
+# view while it carries another. A World is that consistent set: tables
+# built from a text source, DETACHED (never installed as pending or live,
+# never bumping the studio generation), memoized on the source text's
+# identity (a disk write changes the code_cache string; a new baseline is
+# a new object). Resolution's last-resort name index stays the studio's.
+
+class World:
+    __slots__ = ("name", "text_of", "_tables")
+
+    def __init__(self, name, text_of):
+        self.name = name
+        self.text_of = text_of          # resolved path str -> text or None
+        self._tables = {}               # path -> (text, FileTable)
+
+    def table(self, path):
+        """The FileTable of `path` in this world; the studio's table when
+        the world has no text for it (unreadable / never read)."""
+        p = _norm(path)
+        text = self.text_of(p)
+        if not isinstance(text, str):
+            return table_for(p)
+        held = self._tables.get(p)
+        if held is not None and held[0] is text:
+            return held[1]
+        tbl = extract_table(p, text, (self.name, id(text)))
+        if len(self._tables) > 256:
+            self._tables.clear()
+        self._tables[p] = (text, tbl)
+        return tbl
+
+    def generation(self):
+        return disk_generation()
+
+
+_detached = {}   # path -> (text, FileTable) - see detached_table
+
+
+def detached_table(path, text):
+    """A FileTable for `text` as the content of `path`, built OUTSIDE the
+    roster's caches: not installed as the file's pending table, not held as
+    its live override, no generation bump. For a read-only pane whose text
+    is neither the studio's pending truth nor a live editor buffer (the
+    merge window's staged result) — it resolves against the studio's other
+    files while its own blocks / scopes come from what it shows. Memoized
+    on the text's identity (the text is held, so the id can't recycle)."""
+    p = _norm(path)
+    held = _detached.get(p)
+    if held is not None and held[0] is text:
+        return held[1]
+    tbl = extract_table(p, text, ("detached", id(text)))
+    if len(_detached) > 64:
+        _detached.clear()
+    _detached[p] = (text, tbl)
+    return tbl
 
 
 # ── Consumer notification ───────────────────────────────────────────────────
@@ -840,7 +917,8 @@ def _walk_qualname(tbl, parts):
     return best
 
 
-def resolve(path, chain, table=None, allow_fallback=True, scope=None):
+def resolve(path, chain, table=None, allow_fallback=True, scope=None,
+            world=None):
     """The Entry a dotted `chain` (str or list of parts) denotes in the
     context of file `path`, or None. Returns the entry for the WHOLE chain
     only (use `resolve_prefixes` for per-prefix). Order: enclosing scopes
@@ -850,23 +928,28 @@ def resolve(path, chain, table=None, allow_fallback=True, scope=None):
     submodules) → unique same-named module-level definition anywhere in the
     roster. `self.x` / `cls.x` inside a class resolve to that class's member."""
     n = len(chain.split(".")) if isinstance(chain, str) else len(chain)
-    r = resolve_prefixes(path, chain, table, allow_fallback, scope)
+    r = resolve_prefixes(path, chain, table, allow_fallback, scope, world=world)
     return r[-1][0] if r and r[-1][1] == n else None
 
 
-def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None):
+def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None,
+                     world=None):
     """[(entry, n_parts)] for every prefix of `chain` that resolves, shortest
     first (`Toggles`, `Toggles.TextEditor`, `Toggles.TextEditor.x`). The
     prefixes beyond the first resolved one walk qualnames inside the first
     hit's table. `scope`: the innermost Entry the reference sits in (None =
-    module level) — see `resolve`."""
+    module level) — see `resolve`. `world`: the World whose tables the
+    OTHER files resolve through (imports, star imports); None = the
+    studio's (pending + live holds). The last-resort unique-name fallback
+    is always the studio's index."""
     parts = chain.split(".") if isinstance(chain, str) else list(chain)
     if not parts:
         return []
+    tables = world.table if world is not None else table_for
     if table is not None:
         tbl = table                      # caller's table: no path resolve / call
     else:
-        tbl = table_for(_norm(path)) if path is not None else None
+        tbl = tables(_norm(path)) if path is not None else None
     first = parts[0]
     # 0. self / cls inside a class: the enclosing class's members.
     if first in ("self", "cls") and tbl is not None and scope is not None and len(parts) > 1:
@@ -907,7 +990,7 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None):
                     break
             if best is not None:
                 mp, k = best
-                t2 = table_for(mp)
+                t2 = tables(mp)
                 if k == len(parts):
                     return []           # the chain IS a path, not a symbol
                 w = _walk_qualname(t2, parts[k:])
@@ -916,14 +999,14 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None):
             return []
         mp = module_to_path(mod)
         if mp is not None:
-            t2 = table_for(mp)
+            t2 = tables(mp)
             if attr in t2.by_qualname:
                 w = _walk_qualname(t2, [attr] + parts[1:])
                 return [(e, n) for e, n in _expand(w, t2, [attr] + parts[1:])]
         # `from pkg import submodule`
         mp2 = module_to_path(f"{mod}.{attr}")
         if mp2 is not None and len(parts) > 1:
-            t2 = table_for(mp2)
+            t2 = tables(mp2)
             w = _walk_qualname(t2, parts[1:])
             if w is not None:
                 return [(e, n + 1) for e, n in _expand(w, t2, parts[1:])]
@@ -933,7 +1016,7 @@ def resolve_prefixes(path, chain, table=None, allow_fallback=True, scope=None):
             mp = module_to_path(mod)
             if mp is None:
                 continue
-            t2 = table_for(mp)
+            t2 = tables(mp)
             if first in t2.by_qualname:
                 return _expand(_walk_qualname(t2, parts), t2, parts)
     # 4. unique definition anywhere

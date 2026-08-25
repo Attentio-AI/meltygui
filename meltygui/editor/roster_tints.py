@@ -50,7 +50,7 @@ def _decor_start(lines, def_line):
 
 
 def collect_def_tints(text, line_offset=0, view_path=None, window=None,
-                      line_open=None, hold_live=True):
+                      line_open=None, hold_live=True, world=None, table=None):
     """(blocks, spans, line_tints, name_tints) — see module doc.
 
     blocks:     [(def_buf_line, indent_buf_index, end_buf_line, tint)] per
@@ -76,30 +76,45 @@ def collect_def_tints(text, line_offset=0, view_path=None, window=None,
     (a class's 1-line span has no tint comment / extent), so the roster
     generation bumped per row per frame, every roster consumer re-keyed and
     re-rendered continuously, and cross-file lookups into that file saw a
-    different table each frame (washes flickering in the search list)."""
+    different table each frame (washes flickering in the search list).
+
+    `world` (a symbol_roster.World) makes the buffer a view of ANOTHER
+    version of its file — the merge window's disk / sync-frame panes: its
+    own table comes from the world (built from the same text object the
+    pane shows) and every cross-file reference resolves through the
+    world's tables, so `Toggles.Foo` paints in the tint that version of
+    toggles.py carries. `table` overrides only the buffer's OWN table (a
+    detached_table of a staged result) while other files stay the
+    studio's. Neither installs anything in the roster."""
     if view_path is None:
         return ((), (), (), {})
     with roster.pass_scope():
         return _collect(text, line_offset, view_path, window, line_open,
-                        hold_live=hold_live)
+                        hold_live=hold_live, world=world, table=table)
 
 
-# Local-binding memo: (id(text), path(table)) -> {scope-qualname tuple: bindings}.
-# A pure scroll re-runs the windowed pass on the SAME buffer; the 5000-line
-# draw_text chunk's binding scan (~10ms) must not be paid per chunk crossed.
-_bind_memo = [None, None, {}]
+# Local-binding memo: (id(text), path) -> (text, {scope-qualname tuple:
+# bindings}). A pure scroll re-runs the windowed pass on the SAME buffer; the
+# 5000-line draw_text scope's binding cost (~10ms) must not be paid per chunk
+# crossed. A few slots (not one): the merge window runs three panes of ONE
+# file with three texts like this in a row. The text is held so its id
+# stays unique while the entry lives.
+_bind_memo = {}
 
 
 def _bindings_memo(text, own, line_offset, lines, scopes):
     if not scopes:
         return {}
     key = (id(text), own.path)
-    if _bind_memo[0] != key:
-        _bind_memo[0], _bind_memo[1], _bind_memo[2] = key, text, {}   # hold text: it stays unique
+    held = _bind_memo.get(key)
+    if held is None or held[0] is not text:
+        if len(_bind_memo) >= 8:
+            _bind_memo.clear()
+        held = _bind_memo[key] = (text, {})
     sk = tuple(e.qualname for e in scopes)
-    b = _bind_memo[2].get(sk)
+    b = held[1].get(sk)
     if b is None:
-        b = _bind_memo[2][sk] = roster.local_bindings(text, own, line_offset, lines, scopes)
+        b = held[1][sk] = roster.local_bindings(text, own, line_offset, lines, scopes)
     return b
 
 
@@ -128,17 +143,25 @@ def _scan_range(lines, line_start_idx, text, window, line_open):
 
 
 def _collect(text, line_offset, view_path, window=None, line_open=None,
-             hold_live=True):
+             hold_live=True, world=None, table=None):
     from src.lsd.gl_gui.toggles import Toggles
     lines = text.split("\n")
     line_start_idx = [0]
     for l in lines:
         line_start_idx.append(line_start_idx[-1] + len(l) + 1)
     vpath = roster._norm(str(view_path))
-    # A preview buffer resolves against the PENDING table (or whatever live
-    # hold a real editor of this file keeps) instead of becoming the hold.
-    own = roster.table_for(vpath, live_text=text if hold_live else None,
-                           line_offset=line_offset)
+    # The buffer's own table: an explicit one (a staged result), the world's
+    # (disk / sync-frame pane - the world's text for this path IS the pane's
+    # text), else the roster's - except a preview buffer resolves against
+    # the PENDING text (or whatever live hold a real editor of this file
+    # keeps) instead of becoming the hold.
+    if table is not None:
+        own = table
+    elif world is not None:
+        own = world.table(vpath)
+    else:
+        own = roster.table_for(vpath, live_text=text if hold_live else None,
+                               line_offset=line_offset)
     scan_start, scan_end, win_lo, win_hi = _scan_range(lines, line_start_idx, text,
                                                        window, line_open)
 
@@ -177,7 +200,11 @@ def _collect(text, line_offset, view_path, window=None, line_open=None,
     # file; for a SPAN buffer (a function body or a one-line search), use the
     # pending file - a local defined above the span (a param, an earlier
     # assignment) must still colour its uses inside it.
-    whole_file = (line_offset == 0 and isinstance(own.key, tuple) and own.key[0] == "live")
+    # A staged / detached table was built from this very buffer - it is the
+    # whole file just like a live one.
+    whole_file = (line_offset == 0
+                  and (world is not None or table is not None
+                       or (isinstance(own.key, tuple) and own.key[0] == "live")))
     if whole_file:
         ftext, flines, foff = text, lines, 0
     else:
@@ -209,7 +236,8 @@ def _collect(text, line_offset, view_path, window=None, line_open=None,
         got = memo.get(mkey)
         if got is None:
             got = []
-            for ent, n in roster.resolve_prefixes(vpath, chain, own, scope=sc):
+            for ent, n in roster.resolve_prefixes(vpath, chain, own, scope=sc,
+                                                  world=world):
                 if ent.tint is not None:
                     got.append((n, ent))
             memo[mkey] = got

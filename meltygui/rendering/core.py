@@ -32,7 +32,7 @@ from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
 from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm, search_walk
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow
 from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager, handle_undo
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -189,19 +189,42 @@ def column_max_height(column_parent):
 
 def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
                            bar_width=SCROLL_BAR_WIDTH_DEFAULT,
-                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT):
-    """Draw an interactive vertical scrollbar on top of the view's content,
-    on the window draw list a few channels up.
+                           bar_brightness=SCROLL_BAR_BRIGHTNESS_DEFAULT,
+                           overlay=False):
+    """Draw an interactive vertical scrollbar on top of the view's content.
 
     Hover and drag are routed through ``draw_state.on_action`` against the
     grab's screen-space rect, so the scrollbar competes for the cursor like any
     other view. Dragging the grab mutates ``draw_state.scroll_offset`` in place;
     the wheel-scroll path in the wrapper still owns wheel input.
 
-    Called from the wrapper body (draw_inner_main) for ordinary views — the
-    content gives up a gutter for it (``SCROLLBAR_MARGIN``) — and from
-    ``BlitCache.draw_freeze_scrollbar`` for cached freeze_resize views, where
-    blit_offscreen owns it and draws it after the tile image on every frame.
+    overlay=False (default): the window draw list, a few channels up — the
+    normal z-order, and captured into the view's tile with the rest of its
+    pixels. Called from the wrapper body (draw_inner_main) for ordinary
+    views (the content gives up a gutter for it, ``SCROLLBAR_MARGIN``) and
+    from ``BlitCache.draw_freeze_scrollbar`` for cached freeze_resize views
+    at rest.
+
+    overlay=True: the BACKGROUND draw list, clipped to the view's clip rect
+    — deliberately UNDER the whole UI. blit_offscreen routes exactly one
+    frame here: a freeze_resize drag's clean-capture frame, where the bar
+    must stay out of the tile capture. The freshly rendered body covers it,
+    so the capture takes the body's clean pixels while the grab's on_action
+    subs and shadow mark still run. Every other freeze frame uses the
+    normal window-list path above — mid-drag nothing re-captures the frozen
+    tile, so drawing it "regularly" there is both un-baked and correctly
+    colored (the pre-filter brightness / shadow-composite chain; the
+    foreground list, tried first, renders after the filters and always
+    read slightly darker).
+
+    Either way the grab stamps an add_shadow depth mark
+    (``Toggles.ScrollSettings.scrollbar_shadow_offset``): its own raised
+    silhouette in the depth map, so the composite lights it as a thing of
+    its own instead of as part of the view's edge (specular rim, neighbours'
+    shadows) — that is what kept the window-list bar looking lighter / more
+    shadowed than the overlay one. Inside a recording body the mark bakes
+    into the tile's cached mask like the bar itself; from blit_offscreen it
+    is re-issued every frame.
     """
     if max_scroll_y <= 0 or clip_height <= 0:
         return
@@ -211,8 +234,14 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         return
 
     # Viewport in screen space - the scroll region starts under the header.
-    view_left = draw_state.abs_left
-    view_top = draw_state.abs_top + draw_state.header_height
+    # The overlay bar reads the LIVE position: the cached abs_left/abs_top
+    # lag a blit-served drag by a frame and the bar would clip the view.
+    if overlay:
+        view_left = draw_state._abs_left()
+        view_top = draw_state._abs_top() + draw_state.header_height
+    else:
+        view_left = draw_state.abs_left
+        view_top = draw_state.abs_top + draw_state.header_height
     view_width = draw_state.width
     bar_offset = -1.0
 
@@ -264,6 +293,14 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         grab_y1 = track_y1 + travel * t
         grab_y2 = grab_y1 + grab_h
 
+    # Depth mark under the grab - see the docstring. Clip to the view's clip
+    # rect (a parent scroll / window edge), not the live clip snapshot.
+    shadow_offset = Toggles.ScrollSettings.scrollbar_shadow_offset
+    if shadow_offset and grab_y2 > grab_y1:
+        add_shadow((track_x1, grab_y1, track_x2 - track_x1, grab_y2 - grab_y1),
+                   offset=shadow_offset, corner_radius=3.0,
+                   clip=draw_state.abs_clip_rect or True, draw_state=draw_state)
+
     if active:
         # The latched drag is delivered even off-view, but the latch only runs
         # while the scroll node re-renders - and the node otherwise only redraws
@@ -283,12 +320,30 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
         col_grab = imgui.get_color_u32_rgba(1, 1, 1, grab_alpha)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
-    dl = imgui.get_window_draw_list()
-    dl.channels_set_current(Melty.get_channel() + 4)
+    overlay_clip = None
+    if overlay:
+        dl = imgui.get_background_draw_list()
+        # The background list has no window clip of its own; scissor the bar
+        # to what the view actually shows (a parent scroll / window edge).
+        overlay_clip = draw_state.abs_clip_rect
+        if overlay_clip is not None:
+            dl.push_clip_rect(*overlay_clip, True)
+    else:
+        dl = imgui.get_window_draw_list()
+        # Only while the window list is actually split (the split is lazy -
+        # Melty.channels_split; blit & draw_freeze_scrollbar can run when it
+        # is off), and clamped into the window's channel count: get_channel()
+        # caps at max_depth - 1, so the +4 can run past the possible count at
+        # deep nesting and imgui asserts on an out-of-range channel.
+        if Melty.channels_split:
+            dl.channels_set_current(max(0, min(Melty.get_channel() + 4,
+                                               Melty.max_depth - 1)))
     # dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding=3.0)
     if grab_y2 > grab_y1:
         dl.add_rect_filled(track_x1, grab_y1, track_x2, grab_y2, col_grab, rounding=3.0)
         # dl.add_rect(track_x1, grab_y1, track_x2, grab_y2, col_border, rounding=3.0)
+    if overlay and overlay_clip is not None:
+        dl.pop_clip_rect()
 
 
 

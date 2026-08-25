@@ -104,6 +104,14 @@ class ExternalChanges:
         baseline = cls.originals.get(path)
         if baseline is not None:
             cls.absorbed[path] = (id(baseline), id(disk_text))
+        # The sync point moved with this absorb: the merge window's original
+        # world (symbol_roster.World over synced/originals) re-keys on it.
+        try:
+            from src.lsd.gl_gui.view.core_conversion.symbol_roster import (
+                bump_disk_generation)
+            bump_disk_generation()
+        except Exception:
+            pass
 
     @classmethod
     def is_absorbed(cls, path, disk_text):

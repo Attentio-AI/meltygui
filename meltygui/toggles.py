@@ -1164,7 +1164,7 @@ class Toggles:
         freetype_hinting = True
 
     # [icon=""]
-  
+
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:
         # Custom client-side titlebar: undecorated OS window so the UI sticks
@@ -1337,6 +1337,14 @@ class Toggles:
         acceleration_threshold = 0.036  # ms
         bg_offset = 30
         debug_scroll = False
+        # Compositor shadow under the scrollbar grab (add_shadow depth offset,
+        # signed px from the view's surface; 0 disables). The grab gets
+        # its own plane in the depth map, so it reads the same whether
+        # it is drawn in the view list - lit by the composite, so it
+        # otherwise inherits the view edge's specular rim and any
+        # neighbour's cast shadow - or on the overlay list mid freeze-drag,
+        # which renders after the composite.
+        scrollbar_shadow_offset = 1.0
 
     # [icon=""]
     @defaults(tint=(0.315, 0.489, 0.322))
@@ -1614,10 +1622,22 @@ class Toggles:
         anthropic_profile = "lsd"
         # Give up waiting for the browser redirect after this long.
         anthropic_login_timeout_s = 300.0
-        # The subscription row: while its usage panel is open and the
-        # window is repainted, re-fetch the limits once they are older than
-        # this (one GET /api/oauth/usage). Closed panel = no requests.
-        usage_stale_s = 300.0
+        # Claude plan usage panel (Anthropic row): while it is OPEN and the
+        # window is visible, re-fetch the limits every usage_refresh_s (one
+        # GET /api/oauth/usage each) and repaint every usage_tick_s so the
+        # reset countdowns live. Closed panel / hidden window = no requests.
+        usage_refresh_s = 120.0
+        usage_tick_s = 30.0
+        # Hard floor between two usage requests for one account, whatever
+        # asks (a redraw, the poller, an identity change) - only the Refresh
+        # button goes under it. A 429 backs off for its Retry-After, else
+        # usage_backoff_s, doubling per repeat up to usage_backoff_max_s.
+        usage_min_interval_s = 20.0
+        usage_backoff_s = 300.0
+        usage_backoff_max_s = 1800.0
+        # The Claude Code executable the "Use in Claude Code" button runs
+        # (`claude auth login --email ...`); empty = PATH / the usual installs.
+        claude_code_bin = ""
 
 
     @defaults(tint=(0.63, 0.44, 0.2))
@@ -1738,7 +1758,7 @@ class Toggles:
 
     # Filter Settings
     # [tint=(0.418, 0.656, 0.744)]
-    brightness = 0.133
+    brightness = 0.144
     # [tint=(0.458, 0.474, 0.5)]
     contrast = 1.213
 

@@ -6410,7 +6410,7 @@ def _comment_tints(ds, text):
 
 
 def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
-               hold_live=True):
+               hold_live=True, world=None, table=None):
     """Cached-per-(code_tree, text) wrapper around _collect_def_tints — the
     exact key discipline of _usage_spans: the top-level __symbol_usages__
     map's identity rides in the key so the background usage pass's in-place
@@ -6467,8 +6467,13 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
             _c = _DT_WIN_CHUNK
             _win = (max(0, (int(vis[0]) // _c - 1) * _c),
                     (int(vis[1]) // _c + 2) * _c - 1)
+        # The world pane keys on the world's generation too (disk writes /
+        # sync table moves in OTHER files don't move the studio generation)
+        # and on its own table's identity.
         _ckey = (_DEF_TINTS_VER, "roster", _sr.generation(), id(text), line_offset,
-                 str(view_path))
+                 str(view_path),
+                 (world.name, world.generation()) if world is not None else None,
+                 id(table) if table is not None else None)
         key = _ckey + (_win,)
     else:
         # NO text in the key - same reasoning as _usage_spans: text-only drift is
@@ -6525,7 +6530,8 @@ def _def_tints(ds, text, code_tree, line_offset=0, view_path=None, vis=None,
                         _lo_open = ds._dt_lo_open
                     _fresh = _roster_collect(_base, line_offset, view_path,
                                              window=_win, line_open=_lo_open,
-                                             hold_live=hold_live)
+                                             hold_live=hold_live, world=world,
+                                             table=table)
                     ds._def_tints_ckey = _ckey
                 else:
                     _fresh = _collect_def_tints(code_tree, _base, line_offset, view_path)
@@ -8970,6 +8976,7 @@ def draw_text(input_value: str, height=None,
               autocomplete=True, unique=0,
               show_widgets=True, show_root_backgrounds=True,
               highlight_token_matches=True, roster_live_hold=True,
+              roster_world=None, roster_table=None,
               fim="", fim_state: FimState = None):
     """`show_widgets=False` hides every inline token widget (run/eye buttons,
     number drags, bool switches, icon pickers -- the token_views layer).
@@ -8984,7 +8991,13 @@ def draw_text(input_value: str, height=None,
     `roster_live_hold=False` marks this buffer a READ-ONLY preview of its
     file (global-search rows): its def tints resolve against the roster's
     pending table instead of installing the buffer as the file's live
-    override (see roster_tints.collect_def_tints)."""
+    override (see roster_tints.collect_def_tints).
+    `roster_world` (a symbol_roster.World) / `roster_table` (a
+    detached_table): the buffer shows ANOTHER version of its file (the merge
+    window's disk / sync-frame / staged panes) — its definition tints resolve
+    through that world's tables / its own detached table, never the
+    studio's hold for the file; either also lets the file path come from
+    `file_key` when there is no `jump_to`."""
     
     
     ds = draw_state
@@ -12219,10 +12232,17 @@ def draw_text(input_value: str, height=None,
                 _dt_vis = (_v0, _v1)
             except Exception:
                 _dt_vis = None
+        # The file the buffer belongs to: the jump_to Address, else - only
+        # for a world / detached pane, which never holds the buffer - the
+        # wrapper's file_key memo.
+        _dt_path = getattr(jump_to, 'path', None) if jump_to is not None else None
+        if (_dt_path is None and (roster_world is not None or roster_table is not None)
+                and isinstance(getattr(ds, '_file_meta', None), str)):
+            _dt_path = ds._file_meta
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
-            ds, _dt_full, _usage_tree, _usage_off,
-            getattr(jump_to, 'path', None) if jump_to is not None else None,
-            vis=_dt_vis, hold_live=roster_live_hold)
+            ds, _dt_full, _usage_tree, _usage_off, _dt_path,
+            vis=_dt_vis, hold_live=roster_live_hold, world=roster_world,
+            table=roster_table)
         # Fold remap: def tints resolve against the FULL buffer (keeps the
         # last-good/anchor caches fold-independent); project the back into
         # display coords. Blocks whose head line is visible keep their wash,

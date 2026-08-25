@@ -20,8 +20,13 @@ legacy `five_hour` / `seven_day*` blocks as the fallback, plus `spend`
 """
 from __future__ import annotations
 
+import collections
 import json
+import os
 import re
+import shutil
+import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +34,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+
+# Every usage call this process ran: (wall time, outcome) - printed on a
+# 429 so the log shows the real cadence behind a rate limit.
+recent_requests = collections.deque(maxlen=40)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -67,6 +76,33 @@ def read_login(path):
             "path": path}
 
 
+_login_cache = {}   # credentials path → (file signature, read_login result); see cached_login
+
+
+def cached_login(path):
+    """read_login(path), re-read only when the credentials file or the
+    identity file beside it changed (mtime + size) — cheap enough for a
+    repaint, and the way a Claude Code login switch (`claude auth login`,
+    the Use-in-Claude-Code button) reaches every row on its next draw."""
+    path = Path(path).expanduser()
+    signature = tuple(_file_signature(candidate) for candidate in (
+        path, path.parent / ".claude.json", path.parent.parent / ".claude.json"))
+    hit = _login_cache.get(path)
+    if hit is not None and hit[0] == signature:
+        return hit[1]
+    login = read_login(path)
+    _login_cache[path] = (signature, login)
+    return login
+
+
+def _file_signature(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_mtime_ns, info.st_size)
+
+
 def read_identity(credentials_path) -> dict:
     """The `oauthAccount` block of Claude Code's `.claude.json` (no secrets:
     emailAddress, organizationName, displayName, …) for a credentials
@@ -79,11 +115,21 @@ def read_identity(credentials_path) -> dict:
         try:
             data = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            # Claude Code rewrites this file constantly (stats, sessions); a
+            # read that lands mid-write parses as nothing. Keep the last good
+            # identity for this path rather than reporting "nobody" for a
+            # frame - a flicker to "nobody" reads as an account switch.
+            if candidate in _identity_cache:
+                return _identity_cache[candidate]
             continue
         account = data.get("oauthAccount") if isinstance(data, dict) else None
         if isinstance(account, dict):
+            _identity_cache[candidate] = account
             return account
     return {}
+
+
+_identity_cache = {}   # identity file path → last successfully parsed oauthAccount
 
 
 def plan_label(subscription_type, rate_limit_tier) -> str:
@@ -101,16 +147,29 @@ def plan_label(subscription_type, rate_limit_tier) -> str:
 # The usage endpoint
 # ──────────────────────────────────────────────────────────────────────────
 
+class UsageRateLimited(RuntimeError):
+    """The usage endpoint answered 429; `retry_after` is its Retry-After in
+    seconds (None when it sent none)."""
+
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def fetch_usage(token: str, url: str = USAGE_URL, timeout_s: float = 15.0) -> dict:
     """GET the usage payload with the claude.ai OAuth token (Bearer + the
-    oauth beta header). RuntimeError with the status on failure."""
+    oauth beta header). RuntimeError with the status on failure
+    (UsageRateLimited on 429)."""
     request = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
                       "Accept": "application/json", "User-Agent": "latent-descent"})
+    started = time.time()
     try:
         with urllib.request.urlopen(request, timeout=timeout_s) as response:
             raw = response.read()
+        recent_requests.append((started, "ok"))
     except urllib.error.HTTPError as error:
+        recent_requests.append((started, f"http {error.code}"))
         detail = error.read().decode("utf-8", "replace")
         try:
             detail = json.loads(detail)["error"]["message"]
@@ -118,8 +177,19 @@ def fetch_usage(token: str, url: str = USAGE_URL, timeout_s: float = 15.0) -> di
             detail = detail.strip()[:160]
         if error.code == 401:
             detail = "token rejected — open Claude Code to refresh its login"
+        if error.code == 429:
+            retry_after = None
+            try:
+                retry_after = float(error.headers.get("retry-after")) if error.headers else None
+            except (TypeError, ValueError):
+                retry_after = None
+            cadence = ", ".join(time.strftime("%H:%M:%S", time.localtime(when)) + f" {outcome}"
+                                for when, outcome in recent_requests)
+            print(f"[claude_usage] 429 from {url} (retry-after={retry_after}); requests this process: {cadence}")
+            raise UsageRateLimited(f"usage endpoint rate limited: {detail}", retry_after) from None
         raise RuntimeError(f"usage endpoint returned {error.code}: {detail}") from None
     except urllib.error.URLError as error:
+        recent_requests.append((started, "unreachable"))
         raise RuntimeError(f"usage endpoint unreachable: {error.reason}") from None
     try:
         payload = json.loads(raw.decode("utf-8"))
@@ -296,3 +366,121 @@ def _money(block) -> str:
 def _format_money(amount: float, currency: str, places: int) -> str:
     symbol = {"USD": "$", "EUR": "€", "GBP": "£"}.get(currency, f"{currency} ")
     return f"{symbol}{amount:,.{places}f}"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Switching Claude Code's login
+# ──────────────────────────────────────────────────────────────────────────
+
+def find_claude(explicit=""):
+    """The Claude Code executable: an explicit path, else PATH, else the
+    usual install spots (the studio's PATH may lack ~/.local/bin)."""
+    if explicit:
+        candidate = Path(explicit).expanduser()
+        return str(candidate) if candidate.is_file() else None
+    found = shutil.which("claude")
+    if found:
+        return found
+    for candidate in (Path.home() / ".local" / "bin" / "claude",
+                      Path.home() / ".claude" / "local" / "claude",
+                      Path("/usr/local/bin/claude")):
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def strip_terminal_codes(text: str) -> str:
+    """Drop OSC (hyperlinks) and CSI sequences from Claude Code's output."""
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    return re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+
+
+class ClaudeCodeLogin:
+    """`claude auth login --email <email>` driven from the studio (verified
+    without a TTY): Claude Code opens the browser itself with a LOOPBACK
+    redirect, so the login normally completes on its own; it also prints the
+    paste-a-code fallback URL and reads a code from stdin, which `url` /
+    `open_in_browser` / `submit_code` expose for a browser that can't reach
+    the callback. Exit 0 = Claude Code rewrote its credentials + identity
+    files (cached_login notices on the next draw). `config_dir` targets a
+    non-default CLAUDE_CONFIG_DIR (a row pointed at its own login file).
+    Spawned with close_fds=False (posix_spawn — never fork the studio)."""
+
+    def __init__(self, email, executable=None, config_dir=None, on_change=None):
+        self.email = email
+        self.executable = executable
+        self.config_dir = config_dir
+        self.on_change = on_change
+        self.url = None
+        self.output = []
+        self.done = False
+        self.ok = False
+        self.error = None
+        self._process = None
+
+    def start(self):
+        executable = self.executable or find_claude()
+        if not executable:
+            raise RuntimeError("claude (Claude Code) not found — install it or set Toggles.InternetAccounts.claude_code_bin")
+        env = dict(os.environ)
+        if self.config_dir:
+            env["CLAUDE_CONFIG_DIR"] = str(self.config_dir)
+        self._process = subprocess.Popen(
+            [executable, "auth", "login", "--email", self.email],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            close_fds=False, env=env)
+        threading.Thread(target=self._pump, daemon=True, name="claude-auth-login").start()
+
+    def _pump(self):
+        process = self._process
+        try:
+            for raw in iter(process.stdout.readline, b""):
+                line = strip_terminal_codes(raw.decode("utf-8", "replace")).strip()
+                if line:
+                    self.output.append(line)
+                if self.url is None:
+                    match = re.search(r"https://[^\s]+?/oauth/authorize\?[^\s]+", line)
+                    if match:
+                        self.url = match.group(0)
+                        self._notify()
+        except Exception as error:
+            self.output.append(f"output pump failed: {error}")
+        code = process.wait()
+        self.ok = code == 0
+        if not self.ok:
+            failures = [line for line in self.output if "fail" in line.lower() or "error" in line.lower()]
+            self.error = (failures[-1] if failures else (self.output[-1] if self.output else f"claude exited with {code}"))
+            self.error = self.error.replace("Paste code here if prompted >", "").strip() or f"claude exited with {code}"
+        self.done = True
+        self._notify()
+
+    def submit_code(self, code: str):
+        """The paste-a-code fallback: what the Console page showed, into
+        Claude Code's stdin."""
+        if self._process is None or self._process.poll() is not None:
+            return False
+        try:
+            self._process.stdin.write((code.strip() + "\n").encode())
+            self._process.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def open_in_browser(self) -> bool:
+        if not self.url:
+            return False
+        from src.lsd.gl_gui.fim_providers.copilot import open_url
+        return open_url(self.url)
+
+    def cancel(self):
+        if self._process is not None and self._process.poll() is None:
+            try:
+                self._process.terminate()
+            except OSError:
+                pass
+
+    def _notify(self):
+        if self.on_change is not None:
+            try:
+                self.on_change(self)
+            except Exception:
+                pass

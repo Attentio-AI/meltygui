@@ -19,7 +19,9 @@ anything drawn in a frame uses the frame-start mouse sample and shows a
 frame later, while the compositor moves the cursor plane with zero latency
 — overlay crosshairs visibly trailed the pointer. The cursor plane is the
 one thing that can sit exactly where the pointer is. Only the drag box
-(anchored at the press) is drawn on the overlay.
+(anchored at the press) is drawn on the overlay, with a readout pill beside
+it — top-left `x, y` and `w × h` in window points — so the tool doubles as
+a measure tool (drag over a thing, read its rect off the label, Esc).
 """
 
 import glfw
@@ -148,9 +150,62 @@ def _finish(x0, y0, x1, y1):
                            name="screenshot", on_captured=_open_captured)
 
 
+def box_label_lines(x0, y0, x1, y1):
+    """The readout for a normalized box (x0 <= x1, y0 <= y1), in WINDOW
+    POINTS — the coordinate system every draw_state rect and the capture
+    itself use, so a measurement read off the label maps straight onto
+    `draw_state.abs_left` / `width` values. Line 1 = top-left corner,
+    line 2 = size."""
+    x, y = int(round(x0)), int(round(y0))
+    w, h = int(round(x1 - x0)), int(round(y1 - y0))
+    return (f"{x}, {y}", f"{w} × {h}")
+
+
+def label_rect(x0, y0, x1, y1, label_w, label_h, display_w, display_h, gap):
+    """Where the readout pill goes: below the box, right-aligned to its
+    right edge (outside, so the measured content stays visible). Off the
+    bottom of the display → inside the box's bottom-right corner; past the
+    right edge → slid left to fit; a box that fills the screen → inside,
+    clamped. Returns (left, top)."""
+    left = x1 - label_w
+    top = y1 + gap
+    if top + label_h > display_h:
+        top = y1 - gap - label_h
+        left = x1 - gap - label_w
+    left = max(0.0, min(left, display_w - label_w))
+    top = max(0.0, top)
+    return left, top
+
+
+def _draw_box_label(overlay, x0, y0, x1, y1, display_w, display_h):
+    """Paint the coordinate/size readout next to the drag box (the "measure
+    tool" half of the feature): a dark pill, box-coloured text."""
+    # [tint=(0.35, 0.75, 1.0)]
+    padding = 5
+    # [tint=(0.95, 0.61, 0.07)]
+    gap = 6
+    # [tint=(0.36, 0.68, 0.89)]
+    label_background = (0.05, 0.05, 0.08, 0.85)
+    lines = box_label_lines(x0, y0, x1, y1)
+    sizes = [imgui.calc_text_size(line) for line in lines]
+    text_w = max(size.x for size in sizes)
+    line_h = sizes[0].y
+    label_w = text_w + padding * 2
+    label_h = line_h * len(lines) + padding * 2
+    left, top = label_rect(x0, y0, x1, y1, label_w, label_h, display_w, display_h, gap)
+    overlay.add_rect_filled(left, top, left + label_w, top + label_h,
+                            imgui.get_color_u32_rgba(*label_background), rounding=4.0)
+    overlay.add_rect(left, top, left + label_w, top + label_h,
+                     imgui.get_color_u32_rgba(*_BOX_COLOR), rounding=4.0, thickness=1.0)
+    text_color = imgui.get_color_u32_rgba(*_BOX_COLOR)
+    for index, line in enumerate(lines):
+        overlay.add_text(left + padding, top + padding + line_h * index, text_color, line)
+
+
 def draw(draw_state):
     """Per-frame body (from draw_main): claim the mouse, track the box, paint
-    the crosshair/box on the overlay, and fire the capture on release."""
+    the crosshair/box + its coordinate/size readout on the overlay, and fire
+    the capture on release."""
     if not RegionScreenshot.armed:
         _set_tool_cursor(False)     # back to the default after cancel / esc
         return
@@ -186,5 +241,6 @@ def draw(draw_state):
         x0, y0, x1, y1 = min(sx, mx), min(sy, my), max(sx, mx), max(sy, my)
         overlay.add_rect_filled(x0, y0, x1, y1, imgui.get_color_u32_rgba(*_FILL_COLOR))
         overlay.add_rect(x0, y0, x1, y1, imgui.get_color_u32_rgba(*_BOX_COLOR), 0.0, 0, 1.0)
+        _draw_box_label(overlay, x0, y0, x1, y1, full[2], full[3])
         # The box's moving edge tracks the cursor: keep frames coming.
         request_render()

@@ -73,6 +73,7 @@ def _bucket_h(v: int) -> int:
     multi-MB texture every other line. Small tiles keep the tight 32px
     bucket — a 256px floor there would waste ~1MB per short row tile."""
     b = 256 if v >= 1024 else TILE_BUCKET
+
     return min(MAX_TILE_DIM, ((int(v) + b - 1) // b) * b)
 
 
@@ -3265,7 +3266,7 @@ class TileCacheMasked:
                 Melty.bg_depth, Melty.bg_stack = _sv_depth, _sv_stack
                 style_manager.set_imgui_tint(*_sv_tint)
 
-    def draw_freeze_scrollbar(self, draw_state) -> None:
+    def draw_freeze_scrollbar(self, draw_state, served=False) -> None:
         """Single owner of the scrollbar for cached freeze_resize views — the
         counterpart of draw_freeze_bg. core_render's body path draws no bar
         for these views; this runs from mark_end_offscreen on EVERY frame the
@@ -3275,13 +3276,20 @@ class TileCacheMasked:
         frozen resize), where it is re-drawn at the LIVE edge with live
         hover state and its grab on_actions re-issued — so a frozen pane's
         bar tracks the drag and its grab re-fits the live viewport while
-        the content stays the stale tile. Drawn exactly as core_render draws
-        it for every other view: draw_overlay_scrollbar on the window draw
-        list, same geometry and knobs (scroll_bar_width / _brightness from
-        the view's resolved kwargs). Note the tile keeps the bar baked at
-        the edge it was captured at, so a frozen GROW drag also shows that
-        stale bar inside the content until release (nothing trims it —
-        Lukas 08-24)."""
+        the content stays the clean tile. Nearly every frame it is drawn
+        exactly as core_render draws it for every other view:
+        draw_overlay_scrollbar on the WINDOW draw list a few channels up —
+        above the tint washes / text / frozen image, and in the pre-filter
+        frame, so its color rides the brightness + shadow-composite chain.
+        On a live frame at rest that bakes it into the tile (correct
+        there); on served/frozen frames nothing re-captures the tile, so
+        the same draw is never baked. The ONE exception is the drag-start
+        clean-capture frame (draw_state._bar_overlay set this frame in
+        mark_start_offscreen, body freshly rendered): there the bar is
+        routed to the background draw list — under the fresh body, so the
+        capture takes clean pixels — while its on_action subs and shadow
+        mark still run. Same geometry and knobs everywhere
+        (scroll_bar_width / _brightness from the view's resolved kwargs)."""
         if not getattr(draw_state, "freeze_resize", False):
             return
         if (not draw_state.scroll_visible or draw_state.closed
@@ -3302,9 +3310,12 @@ class TileCacheMasked:
         max_scroll_y = max(0, draw_state.abs_content_height
                            - draw_state.abs_clipped_height + 1)
         draw_state._max_scroll_y = max_scroll_y
+        clean_capture_frame = (getattr(draw_state, "_bar_overlay", False)
+                               and not served)
         draw_overlay_scrollbar(draw_state, max_scroll_y,
                                draw_state.height - draw_state.footer_height,
-                               bar_width=bar_width, bar_brightness=bar_brightness)
+                               bar_width=bar_width, bar_brightness=bar_brightness,
+                               overlay=clean_capture_frame)
 
     def _scrub_stale_content(self, t: Tile, draw_state) -> None:
         """freeze_resize tiles: drop preserved beyond-logical texels once the
@@ -3449,19 +3460,58 @@ class TileCacheMasked:
 
             # Frozen resize (opt-in via freeze_resize, off by default): while a
             # mouse drag is actively changing this view's size, skip the live
-            # re-render and blit the stale tile at its captured size, anchored
+            # re-render and blit a CLEAN tile at its captured size, anchored
             # top-left and clipped to the live rect. Layout (the dummy below)
             # still advances by the LIVE size so the cursor tracks; on mouse-up
             # the size mismatch falls through to the normal live-render +
             # _ensure_tile path in mark_for_offscreen and the view redraws
             # once at the settled size. Scoped to a size mismatch so drags
             # inside the view (scroll, selection) never freeze it.
-            frozen = (not use_image
-                      and t is not None and has_area
-                      and getattr(draw_state, "freeze_resize", False)
-                      and t.size != (size[0], size[1])
-                      and (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
-                           or imgui.is_mouse_down(2) or Melty.on_drag))
+            #
+            # The scrollbar lifecycle (draw_freeze_scrollbar). At rest the
+            # bar is drawn on the window draw list like any view, and so is
+            # BAKED into the tile - fine there, but a frozen drag would
+            # show it stuck at the stale edge (and the old trim that hid it
+            # stamped a wrong-colour column into the texture). So a drag
+            # goes through three states, keyed on draw_state._bar_overlay /
+            # _freeze_clean:
+            #   1. drag START (first frame the size changes while the mouse
+            #      is down): the bar switches to the OVERLAY list (never
+            #      captured - it renders after PASS 3) and the view renders
+            #      live ONCE, dirtied here so mark_end captures it: a clean
+            #      draw state with no bar in it, copied 1:1 into the tile's
+            #      logical rect. The copy is mask-gated (nothing outside the
+            #      view's new geometry), so it replaces ONLY the texels the
+            #      view covers this frame - the rest of the texture, the
+            #      earlier-era content beyond the logical rect, is untouched.
+            #   2. mid-drag: the tile is served frozen at its full resident
+            #      extent (content_size), the bar drawn live on the overlay
+            #      at the live edge.
+            #   3. mouse up: the flags drop, the settle re-render draws the
+            #      bar on the window list again and the capture bakes it.
+            dragging = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+                        or imgui.is_mouse_down(2) or Melty.on_drag)
+            frozen = False
+            if getattr(draw_state, "freeze_resize", False) and t is not None and has_area:
+                if not dragging:
+                    draw_state._bar_overlay = False
+                    draw_state._freeze_clean = False
+                elif getattr(draw_state, "_freeze_clean", False):
+                    # State 2: clean tile in hand - serve it frozen (not at
+                    # a momentary exact-size match, so the drag never flips
+                    # between the-render and cache-hit draws).
+                    use_image = False
+                    frozen = True
+                elif t.size != (size[0], size[1]):
+                    # State 1: one clean live render this frame.
+                    draw_state._bar_overlay = True
+                    draw_state._freeze_clean = True
+                    use_image = False
+                    t.last_invalidated_frame = max(t.last_invalidated_frame,
+                                                   self._frame_id)
+                    t.dirty = self._is_dirty(t)
+                    _bump_note(t, "freeze clean capture")
+
 
             if use_image or frozen:
                 # Blit-served: wrapper runs, body (and whole subtree)
@@ -3483,8 +3533,11 @@ class TileCacheMasked:
                 # draws edge to edge. (An earlier 20/5 px right/bottom trim
                 # left the baked gutter/outline on-drag.) The scrollbar is
                 # drawn over this image afterwards, in mark_end_offscreen
-                # (draw_freeze_scrollbar) - the clip here crops the image
-                # only.
+                # (draw_freeze_scrollbar, overlay list mid-drag) - the clip
+                # here crops the image only. The drag-start clean capture
+                # replaced just the texels the view covered on that frame;
+                # everything else in the texture (the earlier-era content
+                # beyond the logical rect) is intact and drawn here as well.
                 draw_size = (getattr(t, "content_size", None) or t.size) if frozen else size
                 b = draw_state.abs_left + draw_size[0], draw_state.abs_top + draw_size[1]
                 # Top-anchored subrect of the (possibly bucket-padded)
@@ -3589,8 +3642,10 @@ class TileCacheMasked:
 
         # Cached freeze_resize views: the scrollbar goes on top - over the
         # body's pixels on a live frame, over the clip-cropped tile image
-        # on a served/frozen one - exactly as core_views draws it.
-        self.draw_freeze_scrollbar(ctx.draw_state)
+        # on a served/frozen one - drawn as core_render draws it (except
+        # the drag-start pre-capture frame, where it hides under the
+        # floating window so the capture stays clean).
+        self.draw_freeze_scrollbar(ctx.draw_state, served=ctx.drew_cached)
 
         minx, miny = int(ctx.draw_state.abs_left), int(ctx.draw_state.abs_top)
 
@@ -3789,8 +3844,23 @@ class TileCacheMasked:
                 self._scrub_stale_content(t, ctx.draw_state)
 
             if self._is_dirty(t) and (ctx.key not in self._enq_copy_keys):
+                cap_size = ctx.size
+                if t is not None and getattr(ctx.draw_state, "_bar_overlay", False):
+                    # Drag-start clean capture (see mark_start_offscreen):
+                    # the tile keeps its pre-drag size while the mouse is
+                    # down (_ensure_tile above is gated on mouse-up) and
+                    # PASS 3 samples the capture rect INTO the tile's
+                    # logical viewport - a live-size rect would land as a
+                    # scaled copy. Enqueue the tile's own rect so the copy
+                    # lands 1:1. The copy then discards all the view's
+                    # fresh geometry, so only the texels the view covers
+                    # this frame are replaced; nothing else in the texture
+                    # (in-rect texels the live view no longer reaches on a
+                    # shrink, and every earlier-era texel beyond the logical
+                    # rect) is written or cleared.
+                    cap_size = (snap_int(t.size[0]), snap_int(t.size[1]))
                 self._pending.append(
-                    _Pending(draw_state=ctx.draw_state, tile=t, pos=ctx.pos, size=ctx.size, layer=ctx.layer,
+                    _Pending(draw_state=ctx.draw_state, tile=t, pos=ctx.pos, size=cap_size, layer=ctx.layer,
                              depth_and_layer=ctx.depth_and_layer, key=ctx.key))
                 self._enq_copy_keys.add(ctx.key)
 
