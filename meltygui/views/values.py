@@ -5784,6 +5784,12 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     corner_radius = rounding
     border_inset = 2.802
     border_inset_half = 1.5
+    if not outline:
+        # The inset only exists to seat the fill inside the outline stroke.
+        # With no outline the fill IS the view's edge (freeze_resize panes
+        # via draw_freeze_bg): keep the inset and content clipped at the
+        # view edge hangs a few px past its own background.
+        border_inset = 0.0
     stroke_width = 4.0
     # How depth maps to color intensity
     intensity_factor = 0.021

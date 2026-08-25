@@ -12417,11 +12417,13 @@ def draw_text(input_value: str, height=None,
                 continue
             sx = origin_x + _colx(_b_idx)
             # Wrap to the block's content: right edge at its widest line
-            # plus one character of air, clamped to the view edge (and never
-            # narrower than a stub when the span is blank/stale mid-edit).
+            # plus a character of air - the block's TRUE extent, never
+            # clamped to the view edge (a clamp put the rounded corners at
+            # the clip instead of the content; the draw-list clip cuts an
+            # overflowing wash with a sharp edge, as it should). Never
+            # narrower than a stub when the span is blank/stale mid-scroll.
             _e0, _e1 = min(_b_line, len(_ll)), min(_b_end + 1, len(_ll))
-            _bx1 = min(rect_max_x,
-                       origin_x + (max(_ll[_e0:_e1] or (0,)) + 1) * char_w)
+            _bx1 = origin_x + (max(_ll[_e0:_e1] or (0,)) + 1) * char_w
             _bx1 = max(_bx1, sx + 2 * char_w)
             _b_rgb = _bg_adjust(tuple(_b_tint[:3]), _bg_f)
             _b_col = imgui.get_color_u32_rgba(_b_rgb[0], _b_rgb[1], _b_rgb[2], _dt_block_a)
