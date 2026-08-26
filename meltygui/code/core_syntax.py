@@ -397,6 +397,10 @@ class _Extractor:
         self.src = origin.src
         self.standalone, self.trailing = _scan_comments(origin.text)
         self.cursor = 0     # last consumed line (1-based); 0 = nothing yet
+        # >0 while extracting call arguments / container elements: a CallParse
+        # nested there gets no span lines (libcst's span map only covers a
+        # statement's direct value call), so LineMap depth works.
+        self._nested = 0
 
     # ── spans on the dict (the consumers' view: Span / _child_spans) ─────────
 
@@ -741,7 +745,9 @@ class _Extractor:
         end = self.src.node_span(node)[1]
         readable = cls(source=self.origin.text[start:end])
         readable.def_name = node.name
-        self._stamp(readable, start, end)
+        # .span starts at the `def` keyword (ast excludes decorators - libcst's
+        # span map agrees); `source` keeps the decorators like _cst_node_to_code.
+        self._stamp(readable, self.src.node_span(node)[0], end)
         decorators = self._decorators(node, path)
         if decorators:
             readable["decorators"] = decorators
@@ -791,7 +797,7 @@ class _Extractor:
         end = self.src.node_span(node)[1]
         readable = FunctionParse(source=self.origin.text[start:end])
         readable.def_name = node.name
-        self._stamp(readable, start, end)
+        self._stamp(readable, self.src.node_span(node)[0], end)   # `def` start, see _class
         decorators = self._decorators(node, path)
         if decorators:
             readable["decorators"] = decorators
@@ -831,7 +837,13 @@ class _Extractor:
                 if name is None:
                     continue
                 self.origin.shadow(dpath + (name,))
-                parsed = self._call(dec, dpath + (name,), DecorationParse, None, allow_empty=True)
+                # Unspanned like libcst's decorator CallParse (LineMap issue:
+                # a decorator line maps to nothing; the def starts at `def`).
+                self._nested += 1
+                try:
+                    parsed = self._call(dec, dpath + (name,), DecorationParse, None, allow_empty=True)
+                finally:
+                    self._nested -= 1
                 if parsed is None:
                     parsed = CodeLine(self._text(dec))
                 result[name] = parsed
@@ -882,8 +894,8 @@ class _Extractor:
                 vs = None
                 extent = ps
             result[p.arg] = value
-            if vs is not None:
-                self._record_child(result, p.arg, value, *vs)
+            # No _child_spans for defaults; libcst's span map has no Param
+            # entries, so LineMap resolves a signature line to `parameters`.
             self.origin.add(Item(path + (p.arg,), p.arg, "param", extent, extent, vs, value,
                                  slot=ps[1]), seq)
         if all_params:
@@ -965,7 +977,7 @@ class _Extractor:
             kw_line = self._keyword_line(orelse, self.cursor)
             else_seq = self._block_body(orelse, branch, branch_path, kw_line, (cond_counters, block_occ))
             if branch:
-                self._stamp(branch, self.src.line_start(kw_line), self.src.node_span(orelse[-1])[1])
+                self._stamp(branch, self.src.node_span(orelse[0])[0], self.src.node_span(orelse[-1])[1])
                 out[key] = branch
                 gs = self.src.line_start(kw_line)
                 self._finish_block_item(key, path, seq, gs, gs, self.src.indent_of_line(kw_line))
@@ -994,7 +1006,7 @@ class _Extractor:
             kw_line = self._keyword_line(node.orelse, self.cursor)
             else_seq = self._block_body(node.orelse, branch, path + (f"{key} else",), kw_line, None)
             if branch:
-                self._stamp(branch, self.src.line_start(kw_line), self.src.node_span(node.orelse[-1])[1])
+                self._stamp(branch, self.src.node_span(node.orelse[0])[0], self.src.node_span(node.orelse[-1])[1])
                 out[f"{key} else"] = branch
                 gs = self.src.line_start(kw_line)
                 self._finish_block_item(f"{key} else", path, seq, gs, gs, self.src.indent_of_line(kw_line))
@@ -1055,7 +1067,7 @@ class _Extractor:
             kw_line = self._keyword_line(node.orelse, self.cursor)
             eseq = self._block_body(node.orelse, ebody, path + (ekey,), kw_line, None)
             if ebody:
-                self._stamp(ebody, self.src.line_start(kw_line), self.src.node_span(node.orelse[-1])[1])
+                self._stamp(ebody, self.src.node_span(node.orelse[0])[0], self.src.node_span(node.orelse[-1])[1])
                 out[ekey] = ebody
                 gs = self.src.line_start(kw_line)
                 self._finish_block_item(ekey, path, seq, gs, gs, self.src.indent_of_line(kw_line))
@@ -1067,7 +1079,7 @@ class _Extractor:
             kw_line = self._keyword_line(node.finalbody, self.cursor)
             fseq = self._block_body(node.finalbody, fbody, path + (fkey,), kw_line, None)
             if fbody:
-                self._stamp(fbody, self.src.line_start(kw_line), self.src.node_span(node.finalbody[-1])[1])
+                self._stamp(fbody, self.src.node_span(node.finalbody[0])[0], self.src.node_span(node.finalbody[-1])[1])
                 out[fkey] = fbody
                 gs = self.src.line_start(kw_line)
                 self._finish_block_item(fkey, path, seq, gs, gs, self.src.indent_of_line(kw_line))
@@ -1110,11 +1122,13 @@ class _Extractor:
                 return CodeLine(self._text(node))
             seq = self.origin.new_seq(path, "elements", sep=", ")
             values = []
+            self._nested += 1
             for i, e in enumerate(node.elts):
                 v = self._value(e, path + (i,))
                 values.append(v)
                 sp = self.src.node_span(e)
                 self.origin.add(Item(path + (i,), i, "element", sp, sp, sp, v), seq)
+            self._nested -= 1
             if len(seq.items) >= 2:
                 seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
             if seq.items:
@@ -1135,6 +1149,7 @@ class _Extractor:
                 keys.append(kv)
             seq = self.origin.new_seq(path, "pairs", sep=", ")
             result = {}
+            self._nested += 1
             for k, knode, vnode in zip(keys, node.keys, node.values):
                 self.origin.shadow(path + (k,))
                 v = self._value(vnode, path + (k,))
@@ -1142,6 +1157,7 @@ class _Extractor:
                 ks, ke = self.src.node_span(knode)
                 vs = self.src.node_span(vnode)
                 self.origin.add(Item(path + (k,), k, "pair", (ks, vs[1]), (ks, vs[1]), vs, v), seq)
+            self._nested -= 1
             if len(seq.items) >= 2:
                 seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
             if seq.items:
@@ -1221,6 +1237,8 @@ class _Extractor:
             pos_names = None
         seq = self.origin.new_seq(path, "args", sep=", ")
         pos_idx = 0
+        nested = self._nested > 0
+        self._nested += 1
         for a in call.args:
             if isinstance(a, ast.Starred):
                 continue
@@ -1229,7 +1247,6 @@ class _Extractor:
                 v = self._value(a, path + (k,))
                 readable[k] = v
                 sp = self.src.node_span(a)
-                self._record_child(readable, k, v, *sp)
                 self.origin.add(Item(path + (k,), k, "element", sp, sp, sp, v), seq)
             pos_idx += 1
         for kw in call.keywords:
@@ -1239,8 +1256,9 @@ class _Extractor:
             readable[kw.arg] = v
             vs = self.src.node_span(kw.value)
             ks = self.src.node_span(kw)[0]
-            self._record_child(readable, kw.arg, v, *vs)
+            # No _child_spans on args either (see _params) - LineMap stops at the call.
             self.origin.add(Item(path + (kw.arg,), kw.arg, "kwarg", (ks, vs[1]), (ks, vs[1]), vs, v), seq)
+        self._nested -= 1
         if len(seq.items) >= 2:
             seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
         if not seq.items:
@@ -1252,7 +1270,8 @@ class _Extractor:
             return None
         if pos_names:
             readable["__pos_names__"] = list(pos_names)
-        self._stamp(readable, *self.src.node_span(call))
+        if not nested:
+            self._stamp(readable, *self.src.node_span(call))
         return readable
 
 

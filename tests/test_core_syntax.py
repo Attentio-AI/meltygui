@@ -529,6 +529,17 @@ class TestParity(unittest.TestCase):
                 theirs = cst_module_to_dict(cst.parse_module(text))
                 self._compare(ours, theirs, f"snippet {i}")
 
+    def test_linemap_depth_matches(self):
+        # live_view resolves sites via LineMap.node_at_line - our span set
+        # (which nodes carry .span / _child_spans) must match libcst's exactly.
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import LineMap
+        for i, text in enumerate(self.SNIPPETS + [SAMPLE]):
+            with self.subTest(i=i):
+                ours, theirs = LineMap(parse_to_dict(text)), LineMap(cst_module_to_dict(cst.parse_module(text)))
+                for line in range(1, text.count("\n") + 1):
+                    a, b = ours.node_at_line(line), theirs.node_at_line(line)
+                    self.assertEqual(a.path if a else None, b.path if b else None, f"snippet {i} line {line}")
+
 
 class TestReparseReusing(unittest.TestCase):
     def test_keeps_unchanged_objects_in_a_new_root(self):
@@ -698,6 +709,22 @@ class TestToggleIntegration(unittest.TestCase):
 
 
 class TestConsumers(unittest.TestCase):
+    def test_snapshot_overlay_recognises_bubbling_defs(self):
+        # The code host rewrites the held tree to Bubbling_<Base>; the live-view
+        # overlay's def detection must see through that on BOTH parsers.
+        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
+        from src.lsd.gl_gui.view.core_views.live_view_views import _is_funcdef_node, _is_def_parse
+        class Root:
+            def _mark_changed(self):
+                pass
+        for gp in (parse_to_dict(SAMPLE), cst_module_to_dict(cst.parse_module(SAMPLE))):
+            gp = install_bubbling(gp, Root())
+            node = gp["my_func"]
+            self.assertTrue(type(node).__name__.startswith("Bubbling_"))
+            self.assertTrue(_is_funcdef_node(node))
+            self.assertTrue(_is_def_parse(node, "my_func"))
+            self.assertFalse(_is_funcdef_node(gp["Toggles"]))
+
     def test_dunder_method_locals_editable(self):
         gp = parse_to_dict("class A:\n    def __repr__(self):\n        w = 1\n        return w\n")
         gp["A"]["__repr__"]["locals"]["w"] = 2

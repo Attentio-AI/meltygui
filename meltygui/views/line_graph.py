@@ -722,7 +722,7 @@ def draw_line_graph_4d(input_value=None, **kwargs):
                     dim_names=("phase", "freq", "sample", "line"))
 
 
-@window(input_value=line_host_5d, tint=(0.02, 0.38, 0.11))
+@window(input_value=line_host_5d, tint=(0.09, 0.50, 0.77))
 @render_func(show_bg=True, use_cache=True)
 def draw_line_graph_5d(input_value=None, draw_state=None, **kwargs):
     t = input_value.get("value") if isinstance(input_value, dict) else input_value

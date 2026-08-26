@@ -254,10 +254,15 @@ def _override_owner(scope_node, lookup_key):
 
 def _is_funcdef_node(node):
     """A def's parse from EITHER parser: a FunctionParse (core_syntax stamps no
-    __cst__) or a libcst FunctionDef-backed dict."""
+    __cst__) or a libcst FunctionDef-backed dict. isinstance, never the class
+    NAME: the code host's held tree is reclassed in place to
+    `Bubbling_FunctionParse` (bubbling.py), which is what the overlay walk
+    hands this function — a name check returned False for every def and the
+    snapshot overlay never drew a single live view (08-25)."""
     if not isinstance(node, dict):
         return False
-    if type(node).__name__ == "FunctionParse":
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import FunctionParse
+    if isinstance(node, FunctionParse):
         return True
     return type(node.get("__cst__")).__name__ == "FunctionDef"
 
