@@ -418,7 +418,7 @@ class Toggles:
     @defaults(tint=(0.811, 0.59, 0.29))
     class TextEditor:
 
-        some_list = [70,-39,93]
+        some_list = [63,-70,276]
 
         enable_spell_check = False
         # Long-line token clipping (_window_tokens band): a line longer
@@ -1923,7 +1923,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by

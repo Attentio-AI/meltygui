@@ -36,6 +36,16 @@ _STATE.setdefault("near_glue", [None, None])
 _STATE.setdefault("near_move", [0.0, 0.0])
 _STATE.setdefault("near_unwound", [0.0, 0.0])
 _STATE.setdefault("near_slid_max", [0.0, 0.0])
+_STATE.setdefault("near_stall", [0, 0])
+_STATE.setdefault("near_wall", [False, False])
+_STATE.setdefault("near_wall_px", [0.0, 0.0])
+
+# Hand-motion frames with a near-edge request outstanding and no move seen
+# after which the compositor is taken to have REFUSED it: the studio's
+# near edge is on the screen's. A move lands 2–3 frames after its request
+# in normal flow (flush → next frame's start → that frame's swap → a
+# input event that shows the surface moved).
+NEAR_STALL_FRAMES = 4
 
 
 def _trace(msg):
@@ -132,9 +142,14 @@ def absorb(axis, overflow, owner=None):
     # the rest of the gesture. One frame of growth overshoots before the
     # slide is seen; that much the studio cannot move.
     hit = _STATE["cap_hit"][i]
-    if hit is None and _STATE["slid"][i] > 0 and _STATE["grown"][i] > 0:
+    # Only the slide the compositor made counts: a near push (push_near)
+    # moves the studio on request, but that move is seen the same way -
+    # net it out, else the first far absorb after a left-edge push would
+    # read the studio's own move as the workarea edge and stop growing.
+    pushed = _STATE["slid"][i] - _STATE["near_slid"][i]
+    if hit is None and pushed > 0.5 and _STATE["grown"][i] > 0:
         hit = _STATE["cap_hit"][i] = size[i]
-        _trace(f"absorb {axis}: compositor slid the surface {_STATE['slid'][i]:.0f} px "
+        _trace(f"absorb {axis}: compositor slid the surface {pushed:.0f} px "
                f"— workarea edge reached, cap {cap[i]:.0f} → {hit:.0f}")
     limit = cap[i] if hit is None else min(cap[i], hit)
     room = max(0.0, limit - size[i])
@@ -169,21 +184,80 @@ def push_far_edge(axis, abs_pos, size, display, owner, cap_size=True):
     return clamp_far_edge(abs_pos, size, display, absorbed, cap_size)
 
 
-def note_surface_slide(slide_x, slide_y):
+def note_surface_slide(slide_x, slide_y, moved=(False, False)):
     """From SplitOverlayRenderer._cancel_surface_slide, every frame a
     button is held: how far the SURFACE has moved under the hand since
     the press (surface-pointer travel − screen-pointer travel; positive =
     the surface moved left / up, the compositor's keep-on-screen push
     against a surface growing right / down). Read by absorb; and each new
     step of it on an axis with a near push armed is the studio moving
-    toward the hand — the near GLUE applies it (see push_near)."""
+    toward the hand — the near GLUE applies it (see push_near), but only
+    as much as is OUTSTANDING (requested, not yet seen): the rest is the
+    compositor's own push and stays with absorb's cap reading. ``moved``
+    = per axis, did the HAND move this frame; a hand-motion frame with a
+    move outstanding and nothing landing counts toward the wall
+    (NEAR_STALL_FRAMES → _hit_wall)."""
     new = [float(slide_x), float(slide_y)]
     old = _STATE["slid"]
     _STATE["slid"] = new
     for i, axis in enumerate(("x", "y")):
+        if _STATE["near_glue"][i] is None:
+            continue
         delta = new[i] - old[i]
-        if delta and _STATE["near_glue"][i] is not None:
+        outstanding = max(0.0, _STATE["near_requested"][i] - _STATE["near_slid"][i])
+        if delta > 0:
+            _STATE["near_stall"][i] = 0
+            ours = min(delta, outstanding)
+            if ours > 0:
+                _apply_near_glue(axis, ours)
+        elif delta < 0:
+            # the unwind's slide back - only the re-base (see _apply_near_glue)
             _apply_near_glue(axis, delta)
+        elif moved[i] and outstanding > 0.5 and not _STATE["near_wall"][i]:
+            _STATE["near_stall"][i] += 1
+            if _STATE["near_stall"][i] > NEAR_STALL_FRAMES:
+                _hit_wall(axis)
+
+
+def _hit_wall(axis):
+    """The compositor refused the outstanding near-push move(s): the
+    studio's near edge is on the screen's. The surface grew on the far
+    side for moves that never came — shrink it back by that (the OS far
+    edge returns to where it was before the refused requests), hand the
+    same px to the pushed window (take_wall_px: it was reframed onto the
+    display edge for those moves and gets the width back as a translate),
+    and hold the axis: push_near returns 0 until the hand comes back
+    inside (unwind_near lifts the wall). The screen is the final barrier
+    for the near edge; the window's overshoot goes the other way from
+    here (the caller's pin-and-slide)."""
+    i = _AXIS[axis]
+    outstanding = max(0.0, _STATE["near_requested"][i] - _STATE["near_slid"][i])
+    _STATE["push_near"][i] -= outstanding
+    _STATE["near_wall_px"][i] += outstanding
+    _STATE["near_wall"][i] = True
+    _STATE["near_stall"][i] = 0
+    _trace(f"near wall {axis}: {outstanding:.0f} px of moves never landed — surface shrunk back, axis holds")
+
+
+def near_walled(axis):
+    """Is the near push on ``axis`` holding at the screen edge this gesture?"""
+    return bool(_STATE["near_wall"][_AXIS[axis]])
+
+
+def take_wall_px(axis, owner):
+    """The px the wall handed back to the window that pushed (its near
+    edge was reframed onto the display for moves the compositor refused):
+    returned ONCE, to that window, 0 otherwise. The frame pass un-reframes
+    by it and translates the window the other way (the pin-and-slide);
+    the corner path re-derives its geometry from the press baseline every
+    frame and needs nothing."""
+    i = _AXIS[axis]
+    glue = _STATE["near_glue"][i]
+    if glue is None or glue[0] is not owner:
+        return 0.0
+    px = _STATE["near_wall_px"][i]
+    _STATE["near_wall_px"][i] = 0.0
+    return px
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +294,23 @@ def note_surface_slide(slide_x, slide_y):
 # pointer (the slide measurement) and the EGL window (the offset). The
 # earlier xdg_toplevel.resize handoff (request_render / the configure glue /
 # the content shift) is superseded and left in place unused.
+#
+# A WALL. Mutter refuses the move - the studio's near edge is on the
+# screen's - and a failed request leaves only the far-side growth behind
+# (the OS right edge expanded while the melty window's right edge sat
+# still: the 08-26 left-drag video). Nothing tells the client; what it can
+# see is that the move never shows up in the pointer. So a move that stays
+# outstanding for NEAR_STALL_FRAMES frames of HAND MOTION is refused
+# (_hit_wall): the surface shr shrunk by the growth that never got its
+# move, the pushed window gets those px back (take_wall_px) and the axis
+# holds - push_near returns 0 - until the hand comes back inside. From
+# there the pushed window's overshoot goes the OTHER way, the mirror of
+# the left/right rule: the window translates as a slide with its near
+# edge pinned on the display edge, its far edge runs into the OS far edge
+# and absorbs there (the columns near hook; the corner path translates
+# from its baseline), sticky on the way back: the translate unwinds first
+# (near edge pinned, far edge returning), then the OS window moves back
+# (unwind_near), then the near edge lifts off the display.
 # ---------------------------------------------------------------------------
 
 def push_near(axis, over, owner, edge=None, total=False):
@@ -230,6 +321,10 @@ def push_near(axis, over, owner, edge=None, total=False):
     if over <= 0 or not near_push_available() or not _live():
         return 0.0
     i = _AXIS[axis]
+    if _STATE["near_wall"][i]:
+        # the studio's near edge is on the screen's (_hit_wall): nothing
+        # to ask for - the caller slides its window the other way
+        return 0.0
     _fresh()
     if total:
         outstanding = _STATE["near_requested"][i] - _STATE["near_slid"][i] + _STATE["push_near"][i]
@@ -269,6 +364,12 @@ def unwind_near(axis, inside, owner):
     glue = _STATE["near_glue"][i]
     if inside <= 0 or glue is None or glue[0] is not owner or not near_push_available() or not _live():
         return 0.0
+    if _STATE["near_wall"][i]:
+        # the hand is back inside: the next push may probe the edge again
+        _STATE["near_wall"][i] = False
+        _STATE["near_stall"][i] = 0
+        _STATE["near_wall_px"][i] = 0.0
+        _trace(f"near wall {axis} lifted (hand back inside)")
     _fresh()
     requested = _STATE["near_requested"][i] + _STATE["push_near"][i]     # net, this gesture
     slid = _STATE["near_slid"][i]
@@ -352,6 +453,9 @@ def flush():
         _STATE["near_move"] = [0.0, 0.0]
         _STATE["near_unwound"] = [0.0, 0.0]
         _STATE["near_slid_max"] = [0.0, 0.0]
+        _STATE["near_stall"] = [0, 0]
+        _STATE["near_wall"] = [False, False]
+        _STATE["near_wall_px"] = [0.0, 0.0]
     px, py = _STATE["push"]
     nx, ny = _STATE["push_near"]
     mx, my = _STATE["near_move"]

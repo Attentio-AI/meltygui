@@ -2303,15 +2303,32 @@ def render_func(*args, **o_kwargs):
                         # not already requested) and the glue re-bases the
                         # baseline with the frame. The queued paths report
                         # increments from _frame_pass.
+                        # At the WALL (the studio's edge on the screen's,
+                        # os_frame.near_walled) the overshoot goes the other
+                        # way instead: the window translates with its near
+                        # edge pinned on the display edge, and the far
+                        # clamps below take its far edge into the OS edge.
+                        # Sticky by construction - pos/size come from the
+                        # press baseline every frame, so the translate
+                        # unwinds as the hand comes back.
                         _near_push = os_frame.near_push_available() and draw_state.parent_window is None
                         if _near_push and not queued and draw_state._abs_left() < 0:
-                            os_frame.push_near("x", -draw_state._abs_left(), draw_state, None, total=True)
-                            _columns.reframe_axis(draw_state, "x", -draw_state._abs_left())
+                            _over_x = -draw_state._abs_left()
+                            if os_frame.near_walled("x"):
+                                draw_state.window_pos = (snap_int(draw_state.window_pos[0] + _over_x),
+                                                         draw_state.window_pos[1])
+                            else:
+                                os_frame.push_near("x", _over_x, draw_state, None, total=True)
+                                _columns.reframe_axis(draw_state, "x", _over_x)
                         elif _near_push and not queued and draw_state._abs_left() > 0:
                             os_frame.unwind_near("x", draw_state._abs_left(), draw_state)
                         if _near_push and not queued_rows and abs_top_tl < 0:
-                            os_frame.push_near("y", -abs_top_tl, draw_state, None, total=True)
-                            _columns.reframe_axis(draw_state, "y", -abs_top_tl)
+                            if os_frame.near_walled("y"):
+                                draw_state.window_pos = (draw_state.window_pos[0],
+                                                         snap_int(draw_state.window_pos[1] - abs_top_tl))
+                            else:
+                                os_frame.push_near("y", -abs_top_tl, draw_state, None, total=True)
+                                _columns.reframe_axis(draw_state, "y", -abs_top_tl)
                             abs_top_tl = 0
                         elif _near_push and not queued_rows and abs_top_tl > 0:
                             os_frame.unwind_near("y", abs_top_tl, draw_state)

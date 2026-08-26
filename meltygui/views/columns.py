@@ -820,7 +820,12 @@ def _frame_pass(window, axis):
     if cursor_driven and _drag_live() and getattr(window, "parent_window", None) is None:
         from src.lsd.gl_gui import os_frame
         from src.lsd.gl_gui.toggles import Toggles
-        if Toggles.Melty.push_os_window_edges and Melty.display_size and _abs_before is not None:
+        # While the near push is at the screen edge (os_frame.near_walled)
+        # the far edge is accounted for AFTER the near hook, from the live
+        # position: its translate is what moves the far edge then, and this
+        # pre-translate position would file a stale unwind against it.
+        if (Toggles.Melty.push_os_window_edges and Melty.display_size and _abs_before is not None
+                and not (os_frame.near_push_available() and os_frame.near_walled(axis))):
             # LIVE position: the wrapper's abs_left/abs_top predate this
             # pass's line-up. A left-edge drag slides window_pos left and
             # grows the width by the same amount - read with the stale left
@@ -864,25 +869,91 @@ def _frame_pass(window, axis):
                     os_frame.absorb(axis, -(gap - back), window)
     elif not _drag_live() and getattr(window, "_push_slide", None):
         window._push_slide = None
+        window._near_slide = None
     # NEAR edge (left / top) driven past the display's near edge by a
-    # cursor-driven drag: the studio moves only through the compositor -
-    # os_frame.push_near grows the far side through the keep-on-screen edge
-    # and Mutter slides the studio toward the edge; this window's near edge
-    # stays AT the display edge meanwhile (reframe: far edge and interior
-    # stay on-screen) and the glue takes it back out on each move.
+    # cursor-driven drag: the studio moves only through the compositor —
+    # os_frame.push_near grows the far edge to translates the studio toward
+    # the hand; this window's near edge stays AT the display edge meanwhile
+    # (reframe: far edge and interior stay on screen) and the glue takes it
+    # back out by each move seen. At the WALL (the studio's near edge on
+    # the screen's, os_frame.near_walled) the overshoot goes the other way
+    # - the mirror of the far hook's pin-and-slide: the window TRANSLATES
+    # with its near edge pinned on the screen edge, and its far edge, now
+    # past the display, pushes the OS far edge out (absorb) or is clamped
+    # at the screen. STICKY like the far slide (window._near_slide): the
+    # hand coming back unwinds the translate first (near edge pinned, far
+    # edge returning), then the OS window comes back (unwind_near), then
+    # the near edge lifts off the display.
     if cursor_driven and _drag_live() and getattr(window, "parent_window", None) is None:
         from src.lsd.gl_gui import os_frame
         if os_frame.near_push_available() and _abs_before is not None:
             i = 0 if axis == "x" else 1
             abs_pos = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
+            near_slid = getattr(window, "_near_slide", None)
+            if near_slid is None:
+                near_slid = window._near_slide = {"x": 0.0, "y": 0.0}
+            # Moves the compositor refused: the near edge was reframed onto
+            # the display for it (the window that is narrower than the
+            # screen's) - un-reframe, then translate by the same px: the near
+            # edge stays where it is, the far edge moves out with it.
+            handed = os_frame.take_wall_px(axis, window)
+            if handed > 0:
+                reframe_axis(window, axis, -handed)
+                pos = window.window_pos or (0, 0)
+                window.window_pos = ((pos[0] + handed, pos[1]) if axis == "x"
+                                     else (pos[0], pos[1] + handed))
+                near_slid[axis] += handed
+                moved = True
             if abs_pos < 0:
-                reframe_axis(window, axis, -abs_pos)
-                os_frame.push_near(axis, -abs_pos, window, cursor_edge)
+                over = -abs_pos
+                if os_frame.near_walled(axis):
+                    # pin the near edge on the display edge, slide the
+                    # window the other way by the overshoot
+                    pos = window.window_pos or (0, 0)
+                    window.window_pos = ((pos[0] + over, pos[1]) if axis == "x"
+                                         else (pos[0], pos[1] + over))
+                    near_slid[axis] += over
+                else:
+                    reframe_axis(window, axis, over)
+                    os_frame.push_near(axis, over, window, cursor_edge)
                 moved = True
             elif abs_pos > 0:
-                # the hand came back, the push unwinds (no-op unless this
-                # window pushed this gesture)
-                os_frame.unwind_near(axis, abs_pos, window)
+                # the hand coming back: the translate unwinds first - the
+                # near edge stays pinned while the far edge comes back -
+                # then the OS window's move (no-op unless this window
+                # pushed this gesture)
+                back = min(near_slid[axis], abs_pos)
+                if back > 0:
+                    pos = window.window_pos or (0, 0)
+                    window.window_pos = ((pos[0] - back, pos[1]) if axis == "x"
+                                         else (pos[0], pos[1] - back))
+                    near_slid[axis] -= back
+                    abs_pos -= back
+                    moved = True
+                if abs_pos > 0:
+                    os_frame.unwind_near(axis, abs_pos, window)
+            # The far edge while the near edge holds at the wall, from the
+            # LIVE position (the far hook above stood down): past the
+            # display it pushes the OS far edge out; what the surface can't
+            # take is clamped there (and slide back while the near edge is on
+            # the wall); inside the display it lets the OS window move back
+            # (absorb's sticky unwind) as the translate unwinds.
+            if os_frame.near_walled(axis) and Melty.display_size and Melty.display_size[i]:
+                display = Melty.display_size[i]
+                abs_now = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
+                overflow = abs_now + far[axis] - display
+                if overflow > 0:
+                    absorbed = os_frame.absorb(axis, overflow, window)
+                    size, _slide = os_frame.clamp_far_edge(abs_now, far[axis], display, absorbed, True)
+                    if size < far[axis]:
+                        far[axis] = float(size)
+                        if axis == "x":
+                            window.width = snap_int(size)
+                        else:
+                            window.height = snap_int(size)
+                        moved = True
+                elif overflow < 0:
+                    os_frame.absorb(axis, overflow, window)
     return moved
 
 

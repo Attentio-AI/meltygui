@@ -257,6 +257,11 @@ class SplitOverlayRenderer(GlfwRenderer):
     # Pointer slide correction: (surface pointer, relative-motion total) at
     # mouse press, None if held.
     _slide_base = None
+    # Last frame's (surface pointer, relative-motion total), and the per-axis
+    # relative motion the cursor did NOT follow (clamped at the screen
+    # edge) since the press - excluded from the slide.
+    _slide_last = None
+    _slide_clamped = (0.0, 0.0)
     SLIDE_DEADBAND = 1.5
 
     def _cancel_surface_slide(self, io):
@@ -276,6 +281,8 @@ class SplitOverlayRenderer(GlfwRenderer):
         down = any(io.mouse_down[i] for i in range(3))
         if not down:
             self._slide_base = None
+            self._slide_last = None
+            self._slide_clamped = (0.0, 0.0)
             return
         mx, my = io.mouse_pos
         if mx < -1e6 or my < -1e6:
@@ -283,18 +290,42 @@ class SplitOverlayRenderer(GlfwRenderer):
         rel = wayland_move.relative_motion_total()
         if self._slide_base is None:
             self._slide_base = ((mx, my), rel)
+            self._slide_last = ((mx, my), rel)
+            self._slide_clamped = (0.0, 0.0)
             return
+        # The cursor CLAMPED at the screen edge: the hand (relative pointer)
+        # keeps moving on an axis while the surface pointer does not move
+        # at all on it. That is not the surface sliding - read as one it
+        # re-based every root window by the phantom slide that frame (the
+        # melty windows "sliding together" once the studio leaves the
+        # display) and pushed the pointer past the edge, so the drag kept
+        # going. Excluded from the slide, permanently: the cursor does
+        # not owe that motion back.
+        if self._slide_last is None:          # hotswapped mid-gesture: start the frame diff here
+            self._slide_last = ((mx, my), rel)
+        (lx, ly), (lrx, lry) = self._slide_last
+        d_rel = (rel[0] - lrx, rel[1] - lry)
+        cx, cy = self._slide_clamped
+        if d_rel[0] and mx == lx:
+            cx += d_rel[0]
+        if d_rel[1] and my == ly:
+            cy += d_rel[1]
+        self._slide_clamped = (cx, cy)
+        self._slide_last = ((mx, my), rel)
+        moved = (d_rel[0] != 0.0, d_rel[1] != 0.0)
         (bx, by), (rx0, ry0) = self._slide_base
-        slide_x = (mx - bx) - (rel[0] - rx0)
-        slide_y = (my - by) - (rel[1] - ry0)
+        slide_x = (mx - bx) - (rel[0] - rx0 - cx)
+        slide_y = (my - by) - (rel[1] - ry0 - cy)
         if abs(slide_x) < self.SLIDE_DEADBAND:
             slide_x = 0.0
         if abs(slide_y) < self.SLIDE_DEADBAND:
             slide_y = 0.0
         # os_frame reads the slide as the workarea edge: the OS-edge push
-        # stops growing an axis the compositor has slid against.
+        # stops moving an axis the compositor has slid on; the the
+        # push's glue applies the moves it asked for, and counts the hand
+        # frames a move stays unseen (the wall).
         from src.lsd.gl_gui import os_frame
-        os_frame.note_surface_slide(slide_x, slide_y)
+        os_frame.note_surface_slide(slide_x, slide_y, moved=moved)
         if slide_x or slide_y:
             io.mouse_pos = (mx - slide_x, my - slide_y)
 
