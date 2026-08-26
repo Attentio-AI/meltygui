@@ -5007,6 +5007,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             kwargs.pop("instances", None)
             kwargs.setdefault('show_bg', True)
             kwargs.setdefault('name', name)
+
+            from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+            if isinstance(kwargs.get("input_value"), RenderHost):
+                kwargs['input_value'] = kwargs['input_value'].get("value")
+
             if instances > 1:
                 # Multi-instance windows get their index so the caller can
                 # tell the primary (0) - the target of external commands -
@@ -5188,6 +5193,12 @@ def draw_melty_windows(vis):
 
     Core.melty.begin_frame()
 
+    # The OS window shrinking pushes the root windows to stay in view
+    # (os_frame / sticky to the gesture, cascading through their columns) -
+    # before they draw, at the display size begin_frame just updated.
+    from src.lsd.gl_gui import os_frame
+    os_frame.fit_windows_to_display()
+
     # imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
     imgui.set_cursor_screen_pos((0, 0))
     imgui.set_item_allow_overlap()
@@ -5228,6 +5239,13 @@ def draw_melty_windows(vis):
     paint_window_controls(draw_list)
 
     Core.melty.end_frame()
+
+    # The frame's pushes against the OS window's edges (os_frame.absorb from
+    # the corner drag / edge solves - which run in end_frame's window
+    # dispatch, so this must follow it) → one surface resize when next frame
+    # start.
+    from src.lsd.gl_gui import os_frame
+    os_frame.flush()
 
     # End frame ###############
     Core.melty.window_stack.pop()

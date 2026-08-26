@@ -375,8 +375,9 @@ def _workarea_for(window):
         # every side (the window client is the content), so the cap is
         # the workarea plus twice the margin.
         _ax, _ay, aw, ah = glfw.get_monitor_workarea(glfw.get_primary_monitor())
-        overhang = 2 * window_inset()
-        return 0.0, 0.0, float(aw + overhang), float(ah + overhang)
+        ox, oy = content_origin()
+        inset = window_inset()
+        return 0.0, 0.0, float(aw + ox + inset), float(ah + oy + inset)
     wx, wy = glfw.get_window_pos(window)
     ww, wh = glfw.get_window_size(window)
     cx, cy = wx + ww / 2, wy + wh / 2
@@ -400,8 +401,8 @@ def _apply_rdrag_resize(window, px, py, grab=None):
     window clamp — an edge dragged past the workarea edge pins there and the
     remaining growth pushes the OPPOSITE edge (slide + resize), so the
     window maxes out filling the workarea instead of running off-screen.
-    `grab` = (right, bottom) overrides the latched corner for this frame —
-    the left+right chord switching corners mid-drag (X11)."""
+    `grab` = (right, bottom) overrides the latched corner for this frame
+    (X11: the double right-drag's top-left mode)."""
     L0, T0, R0, B0, px0, py0, latched, wa = _rdrag
     grab_right, grab_bottom = grab if grab is not None else latched
     wa_l, wa_t, wa_r, wa_b = wa
@@ -469,8 +470,14 @@ def _button_layout(disp_w, maximized):
 
 
 def _studio_window():
+    """The studio's GLFW window handle, or None. Only a real ctypes handle
+    passes: a mocked vis (the test harness) hands back a MagicMock, which
+    ctypes coerces through __int__ into a garbage pointer that GLFW
+    segfaults on."""
+    import ctypes
     from src.lsd.gl_gui.melty import Melty
-    return Melty.glfw_window or getattr(Melty.vis, "window", None)
+    window = Melty.glfw_window or getattr(Melty.vis, "window", None)
+    return window if isinstance(window, ctypes._Pointer) else None
 
 
 def _main_window_ds():
@@ -691,21 +698,19 @@ def draw_titlebar(window):
     # a client-driven resize, which the per-drag-event render keeps smooth.
     if not maximized and over_button is None and edge is None:
         Melty.event_handler.register_hovered(
-            _RESIZE_ID, ["right_mouse_dragged"], priority=_STRIP_PRIORITY)
+            _RESIZE_ID, ["right_mouse_dragged", "right_mouse_double_dragged"], priority=_STRIP_PRIORITY)
     resize_events = (getattr(Melty, "events", None) or {}).get(_RESIZE_ID, {})
     if _rdrag is not None and not Melty.event_handler.is_down("right_mouse"):
         _rdrag = None  # gesture ended - re-latch on the next drag
-    if "right_mouse_dragged" in resize_events or _rdrag is not None:
-        # Left held too = the TOP-LEFT corner (the melty windows' own
-        # left+right corner rule), read EVERY frame so the chord switches
-        # corners mid-drag like theirs. X11: the app-side path slides the
-        # window, both ways. Wayland: that corner only moves at the
-        # compositor - xdg_toplevel.resize(top_left) - so the rest of the
-        # gesture is handed over the moment the left button joins; the
-        # compositor then owns the pointer until the sequence's first
-        # button is released, so there is no way back to the bottom-right
-        # corner within the same drag (a left release alone changes nothing).
-        both = Melty.event_handler.is_down("left_mouse")
+    double_drag = "right_mouse_double_dragged" in resize_events
+    if "right_mouse_dragged" in resize_events or double_drag or _rdrag is not None:
+        # A DOUBLE right-drag = the TOP-LEFT corner (the melty windows' own
+        # rule), decided on the press for the whole gesture. X11: the
+        # app-side drag slides the window. Wayland: that corner only moves
+        # through the compositor - xdg_toplevel.resize(top_left) - so the
+        # gesture is handed over as it starts (a fresh press: no travel for
+        # the compositor's corner-anchored resize to jump by).
+        both = double_drag and _rdrag is None
         if both and wayland and wayland_move.begin_resize(window, wayland_move.EDGE_TOP_LEFT):
             _release_after_wayland_grab(window)
             _rdrag = None
@@ -743,9 +748,11 @@ def draw_titlebar(window):
                 grab = (True, True) if wayland else (mx >= band_x, my >= band_y)
                 _rdrag = (float(wx), float(wy), float(wx + ww), float(wy + wh),
                           px, py, grab, _workarea_for(window))
-            # The chord picks the corner per frame: left held = top-left,
-            # released = back to the latched corner (X11; Wayland handed off above).
-            grab_right, grab_bottom = (False, False) if both else _rdrag[6]
+            # X11: a double right-drag is the top-left corner for the whole
+            # gesture (latched below); Wayland handed it over above.
+            if both:
+                _rdrag = _rdrag[:6] + ((False, False),) + _rdrag[7:]
+            grab_right, grab_bottom = _rdrag[6]
             direction = ((_SIZE_BOTTOMRIGHT if grab_right else _SIZE_BOTTOMLEFT)
                          if grab_bottom else
                          (_SIZE_TOPRIGHT if grab_right else _SIZE_TOPLEFT))
@@ -868,13 +875,30 @@ def _fullscreen(window):
 
 
 def frame_geometry(fb_w, fb_h):
-    """(inset, radius, content_size) of the frame for this frame's REAL
-    framebuffer, or (0, 0, (0, 0)) when the window is not transparent —
-    the shadow composite's frame uniforms (no frame → everything is content)."""
+    """(origin, radius, content_size) of the frame for this frame's REAL
+    framebuffer — origin the content's top-left in the surface — or
+    ((0, 0), 0, (0, 0)) when the window is not transparent: the shadow
+    composite's frame uniforms (no frame → everything is content)."""
     if not _frame_transparent(_studio_window()):
-        return 0.0, 0.0, (0.0, 0.0)
+        return (0.0, 0.0), 0.0, (0.0, 0.0)
     inset = float(window_inset())
-    return inset, frame_corner_radius(), (float(fb_w) - 2.0 * inset, float(fb_h) - 2.0 * inset)
+    ox, oy = content_origin()
+    return (ox, oy), frame_corner_radius(), (float(fb_w) - ox - inset, float(fb_h) - oy - inset)
+
+
+def content_origin():
+    """(x, y) of the content's top-left inside the surface: the shadow
+    margin plus the left/top content shift the OS-edge handoff leaves
+    behind (os_frame.content_shift — see there). (0, 0) while maximized /
+    fullscreen, which also collapses the shift."""
+    from src.lsd.gl_gui import os_frame
+    window = _studio_window()
+    if _maximized(window) or _fullscreen(window):
+        os_frame.reset_shift()
+        return (0.0, 0.0)
+    inset = float(window_inset())
+    sx, sy = os_frame.content_shift()
+    return (inset + sx, inset + sy)
 
 
 def frame_corner_radius():
@@ -893,7 +917,7 @@ def frame_corner_radius():
 _COVERAGE_GLSL = """
 float coverage(vec2 p) {
     vec2 half_size = content_size * 0.5;
-    vec2 d = abs(p - vec2(inset) - half_size) - (half_size - vec2(radius));
+    vec2 d = abs(p - origin - half_size) - (half_size - vec2(radius));
     float dist = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0) - radius;
     return 1.0 - smoothstep(-0.5, 0.5, dist);
 }
@@ -909,7 +933,7 @@ void main() {
 """
 
 @shader_func(fragment=_CORNER_FRAG)
-def _corner_alpha_pass(gl_state: GLState = None, content_size=(1.0, 1.0), inset=0.0,
+def _corner_alpha_pass(gl_state: GLState = None, content_size=(1.0, 1.0), origin=(0.0, 0.0),
                        radius=0.0, **kwargs):
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
@@ -960,6 +984,13 @@ def apply_pending_surface_size(window):
     if size is None or window is None:
         return None
     _pending_surface_size = None
+    from src.lsd.gl_gui.toggles import Toggles
+    if Toggles.Melty.push_os_window_edges_trace:
+        try:
+            was = glfw.get_framebuffer_size(window)
+        except Exception:
+            was = None
+        print(f"[os_frame] apply pending surface size {size} (was {was})")
     set_surface_size(window, *size)
     return size
 
@@ -985,10 +1016,15 @@ def on_surface_resized(window, width, height):
         sync_window_geometry(window, (int(width), int(height)))
         return None
     inset = window_inset()      # MAXIMIZED is already current inside GLFW's configure callback
-    if inset <= 0:
+    # A compositor-driven size names the GEOMETRY: the left/top pushoff's
+    # glue adjusts it (os_frame), then the surface is regrown around it
+    # (geometry origin on the left/top, shadow margin on the right/bottom).
+    from src.lsd.gl_gui import os_frame
+    os_frame.on_compositor_size(int(width), int(height))
+    grown = os_frame.surface_for_geometry(int(width), int(height))
+    if inset <= 0 and grown == (int(width), int(height)):
         sync_window_geometry(window, (int(width), int(height)))
         return None
-    grown = (int(width) + 2 * inset, int(height) + 2 * inset)
     set_surface_size(window, *grown)      # its resize callback syncs the geometry
     return grown
 
@@ -1002,9 +1038,9 @@ def sync_window_geometry(window, size=None):
     global _geometry_applied
     if not _on_wayland() or not wayland_move.geometry_available():
         return False
-    inset = window_inset()
+    from src.lsd.gl_gui import os_frame
     fb_w, fb_h = size if size is not None else glfw.get_framebuffer_size(window)
-    rect = (inset, inset, max(1, fb_w - 2 * inset), max(1, fb_h - 2 * inset))
+    rect = os_frame.geometry_rect(fb_w, fb_h)
     if rect == _geometry_applied:
         return False
     if wayland_move.set_window_geometry(*rect):
@@ -1022,11 +1058,12 @@ def sync_input_region(window):
     if not _on_wayland() or not wayland_move.input_region_available():
         return False
     inset = window_inset()
-    if inset <= 0:
+    ox, oy = content_origin()
+    if inset <= 0 and ox == 0 and oy == 0:
         rect = None
     else:
         fb_w, fb_h = glfw.get_framebuffer_size(window)
-        rect = (inset, inset, max(1, fb_w - 2 * inset), max(1, fb_h - 2 * inset))
+        rect = (int(ox), int(oy), max(1, int(fb_w - ox - inset)), max(1, int(fb_h - oy - inset)))
     if rect == _input_rect_applied:
         return False
     if wayland_move.set_input_rect(rect):
@@ -1058,13 +1095,14 @@ def composite_window_frame(fb_w, fb_h):
     from src.lsd.gl_gui.toggles import Toggles
     radius = frame_corner_radius()
     inset = float(window_inset())
+    origin = content_origin()
     if fb_w <= 0 or fb_h <= 0 or not is_gl_thread():
         return False
-    if radius <= 0 and inset <= 0:
+    if radius <= 0 and inset <= 0 and origin == (0.0, 0.0):
         return False
     if not _frame_transparent(_studio_window()):
         return False
-    content_size = (float(fb_w) - 2.0 * inset, float(fb_h) - 2.0 * inset)
+    content_size = (float(fb_w) - origin[0] - inset, float(fb_h) - origin[1] - inset)
     if _corner_gl is None:
         _corner_gl = GLState()
     saved_mask = gl.glGetBooleanv(gl.GL_COLOR_WRITEMASK)
@@ -1091,7 +1129,7 @@ def composite_window_frame(fb_w, fb_h):
             # rgb = 0·src + dst·src_a ; alpha = src_a·1 + dst_a·0
             gl.glBlendEquationSeparate(gl.GL_FUNC_ADD, gl.GL_FUNC_ADD)
             gl.glBlendFuncSeparate(gl.GL_ZERO, gl.GL_SRC_ALPHA, gl.GL_ONE, gl.GL_ZERO)
-        _corner_alpha_pass(_corner_gl, content_size=content_size, inset=inset, radius=radius)
+        _corner_alpha_pass(_corner_gl, content_size=content_size, origin=origin, radius=radius)
         return True
     finally:
         gl.glColorMask(*[gl.GL_TRUE if bool(m) else gl.GL_FALSE for m in saved_mask])

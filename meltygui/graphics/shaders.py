@@ -299,14 +299,14 @@ class ShadowComposite:
         # rim. 0 disables the adaptation (pure fixed-f fade).
         'specular_fade_rel': (GLType.FLOAT, 0.6),
         # The frameless OS window's frame (titlebar/etc): its rect sits
-        # frame_inset px into the framebuffer, frame_size wide, corners of
+        # at frame_origin in the framebuffer, frame_size wide, corners of
         # frame_radius, on a TRANSPARENT background. Inside that rounded rect the
         # composite is the usual darkening; outside it - the shadow margin
         # and the cut corners - there is nothing but the shadow, so the
         # output becomes the shadow itself with premultiplied alpha
         # (shadow_color·s, s). frame_size (0, 0) = no frame, the whole
         # framebuffer is drawn.
-        'frame_inset': (GLType.FLOAT, 0.0),
+        'frame_origin': (GLType.VEC2, (0.0, 0.0)),
         'frame_radius': (GLType.FLOAT, 0.0),
         'frame_size': (GLType.VEC2, (0.0, 0.0)),
         # Window-occlusion mask (blit_offscreen._build_window_mask): R16,
@@ -510,7 +510,7 @@ void main() {
     float frame_cov = 1.0;
     if (frame_size.x > 0.0 && frame_size.y > 0.0) {
         vec2 half_size = frame_size * 0.5;
-        vec2 fd = abs(gl_FragCoord.xy - vec2(frame_inset) - half_size) - (half_size - vec2(frame_radius));
+        vec2 fd = abs(gl_FragCoord.xy - frame_origin - half_size) - (half_size - vec2(frame_radius));
         float fdist = length(max(fd, vec2(0.0))) + min(max(fd.x, fd.y), 0.0) - frame_radius;
         frame_cov = 1.0 - smoothstep(-0.5, 0.5, fdist);
     }

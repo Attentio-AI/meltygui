@@ -517,12 +517,18 @@ def press_serial():
     return _STATE["press_serial"]
 
 
+def enter_serial():
+    """Serial of the last wl_pointer.enter on this client: it changes when the
+    pointer comes back after a compositor grab — the grab-over signal."""
+    return _STATE["enter_serial"]
+
+
 def _grab(opcode_name, *extra):
     """Send the move/resize request. The compositor honours it only with
     the serial of the press it keys the pointer grab to — for a single
-    button that is simply the press; for a CHORD (left+right = the
-    top-left corner) it is either the sequence's first press or the latest
-    one depending on the compositor, so both are sent when they differ:
+    button that is simply the press; with two buttons held it is either the
+    sequence's first press or the latest one depending on the compositor, so
+    both are sent when they differ:
     exactly one matches and starts the grab, the other is ignored."""
     if not available():
         return False
@@ -539,8 +545,8 @@ def _grab(opcode_name, *extra):
         wl.wl_proxy_marshal_flags(toplevel, _STATE["opcodes"][opcode_name], None,
                                   wl.wl_proxy_get_version(toplevel), 0, *args)
     wl.wl_display_flush(_STATE["display"])
-    # The grab swallows the release of every button held right now (a
-    # left+right corner grab holds two).
+    # The grab swallows the release of EVERY button held until now (two
+    # when a second button joined before the grab).
     held = set(_STATE["held"])
     if _STATE["press_button"] is not None:
         held.add(_STATE["press_button"])

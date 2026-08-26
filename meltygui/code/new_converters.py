@@ -759,6 +759,12 @@ def _melty_syntax_source(text):
     the bare SyntaxError when nothing parses (a VALUE for _run_convert — it
     carries `lineno` for the red highlight like _compile_check's)."""
     import ast
+    if (Toggles.TextEditor.melty_scanner
+            and len(text) >= Toggles.TextEditor.melty_async_min_chars):
+        # A buffer this big is a whole file (never a snippet needing a wrapper)
+        # and its syntax check runs inside the scan worker, off the GIL - an
+        # ast.parse here would hold the render thread for ~70ms per keystroke.
+        return text
     try:
         ast.parse(text)
         return text
@@ -1154,15 +1160,17 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             from src.lsd.gl_gui.notifications import lag_span
             _prev_melty = _prev_gp.get("__origin__") is not None
             if _prev_melty and Toggles.TextEditor.melty_syntax:
-                # core_syntax parse: a fresh parse that REUSES every unchanged
-                # value object of the held tree (draw_states survive), never
-                # mutating it - the held tree is bubbling-wrapped, and mutation
-                # would read as a user edit. A broken keystroke falls through
-                # to the full path, which is what reports the error.
-                from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_reusing
+                # Increment incremental parse: re-parse only the top-level statements
+                # the edit touched and splice them into a NEW root that reuses
+                # every unchanged value object of the held tree (draw calls
+                # survive) - the entire tree is bubbling-wrapped, a mutation
+                # would trigger as a user edit; it falls back to a full parse
+                # (reparse_reusing) for header/tail edits. A broken keystroke
+                # falls through to the full path, which is what reports the error.
+                from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
                 try:
                     with lag_span("melty_syntax reparse", 30):
-                        _inc_gp = reparse_reusing(_prev_gp, input_value)
+                        _inc_gp = reparse_incremental(_prev_gp, input_value)
                 except SyntaxError:
                     _inc_gp = None
             elif not _prev_melty and not Toggles.TextEditor.melty_syntax:

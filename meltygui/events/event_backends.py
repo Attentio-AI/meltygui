@@ -414,10 +414,10 @@ class GlfwQueueBackend:
         x, y = glfw.get_cursor_pos(window)
         try:
             from src.lsd.gl_gui.melty import Melty
-            inset = int(getattr(Melty, "frame_inset", 0) or 0)
+            ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
         except Exception:
-            inset = 0
-        return x - inset, y - inset
+            ox, oy = 0, 0
+        return x - ox, y - oy
 
     @staticmethod
     def _chain(prev, *args):

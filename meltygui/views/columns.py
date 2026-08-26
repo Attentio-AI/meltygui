@@ -700,9 +700,10 @@ def _frame_pass(window, axis):
             specs.pop(key, None)
 
     # Foreign size change since last frame → the far frame edge follows it
-    # THROUGH the collision solve.
+    # THROUGH the collision solve. Third slot None = NOT a cursor drag (the
+    # OS-edge hooks below skip it; _solve_collisions keeps its position).
     if abs(far[axis] - size) > 0.5:
-        _pending(window, axis).append((far, float(size)))
+        _pending(window, axis).append((far, float(size), None))
 
     # The frame can never out-compress the window: keep min_width /
     # min_height at the fully-compressed span so a pending shrink always
@@ -769,6 +770,20 @@ def _frame_pass(window, axis):
                   and h not in seen_handles]:
             del totals[h]
 
+    # Only a CURSOR-DRIVEN drag in this pass may push / unwind the OS edge
+    # below - every live drag but the foreign-size invariant (third None
+    # above): column and row cascade, the frame handles, the corner drag.
+    # A gesture elsewhere on the app queues nothing here, but a window drag
+    # past the display edge moves the OS edge on its own.
+    cursor_items = [item for item in _pending(window, axis)
+                    if not (len(item) > 2 and item[2] is None)]
+    cursor_driven = bool(cursor_items)
+    cursor_edge = cursor_items[0][0] if cursor_items else None
+    # The window's screen position before this pass moves it: the near-edge
+    # check below adds this pass's own window_pos delta to it (abs_left /
+    # abs_top are the wrapper's per-frame values, not live).
+    _pos_before = tuple(window.window_pos or (0, 0))
+    _abs_before = window.abs_left if axis == "x" else window.abs_top
     moved = _solve_collisions(window, axis)
 
     # Line the WINDOW up with its frame edges: the same rule cells use.
@@ -794,6 +809,76 @@ def _frame_pass(window, axis):
         moved = True
     # Kill snap drift so the invariant check doesn't re-fire every frame.
     far[axis] = float(size)
+    # A far edge driven past the display edge by a live drag (frame handles,
+    # column cascade) pushes the OS window's edge out (os_frame); what the
+    # surface can't take - at the boundary - pins there and slides the
+    # window all other way, capped at the display's near edge (the corner
+    # right-drag's limit). STICKY: the slide is remembered for the gesture
+    # and unwound first as the far edge comes back (the bottom stays
+    # pinned while the top comes down), then the OS edge comes back by
+    # what is left (os_frame), then the far edge lifts off.
+    if cursor_driven and _drag_live() and getattr(window, "parent_window", None) is None:
+        from src.lsd.gl_gui import os_frame
+        from src.lsd.gl_gui.toggles import Toggles
+        if Toggles.Melty.push_os_window_edges and Melty.display_size and _abs_before is not None:
+            # LIVE position: the wrapper's abs_left/abs_top predate this
+            # pass's line-up. A left-edge drag slides window_pos left and
+            # grows the width by the same amount - read with the stale left
+            # that overstated the right edge by the drag amount: a false
+            # overflow, a spurious surface growth this frame and a
+            # pin-and-slide that threw the window to the display's left.
+            i = 0 if axis == "x" else 1
+            abs_pos = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
+            display = Melty.display_size[i]
+            if display:
+                slid = getattr(window, "_push_slide", None)
+                if slid is None:
+                    slid = window._push_slide = {"x": 0.0, "y": 0.0}
+                overflow = abs_pos + far[axis] - display
+                if overflow > 0:
+                    # OS edge out → pin-and-slide → through the compositor's
+                    # edge once the near edge is past the window's
+                    size, slide = os_frame.push_far_edge(axis, abs_pos, far[axis], display, window)
+                    if slide > 0:
+                        pos = window.window_pos or (0, 0)
+                        window.window_pos = ((pos[0] - slide, pos[1]) if axis == "x"
+                                             else (pos[0], pos[1] - slide))
+                        slid[axis] += slide
+                        moved = True
+                    if size < far[axis]:
+                        far[axis] = float(size)
+                        if axis == "x":
+                            window.width = snap_int(size)
+                        else:
+                            window.height = snap_int(size)
+                        moved = True
+                elif overflow < 0:
+                    gap = -overflow
+                    back = min(slid[axis], gap)
+                    if back > 0:
+                        pos = window.window_pos or (0, 0)
+                        window.window_pos = ((pos[0] + back, pos[1]) if axis == "x"
+                                             else (pos[0], pos[1] + back))
+                        slid[axis] -= back
+                        moved = True
+                    os_frame.absorb(axis, -(gap - back), window)
+    elif not _drag_live() and getattr(window, "_push_slide", None):
+        window._push_slide = None
+    # NEAR edge (left / top) driven past the display's near edge by a
+    # cursor-driven drag: the studio moves only through the compositor -
+    # os_frame.push_near grows the far side through the keep-on-screen edge
+    # and Mutter slides the studio toward the edge; this window's near edge
+    # stays AT the display edge meanwhile (reframe: far edge and interior
+    # stay on-screen) and the glue takes it back out on each move.
+    if cursor_driven and _drag_live() and getattr(window, "parent_window", None) is None:
+        from src.lsd.gl_gui import os_frame
+        if os_frame.near_push_available() and _abs_before is not None:
+            i = 0 if axis == "x" else 1
+            abs_pos = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
+            if abs_pos < 0:
+                reframe_axis(window, axis, -abs_pos)
+                os_frame.push_near(axis, -abs_pos, window, cursor_edge)
+                moved = True
     return moved
 
 
@@ -832,6 +917,46 @@ def reframe_window(window, d_left, d_right, extra_edges=()):
     for ds, _ in window._edge_views.values():
         if not ds.size_change:
             ds.invalidate(note=Note(reason="reframe window", **_NOTE))
+    request_render()
+
+
+def reframe_axis(window, axis, d_near):
+    """Move the window's NEAR frame edge (left for "x", top for "y") by
+    ``d_near`` px (negative = outward) keeping every registered interior
+    edge at its SCREEN position — reframe_window's rule on either axis
+    with the far edge fixed. The glue of the OS-edge handoff (os_frame):
+    the compositor moved the studio's left/top edge, every root window was
+    re-based by the same amount, and the glued window's near edge follows
+    the OS edge back out while its interior stays put."""
+    if not d_near:
+        return
+    _ensure_window_state(window)
+    frame_attr = _REGISTRY[axis][2]
+    size = window.width if axis == "x" else window.height
+    fe = getattr(window, frame_attr, None)
+    if not fe:
+        fe = [{axis: 0.0}, {axis: float(size or 0)}]
+        setattr(window, frame_attr, fe)
+    pos = window.window_pos or (0, 0)
+    if axis == "x":
+        window.window_pos = (pos[0] + d_near, pos[1])
+        window.width = snap_int((window.width or 0) - d_near)
+        size = window.width
+    else:
+        window.window_pos = (pos[0], pos[1] + d_near)
+        window.height = snap_int((window.height or 0) - d_near)
+        size = window.height
+    seen = set()
+    for e in _all_edges(window, axis):
+        if e is fe[0] or e is fe[1] or id(e) in seen:
+            continue
+        seen.add(id(e))
+        e[axis] -= d_near
+    fe[0][axis] = 0.0
+    fe[1][axis] = float(size)
+    for ds, _ in _views(window, axis).values():
+        if not ds.size_change:
+            ds.invalidate(note=Note(reason="reframe axis", **_NOTE))
     request_render()
 
 

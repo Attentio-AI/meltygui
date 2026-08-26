@@ -2890,26 +2890,21 @@ def _draw_host_volume(input_value):
     draw_voxels(t, name="volume")
 
 
-window(cls=voxel_host.get("value"), name="draw_voxel_playground", view_func=draw_voxels, tint=(0.00, 0.02, 0.12))
+# window(cls=voxel_host.get("value"), name="draw_voxel_playground", view_func=draw_voxels, tint=(0.00, 0.02, 0.12))
 #
 # @render_func(show_bg=True, use_cache=True)
 # def draw_voxel_playground(input_value=None, **kwargs):
 #     _draw_host_volume(input_value)
 
 
-@window(input_value=voxel_host_4d, tint=(0.20, 0.36, 0.59))
-@render_func(show_bg=True, use_cache=True)
-def draw_voxel_4d(input_value=None, **kwargs):
-    draw_voxels(input_value.get("value"), name="volume_4d", mode=Modes.WINDOW)
+# @window(input_value=voxel_host_4d, tint=(0.20, 0.36, 0.59))
+# @render_func(show_bg=True, use_cache=True)
+# def draw_voxel_4d(input_value=None, **kwargs):
+#     draw_voxels(input_value.get("value"), name="volume_4d", mode=Modes.WIRE)
 
+window(draw_voxels, name="voxel_host", input_value=voxel_host, tint=(1,0,0))
 
-@window(input_value=voxel_host_5d, tint=(0.02, 0.38, 0.11))
-@render_func(show_bg=True, use_cache=True)
-def draw_voxel_5d(input_value=None, draw_state=None, **kwargs):
-    _draw_host_volume(input_value)
+window(draw_voxels, name="voxel_host_4d", input_value=voxel_host_4d, tint=(0,1,1))
+window(draw_voxels, name="voxel_host_5d", input_value=voxel_host_5d, tint=(0.02, 0.38, 0.11))
 
-
-@window(input_value=voxel_host_flow, tint=(0.30, 0.20, 0.14))
-@render_func(show_bg=True, use_cache=True)
-def draw_voxel_flow(input_value=None, **kwargs):
-    _draw_host_volume(input_value)
+window(draw_voxels, name="voxel_host_flow", input_value=voxel_host_flow, tint=(0.02, 0.38, 0.11))

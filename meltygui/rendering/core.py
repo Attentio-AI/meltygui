@@ -346,13 +346,23 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
             dl.push_clip_rect(*overlay_clip, True)
     else:
         dl = imgui.get_window_draw_list()
-        # Only while the window list is actually split (the split is lazy -
-        # Melty.channels_split; blit & draw_freeze_scrollbar can run when it
-        # is off), and clamped into the window's channel count: get_channel()
-        # caps at max_depth - 1, so the +4 can run past the possible count at
-        # deep nesting and imgui asserts on an out-of-range channel.
+        # Channels above the view's body the grab paints on. The bar must
+        # sit over EVERY piece of window-list chrome drawn across a view
+        # from a shallower depth: the code editor's compare ribbons draw at
+        # get_channel() + 10 and its take arrows at + 11 (take_files /
+        # merge_files) from the editor WINDOW's depth, and the pane the bar
+        # belongs to is never shallower than that window, so + 12 clears
+        # them at any nesting. (Blit's served-frame bar already landed on
+        # top - it paints after the tile image - so this only matched the
+        # live view to date.) Bump this if a new chrome offset outgrows it.
+        channel_lift = 12
+        # Only while the window list is actually split (the split is lazy —
+        # Melty.channels_split; blit's draw_freeze_scrollbar can run when it
+        # is not), and clamped into the split's channel count: get_channel()
+        # caps at max_depth - 1, so the lift can run past the last channel
+        # at deep nesting and imgui asserts on an out-of-range channel.
         if Melty.channels_split:
-            dl.channels_set_current(max(0, min(Melty.get_channel() + 4,
+            dl.channels_set_current(max(0, min(Melty.get_channel() + channel_lift,
                                                Melty.max_depth - 1)))
     # dl.add_rect(track_x1, track_y1, track_x2, track_y2, col_border, rounding=3.0)
     if grab_y2 > grab_y1:
@@ -1896,13 +1906,13 @@ def render_func(*args, **o_kwargs):
                 draw_state.window_pos = (0, 0)
 
             # The right-drag (corner_drag) drives the resize block below: a
-            # plain right-drag drags the BOTTOM-RIGHT corner, left+right-drag
-            # (left button held too) drags the TOP-LEFT corner instead - the
-            # left press is a CHORD there (input_handler.feed_down: pressed
-            # while right is held it dispatches nothing, is_down reads it), so
-            # it can be pressed/released freely mid-drag to switch corners.
-            # Initialised as None so the
-            # window-move press block further down can still check whether a
+            # plain right-drag drags the BOTTOM-RIGHT corner, a DOUBLE
+            # right-drag (corner_double: press-press-drag in the handler's
+            # right_mouse_double_dragged) drags the TOP-LEFT corner instead -
+            # decided at the press for the whole gesture (the left+right
+            # chord it replaced switched corners mid-drag, Lukas dropped it
+            # 08-25). Initialised to None so the
+            # window-move press latch further down can still check whether a
             # right-drag resize is in flight (auto-resize windows have no
             # resize handle, so corner_drag stays None for them).
             corner_drag = None
@@ -1917,6 +1927,15 @@ def render_func(*args, **o_kwargs):
                                                    cursor=mouse_cursor.RESIZE_SE)
 
                 corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
+                # DOUBLE right-drag (the 2nd press of a double right-click,
+                # held and dragged) = the TOP-LEFT corner. The handler hands
+                # a double press to DOUBLE_DRAGGED subscribers first, so this
+                # fires INSTEAD of the plain corner drag: same event shape,
+                # the mode is decided at the press for the whole gesture.
+                corner_double = draw_state.on_action("double_right_mouse_drag",
+                                                     view_id="corner_drag_double", priority_delta=-1)
+                if corner_drag is None and corner_double is not None:
+                    corner_drag = corner_double
                 # A right-drag always resizes; the held LEFT button only
                 # selects the corner (read per frame in the drag block below
                 # - pressing/releasing left mid-drag flips corners live, with
@@ -1972,22 +1991,18 @@ def render_func(*args, **o_kwargs):
                         draw_state._initial_window_pos_resize = None
 
                 if handle_drag and not auto_resize:
-                    # Which corner this drag is currently dragging, read from
-                    # the LEFT button's level state per frame: plain
-                    # right-drag (and the corner handle) drags the
-                    # BOTTOM-RIGHT corner, left+right-drag drags the TOP-LEFT
-                    # corner - left column edge + window top, same collision
-                    # rules. The left press is a chord (never dispatched, see
-                    # input_handler.feed_down), so is_down is the only trace
-                    # of it. Pressing/releasing left mid-drag flips the
-                    # corner live: both modes state size/pos as
-                    # baseline ± total_d, so on a flip the baseline is
-                    # rebased around the CURRENT size/pos/total and the two
-                    # formulas hand off with zero jump; the column edge is
-                    # re-latched for the new side against the CURRENT cursor
-                    # (the gesture-start latch below uses the press point).
-                    top_left_now = bool(handle_drag is corner_drag
-                                        and Melty.event_handler.is_down("left_mouse"))
+                    # Which corner this drag drags: a right-drag (and the
+                    # corner handle) the BOTTOM-RIGHT corner; a DOUBLE
+                    # right-drag the TOP-LEFT corner - left column edge +
+                    # window top, same collision rules. Fixed for the
+                    # gesture (a double press can't become single mid-drag),
+                    # but both modes always state size/pos as baseline ±
+                    # total_d and the rebase-on-flip below is live, so a
+                    # mode change between frames hands off with zero jump;
+                    # the column edge is re-latched for the new side against
+                    # the CURRENT cursor (the gesture-start latch below uses
+                    # the press point).
+                    top_left_now = bool(handle_drag is corner_drag and corner_double is not None)
                     # The corner's own directional shape (bottom-right ↘ vs
                     # top-left ↖). Immediate: the right-drag has no grab rect
                     # to hang a subscription cursor on, and this block runs
@@ -2270,7 +2285,32 @@ def render_func(*args, **o_kwargs):
                     # position is re-derived from the baseline every frame, so
                     # the clamp never accumulates and releases on drag-back.
                     if from_top_left:
+                        # (imported here too: the corner clamp below imports
+                        # the same name later in this function, which makes
+                        # it a LOCAL for the whole body - an unbound read
+                        # here otherwise)
+                        from src.lsd.gl_gui import os_frame
                         abs_top_tl = draw_state._abs_top()
+                        # The display's top / left are movable OS edges on the
+                        # frameless Wayland window: past them os_frame.push_near
+                        # pushes the surface through the compositor's edge and
+                        # the studio slides toward the hand; this window's
+                        # edge stays on the display edge meanwhile
+                        # (reframe_axis keeps the OS edge and the interior on
+                        # screen). This path re-derives pos/size from the press
+                        # baseline every frame, so it reports the TOTAL past
+                        # the edge (the with total=True sends only what's
+                        # not already requested) and the glue re-bases the
+                        # baseline with the frame. The queued paths report
+                        # increments from _frame_pass.
+                        _near_push = os_frame.near_push_available() and draw_state.parent_window is None
+                        if _near_push and not queued and draw_state._abs_left() < 0:
+                            os_frame.push_near("x", -draw_state._abs_left(), draw_state, None, total=True)
+                            _columns.reframe_axis(draw_state, "x", -draw_state._abs_left())
+                        if _near_push and not queued_rows and abs_top_tl < 0:
+                            os_frame.push_near("y", -abs_top_tl, draw_state, None, total=True)
+                            _columns.reframe_axis(draw_state, "y", -abs_top_tl)
+                            abs_top_tl = 0
                         if abs_top_tl < 0 and queued_rows:
                             # The y solve owns height and position here
                             # frame: state the clamp as a cursor drag drag
@@ -2301,19 +2341,35 @@ def render_func(*args, **o_kwargs):
                     # windows clamp against the display correctly too. Only
                     # fires during real resizing, so the corner handle - whose
                     # cursor can't pass the the edge - is unaffected.
+                    # The display bottom is itself movable now (os_frame): the
+                    # overflow first pushes the OS window's bottom edge out,
+                    # and only what the surface can't take - at the screen -
+                    # pins and slides as before.
+                    from src.lsd.gl_gui import os_frame
                     display_h = imgui.get_io().display_size[1]
                     abs_top = draw_state._abs_top()
-                    if abs_top + draw_state.height > display_h:
-                        # Cap: never go taller than the display, and never
-                        # push the top above the display top. Once the window
-                        # fills the display height it stops enlarging - top
-                        # pinned at the display top, bottom at the display
-                        # bottom.
-                        if passed_height is None and draw_state.height > display_h:
-                            draw_state.height = snap_int(display_h)
-                        overflow = abs_top + draw_state.height - display_h
-                        draw_state.window_pos = (draw_state.window_pos[0],
-                                                 snap_int(draw_state.window_pos[1] - overflow))
+                    # Reported every frame of the drag: a positive overflow
+                    # pushes the OS edge out, a negative one (the hand
+                    # returning) lets it come back - sticky, they level out.
+                    # Only on the DIRECT path: when the drag is queued onto
+                    # the row solve, the height here is last frame's and
+                    # _frame_pass reports the real one (a stale push and a
+                    # real unwind in one frame fought over the OS edge).
+                    _overflow_y = abs_top + draw_state.height - display_h
+                    if _overflow_y <= 0 and not queued_rows:
+                        os_frame.absorb("y", _overflow_y, draw_state)      # the sticky unwind
+                    if _overflow_y > 0 and not queued_rows:
+                        # OS edge out → pin-and-slide (top down to the
+                        # display edge) → through the compositor's edge (the
+                        # studio's top moves) - os_frame.push_far_edge.
+                        new_h, slide = os_frame.push_far_edge(
+                            "y", abs_top, draw_state.height, display_h, draw_state,
+                            cap_size=passed_height is None)
+                        if new_h != draw_state.height:
+                            draw_state.height = snap_int(new_h)
+                        if slide > 0:
+                            draw_state.window_pos = (draw_state.window_pos[0],
+                                                     snap_int(draw_state.window_pos[1] - slide))
 
                     # Horizontal version of the clamp above: keep the window's
                     # right edge on the display while resizing. When the new
@@ -2322,12 +2378,18 @@ def render_func(*args, **o_kwargs):
                     # left instead, capping the width at the display width.
                     display_w = imgui.get_io().display_size[0]
                     abs_left = draw_state._abs_left()
-                    if abs_left + draw_state.width > display_w:
-                        if passed_width is None and draw_state.width > display_w:
-                            draw_state.width = snap_int(display_w)
-                        overflow = abs_left + draw_state.width - display_w
-                        draw_state.window_pos = (snap_int(draw_state.window_pos[0] - overflow),
-                                                 draw_state.window_pos[1])
+                    _overflow_x = abs_left + draw_state.width - display_w
+                    if _overflow_x <= 0 and not queued:
+                        os_frame.absorb("x", _overflow_x, draw_state)      # the sticky unwind
+                    if _overflow_x > 0 and not queued:
+                        new_w, slide = os_frame.push_far_edge(
+                            "x", abs_left, draw_state.width, display_w, draw_state,
+                            cap_size=passed_width is None)
+                        if new_w != draw_state.width:
+                            draw_state.width = snap_int(new_w)
+                        if slide > 0:
+                            draw_state.window_pos = (snap_int(draw_state.window_pos[0] - slide),
+                                                     draw_state.window_pos[1])
                 elif not (handle_press or corner_press):
                     # Not on the press branch itself - that would wipe the
                     # press-anchored baselines latched just above before the
@@ -2410,13 +2472,13 @@ def render_func(*args, **o_kwargs):
                     # here lost the press to any child that subscribed to it, which
                     # is exactly the inconsistency this replaces.
 
-                    # Window moves are left-drag only (left+right-drag drags
-                    # the top-left corner in the resize handler above). While a
-                    # right-drag resize is in flight the left button is its
-                    # corner chord, never a move - the handler swallows the
-                    # chorded press, so on_drag can't normally arrive here at
-                    # the same time as corner_drag; discard anyway so a lost
-                    # release doesn't make the two fight over window_pos.
+                    # Window moves are left-drag only (the right-drags, single
+                    # and double, are the resize block above). A left press
+                    # while a right-drag resize is in flight is a chord the
+                    # handler swallows (input_handler.feed_down), so on_drag
+                    # can't consistently arrive here at the same time as
+                    # corner_drag; guard anyway so a lost release can't make
+                    # the two fight over window_pos.
                     move_drag = on_drag if corner_drag is None else None
 
                     if move_drag and not imgui_active:

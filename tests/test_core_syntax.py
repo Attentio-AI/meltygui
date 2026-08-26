@@ -786,3 +786,184 @@ class TestConsumers(unittest.TestCase):
         self.assertEqual(loc["y"]["__pos_names__"], ["value", "name"])
         loc["y"]["value"] = 3
         self.assertIn("    y = melty_probe_fn(3)\n", general_parse_to_str(gp))
+
+
+# ── the scanner front end vs the ast oracle ─────────────────────────────────────
+
+def _snapshot_value(v):
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import NoDefault
+    if isinstance(v, Comment):
+        return ("C", str(v), v.inline)
+    if isinstance(v, CodeLine):
+        return ("code", str(v))
+    if isinstance(v, NoDefault):
+        return "NO_DEFAULT"
+    if isinstance(v, dict):
+        return ("D", type(v).__name__, [(_snapshot_value(k), _snapshot_value(val)) for k, val in v.items()
+                                         if k != ORIGIN_KEY],
+                repr(getattr(v, "span", None)),
+                sorted((_snapshot_value(k), repr(sp)) for k, sp in (getattr(v, "_child_spans", None) or {}).items()),
+                getattr(v, "def_name", None), getattr(v, "func_name", None), getattr(v, "condition", None),
+                getattr(v, "target", None), getattr(v, "iter", None), getattr(v, "header", None),
+                getattr(v, "source", None) if isinstance(v, GeneralParse) else None)
+    if isinstance(v, (list, tuple)):
+        return (type(v).__name__, [_snapshot_value(x) for x in v])
+    if isinstance(v, set):
+        return ("set", sorted(map(repr, v)))
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return (type(v).__name__, v)
+    return ("obj", repr(v))
+
+
+def snapshot(gp):
+    """Everything the studio and the reverse path read, as plain data."""
+    origin = gp[ORIGIN_KEY]
+    items = sorted(((tuple(_snapshot_value(k) for k in p), it.kind, it.extent, it.core, it.value_span, it.indent,
+                     it.slot, it.code_end, it.shadowed, _snapshot_value(it.key),
+                     _snapshot_value(it.comment_key) if it.comment_key is not None else None,
+                     origin.seqs[it.seq].kind if it.seq is not None else None)
+                    for p, it in origin.items.items()), key=repr)
+    seqs = sorted(((tuple(_snapshot_value(k) for k in s.owner), s.kind, [_snapshot_value(it.key) for it in s.items],
+                    s.region, s.insert_at, s.indent, s.sep) for s in origin.seqs.values()), key=repr)
+    return (_snapshot_value(gp), items, seqs,
+            sorted((tuple(_snapshot_value(k) for k in p), origin.seqs[v].kind) for p, v in origin.default_seq.items()),
+            sorted((tuple(_snapshot_value(k) for k in p), sorted(origin.seqs[s].kind for s in v)) for p, v in origin.owned.items()),
+            sorted((tuple(_snapshot_value(k) for k in p), len(v)) for p, v in origin.loose.items()))
+
+
+class TestScannerParity(unittest.TestCase):
+    """melty_scan.scan (in-process and in the worker) must produce exactly what
+    the ast front end produces — dict, spans, items, seqs — on every src file."""
+
+    def _check(self, text, path, frontends=("scan", "worker")):
+        ref = snapshot(parse_to_dict(text, file_path=path, frontend="ast"))
+        for fe in frontends:
+            got = snapshot(parse_to_dict(text, file_path=path, frontend=fe))
+            if got != ref:
+                for i, (a, b) in enumerate(zip(ref, got)):
+                    if a != b:
+                        if isinstance(a, list):
+                            sa, sb = set(map(repr, a)), set(map(repr, b))
+                            self.fail(f"{path} [{fe}] section {i} differs:\n  only ast: {sorted(sa - sb)[:5]}\n  only {fe}: {sorted(sb - sa)[:5]}")
+                        self.fail(f"{path} [{fe}] section {i} differs")
+                self.fail(f"{path} [{fe}] differs")
+
+    def test_sample(self):
+        self._check(SAMPLE, "sample")
+
+    def test_whole_src_tree(self):
+        checked = 0
+        for path in sorted(SRC.rglob("*.py")):
+            if "site-packages" in str(path) or "venv" in str(path):
+                continue
+            text = path.read_text(encoding="utf-8")
+            try:
+                ast.parse(text)
+            except SyntaxError:
+                continue
+            with self.subTest(file=path.name):
+                self._check(text, path, frontends=("scan",))
+            checked += 1
+        self.assertGreater(checked, 50)
+
+    def test_worker_on_big_files(self):
+        for name in ("view/core_views/text_editor.py", "toggles.py", "view/core_views/new_core_view.py"):
+            path = SRC / "lsd" / "gl_gui" / name
+            self._check(path.read_text(encoding="utf-8"), path, frontends=("worker",))
+
+    def test_worker_reports_syntax_errors_as_syntaxerror(self):
+        with self.assertRaises(SyntaxError) as ctx:
+            parse_to_dict("x = (\n", frontend="worker")
+        self.assertEqual(ctx.exception.lineno, 1)
+
+    def test_scanner_syntax_errors(self):
+        for bad in ("x = (\n", "def f(:\n    pass\n", "  x = 1\n"):
+            with self.assertRaises(SyntaxError):
+                parse_to_dict(bad, frontend="scan")
+
+    def test_default_frontend_by_size(self):
+        from src.lsd.gl_gui.toggles import Toggles
+        from src.lsd.gl_gui.view.core_conversion import core_syntax as cs
+        prev = (Toggles.TextEditor.melty_scanner, Toggles.TextEditor.melty_async_min_chars)
+        try:
+            Toggles.TextEditor.melty_scanner = True
+            Toggles.TextEditor.melty_async_min_chars = 10
+            self.assertEqual(cs._default_frontend(5), "scan")
+            self.assertEqual(cs._default_frontend(50), "worker" if cs._worker.available() else "scan")
+            Toggles.TextEditor.melty_scanner = False
+            self.assertEqual(cs._default_frontend(50), "ast")
+        finally:
+            Toggles.TextEditor.melty_scanner, Toggles.TextEditor.melty_async_min_chars = prev
+
+
+class TestIncremental(unittest.TestCase):
+    """reparse_incremental(gp, new) must equal a full parse of `new` — dict,
+    spans, items, seqs — for every kind of edit, and reuse untouched nodes."""
+
+    @staticmethod
+    def _edits(text):
+        lines = text.split("\n")
+        n = len(lines)
+        yield "same-line literal", "\n".join(l.replace("= 0.", "= 9.", 1) if "= 0." in l else l for l in lines)
+        i = next((i for i, l in enumerate(lines) if l.startswith("    ") and " = " in l), None)
+        if i is not None:
+            yield "insert a line", "\n".join(lines[:i] + [lines[i], lines[i].split("=")[0] + "_dup = 1"] + lines[i + 1:])
+            yield "delete a line", "\n".join(lines[:i] + lines[i + 1:])
+        j = next((i for i, l in enumerate(lines) if l.startswith("def ") or l.startswith("class ")), None)
+        if j is not None:
+            yield "comment above a def", "\n".join(lines[:j] + ["# [tint=(0.1, 0.2, 0.3)]"] + lines[j:])
+            yield "rename a def", "\n".join(lines[:j] + [lines[j].replace(lines[j].split()[1].split("(")[0].split(":")[0], "renamed_thing", 1)] + lines[j + 1:])
+        yield "append at end", text + "\nTAIL = 1\n"
+        yield "edit near the top", lines[0] + "  # touched\n" + "\n".join(lines[1:])
+
+    def _check(self, text, label):
+        from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+        for name, new_text in self._edits(text):
+            if new_text == text:
+                continue
+            gp = parse_to_dict(text)          # the base parse consumed by each incremental step
+            with self.subTest(file=label, edit=name):
+                try:
+                    ast.parse(new_text)
+                except SyntaxError:
+                    with self.assertRaises(SyntaxError):
+                        reparse_incremental(gp, new_text)
+                    continue
+                inc = reparse_incremental(gp, new_text)
+                full = parse_to_dict(new_text)
+                self.assertEqual(snapshot(inc), snapshot(full))
+                self.assertEqual(general_parse_to_str(inc), new_text)
+                self.assertIsNot(inc, gp)
+
+    def test_sample(self):
+        self._check(SAMPLE, "sample")
+
+    def test_src_files(self):
+        for name in ("toggles.py", "view/core_conversion/live_view.py", "view/core_views/text_editor.py",
+                     "view/core_views/merge_files.py", "shaped.py"):
+            path = SRC / "lsd" / "gl_gui" / name
+            self._check(path.read_text(encoding="utf-8"), name)
+
+    def test_reuses_untouched_top_level_nodes(self):
+        from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+        gp = parse_to_dict(SAMPLE)
+        toggles = gp["Toggles"]
+        inc = reparse_incremental(gp, SAMPLE.replace("local_one = 5", "local_one = 55"))
+        self.assertIs(inc["Toggles"], toggles)            # a statement outside the region: the old object
+        self.assertIsNot(inc["my_func"], gp["my_func"])   # the edited def is fresh ...
+        self.assertIs(inc["my_func"]["decorators"]["register"], gp["my_func"]["decorators"]["register"])  # ... its untouched parts reused
+        self.assertEqual(inc["my_func"]["locals"]["local_one"], 55)
+
+    def test_never_mutates_the_previous_tree(self):
+        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
+        from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_incremental
+        class Root:
+            marks = 0
+            def _mark_changed(self):
+                self.marks += 1
+        root = Root()
+        gp = install_bubbling(parse_to_dict(SAMPLE), root)
+        inc = reparse_incremental(gp, SAMPLE.replace("speed = 3.0", "speed = 4.0"))
+        self.assertEqual(root.marks, 0)
+        self.assertEqual(inc["Toggles"]["speed"], 4.0)
+        self.assertEqual(gp["Toggles"]["speed"], 3.0)

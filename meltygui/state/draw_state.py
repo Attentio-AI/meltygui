@@ -1802,8 +1802,8 @@ class DrawState(DictConversion):
     def is_glfw_mouse_hovering_rect(self, x1, y1, x2, y2):
 
         global_mouse = glfw.get_cursor_pos(Core.melty.glfw_window)
-        inset = int(getattr(Core.melty, "frame_inset", 0) or 0)   # shadow coords → content coords
-        mx, my = global_mouse[0] - inset, global_mouse[1] - inset
+        ox, oy = getattr(Core.melty, "frame_origin", None) or (0, 0)   # shadow margin (+ shift) → content coords
+        mx, my = global_mouse[0] - ox, global_mouse[1] - oy
         # basic collision check
         if x1 <= mx <= x2 and y1 <= my <= y2:
             return True

@@ -39,6 +39,7 @@ ctrl = y only).
 import math
 
 import imgui
+import numpy
 import numpy as np
 import OpenGL.GL as gl
 
@@ -386,6 +387,7 @@ def draw_line_graph(input_value=None, gl_state: GLState = None, selectable=False
     series GLTexture (rendered as-is; needs n_samples/tex_w/y_range stamped
     on it)."""
     import torch
+    
     src = input_value
     img_origin = imgui.get_cursor_screen_pos()   # the image draws here below
     dim_names = tuple(_clean_dim_name(x, i) for i, x in enumerate(dim_names or ()))
@@ -715,21 +717,10 @@ line_host_5d = _ensure_host("line_host_5d", "Line 5D", demo_5d(), io=voxel_io)
 line_host_torus = _ensure_host("line_host_torus", "Line Torus", demo_4d(), io=voxel_io)
 
 
-@window(input_value=line_host_4d, tint=(0.20, 0.36, 0.59))
-@render_func(show_bg=True, use_cache=True)
-def draw_line_graph_4d(input_value=None, **kwargs):
-    draw_line_graph(input_value.get("value"), name="lines_4d", mode=Modes.WINDOW,
-                    dim_names=("phase", "freq", "sample", "line"))
+window(draw_line_graph, name="line_host_4d", input_value=line_host_4d, tint=(0.20, 0.36, 0.59))
 
 
-@window(input_value=line_host_5d, tint=(0.09, 0.50, 0.77))
-@render_func(show_bg=True, use_cache=True)
-def draw_line_graph_5d(input_value=None, draw_state=None, **kwargs):
-    t = input_value.get("value") if isinstance(input_value, dict) else input_value
-    if t is None:
-        imgui.text("no series yet — waiting on host")
-        return
-    draw_line_graph(t, name="lines_5d", dim_names=("layer", "head", "d", "h", "w"))
+window(draw_line_graph, name="line_host_5d", input_value=line_host_5d, tint=(0.09, 0.50, 0.77))
 
 
 @window(input_value=line_host_torus, tint=(0.78, 0.67, 0.61))

@@ -115,18 +115,21 @@ class SplitOverlayRenderer(GlfwRenderer):
         # side; the render methods paint into that inset viewport and the
         # pointer shifts back by it. Melty.frame_inset / framebuffer_size
         # carry the two numbers to the masks, tiles, etc.
-        from src.lsd.gl_gui.titlebar import window_inset
+        from src.lsd.gl_gui.titlebar import window_inset, content_origin
         from src.lsd.gl_gui.melty import Melty
         io = imgui.get_io()
         inset = int(window_inset())
+        ox, oy = (int(v) for v in content_origin())
         w, h = io.display_size
         Melty.framebuffer_size = (int(w * io.display_fb_scale[0]), int(h * io.display_fb_scale[1]))
         Melty.frame_inset = inset
-        if inset:
-            io.display_size = (max(1.0, w - 2 * inset), max(1.0, h - 2 * inset))
+        Melty.frame_origin = (ox, oy)
+        if inset or ox or oy:
+            io.display_size = (max(1.0, w - ox - inset), max(1.0, h - oy - inset))
             mx, my = io.mouse_pos
             if mx > -1e6 and my > -1e6:      # -FLT_MAX / (-1, -1) = off-window stays as is
-                io.mouse_pos = (mx - inset, my - inset)
+                io.mouse_pos = (mx - ox, my - oy)
+        self._cancel_surface_slide(io)
         # A compositor move/resize grab (gl_gui/wayland_move.py) swallowed a
         # button release, so GLFW's level state - what the stock poll above
         # copies into io.mouse_down - stays PRESS until its next real event.
@@ -251,14 +254,58 @@ class SplitOverlayRenderer(GlfwRenderer):
             self._render_command_lists(draw_data, lists[-1:])
         self._has_overlay = False
 
+    # Pointer slide correction: (surface pointer, relative-motion total) at
+    # mouse press, None if held.
+    _slide_base = None
+    SLIDE_DEADBAND = 1.5
+
+    def _cancel_surface_slide(self, io):
+        """While a mouse button is held, subtract the SURFACE's own motion
+        from the pointer. The compositor slides the studio to keep it on
+        screen when its surface grows past the workarea (the OS-edge push,
+        os_frame); the surface-relative pointer then jumps by the slide
+        while the hand did not move — a drag reading that as motion grows
+        the window more and is slid again, a feedback snap. The slide is
+        the difference between the surface-relative pointer's travel and
+        the relative-pointer (screen-space) travel since the press; below
+        SLIDE_DEADBAND it is rounding, not a slide. Resets on release, so
+        hover after a gesture reads the true pointer again."""
+        from src.lsd.gl_gui import wayland_move
+        if not wayland_move.relative_motion_available():
+            return
+        down = any(io.mouse_down[i] for i in range(3))
+        if not down:
+            self._slide_base = None
+            return
+        mx, my = io.mouse_pos
+        if mx < -1e6 or my < -1e6:
+            return
+        rel = wayland_move.relative_motion_total()
+        if self._slide_base is None:
+            self._slide_base = ((mx, my), rel)
+            return
+        (bx, by), (rx0, ry0) = self._slide_base
+        slide_x = (mx - bx) - (rel[0] - rx0)
+        slide_y = (my - by) - (rel[1] - ry0)
+        if abs(slide_x) < self.SLIDE_DEADBAND:
+            slide_x = 0.0
+        if abs(slide_y) < self.SLIDE_DEADBAND:
+            slide_y = 0.0
+        # os_frame reads the slide as the workarea edge: the OS-edge push
+        # stops growing an axis the compositor has slid against.
+        from src.lsd.gl_gui import os_frame
+        os_frame.note_surface_slide(slide_x, slide_y)
+        if slide_x or slide_y:
+            io.mouse_pos = (mx - slide_x, my - slide_y)
+
     @staticmethod
     def _frame_origin():
         """Framebuffer origin of imgui's display: (inset, inset) while the
         frameless window carries its shadow margin, else (0, 0). Viewports
         move by it, scissors add it."""
         from src.lsd.gl_gui.melty import Melty
-        inset = int(getattr(Melty, "frame_inset", 0) or 0)
-        return inset, inset
+        ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
+        return int(ox), int(oy)
 
     def _render_overlay_channels(self, draw_data, overlay_list, ranges, Melty) -> None:
         """Render the foreground draw list one channel at a time. Channel index

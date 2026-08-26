@@ -762,6 +762,10 @@ class Melty:
     # framebuffer_size - masks, tiles and filters point at the latter. Both
     # stamped per frame by SplitOverlayRenderer.process_inputs.
     frame_inset = 0
+    # The content's top-left in the framebuffer: the margin plus the OS-edge
+    # handoff's content shift (titlebar.content_origin); the viewport and
+    # the screen→fb transform anchor here.
+    frame_origin = (0, 0)
     framebuffer_size = None
     clip_stack = []
     clip_stack_holder = {}
@@ -3995,8 +3999,9 @@ class Melty:
         # silhouette in the depth mask (an overhanging window would cast
         # its own shadows out there - see clear_mask_outside).
         _inset = int(cls.frame_inset or 0)
-        if _inset > 0:
-            Melty.cache.clear_mask_outside(_inset, _inset, int(fb_w) - _inset, int(fb_h) - _inset)
+        _ox, _oy = (int(v) for v in (cls.frame_origin or (0, 0)))
+        if _inset > 0 or _ox or _oy:
+            Melty.cache.clear_mask_outside(_ox, _oy, int(fb_w) - _inset, int(fb_h) - _inset)
         _gt.stamp("captures")
         _ps_t3 = _pp()
         
@@ -4072,12 +4077,12 @@ class Melty:
                 # shadow as premultiplied alpha - the OS window's shadow IS
                 # this pass, cast by the root's mark / the frame add_shadow.
                 from src.lsd.gl_gui.titlebar import frame_geometry
-                _f_inset, _f_radius, _f_size = frame_geometry(int(fb_w), int(fb_h))
+                _f_origin, _f_radius, _f_size = frame_geometry(int(fb_w), int(fb_h))
                 Melty.filter.shadow_composite(
                     input_framebuffer=0,
                     output_framebuffer=0,
                     shadow_map=shadow_raw,
-                    frame_inset=_f_inset,
+                    frame_origin=_f_origin,
                     frame_radius=_f_radius,
                     frame_size=_f_size,
                     depth_map=Melty.cache._full_mask_tex,

@@ -3216,9 +3216,9 @@ class TileCacheMasked:
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos
         s_x, s_y = 1, 1
-        inset = int(getattr(Melty, "frame_inset", 0) or 0)
-        dp_x -= inset
-        dp_y -= inset
+        ox, oy = getattr(Melty, "frame_origin", None) or (0, 0)
+        dp_x -= int(ox)
+        dp_y -= int(oy)
         real = getattr(Melty, "framebuffer_size", None)
         if real:
             fb_w, fb_h = snap_int(real[0]), snap_int(real[1])

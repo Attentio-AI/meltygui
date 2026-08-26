@@ -20,51 +20,52 @@ a literal's elements) — and emits `TextEdit`s into the original string:
                           slices verbatim in the new order (gaps stay in their slots)
 
 Everything not touched is copied byte-for-byte, so "unchanged code comes back
-exactly" holds by construction. The parser only has to find spans for what the
-dict surfaces; everything else is opaque text that survives untouched.
+exactly" holds by construction.
 
-Parser backend: Python's `ast` (C, native char positions since 3.8) plus
-`tokenize` for comments — no libcst anywhere. Both hold the GIL; the seam for a
-GIL-free / incremental backend (tree-sitter) is `_Src` + `_Extractor`, which
-only need (kind, start, end, fields) per node. `reparse_reusing` is the live
-path for now: a full re-extract whose result reuses every unchanged value
-object of the previous parse by identity, so draw_states stay stable — the
-previous tree is never mutated (the studio's held tree is bubbling-wrapped:
-a dict mutation there reads as a user edit).
+FRONT ENDS (the forward half lives in `melty_scan`, stdlib-only on purpose):
+  "scan"   the tokenize-based cst-lite parser, in-process — small files
+           (Toggles.TextEditor.melty_scanner)
+  "worker" the same scanner + extractor run in a 3.12 SUBINTERPRETER with its
+           own GIL, so a big file's parse never stalls the render thread; the
+           result crosses back as pickled neutral data that `materialize_parse`
+           turns into the studio's parse classes, resolving names against the
+           src scope and binding positional args to runtime signatures here
+           (files ≥ Toggles.TextEditor.melty_async_min_chars)
+  "ast"    Python's parser — the oracle the other two are tested against
 
-Dict shape matches `libcst_conversion` key-for-key (assignment names, `x#1`
-occurrence keys in function bodies, `func()` / `func()#N` call keys with
-`__pos_names__`, `if##N` branches with `##if` / `name()##if` condition keys,
-`for … in …` / `try` / `except …` block keys via `_occ_key`, `Comment` keys,
-`__overrides__` from `# [k=v]` comments, `decorators` / `parameters` / `locals`
-on functions, `__init__` self.X fields on classes). Positional call args bind
-to a sibling def's parameter names, else to the callee's runtime signature
-(same resolvers as the libcst path: builtins + the src scope), else `argN`.
+`reparse_reusing` is the live path: a fresh parse whose result reuses every
+unchanged value object of the previous parse by identity, so draw_states stay
+stable — the previous tree is never mutated (the studio's held tree is
+bubbling-wrapped: a dict mutation there reads as a user edit).
 """
 
 from __future__ import annotations
 
 import ast
-import bisect
 import enum
-import io
-import tokenize
-from dataclasses import dataclass, field
+import os
+import pickle
+import threading
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     GeneralParse, ClassParse, EnumParse, FunctionParse, CallParse, DecorationParse,
     Comment, CodeLine, Conditional, Loop, Try, Except, NO_DEFAULT, NoDefault, Span,
-    _SKIP_PARAMS, _UNREADABLE, _float_to_str, _floats_match, _is_dunder, _occ_key,
-    _override_changed, _parse_override_comment, _format_override_comment,
+    _SKIP_PARAMS, _UNREADABLE, _float_to_str, _floats_match, _is_dunder,
+    _override_changed, _format_override_comment,
     _reformat_override_comment, _resolve_as_enum, _resolve_callable_by_name,
     _resolve_callable_by_parts, _cached_signature,
 )
+from src.lsd.gl_gui.view.core_conversion.melty_scan import (   # noqa: F401 (re-exports)
+    Item, Seq, Origin, Base, ZERO_BASE, Types, UNRESOLVED, _Src, extract as _extract,
+    scan_comments as _scan_comments,
+    NGeneralParse, NClassParse, NEnumParse, NFunctionParse, NCallParse, NDecorationParse,
+    NConditional, NLoop, NTry, NExcept, NComment, NCodeLine, NameRef, NNoDefault, NSpan,
+)
 
 ORIGIN_KEY = "__origin__"
-
-_DEF_TYPES = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-_SIMPLE_LITERAL_TYPES = (str, int, float, bool, type(None))
 
 
 class CoreSyntaxError(ValueError):
@@ -77,108 +78,6 @@ class CoreSyntaxError(ValueError):
         self.lineno = lineno
         self.offset = offset
 
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Source text, line table, ast byte columns → char offsets                   ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
-
-class _Src:
-    """The parsed text with a line-start table. `ast` reports columns in UTF-8
-    BYTES; every span here is in CHARACTERS (what str slicing and the editor
-    use), converted per line only when the line isn't ASCII."""
-
-    __slots__ = ("text", "line_starts", "newline")
-
-    def __init__(self, text):
-        self.text = text
-        starts = [0]
-        find = text.find
-        i = find("\n")
-        while i != -1:
-            starts.append(i + 1)
-            i = find("\n", i + 1)
-        self.line_starts = starts
-        crlf = text.count("\r\n")
-        self.newline = "\r\n" if crlf and crlf * 2 > text.count("\n") else "\n"
-
-    @property
-    def line_count(self):
-        return len(self.line_starts)
-
-    def line_start(self, lineno):
-        return self.line_starts[lineno - 1]
-
-    def next_line_start(self, lineno):
-        """Offset just past line `lineno`'s terminator (len(text) on the last line).
-        `next_line_start(0)` is 0, so "the line after the cursor" works from a
-        cursor that hasn't consumed anything yet."""
-        if lineno <= 0:
-            return 0
-        if lineno < len(self.line_starts):
-            return self.line_starts[lineno]
-        return len(self.text)
-
-    def line_end(self, lineno):
-        """Offset of the line's terminator (or len(text)) — [line_start, line_end)
-        is the line's content without its newline."""
-        if lineno < len(self.line_starts):
-            e = self.line_starts[lineno] - 1
-            if e > 0 and self.text[e - 1] == "\r":
-                e -= 1
-            return e
-        return len(self.text)
-
-    def line_text(self, lineno):
-        return self.text[self.line_start(lineno):self.line_end(lineno)]
-
-    def offset(self, lineno, col_bytes):
-        start = self.line_start(lineno)
-        line = self.text[start:self.next_line_start(lineno)]
-        if line.isascii():
-            return start + col_bytes
-        return start + len(line.encode("utf-8")[:col_bytes].decode("utf-8", "ignore"))
-
-    def node_span(self, node):
-        return (self.offset(node.lineno, node.col_offset),
-                self.offset(node.end_lineno, node.end_col_offset))
-
-    def linecol(self, offset):
-        lineno = bisect.bisect_right(self.line_starts, offset)
-        return lineno, offset - self.line_starts[lineno - 1]
-
-    def span_obj(self, start, end) -> Span:
-        (sl, sc), (el, ec) = self.linecol(start), self.linecol(end)
-        return Span(sl, sc, el, ec)
-
-    def indent_of_line(self, lineno):
-        line = self.line_text(lineno)
-        return line[:len(line) - len(line.lstrip())]
-
-    def is_blank(self, lineno):
-        return not self.line_text(lineno).strip()
-
-
-def _scan_comments(text):
-    """{lineno: (col, text)} for standalone comment lines and for trailing
-    (same-line-as-code) comments. tokenize's columns are in characters."""
-    standalone, trailing = {}, {}
-    try:
-        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
-            if tok.type != tokenize.COMMENT:
-                continue
-            line, col = tok.start
-            if tok.line[:col].strip() == "":
-                standalone[line] = (col, tok.string)
-            else:
-                trailing[line] = (col, tok.string)
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        pass
-    return standalone, trailing
-
-
-# ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Site tables                                                  ║
-# ╚══════════════════════════════════════════════════════════════════════════════╝
 
 @dataclass
 class TextEdit:
@@ -196,1083 +95,364 @@ class RegionEdit:
     pieces: list
 
 
-@dataclass
-class Item:
-    """One surfaced site. `extent` is what a delete removes (leading comment
-    lines and blank lines above, the statement, its trailing comment and
-    newline); `core` is what a reorder moves (extent minus the blank lines
-    above it); `value_span` is the editable expression, None when there is
-    none (a def, a block, a parameter without a default — `slot` then says
-    where a value would be inserted)."""
-    path: tuple
-    key: Any
-    kind: str                       # value | param | kwarg | element | pair | def | block | header | comment | trailing | override | decorator | pseudo
-    extent: tuple
-    core: tuple
-    value_span: tuple | None
-    orig: Any
-    indent: str = ""
-    slot: int | None = None
-    code_end: int | None = None     # end of the statement's code (trailing comments start here)
-    seq: int | None = None
-    comment_key: Any = None         # override items: the Comment key that shares their span
-    shadowed: bool = False          # a later statement re-bound this key: fixed in place, never diffed
-
-
-@dataclass
-class Seq:
-    """An ordered container of items in the source."""
-    id: int
-    owner: tuple                    # node path whose keys this Seq holds
-    kind: str                       # body | params | args | elements | pairs | decorators
-    items: list = field(default_factory=list)
-    region: tuple = (0, 0)          # [first core start, last core end)
-    insert_at: int = 0              # where a first member goes when there is none
-    indent: str = ""
-    sep: str = ", "
-
-
-class Origin:
-    """The residual: the parsed text plus the flat site tables."""
-
-    def __init__(self, text):
-        self.text = text
-        self.src = _Src(text)
-        self.items: dict[tuple, Item] = {}
-        self.seqs: dict[int, Seq] = {}
-        self.default_seq: dict[tuple, int] = {}     # node path → seq new keys of that node join
-        self.owned: dict[tuple, list] = {}          # node path → seq ids whose deletes it answers
-        self.loose: dict[tuple, list] = {}          # node path → items outside any Seq (comments, overrides)
-        self.generation = 0
-        self.file_path = None
-        self.line_offset = 0
-        self._next_seq_id = 0
-
-    def new_seq(self, owner, kind, *, default=True, indent="", insert_at=0, sep=", "):
-        seq = Seq(self._next_seq_id, owner, kind, indent=indent, insert_at=insert_at, sep=sep)
-        self._next_seq_id += 1       # never len(seqs): ids must survive drop_seq
-        self.seqs[seq.id] = seq
-        self.owned.setdefault(owner, []).append(seq.id)
-        if default:
-            self.default_seq[owner] = seq.id
-        return seq
-
-    def drop_seq(self, seq):
-        self.seqs.pop(seq.id, None)
-        owned = self.owned.get(seq.owner)
-        if owned and seq.id in owned:
-            owned.remove(seq.id)
-        if self.default_seq.get(seq.owner) == seq.id:
-            del self.default_seq[seq.owner]
-
-    def add(self, item, seq=None):
-        if seq is not None:
-            item.seq = seq.id
-            seq.items.append(item)
-        else:
-            self.loose.setdefault(item.path[:-1], []).append(item)
-        prev = self.items.get(item.path)
-        if prev is not None:
-            prev.shadowed = True
-        self.items[item.path] = item
-        return item
-
-    def shadow(self, path):
-        """A key is being re-bound: the earlier binding stays a fixed slot in its
-        Seq (never diffed) and everything nested under it is unreachable from
-        the dict, so its tables go. Call BEFORE extracting the new value."""
-        prev = self.items.get(path)
-        if prev is None:
-            return
-        prev.shadowed = True
-        n = len(path)
-        for p in [p for p in self.items if len(p) > n and p[:n] == path]:
-            del self.items[p]
-        for sid in [sid for sid, sq in self.seqs.items() if len(sq.owner) >= n and sq.owner[:n] == path]:
-            self.drop_seq(self.seqs[sid])
-        for p in [p for p in self.loose if len(p) >= n and p[:n] == path]:
-            del self.loose[p]
-
-    def seal_seq(self, seq):
-        """Region = the members' cores; a body's region starts at the first
-        member so the header line / blank lines above stay outside it."""
-        if seq.items:
-            seq.region = (seq.items[0].core[0], seq.items[-1].core[1])
-        else:
-            seq.region = (seq.insert_at, seq.insert_at)
-
-
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                      Forward: text → GeneralParse + Origin                             ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-def parse_to_dict(text, *, file_path=None, line_offset=0) -> GeneralParse:
+def _resolve_parts(parts):
+    """A dotted name → the live callable / enum member it names in the src scope
+    (builtins for a bare name), else UNRESOLVED. Same resolvers as libcst."""
+    if len(parts) == 1:
+        resolved = _resolve_callable_by_name(parts[0])
+    else:
+        resolved = _resolve_as_enum(parts)
+        if resolved is _UNREADABLE:
+            resolved = _resolve_callable_by_parts(parts)
+    return UNRESOLVED if resolved is _UNREADABLE else resolved
+
+
+def _positional_names_for(parts):
+    """Ordered positional parameter names of the callee `parts` names (leading
+    self/cls dropped, stops at *args), or None when it can't be resolved or
+    inspected — mirrors libcst_conversion._call_positional_param_names."""
+    obj = _resolve_callable_by_name(parts[0]) if len(parts) == 1 else _resolve_callable_by_parts(parts)
+    if obj is _UNREADABLE or not callable(obj):
+        return None
+    try:
+        sig = _cached_signature(obj)
+    except TypeError:
+        sig = None
+    if sig is None:
+        return None
+    names = []
+    for p in sig.parameters.values():
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+            if not names and p.name in _SKIP_PARAMS:
+                continue
+            names.append(p.name)
+        elif p.kind == p.VAR_POSITIONAL:
+            break
+    return names
+
+
+class RelSpan(Span):
+    """A `Span` whose LINE numbers are relative to a `Base` cell (the enclosing
+    top-level statement), so an edit above the statement moves every span in
+    it by touching the cell — the incremental reparse never walks the tree to
+    renumber. Reads exactly like a Span (`start_line`, `end_line`, …)."""
+    __slots__ = ("base", "rel_start_line", "rel_end_line")
+
+    def __init__(self, base, rel_start_line, start_col, rel_end_line, end_col):
+        self.base = base
+        self.rel_start_line = rel_start_line
+        self.start_col = start_col
+        self.rel_end_line = rel_end_line
+        self.end_col = end_col
+
+    @property
+    def start_line(self):
+        return self.rel_start_line + self.base.line
+
+    @property
+    def end_line(self):
+        return self.rel_end_line + self.base.line
+
+    def __reduce__(self):
+        return (RelSpan, (self.base, self.rel_start_line, self.start_col, self.rel_end_line, self.end_col))
+
+
+REAL_TYPES = Types(
+    GeneralParse=GeneralParse, ClassParse=ClassParse, EnumParse=EnumParse, FunctionParse=FunctionParse,
+    CallParse=CallParse, DecorationParse=DecorationParse, Comment=Comment, CodeLine=CodeLine,
+    Conditional=Conditional, Loop=Loop, Try=Try, Except=Except, NO_DEFAULT=NO_DEFAULT, Span=RelSpan,
+    resolve=_resolve_parts, positional_names=_positional_names_for)
+
+
+def _default_frontend(n_chars):
+    from src.lsd.gl_gui.toggles import Toggles      # lazy to avoid an import cycle
+    if not Toggles.TextEditor.melty_scanner:
+        return "ast"
+    if n_chars >= Toggles.TextEditor.melty_async_min_chars and _worker.available():
+        return "worker"
+    return "scan"
+
+
+def parse_to_dict(text, *, file_path=None, line_offset=0, frontend=None) -> GeneralParse:
     """Parse `text` into a GeneralParse with `gp["__origin__"]` attached.
+    `frontend`: "scan" | "worker" | "ast" (None = by Toggles and size).
     Raises SyntaxError when the text doesn't parse."""
-    tree = ast.parse(text)
-    origin = Origin(text)
+    if frontend is None:
+        frontend = _default_frontend(len(text))
+    gp = origin = None
+    if frontend == "worker":
+        result = _worker.scan_extract(text)
+        if result is None:
+            frontend = "scan"                       # worker unavailable: same parser, in-process
+        elif result[0] == "error":
+            _, msg, lineno, offset = result
+            raise SyntaxError(msg, (str(file_path or "<text>"), lineno, offset, ""))
+        else:
+            gp, origin = materialize_parse(result[1], result[2])
+    if gp is None:
+        if frontend == "scan":
+            ast.parse(text)                         # validation only; the scanner does the work
+        gp, origin = _extract(text, frontend=frontend, types=REAL_TYPES,
+                              file_path=file_path, line_offset=line_offset)
     origin.file_path = file_path
     origin.line_offset = line_offset
-    ex = _Extractor(origin)
-    gp = ex.module(tree)
     gp.file_path = file_path
     gp.line_offset = line_offset
     gp[ORIGIN_KEY] = origin
     return gp
 
 
-def _dotted_parts(node):
-    """["a", "b", "c"] for a.b.c made of Names/Attributes, else None."""
-    parts = []
-    while isinstance(node, ast.Attribute):
-        parts.append(node.attr)
-        node = node.value
-    if isinstance(node, ast.Name):
-        parts.append(node.id)
-        parts.reverse()
-        return parts
-    return None
+# ─── materialize: the worker's neutral tree → the studio's parse classes ─────────
+
+def _walk_paths(node, path, fn):
+    """fn(path, node) over every dict node of a parse tree (list/tuple elements
+    included, indexed like origin paths). Bookkeeping keys are skipped by NAME
+    — a dunder-named def (`__missing__`) is a real node and is walked."""
+    if isinstance(node, dict):
+        fn(path, node)
+        for k, v in node.items():
+            if k in ("__origin__", "__pos_names__", "__symbol_usages__", "__cst__"):
+                continue
+            if isinstance(v, (dict, list, tuple)):
+                _walk_paths(v, path + (k,), fn)
+    elif isinstance(node, (list, tuple)):
+        for i, v in enumerate(node):
+            _walk_paths(v, path + (i,), fn)
 
 
-def _call_func_name(call):
-    func = call.func
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute):
-        parts = _dotted_parts(func)
-        return ".".join(parts) if parts is not None else func.attr
-    return None
+def _bind_pending_positionals(ngp, origin):
+    """The worker keys positional args `argN`; here the callee's runtime
+    signature names them (`live_view(x)` → `value`) exactly as the in-process
+    extractor would have, renaming the dict keys and every origin path under
+    the call in one pass. Positions past the signature are dropped, like the
+    in-process path never surfaced them."""
+    renames = {}
 
+    def visit(path, node):
+        parts = node.__dict__.pop("_pos_pending", None) if hasattr(node, "__dict__") else None
+        if parts is None:
+            return
+        names = _positional_names_for(parts)
+        if names is None:
+            return
+        pos_keys = [k for k in node if isinstance(k, str) and k.startswith("arg") and k[3:].isdigit()]
+        mapping = {k: (names[i] if i < len(names) else None) for i, k in enumerate(pos_keys)}
+        items = []
+        for k, v in node.items():
+            if k in mapping:
+                if mapping[k] is None:
+                    continue
+                items.append((mapping[k], v))
+            elif k == "__pos_names__":
+                continue
+            else:
+                items.append((k, v))
+        node.clear()
+        node.update(items)
+        if names:
+            node["__pos_names__"] = list(names)
+        renames[path] = mapping
 
-def _assign_target_name(stmt):
-    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-        return stmt.targets[0].id
-    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.value is not None:
-        return stmt.target.id
-    return None
+    _walk_paths(ngp, (), visit)
+    if not renames:
+        return
 
+    def rename_path(path):
+        for L in range(len(path)):
+            m = renames.get(path[:L])
+            if m is not None and L < len(path) and path[L] in m:
+                new = m[path[L]]
+                if new is None:
+                    return None
+                path = path[:L] + (new,) + path[L + 1:]
+        return path
 
-def _stmt_call(stmt, nonname_targets):
-    """The Call a statement surfaces as a CallParse: a bare call statement, or
-    (when `nonname_targets`) a call assigned to a non-Name target."""
-    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-        return stmt.value
-    if not nonname_targets:
-        return None
-    if isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
-        if not (len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)):
-            return stmt.value
-    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.value, ast.Call):
-        if not isinstance(stmt.target, ast.Name):
-            return stmt.value
-    return None
-
-
-def _is_enum_classdef(node):
-    for base in list(node.bases) + [k.value for k in node.keywords if k.arg == "metaclass"]:
-        parts = _dotted_parts(base)
-        last = parts[-1] if parts else None
-        if last and (last.endswith("Enum") or last.endswith("Flag")):
-            return True
-    return False
-
-
-def _param_names(funcdef):
-    a = funcdef.args
-    names = []
-    for p in list(a.posonlyargs) + list(a.args):
-        if not names and p.arg in _SKIP_PARAMS:
+    items = {}
+    dropped = set()
+    for path, item in origin.items.items():
+        np = rename_path(path)
+        if np is None:
+            dropped.add(id(item))
             continue
-        names.append(p.arg)
-    return names
+        item.path = np
+        item.key = np[-1]
+        items[np] = item
+    origin.items = items
+    text = origin.text
+    for seq in origin.seqs.values():
+        seq.owner = rename_path(seq.owner) or seq.owner
+        kept = [it for it in seq.items if id(it) not in dropped]
+        if len(kept) != len(seq.items):
+            seq.items = kept                    # `region` follows the items; only the separator is re-read
+            if len(kept) >= 2:
+                seq.sep = text[kept[0].extent[1]:kept[1].extent[0]]
+    origin.default_seq = {rename_path(p) or p: v for p, v in origin.default_seq.items()}
+    origin.owned = {rename_path(p) or p: v for p, v in origin.owned.items()}
+    origin.loose = {rename_path(p) or p: [it for it in v if id(it) not in dropped]
+                    for p, v in origin.loose.items()}
 
 
-def _local_signatures(stmts):
-    return {s.name: _param_names(s) for s in stmts if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))}
+_NODE_ATTR_DEFAULTS = {"file_path": None, "line_offset": 0, "usages": None, "_bg_hash_cache": None,
+                       "source_ref": None, "symbol_usage": None}
 
 
-class _Extractor:
-    def __init__(self, origin):
-        self.origin = origin
-        self.src = origin.src
-        self.standalone, self.trailing = _scan_comments(origin.text)
-        self.cursor = 0     # last consumed line (1-based); 0 = nothing yet
-        # >0 while extracting call arguments / container elements: a CallParse
-        # nested there gets no span lines (libcst's span map only covers a
-        # statement's direct value call), so LineMap depth works.
-        self._nested = 0
+def materialize_parse(gp, origin):
+    """Finish a worker parse that `_ParseUnpickler` already loaded as the
+    studio's classes: give nodes the attributes their `__init__` would have set
+    (pickle bypasses it), resolve `NameRef`s against the live src scope, and
+    bind positional args to runtime signatures (renaming dict keys and origin
+    paths). `Item.orig` identity with the dict values survives the pickle
+    round trip on its own (one dumps → shared references)."""
+    _bind_pending_positionals(gp, origin)
 
-    # ── spans on the dict (the consumers' view: Span / _child_spans) ─────────
+    def fix(path, node):
+        d = getattr(node, "__dict__", None)
+        if d is not None:
+            if isinstance(node, GeneralParse):
+                for attr, default in _NODE_ATTR_DEFAULTS.items():
+                    d.setdefault(attr, default)
+                if "address" not in d:
+                    d["address"] = None
+                if "usages" not in d or d["usages"] is None:
+                    d["usages"] = {}
+                if "symbol_usage" not in d or d["symbol_usage"] is None:
+                    d["symbol_usage"] = [None]
+            elif isinstance(node, Loop):
+                d.setdefault("_bg_hash_cache", None)
+        for k in list(node.keys()):
+            v = node[k]
+            if isinstance(v, (NameRef, list, tuple)):
+                node[k] = _resolve_refs(v, path + (k,), origin)
 
-    def _stamp(self, obj, start, end):
+    _walk_paths(gp, (), fix)
+    return gp, origin
+
+
+def _resolve_refs(v, path, origin):
+    """`v` with every NameRef (at any container depth) resolved against the src
+    scope or turned into a CodeLine; `Item.orig` at each touched path follows,
+    so the residual holds what the dict holds. Tuples are rebuilt, lists
+    patched in place."""
+    if isinstance(v, NameRef):
+        r = _resolve_parts(v.parts)
+        new = r if r is not UNRESOLVED else CodeLine(str(v))
+    elif isinstance(v, (list, tuple)):
+        if not any(isinstance(x, (NameRef, list, tuple)) for x in v):
+            return v
+        fixed = [_resolve_refs(x, path + (i,), origin) for i, x in enumerate(v)]
+        if isinstance(v, tuple):
+            new = tuple(fixed)
+        else:
+            v[:] = fixed
+            return v
+    else:
+        return v
+    item = origin.items.get(path)
+    if item is not None:
+        item.orig = new
+    return new
+
+
+
+
+class _ParseUnpickler(pickle.Unpickler):
+    """Loads the worker's neutral classes AS the studio's classes: no second
+    tree, no per-node conversion — `Comment(text, inline)`, `CodeLine`,
+    `Span(...)`, the NO_DEFAULT singleton, and the parse dict subclasses come
+    out of `loads` directly (their `__init__` is bypassed; materialize_parse
+    fills the attributes it would have set)."""
+    _MAP = {"NGeneralParse": GeneralParse, "NClassParse": ClassParse, "NEnumParse": EnumParse,
+            "NFunctionParse": FunctionParse, "NCallParse": CallParse, "NDecorationParse": DecorationParse,
+            "NConditional": Conditional, "NLoop": Loop, "NTry": Try, "NExcept": Except,
+            "NComment": Comment, "NCodeLine": CodeLine, "NSpan": RelSpan, "NNoDefault": lambda: NO_DEFAULT}
+
+    def find_class(self, module, name):
+        if module.endswith(".melty_scan"):
+            real = self._MAP.get(name)
+            if real is not None:
+                return real
+        return super().find_class(module, name)
+
+
+# ── the parse worker: a subinterpreter with its own GIL ───────────────────────────
+
+_WORKER_SCRIPT = r"""
+import sys
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+import pickle
+import _xxinterpchannels as _ch
+from src.lsd.gl_gui.view.core_conversion import melty_scan as _ms
+import gc as _gc
+_gc.disable()                    # ~20% of the scan was gen-2 collections over the fresh tree
+try:
+    _res = _ms.scan_extract(TEXT)
+except Exception as _e:          # never raise across the boundary: report as data
+    _res = ("error", f"{type(_e).__name__}: {_e}", 0, 0)
+_blob = pickle.dumps(_res, protocol=pickle.HIGHEST_PROTOCOL)
+del _res
+_gc.enable()
+_gc.collect()
+_ch.send(CID, _blob)
+"""
+
+
+class _ScanWorker:
+    """One 3.12 subinterpreter (`_xxsubinterpreters`, per-interpreter GIL) that
+    runs melty_scan.scan_extract. The CALLING thread executes inside the
+    subinterpreter, under ITS GIL — the main interpreter's GIL is free for the
+    render thread the whole time (measured: a 130 ms parse and 130 ms of main-
+    thread Python overlap to 130 ms wall). One run at a time; a second caller
+    waits on the lock. Any failure to boot marks the worker unavailable and
+    parses fall back to the in-process scanner."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._interp = None
+        self._cid = None
+        self._broken = False
+
+    def available(self):
+        if self._broken:
+            return False
         try:
-            obj.span = self.src.span_obj(start, end)
-        except AttributeError:
-            pass
-        return obj
+            import _xxsubinterpreters  # noqa: F401
+            import _xxinterpchannels  # noqa: F401
+        except ImportError:
+            self._broken = True
+            return False
+        return True
 
-    def _record_child(self, container, key, value, start, end):
-        if isinstance(value, dict) and getattr(value, "span", None) is not None:
-            return
-        cs = getattr(container, "_child_spans", None)
-        if cs is None:
-            cs = {}
+    def scan_extract(self, text):
+        """("ok", gp, origin) | ("error", msg, lineno, offset) — or None when the
+        worker can't run (the caller parses in-process)."""
+        if not self.available():
+            return None
+        import _xxsubinterpreters as si
+        import _xxinterpchannels as ch
+        root = str(Path(__file__).resolve().parents[5])
+        with self._lock:
             try:
-                container._child_spans = cs
-            except AttributeError:
-                return
-        cs[key] = self.src.span_obj(start, end)
-
-    # ── comments ─────────────────────────────────────────────────────────────
-
-    def _leading_groups(self, upto_line):
-        """Comment groups on the lines (cursor, upto_line): adjacent comment
-        lines form one group, blank lines separate groups, and an override
-        `# [...]` comment (possibly split over several lines) is always its
-        own group. Each group: (first_line, last_line, texts, is_override)."""
-        runs, run = [], []
-        for ln in range(self.cursor + 1, upto_line):
-            c = self.standalone.get(ln)
-            if c is None:
-                if run:
-                    runs.append(run)
-                    run = []
-                continue
-            run.append((ln, c[1]))
-        if run:
-            runs.append(run)
-        groups = []
-        for run in runs:
-            k = plain = 0
-            while k < len(run):
-                ov_end = self._override_run_end(run, k)
-                if ov_end is None:
-                    k += 1
-                    continue
-                if plain < k:
-                    groups.append(self._group(run[plain:k], False))
-                groups.append(self._group(run[k:ov_end], True))
-                k = plain = ov_end
-            if plain < len(run):
-                groups.append(self._group(run[plain:], False))
-        return groups
-
-    @staticmethod
-    def _group(run, is_override):
-        return (run[0][0], run[-1][0], [t for _, t in run], is_override)
-
-    @staticmethod
-    def _override_run_end(run, i):
-        if not run[i][1].lstrip("#").strip().startswith("["):
-            return None
-        for j in range(i, len(run)):
-            if run[j][1].rstrip().endswith("]"):
-                joined = "\n".join(t for _, t in run[i:j + 1])
-                if _parse_override_comment(joined) is not None:
-                    return j + 1
-        return None
-
-    def _comment_extent(self, first_line, last_line):
-        start = self.src.line_start(first_line)
-        end = self.src.next_line_start(last_line)
-        return start, end
-
-    def _comment_span(self, first_line, last_line):
-        col = self.standalone[first_line][0]
-        return self.src.line_start(first_line) + col, self.src.line_end(last_line)
-
-    def _surface_comment(self, out, path, group):
-        first, last, texts, _ = group
-        text = "\n".join(texts)
-        c = Comment(text)
-        out[c] = c
-        extent = self._comment_extent(first, last)
-        self.origin.add(Item(path + (c,), c, "comment", extent, extent,
-                             self._comment_span(first, last), text,
-                             indent=self.src.indent_of_line(first)))
-        return c
-
-    def _merge_override(self, comment, out, path, span, indent):
-        """A scope-level override comment (module header, trailing, above a
-        block): first one owns `__overrides__`; recorded as an override item
-        sharing the Comment's span."""
-        if isinstance(out.get("__overrides__"), dict):
-            return
-        parsed = _parse_override_comment(str(comment))
-        if parsed:
-            out["__overrides__"] = parsed
-            self.origin.add(Item(path + ("__overrides__",), "__overrides__", "override",
-                                 span, span, span, dict(parsed), indent=indent,
-                                 comment_key=comment))
-
-    def _trailing_comment(self, stmt, out, path, key):
-        tc = self.trailing.get(stmt.end_lineno)
-        if tc is None:
-            return
-        col, text = tc
-        code_end = self.src.node_span(stmt)[1]
-        c = Comment(text, inline=key)
-        out[c] = c
-        start = self.src.line_start(stmt.end_lineno) + col
-        end = self.src.line_end(stmt.end_lineno)
-        self.origin.add(Item(path + (c,), c, "trailing", (code_end, end), (code_end, end),
-                             (start, end), text, indent=self.src.indent_of_line(stmt.end_lineno)))
-        self._merge_override(c, out, path, (start, end), self.src.indent_of_line(stmt.end_lineno))
-
-    def _consume_footer(self, body_indent_len):
-        """Comment lines after a block's last statement that sit at the block's
-        indent (libcst's IndentedBlock.footer) belong to nobody's dict; skip
-        them so they don't become the next statement's leading comments."""
-        ln = self.cursor + 1
-        last_taken = self.cursor
-        while ln <= self.src.line_count:
-            c = self.standalone.get(ln)
-            if c is not None:
-                if c[0] < body_indent_len:
-                    break
-                last_taken = ln
-            elif not self.src.is_blank(ln):
-                break
-            ln += 1
-        self.cursor = last_taken
-
-    # ── statement extents ────────────────────────────────────────────────────
-
-    def _stmt_first_line(self, stmt):
-        decs = getattr(stmt, "decorator_list", None)
-        if decs:
-            return min(stmt.lineno, decs[0].lineno)
-        return stmt.lineno
-
-    def _header_end_line(self, stmt):
-        """The line the block header ends on (the `:` line) — the last non-blank,
-        non-comment line before the body's first statement."""
-        body = stmt.body
-        ln = self._stmt_first_line(body[0]) - 1     # a decorated first member starts at its decorator
-        first = self._stmt_first_line(stmt)
-        while ln > first and (self.src.is_blank(ln) or ln in self.standalone):
-            ln -= 1
-        return ln
-
-    def _keyword_line(self, body_stmts, low):
-        """The `else:` / `finally:` / `try:` line above a body — the last code
-        line before its first statement, not below `low`."""
-        ln = self._stmt_first_line(body_stmts[0]) - 1
-        while ln > low and (self.src.is_blank(ln) or ln in self.standalone):
-            ln -= 1
-        return ln
-
-    # ── module ───────────────────────────────────────────────────────────────
-
-    def module(self, tree):
-        gp = GeneralParse(source=self.origin.text)
-        seq = self.origin.new_seq((), "body", indent="", insert_at=0)
-        self._body(tree.body, gp, (), seq, scope="module")
-        self.origin.seal_seq(seq)
-        return gp
-
-    # ── bodies ───────────────────────────────────────────────────────────────
-
-    def _body(self, stmts, out, path, seq, *, scope, block_state=None):
-        """Walk `stmts` in source order into `out`. `scope` decides the
-        surfacing rules: module / class / function (function bodies get
-        occurrence keys, blocks and non-Name-target calls)."""
-        is_function = scope == "function"
-        nonname_calls = scope != "class"
-        local_sigs = _local_signatures(stmts)
-        call_seen: dict[str, int] = {}
-        counts: dict[str, int] = {}
-        seen: dict[str, int] = {}
-        if is_function:
-            for s in stmts:
-                n = _assign_target_name(s)
-                if n is not None:
-                    counts[n] = counts.get(n, 0) + 1
-        if block_state is None:
-            block_state = ({"if": 0, "elif": 0, "else": 0}, {})
-        cond_counters, block_occ = block_state
-        prev_key = None
-
-        for stmt in stmts:
-            first_line = self._stmt_first_line(stmt)
-            same_line = first_line <= self.cursor       # `a = 1; b = 2`
-            gap_start = self.src.next_line_start(self.cursor) if not same_line else self.src.node_span(stmt)[0]
-            groups = [] if same_line else self._leading_groups(first_line)
-            core_start = self.src.line_start(groups[0][0]) if groups else (
-                self.src.line_start(first_line) if not same_line else gap_start)
-            indent = self.src.indent_of_line(first_line)
-            is_def = isinstance(stmt, _DEF_TYPES)
-            is_block = isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.Try, getattr(ast, "TryStar", ast.Try)))
-            field_override = child_override = None
-
-            for g in groups:
-                if g[3]:    # override comment
-                    if is_def:
-                        if child_override is None:
-                            child_override = g
-                    elif is_block and is_function:
-                        c = self._surface_comment(out, path, g)
-                        self._merge_override(c, out, path, self._comment_span(g[0], g[1]),
-                                             self.src.indent_of_line(g[0]))
-                    elif scope == "module" and self.cursor == 0 and not out:
-                        # Module header: an override comment is both a Comment and the module's __overrides__.
-                        c = self._surface_comment(out, path, g)
-                        self._merge_override(c, out, path, self._comment_span(g[0], g[1]),
-                                             self.src.indent_of_line(g[0]))
-                    elif field_override is None:
-                        field_override = g
-                else:
-                    self._surface_comment(out, path, g)
-
-            key = None
-            if is_def:
-                key = self._def(stmt, out, path, seq, scope, child_override, gap_start, core_start)
-            elif isinstance(stmt, (ast.Assign, ast.AnnAssign)) and _assign_target_name(stmt) is not None:
-                name = _assign_target_name(stmt)
-                if is_function:
-                    occ = seen.get(name, 0)
-                    seen[name] = occ + 1
-                    key = name if (counts[name] == 1 or occ == 0) else f"{name}#{occ}"
-                else:
-                    key = name
-                self.origin.shadow(path + (key,))
-                value = self._value(stmt.value, path + (key,))
-                out[key] = value
-                vs = self.src.node_span(stmt.value)
-                self._record_child(out, key, value, *vs)
-                self.origin.add(Item(path + (key,), key, "value", (gap_start, 0), (core_start, 0), vs, value,
-                                     indent=indent, code_end=self.src.node_span(stmt)[1]), seq)
-            elif _stmt_call(stmt, nonname_calls) is not None:
-                call = _stmt_call(stmt, nonname_calls)
-                fname = _call_func_name(call) or "call"
-                occ = call_seen.get(fname, 0)
-                call_seen[fname] = occ + 1
-                key = f"{fname}()" if occ == 0 else f"{fname}()#{occ}"
-                self.origin.shadow(path + (key,))
-                # A statement-level call is surface even with nothing readable
-                # (`live_view()`): libcst's _surface_ keeps the empty CallParse
-                # too, and live_view keys its capture sites on that entry.
-                parsed = self._call(call, path + (key,), CallParse, local_sigs.get(fname),
-                                    allow_empty=True)
-                if parsed is None:
-                    key = None
-                else:
-                    out[key] = parsed
-                    cs = self.src.node_span(call)
-                    self.origin.add(Item(path + (key,), key, "value", (gap_start, 0), (core_start, 0), cs, parsed,
-                                         indent=indent, code_end=self.src.node_span(stmt)[1]), seq)
-            elif is_function and isinstance(stmt, ast.If):
-                self._if_chain(stmt, out, path, seq, cond_counters, block_occ, gap_start, core_start, indent)
-            elif is_function and isinstance(stmt, (ast.For, ast.AsyncFor)):
-                self._for_loop(stmt, out, path, seq, block_occ, gap_start, core_start, indent)
-            elif is_function and isinstance(stmt, (ast.Try, getattr(ast, "TryStar", ast.Try))):
-                self._try_block(stmt, out, path, seq, block_occ, gap_start, core_start, indent)
-
-            if key is not None and not is_def and not same_line:
-                self._trailing_comment(stmt, out, path, key)
-                if field_override is not None:
-                    self._attach_field_override(field_override, out, path, key)
-
-            if not is_def and not is_block:
-                self.cursor = max(self.cursor, stmt.end_lineno)
-            if key is not None:
-                item = self.origin.items[path + (key,)]
-                end = self.src.next_line_start(self.cursor) if not same_line else self.src.node_span(stmt)[1]
-                item.extent = (item.extent[0], end)
-                item.core = (item.core[0], end)
-            prev_key = key
-
-    def _attach_field_override(self, group, out, path, key):
-        first, last, texts, _ = group
-        parsed = _parse_override_comment("\n".join(texts))
-        if not parsed:
-            return
-        overrides = out.get("__overrides__")
-        if not isinstance(overrides, dict):
-            overrides = {}
-            out["__overrides__"] = overrides
-        slot = f"__{key}__"
-        if slot in overrides:
-            return
-        overrides[slot] = parsed
-        span = self._comment_span(first, last)
-        self.origin.add(Item(path + ("__overrides__", slot), slot, "override",
-                             self._comment_extent(first, last), span, span, dict(parsed),
-                             indent=self.src.indent_of_line(first)))
-
-    # ── defs ─────────────────────────────────────────────────────────────────
-
-    def _def(self, stmt, out, path, seq, scope, child_override, gap_start, core_start):
-        name = stmt.name
-        child_path = path + (name,)
-        first_line = self._stmt_first_line(stmt)
-        indent = self.src.indent_of_line(first_line)
-        is_init = (scope == "class" and isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
-                   and name == "__init__")
-        if is_init:
-            # __init__ is not a member; its self.X assignments surface as class
-            # fields (see _init_fields, run by _class after the body walk).
-            self.cursor = max(self.cursor, stmt.end_lineno)
-            return None
-        code_span = (self.src.line_start(first_line) + len(indent), self.src.node_span(stmt)[1])
-        self.origin.shadow(child_path)
-        if isinstance(stmt, ast.ClassDef):
-            child = self._class(stmt, child_path)
-        else:
-            child = self._function(stmt, child_path)
-        out[name] = child
-        item = self.origin.add(Item(child_path, name, "def", (gap_start, 0), (core_start, 0), None, None,
-                                    indent=indent, code_end=code_span[1]), seq)
-        if child_override is not None:
-            parsed = _parse_override_comment("\n".join(child_override[2]))
-            if parsed:
-                existing = child.get("__overrides__")
-                if isinstance(existing, dict):
-                    for k, v in parsed.items():
-                        existing.setdefault(k, v)
-                else:
-                    child["__overrides__"] = parsed
-                span = self._comment_span(child_override[0], child_override[1])
-                self.origin.add(Item(child_path + ("__overrides__",), "__overrides__", "override",
-                                     self._comment_extent(child_override[0], child_override[1]), span, span,
-                                     dict(parsed), indent=self.src.indent_of_line(child_override[0])))
-        return name
-
-    def _class(self, node, path):
-        cls = EnumParse if _is_enum_classdef(node) else ClassParse
-        first_line = self._stmt_first_line(node)
-        start = self.src.line_start(first_line) + len(self.src.indent_of_line(first_line))
-        end = self.src.node_span(node)[1]
-        readable = cls(source=self.origin.text[start:end])
-        readable.def_name = node.name
-        # .span starts at the `def` keyword (ast excludes decorators - libcst's
-        # span map agrees); `source` keeps the decorators like _cst_node_to_code.
-        self._stamp(readable, self.src.node_span(node)[0], end)
-        decorators = self._decorators(node, path)
-        if decorators:
-            readable["decorators"] = decorators
-        self.cursor = self._header_end_line(node)
-        body_indent = self.src.indent_of_line(node.body[0].lineno)
-        seq = self.origin.new_seq(path, "body", indent=body_indent,
-                                  insert_at=self.src.line_start(node.body[0].lineno))
-        self._body(node.body, readable, path, seq, scope="class")
-        self._consume_footer(len(body_indent))
-        self.origin.seal_seq(seq)
-        self._init_fields(node, readable, path)
-        return readable
-
-    def _init_fields(self, node, readable, path):
-        init = next((s for s in node.body if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef))
-                     and s.name == "__init__"), None)
-        if init is None:
-            return
-        body_indent = self.src.indent_of_line(init.body[0].lineno)
-        seq = self.origin.new_seq(path, "body", default=False, indent=body_indent,
-                                  insert_at=self.src.line_start(init.body[0].lineno))
-        for stmt in init.body:
-            target = value = None
-            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-                target, value = stmt.targets[0], stmt.value
-            elif isinstance(stmt, ast.AnnAssign):
-                target, value = stmt.target, stmt.value
-            if (target is None or value is None or not isinstance(target, ast.Attribute)
-                    or not isinstance(target.value, ast.Name) or target.value.id != "self"):
-                continue
-            attr = target.attr
-            if attr in readable:
-                continue
-            py = self._value(value, path + (attr,))
-            readable[attr] = py
-            vs = self.src.node_span(value)
-            self._record_child(readable, attr, py, *vs)
-            extent = (self.src.line_start(stmt.lineno), self.src.next_line_start(stmt.end_lineno))
-            self.origin.add(Item(path + (attr,), attr, "value", extent, extent, vs, py,
-                                 indent=self.src.indent_of_line(stmt.lineno),
-                                 code_end=self.src.node_span(stmt)[1]), seq)
-        self.origin.seal_seq(seq)
-
-    def _function(self, node, path):
-        first_line = self._stmt_first_line(node)
-        start = self.src.line_start(first_line) + len(self.src.indent_of_line(first_line))
-        end = self.src.node_span(node)[1]
-        readable = FunctionParse(source=self.origin.text[start:end])
-        readable.def_name = node.name
-        self._stamp(readable, self.src.node_span(node)[0], end)   # `def` start, see _class
-        decorators = self._decorators(node, path)
-        if decorators:
-            readable["decorators"] = decorators
-        params = self._params(node, path + ("parameters",))
-        if params:
-            readable["parameters"] = params
-            self.origin.add(Item(path + ("parameters",), "parameters", "pseudo", (0, 0), (0, 0), None, params))
-        self.cursor = self._header_end_line(node)
-        body_indent = self.src.indent_of_line(node.body[0].lineno)
-        locals_ = GeneralParse(source="")
-        seq = self.origin.new_seq(path + ("locals",), "body", indent=body_indent,
-                                  insert_at=self.src.line_start(node.body[0].lineno))
-        self._body(node.body, locals_, path + ("locals",), seq, scope="function")
-        self._consume_footer(len(body_indent))
-        self.origin.seal_seq(seq)
-        if locals_:
-            bs, be = self.src.node_span(node.body[0])[0], self.src.node_span(node.body[-1])[1]
-            self._stamp(locals_, bs, be)
-            readable["locals"] = locals_
-            self.origin.add(Item(path + ("locals",), "locals", "pseudo", (0, 0), (0, 0), None, locals_))
-        else:
-            self.origin.drop_seq(seq)
-        return readable
-
-    def _decorators(self, node, path):
-        if not node.decorator_list:
-            return {}
-        result = {}
-        dpath = path + ("decorators",)
-        seq = self.origin.new_seq(dpath, "decorators",
-                                  indent=self.src.indent_of_line(node.decorator_list[0].lineno),
-                                  insert_at=self.src.line_start(node.decorator_list[0].lineno))
-        for dec in node.decorator_list:
-            extent = (self.src.line_start(dec.lineno), self.src.next_line_start(dec.end_lineno))
-            if isinstance(dec, ast.Call):
-                name = _call_func_name(dec)
-                if name is None:
-                    continue
-                self.origin.shadow(dpath + (name,))
-                # Unspanned like libcst's decorator CallParse (LineMap issue:
-                # a decorator line maps to nothing; the def starts at `def`).
-                self._nested += 1
-                try:
-                    parsed = self._call(dec, dpath + (name,), DecorationParse, None, allow_empty=True)
-                finally:
-                    self._nested -= 1
-                if parsed is None:
-                    parsed = CodeLine(self._text(dec))
-                result[name] = parsed
-                self.origin.add(Item(dpath + (name,), name, "decorator", extent, extent,
-                                     self.src.node_span(dec), parsed,
-                                     indent=self.src.indent_of_line(dec.lineno)), seq)
-            else:
-                code = self._text(dec)
-                result[code] = code
-                self.origin.add(Item(dpath + (code,), code, "decorator", extent, extent,
-                                     self.src.node_span(dec), code,
-                                     indent=self.src.indent_of_line(dec.lineno)), seq)
-        self.origin.seal_seq(seq)
-        if result:
-            self.origin.add(Item(dpath, "decorators", "pseudo", (0, 0), (0, 0), None, result))
-        else:
-            self.origin.drop_seq(seq)
-        return result
-
-    def _params(self, node, path):
-        a = node.args
-        ordered = []    # (arg, default) in mstion order: params, posonly, kwonly
-        n_pos = len(a.posonlyargs) + len(a.args)
-        defaults = [None] * (n_pos - len(a.defaults)) + list(a.defaults)
-        regular = [(p, defaults[len(a.posonlyargs) + i]) for i, p in enumerate(a.args)]
-        posonly = [(p, defaults[i]) for i, p in enumerate(a.posonlyargs)]
-        kwonly = [(p, a.kw_defaults[i]) for i, p in enumerate(a.kwonlyargs)]
-        ordered = regular + posonly + kwonly
-        if not ordered:
-            return None
-        result = GeneralParse(source="")
-        all_params = [p for p, _ in ordered]
-        seq = self.origin.new_seq(path, "params", sep=", ")
-        first = True
-        for p, default in ordered:
-            if p.arg in _SKIP_PARAMS:
-                continue
-            ps = self.src.node_span(p)
-            if first:
-                seq.insert_at = ps[0]
-                first = False
-            if default is not None:
-                value = self._value(default, path + (p.arg,))
-                vs = self.src.node_span(default)
-                extent = (ps[0], vs[1])
-            else:
-                value = NO_DEFAULT
-                vs = None
-                extent = ps
-            result[p.arg] = value
-            # No _child_spans for defaults; libcst's span map has no Param
-            # entries, so LineMap resolves a signature line to `parameters`.
-            self.origin.add(Item(path + (p.arg,), p.arg, "param", extent, extent, vs, value,
-                                 slot=ps[1]), seq)
-        if all_params:
-            self._stamp(result, self.src.node_span(all_params[0])[0],
-                        max(self.src.node_span(p)[1] for p in all_params))
-        # Separator style from the source: multi-line parameter lists keep their line breaks.
-        if len(seq.items) >= 2:
-            seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
-        self.origin.seal_seq(seq)
-        if not result:
-            self.origin.drop_seq(seq)
-            return None
-        return result
-
-    # ── blocks (nested bodies) ─────────────────────────────────────────────
-
-    def _block_body(self, stmts, out, path, header_line, block_state):
-        """Extract a nested block body into `out` (a Conditional/Loop/Try)."""
-        self.cursor = header_line
-        body_indent = self.src.indent_of_line(stmts[0].lineno)
-        seq = self.origin.new_seq(path, "body", indent=body_indent,
-                                  insert_at=self.src.line_start(stmts[0].lineno))
-        self._body(stmts, out, path, seq, scope="function")
-        self._consume_footer(len(body_indent))
-        self.origin.seal_seq(seq)
-        return seq
-
-    def _finish_block_item(self, key, path, seq, gap_start, core_start, indent, kind="block"):
-        end = self.src.next_line_start(self.cursor)
-        self.origin.add(Item(path + (key,), key, kind, (gap_start, end), (core_start, end), None, None,
-                             indent=indent), seq)
-
-    def _condition(self, test, branch_path, keyword):
-        call = test.value if isinstance(test, ast.Subscript) and isinstance(test.value, ast.Call) else test
-        if isinstance(call, ast.Call):
-            cond_key = f"{_call_func_name(call) or 'call'}()##{keyword}"
-        else:
-            cond_key = f"##{keyword}"
-        if isinstance(test, ast.Subscript) and isinstance(test.value, ast.Call):
-            inner = self._call(test.value, branch_path + (cond_key,), CallParse, None)
-            value = inner if inner is not None else CodeLine(self._text(test))
-        else:
-            value = self._value(test, branch_path + (cond_key,))
-        return cond_key, value
-
-    def _if_chain(self, node, out, path, seq, cond_counters, block_occ, gap_start, core_start, indent):
-        first = True
-        while True:
-            keyword = "if" if first else "elif"
-            idx = cond_counters[keyword]
-            cond_counters[keyword] += 1
-            key = f"{keyword}##{idx}"
-            branch_path = path + (key,)
-            branch = Conditional(condition=key)
-            cond_key, cond_value = self._condition(node.test, branch_path, keyword)
-            branch[cond_key] = cond_value
-            ts = self.src.node_span(node.test)
-            self._record_child(branch, cond_key, cond_value, *ts)
-            self.origin.add(Item(branch_path + (cond_key,), cond_key, "header", ts, ts, ts, cond_value))
-            self._block_body(node.body, branch, branch_path, node.test.end_lineno, (cond_counters, block_occ))
-            self._stamp(branch, ts[0], self.src.node_span(node.body[-1])[1])
-            out[key] = branch
-            self._finish_block_item(key, path, seq, gap_start, core_start, indent)
-            first = False
-            orelse = node.orelse
-            if not orelse:
-                return
-            if (len(orelse) == 1 and isinstance(orelse[0], ast.If)
-                    and self.src.line_text(orelse[0].lineno).lstrip().startswith("elif")):
-                node = orelse[0]
-                gap_start = core_start = self.src.line_start(node.lineno)
-                indent = self.src.indent_of_line(node.lineno)
-                continue
-            idx = cond_counters["else"]
-            cond_counters["else"] += 1
-            key = f"else##{idx}"
-            branch_path = path + (key,)
-            branch = Conditional(condition=key)
-            kw_line = self._keyword_line(orelse, self.cursor)
-            else_seq = self._block_body(orelse, branch, branch_path, kw_line, (cond_counters, block_occ))
-            if branch:
-                self._stamp(branch, self.src.node_span(orelse[0])[0], self.src.node_span(orelse[-1])[1])
-                out[key] = branch
-                gs = self.src.line_start(kw_line)
-                self._finish_block_item(key, path, seq, gs, gs, self.src.indent_of_line(kw_line))
-            else:
-                self.origin.drop_seq(else_seq)
-            return
-
-    def _for_loop(self, node, out, path, seq, block_occ, gap_start, core_start, indent):
-        target = self._text(node.target)
-        it = self._text(node.iter)
-        key = _occ_key(f"for {target} in {it}", block_occ)
-        loop_path = path + (key,)
-        loop = Loop(target=target, iter=it)
-        self._block_body(node.body, loop, loop_path, node.iter.end_lineno, None)
-        range_args = self._range_args(node.iter, loop_path + ("range",))
-        if range_args is not None:
-            loop["range"] = range_args
-            rs = (self.src.node_span(node.iter.args[0])[0], self.src.node_span(node.iter.args[-1])[1])
-            self._record_child(loop, "range", range_args, *rs)
-            self.origin.add(Item(loop_path + ("range",), "range", "value", rs, rs, rs, range_args))
-        self._stamp(loop, *self.src.node_span(node))
-        out[key] = loop
-        self._finish_block_item(key, path, seq, gap_start, core_start, indent)
-        if node.orelse:
-            branch = Conditional(condition="else")
-            kw_line = self._keyword_line(node.orelse, self.cursor)
-            else_seq = self._block_body(node.orelse, branch, path + (f"{key} else",), kw_line, None)
-            if branch:
-                self._stamp(branch, self.src.node_span(node.orelse[0])[0], self.src.node_span(node.orelse[-1])[1])
-                out[f"{key} else"] = branch
-                gs = self.src.line_start(kw_line)
-                self._finish_block_item(f"{key} else", path, seq, gs, gs, self.src.indent_of_line(kw_line))
-            else:
-                self.origin.drop_seq(else_seq)
-
-    def _range_args(self, iter_node, path):
-        if not (isinstance(iter_node, ast.Call) and isinstance(iter_node.func, ast.Name)
-                and iter_node.func.id == "range" and iter_node.args and not iter_node.keywords):
-            return None
-        args = []
-        seq = self.origin.new_seq(path, "elements", sep=", ")
-        for i, a in enumerate(iter_node.args):
-            v = self._literal(a)
-            if v is _UNREADABLE:
-                self.origin.drop_seq(seq)
-                for j in range(i):
-                    self.origin.items.pop(path + (j,), None)
+                if self._interp is None:
+                    self._interp = si.create()
+                    self._cid = ch.create()
+                si.run_string(self._interp, _WORKER_SCRIPT,
+                              shared={"TEXT": text, "ROOT": root, "CID": int(self._cid)})
+                blob = ch.recv(self._cid)
+            except Exception as e:
+                print(f"core_syntax: scan worker failed ({type(e).__name__}: {str(e)[:200]}); "
+                      "parsing in-process from now on")
+                self._broken = True
                 return None
-            args.append(v)
-            sp = self.src.node_span(a)
-            self.origin.add(Item(path + (i,), i, "element", sp, sp, sp, v), seq)
-        self.origin.seal_seq(seq)
-        return args
+        import io
+        return _ParseUnpickler(io.BytesIO(blob)).load()
 
-    def _try_block(self, node, out, path, seq, block_occ, gap_start, core_start, indent):
-        try_key = _occ_key("try", block_occ)
-        body = Try(header="try")
-        tseq = self._block_body(node.body, body, path + (try_key,), node.lineno, None)
-        if body:
-            self._stamp(body, self.src.node_span(node.body[0])[0], self.src.node_span(node.body[-1])[1])
-            out[try_key] = body
-            self._finish_block_item(try_key, path, seq, gap_start, core_start, indent)
-        else:
-            self.origin.drop_seq(tseq)
-        star = isinstance(node, getattr(ast, "TryStar", ())) and not isinstance(node, ast.Try)
-        for handler in node.handlers:
-            parts = ["except*" if star else "except"]
-            if handler.type is not None:
-                parts.append(self._text(handler.type))
-            if handler.name is not None:
-                parts += ["as", handler.name]
-            header = " ".join(parts)
-            hkey = _occ_key(header, block_occ)
-            hbody = Except(header=header)
-            hline = handler.type.end_lineno if handler.type is not None else handler.lineno
-            hseq = self._block_body(handler.body, hbody, path + (hkey,), hline, None)
-            if hbody:
-                self._stamp(hbody, *self.src.node_span(handler))
-                out[hkey] = hbody
-                gs = self.src.line_start(handler.lineno)
-                self._finish_block_item(hkey, path, seq, gs, gs, self.src.indent_of_line(handler.lineno))
-            else:
-                self.origin.drop_seq(hseq)
-        if node.orelse:
-            ekey = _occ_key("try else", block_occ)
-            ebody = Try(header="try else")
-            kw_line = self._keyword_line(node.orelse, self.cursor)
-            eseq = self._block_body(node.orelse, ebody, path + (ekey,), kw_line, None)
-            if ebody:
-                self._stamp(ebody, self.src.node_span(node.orelse[0])[0], self.src.node_span(node.orelse[-1])[1])
-                out[ekey] = ebody
-                gs = self.src.line_start(kw_line)
-                self._finish_block_item(ekey, path, seq, gs, gs, self.src.indent_of_line(kw_line))
-            else:
-                self.origin.drop_seq(eseq)
-        if node.finalbody:
-            fkey = _occ_key("finally", block_occ)
-            fbody = Try(header="finally")
-            kw_line = self._keyword_line(node.finalbody, self.cursor)
-            fseq = self._block_body(node.finalbody, fbody, path + (fkey,), kw_line, None)
-            if fbody:
-                self._stamp(fbody, self.src.node_span(node.finalbody[0])[0], self.src.node_span(node.finalbody[-1])[1])
-                out[fkey] = fbody
-                gs = self.src.line_start(kw_line)
-                self._finish_block_item(fkey, path, seq, gs, gs, self.src.indent_of_line(kw_line))
-            else:
-                self.origin.drop_seq(fseq)
 
-    # ── values ───────────────────────────────────────────────────────────────
-
-    def _text(self, node):
-        s, e = self.src.node_span(node)
-        return self.origin.text[s:e]
-
-    def _literal(self, node):
-        """A plain literal's Python value, else _UNREADABLE (no containers)."""
-        if isinstance(node, ast.Constant) and isinstance(node.value, _SIMPLE_LITERAL_TYPES):
-            return node.value
-        if (isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd))
-                and isinstance(node.operand, ast.Constant)
-                and isinstance(node.operand.value, (int, float)) and not isinstance(node.operand.value, bool)):
-            return -node.operand.value if isinstance(node.op, ast.USub) else node.operand.value
-        return _UNREADABLE
-
-    def _value(self, node, path):
-        """The Python value of an expression: literals, containers of values
-        (elements recorded as items), calls as CallParse, src-resolvable names
-        as live objects, anything else as CodeLine(source)."""
-        lit = self._literal(node)
-        if lit is not _UNREADABLE:
-            return lit
-        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Call):
-            inner = self._call(node.value, path, CallParse, None)
-            if inner is not None:
-                return inner
-            return CodeLine(self._text(node))
-        if isinstance(node, ast.Call):
-            parsed = self._call(node, path, CallParse, None)
-            return parsed if parsed is not None else CodeLine(self._text(node))
-        if isinstance(node, (ast.Tuple, ast.List)):
-            if any(isinstance(e, ast.Starred) for e in node.elts):
-                return CodeLine(self._text(node))
-            seq = self.origin.new_seq(path, "elements", sep=", ")
-            values = []
-            self._nested += 1
-            for i, e in enumerate(node.elts):
-                v = self._value(e, path + (i,))
-                values.append(v)
-                sp = self.src.node_span(e)
-                self.origin.add(Item(path + (i,), i, "element", sp, sp, sp, v), seq)
-            self._nested -= 1
-            if len(seq.items) >= 2:
-                seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
-            if seq.items:
-                self.origin.seal_seq(seq)
-            else:
-                self.origin.drop_seq(seq)
-            return tuple(values) if isinstance(node, ast.Tuple) else values
-        if isinstance(node, ast.Dict):
-            if any(k is None for k in node.keys):
-                return CodeLine(self._text(node))
-            keys = []
-            for k in node.keys:
-                try:
-                    kv = ast.literal_eval(k)
-                    hash(kv)
-                except Exception:
-                    return CodeLine(self._text(node))
-                keys.append(kv)
-            seq = self.origin.new_seq(path, "pairs", sep=", ")
-            result = {}
-            self._nested += 1
-            for k, knode, vnode in zip(keys, node.keys, node.values):
-                self.origin.shadow(path + (k,))
-                v = self._value(vnode, path + (k,))
-                result[k] = v
-                ks, ke = self.src.node_span(knode)
-                vs = self.src.node_span(vnode)
-                self.origin.add(Item(path + (k,), k, "pair", (ks, vs[1]), (ks, vs[1]), vs, v), seq)
-            self._nested -= 1
-            if len(seq.items) >= 2:
-                seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
-            if seq.items:
-                self.origin.seal_seq(seq)
-            else:
-                self.origin.drop_seq(seq)
-            return result
-        if isinstance(node, ast.Set):
-            elements = []
-            for e in node.elts:
-                v = self._literal(e)
-                if v is _UNREADABLE:
-                    return CodeLine(self._text(node))
-                elements.append(v)
-            return set(elements)
-        if isinstance(node, (ast.Name, ast.Attribute)):
-            parts = _dotted_parts(node)
-            if parts is not None:
-                if len(parts) == 1:
-                    resolved = _resolve_callable_by_name(parts[0])
-                else:
-                    resolved = _resolve_as_enum(parts)
-                    if resolved is _UNREADABLE:
-                        resolved = _resolve_callable_by_parts(parts)
-                if resolved is not _UNREADABLE:
-                    return resolved
-        return CodeLine(self._text(node))
-
-    @staticmethod
-    def _runtime_positional_names(call):
-        """Ordered positional parameter names of the resolved callee (leading
-        self/cls dropped, stops at *args), or None when it can't be resolved or
-        inspected — mirrors libcst_conversion._call_positional_param_names."""
-        func = call.func
-        obj = _UNREADABLE
-        if isinstance(func, ast.Name):
-            obj = _resolve_callable_by_name(func.id)
-        elif isinstance(func, ast.Attribute):
-            parts = _dotted_parts(func)
-            if parts is not None:
-                obj = _resolve_callable_by_parts(parts)
-        if obj is _UNREADABLE or not callable(obj):
-            return None
-        try:
-            sig = _cached_signature(obj)
-        except TypeError:
-            sig = None
-        if sig is None:
-            return None
-        names = []
-        for p in sig.parameters.values():
-            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
-                if not names and p.name in _SKIP_PARAMS:
-                    continue
-                names.append(p.name)
-            elif p.kind == p.VAR_POSITIONAL:
-                break
-        return names
-
-    def _call(self, call, path, result_cls, pos_names_override, allow_empty=False):
-        """Arguments keyed by parameter name (see CallParse). Returns None when
-        nothing is readable (the caller falls back to a CodeLine) unless
-        `allow_empty`."""
-        readable = result_cls(source=self._text(call), func_name=_call_func_name(call))
-        positional = [a for a in call.args if not isinstance(a, ast.Starred)]
-        if pos_names_override is not None:
-            pos_names = pos_names_override
-        elif positional:
-            # The callee's runtime signature (builtins + the src scope, like the
-            # libcst path - `live_view(x)` calls its arg `value`), else argN.
-            pos_names = self._runtime_positional_names(call)
-            if pos_names is None:
-                pos_names = [f"arg{i}" for i in range(len(positional))]
-                if any(n in {k.arg for k in call.keywords} for n in pos_names):
-                    pos_names = None
-        else:
-            pos_names = None
-        seq = self.origin.new_seq(path, "args", sep=", ")
-        pos_idx = 0
-        nested = self._nested > 0
-        self._nested += 1
-        for a in call.args:
-            if isinstance(a, ast.Starred):
-                continue
-            if pos_names is not None and pos_idx < len(pos_names):
-                k = pos_names[pos_idx]
-                v = self._value(a, path + (k,))
-                readable[k] = v
-                sp = self.src.node_span(a)
-                self.origin.add(Item(path + (k,), k, "element", sp, sp, sp, v), seq)
-            pos_idx += 1
-        for kw in call.keywords:
-            if kw.arg is None:
-                continue        # **splat passes through in the text
-            v = self._value(kw.value, path + (kw.arg,))
-            readable[kw.arg] = v
-            vs = self.src.node_span(kw.value)
-            ks = self.src.node_span(kw)[0]
-            # No _child_spans on args either (see _params) - LineMap stops at the call.
-            self.origin.add(Item(path + (kw.arg,), kw.arg, "kwarg", (ks, vs[1]), (ks, vs[1]), vs, v), seq)
-        self._nested -= 1
-        if len(seq.items) >= 2:
-            seq.sep = self.origin.text[seq.items[0].extent[1]:seq.items[1].extent[0]]
-        if not seq.items:
-            # Insertion point for the first argument: just inside the closing brace.
-            seq.insert_at = self.src.node_span(call)[1] - 1
-        self.origin.seal_seq(seq)
-        if not readable and not allow_empty:
-            self.origin.drop_seq(seq)
-            return None
-        if pos_names:
-            readable["__pos_names__"] = list(pos_names)
-        if not nested:
-            self._stamp(readable, *self.src.node_span(call))
-        return readable
+_worker = _ScanWorker()
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -1837,12 +1017,242 @@ def reparse_reusing(gp, new_text) -> GeneralParse:
     return merged
 
 
+def reparse_incremental(gp, new_text) -> GeneralParse:
+    """The keystroke path: re-parse only the TOP-LEVEL statements the edit
+    touched and splice them into a new root; everything else is the previous
+    parse's objects with their offsets / line numbers shifted. Falls back to
+    `reparse_reusing` (a full parse) when the edit lands outside every
+    statement (module head / tail), touches more than half the file, or the
+    previous parse carries no statement table. Raises SyntaxError like
+    parse_to_dict (region line numbers mapped back to the file).
+
+    The previous parse is CONSUMED: nodes it shares with the result get their
+    spans moved to the new coordinates and its residual tables are re-based —
+    use the returned gp from then on (the libcst incremental had the same
+    contract; the code host always chains)."""
+    origin = gp.get(ORIGIN_KEY)
+    if origin is None or not getattr(origin, "top_stmts", None):
+        return reparse_reusing(gp, new_text)
+    old_text = origin.text
+    if new_text == old_text:
+        return gp
+
+    # ── 1. the changed char range (memcmp-style prefix / suffix), snapped to lines ──
+    pre = _common_prefix(old_text, new_text)
+    suf = _common_suffix(old_text, new_text, pre)
+    old_lo = old_text.rfind("\n", 0, pre) + 1
+    old_hi = old_text.find("\n", len(old_text) - suf)
+    old_hi = len(old_text) if old_hi == -1 else old_hi + 1
+    delta = len(new_text) - len(old_text)
+    top = origin.top_extents()
+    i0 = i1 = None
+    for i, (s0, e0, _k) in enumerate(top):
+        if e0 > old_lo and s0 < max(old_hi, old_lo + 1):
+            if i0 is None:
+                i0 = i
+            i1 = i
+    if i0 is None or old_lo < top[0][0]:
+        return reparse_reusing(gp, new_text)          # head / tail edit: full parse
+    rs, re_ = top[i0][0], top[i1][1]
+    if old_hi > re_ or (re_ - rs) * 2 > len(old_text):
+        return reparse_reusing(gp, new_text)
+    region_old = old_text[rs:re_]
+    region_new = new_text[rs:re_ + delta]
+    if rs > pre or len(old_text) - re_ > suf:
+        return reparse_reusing(gp, new_text)
+    dl = region_new.count("\n") - region_old.count("\n")
+
+    # ── 2. parse the region on its own (column 0, statement boundaries) ──
+    from src.lsd.gl_gui.toggles import Toggles
+    frontend = "scan" if Toggles.TextEditor.melty_scanner else "ast"
+    first_line = origin.src.linecol(rs)[0]
+    try:
+        ast.parse(region_new)
+        rgp, rorigin = _extract(region_new, frontend=frontend, types=REAL_TYPES, module_header=(rs == 0))
+    except SyntaxError as e:
+        raise SyntaxError(e.msg, (str(getattr(gp, "file_path", None) or "<text>"),
+                                  (e.lineno or 1) + first_line - 1, e.offset or 0, "")) from None
+
+    # ── 3. root keys: before / region / after, by extent ──
+    before_keys, after_keys, region_keys = [], [], set()
+    for k in gp:
+        if _is_dunder(k):
+            continue
+        item = origin.items.get((k,))
+        if item is None or (item.extent[0] < re_ and item.extent[1] > rs):
+            region_keys.add(k)
+        elif item.extent[1] <= rs:
+            before_keys.append(k)
+        else:
+            after_keys.append(k)
+    kept = set(before_keys) | set(after_keys)
+    rkeys = [k for k in rgp if not _is_dunder(k)]
+
+    # ── 4. the new root ──
+    merged = type(gp)(source=new_text)
+    for attr in _ROOT_CARRY_ATTRS:
+        if hasattr(gp, attr):
+            setattr(merged, attr, getattr(gp, attr))
+    for k in before_keys:
+        merged[k] = gp[k]
+    for k in rkeys:
+        v = rgp[k]
+        ov = gp.get(k) if k in region_keys else None
+        if isinstance(ov, dict) and isinstance(v, dict) and _parse_kind(ov) is _parse_kind(v):
+            v = _merge_node(ov, v, (k,), rorigin)      # unchanged subtrees keep their identity
+        merged[k] = v
+    for k in after_keys:
+        merged[k] = gp[k]
+    old_ov = gp.get("__overrides__") if isinstance(gp.get("__overrides__"), dict) else {}
+    new_ov = {k: v for k, v in old_ov.items()
+              if (_is_dunder(k) and len(k) > 4 and k[2:-2] in kept) or (not _is_dunder(k) and rs > 0)}
+    if isinstance(rgp.get("__overrides__"), dict):
+        new_ov.update(rgp["__overrides__"])
+    if new_ov:
+        merged["__overrides__"] = new_ov
+    for k, v in gp.items():
+        if _is_dunder(k) and k not in merged and k not in (ORIGIN_KEY, "__cst__", "__overrides__"):
+            merged[k] = v
+
+    # ── 5. the residual, updated IN PLACE: forget the region's entries (start by
+    #       walking the OLD region subtrees), re-base the statements after it,
+    #       add the region's entries ──
+    body = origin.seqs[origin.default_seq[()]]
+    body_before = [it for it in body.items if it.extent[1] <= rs]
+    body_after = [it for it in body.items if it.extent[0] >= re_]
+    for k in region_keys:
+        if k in gp:
+            _forget_subtree(origin, gp[k], (k,))
+    old_ov = gp.get("__overrides__") if isinstance(gp.get("__overrides__"), dict) else {}
+    for k in old_ov:
+        if _is_dunder(k) and len(k) > 4 and k[2:-2] not in kept:
+            origin.items.pop(("__overrides__", k), None)
+    if rs == 0:
+        origin.items.pop(("__overrides__",), None)
+    if () in origin.loose:
+        origin.loose[()] = [it for it in origin.loose[()]
+                            if (it.path[0] in kept) or (it.path[0] == "__overrides__" and (it.path[1:2] or ("",))[0] != ""
+                                                        and it.path[1][2:-2] in kept) or (it.path == ("__overrides__",) and rs > 0)]
+    rl = first_line - 1
+    for b, _e, _k in origin.top_stmts[i1 + 1:]:
+        b.offset += delta
+        b.line += dl
+    for b, _e, _k in rorigin.top_stmts:
+        b.offset += rs
+        b.line += rl
+    origin.items.update(rorigin.items)
+    idmap = {}
+    for sid, sq in rorigin.seqs.items():
+        if sq.owner == ():
+            continue
+        sq.id = origin._next_seq_id
+        origin._next_seq_id += 1
+        origin.seqs[sq.id] = sq
+        idmap[sid] = sq.id
+        for it in sq.items:
+            it.seq = sq.id
+    for path, sid in rorigin.default_seq.items():
+        if path != () and sid in idmap:
+            origin.default_seq[path] = idmap[sid]
+    for path, sids in rorigin.owned.items():
+        if path != ():
+            origin.owned[path] = [idmap[x] for x in sids if x in idmap]
+    for path, its in rorigin.loose.items():
+        if path == ():
+            origin.loose.setdefault((), []).extend(its)
+        else:
+            origin.loose[path] = its
+    rbody = rorigin.seqs[rorigin.default_seq[()]]
+    body.items = body_before + list(rbody.items) + body_after
+    for it in rbody.items:
+        it.seq = body.id
+    origin.top_stmts = origin.top_stmts[:i0] + rorigin.top_stmts + origin.top_stmts[i1 + 1:]
+    origin.text = new_text
+    origin.src = _Src.spliced(origin.src, new_text, rs, re_, delta, rorigin.src)
+
+    # ── 6. spans: nothing to renumber - they hang off the Base cells shifted above ──
+    child_spans = {k: sp for k, sp in (getattr(gp, "_child_spans", None) or {}).items() if k in kept}
+    child_spans.update(getattr(rgp, "_child_spans", None) or {})
+    if child_spans:
+        merged._child_spans = child_spans
+    merged[ORIGIN_KEY] = origin
+    merged.source = new_text
+    return merged
+
+
+def _common_prefix(a, b):
+    """Length of the common prefix — C-speed slice compares, log(n) of them."""
+    lo, hi = 0, min(len(a), len(b))
+    if hi and a[:hi] == b[:hi]:
+        return hi
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if a[:mid] == b[:mid]:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _common_suffix(a, b, prefix):
+    """Length of the common suffix past `prefix` (so the two never overlap)."""
+    lo, hi = 0, min(len(a), len(b)) - prefix
+    if hi > 0 and a[-hi:] == b[-hi:]:
+        return hi
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if a[-mid:] == b[-mid:]:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
+def _forget_subtree(origin, node, path):
+    """Drop every Origin table entry the old region subtree at `path` owns:
+    its node's Items (one per key, elements by index), loose comments /
+    overrides, and the Seqs it owns — O(region), no table scans."""
+    stack = [(path, node)]
+    while stack:
+        p, n = stack.pop()
+        for sid in origin.owned.pop(p, ()):
+            origin.seqs.pop(sid, None)
+        origin.default_seq.pop(p, None)
+        origin.loose.pop(p, None)
+        origin.loose.pop(p + ("__overrides__",), None)
+        if isinstance(n, dict):
+            ov = n.get("__overrides__")
+            if isinstance(ov, dict):
+                origin.items.pop(p + ("__overrides__",), None)
+                for k in ov:
+                    origin.items.pop(p + ("__overrides__", k), None)
+            for k, v in n.items():
+                if k in (ORIGIN_KEY, "__pos_names__", "__symbol_usages__", "__overrides__"):
+                    continue
+                cp = p + (k,)
+                origin.items.pop(cp, None)
+                if isinstance(v, (dict, list, tuple)):
+                    stack.append((cp, v))
+        elif isinstance(n, (list, tuple)):
+            for i, v in enumerate(n):
+                cp = p + (i,)
+                origin.items.pop(cp, None)
+                if isinstance(v, (dict, list, tuple)):
+                    stack.append((cp, v))
+    origin.items.pop(path, None)
+
+
 def _merge_node(old, fresh, path, origin):
     """The node to use in place of `fresh`: `old` itself when the whole subtree
     is unchanged (coordinates refreshed onto it), else `fresh` with every
     unchanged child swapped for the old object. Reads `old` only; writes go
     into `fresh`, which is a plain (unwrapped) parse."""
     changed = [k for k in old if not _is_dunder(k)] != [k for k in fresh if not _is_dunder(k)]
+    # __overrides__ / __pos_names__ are part of the node's identity (a new
+    # `# [tint=...]` above a def must not be dropped for an otherwise-equal node).
+    for meta in ("__overrides__", "__pos_names__"):
+        if not values_equal(old.get(meta), fresh.get(meta)):
+            changed = True
     for k in list(fresh.keys()):
         if _is_dunder(k):
             continue

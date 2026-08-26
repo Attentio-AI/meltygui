@@ -942,7 +942,8 @@ def render_host_view(input_value, external_change=False, draw=False, draw_state=
     # call) to tell a genuine upstream change from the wrapper's own per-keystroke pulse.
     host.child_kwargs['temp'] = True
     notify(f"{host.io_function.__name__}", tag="host", tint=(1, 0.5, 0.5))
-    result = host.io_function(input_value=input_value, draw=draw, view_func=host._internal_view_func,
+    host.child_kwargs["input_value"] = input_value
+    result = host.io_function(draw=draw, view_func=host._internal_view_func,
                           external_change=ext, return_extras=True, **host.child_kwargs)
     host._pending_external = False
     if isinstance(result, tuple) and len(result) == 3:

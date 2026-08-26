@@ -412,11 +412,13 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.07, 0.079, 0.083))
+@window(tint=(0.78, 0.41, 0.13))
 class Toggles:
 
-    @defaults(tint=(0.236, 0.26, 0.267))
+    @defaults(tint=(0.811, 0.59, 0.29))
     class TextEditor:
+
+        some_list = [70,-39,93]
 
         enable_spell_check = False
         # Long-line token clipping (_window_tokens band): a line longer
@@ -609,6 +611,18 @@ class Toggles:
         # (__origin__ = core_syntax, __cst__ = libcst), so it flips live.
         # The cst-dict cache is keyed by parser. Read live.
         melty_syntax = True
+
+        # melty_scanner: with melty_syntax on, parse with core_syntax's own
+        # tokenize-based scanner (melty_scan.scan - the "cst-lite" replacement
+        # for ast.parse; off = Python's ast, the oracle the scanner is tested
+        # against). It is what makes the above knob possible. Read live.
+        melty_scanner = True
+
+        # Buffers at least this many chars parse in the scan WORKER: a 3.12
+        # subinterpreter with its own GIL, so the parse runs truly in parallel
+        # and never stalls the render thread; smaller buffers parse in-process
+        # (their parse is a few ms). 0 = always the worker. Read live.
+        melty_async_min_chars = 32 * 1024
 
 
         # Fidelity gate for the merge above: regenerate the spliced module's
@@ -1104,7 +1118,7 @@ class Toggles:
         # shader's final sRGB encode: 1.0 = pure sRGB encode (brightest,
         # colorimetrically "correct"); 2.2 = raw linear out (darkest). Read
         # live per frame by draw_voxels.
-        gamma = 2.2
+        gamma = 1.00
 
         # Auto neural flow: when nf_on is OFF and a DISPLAYED axis is longer
         # than this (or than GL_MAX_3D_TEXTURE_SIZE, whichever is smaller),
@@ -1234,6 +1248,35 @@ class Toggles:
         resize_border = 6
         resize_corner = 18
 
+        # The OS window's right/bottom edges join the column collision
+        # system (gl_gui/os_frame.py): a melty window edge or a column
+        # cascade that reaches the display edge during a drag pushes the OS
+        # surface out instead of stopping there; the workarea (the screen)
+        # is the final barrier, where the OS pin-and-slide takes over.
+        push_os_window_edges = True
+        # The LEFT/TOP half of that (os_frame.push_near): a near edge
+        # dragged past the display's left/top grows the window on the FAR
+        # side through the compositor's keep-on-screen edge, so Mutter
+        # slides the edge toward the hand - the same slide the push-up
+        # rides - while every other window is re-based to the room and the
+        # dragged window's edge keeps the OS edge out. (The earlier
+        # xdg_toplevel.resize handoff is superseded.) Off: the near edge
+        # just runs off the display.
+        push_os_window_near_edges = True
+        # The REVERSE push (os_frame.fit_windows_to_display): the OS window
+        # growing - right-drag on bare background, a compositor resize,
+        # maximize - pushes the root melty windows to stay in view: a
+        # window slides until its left/top edge reaches the display's, then
+        # shrinks, cascading through its columns/rows to fill the edge.
+        # STICKY for the gesture: every step is re-applied against the layout
+        # at the gesture's start, so growing the OS window back restores
+        # the windows exactly; at release the pushed layout is kept.
+        os_edges_push_windows = True
+        # Console trace of the OS-edge push chain (absorb → flush → apply,
+        # the compositor handoff and its glue, the reverse push). Off: it
+        # prints per configure and per absorb, a real cost at 120 Hz.
+        push_os_window_edges_trace = False
+
         # Tint of the OS-window chrome: the minimize / maximize / close
         # controls titlebar.py draws top-right. Each is painted exactly like
         # a window header's close button (draw_header_end's flat_button),
@@ -1338,6 +1381,20 @@ class Toggles:
         # near/black dd text, 1 = invisible) so the active-source yellow
         # stands out against quiet rows.
         source_text_toward_bg = 0.55
+
+    @defaults(tint=(0.378, 0.286, 0.201))
+    class Collection:
+        pre_load_items = 26
+        placeholder_height = 30.0
+        drop_tail_height = 8
+        # Drag-and-drop chrome (slot lines, the home icon) starts INVISIBLE
+        # at pickup and eases up to full opacity once the cursor has
+        # travelled this many px (cumulative path length, never fading back
+        # on a return trip) - nothing pops in on a short drag. 0 = instant.
+        dnd_reveal_distance = 10.0
+
+        max_preferred_header_width = 70
+        preferred_header_width = 132
 
     # [icon=""]
     @defaults(tint=(0.65, 0.385, 0.069, 1.0))
@@ -1448,6 +1505,7 @@ class Toggles:
         # custom.ini as the main host identity / hot-reload cache anchor, so kee
         # this off until the .ini is fully deprecated.
         ini_save = False
+
 
     @defaults(tint=(0.36, 0.56, 0.44))
     class CodeEditor:
@@ -1614,7 +1672,6 @@ class Toggles:
         # value - change them together by changing only this.
         compare_padding = 14.0
 
-
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
         # Kill switch for folder_io's reconcile deletes: while True, a key
@@ -1676,6 +1733,7 @@ class Toggles:
 
         # [tint=(0.0, 0.56, 0.872), show_tint=True]
         draw_bvh = False
+
 
     @defaults(tint=(0.16, 0.132, 0.194))
     class Fim:
@@ -1847,21 +1905,6 @@ class Toggles:
         # references them (store key / draw / attr / frame / module).
         # A few seconds of gc walk, OOM-time only.
         oom_holder_report = True
-
-
-    @defaults(tint=(0.378, 0.286, 0.201))
-    class Collection:
-        pre_load_items = 26
-        placeholder_height = 30.0
-        drop_tail_height = 8
-        # Drag-and-drop chrome (slot lines, the home frame) starts INVISIBLE
-        # at pickup and eases up to full opacity once the cursor has
-        # traveled this many pixels (cumulative path length, never fading back
-        # on a return trip) - nothing pops in on a short drag. 0 = instant.
-        dnd_reveal_distance = 10.0
-
-        max_preferred_header_width = 70
-        preferred_header_width = 132
     cam_zoom = 1.5585
 
     # Presentation mode: dim the text editor's glyphs everywhere EXCEPT on
@@ -1880,7 +1923,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by
