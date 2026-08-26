@@ -712,6 +712,20 @@ class _FileMoreRow:
 FILE_ROW_CAP = 8  # rows shown under a file before it collapses to "+ n more"
 
 
+class _MoreFilesRow:
+    """Sentinel row closing the Code TREE when it holds more files than the
+    tab shows (Toggles.GlobalSearch.code_files_per_page files, plus one page
+    per pick — GlobalSearch.file_pages). Selectable like any row; Enter /
+    click reveals the next page of files, the highlight staying put so it
+    lands on the first file revealed. `count` = files still hidden."""
+    __slots__ = ("count",)
+    kind = CODE_CATEGORY
+    label = "more files"
+
+    def __init__(self, count):
+        self.count = count
+
+
 class _LoadAllRow:
     """Sentinel row replacing the old "+ n more" label when the active tab
     holds more hits than max_visible shows. A real row in the on-screen list —
@@ -744,7 +758,7 @@ def _match_tier(hit, scores):
 FUZZY_PER_SCOPE = 2  # non-exact siblings shown per scope when the scope has exact matches
 
 
-def _code_tree_rows(hits, scores=None, expanded=()):
+def _code_tree_rows(hits, scores=None, expanded=(), max_files=None):
     """Lay Code hits out as a file -> class -> def TREE, flattened to rows.
     Every hit's ancestors (sym.parent chain) are inserted above it -- as
     CONTEXT rows when they didn't match themselves (see _is_context_row) --
@@ -752,7 +766,9 @@ def _code_tree_rows(hits, scores=None, expanded=()):
     scorer rank of their best nested match (most relevant file first);
     siblings inside a file order by the highest pick count anywhere in their
     subtree (most-used first), then by definition order. Non-Code hits pass
-    through in place."""
+    through in place. `max_files` caps the FILE blocks listed (best files
+    first); the rest fold into one trailing "+ n more files" sentinel
+    (_MoreFilesRow) after the last shown block."""
     if not hits:
         return []
     counts = (getattr(_ensure_search_store(), "counts", None) or {})
@@ -928,8 +944,14 @@ def _code_tree_rows(hits, scores=None, expanded=()):
     # scorer rank of the best match inside (rank folds popularity in within
     # match tiers), same fuzzy cap. Each file's block is capped at
     # FILE_ROW_CAP rows (best first, since they're in tree order) with a
-    # "+ n more" sentinel unless the file is in `expanded`.
-    for n in order_children(roots.values(), lambda n: n[2]):
+    # "+ n more" sentinel unless the file is in `expanded`. Past `max_files`
+    # blocks the remaining files collapse into ONE "+ n more files" row.
+    files = order_children(roots.values(), lambda n: n[2])
+    hidden_files = 0
+    if max_files is not None and len(files) > max_files:
+        hidden_files = len(files) - max_files
+        files = files[:max_files]
+    for n in files:
         block = []
         emit(n, block)
         root_hit = n[0]
@@ -941,18 +963,21 @@ def _code_tree_rows(hits, scores=None, expanded=()):
             if hidden:
                 block.append(_FileMoreRow(rpath, hidden, root_hit))
         rows.extend(block)
+    if hidden_files:
+        rows.append(_MoreFilesRow(hidden_files))
     # Non-Code hits keep their relative order after the tree (a mixed list
     # only happens in the All tab, which groups by category anyway).
     rows.extend(h for _r, h in passthrough)
     return rows
 
 
-def _expand_rows(kind, hits, scores=None, expanded=()):
+def _expand_rows(kind, hits, scores=None, expanded=(), max_files=None):
     """The on-screen rows for a category's hits: the Code category expands
     into its tree (context rows included); every other category shows its
     hits as they are. `scores` = the (dist, prefix) map from the query;
-    `expanded` = file paths whose blocks list every row."""
-    return (_code_tree_rows(hits, scores, expanded) if kind == CODE_CATEGORY
+    `expanded` = file paths whose blocks list every row; `max_files` = the
+    Code tree's file cap (None = every file; see _code_tree_rows)."""
+    return (_code_tree_rows(hits, scores, expanded, max_files) if kind == CODE_CATEGORY
             else list(hits))
 
 
@@ -1925,6 +1950,7 @@ def _kick_search(q, active_kind, limit=60, new_query=False, immediate=False,
             if new_query:
                 GlobalSearch.selected = 0  # jump back to the top match
                 GlobalSearch.expanded_files = set()  # per-file "+ n more" collapses again
+                GlobalSearch.file_pages = 0  # the Code tree back to the first page of files
             if snap_selection:
                 GlobalSearch._snap_sel = True  # unskipping Code context rows
         _repaint_global_search()
@@ -3593,16 +3619,21 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             return all_rows, False
         _scs = getattr(input_value, "_scores", None)
         _exp = input_value.expanded_files
+        # The Code tree lists code_files_per_page files, plus one page per
+        # "+ n more files" since this query (file_pages); 0 = every file.
+        _page = int(Toggles.GlobalSearch.code_files_per_page)
+        _max_files = _page * (input_value.file_pages + 1) if _page > 0 else None
         # Whether this is the fallback view is decided by the FAST pass
         # alone, so the view can't flip from borrowed rows to own rows when
         # a late tier lands (its hits merge into whichever tab is up).
         if fast_by_kind.get(kind) or not input_value.results:
-            return _expand_rows(kind, by_kind.get(kind) or [], _scs, _exp), False
+            return _expand_rows(kind, by_kind.get(kind) or [], _scs, _exp,
+                                max_files=_max_files), False
         grouped = []
         # best-ranked category first (results order), then any category
         # only an async tier filled
         for k in dict.fromkeys([h.kind for h in input_value.results] + list(by_kind)):
-            grouped.extend(_expand_rows(k, by_kind[k], _scs, _exp))
+            grouped.extend(_expand_rows(k, by_kind[k], _scs, _exp, max_files=_max_files))
         return grouped, True
 
     items, fallback = _items_for(active)
@@ -3663,6 +3694,16 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         input_value.show_all = True
         _kick_search(q, input_value.active_kind, limit=10 ** 9,
                      immediate=True, snap_selection=False)
+        request_render()
+
+    def _reveal_more_files():
+        """Activate the Code tree's "+ n more files" row: one more page of
+        files (Toggles.GlobalSearch.code_files_per_page) lists, this query
+        only. The highlight stays at the sentinel's index, so it lands on
+        the first file revealed (the window keeps its size; the rows scroll
+        — "load all" stays available to lift the QUERY cap)."""
+        input_value.file_pages += 1
+        input_value._follow_sel = True
         request_render()
 
     # While the box holds text focus: Tab / Shift+Tab pick the category (the
@@ -3731,6 +3772,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 input_value.expanded_files.add(_hit.path)
                 input_value.show_all = True  # lift the display cap so the block can show
                 request_render()
+            elif isinstance(_hit, _MoreFilesRow):
+                _reveal_more_files()
             elif (_enter_mods[0] & glfw.MOD_SHIFT) and _goto is not None:
                 # Shift+Enter: jump to the hit's DEFINITION (its action's /
                 # toggle's code in toggles.py) instead of activating it -
@@ -4114,6 +4157,22 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 input_value.show_all = True
                 request_render()
             continue
+        if isinstance(hit, _MoreFilesRow):
+            # The Code tree's "+ n more files" row: bare text in the Code
+            # column at file level (the icon gutter's right), selectable;
+            # activating it reveals the next page of files.
+            dl.add_text(bx + ICON_COL + 8, ry + (ROW_H - line_h) / 2.0,
+                        _mix(_category_tint(CODE_CATEGORY), 1.0 if hot else 0.5,
+                             sat=text_saturation),
+                        f"+ {hit.count} more file{'s' if hit.count != 1 else ''}")
+            if sel:
+                dl.add_rect(bx + ICON_COL, ry, bx + bw, ry + ROW_H, sel_color,
+                            rounding=4.0, thickness=sel_thickness)
+            if (click is not None and bx <= click[0] <= bx + bw
+                    and ry <= click[1] <= ry + ROW_H):
+                input_value.selected = idx
+                _reveal_more_files()
+            continue
         if isinstance(hit, _ShowMoreRow):
             # The category's "show more" row: bare tinted text at row size but
             # no background/icon - just like any row (outline on
@@ -4420,6 +4479,7 @@ class GlobalSearch:
     _last_scope = None  # (query, active_kind) the results were computed for
     _scores = None  # id(hit) -> (dist, prefix, file) for the current results (score = 0)
     expanded_files = set()  # Code-tree files whose "+ n more" was opened (reset per query)
+    file_pages = 0  # Code-tree "+ n more files" picks this query: pages of files past the first (reset per query)
     results = []  # cached [SearchHit] for the current query
     text_results = []  # async [SearchHit] from the tracy full-text index
     local_results = []  # async Code-tab local-symbol hits (built beside text_results)

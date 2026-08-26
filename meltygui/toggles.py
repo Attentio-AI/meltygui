@@ -1394,6 +1394,11 @@ class Toggles:
         # Hits each category contributes to the All tab (the #1 lands in the
         # top block; the rest sit under the category's own label).
         all_tab_per_category = 13
+        # Files the Code tab lists at first - the rest fold into a trailing
+        # "+ n more files" row that reveals this many more per pick. The
+        # per-file row cap (FILE_ROW_CAP; "+ n more" inside a file) is
+        # separate. 0 = list every file.
+        code_files_per_page = 4
         # Lay the All tab out horizontally: one column per category (its
         # first on top, hits below), instead of the vertical Top-block
         # interleave.

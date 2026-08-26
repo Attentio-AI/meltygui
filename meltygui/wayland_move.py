@@ -44,7 +44,7 @@ _STATE = globals().get("_STATE") or {
     "attached": False, "window": None, "display": None, "toplevel": None,
     "seat": None, "pointer": None, "registry": None, "compositor": None, "surface": None,
     "xdg_surface": None,
-    "press_serial": 0,
+    "press_serial": 0, "grab_serial": 0,
     "press_button": None, "held": set(), "enter_serial": 0, "masked": set(), "keep": [],
     "opcodes": {}, "prev_button_cb": None, "error": None,
 }
@@ -274,6 +274,10 @@ def _on_leave(data, pointer, serial, surface):
 def _on_button(data, pointer, serial, time_ms, button, state):
     glfw_button = _EVDEV_TO_GLFW.get(int(button), int(button))
     if int(state) == _BTN_PRESSED:
+        if not _STATE["held"]:
+            # First button in a button sequence: the compositor's pointer
+            # grab starts here. A chord's second button gets its own serial.
+            _STATE["grab_serial"] = int(serial)
         _STATE["press_serial"] = int(serial)
         _STATE["press_button"] = glfw_button
         _STATE["held"].add(glfw_button)
@@ -332,7 +336,7 @@ def attach(window):
         if _STATE["display"] != display:
             # A new connection (fresh GLFW window): the old seat/pointer/registry
             # proxies are stale: never marshal on them again.
-            _STATE.update(seat=None, pointer=None, registry=None, press_serial=0,
+            _STATE.update(seat=None, pointer=None, registry=None, press_serial=0, grab_serial=0,
                           press_button=None, held=set(), enter_serial=0)
         _STATE["display"] = display
         _STATE["masked"].clear()
@@ -403,16 +407,26 @@ def press_serial():
 
 
 def _grab(opcode_name, *extra):
+    """Send the move/resize request. The compositor honours it only with
+    the serial of the press it keys the pointer grab to — for a single
+    button that is simply the press; for a CHORD (left+right = the
+    top-left corner) it is either the sequence's first press or the latest
+    one depending on the compositor, so both are sent when they differ:
+    exactly one matches and starts the grab, the other is ignored."""
     if not available():
         return False
-    serial = _STATE["press_serial"]
-    if not serial:
+    serials = []
+    for serial in (_STATE["grab_serial"], _STATE["press_serial"]):
+        if serial and serial not in serials:
+            serials.append(serial)
+    if not serials:
         return False
     _, wl = _c()
     toplevel = _STATE["toplevel"]
-    args = [ctypes.c_void_p(_STATE["seat"]), ctypes.c_uint32(serial)] + list(extra)
-    wl.wl_proxy_marshal_flags(toplevel, _STATE["opcodes"][opcode_name], None,
-                              wl.wl_proxy_get_version(toplevel), 0, *args)
+    for serial in serials:
+        args = [ctypes.c_void_p(_STATE["seat"]), ctypes.c_uint32(serial)] + list(extra)
+        wl.wl_proxy_marshal_flags(toplevel, _STATE["opcodes"][opcode_name], None,
+                                  wl.wl_proxy_get_version(toplevel), 0, *args)
     wl.wl_display_flush(_STATE["display"])
     # The grab swallows the release of every button held right now (a
     # left+right corner grab holds two).

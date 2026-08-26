@@ -394,13 +394,16 @@ def _workarea_for(window):
     return float(ax), float(ay), float(ax + aw), float(ay + ah)
 
 
-def _apply_rdrag_resize(window, px, py):
+def _apply_rdrag_resize(window, px, py, grab=None):
     """One frame of the right-drag resize: move the grabbed corner's two
     edges by the pointer delta since the gesture latched, with the melty
     window clamp — an edge dragged past the workarea edge pins there and the
     remaining growth pushes the OPPOSITE edge (slide + resize), so the
-    window maxes out filling the workarea instead of running off-screen."""
-    L0, T0, R0, B0, px0, py0, (grab_right, grab_bottom), wa = _rdrag
+    window maxes out filling the workarea instead of running off-screen.
+    `grab` = (right, bottom) overrides the latched corner for this frame —
+    the left+right chord switching corners mid-drag (X11)."""
+    L0, T0, R0, B0, px0, py0, latched, wa = _rdrag
+    grab_right, grab_bottom = grab if grab is not None else latched
     wa_l, wa_t, wa_r, wa_b = wa
     dx, dy = px - px0, py - py0
 
@@ -694,10 +697,15 @@ def draw_titlebar(window):
         _rdrag = None  # gesture ended - re-latch on the next drag
     if "right_mouse_dragged" in resize_events or _rdrag is not None:
         # Left held too = the TOP-LEFT corner (the melty windows' own
-        # left+right priority rule): on Wayland that requires needs a move
-        # by the compositor - xdg_toplevel.resize(top_left) - so hand
-        # the whole gesture over; on X11 the app-side path slides the window.
-        both = _rdrag is None and Melty.event_handler.is_down("left_mouse")
+        # left+right corner rule), read EVERY frame so the chord switches
+        # corners mid-drag like theirs. X11: the app-side path slides the
+        # window, both ways. Wayland: that corner only moves at the
+        # compositor - xdg_toplevel.resize(top_left) - so the rest of the
+        # gesture is handed over the moment the left button joins; the
+        # compositor then owns the pointer until the sequence's first
+        # button is released, so there is no way back to the bottom-right
+        # corner within the same drag (a left release alone changes nothing).
+        both = Melty.event_handler.is_down("left_mouse")
         if both and wayland and wayland_move.begin_resize(window, wayland_move.EDGE_TOP_LEFT):
             _release_after_wayland_grab(window)
             _rdrag = None
@@ -725,18 +733,17 @@ def draw_titlebar(window):
                 # it, and clients can't position themselves there.
                 band_x = min(_GRAB_BAND, ww / 2)
                 band_y = min(_GRAB_BAND, wh / 2)
-                if both:
-                    grab = (False, False)
-                else:
-                    grab = (True, True) if wayland else (mx >= band_x, my >= band_y)
+                grab = (True, True) if wayland else (mx >= band_x, my >= band_y)
                 _rdrag = (float(wx), float(wy), float(wx + ww), float(wy + wh),
                           px, py, grab, _workarea_for(window))
-            grab_right, grab_bottom = _rdrag[6]
+            # The chord picks the corner per frame: left held = top-left,
+            # released = back to the latched corner (X11; Wayland handed off above).
+            grab_right, grab_bottom = (False, False) if both else _rdrag[6]
             direction = ((_SIZE_BOTTOMRIGHT if grab_right else _SIZE_BOTTOMLEFT)
                          if grab_bottom else
                          (_SIZE_TOPRIGHT if grab_right else _SIZE_TOPLEFT))
             mouse_cursor.request(_EDGE_CURSOR[direction])
-            _apply_rdrag_resize(window, px, py)
+            _apply_rdrag_resize(window, px, py, grab=(grab_right, grab_bottom))
 
     # The buttons themselves are painted earlier in the frame, in the main
     # window draw list (paint_window_controls) - see there for why.
