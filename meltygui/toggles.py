@@ -1170,11 +1170,41 @@ class Toggles:
         # Custom client-side titlebar: undecorated OS window so the UI sticks
         # to the top of the display, with min/max/close drawn to the overlay
         # drawlist top-right and drag/edge-resize handed to the WM via
-        # _NET_WM_MOVERESIZE (titlebar.py). X11/XWayland only - on native
-        # Wayland the toggle is ignored and server decorations stay. Applied
-        # live each frame (glfw.set_window_attrib) and read at boot from the
-        # DECORATED window hint.
+        # _NET_WM_MOVERESIZE (titlebar.py). X11/XWayland only: on native
+        # Wayland this is NOT consulted - with wayland_native_frame (below)
+        # the min/max/close buttons always draw (GLFW's fallback frame has
+        # none of its own) while the OS window KEEPS that frame (its caption
+        # strip + borders are the only move/resize surface there; no GLFW
+        # route to xdg_toplevel.move). Applied live per frame
+        # (glfw.set_window_attrib) and read at boot for the DECORATED hint.
         enhanced_titlebar = False
+
+        # GNOME Wayland only. GNOME offers no server-side decorations, so
+        # GLFW hands its OS window to libdecor, and its GNOME plugin
+        # repaints the whole title bar + frame on the fly for EVERY resize
+        # configure: 38 ms a step at a 4072×2136 window, 59 ms at 7000×2000,
+        # inside glfw.wait_events before render() even starts, and the
+        # configures queue up while the frame runs - the 2s OS-window
+        # resize. On, GLFW skips libdecor (WAYLAND_DISABLE_LIBDECOR init
+        # hint) and draws its own fallback frame: a plain caption strip +
+        # 4 px borders that move/resize through the compositor at <1 ms a
+        # step, with no buttons - titlebar.py draws min/max/close over it. Read
+        # by the FIRST glfw.init() of the day (the launcher process,
+        # glfw_utils.apply_wayland_frame_hint), so a change takes effect on
+        # the next model_server restart, like the cursor size.
+        wayland_native_frame = True
+
+        # With wayland_native_frame: keep GLFW's fallback frame - a 24 px
+        # caption strip (drag = move) + 4 px borders (drag = resize), sizes
+        # GLFW hardcodes - or drop it and run frameless: the buttons are
+        # titlebar.py's, resizing is the right-drag anywhere in the window
+        # (app-driven glfw.set_window_size, bottom-right corner - Wayland
+        # prefers the top-left; the edge zones ask the compositor:
+        # xdg_toplevel.resize) and MOVING is xdg_toplevel.move from the
+        # drag strip / drag-anywhere (gl_gui/wayland_move.py - Super+drag
+        # semantics, driven by the compositor). Applied live
+        # (sync_decoration).
+        wayland_show_frame = False
 
         # px height of the invisible drag strip along the top edge - a drag
         # outside inside it (a few px of travel past the press) moves the OS
@@ -1182,9 +1212,34 @@ class Toggles:
         # the cursor. Double-click toggles maximize.
         drag_strip_height = 50
 
+        # Left-drag ANYWHERE in the window moves the OS window - the melty
+        # way - as the worst-priority drag subscriber: a view that wants the
+        # drag (window headers, sliders, text selection, dnd) always wins,
+        # while an unclaimed drag on bare background moves the window. Off =
+        # only the strip moves. Double-click-maximize stays strip-only.
+        move_drag_anywhere = True
+
         # px hit zones for edge/corner resize on the undecorated window.
         resize_border = 6
         resize_corner = 18
+
+        # Tint of the OS-window chrome: the minimize / maximize / close
+        # controls titlebar.py draws top-right. Each is painted exactly like
+        # a window header's close button (draw_header_end's flat_button),
+        # with this tint set in the style manager the way the header runs
+        # under its window's tint — copy a window's tint here to match it.
+        # [tint=(0.55, 0.75, 0.35)]
+        melty_window_tint = (0.55, 0.75, 0.35)
+
+        # Rounded corners on the frameless OS window (px; 0 = square). The
+        # window is created with a transparent framebuffer (boot-time -
+        # restart to change 0 ↔ >0) and titlebar.punch_rounded_corners runs
+        # last in Melty.post_frame: an alpha-only fullscreen pass writing 1
+        # inside the rounded rect and 0 outside (anti-aliased edge), which
+        # also repairs the alpha imgui's blending leaves below 1 - without
+        # it the desktop would bleed through every translucent draw. The
+        # radius change applies live.
+        window_corner_radius = 14
 
     @defaults(tint=(0.635, 0.728, 0.725))
     class Style:
@@ -1433,7 +1488,7 @@ class Toggles:
         # (files spread over their whole band, panes below their chevron
         # row - add_shadow semantics: positive lifts the card off the
         # column, negative sinks it). 0 disables.
-        merge_column_shadow_offset = 2.0
+        merge_column_shadow_offset = 0.5
         # Take-arrow chips riding the swooshes (pull a block from the
         # reference pane into the buffer): flat_buttons colored by the
         # block's ribbon tint - hover boost and text color come from
@@ -1488,11 +1543,39 @@ class Toggles:
         # compare files column, and the editor toolbar buttons all key off it.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         tab_tint_fallback = (0.485, 0.61, 0.76)
+        # Editor toolbar back/forward buttons (open_files._draw_editor_toolbar):
+        # hsv SCALES applied straight to the target file's tint (1.0 = the
+        # tint as is) before it reaches flat_button — its own saturation /
+        # tint_value knobs only shape the theme colour mixed in at `factor`,
+        # which left these buttons unmoved. The disabled side is theme grey
+        # and carries no file tint, so nothing here touches it.
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        nav_button_saturation = 2.5
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        nav_button_value = 0.34
+        # Hard cap the button bg is clamped to AFTER the scale — raise it
+        # along with nav_button_value or the value knob tops out here.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        nav_button_max_brightness = 0.25
+        # The arrow glyph on an enabled button: hsv scales of the target
+        # file's UNSCALED tint (not the bg above — dimming the bg leaves the
+        # glyph alone), handed to flat_button as text_color the way the tab
+        # labels are. brightness scales value (1.0 = the tint's own, higher
+        # pushes toward full-bright), saturation scales hsv saturation.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        nav_button_text_brightness = 1.0
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        nav_button_text_saturation = 0.8
+        # Floor on the glyph's hsv value AFTER the brightness scale — a dark
+        # file tint stays legible instead of scaling toward black.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        nav_button_text_min_brightness = 0.6
         # ColumnLayout padding the compare column renders with (cell content
         # is inset by this from its dividers on both sides). The layout
         # reframe math (open_files._cmp_layout_reframe) keys on the SAME
         # value - change them together by changing only this.
         compare_padding = 14.0
+
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:
@@ -1652,6 +1735,12 @@ class Toggles:
         # the panel opens, when a REPAINT finds the numbers older than
         # usage_refresh_s, and from the Refresh button. No panel = nothing.
         usage_refresh_s = 300.0
+        # Every AUTOMATIC usage fetch (panel opened, numbers found stale by
+        # a repaint, the persisted-open panel at boot) waits this long
+        # before the request fires; last session's cached bars show
+        # meanwhile (AccountsPanelState.usage), so a quick restart cycle
+        # never reaches the endpoint. 0 = fire at once. Refresh is immediate.
+        usage_fetch_delay_s = 60.0
         # Hard floor between two usage requests for one account, whatever
         # asks (a redraw, the poller, an identity change) - only the Refresh
         # button goes under it. A 429 backs off for its Retry-After, else
@@ -1694,7 +1783,7 @@ class Toggles:
         # Minimum spacing for a collect that at the moment the window
         # LOSES focus (alt-tab / minimize): the one frame nobody is watching.
         # Focus-gain restarts the idle clock, so returning never collects.
-        unfocus_collect_s = 20.0
+        unfocus_collect_s = 2000000.0
         # Minimum spacing between post-run collects (collect_after_run -
         # the live lab's per-run VRAM retirement). Auto Execute runs the
         # previewed function per mouse-drag tick; collecting after every
@@ -1727,6 +1816,11 @@ class Toggles:
         pre_load_items = 26
         placeholder_height = 30.0
         drop_tail_height = 8
+        # Drag-and-drop chrome (slot lines, the home frame) starts INVISIBLE
+        # at pickup and eases up to full opacity once the cursor has
+        # traveled this many pixels (cumulative path length, never fading back
+        # on a return trip) - nothing pops in on a short drag. 0 = instant.
+        dnd_reveal_distance = 10.0
 
         max_preferred_header_width = 70
         preferred_header_width = 132
@@ -1748,7 +1842,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by

@@ -106,6 +106,40 @@ def export_desktop_cursor_env():
     return exported
 
 
+def apply_wayland_frame_hint():
+    """Toggles.Melty.wayland_native_frame → tell GLFW to skip libdecor.
+
+    GNOME has no server-side decorations, so on native Wayland GLFW gives
+    the window to libdecor, whose cairo plugin repaints the title bar and
+    shadow on the CPU for every resize configure (tens of ms a step at the
+    studio's size — the 2 fps OS-window resize). The WAYLAND_DISABLE_LIBDECOR
+    init hint makes GLFW draw its own fallback frame instead (caption strip
+    + borders, compositor-driven move/resize, <1 ms a step, no buttons —
+    titlebar.py draws those). Init hints only count before the FIRST
+    glfw.init() of the process, the launcher's, so this runs beside
+    export_desktop_cursor_env at both init sites; the outcome is recorded
+    process-wide (sys._lsd_wayland_libdecor_disabled) so
+    titlebar.backend_supported reads what the process actually got, not the
+    live toggle. Returns True when the hint was applied by this call."""
+    if getattr(sys, "_lsd_wayland_libdecor_disabled", None) is not None:
+        return False        # decided at the first init - later inits are no-ops
+    applied = False
+    if os.environ.get("WAYLAND_DISPLAY") and Toggles.Melty.wayland_native_frame:
+        try:
+            glfw.init_hint(glfw.WAYLAND_LIBDECOR, glfw.WAYLAND_DISABLE_LIBDECOR)
+            applied = True
+        except AttributeError:
+            pass            # pre-3.4 pyglfw: no hint, libdecor disabled
+    sys._lsd_wayland_libdecor_disabled = applied
+    return applied
+
+
+def wayland_native_frame_active():
+    """True when this process's GLFW runs Wayland windows without libdecor
+    (apply_wayland_frame_hint took effect at the first init)."""
+    return bool(getattr(sys, "_lsd_wayland_libdecor_disabled", False))
+
+
 def _is_user_code(filepath):
     """Check if a file is inside the user's module."""
     rel = _rel_path(filepath)

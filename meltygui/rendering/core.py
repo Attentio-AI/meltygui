@@ -32,7 +32,7 @@ from src.lsd.gl_gui.utils.custom_views import push_style_var, pop_style_var
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, trace_group, get_live_frames
 from src.lsd.gl_gui.melty import Melty, apply_collection_action, MeltyState, SearchTerm, search_walk
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
-from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow, clear_shadows
 from src.lsd.gl_gui.view.core_views.core_meta import AnnotationOverride
 from src.lsd.gl_gui.view.core_views.core_undo import UndoManager, handle_undo
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
@@ -134,6 +134,15 @@ SCROLL_BAR_BRIGHTNESS_DEFAULT = 1.0
 # underneath the bar - is scroll_bar_width + this.
 SCROLLBAR_MARGIN = 6.0
 
+# Retention group of the scrollbar grab's depth mark (add_shadow `group=`).
+# The grab is drawn by the WRAPPER (draw_overlay_scrollbar, and
+# BlitCache.draw_freeze_scrollbar for cached freeze_resize views), not by
+# the view's body, so its retained mark lives in its own group: a body's
+# clear_glows never touches it, and every bar-drawing path clears this group
+# (clear_shadows) before deciding whether to draw - a bar that stops drawing
+# drops its silhouette instead of re-stacking it under the view.
+SCROLLBAR_SHADOW_GROUP = "scrollbar"
+
 
 def column_boundary(content_width, n_cols, offsets, c):
     """Left-edge x of column ``c`` relative to the content origin.
@@ -226,6 +235,12 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
     into the tile's cached mask like the bar itself; from blit_offscreen it
     is re-issued every frame.
     """
+    # This call owns the grab's retained depth mark for the frame: clear
+    # its group FIRST (before any early return), and the add_shadow below
+    # re-retains it only if the bar actually draws. Without this the
+    # last grab mark kept re-stamping every frame after the bar hid -
+    # content shrunk to fit, pane grown past its content.
+    clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
     if max_scroll_y <= 0 or clip_height <= 0:
         return
 
@@ -299,7 +314,8 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
     if shadow_offset and grab_y2 > grab_y1:
         add_shadow((track_x1, grab_y1, track_x2 - track_x1, grab_y2 - grab_y1),
                    offset=shadow_offset, corner_radius=3.0,
-                   clip=draw_state.abs_clip_rect or True, draw_state=draw_state)
+                   clip=draw_state.abs_clip_rect or True, draw_state=draw_state,
+                   group=SCROLLBAR_SHADOW_GROUP)
 
     if active:
         # The latched drag is delivered even off-view, but the latch only runs
@@ -4950,6 +4966,15 @@ def render_func(*args, **o_kwargs):
             needs_scroll = False
 
         draw_state.scroll_visible = needs_scroll
+        # The bar's retained depth mark is the wrapper's (SCROLLBAR_SHADOW_GROUP),
+        # so the wrapper resets it on every body run the bar doesn't draw on
+        # (needs_scroll off or closed): draw_overlay_scrollbar re-retains it
+        # below when it does draw. Cached freeze_resize views are skipped:
+        # the bar was already cleared this frame from mark_end_offscreen
+        # (BlitCache.draw_freeze_scrollbar clears the group itself) and a
+        # premature here would drop that emission.
+        if not (draw_state.freeze_resize and draw_state.use_cache):
+            clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
         # Only zero the offset when the content GENUINELY fits - never while the
         # content height is still unmeasured (invalid_content_height). On the
         # first frame(s) after a view loads from a saved state, its children

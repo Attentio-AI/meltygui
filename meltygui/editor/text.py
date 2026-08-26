@@ -8952,7 +8952,7 @@ def fold_project_jump(ds, text, pos, li):
 
 @render_func(is_default_for=(CodeLine), show_bg=True, use_cache=True, disable_scroll=False, with_header=draw_header,
              shadow=False, max_bg_depth=0, max_bg_value=0.05,
-             show_name=False, with_footer=draw_footer, determines_height=False, saturation=0.9,
+             show_name=False, with_footer=draw_footer, determines_height=False, saturation=1.7,
              selectable=False, searchable=True, bg_offset=-0.6, show_add_delete=False)
 @window
 def draw_text(input_value: str, height=None,
@@ -8998,10 +8998,9 @@ def draw_text(input_value: str, height=None,
     through that world's tables / its own detached table, never the
     studio's hold for the file; either also lets the file path come from
     `file_key` when there is no `jump_to`."""
-    
-    ds = draw_state
 
-    
+
+    ds = draw_state
     # ── Instant restore (input_value==LOADING) ─────────────────────────────
     # A caller whose real buffer is still loading (draw_code_editor's
     # loading_frame) passes the LOADING sentinel: rebuild a same-shape
@@ -9237,6 +9236,7 @@ def draw_text(input_value: str, height=None,
                     ds._fold_search_exp.discard(_rng)
                     ds.invalidate()
                     request_render()
+                    
 
                     break
         # Keyboard folding — Ctrl+Minus/Equal collapse/expand the scope at

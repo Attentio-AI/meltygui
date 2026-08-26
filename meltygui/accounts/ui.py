@@ -128,11 +128,17 @@ class AccountStore(dict):
         return entry
 
     def remove(self, account_id):
-        entry = self.pop(account_id, None)
-        if entry is not None:
-            _drop_sessions_for(entry)
-            self.save()
-            accounts_changed()
+        """Drop an account. Its live sessions go first — computed while it
+        is still in the store, so a removed DEFAULT row also drops the
+        sessions pooled under "default" (built on its credentials; the next
+        row of the kind becomes the default, see `default_account`)."""
+        entry = self.get(account_id)
+        if entry is None:
+            return
+        _drop_sessions_for(entry)
+        self.pop(account_id, None)
+        self.save()
+        accounts_changed()
 
     def set_field(self, account_id, field, value, reprobe=True):
         entry = self.get(account_id)
@@ -150,6 +156,23 @@ class AccountStore(dict):
         return sorted((entry for entry in self.values() if entry.get("kind") == kind_name),
                       key=lambda entry: (entry["id"] != kind_name, entry["id"]))
 
+    def default_account(self, kind_name):
+        """The kind's DEFAULT account — what `account(kind, "default")` and
+        the providers' `account="default"` resolve to: the entry named
+        after its kind, else (that one removed) the first remaining row of
+        the kind. Ids never change on promotion, so `account="anthropic-2"`
+        references, profile files and panel state all stay put."""
+        entry = self.get(kind_name)
+        if entry is not None and entry.get("kind") == kind_name:
+            return entry
+        rows = self.of_kind(kind_name)
+        return rows[0] if rows else None
+
+    def removable(self, account_entry) -> bool:
+        """A row can go while its kind keeps at least one other — the last
+        one stays (every kind always has a row to act on)."""
+        return len(self.of_kind(account_entry.get("kind"))) > 1
+
 
 accounts = AccountStore()
 
@@ -164,7 +187,8 @@ Melty._internet_accounts_store = accounts
 
 
 def is_default(account) -> bool:
-    return account.get("id") == account.get("kind")
+    """The kind's default row (`AccountStore.default_account`) — the top row."""
+    return accounts.default_account(account.get("kind")) is account
 
 
 def session_account_id(account) -> str:
@@ -180,7 +204,7 @@ def account(kind_name, account_id="default"):
     if not accounts.loaded:
         accounts.load()
     if account_id in ("default", None, ""):
-        account_id = kind_name
+        return accounts.default_account(kind_name)
     entry = accounts.get(account_id)
     if entry is not None and entry.get("kind") == kind_name:
         return entry
@@ -327,13 +351,15 @@ class AnthropicKind(AccountKind):
     def profile_name(account) -> str:
         """The SDK profile this account signs in to: its `profile` field,
         else Toggles.InternetAccounts.anthropic_profile ("lsd") for the
-        default account and "<that>-<account id>" for extra ones."""
+        account NAMED after the kind and "<that>-<account id>" for the
+        others — keyed on the id, not on default-ness, so a row promoted to
+        default (the kind-named one removed) keeps its profile files."""
         from src.lsd.gl_gui.toggles import Toggles
         name = (account.get("profile") or "").strip()
         if name:
             return name
         base = Toggles.InternetAccounts.anthropic_profile
-        return base if is_default(account) else f"{base}-{account['id']}"
+        return base if account.get("id") == account.get("kind") else f"{base}-{account['id']}"
 
     def login_info(self, account, fresh=False):
         """anthropic_oauth.read_profile() of the account's profile, cached
@@ -445,9 +471,46 @@ class AnthropicKind(AccountKind):
         for key in ("_usage_rows", "_usage_summary", "_usage_fetched_wall", "_usage_error"):
             account.pop(key, None)
         account["_usage_fetched_at"] = None
-        timer = account.pop("_usage_timer", None)
-        if timer is not None:
-            timer.cancel()
+        self._disarm_usage_fetch(account)
+
+    # -- last session's numbers --------------------------------------------------
+    # The bars persist in the window (AccountsPanelState.usage, keyed by
+    # account id) so a fresh process shows the previous session's numbers
+    # at once and the delayed fetch (usage_fetch_delay_s) updates them.
+
+    def usage_cache_entry(self, account):
+        """What the window persists for this row: the rows, the summary,
+        when they were fetched and WHOSE they are (the login's email — a
+        different login next session must not inherit them). None = nothing."""
+        rows = account.get("_usage_rows")
+        if not rows or not account.get("_usage_fetched_wall"):
+            return None
+        return {"rows": rows,
+                "summary": account.get("_usage_summary") or "",
+                "fetched_wall": account["_usage_fetched_wall"],
+                "email": ((account.get("_claude_login") or {}).get("email") or "").lower()}
+
+    def restore_usage(self, account, cached):
+        """A fresh account dict (boot / restart / reload) takes the persisted
+        numbers when they belong to the CURRENT Claude Code login (same
+        email; a login with no identity file is trusted). Restored numbers
+        are stale by definition: `_usage_fetched_at` stays None so an open
+        panel arms the delayed fetch. Runs once per account dict."""
+        if account.get("_usage_restored") or "_usage_rows" in account:
+            return
+        account["_usage_restored"] = True
+        if not cached or not cached.get("rows"):
+            return
+        login = self._claude_login_for(account)
+        if login is None:
+            return
+        login_email = (login.get("email") or "").lower()
+        if login_email and login_email != (cached.get("email") or ""):
+            return
+        account["_usage_rows"] = list(cached["rows"])
+        account["_usage_summary"] = cached.get("summary") or ""
+        account["_usage_fetched_wall"] = cached.get("fetched_wall")
+        account["_usage_fetched_at"] = None
 
     # -- Changing Claude Code's login -------------------------------------------
     # Claude Code holds ONE login per config dir; the Use-in-Claude-Code
@@ -564,6 +627,7 @@ class AnthropicKind(AccountKind):
             return
         login = self._claude_login_for(account)
         account["_usage_fetched_at"] = now
+        self._disarm_usage_fetch(account)      # a launch (Refresh) supersedes a pending delayed fetch
         if login is None or login["expired"]:
             account["_usage_rows"] = None
             account["_usage_error"] = ("sign in to Claude Code to view usage" if login is None
@@ -603,14 +667,45 @@ class AnthropicKind(AccountKind):
 
         threading.Thread(target=run, daemon=True, name=f"claude-usage-{account['id']}").start()
 
+    def _arm_usage_fetch(self, account):
+        """An automatic fetch never fires on the spot: it waits
+        Toggles.InternetAccounts.usage_fetch_delay_s (a daemon Timer on
+        `_usage_timer`, one per account) and fires only if the panel is
+        still open then — so the persisted-open panel at boot shows last
+        session's bars and a restart within the delay costs no request.
+        A delay of 0 fetches at once (the tests' setting)."""
+        from src.lsd.gl_gui.toggles import Toggles
+        delay = Toggles.InternetAccounts.usage_fetch_delay_s
+        if delay <= 0:
+            self.fetch_usage(account)
+            return
+        if account.get("_usage_timer") is not None:
+            return
+
+        def fire():
+            if account.get("_usage_timer") is not timer:   # disarmed / re-armed meanwhile
+                return
+            account.pop("_usage_timer", None)
+            if account.get("_usage_open"):
+                self.fetch_usage(account)
+
+        timer = threading.Timer(delay, fire)
+        timer.daemon = True
+        account["_usage_timer"] = timer
+        timer.start()
+
+    @staticmethod
+    def _disarm_usage_fetch(account):
+        timer = account.pop("_usage_timer", None)
+        if timer is not None:
+            timer.cancel()
+
     def _usage_rows(self, account):
-        """The open panel's rows; fetches on open and once the numbers are
-        older than Toggles.InternetAccounts.usage_refresh_s, and arms the
-        live-update ticker (`_schedule_usage_tick`)."""
+        """The open panel's rows; arms the delayed fetch on open and once the
+        numbers are older than Toggles.InternetAccounts.usage_refresh_s
+        (`_arm_usage_fetch`)."""
         if not account.get("_usage_open"):
-            timer = account.pop("_usage_timer", None)
-            if timer is not None:
-                timer.cancel()
+            self._disarm_usage_fetch(account)
             return []
         from src.lsd.gl_gui.toggles import Toggles
         login = self._claude_login_for(account)
@@ -623,18 +718,22 @@ class AnthropicKind(AccountKind):
         if not account.get("_usage_loading") and (
                 fetched_at is None
                 or time.monotonic() - fetched_at > Toggles.InternetAccounts.usage_refresh_s):
-            self.fetch_usage(account)
+            self._arm_usage_fetch(account)
         rows = account.get("_usage_rows") or []
         out = [("usage", row) for row in rows]
         if account.get("_usage_error"):
             out.append(("note", account["_usage_error"]))
-        elif not rows:
+        elif not rows and account.get("_usage_timer") is None:
+            # (a pending delayed fetch shows nothing - no longer, Lukas 08-25)
             out.append(("note", "loading usage…" if account.get("_usage_loading") else "no usage data"))
         fetched_wall = account.get("_usage_fetched_wall")
         if fetched_wall:
             # "as of 21:42:10" — when these numbers were fetched, so a stale
-            # panel (hidden window, network trouble) is visibly stale.
-            stamp = "as of " + time.strftime("%H:%M:%S", time.localtime(fetched_wall))
+            # panel (hidden window, network trouble, last session's numbers)
+            # is visibly older; another day's fetch carries its date.
+            fetched = time.localtime(fetched_wall)
+            same_day = fetched[:3] == time.localtime()[:3]
+            stamp = "as of " + time.strftime("%H:%M:%S" if same_day else "%m-%d %H:%M", fetched)
             if account.get("_usage_loading"):
                 stamp += " · refreshing…"
             out.append(("stamp", stamp))
@@ -1108,15 +1207,20 @@ class AccountsPanelState(DictConversion):
     pattern) so the window reopens the way it was left. The kinds keep
     toggling the account dicts' runtime keys (`_usage_open`, …); the window
     restores those from here on a fresh store (boot / restart) and mirrors
-    them back after every frame. `open` maps "<account id><key>" → True."""
+    them back after every frame. `open` maps "<account id><key>" → True.
+    `usage` maps account id → the Claude plan numbers last fetched
+    (`AnthropicKind.usage_cache_entry`: rows, summary, fetched_wall, email)
+    — restored into a fresh account dict by `restore_usage`, so the panel
+    shows last session's bars until the delayed fetch replaces them."""
     PANEL_KEYS = ("_usage_open", "_models_open", "_edit")
 
     def __init__(self):
         super().__init__()
         self.open = {}
+        self.usage = {}
 
 
-@window(input_value=accounts, tint=(0.35, 0.34, 0.31), icon=f"",
+@window(input_value=accounts, tint=(0.91, 0.89, 0.77), icon=f"",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True,
@@ -1132,12 +1236,18 @@ def draw_internet_accounts(
     if not store.loaded:
         store.load()
     if panel_state is not None:
-        # A fresh account dict (boot / open / reload) has no runtime
-        # panel flags yet - restore the persisted ones.
+        if "usage" not in panel_state.__dict__:
+            panel_state.usage = {}      # a legacy instance from before the field existed (hotswap)
+        # A fresh account dict (boot / restart / reload) has no runtime
+        # panel states yet - take the persisted ones, and last session's
+        # usage numbers for the rows that can show them.
         for account_entry in store.values():
             for key in AccountsPanelState.PANEL_KEYS:
                 if key not in account_entry:
                     account_entry[key] = bool(panel_state.open.get(f"{account_entry['id']}{key}"))
+            kind = KINDS.get(account_entry.get("kind"))
+            if isinstance(kind, AnthropicKind):
+                kind.restore_usage(account_entry, panel_state.usage.get(account_entry["id"]))
 
     # ---- styling (fast_dock recipe) ----
     row_bg_value, row_text_value = 0.06, 0.95
@@ -1304,9 +1414,11 @@ def draw_internet_accounts(
         y += kind_header_height + px(2)
         for account_entry in store.of_kind(kind.name):
             buttons = list(kind.actions(account_entry))
-            if not is_default(account_entry):
+            if store.removable(account_entry):
                 buttons.append(Button(None, lambda account: store.remove(account["id"]),
-                                      icon=f"", tip="Remove account", danger=True))
+                                      icon=f"", danger=True,
+                                      tip=("Remove account — the next row becomes the default"
+                                           if is_default(account_entry) else "Remove account")))
             text_avail = ((row_right - px(6)) - (row_left + text_inset)
                           - buttons_width(buttons) - button_gap)
             lines, wrap = strip_layout(buttons, (row_right - px(6)) - (row_left + px(6)),
@@ -1559,6 +1671,16 @@ def draw_internet_accounts(
                        for key in AccountsPanelState.PANEL_KEYS if account_entry.get(key)}
         if open_panels != panel_state.open:
             panel_state.open = open_panels
+        # ... and the usage numbers, so next session starts from them.
+        usage_cache = {}
+        for account_entry in store.values():
+            kind = KINDS.get(account_entry.get("kind"))
+            if isinstance(kind, AnthropicKind):
+                entry = kind.usage_cache_entry(account_entry)
+                if entry is not None:
+                    usage_cache[account_entry["id"]] = entry
+        if usage_cache != panel_state.usage:
+            panel_state.usage = usage_cache
 
     return pressed[0], input_value
 

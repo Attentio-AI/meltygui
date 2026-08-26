@@ -5,11 +5,21 @@ display, draws min/max/close as overlay-drawlist widgets in the top-right
 corner, and hands drag / edge-resize back to the window manager via
 _NET_WM_MOVERESIZE — so snapping, tiling and drag smoothness stay native.
 
-Backend support: X11 only (which includes every XWayland session — the
-bundled GLFW is built without a Wayland backend, so that is every session
-today). Native Wayland has no public GLFW route to xdg_toplevel.move();
-when a Wayland-capable GLFW lands, a second backend slots in behind
-begin_move()/begin_resize() and the widget code above is unchanged.
+Backend support. X11 (and XWayland): everything above. Native Wayland:
+GLFW has no public route to xdg_toplevel.move()/resize(), so the OS window
+KEEPS a frame there — GLFW's own fallback frame (a caption strip + borders,
+compositor-driven move/resize) once Toggles.Melty.wayland_native_frame has
+switched libdecor off at the first glfw.init (glfw_utils
+.apply_wayland_frame_hint) — or, with Toggles.Melty.wayland_show_frame off
+(the default), no frame at all. This module then contributes the buttons
+(always on Wayland; Toggles.Melty.enhanced_titlebar is an X11 knob), the
+right-drag resize (app-driven set_window_size, bottom-right corner only —
+the top-left is pinned) and, through gl_gui/wayland_move.py, the SAME
+strip / drag-anywhere move and edge resize as X11: xdg_toplevel.move /
+.resize sent straight to the compositor (what Super+drag and the caption
+strip do), the grab then driven by GNOME. With libdecor still on, its own
+title bar carries the buttons and nothing here draws (backend_supported
+is False).
 
 Everything here runs on the visualization thread inside the imgui frame
 (called from LSDStudio.render). The decoration attribute is synced live
@@ -20,8 +30,12 @@ import ctypes
 
 import glfw
 import imgui
+import OpenGL.GL as gl
 
 from src.lsd.gl_gui import mouse_cursor
+from src.lsd.gl_gui import wayland_move
+from src.lsd.gl_gui.gl_state import GLState, is_gl_thread
+from src.lsd.gl_gui.shader_func import shader_func
 
 # ---------------------------------------------------------------------------
 # X11 backend: _NET_WM_MOVERESIZE via ctypes → libX11
@@ -171,8 +185,7 @@ def _begin_moveresize(window, direction, button=1):
 # Widget: window controls + drag strip + edge resize
 # ---------------------------------------------------------------------------
 
-_BTN_W = 40.0
-_BTN_H = 30.0
+_BTN_H = 30.0   # top_inset: chrome height to keep clear (buttons ≈ this)
 _pressed_button = None  # index armed by a press, fires on release inside
 
 # The drag strip participates in the normal input-handler pipeline as the
@@ -206,26 +219,57 @@ def top_inset():
     return _BTN_H if titlebar_enabled() else 0.0
 
 
-def backend_supported():
+def _on_wayland():
     try:
-        return glfw.get_platform() == glfw.PLATFORM_X11
+        return glfw.get_platform() == glfw.PLATFORM_WAYLAND
     except AttributeError:
-        return True  # pre-3.4 glfw on linux = X11
+        return False  # pre-3.4 glfw on linux = X11
+
+
+def backend_supported():
+    """X11 always; native Wayland only once libdecor is out of the picture
+    (the fallback frame has no buttons — ours fill in), never beside
+    libdecor's own title bar."""
+    if _on_wayland():
+        from src.lsd.gl_gui.utils.glfw_utils import wayland_native_frame_active
+        return wayland_native_frame_active()
+    return True
 
 
 def titlebar_enabled():
+    """X11: Toggles.Melty.enhanced_titlebar (it replaces the WM frame, an
+    opt-in). Wayland: whenever the native frame is up — GLFW's fallback frame
+    carries no buttons, so ours are the only min/max/close the window gets,
+    and the toggle is not consulted."""
+    if _on_wayland():
+        return backend_supported()
     from src.lsd.gl_gui.toggles import Toggles
     return Toggles.Melty.enhanced_titlebar and backend_supported()
+
+
+def wants_os_decoration():
+    """DECORATED for the OS window. Wayland: with libdecor still up, always
+    (its frame is the window's chrome); on the native frame,
+    Toggles.Melty.wayland_show_frame — off = frameless, resize by right-drag,
+    move by the compositor. X11: only while the enhanced titlebar is off (it
+    replaces the WM's frame with _NET_WM_MOVERESIZE gestures). Boot hint and
+    per-frame sync both read this."""
+    if _on_wayland():
+        if not backend_supported():
+            return True
+        from src.lsd.gl_gui.toggles import Toggles
+        return bool(Toggles.Melty.wayland_show_frame)
+    return not titlebar_enabled()
 
 
 def sync_decoration(window):
     """Apply the toggle live: called every frame on the viz thread."""
     want_bar = titlebar_enabled()
-    decorated = glfw.get_window_attrib(window, glfw.DECORATED)
-    if want_bar and decorated:
-        glfw.set_window_attrib(window, glfw.DECORATED, glfw.FALSE)
-    elif not want_bar and not decorated:
-        glfw.set_window_attrib(window, glfw.DECORATED, glfw.TRUE)
+    decorated = bool(glfw.get_window_attrib(window, glfw.DECORATED))
+    want_decorated = wants_os_decoration()
+    if decorated != want_decorated:
+        glfw.set_window_attrib(window, glfw.DECORATED,
+                               glfw.TRUE if want_decorated else glfw.FALSE)
     return want_bar
 
 
@@ -265,6 +309,53 @@ _EDGE_CURSOR = {
 }
 
 
+# EWMH direction → xdg_toplevel.resize_edge, for the Wayland edge zones.
+_XDG_EDGE = {
+    _SIZE_TOP: wayland_move.EDGE_TOP, _SIZE_BOTTOM: wayland_move.EDGE_BOTTOM,
+    _SIZE_LEFT: wayland_move.EDGE_LEFT, _SIZE_RIGHT: wayland_move.EDGE_RIGHT,
+    _SIZE_TOPLEFT: wayland_move.EDGE_TOP_LEFT, _SIZE_TOPRIGHT: wayland_move.EDGE_TOP_RIGHT,
+    _SIZE_BOTTOMLEFT: wayland_move.EDGE_BOTTOM_LEFT, _SIZE_BOTTOMRIGHT: wayland_move.EDGE_BOTTOM_RIGHT,
+}
+
+
+def _wm_gestures_available():
+    """Can the strip / edge zones hand a gesture to the window manager?
+    X11: always (_NET_WM_MOVERESIZE). Wayland: once wayland_move found the
+    window's xdg_toplevel (LSDStudio attaches it after the input backend)."""
+    return wayland_move.available() if _on_wayland() else True
+
+
+def _release_after_wayland_grab(window):
+    """The compositor's grab swallows the button release. X11 gets a real
+    synthesized X event; on Wayland GLFW's own state can't be poked, so the
+    input handler is fed the release here and the polls read the button as
+    up through wayland_move.button_masked until GLFW's next real event."""
+    from src.lsd.gl_gui.melty import Melty
+    backend = getattr(Melty, "backend", None)
+    if backend is None or not hasattr(backend, "_on_button"):
+        return
+    for button in wayland_move.masked_buttons():
+        backend._on_button(window, button, glfw.RELEASE, 0)
+
+
+def _begin_wm_move(window):
+    if _on_wayland():
+        if wayland_move.begin_move(window):
+            _release_after_wayland_grab(window)
+            return True
+        return False
+    return _begin_moveresize(window, _MOVE)
+
+
+def _begin_wm_resize(window, direction):
+    if _on_wayland():
+        if wayland_move.begin_resize(window, _XDG_EDGE[direction]):
+            _release_after_wayland_grab(window)
+            return True
+        return False
+    return _begin_moveresize(window, direction)
+
+
 def _toggle_maximize(window):
     if glfw.get_window_attrib(window, glfw.MAXIMIZED):
         glfw.restore_window(window)
@@ -276,6 +367,12 @@ def _workarea_for(window):
     """(left, top, right, bottom) of the workarea of the monitor holding the
     window's center — the resize bounds. Falls back to the primary monitor
     when the center sits off every monitor (mid-drag between screens)."""
+    if _on_wayland():
+        # No window positions on Wayland: the bounds are the primary
+        # monitor's workarea SIZE anchored at the window's own top-left
+        # (which the compositor pins) - a cap on how far a resize may grow.
+        _ax, _ay, aw, ah = glfw.get_monitor_workarea(glfw.get_primary_monitor())
+        return 0.0, 0.0, float(aw), float(ah)
     wx, wy = glfw.get_window_pos(window)
     ww, wh = glfw.get_window_size(window)
     cx, cy = wx + ww / 2, wy + wh / 2
@@ -325,7 +422,8 @@ def _apply_rdrag_resize(window, px, py):
             B = min(B + (wa_t - T), wa_b)
             T = wa_t
 
-    glfw.set_window_pos(window, int(round(L)), int(round(T)))
+    if not _on_wayland():        # Wayland: no client positioning, size only
+        glfw.set_window_pos(window, int(round(L)), int(round(T)))
     glfw.set_window_size(window, int(round(R - L)), int(round(B - T)))
 
 
@@ -337,30 +435,84 @@ _ICON_RESTORE = "\uf2d2"    # fa window-restore
 _ICON_CLOSE = "\uf00d"      # fa times
 
 
-def _draw_glyph(dl, idx, cx, cy, color, maximized):
-    """Minimize / maximize-restore / close, centered FontAwesome text glyphs.
-    Uses the CURRENT font (draw_titlebar runs inside the frame before any
-    push_font), which is the default UI font with FontAwesome merged in."""
-    icon = (_ICON_MINIMIZE, _ICON_RESTORE if maximized else _ICON_MAXIMIZE,
-            _ICON_CLOSE)[idx]
-    ts = imgui.calc_text_size(icon)
-    dl.add_text(cx - ts.x / 2.0, cy - ts.y / 2.0, color, icon)
+def _button_icons(maximized):
+    return (_ICON_MINIMIZE, _ICON_RESTORE if maximized else _ICON_MAXIMIZE, _ICON_CLOSE)
+
+
+def _button_layout(disp_w, maximized):
+    """Rects of the three controls, right-aligned at the top: the header's
+    close button sizing (flat_button: glyph + px(15) wide, + px(8) tall, one
+    width for all three so they line up) inset by button_margin from the
+    top-right corner, button_gap apart."""
+    from src.lsd.gl_gui.melty import Melty
+    # [tint=(1.0, 0.55, 0.2)]
+    button_margin = Melty.px(4.0)
+    # [tint=(1.0, 0.55, 0.2)]
+    button_gap = Melty.px(3.0)
+    sizes = [imgui.calc_text_size(icon) for icon in _button_icons(maximized)]
+    width = max(s.x for s in sizes) + Melty.px(15.0)
+    height = max(s.y for s in sizes) + Melty.px(8.0)
+    n = len(sizes)
+    left = disp_w - button_margin - n * width - (n - 1) * button_gap
+    rects = []
+    for i in range(n):
+        x0 = left + i * (width + button_gap)
+        rects.append((x0, button_margin, x0 + width, button_margin + height))
+    return rects
+
+
+def _paint_buttons(dl, rects, over_button, maximized):
+    """The three controls, each painted EXACTLY like a window header's
+    close button (draw_header_end): the same flat_button call — colour
+    (9, 1, 1), glyph + px(15) by glyph + px(8), rounded, theme-mixed glyph,
+    hover brightening, a depth mark for the shadow pass (drop shadow + lit
+    rim) — run under Toggles.Melty.melty_window_tint set in the style
+    manager, the way a header runs under its window's tint (that tint is
+    what make_color_rgb mixes the colour against). The previous tint is
+    restored afterwards."""
+    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+    from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.toggles import Toggles
+    # The header close button's colour (draw_header_end).
+    # [tint=(0.9, 0.15, 0.15)]
+    close_color = (9, 1, 1)
+    style_manager = Melty.style_manager
+    previous_tint = style_manager.get_tint() if style_manager is not None else None
+    chrome_tint = Toggles.Melty.melty_window_tint
+    if style_manager is not None and chrome_tint and len(chrome_tint) >= 3:
+        style_manager.set_imgui_tint(*chrome_tint[:4])
+    try:
+        for i, (icon, (x0, y0, x1, y1)) in enumerate(zip(_button_icons(maximized), rects)):
+            # Ownerless raised mark at the current paint rank - the frame
+            # has painted everything by now, so it lands on top; no clip
+            # (the window clip stack is gone at this point of the frame).
+            add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False)
+            flat_button(icon, None, view_id=f"titlebar_button_{i}",
+                        width=x1 - x0, height=y1 - y0, pos=(x0, y0),
+                        hovered=(over_button == i), layout=False, draw_list=dl,
+                        color=close_color)
+    finally:
+        if style_manager is not None and previous_tint is not None:
+            style_manager.set_imgui_tint(*previous_tint)
 
 
 def _close_blocked_by_merge():
     """True when quitting would lose pending state: some file has BOTH pending
     edits and unmerged external drift (PendingSave.needs_merge). Instead of
     closing, surface the merge window — the manual merge is the only way that
-    state resolves. Errors never block the close."""
+    state resolves — with as much as possible already staged (its Auto-merge
+    run over every drifted file) and the conflicts that are left flashed;
+    Ctrl+M then applies. Errors never block the close."""
     try:
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
         if not PendingSave.needs_merge():
             return False
-        from src.lsd.gl_gui.view.core_views.new_core_view import Core
+        from src.lsd.gl_gui.view.core_views.merge_files import MergeFiles
         from src.lsd.gl_gui.notifications import notify
-        Core.melty.open_window("merge_files")
-        notify("Unmerged external changes — merge before closing",
-               tint=(1.0, 0.7, 0.2))
+        MergeFiles.open(auto_merge=True)
+        notify("Unmerged external changes — merge before closing "
+               "(Ctrl+M applies the staged merge)", tint=(1.0, 0.7, 0.2))
         from src.lsd.gl_gui.utils.glfw_utils import request_render
         request_render()
         return True
@@ -372,7 +524,10 @@ def draw_titlebar(window):
     """Per-frame entry point — call inside the imgui frame on the viz thread.
 
     Handles decoration sync, the top-right window controls, the top drag
-    strip (double-click = maximize) and edge/corner resize.
+    strip (double-click = maximize; with Toggles.Melty.move_drag_anywhere an
+    unclaimed left-drag anywhere moves too), edge/corner resize and the
+    right-drag resize. The WM gestures go through _NET_WM_MOVERESIZE on X11
+    and wayland_move (xdg_toplevel.move/resize) on Wayland.
     """
     global _pressed_button, _wm_move_started, _rdrag
     if not sync_decoration(window):
@@ -389,14 +544,17 @@ def draw_titlebar(window):
     disp_w, disp_h = io.display_size.x, io.display_size.y
     mx, my = io.mouse_pos.x, io.mouse_pos.y
     maximized = bool(glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    # The strip and edge gestures hand the drag to the window manager
+    # (_begin_wm_move / _begin_wm_resize) - on Wayland only once wayland_move
+    # is ready. The right-drag resize is app-driven (set_window_size) and
+    # runs on both; on Wayland it reads the surface relative pointer and
+    # always grabs the bottom-right corner (the top-left is pinned).
+    wayland = _on_wayland()
+    gestures = _wm_gestures_available()
 
     # --- window control buttons, right-aligned at the very top -------------
-    n_buttons = 3
-    bar_left = disp_w - n_buttons * _BTN_W
-    button_rects = []
-    for i in range(n_buttons):
-        x0 = bar_left + i * _BTN_W
-        button_rects.append((x0, 0.0, x0 + _BTN_W, _BTN_H))
+    button_rects = _button_layout(disp_w, maximized)
+    bar_left = button_rects[0][0]
 
     over_button = None
     for i, (x0, y0, x1, y1) in enumerate(button_rects):
@@ -408,12 +566,11 @@ def draw_titlebar(window):
     border = float(Toggles.Melty.resize_border)
     corner = float(Toggles.Melty.resize_corner)
     edge = None
-    if not maximized and over_button is None:
+    if gestures and not maximized and over_button is None:
         edge = _edge_at(mx, my, disp_w, disp_h, border, corner)
     if edge is not None:
         mouse_cursor.request(_EDGE_CURSOR[edge])
-        if imgui.is_mouse_clicked(0):
-            _begin_moveresize(window, edge)
+        if imgui.is_mouse_clicked(0) and _begin_wm_resize(window, edge):
             return
 
     # --- buttons: arm on press, fire on release inside ---------------------
@@ -438,10 +595,17 @@ def draw_titlebar(window):
     # nothing else claimed it. Clean clicks are untouched (dragged fires
     # only past the handler's drag threshold). Double-click = maximize,
     # same lowest-priority rule.
+    # Toggles.Melty.move_drag_anywhere widens the drag (not the double-click)
+    # to the whole window at the same worst priority: only a drag nothing
+    # else claimed - including background - moves the OS window.
     strip_h = float(Toggles.Melty.drag_strip_height)
-    if my <= strip_h and mx < bar_left and edge is None:
+    in_strip = my <= strip_h and mx < bar_left
+    anywhere = bool(Toggles.Melty.move_drag_anywhere) and over_button is None
+    if gestures and edge is None and (in_strip or anywhere):
         Melty.event_handler.register_hovered(
-            _STRIP_ID, ["left_mouse_dragged", "left_mouse_double_clicked"],
+            _STRIP_ID,
+            ["left_mouse_dragged", "left_mouse_double_clicked"] if in_strip
+            else ["left_mouse_dragged"],
             priority=_STRIP_PRIORITY)
     strip_events = (getattr(Melty, "events", None) or {}).get(_STRIP_ID, {})
     if _wm_move_started and not Melty.event_handler.is_down("left_mouse"):
@@ -450,8 +614,8 @@ def draw_titlebar(window):
         _toggle_maximize(window)
     elif "left_mouse_dragged" in strip_events and not _wm_move_started:
         _wm_move_started = True
-        _begin_moveresize(window, _MOVE)
-        return
+        if _begin_wm_move(window):
+            return
 
     # --- right-drag resize, anywhere in the window -------------------------
     # Same worst-priority pattern as the strip, but over the WHOLE window:
@@ -469,25 +633,44 @@ def draw_titlebar(window):
     if _rdrag is not None and not Melty.event_handler.is_down("right_mouse"):
         _rdrag = None  # gesture ended - re-latch on the next drag
     if "right_mouse_dragged" in resize_events or _rdrag is not None:
-        try:
-            x11 = _lib()
-            dpy, _win = _handles(window)
-            px, py = _root_pointer(x11, dpy, x11.XDefaultRootWindow(dpy))
-        except Exception:
-            px = py = None
+        # Left held too = the TOP-LEFT corner (the melty windows' own
+        # left+right priority rule): on Wayland that requires needs a move
+        # by the compositor - xdg_toplevel.resize(top_left) - so hand
+        # the whole gesture over; on X11 the app-side path slides the window.
+        both = _rdrag is None and Melty.event_handler.is_down("left_mouse")
+        if both and wayland and wayland_move.begin_resize(window, wayland_move.EDGE_TOP_LEFT):
+            _release_after_wayland_grab(window)
+            _rdrag = None
+            return
+        if wayland:
+            # Surface-relative pointer: only deltas matter, and the window's
+            # top-left never moves here, so the frame of reference holds.
+            px, py = mx, my
+        else:
+            try:
+                x11 = _lib()
+                dpy, _win = _handles(window)
+                px, py = _root_pointer(x11, dpy, x11.XDefaultRootWindow(dpy))
+            except Exception:
+                px = py = None
         if px is not None:
             if _rdrag is None:
-                wx, wy = glfw.get_window_pos(window)
                 ww, wh = glfw.get_window_size(window)
+                wx, wy = (0, 0) if wayland else glfw.get_window_pos(window)
                 # Corner pick: bottom-right gets most of the window - the
                 # top/left grabs only apply within the first _GRAB_BAND px of
                 # their edge (halved on windows too small for two full bands,
-                # so tiny windows still split sensibly).
+                # so tiny windows still resize sensibly). Wayland: always the
+                # bottom-right - a left/top grab would need the window placed
+                # it, and clients can't position themselves there.
                 band_x = min(_GRAB_BAND, ww / 2)
                 band_y = min(_GRAB_BAND, wh / 2)
+                if both:
+                    grab = (False, False)
+                else:
+                    grab = (True, True) if wayland else (mx >= band_x, my >= band_y)
                 _rdrag = (float(wx), float(wy), float(wx + ww), float(wy + wh),
-                          px, py, (mx >= band_x, my >= band_y),
-                          _workarea_for(window))
+                          px, py, grab, _workarea_for(window))
             grab_right, grab_bottom = _rdrag[6]
             direction = ((_SIZE_BOTTOMRIGHT if grab_right else _SIZE_BOTTOMLEFT)
                          if grab_bottom else
@@ -496,14 +679,78 @@ def draw_titlebar(window):
             _apply_rdrag_resize(window, px, py)
 
     # --- paint the buttons (topmost, after all the logic) ------------------
-    for i, (x0, y0, x1, y1) in enumerate(button_rects):
-        hovered = over_button == i
-        if hovered:
-            if i == 2:
-                bg = imgui.get_color_u32_rgba(0.78, 0.16, 0.16, 0.9)
-            else:
-                bg = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.10)
-            dl.add_rect_filled(x0, y0, x1, y1, bg)
-        alpha = 1.0 if hovered else 0.55
-        color = imgui.get_color_u32_rgba(0.9, 0.9, 0.9, alpha)
-        _draw_glyph(dl, i, (x0 + x1) / 2.0, (y0 + y1) / 2.0, color, maximized)
+    _paint_buttons(dl, button_rects, over_button, maximized)
+
+
+# ---------------------------------------------------------------------------
+# Rounded window corners - a transparent framebuffer + a final alpha pass
+# ---------------------------------------------------------------------------
+
+def wants_transparent_framebuffer():
+    """Boot hint (GLFW TRANSPARENT_FRAMEBUFFER): only a frameless window
+    with a corner radius needs per-pixel alpha at the compositor."""
+    from src.lsd.gl_gui.toggles import Toggles
+    return titlebar_enabled() and Toggles.Melty.window_corner_radius > 0
+
+
+_CORNER_FRAG = """
+#version 330 core
+out vec4 FragColor;
+void main() {
+    // Signed distance to the rounded rect covering the whole framebuffer
+    // (gl_FragCoord is pixel-centred, origin bottom-left), 0 on the edge.
+    vec2 half_size = size * 0.5;
+    vec2 d = abs(gl_FragCoord.xy - half_size) - (half_size - vec2(radius));
+    float dist = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0) - radius;
+    // Anti-aliased: one pixel of ramp across the edge.
+    FragColor = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(-0.5, 0.5, dist));
+}
+"""
+
+
+@shader_func(fragment=_CORNER_FRAG)
+def _corner_alpha_pass(gl_state: GLState = None, size=(1.0, 1.0), radius=0.0, **kwargs):
+    gl.glBindVertexArray(gl_state.vao("fs_triangle"))
+    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+
+# One GLState for the pass, module-owned (hotswap keeps it).
+_corner_gl = globals().get("_corner_gl")
+
+
+def punch_rounded_corners(fb_w, fb_h):
+    """Last GL work of the frame (Melty.post_frame, after the overlay): write
+    the framebuffer's ALPHA only — 1 inside the rounded rect, 0 outside —
+    so the compositor clips the corners and every pixel imgui's blending
+    left translucent (dst_a = a² + dst_a·(1-a) < 1 over an opaque clear)
+    reads opaque again. No-op unless the window was created transparent
+    (wants_transparent_framebuffer at boot) and the radius is > 0."""
+    global _corner_gl
+    from src.lsd.gl_gui.toggles import Toggles
+    radius = float(Toggles.Melty.window_corner_radius)
+    if radius <= 0 or fb_w <= 0 or fb_h <= 0 or not is_gl_thread():
+        return False
+    if _corner_gl is None:
+        _corner_gl = GLState()
+    saved_mask = gl.glGetBooleanv(gl.GL_COLOR_WRITEMASK)
+    blend = gl.glIsEnabled(gl.GL_BLEND)
+    scissor = gl.glIsEnabled(gl.GL_SCISSOR_TEST)
+    depth = gl.glIsEnabled(gl.GL_DEPTH_TEST)
+    stencil = gl.glIsEnabled(gl.GL_STENCIL_TEST)
+    try:
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glViewport(0, 0, int(fb_w), int(fb_h))
+        gl.glDisable(gl.GL_BLEND)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
+        gl.glDisable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_STENCIL_TEST)
+        gl.glColorMask(gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_TRUE)
+        _corner_alpha_pass(_corner_gl, size=(float(fb_w), float(fb_h)), radius=radius)
+        return True
+    finally:
+        gl.glColorMask(*[gl.GL_TRUE if bool(m) else gl.GL_FALSE for m in saved_mask])
+        (gl.glEnable if blend else gl.glDisable)(gl.GL_BLEND)
+        (gl.glEnable if scissor else gl.glDisable)(gl.GL_SCISSOR_TEST)
+        (gl.glEnable if depth else gl.glDisable)(gl.GL_DEPTH_TEST)
+        (gl.glEnable if stencil else gl.glDisable)(gl.GL_STENCIL_TEST)
+        gl.glBindVertexArray(0)

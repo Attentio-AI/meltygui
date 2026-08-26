@@ -661,7 +661,7 @@ def _find_links(grid, scols):
 @render_func(is_default_for=(Terminal), show_bg=False, show_header=False, show_name=False, is_tree=False,
              selectable=False, disable_scroll=True, initial={"closed": False})
 def draw_terminal_screen(input_value: Terminal, draw_state, view_state: TerminalScreenState,
-                         left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False,
+                         left_mouse_down=False, left_mouse_drag=False, left_mouse_held=False, 
                          left_mouse_clicked=False):
     term, ds, vs = input_value, draw_state, view_state
     # Point the reader thread's invalidator at the tile that actually re-renders this
@@ -1039,7 +1039,7 @@ def _draw_terminal_window(term, ds, name):
 # thread invalidate()s the window on PTY output; the render below invalidate()s whe
 # focused (for the blinking cursor + input responsiveness). Idle/unfocused terminals
 # cost nothing.
-@window(tint=(0.04, 0.044, 0.05), bg_offset=-1, disable_scroll=True, input_value=terminal_instance)
+@window(tint=(0.05, 0.06, 0.07), bg_offset=-1,max_bg_value=0.08, disable_scroll=True, input_value=terminal_instance)
 @render_func(is_default_for=Terminal)
 def draw_terminal(input_value: Terminal, draw_state):
     return _draw_terminal_window(input_value, draw_state, "terminal_screen")

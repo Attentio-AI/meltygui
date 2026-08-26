@@ -115,7 +115,7 @@ def _floor_value(rgb, min_value):
     return colorsys.hsv_to_rgb(h, s, min(min_value, 1.0)) + tuple(rgb[3:])
 
 
-@render_func(use_cache=True, selectable=False, show_add_delete=False, is_tree=False,
+@render_func(use_cache=True, selectable=False, show_add_delete=False, show_close=False, is_tree=False,
              show_name=False, searchable=True, shadow=True)
 def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=False,
                    left_mouse_down=False, search_text="", **kwargs):

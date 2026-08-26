@@ -34,7 +34,14 @@ How a drag flows, end to end:
     intersects a DROP_RADIUS square around the cursor contributes one slot
     per gap (rows are the collection's live children, read from ds._children
     and their BVH boxes). A line is drawn on every slot in radius, nearest
-    highlighted.
+    highlighted. Nothing pops: a line's opacity eases up FROM ZERO as it
+    enters the radius (so a slot sliding into range fades in rather than
+    appearing at a floor alpha), and all of the drop chrome — slot lines,
+    the home frame — is additionally scaled by the REVEAL ramp: invisible at
+    pickup, eased up to full over the first Toggles.Collection.dnd_reveal_distance
+    px of cumulative cursor travel (DragDrop.travel, accumulated per frame
+    in frame_update). The one thing that moves instantly is WHICH slot is
+    the nearest highlight — that snaps between lines with no cross-fade.
 
   * The item's start position is also a drop target (the _HOME sentinel),
     drawn as a subtle rect frame around the placeholder (draw_home) rather than
@@ -83,6 +90,7 @@ from dataclasses import dataclass
 
 import imgui
 
+from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
@@ -92,6 +100,19 @@ DROP_RADIUS = 260.0
 # The cursor must travel this far from the press before the drag arms (the
 # dragged window detaches) - keeps header clicks from ever reordering.
 ARM_DISTANCE = 2.0
+
+
+
+def _ease(t):
+    """Smoothstep: the ease applied to every drop-chrome opacity ramp — the
+    pickup reveal (DragDrop.reveal) and a slot line's fade over distance
+    (DragDrop.slot_alpha). Zero slope at both ends, so a ramp starts from
+    nothing without a visible onset and lands on full without a kink. To
+    change the feel of every fade at once, change this one function (an
+    ease-in-only alternative: t * t * t)."""
+    t = 0.0 if t < 0.0 else 1.0 if t > 1.0 else t
+    return t * t * (3.0 - 2.0 * t)
+
 
 _VIEW_ID = "dnd_item"
 _VIEW_ID_SUFFIX = "_" + _VIEW_ID
@@ -188,6 +209,11 @@ class DragDrop:
     home_rect = None          # (abs_left, abs_top) of the inline slot at pickup
     slots = ()                # this frame's (y, x0, x1, h, coll_ds, insert_idx)
     nearest = None
+    # Cumulative cursor path length (px) since the press - drives the pickup
+    # fade ramp (see reveal()). Path length, not displacement: the chrome
+    # never fades back out when the cursor returns toward the press point.
+    travel = 0.0
+    _last_mouse = None        # cursor at the last travel sample
 
     # ── immediate-mode state ─────────────────────────────────────────────
     immediate = False     # the active drag is an on_drag item (no item_ds)
@@ -251,6 +277,63 @@ class DragDrop:
         cur = draw_state.window_pos or (0.0, 0.0)
         draw_state.window_pos = (int(cur[0] + (mx - cls.grab_offset[0]) - left),
                                  int(cur[1] + (my - cls.grab_offset[1]) - top))
+
+    # ── drop-chrome opacity ──────────────────────────────────────────────
+
+    @classmethod
+    def reveal(cls):
+        """0..1 multiplier on every piece of drop chrome (slot lines, home
+        frame): 0 at pickup, eased up to 1 once the cursor has travelled
+        Toggles.Collection.dnd_reveal_distance px in total — the little UI
+        elements grow in with the gesture instead of popping into existence
+        the moment the drag arms."""
+        distance = Toggles.Collection.dnd_reveal_distance
+        if not distance or distance <= 0.0:
+            return 1.0
+        return _ease(cls.travel / distance)
+
+    @classmethod
+    def slot_alpha(cls, dist, nearest):
+        """Opacity of one slot line. The NEAREST line is the active drop
+        zone: full strength, switching instantly between lines. Every other
+        line fades with its distance from the probe point — from ZERO at
+        DROP_RADIUS (so a slot sliding into range eases in from nothing) up
+        to line_alpha at distance 0. Both are scaled by the pickup reveal."""
+        # [tint=(0.95, 0.75, 0.25)]
+        nearest_alpha = 0.95
+        # [tint=(0.55, 0.85, 0.95)]
+        line_alpha = 0.50
+        if nearest:
+            return nearest_alpha * cls.reveal()
+        fade = 1.0 - dist / DROP_RADIUS
+        return line_alpha * _ease(fade) * cls.reveal()
+
+    @classmethod
+    def home_alpha(cls, active):
+        """Opacity of the home (cancel-zone) frame: lifted while the cursor
+        is over it (still subtle — it's a cancel zone, not a reorder target),
+        faint otherwise; both scaled by the pickup reveal."""
+        # [tint=(0.95, 0.75, 0.25)]
+        active_alpha = 0.45
+        # [tint=(0.55, 0.85, 0.95)]
+        rest_alpha = 0.16
+        return (active_alpha if active else rest_alpha) * cls.reveal()
+
+    @classmethod
+    def _start_travel(cls, ev):
+        """Seed the reveal ramp at pickup: the displacement from the press
+        so far (>= ARM_DISTANCE) counts as travel, and the cursor's current
+        position becomes the first sample for the per-frame accumulation."""
+        cls.travel = math.hypot(ev.total_dx, ev.total_dy)
+        cls._last_mouse = (ev.x, ev.y)
+
+    @classmethod
+    def _track_travel(cls, mx, my):
+        """Add this frame's cursor movement to the cumulative travel."""
+        last = cls._last_mouse
+        if last is not None:
+            cls.travel += math.hypot(mx - last[0], my - last[1])
+        cls._last_mouse = (mx, my)
 
     # ── immediate-mode API (items without a @render_func) ────────────────
     #
@@ -408,6 +491,7 @@ class DragDrop:
         Core.melty.dnd_home_rect = (x0, y0, cls.size[0], cls.size[1])
         cls.slots = ()
         cls.nearest = None
+        cls._start_travel(ev)
         cls._wake(item.ds)
 
     @classmethod
@@ -555,6 +639,7 @@ class DragDrop:
             return
 
         mx, my = imgui.get_io().mouse_pos
+        cls._track_travel(mx, my)
         cls._compute_slots(mx, my)
         cls._draw_slots()
         cls._draw_home()
@@ -692,6 +777,7 @@ class DragDrop:
         Core.melty.dnd_home_rect = (left, top, cls.size[0] or 0, cls.size[1] or 0)
         cls.slots = ()
         cls.nearest = None
+        cls._start_travel(ev)
         # Reflow the collection (the item leaves the UI flow) and re-render
         # the item as a window.
         cls._wake(coll_ds)
@@ -1079,13 +1165,11 @@ class DragDrop:
             # same brightened-tint helper the swoosh and selection highlights
             # use, so slots read as part of the window they'd drop into.
             rgb = melty._highlight_rgb(_ds.current_tint)
-            if nearest:
-                col = imgui.get_color_u32_rgba(*rgb, 0.95)
-                thickness = 3.0
-            else:
-                fade = max(0.0, 1.0 - dist / DROP_RADIUS)
-                col = imgui.get_color_u32_rgba(*rgb, 0.10 + 0.40 * fade)
-                thickness = 2.0
+            # Opacity: nearest = the active drop zone at full strength (it
+            # snaps between lines); the rest ease in from zero at the drag
+            # edge; everything rides the pickup reveal (slot_alpha).
+            col = imgui.get_color_u32_rgba(*rgb, cls.slot_alpha(dist, nearest))
+            thickness = 3.0 if nearest else 2.0
             if vert:
                 # Vertical insertion line at x=cross spanning y a0..a1
                 # (horizontal collections). Same carve-out around the floating
@@ -1164,12 +1248,9 @@ class DragDrop:
         x, y = cls.home_rect
         src = cls.source_ds
         rgb = melty._highlight_rgb(src.current_tint) if src is not None else (1.0, 1.0, 1.0)
-        if cls.nearest is _HOME:
-            col = imgui.get_color_u32_rgba(*rgb, 0.45)
-            thickness = 1.75
-        else:
-            col = imgui.get_color_u32_rgba(*rgb, 0.16)
-            thickness = 1.5
+        active = cls.nearest is _HOME
+        col = imgui.get_color_u32_rgba(*rgb, cls.home_alpha(active))
+        thickness = 1.75 if active else 1.5
         rounding = 5.0
         # Inset 1px on every side so the highlight sits ever so slightly
         # inside the socket background rect (x, y, w, h-2).
@@ -1265,6 +1346,8 @@ class DragDrop:
         Core.melty.dnd_home_rect = None
         cls.slots = ()
         cls.nearest = None
+        cls.travel = 0.0
+        cls._last_mouse = None
         if item is not None:
             item.window_pos = (0, 0)
             # Undo the floating-render override. dragged_item_kwargs() forced

@@ -419,7 +419,12 @@ class PendingSave:
         off it would compile the stale version. Matched by (path, start, end),
         NOT identity: every consumer resolves its OWN Address from the (stable,
         since unwritten) disk to the same coords, so the value match lets a
-        sibling see the editor's live edit. None when nothing is queued there."""
+        sibling see the editor's live edit. Cross-SHAPE serving works BOTH
+        ways: a span consumer reads its slice of a whole-file entry, and a
+        whole-file consumer reads the sync-frame base with the file's span
+        entries spliced in (a context-menu lens edit queues per-def spans —
+        this is how they reach the editor buffer and the code hosts). None
+        when nothing is queued there."""
         for addr, (codec, kwargs) in list(cls.pending_saves.items()):
             if (addr.path == address.path and addr.start == address.start
                     and addr.end == address.end):
@@ -452,6 +457,41 @@ class PendingSave:
                 if address.end is not None and address.end > len(lines):
                     return None     # bad coords - never serve a short slice
                 return "\n".join(lines[address.start:address.end])
+        # The mirror direction: a WHOLE-FILE consumer (the code editor's
+        # buffer and every code host - auto_load_edits) must also see SPAN
+        # edits. A context-menu / lens edit queues a per-def span with no
+        # host anywhere; without this branch the editor's cross-view sync
+        # asked with (path, None, None), got None, and the edit showed up
+        # in draw_pending_saves but in no editor (and, through the hosts,
+        # not in the merge window). Compose sync-frame base with spans
+        # (studio_text_for - span coords match sync-frame) and memoize on
+        # the content-free generation + base identity: this runs per frame
+        # in the sync branch, the O(file) splice must cache.
+        if address.start is None:
+            has_real_span = any(
+                addr.path == address.path and addr.start is not None
+                and isinstance(kwargs.get("data"), str)
+                and kwargs.get("data") != cls.originals.get(addr)
+                for addr, (codec, kwargs) in list(cls.pending_saves.items()))
+            if not has_real_span:
+                return None
+            from src.lsd.gl_gui.melty import Melty
+            from src.lsd.gl_gui.view.core_views.external_changes import \
+                ExternalChanges
+            key_path = str(address.path)
+            base = ExternalChanges.synced.get(
+                key_path, ExternalChanges.originals.get(key_path))
+            if base is None:
+                base = Melty.read_code(key_path)
+            memo_key = (cls._pending_gen.get(address.path, 0), id(base))
+            memo = cls._wholefile_overlay_memo.get(key_path)
+            if memo is not None and memo[0] == memo_key:
+                return memo[1]
+            overlay = cls.studio_text_for(key_path)
+            if not isinstance(overlay, str):
+                overlay = None
+            cls._wholefile_overlay_memo[key_path] = (memo_key, overlay)
+            return overlay
         return None
 
 
@@ -583,6 +623,10 @@ class PendingSave:
                 d = d[:-1]
             lines[start:end] = d.split("\n")
         return "\n".join(lines)
+
+    # path str → ((pending_gen, id(base)), overlay text) - the whole-file
+    # consumers' pending-composition memo (pending_text_for's mirror image).
+    _wholefile_overlay_memo = {}
 
     # path → ((id(sync), id(disk)), unmerged: bool). Identity-keyed memo for
     # unmerged_drift_paths: both texts are held objects (synced/originals are

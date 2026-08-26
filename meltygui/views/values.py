@@ -4250,7 +4250,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                                  show_widgets=False, show_root_backgrounds=False,
                                  show_header=False, show_bg=False, shadow=False,
                                  single_line=True, width=_cw, height=ROW_H,
-                                 use_cache=True, temp=True,
+                                 use_cache=True, temp=True, freeze_resize=True,
                                  # The row tile rides at EXACTLY the depth of
                                  # the raised surface it sits on (its
                                  # enclosing tinted block's lift, or its own
@@ -4624,7 +4624,7 @@ dropdown_demo_data = {
 drop_down_selection = None
 # hey there
 @render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
-             show_tint=True, is_tree=False, bg_offset=0, with_header=draw_header)
+             show_tint=True, is_tree=False, bg_offset=0, max_bg_value=0.063, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict

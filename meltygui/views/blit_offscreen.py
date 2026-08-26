@@ -2062,6 +2062,8 @@ class TileCacheMasked:
             self._glow_cleared.clear()
         if getattr(self, "_depth_frame", None) is not None:
             self._depth_frame.clear()
+        if getattr(self, "_depth_cleared", None) is not None:
+            self._depth_cleared.clear()
         if getattr(self, "_emit_counts", None) is not None:
             self._emit_counts.clear()
         self._rect_seq = 0
@@ -2110,6 +2112,7 @@ class TileCacheMasked:
             self, rect: Tuple[float, float, float, float], offset: float = 2.0,
             layer: int = None, depth: int = None, corner_radius: float = 5.0,
             margin: float = 0.0, clip: bool = True, draw_state=None,
+            group=None,
     ) -> None:
         """Mark a screen-space rect as a shadow caster, for code that is not
         a @render_func (raw draw-list overlays, dock rows, drag ghosts).
@@ -2147,6 +2150,17 @@ class TileCacheMasked:
         on frames where the caller's body is cache-served — the same
         persistence regular view marks get, and it ages out naturally on the
         owner's next fresh capture.
+
+        Retention (`draw_state=`): a raised mark is also RETAINED under its
+        emitting draw_state and re-stamped into the full mask every frame
+        until its owner clears it — see clear_glows / clear_shadows. `group`
+        names which owner: None is the BODY's group (a body calls
+        clear_glows(ds) at its top and re-emits what it still wants), any
+        other value is a group some OTHER code draws for that draw_state —
+        the wrapper's scrollbar grab (core_render.SCROLLBAR_SHADOW_GROUP)
+        — and clears with clear_shadows(ds, group) before re-emitting.
+        Groups are independent: a served-frame scrollbar re-emit keeps the
+        body's retained marks, and a body run keeps the scrollbar's.
 
         rect is (x, y, w, h) in screen coords. layer defaults to
         Melty.paint_rank (the paint-order rank, the same unit as
@@ -2218,7 +2232,7 @@ class TileCacheMasked:
             # live-vs-recorded delta supplies the shift instead.
             self._depth_frame.append(
                 (mark, draw_state,
-                 self._retain_anchor(draw_state, depth_defaulted)))
+                 self._retain_anchor(draw_state, depth_defaulted), group))
 
     def _retain_anchor(self, draw_state, depth_defaulted):
         """(abs_left, abs_top, emitter_rank, root_rank, depth_defaulted)
@@ -2267,6 +2281,7 @@ class TileCacheMasked:
     def add_shadow_strip(
             self, points, offset: float = 2.0, layer: int = None,
             depth: int = None, clip: bool = True, draw_state=None,
+            group=None,
     ) -> None:
         """add_shadow for a NON-RECT shape: `points` is a triangle strip of
         screen-space (x, y) vertices (len >= 3) — e.g. a band between two
@@ -2331,7 +2346,13 @@ class TileCacheMasked:
             self._ensure_glow_state()
             self._depth_frame.append(
                 (mark, draw_state,
-                 self._retain_anchor(draw_state, depth_defaulted)))
+                 self._retain_anchor(draw_state, depth_defaulted), group))
+
+    @staticmethod
+    def _retain_group(entry):
+        """Retention group of a `_depth_frame` entry — None (the body's
+        group) for pre-group entries a hotswap left in the frame list."""
+        return entry[3] if len(entry) > 3 else None
 
     def _ensure_glow_state(self) -> None:
         """Lazily create the glow bookkeeping fields. A hotswap patches
@@ -2355,6 +2376,10 @@ class TileCacheMasked:
             # protocol.
             self._depth_frame = []
             self._depth_marks_by_emitter = {}
+        if getattr(self, "_depth_cleared", None) is None:
+            # (id(draw_state), group) pairs whose retained depth marks drop
+            # at finalize unless re-emitted this frame - clear_shadows.
+            self._depth_cleared = set()
         if getattr(self, "_glow_kill_pending", None) is None:
             # Territory kills observed mid-interaction (mouse down / drag)
             # are DEFERRED here instead of executing - resize drags pass
@@ -2385,6 +2410,51 @@ class TileCacheMasked:
             hops += 1
         return w
 
+    @staticmethod
+    def _enclosing_window_clip(ds):
+        """LIVE clip of the windows enclosing `ds`: the intersection of every
+        `parent_window`'s abs_clip_rect up the chain (box ∩ its captured
+        clip, shifted with the window's movement). This is the rect the
+        emitter's own PIXELS are scissored to, so a retained mark must never
+        stamp past it either. None when `ds` sits in no window (root-level
+        overlays); an EMPTY rect (x1 <= x0 or y1 <= y0) when the windows no
+        longer overlap — the caller skips the mark.
+
+        Why windows only: a non-window ancestor's box does not bound its
+        children (the wrapper pushes a clip for closable views alone, and a
+        pinned float legitimately overhangs the button it hangs off), while
+        a window's box ∩ clip is exactly what its content is clipped to.
+
+        Rows culled by their window's body are the case this exists for
+        (global search auto-fits its height to the result count: the
+        previous query's row editors below the new bottom never run again,
+        nothing repaints their territory, and their chip shadows re-stamped
+        under the window every frame)."""
+        clip = None
+        w = ds
+        hops = 0
+        while w is not None and hops < 64:
+            pw = getattr(w, "parent_window", None)
+            if pw is None or pw is w:
+                break
+            try:
+                rect = pw.abs_clip_rect
+            except Exception:
+                try:
+                    _l, _t = pw.abs_left, pw.abs_top
+                    _w, _h = pw.width, pw.height
+                    rect = ((_l, _t, _l + _w, _t + _h)
+                            if _w is not None and _h is not None else None)
+                except Exception:
+                    rect = None
+            if rect is not None:
+                clip = (rect if clip is None else
+                        (max(clip[0], rect[0]), max(clip[1], rect[1]),
+                         min(clip[2], rect[2]), min(clip[3], rect[3])))
+            w = pw
+            hops += 1
+        return clip
+
     def clear_glows(self, draw_state) -> None:
         """Start of an emitter's glow group for this body run: retained marks
         from its previous run drop at finalize unless re-emitted this frame.
@@ -2404,14 +2474,74 @@ class TileCacheMasked:
             self._glow_rects[:] = [e for e in self._glow_rects
                                    if e[1] is not draw_state]
         if self._depth_frame:
-            self._depth_frame[:] = [e for e in self._depth_frame
-                                    if e[1] is not draw_state]
+            # Depth marks: the body's group only (group None). Other groups
+            # (the wrapper's scrollbar grab) have their own owner, who
+            # clears them with clear_shadows - dropping them here would
+            # lose a bar emitted earlier this frame, and keep it.
+            self._depth_frame[:] = [
+                e for e in self._depth_frame
+                if not (e[1] is draw_state and self._retain_group(e) is None)]
         # The dropped emissions hand their cap budget back too - the last
         # body run gets the same Toggles.shadow_cap headroom the first had.
         counts = getattr(self, "_emit_counts", None)
         if counts is not None:
             counts.pop((id(draw_state), "shadow"), None)
             counts.pop((id(draw_state), "glow"), None)
+
+    def clear_shadows(self, draw_state, group) -> None:
+        """Start of a NON-body owner's retained-depth group for this frame
+        (add_shadow's `group`): the marks it retained under `draw_state`
+        drop at finalize unless re-emitted this frame, and anything the
+        same group emitted earlier THIS frame is dropped too (last emission
+        wins, as clear_glows does for bodies). Call it unconditionally
+        wherever the group's owner decides whether to draw — the scrollbar
+        paths call it before their early returns, so a bar that stops
+        drawing (content now fits, scroll disabled, window closed) sheds
+        its grab silhouette instead of re-stamping it under the view
+        every frame."""
+        self._ensure_glow_state()
+        self._depth_cleared.add((id(draw_state), group))
+        if self._depth_frame:
+            self._depth_frame[:] = [
+                e for e in self._depth_frame
+                if not (e[1] is draw_state and self._retain_group(e) == group)]
+
+    def _fold_depth_retention(self):
+        """PASS 6 bookkeeping for retained depth marks, GL-free: apply this
+        frame's clears to the per-emitter store, then fold the frame's
+        emissions in. The store is keyed (id(draw_state), group) — a body
+        run (clear_glows) touches only group None, clear_shadows only its
+        own group, and an emission replaces exactly its own group's marks,
+        so the scrollbar re-emitting on a served frame never discards the
+        body's retained block/gutter marks (and vice versa). Returns the
+        set of keys emitted this frame — the re-stamp loop skips those
+        (stamped via the fresh path already).
+
+        A store from before the group keys (hotswap: plain id keys) is
+        re-keyed as group None on the way in."""
+        self._ensure_glow_state()
+        retained = self._depth_marks_by_emitter
+        for key in list(retained):
+            if not isinstance(key, tuple):
+                retained[(key, None)] = retained.pop(key)
+        pending = self._depth_kill_pending
+        for key in list(pending):
+            if not isinstance(key, tuple):
+                pending.discard(key)
+                pending.add((key, None))
+        for eid in self._glow_cleared:
+            retained.pop((eid, None), None)
+        for key in self._depth_cleared:
+            retained.pop(key, None)
+        emitted = defaultdict(list)
+        for entry in self._depth_frame:
+            mark, eds, anchor = entry[0], entry[1], entry[2]
+            emitted[(id(eds), self._retain_group(entry))].append(
+                (mark, eds, anchor))
+        for key, entries in emitted.items():
+            retained[key] = ([m for m, _d, _a in entries],
+                             entries[0][1], entries[0][2])
+        return set(emitted)
 
     def add_glow(
             self, rect: Tuple[float, float, float, float],
@@ -3291,12 +3421,17 @@ class TileCacheMasked:
         (scroll_bar_width / _brightness from the view's resolved kwargs)."""
         if not getattr(draw_state, "freeze_resize", False):
             return
+        from src.lsd.gl_gui.view.core_views.core_render import (
+            draw_overlay_scrollbar, SCROLL_BAR_WIDTH_DEFAULT,
+            SCROLL_BAR_BRIGHTNESS_DEFAULT, SCROLLBAR_SHADOW_GROUP)
+        # Owner of the grab's retained depth mark on these views: shed the
+        # group after the early returns, so a scrollbar hidden this frame
+        # (content fits after a resize / edit, view closed) drops its
+        # silhouette; draw_overlay_scrollbar re-retains it while visible.
+        self.clear_shadows(draw_state, SCROLLBAR_SHADOW_GROUP)
         if (not draw_state.scroll_visible or draw_state.closed
                 or draw_state.just_shadow or draw_state.height is None):
             return
-        from src.lsd.gl_gui.view.core_views.core_render import (
-            draw_overlay_scrollbar, SCROLL_BAR_WIDTH_DEFAULT,
-            SCROLL_BAR_BRIGHTNESS_DEFAULT)
         kwargs = getattr(draw_state, "_kwargs", None) or {}
         bar_width = kwargs.get(
             "scroll_bar_width",
@@ -4695,7 +4830,9 @@ class TileCacheMasked:
                 _depth_retained = self._depth_marks_by_emitter
                 for _eid in self._glow_cleared:
                     _glow_retained.pop(_eid, None)
-                    _depth_retained.pop(_eid, None)
+                # Depth marks fold per (emitter, origin) - see
+                # _fold_depth_retention; the glow store stays id-keyed.
+                _depth_emitted = self._fold_depth_retention()
 
                 # Kill evidence shared by BOTH retained stores: the rects of
                 # every tile that FUTURE this frame, tagged with their
@@ -4743,20 +4880,34 @@ class TileCacheMasked:
                         pass
 
                 def _live_clip_of(eds):
-                    # The emitter's LIVE rect - clips glow ORIGIN rects and
-                    # kill territory alike (never the rendered pixels):
-                    # during a freeze-resize drag the wrapper doesn't re-run,
-                    # but width/height track the drag live.
+                    # The emitter's LIVE rect - clips mark ORIGIN rects,
+                    # re-stamp positions, and kill territory alike (never
+                    # the rendered light): during a freeze-resize drag the
+                    # body doesn't re-run, so width/ height track the drag
+                    # live. Intersected with the enclosing windows' live
+                    # clip (_enclosing_window_clip): an emitter whose window
+                    # scrolled / shrank out of view keeps its own rect, but
+                    # no pixel of it shows, so none of its marks may cast -
+                    # an empty rect here makes every stamp skip them.
                     if eds is None:
                         return None
                     try:
                         l, t = eds.abs_left, eds.abs_top
                         w, h = eds.width, eds.height
-                        if w is None or h is None:
-                            return None
-                        return (l, t, l + w, t + h)
+                        rect = ((l, t, l + w, t + h)
+                                if w is not None and h is not None else None)
                     except Exception:
-                        return None
+                        rect = None
+                    try:
+                        win = self._enclosing_window_clip(eds)
+                    except Exception:
+                        win = None
+                    if win is None:
+                        return rect
+                    if rect is None:
+                        return win
+                    return (max(rect[0], win[0]), max(rect[1], win[1]),
+                            min(rect[2], win[2]), min(rect[3], win[3]))
 
                 # Kills only EXECUTE while interaction is settled: mid-drag
                 # repaints (column resize, freeze resize reflows) hit live
@@ -4823,22 +4974,18 @@ class TileCacheMasked:
                 # lifts) is retained instead of flashing. The additive blend
                 # makes re-stamping marks that were also freshly emitted
                 # this frame idempotent.
-                _depth_emitted = defaultdict(list)
-                for mark, _eds, _anchor in self._depth_frame:
-                    _depth_emitted[id(_eds)].append((mark, _eds, _anchor))
-                for _eid, entries in _depth_emitted.items():
-                    _depth_retained[_eid] = (
-                        [m for m, _d, _a in entries],
-                        entries[0][1], entries[0][2])
                 _depth_stamp = []
-                for _eid, (marks, _eds, _anchor) in list(
+                # _key = (id(emitter), owner); kill-pending is per key too,
+                # so a killed body group mark takes the scrollbar's with
+                # it on a frame the bar legitimately re-emitted.
+                for _key, (marks, _eds, _anchor) in list(
                         _depth_retained.items()):
                     if _eds is None or getattr(_eds, "abs_closed", False):
-                        _depth_retained.pop(_eid, None)
-                        self._depth_kill_pending.discard(_eid)
+                        _depth_retained.pop(_key, None)
+                        self._depth_kill_pending.discard(_key)
                         continue
-                    if _eid in _depth_emitted:
-                        self._depth_kill_pending.discard(_eid)
+                    if _key in _depth_emitted:
+                        self._depth_kill_pending.discard(_key)
                         continue  # stamped via the normal fresh path already
                     _delta = (_eds.abs_left - _anchor[0],
                               _eds.abs_top - _anchor[1])
@@ -4848,20 +4995,20 @@ class TileCacheMasked:
                         # reached and blit-served (subtile pixels intact).
                         # Tab-switched/culled emitters fail both, so real
                         # content swaps still kill.
-                        self._depth_kill_pending.discard(_eid)
+                        self._depth_kill_pending.discard(_key)
                     else:
                         _hit = _territory_hit(marks, _delta, _root_ds, _eds,
                                               _live_clip_of(_eds))
                         if _hit is not None:
                             _log_kill("depth", _eds, _hit, not _settled)
                             if _settled:
-                                _depth_retained.pop(_eid, None)
-                                self._depth_kill_pending.discard(_eid)
+                                _depth_retained.pop(_key, None)
+                                self._depth_kill_pending.discard(_key)
                                 continue
-                            self._depth_kill_pending.add(_eid)
-                        elif _settled and _eid in self._depth_kill_pending:
-                            _depth_retained.pop(_eid, None)
-                            self._depth_kill_pending.discard(_eid)
+                            self._depth_kill_pending.add(_key)
+                        elif _settled and _key in self._depth_kill_pending:
+                            _depth_retained.pop(_key, None)
+                            self._depth_kill_pending.discard(_key)
                             continue
                     dx, dy = _delta
                     # Re-stamped marks clip to the emitter's LIVE rect -
@@ -5126,6 +5273,8 @@ class TileCacheMasked:
                 self._glow_cleared.clear()
             if getattr(self, "_depth_frame", None) is not None:
                 self._depth_frame.clear()
+            if getattr(self, "_depth_cleared", None) is not None:
+                self._depth_cleared.clear()
             if getattr(self, "_emit_counts", None) is not None:
                 self._emit_counts.clear()
             self._enq_mask_keys.clear()
@@ -5137,7 +5286,7 @@ class TileCacheMasked:
 
 
 def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
-               margin=0.0, clip=True, draw_state=None):
+               margin=0.0, clip=True, draw_state=None, group=None):
     """Mark a screen-space (x, y, w, h) rect as a shadow caster from anywhere
     — no @render_func, key, or draw_state required. `offset` is the signed
     depth delta from the surrounding surface: positive (default +2) lifts the
@@ -5146,17 +5295,19 @@ def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,
     gives each corner its own delta and eases the depth between them across
     the quad — e.g. offset=(0, 0, 0, 8) peels the bottom-right corner up.
     layer/depth default to Melty.paint_rank/Melty.shadow_depth at call
-    time. Cheap enough to call every frame; see
-    TileCacheMasked.add_shadow."""
+    time. Cheap enough to call every frame. `draw_state` retains the mark
+    across cache-served frames under that draw_state's `group` (None = the
+    body's, cleared by clear_glows; anything else is cleared by
+    clear_shadows(draw_state, group)); see TileCacheMasked.add_shadow."""
     cache = Melty.cache
     if cache is not None:
         cache.add_shadow(rect, offset=offset, layer=layer, depth=depth,
                          corner_radius=corner_radius, margin=margin, clip=clip,
-                         draw_state=draw_state)
+                         draw_state=draw_state, group=group)
 
 
 def add_shadow_strip(points, offset=2.0, layer=None, depth=None, clip=True,
-                     draw_state=None):
+                     draw_state=None, group=None):
     """add_shadow for a NON-RECT shape: `points` is a triangle strip of
     screen-space (x, y) vertices (a band between two polylines interleaves
     top0, bot0, top1, bot1, …). `offset` keeps add_shadow's signed
@@ -5166,7 +5317,19 @@ def add_shadow_strip(points, offset=2.0, layer=None, depth=None, clip=True,
     cache = Melty.cache
     if cache is not None and getattr(cache, "add_shadow_strip", None) is not None:
         cache.add_shadow_strip(points, offset=offset, layer=layer,
-                               depth=depth, clip=clip, draw_state=draw_state)
+                               depth=depth, clip=clip, draw_state=draw_state,
+                               group=group)
+
+
+def clear_shadows(draw_state, group):
+    """Open a non-body owner's retained-depth `group` for `draw_state` this
+    frame: marks it retained drop at frame end unless re-emitted now. Call
+    it wherever the group's owner decides whether to draw at all — before
+    its early returns — the way a body calls clear_glows at its top. See
+    TileCacheMasked.clear_shadows."""
+    cache = Melty.cache
+    if cache is not None and getattr(cache, "clear_shadows", None) is not None:
+        cache.clear_shadows(draw_state, group)
 
 
 def add_glow(rect, color, intensity=1.0, radius=24.0, falloff=2.0,

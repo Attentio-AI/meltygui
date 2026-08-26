@@ -916,6 +916,15 @@ class Melty:
     # frames. Cleared in end_frame after this frame's views have read them.
     frame_key_events = []
 
+    # App-level keyboard shortcuts that fire wherever the focus is:
+    # (glfw_key, modifier bits) → callback. Drained by begin_frame from the
+    # press-edge queue above (never glfw.get_key level state - a tap may be
+    # pressed AND released inside one UI frame). Register through
+    # register_global_hotkey; re-registering a key replaces its callback, so
+    # a hotswappable module re-binding at import is harmless. Survives a
+    # melty.py hotswap (unchanged source expression keeps the live dict).
+    global_hotkeys = {}
+
     # time.monotonic() of the last UI input - key (incl. held-key auto-repeat),
     # mouse button, mouse move/drag, or scroll (set in event_backends). Read by
     # the cst→dict index's cooperative loop yield to back off when the user interacts.
@@ -1881,6 +1890,13 @@ class Melty:
                    tint=(1, 1, 0.4), tag="InvalidateTracker")
             request_render()
 
+        # Registered global hotkeys (register_global_hotkey), same press edge
+        # queue; a Melty editor or an imgui input owning the keyboard mutes
+        # the registrations that didn't opt into text focus.
+        if cls.fire_global_hotkeys(keyboard_owned=focused is not None
+                                   or bool(want_text)):
+            request_render()
+
         if focused is not None and not any(k == glfw.KEY_ESCAPE
                                            for k, _ in cls.frame_key_events):
             if cls.focused_key_pending():
@@ -2064,12 +2080,6 @@ class Melty:
         cls.layers.clear()
         for _ in range(cls.nested_layer_max):
             cls.layers.append([])
-        # Handle global hotkeys
-        # for hotkey, target in global_hotkeys.items():
-        #     if Melty.is_key_pressed(hotkey.key):
-        #         if callable(target):
-        #             target()
-
         for view_id, evts in cls.events.items():
             first_event = list(evts.values())[0]
             if first_event.tile_id != "hovered":
@@ -4082,6 +4092,12 @@ class Melty:
         # Overlay last, so the highlight/swoosh sits on top of the shadow pass
         # (the split renderer's intended slot: "below overlay" is everything above).
         imgui_impl.render_overlay_only(draw_data)
+        # Rounded sub-window corners: alpha-only pass, the last thing rendered
+        # (titlebar.punch_rounded_corners - also clears the alpha imgui's
+        # blending left below 1 on the transparent framebuffer).
+        from src.lsd.gl_gui.titlebar import punch_rounded_corners, wants_transparent_framebuffer
+        if wants_transparent_framebuffer():
+            punch_rounded_corners(int(fb_w), int(fb_h))
         _gt.stamp("overlay")
         _ps_t5 = _pp()
 
@@ -4273,6 +4289,51 @@ class Melty:
             return
         window_key = draw_state._tile_id
         cls.pending_delete_window = (window_key, draw_state)
+
+    @classmethod
+    def register_global_hotkey(cls, key, mods, callback, text_focus_ok=False):
+        """Bind `callback` to a keyboard shortcut that fires wherever the
+        mouse is (begin_frame drains it from the press-edge queue). `key` is
+        a glfw.KEY_*, `mods` the exact glfw.MOD_* mask that must be held
+        (0 for a bare key). Hover-routed shortcuts belong on a render_func
+        as event-named params (`ctrl_m_down`); this is for the few
+        app-level ones. `text_focus_ok=True` lets it fire while a text
+        editor / imgui input owns the keyboard — only for combos no editor
+        binds. Re-registering a (key, mods) replaces the callback."""
+        mod_mask = (glfw.MOD_CONTROL | glfw.MOD_SHIFT | glfw.MOD_ALT
+                    | glfw.MOD_SUPER)
+        cls.global_hotkeys[(key, mods & mod_mask)] = (callback,
+                                                     bool(text_focus_ok))
+
+    @classmethod
+    def fire_global_hotkeys(cls, keyboard_owned=False):
+        """begin_frame's drain of the register_global_hotkey bindings: every
+        press edge in frame_key_events whose (key, exact modifier set — lock
+        bits masked off) is bound runs its callback. `keyboard_owned` (a
+        Melty text editor or an imgui input has the keyboard) mutes the
+        bindings registered with text_focus_ok=False — the bare-E toggle's
+        rule — while a text_focus_ok binding fires regardless (a Ctrl combo
+        no editor binds, e.g. Ctrl+M). A raising callback is printed, never
+        propagated into the frame. Returns True when anything fired."""
+        if not cls.global_hotkeys or not cls.frame_key_events:
+            return False
+        mod_mask = (glfw.MOD_CONTROL | glfw.MOD_SHIFT | glfw.MOD_ALT
+                    | glfw.MOD_SUPER)
+        fired = False
+        for key, mods in list(cls.frame_key_events):
+            entry = cls.global_hotkeys.get((key, mods & mod_mask))
+            if entry is None:
+                continue
+            callback, text_focus_ok = entry
+            if keyboard_owned and not text_focus_ok:
+                continue
+            try:
+                callback()
+            except Exception:
+                import traceback
+                traceback.print_exc()
+            fired = True
+        return fired
 
     @classmethod
     def find_window(cls, name):

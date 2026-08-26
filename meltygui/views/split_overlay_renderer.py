@@ -108,6 +108,19 @@ class SplitOverlayRenderer(GlfwRenderer):
         self._scaled_this_frame = False
         self._mask_debug_logged = False
 
+    def process_inputs(self):
+        super().process_inputs()
+        # A compositor move/resize grab (gl_gui/wayland_move.py) swallowed a
+        # button release, so GLFW's level state - what the stock poll above
+        # copies into io.mouse_down - stays PRESS until its next real event.
+        from src.lsd.gl_gui import wayland_move
+        masked = wayland_move.masked_buttons()
+        if masked:
+            io = imgui.get_io()
+            for button in masked:
+                if 0 <= button < 3:
+                    io.mouse_down[button] = False
+
     def _create_device_objects(self):
         """Build the LCD program; if the driver can't link it (no dual-source
         blending), fall back to the stock shader + stock blending so text
