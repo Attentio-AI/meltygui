@@ -2639,8 +2639,10 @@ def _fnrun_find_def_node(tree, def_name, line):
             continue
         seen.add(id(node))
         if isinstance(node, FunctionParse):
-            cst_n = node.get('__cst__')
-            nm = getattr(getattr(cst_n, 'name', None), 'value', None)
+            nm = getattr(node, 'def_name', None)        # both parsers stamp this
+            if nm is None:
+                cst_n = node.get('__cst__')
+                nm = getattr(getattr(cst_n, 'name', None), 'value', None)
             if nm == def_name:
                 sp = getattr(node, 'span', None)
                 d = abs(sp.start_line - line) if sp is not None else 1 << 20

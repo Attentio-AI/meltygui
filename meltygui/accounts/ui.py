@@ -1220,7 +1220,7 @@ class AccountsPanelState(DictConversion):
         self.usage = {}
 
 
-@window(input_value=accounts, tint=(0.91, 0.89, 0.77), icon=f"",
+@window(input_value=accounts, tint=(0.84, 0.84, 0.77), icon=f"",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True,

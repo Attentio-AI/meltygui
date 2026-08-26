@@ -298,6 +298,17 @@ class ShadowComposite:
         # out within their own edge instead of holding a uniform bright
         # rim. 0 disables the adaptation (pure fixed-f fade).
         'specular_fade_rel': (GLType.FLOAT, 0.6),
+        # The frameless OS window's frame (titlebar/etc): its rect sits
+        # frame_inset px into the framebuffer, frame_size wide, corners of
+        # frame_radius, on a TRANSPARENT background. Inside that rounded rect the
+        # composite is the usual darkening; outside it - the shadow margin
+        # and the cut corners - there is nothing but the shadow, so the
+        # output becomes the shadow itself with premultiplied alpha
+        # (shadow_color·s, s). frame_size (0, 0) = no frame, the whole
+        # framebuffer is drawn.
+        'frame_inset': (GLType.FLOAT, 0.0),
+        'frame_radius': (GLType.FLOAT, 0.0),
+        'frame_size': (GLType.VEC2, (0.0, 0.0)),
         # Window-occlusion mask (blit_offscreen._build_window_mask): R16,
         # each dispatched window's rounded rect stamped back-to-front at
         # rank (i+1)/1024. The specular pass decodes the rank at a
@@ -492,7 +503,20 @@ void main() {
         }
     }
 
-    fragColor = vec4(vec3(shadowed), color.a);
+    // Frameless-window frame: coverage of the content's rounded rect at this
+    // pixel (gl_FragCoord: pixel centres, origin bottom-left — the rect is
+    // symmetric so no flip). Outside it only the shadow exists: emit it as
+    // premultiplied alpha so the compositor blends the desktop through.
+    float frame_cov = 1.0;
+    if (frame_size.x > 0.0 && frame_size.y > 0.0) {
+        vec2 half_size = frame_size * 0.5;
+        vec2 fd = abs(gl_FragCoord.xy - vec2(frame_inset) - half_size) - (half_size - vec2(frame_radius));
+        float fdist = length(max(fd, vec2(0.0))) + min(max(fd.x, fd.y), 0.0) - frame_radius;
+        frame_cov = 1.0 - smoothstep(-0.5, 0.5, fdist);
+    }
+    float bg_alpha = shadow_intensity * shadow_opacity;
+    vec3 bg_rgb = shadow_color * bg_alpha;
+    fragColor = vec4(mix(bg_rgb, vec3(shadowed), frame_cov), mix(bg_alpha, color.a, frame_cov));
 }
 """
 

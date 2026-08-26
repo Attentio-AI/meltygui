@@ -3635,9 +3635,14 @@ def render_func(*args, **o_kwargs):
                                 draw_state, draw_state.abs_left, draw_state.abs_top,
                                 draw_state.width, draw_state.height, live=True)
                         else:
+                            # bg_outline=False: no outer stroke, the fill IS the
+                            # view's edge (the frameless OS window's root: its
+                            # rounded fill, mask rim and corner alpha cut share
+                            # one geometry, in draw_melty_windows).
                             bg_return = draw_bg(bypass=True, left=draw_state.abs_left, top=draw_state.abs_top,
                                                 width=draw_state.width, height=draw_state.height,
                                                 rounding=draw_state.corner_radius, bg_offset=kwargs.get("bg_offset", 0),
+                                                outline=kwargs.get("bg_outline", True),
                                                 max_bg_depth=kwargs.get("max_bg_depth", None),
                                                 max_bg_value=kwargs.get("max_bg_value", None),
                                                 depth=Melty.shadow_depth, selected=False,

@@ -346,6 +346,14 @@ class DiskSpanText(str):
                  "_codec")                      # the codec class that loaded this text
 
 
+def _parser_tag():
+    """Which parser a cached gp came from — part of every cst-dict cache key,
+    so flipping Toggles.TextEditor.melty_syntax never serves the OTHER
+    parser's parse (a libcst gp reverses through libcst, a core_syntax gp
+    through its text residual — both work, but the toggle should be seen)."""
+    return "melty" if Toggles.TextEditor.melty_syntax else "libcst"
+
+
 def chain_parse_cache_has(span_key, disk_mtime):
     """O(1): would chain_parse_cache_get hit for this pristine buffer? Lets the
     dispatch site inline a first parse that is really just a ~26ms loads —
@@ -353,7 +361,7 @@ def chain_parse_cache_has(span_key, disk_mtime):
     the worker."""
     if span_key is None or disk_mtime is None:
         return False
-    cached = _cst_dict_cache.get((*span_key, "chain"))
+    cached = _cst_dict_cache.get((*span_key, "chain", _parser_tag()))
     return cached is not None and cached[0] == disk_mtime
 
 
@@ -363,7 +371,7 @@ def chain_parse_cache_get(span_key, disk_mtime):
     mtime the buffer was read at — no stat, no content compare; a fresh copy is
     served per hit (pickle.loads). The gp is served address-less, exactly like
     a live chain parse without jump_to (`file=<no address>`)."""
-    key = (*span_key, "chain")
+    key = (*span_key, "chain", _parser_tag())
     cached = _cst_dict_cache.get(key)
     if cached is None or cached[0] != disk_mtime:
         if cached is not None:
@@ -386,7 +394,8 @@ def chain_parse_cache_put(span_key, disk_mtime, gp):
     detached for the dump (live source objects don't pickle) and restored."""
     if not isinstance(gp, dict):
         return
-    key = (*span_key, "chain")
+    key = (*span_key, "chain",
+           "melty" if gp.get("__origin__") is not None else "libcst")
     # Detach what a fresh session re-derives anyway: the live address (source
     # objects don't pickle) and the attached symbol index (~40% of the blob -
     # _ensure_symbol_index re-attaches it from the symbol-usage cache in ~1ms
@@ -448,7 +457,8 @@ def _harvest_live_span_parses():
         try:
             sh, dh = pair
             gp = dh._held()
-            if not isinstance(gp, dict) or gp.get("__cst__") is None:
+            if not isinstance(gp, dict) or (gp.get("__cst__") is None
+                                            and gp.get("__origin__") is None):
                 continue
             cs = host_code_state(sh)
             addr = getattr(cs, "address", None)
@@ -525,6 +535,7 @@ def load_cst_module(input_value: Address):
     file_label = input_value.path.name if input_value.path else "?"
     key, mtime = _cst_cache_key(input_value)
     if key is not None:
+        key = (*key, _parser_tag())
         cached = _cst_dict_cache.get(key)
         if cached is not None and cached[0] == mtime:
             try:
@@ -544,8 +555,10 @@ def load_cst_module(input_value: Address):
     with _pspan("cst_cache: parse", file=file_label,
                 span=(input_value.start, input_value.end)):
         text = _load_span(input_value)
-        converted_cst = cst.parse_module(text)
-        general_parse = cst_module_to_dict(converted_cst)
+        if Toggles.TextEditor.melty_syntax:
+            general_parse = cst_module_to_dict(text)        # core_syntax (str input)
+        else:
+            general_parse = cst_module_to_dict(cst.parse_module(text))
     general_parse.file_path = input_value.path
     if key is not None:
         try:
@@ -1982,6 +1995,8 @@ def parse_source_to_general(input_value):
     inline on str_to_general_parse blocked every keystroke. Mirrors CODE_UI's
     load_cst_module. A syntax error mid-edit raises here and surfaces as a
     PendingState.ERROR (Background.run catches it)."""
+    if Toggles.TextEditor.melty_syntax:
+        return True, cst_module_to_dict(str(input_value))   # core_syntax (str input)
     cst_module = cst.parse_module(str(input_value))
     return True, cst_module_to_dict(cst_module)
 

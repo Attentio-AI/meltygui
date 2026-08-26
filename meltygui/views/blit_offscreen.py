@@ -3174,11 +3174,23 @@ class TileCacheMasked:
 
     @staticmethod
     def _get_draw_xform():
+        """Screen (imgui/content) → framebuffer transform. With a shadow
+        margin (Melty.frame_inset) the content sits inset in a larger
+        framebuffer (Melty.framebuffer_size): the inset rides as a negative
+        display_pos so _screen_rect_to_fb_xyxy lands content coords on the
+        right texels, and fb_h is the REAL height for the y flip."""
         dd = imgui.get_draw_data()
         dp_x, dp_y = dd.display_pos
         s_x, s_y = 1, 1
-        fb_w = snap_int(dd.display_size[0] * s_x)
-        fb_h = snap_int(dd.display_size[1] * s_y)
+        inset = int(getattr(Melty, "frame_inset", 0) or 0)
+        dp_x -= inset
+        dp_y -= inset
+        real = getattr(Melty, "framebuffer_size", None)
+        if real:
+            fb_w, fb_h = snap_int(real[0]), snap_int(real[1])
+        else:
+            fb_w = snap_int(dd.display_size[0] * s_x)
+            fb_h = snap_int(dd.display_size[1] * s_y)
         return dp_x, dp_y, s_x, s_y, fb_w, fb_h
 
     @staticmethod

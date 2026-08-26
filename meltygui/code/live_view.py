@@ -2093,7 +2093,11 @@ def _linemap_for(path, sig, span, text):
     else:
         lines = text.splitlines(keepends=True)
         snippet = "".join(lines[span[0] - 1:span[1]])
-    parse = cst_module_to_dict(cst.parse_module(snippet))
+    from src.lsd.gl_gui.toggles import Toggles
+    if Toggles.TextEditor.melty_syntax:
+        parse = cst_module_to_dict(snippet)                 # core_syntax (raw input)
+    else:
+        parse = cst_module_to_dict(cst.parse_module(snippet))
     lm = LineMap(parse, line_offset=start - 1)
     _linemaps[key] = (sig, lm)
     return lm
@@ -2169,6 +2173,9 @@ def _is_live_view_callparse(call_parse):
     call — whose arguments have nothing to do with live_view's."""
     if not isinstance(call_parse, dict):
         return False
+    func_name = getattr(call_parse, "func_name", None)    # CallParse, either form
+    if isinstance(func_name, str):
+        return func_name.rsplit(".", 1)[-1] == "live_view"
     try:
         func = call_parse.get("__cst__").func
     except Exception:

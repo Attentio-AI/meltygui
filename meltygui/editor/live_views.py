@@ -252,10 +252,27 @@ def _override_owner(scope_node, lookup_key):
     return scope_node
 
 
-def _is_def_parse(node, def_name):
+def _is_funcdef_node(node):
+    """A def's parse from EITHER parser: a FunctionParse (core_syntax stamps no
+    __cst__) or a libcst FunctionDef-backed dict."""
+    if not isinstance(node, dict):
+        return False
+    if type(node).__name__ == "FunctionParse":
+        return True
+    return type(node.get("__cst__")).__name__ == "FunctionDef"
+
+
+def _def_name(node):
+    """The def's name: `def_name` (both parsers stamp it) or the libcst node's."""
+    name = getattr(node, "def_name", None)
+    if name is not None:
+        return name
     cst_node = node.get("__cst__") if isinstance(node, dict) else None
-    return (type(cst_node).__name__ == "FunctionDef"
-            and getattr(getattr(cst_node, "name", None), "value", None) == def_name)
+    return getattr(getattr(cst_node, "name", None), "value", None)
+
+
+def _is_def_parse(node, def_name):
+    return _is_funcdef_node(node) and _def_name(node) == def_name
 
 
 def _find_def_node(tree, def_name, near_line):
@@ -798,8 +815,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # read so this render's own splat also resolves through the code
         # host's held tree - `code_tree_node` is whatever the cached tabs
         # body last captured and can lag a reparse by frames.
-        _dcst = def_node.get("__cst__") if isinstance(def_node, dict) else None
-        _dname = getattr(getattr(_dcst, "name", None), "value", None)
+        _dname = _def_name(def_node)
         _locator = None
         if _dname:
             _dspan = getattr(def_node, "span", None)
@@ -1385,8 +1401,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     against `root`: the code-host route hands the walk Bubbling proxy wrappers
     whose identities don't survive re-access, which is exactly how the first
     root-guarded version of this overlay silently never ran."""
-    cst_node = node.get("__cst__") if isinstance(node, dict) else None
-    if type(cst_node).__name__ != "FunctionDef" or span is None:
+    if not _is_funcdef_node(node) or span is None:
         return
     from src.lsd.gl_gui.toggles import Toggles
     if not Toggles.TextEditor.enable_live_view:

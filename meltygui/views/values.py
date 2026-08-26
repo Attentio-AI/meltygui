@@ -46,7 +46,8 @@ from src.lsd.gl_gui.view.core_conversion.new_converters import code_file_io, con
 from src.lsd.gl_gui.view.core_conversion.path_finder import Pending
 from src.lsd.gl_gui.view.core_views.basic_view_utils import same_line
 from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int, add_shadow
-from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names
+from src.lsd.gl_gui.view.core_views.core_render import render_func, render_func_kwarg_names, \
+    SCROLL_BAR_WIDTH_DEFAULT, SCROLLBAR_MARGIN
 from src.lsd.gl_gui.view.core_views.anywhere import SourcePriority, _source_priority, _sources_for, \
     _driving_source, _setting_source, default_write_source, get_value_for_source, get_source_for, \
     from_anywhere, anywhere_value, set_anywhere, \
@@ -4624,7 +4625,7 @@ dropdown_demo_data = {
 drop_down_selection = None
 # hey there
 @render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
-             show_tint=True, is_tree=False, bg_offset=0, max_bg_value=0.063, with_header=draw_header)
+             show_tint=True, is_tree=False, bg_offset=0, disable_scroll=True, max_bg_value=0.063, with_header=draw_header)
 def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict
@@ -5115,7 +5116,14 @@ def draw_melty_windows(vis):
 
     imgui.set_next_window_size(fb_w, fb_h)
     title = "main##window_melty"
+    # Edge to edge: imgui insets a window's clip rect by its its padding
+    # (and its border), which clipped everything 3 px short of the
+    # framebuffer edge - a near-black border along the right and bottom of
+    # the frameless OS window. The cursor is placed at (0, 0) below anyway.
+    imgui.push_style_var(imgui.STYLE_WINDOW_PADDING, (0.0, 0.0))
+    imgui.push_style_var(imgui.STYLE_WINDOW_BORDERSIZE, 0.0)
     opened, _ = begin(title, closable=False, flags=flags)
+    imgui.pop_style_var(2)
 
     Core.melty.imgui_main_window_hovered = imgui.is_window_hovered()
 
@@ -5130,10 +5138,35 @@ def draw_melty_windows(vis):
     Core.melty.channels_split = True
     Core.melty.window_stack.append((title, True))
 
-    draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
+    # Frameless OS window with rounded corners (titlebar.py): the root's
+    # shadow is the window's visible edge, so it runs edge to edge with
+    # no outline stroke and the SAME corner radius the alpha cut uses to
+    # fill - its mask mark (the shadow pass's lit rim, like the window's)
+    # and the transparent content then trace one rounded rect.
+    from src.lsd.gl_gui.titlebar import wants_transparent_framebuffer
+    if wants_transparent_framebuffer():
+        from src.lsd.gl_gui.titlebar import frame_corner_radius
+        from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+        _radius = frame_corner_radius()
+        draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h,
+                  corner_radius=_radius, bg_outline=False)
+        # The OS window's shadow: the content rect lifted by
+        # window_shadow_lift over the (transparent) surroundings and cast by
+        # the very shadow pass the windows use - into the shadow margin.
+        if Toggles.Melty.window_shadow_lift > 0:
+            add_shadow((0, 0, fb_w, fb_h), offset=float(Toggles.Melty.window_shadow_lift),
+                       corner_radius=_radius, clip=False)
+    else:
+        draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
 
     from src.lsd.gl_gui.applet.test_applet import render_app
     render_app()
+
+    # OS window min/max/close (titlebar.py): on this list's top channel,
+    # before the capture + shadow passes, so they composite like any header
+    # button - the overlay list would draw over their own rim.
+    from src.lsd.gl_gui.titlebar import paint_window_controls
+    paint_window_controls(draw_list)
 
     Core.melty.end_frame()
 
@@ -6834,6 +6867,7 @@ def draw_param_matrix(input_value, wrap=True, search_text="", draw_state=None, s
             pass
         if isinstance(v, dict):
             v.pop('__cst__', None)
+            v.pop('__origin__', None)
         return v
 
     for sname in order:
@@ -9389,8 +9423,9 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
         if isinstance(_praw, GeneralParse):
             _pdecos = _praw.get("decorators")
             _pdefaults = _pdecos.get("defaults") if isinstance(_pdecos, dict) else None
-            _pname = getattr(getattr(_praw.get("__cst__"), "name", None),
-                             "value", None)
+            _pname = (getattr(_praw, "def_name", None)
+                      or getattr(getattr(_praw.get("__cst__"), "name", None),
+                                 "value", None))
             # The name-carry guard covers viewing ClassParse's own parse -
             # the class_to_show row already shows it there.
             if (isinstance(_pdefaults, dict) and _pdefaults and _pname
@@ -10274,15 +10309,50 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             drop_down_state._kbd_mode = False
         drop_down_state._last_mouse = (_mp[0], _mp[1])
 
-    changed, new_item = draw_dd_menu(collection, tint=draw_state.tint,
-                                     name=f"{unique}_menu",
-                                     closed=not is_open, temp=True, shadow=False,
-                                     window_pos=(0, trigger_h - _DD_ROW_H), max_height=500,
-                                     parent_window=draw_state, swoosh=False, disable_scroll=False,
-                                     row_tints=kwargs.get("row_tints"),
-                                     row_actions=kwargs.get("row_actions"),
-                                     text_toward_bg=kwargs.get("text_toward_bg", 0.0),
-                                     root_state=drop_down_state, path_prefix=())
+    # ── Popover size: content-fit until the user drag-resizes it ──
+    # The menu runs auto_resize=False so the wrapper gives it the resize
+    # handle (+ right-drag corner resize); its size is then ours: while
+    # drop_down_state.menu_size is None we stamp the wrapper's own
+    # content-fit rule after every open frame (_dd_menu_fit: the measured
+    # unclipped content rect under its min-width / max-height / display
+    # clamps), and a size that differs from what we stamped is the resize
+    # handle's work - adopted into menu_size (persisted) and re-applied on
+    # every later open. Opening grace special: a persisted size goes on
+    # before the window begins.
+    menu_ds = getattr(drop_down_state, "_menu_ds", None)
+    menu_size = getattr(drop_down_state, "menu_size", None)
+    if is_open and menu_ds is not None:
+        opening = getattr(Melty, "_popover_open_frame", None) == Melty.frame_count
+        if opening and menu_size is not None:
+            menu_ds.width, menu_ds.height = menu_size
+            drop_down_state._menu_fit = tuple(menu_size)
+        if menu_ds.width is None or menu_ds.width < 5:
+            menu_ds.width = _DD_MENU_MIN_W
+    changed, new_item, menu_ds = draw_dd_menu(
+        collection, tint=draw_state.tint,
+        name=f"{unique}_menu",
+        closed=not is_open, temp=True, shadow=False, auto_resize=False,
+        window_pos=(0, trigger_h - _DD_ROW_H), max_height=_DD_MENU_MAX_H,
+        parent_window=draw_state, swoosh=False, disable_scroll=False,
+        row_tags=kwargs.get("row_tags"),
+        row_tints=kwargs.get("row_tints"),
+        row_fades=kwargs.get("row_fades"),
+        row_actions=kwargs.get("row_actions"),
+        text_toward_bg=kwargs.get("text_toward_bg", 0.0),
+        root_state=drop_down_state, path_prefix=(), return_extras=True)
+    drop_down_state._menu_ds = menu_ds
+    if is_open and menu_ds is not None:
+        current = (menu_ds.width, menu_ds.height)
+        last_fit = getattr(drop_down_state, "_menu_fit", None)
+        if last_fit is not None and current != last_fit and current[0] and current[1]:
+            drop_down_state.menu_size = current       # the resize handle moved it
+            drop_down_state._menu_fit = current
+        elif getattr(drop_down_state, "menu_size", None) is None:
+            fit = _dd_menu_fit(menu_ds)
+            if fit is not None and fit != current:
+                menu_ds.width, menu_ds.height = fit
+                request_render()
+            drop_down_state._menu_fit = (menu_ds.width, menu_ds.height)
     if is_open:
         if changed:
             _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
@@ -10713,6 +10783,26 @@ def _dd_handle_keys(collection, root_state, search="", text_focused=False):
 
 _DD_MENU_W = 170
 _DD_ROW_H = 24
+# Root popover size bounds (draw_dropdown's content fit + the resize handle):
+# the wrapper's min_width / min_height for dd_menu and the old popup_size.
+_DD_MENU_MIN_W = 300
+_DD_MENU_MIN_H = 33
+_DD_MENU_MAX_H = 500
+
+
+def _dd_menu_fit(menu_ds):
+    """The popover size that fits its content — what the wrapper's
+    auto_resize computed for a closable window: the measured UNCLIPPED
+    group rect (_content_rect), width floored at min_width, height capped
+    at max_height and the display (rows scroll past it). None until the
+    body has measured."""
+    rect = getattr(menu_ds, "_content_rect", None)
+    if not rect or rect[0] <= 0 or rect[1] <= 0:
+        return None
+    display_w, display_h = imgui.get_io().display_size
+    fit_w = snap_int(max(min(rect[0], display_w), _DD_MENU_MIN_W))
+    fit_h = snap_int(max(min(rect[1], display_h, _DD_MENU_MAX_H), _DD_MENU_MIN_H))
+    return (fit_w, fit_h)
 # Limits on the scope-label column of code-preview rows (usage-jump picker):
 # the main code column clamps here, and longer labels ellipsize, so the
 # code keeps most of the row's width.
@@ -10731,10 +10821,109 @@ def _dd_row_lookup(mapping, value):
         return None
 
 
+# Row tags (the right-aligned dim column): default colour - the
+# autocomplete kind label's blue washed - and the gap between segments.
+_DD_TAG_COLOR = (0.55, 0.6, 0.72, 0.85)
+_DD_TAG_GAP = 8.0
+# Per-row symbol tint wash alpha (autocomplete's definition colours) -
+# the tag mask re-composes it so the mask stays invisible on tinted rows.
+_DD_ROW_TINT_A = 0.35
+
+
+def _dd_tag_segments(tag):
+    """A row tag as [(text, rgba)] segments. A plain str is ONE segment in
+    the default dim colour; a sequence mixes str items with (text, color)
+    pairs that keep their own colour (the Compare With rows: the date dim,
+    "+N" green, "−M" red) — a 3-tuple colour gets the default alpha, a
+    None colour the default colour. Empty texts drop out."""
+    if not tag:
+        return []
+    if isinstance(tag, str):
+        return [(tag, _DD_TAG_COLOR)]
+    out = []
+    for item in tag:
+        if isinstance(item, str):
+            text, color = item, None
+        else:
+            text, color = item
+        color = _DD_TAG_COLOR if color is None else tuple(color)
+        if len(color) == 3:
+            color = color + (_DD_TAG_COLOR[3],)
+        if text:
+            out.append((str(text), color))
+    return out
+
+
+def _dd_tag_width(tag):
+    """Painted width of a row tag (all segments + gaps), 0 for none."""
+    segments = _dd_tag_segments(tag)
+    if not segments:
+        return 0.0
+    return (sum(imgui.calc_text_size(text)[0] for text, _c in segments)
+            + _DD_TAG_GAP * (len(segments) - 1))
+
+
+def _dd_paint_tag(draw_list, right, top, height, tag, active,
+                  row_tint=None, fade=0.0):
+    """The dim tag column, right-aligned to `right` inside a row box
+    [top, top + height). Opaque backing rect first so a long label can't
+    run under it: the menu's actual painted fill (bg_color_stack top),
+    with the row's tint wash and the active-row wash (white @ 0.16)
+    re-composed in, so the mask is invisible on plain, tinted and
+    highlighted rows alike. `fade` (0..1) pulls every segment's colour
+    toward that fill — a faded row's tag fades with its label."""
+    segments = _dd_tag_segments(tag)
+    if not segments:
+        return
+    line_h = imgui.get_text_line_height()
+    tag_w = _dd_tag_width(tag)
+    tag_x = right - tag_w
+    tag_y = top + (height - line_h) * 0.5
+    bg = Melty.bg_color_stack[-1][:3] if Melty.bg_color_stack else None
+    if bg is not None:
+        r, g, b = bg
+        if row_tint is not None:
+            r = r * (1 - _DD_ROW_TINT_A) + row_tint[0] * _DD_ROW_TINT_A
+            g = g * (1 - _DD_ROW_TINT_A) + row_tint[1] * _DD_ROW_TINT_A
+            b = b * (1 - _DD_ROW_TINT_A) + row_tint[2] * _DD_ROW_TINT_A
+        if active:
+            r, g, b = r * 0.84 + 0.16, g * 0.84 + 0.16, b * 0.84 + 0.16
+        mask = imgui.get_color_u32_rgba(min(max(r, 0.0), 1.0),
+                                        min(max(g, 0.0), 1.0),
+                                        min(max(b, 0.0), 1.0), 1.0)
+        draw_list.add_rect_filled(tag_x - 6, top + 1, tag_x + tag_w + 6,
+                                  top + height - 1, mask)
+    fade = min(max(float(fade or 0.0), 0.0), 1.0)
+    x = tag_x
+    for text, color in segments:
+        red, green, blue, alpha = color
+        if fade and bg is not None:
+            red = red * (1 - fade) + bg[0] * fade
+            green = green * (1 - fade) + bg[1] * fade
+            blue = blue * (1 - fade) + bg[2] * fade
+        draw_list.add_text(x, tag_y,
+                           imgui.get_color_u32_rgba(red, green, blue, alpha),
+                           text)
+        x += imgui.calc_text_size(text)[0] + _DD_TAG_GAP
+
+
+def _dd_row_width(draw_state):
+    """A menu row's width: the popover WINDOW's own width less the scrollbar
+    reserve. NOT content_width — the wrapper derives that from the PARENT's
+    available width (the trigger's 300 px slot) and pins it at min_width,
+    so a popover grown to fit long labels painted its tags and hit-tested
+    its rows at 300 px while the window was 600+ wide (the tag masked the
+    label's tail). The max keeps the old figure where it was the larger."""
+    window_width = draw_state.width or 0
+    return max(draw_state.content_width or 0,
+               window_width - (SCROLL_BAR_WIDTH_DEFAULT + SCROLLBAR_MARGIN))
+
+
 def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, left_pad=10,
-                 text_toward_bg=0.0, row_code=None, code_label_w=None):
+                 text_toward_bg=0.0, row_code=None, code_label_w=None,
+                 row_fades=None, row_width=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -10745,14 +10934,20 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     own a nested submenu and a real draw_state. Returns the picked value when
     clicked, else UNSET_VALUE.
 
-    `draw_state` is the MENU window's draw_state (the level), not a per-row one."""
+    `draw_state` is the MENU window's draw_state (the level), not a per-row one.
+
+    `row_fades` (value → 0..1) fades ONE row's label + tag toward the menu
+    bg on top of the menu-wide `text_toward_bg` (the Compare With rows with
+    nothing to compare)."""
     row_path = tuple(path_prefix) + (key,)
     is_cursor = _dd_as_tuple(cursor_path) == row_path
     kbd_mode = getattr(root_state, "_kbd_mode", True)
+    row_fade = max(float(text_toward_bg or 0.0),
+                   float(_dd_row_lookup(row_fades, value) or 0.0))
 
     pos = imgui.get_cursor_screen_pos()
     x, y = pos[0], pos[1]
-    w = draw_state.content_width or 0
+    w = row_width if row_width else _dd_row_width(draw_state)
     h = _DD_ROW_H
     mp = imgui.get_mouse_pos()
     hovered = (x <= mp[0] < x + w) and (y <= mp[1] < y + h)
@@ -10775,7 +10970,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     # wash styling - rather than colored text. Under the active highlight so
     # keyboard/hover selection still reads on tinted rows.
     row_tint = _dd_row_lookup(row_tints, value)
-    _ROW_TINT_A = 0.35
+    _ROW_TINT_A = _DD_ROW_TINT_A
     _ROW_TINT_V_CAP = 0.55  # max RGB component - near-white text must stay legible
     _ROW_TINT_S_BOOST = 1.25  # saturation bump on capped tints — keeps hue vivid
     if row_tint is not None:
@@ -10811,11 +11006,12 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         color = _dd_obj_tint(value, tint)
         color = Tint.dd_text(requested_tint=color)
         # Quiet-row dimming: pull the label toward the menu bg so tinted
-        # rows (the info popup's active-source yellow) stand out. Skipped for
-        # washed rows above - their label is already contrast-managed.
-        if text_toward_bg and Melty.bg_color_stack:
+        # rows (the info tab's active-source yellow) stand out - menu-wide
+        # (text_toward_bg) or for this row alone (row_fades). Skipped for
+        # washed rows above — their label is already contrast-managed.
+        if row_fade and Melty.bg_color_stack:
             _bg = Melty.bg_color_stack[-1]
-            _k = min(max(float(text_toward_bg), 0.0), 1.0)
+            _k = min(max(row_fade, 0.0), 1.0)
             color = tuple(c * (1 - _k) + _b * _k
                           for c, _b in zip(color[:3], _bg[:3]))
     imgui.set_cursor_screen_pos((x + left_pad, y + (h - line_h) * 0.5))
@@ -10859,7 +11055,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         _lw = (code_label_w if code_label_w is not None
                else min(imgui.calc_text_size(_lbl)[0], _DD_CODE_LBL_MAX_W))
         _cx = x + left_pad + _lw + 14.0
-        _tw_r = (imgui.calc_text_size(tag)[0] + 22.0) if tag else 10.0
+        _tw_r = (_dd_tag_width(tag) + 22.0) if tag else 10.0
         _cw = max(60.0, x + w - _tw_r - _cx)
         # Offscreen rows (scrolled past the menu's visible band): skip the
         # draw_text embed - the one-line editor body takes real wrapper
@@ -10920,31 +11116,22 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         if sfx:
             imgui.same_line(spacing=0)
             imgui.text_colored(sfx, color[0], color[1], color[2], 0.45)
+        # Claim the tag column's width as row content too, so the menu's
+        # auto-resize fits label AND tag side by side instead of the tag
+        # masking the label's tail (a commit tag - date + counts - hid part
+        # of a long commit subject otherwise).
+        if tag:
+            imgui.same_line(spacing=0)
+            imgui.dummy(_dd_tag_width(tag) + 16.0, 1)
 
         imgui.set_cursor_screen_pos((x, y + h))
 
-    # Dimmed tag, right-aligned (autocomplete's func/class/... label). Opaque
-    # backing mask first so a long label can't run off it; the mask reuses the
-    # menu fill (+active wash) so it's invisible on plain and highlighted rows.
-    tag = _dd_row_lookup(row_tags, value)
+    # row kind tag, right-aligned (autocomplete's func/class/... label; the
+    # Compare With rows' date + coloured counts) - _dd_paint_tag masks the
+    # label under it and fades out the row.
     if tag:
-        tw = imgui.calc_text_size(tag).x
-        tx = x + w - tw - 10
-        ty = y + (h - line_h) * 0.5
-        if Melty.bg_color_stack:
-            r, g, b = Melty.bg_color_stack[-1][:3]
-            if row_tint is not None:
-                # Match the tinted wash under it, else the opaque mask reads
-                # as a gray notch on top of the colored bar.
-                r = r * (1 - _ROW_TINT_A) + row_tint[0] * _ROW_TINT_A
-                g = g * (1 - _ROW_TINT_A) + row_tint[1] * _ROW_TINT_A
-                b = b * (1 - _ROW_TINT_A) + row_tint[2] * _ROW_TINT_A
-            if active:
-                r, g, b = r * 0.84 + 0.16, g * 0.84 + 0.16, b * 0.84 + 0.16
-            mask = imgui.get_color_u32_rgba(min(max(r, 0.0), 1.0), min(max(g, 0.0), 1.0),
-                                            min(max(b, 0.0), 1.0), 1.0)
-            dl.add_rect_filled(tx - 6, y + 1, tx + tw + 6, y + h - 1, mask)
-        dl.add_text(tx, ty, imgui.get_color_u32_rgba(0.55, 0.6, 0.72, 0.85), tag)
+        _dd_paint_tag(dl, x + w - 10, y, h, tag, active, row_tint=row_tint,
+                      fade=row_fade)
 
     # Per-row ACTION (`row_actions`: dict value→callable, or single callable for
     # every row): a right-aligned trash icon whose click runs the action and
@@ -10978,7 +11165,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
-                 full_render=False, row_code=None, **kwargs):
+                 full_render=False, row_code=None, row_fades=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -11111,7 +11298,9 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
             _mw = 0.0
             for (_k, _v, _lbl, _b) in rows:
                 _sfx = _dd_row_lookup(row_suffixes, _v) if row_suffixes else None
-                _mw = max(_mw, imgui.calc_text_size(str(_lbl) + (_sfx or ""))[0])
+                _tag = _dd_row_lookup(row_tags, _v) if row_tags else None
+                _mw = max(_mw, imgui.calc_text_size(str(_lbl) + (_sfx or ""))[0]
+                          + (_dd_tag_width(_tag) + 16.0 if _tag else 0.0))
             root_state._row_w_key = _wkey
             root_state._row_w = _mw + 24.0
     # Shared label column for code rows: every row's code preview starts at
@@ -11125,6 +11314,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                if not _b and _dd_row_lookup(row_code, _v) is not None]
         if _ws:
             code_label_w = min(max(_ws), _DD_CODE_LBL_MAX_W)
+    row_width = _dd_row_width(draw_state)
     for idx, row in enumerate(rows):
         key, value, label, is_branch = row
         if is_branch:
@@ -11148,7 +11338,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   row_actions=row_actions,
                                   text_toward_bg=text_toward_bg,
                                   row_code=row_code,
-                                  code_label_w=code_label_w)
+                                  code_label_w=code_label_w,
+                                  row_fades=row_fades, row_width=row_width)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result
@@ -11239,19 +11430,9 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
     # re-composed in, so the mask is invisible on both active and highlighted
     # rows while still cutting off the label.
     if tag:
-        dl = imgui.get_window_draw_list()
-        tw = imgui.calc_text_size(tag).x
-        tx = draw_state.abs_left + draw_state.width - tw - 10
-        ty = draw_state.abs_top + (draw_state.height - imgui.get_text_line_height()) * 0.5
-        if Melty.bg_color_stack:
-            r, g, b = Melty.bg_color_stack[-1][:3]
-            if active:
-                r, g, b = r * 0.84 + 0.16, g * 0.84 + 0.16, b * 0.84 + 0.16
-            mask = imgui.get_color_u32_rgba(min(max(r, 0.0), 1.0), min(max(g, 0.0), 1.0),
-                                            min(max(b, 0.0), 1.0), 1.0)
-            dl.add_rect_filled(tx - 6, draw_state.abs_top + 1,
-                               tx + tw + 6, draw_state.abs_top + draw_state.height - 1, mask)
-        dl.add_text(tx, ty, imgui.get_color_u32_rgba(0.55, 0.6, 0.72, 0.85), tag)
+        _dd_paint_tag(imgui.get_window_draw_list(),
+                      draw_state.abs_left + draw_state.width - 10,
+                      draw_state.abs_top, draw_state.height, tag, active)
 
     if is_branch:
         # Always call the sub-menu (so off-path ones stay registered but hidden

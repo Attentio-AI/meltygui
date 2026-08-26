@@ -52,7 +52,7 @@ from typing import Any
 
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     GeneralParse, ClassParse, EnumParse, FunctionParse, CallParse, DecorationParse,
-    Comment, CodeLine, Conditional, Loop, Try, Except, NO_DEFAULT, Span,
+    Comment, CodeLine, Conditional, Loop, Try, Except, NO_DEFAULT, NoDefault, Span,
     _SKIP_PARAMS, _UNREADABLE, _float_to_str, _floats_match, _is_dunder, _occ_key,
     _override_changed, _parse_override_comment, _format_override_comment,
     _reformat_override_comment, _resolve_as_enum, _resolve_callable_by_name,
@@ -644,7 +644,11 @@ class _Extractor:
                 call_seen[fname] = occ + 1
                 key = f"{fname}()" if occ == 0 else f"{fname}()#{occ}"
                 self.origin.shadow(path + (key,))
-                parsed = self._call(call, path + (key,), CallParse, local_sigs.get(fname))
+                # A statement-level call is surface even with nothing readable
+                # (`live_view()`): libcst's _surface_ keeps the empty CallParse
+                # too, and live_view keys its capture sites on that entry.
+                parsed = self._call(call, path + (key,), CallParse, local_sigs.get(fname),
+                                    allow_empty=True)
                 if parsed is None:
                     key = None
                 else:
@@ -735,6 +739,7 @@ class _Extractor:
         start = self.src.line_start(first_line) + len(self.src.indent_of_line(first_line))
         end = self.src.node_span(node)[1]
         readable = cls(source=self.origin.text[start:end])
+        readable.def_name = node.name
         self._stamp(readable, start, end)
         decorators = self._decorators(node, path)
         if decorators:
@@ -784,6 +789,7 @@ class _Extractor:
         start = self.src.line_start(first_line) + len(self.src.indent_of_line(first_line))
         end = self.src.node_span(node)[1]
         readable = FunctionParse(source=self.origin.text[start:end])
+        readable.def_name = node.name
         self._stamp(readable, start, end)
         decorators = self._decorators(node, path)
         if decorators:
@@ -1224,6 +1230,8 @@ def values_equal(a, b):
     identity for enum members and callables."""
     if a is b:
         return True
+    if isinstance(a, NoDefault) or isinstance(b, NoDefault):
+        return isinstance(a, NoDefault) and isinstance(b, NoDefault)   # TODO: any instance (pickle)
     if isinstance(a, bool) or isinstance(b, bool):
         return type(a) is type(b) and a == b
     if isinstance(a, float) and isinstance(b, float):
@@ -1361,6 +1369,11 @@ def diff(gp, origin=None):
 
 def _walk(node, path, origin, edits):
     keys = _managed_keys(node)
+    if isinstance(node, dict):
+        # Dunder-named DEFS are editable too - `__init__` methods, the chain's
+        # synthetic `__melty_*_wrap__` snippet wrappers - just never reordered.
+        keys += [k for k in node if _is_dunder(k)
+                 and getattr(origin.items.get(path + (k,)), "kind", None) == "def"]
     present_by_seq: dict[int, list] = {}
     new_keys = []
     for k in keys:
@@ -1368,7 +1381,7 @@ def _walk(node, path, origin, edits):
         if item is None:
             new_keys.append(k)
             continue
-        if item.seq is not None:
+        if item.seq is not None and not _is_dunder(k):
             present_by_seq.setdefault(item.seq, []).append(k)
         if item.kind in ("comment", "trailing"):
             _diff_comment(node[k], item, origin, edits)
@@ -1430,10 +1443,10 @@ def _diff_value(new, item, path, origin, edits):
             _walk(new, path, origin, edits)
         return
     if item.value_span is None:
-        if item.kind == "param" and new is not NO_DEFAULT:
+        if item.kind == "param" and not isinstance(new, NoDefault):
             edits.append(TextEdit(item.slot, item.slot, "=" + render(new)))
         return
-    if item.kind == "param" and new is NO_DEFAULT:
+    if item.kind == "param" and isinstance(new, NoDefault):
         edits.append(TextEdit(item.slot, item.value_span[1], ""))
         return
     if new is orig or values_equal(new, orig):
@@ -1542,7 +1555,7 @@ def _render_member(node, key, seq, origin, indent):
             return f"{indent}@{render(value)}{nl}"
         return f"{indent}@{value}{nl}"
     if kind == "params":
-        return str(key) if value is NO_DEFAULT else f"{key}={render(value)}"
+        return str(key) if isinstance(value, NoDefault) else f"{key}={render(value)}"
     if kind == "args":
         pos_names = node.get("__pos_names__") if isinstance(node, dict) else None
         if pos_names and key in pos_names:
@@ -1750,12 +1763,18 @@ def _merge_node(old, fresh, path, origin):
                 item.orig = ov
         else:
             kept[k] = v
+    # Dunder entries the fresh parse doesn't produce (`__symbol_usages__`
+    # distributed by the symbol table) stay - they hang off the root object.
+    for k, v in old.items():
+        if _is_dunder(k) and k not in kept and k != "__cst__":
+            kept[k] = v
     old.clear()
     old.update(kept)
 
 
 def _copy_node_attrs(dst, src):
-    for attr in ("span", "_child_spans", "source", "condition", "target", "iter", "header", "func_name"):
+    for attr in ("span", "_child_spans", "source", "condition", "target", "iter", "header",
+                 "func_name", "def_name"):
         if hasattr(src, attr):
             try:
                 setattr(dst, attr, getattr(src, attr))

@@ -194,6 +194,14 @@ class DropDownState(DictConversion):
         # highlight until the mouse moves. _last_mouse detects that movement.
         self._kbd_mode = False
         self._last_mouse = None
+        # The popover's (width, height) when the user drag-resized it -
+        # persisted, re-applied on every later open; None = size to content
+        # (draw_dropdown's fit). _menu_ds is the popover's draw_state and
+        # _menu_fit the last size draw_dropdown stamped on it: a size that
+        # differs from _menu_fit is the wrapper's resize handle at work.
+        self.menu_size = None
+        self._menu_ds = None
+        self._menu_fit = None
 
 
 @exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
@@ -1794,7 +1802,8 @@ class DrawState(DictConversion):
     def is_glfw_mouse_hovering_rect(self, x1, y1, x2, y2):
 
         global_mouse = glfw.get_cursor_pos(Core.melty.glfw_window)
-        mx, my = global_mouse
+        inset = int(getattr(Core.melty, "frame_inset", 0) or 0)   # shadow coords → content coords
+        mx, my = global_mouse[0] - inset, global_mouse[1] - inset
         # basic collision check
         if x1 <= mx <= x2 and y1 <= my <= y2:
             return True

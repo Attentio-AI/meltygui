@@ -407,6 +407,19 @@ class GlfwQueueBackend:
         self._prev_cursor = glfw.set_cursor_pos_callback(window, self._on_move)
 
     @staticmethod
+    def _content_cursor(window):
+        """GLFW's cursor in imgui/content coordinates: the frameless
+        window's shadow margin (Melty.frame_inset) sits outside imgui's
+        display, so the handler's press positions must shift like io.mouse_pos."""
+        x, y = glfw.get_cursor_pos(window)
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            inset = int(getattr(Melty, "frame_inset", 0) or 0)
+        except Exception:
+            inset = 0
+        return x - inset, y - inset
+
+    @staticmethod
     def _chain(prev, *args):
         if prev is not None:
             try:
@@ -438,7 +451,7 @@ class GlfwQueueBackend:
             from src.lsd.gl_gui.utils.glfw_utils import request_render
             self._stamp_input()   # key activity (press/repeat/release) defers the parse
             self._set_mods(self.handler, mods)
-            x, y = glfw.get_cursor_pos(window)
+            x, y = self._content_cursor(window)
             name = ImGuiBackend.KEY_NAMES.get(key, f"key_{key}")
             if action == glfw.PRESS or action == glfw.REPEAT:
                 # Ordered record for the text editor (preserves typed order, and
@@ -479,7 +492,7 @@ class GlfwQueueBackend:
             from src.lsd.gl_gui.utils.glfw_utils import request_render
             self._stamp_input()   # mouse button press/release defers the parse
             self._set_mods(self.handler, mods)
-            x, y = glfw.get_cursor_pos(window)
+            x, y = self._content_cursor(window)
             name = ImGuiBackend.MOUSE_BUTTONS.get(button, f"mouse_{button}")
             if action == glfw.PRESS:
                 self.handler.feed_down(name, x, y)

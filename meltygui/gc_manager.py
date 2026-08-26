@@ -516,24 +516,24 @@ def tick():
     lost_focus = was_focused and not focused
     last_input = max(getattr(Melty, "_last_input_time", 0.0), _state["resumed_t"])
 
-    # if lost_focus:
-    #     if not _state["frozen"]:
-    #         with lag_span("gc: boot collect+freeze (unfocused)", 0.0):
-    #             _boot_collect_and_freeze("boot")
-    #     elif now - _state["last_collect"] >= Toggles.GC.unfocus_collect_s:
-    #         with lag_span("gc: unfocus collect", 0.0):
-    #             _collect("unfocus")
-    #         _state["last_collect"] = now
-    #         return
-    # if not focused or now - last_input < Toggles.GC.idle_seconds:
-    #     return
-    # if not _state["frozen"]:
-    #     with lag_span("gc: boot collect+freeze", 0.0):
-    #         _boot_collect_and_freeze("boot")
-    # elif now - _state["last_collect"] >= Toggles.GC.idle_collect_s:
-    #     with lag_span("gc: idle collect", 0.0):
-    #         _collect("idle")
-    #     _state["last_collect"] = now
+    if lost_focus:
+        if not _state["frozen"]:
+            with lag_span("gc: boot collect+freeze (unfocused)", 0.0):
+                _boot_collect_and_freeze("boot")
+        elif now - _state["last_collect"] >= Toggles.GC.unfocus_collect_s:
+            with lag_span("gc: unfocus collect", 0.0):
+                _collect("unfocus")
+            _state["last_collect"] = now
+        return
+    if not focused or now - last_input < Toggles.GC.idle_seconds:
+        return
+    if not _state["frozen"]:
+        with lag_span("gc: boot collect+freeze", 0.0):
+            _boot_collect_and_freeze("boot")
+    elif now - _state["last_collect"] >= Toggles.GC.idle_collect_s:
+        with lag_span("gc: idle collect", 0.0):
+            _collect("idle")
+        _state["last_collect"] = now
 
 
 def _window_focused(Melty) -> bool:

@@ -42,7 +42,8 @@ import glfw
 # Survives reloads (module re-exec reuses the existing dict).
 _STATE = globals().get("_STATE") or {
     "attached": False, "window": None, "display": None, "toplevel": None,
-    "seat": None, "pointer": None, "registry": None, "press_serial": 0,
+    "seat": None, "pointer": None, "registry": None, "compositor": None, "surface": None,
+    "press_serial": 0,
     "press_button": None, "held": set(), "enter_serial": 0, "masked": set(), "keep": [],
     "opcodes": {}, "prev_button_cb": None, "error": None,
 }
@@ -54,6 +55,8 @@ EDGE_TOP_RIGHT, EDGE_BOTTOM_RIGHT = 9, 10
 
 # wl_pointer.button state
 _BTN_PRESSED = 1
+# wl_proxy_marshal_flags: destroy the request after sending (wl_region one-shots)
+WL_MARSHAL_FLAG_DESTROY = 1
 # Linux evdev button codes → GLFW buttons
 _EVDEV_TO_GLFW = {0x110: glfw.MOUSE_BUTTON_LEFT, 0x111: glfw.MOUSE_BUTTON_RIGHT,
                   0x112: glfw.MOUSE_BUTTON_MIDDLE}
@@ -116,6 +119,11 @@ def _c():
 # ---------------------------------------------------------------------------
 # Safe memory reads + the proxy scan
 # ---------------------------------------------------------------------------
+
+def _iface_addr(wl, name):
+    """Address of one of libwayland-client's exported wl_interface structs."""
+    return ctypes.addressof(ctypes.c_char.in_dll(wl, name))
+
 
 def _read(addr, n):
     """n bytes at addr, or None when any of it is unmapped (EFAULT) — a
@@ -185,7 +193,12 @@ def _opcodes(proxy, names):
     raw = _read(iface_ptr, ctypes.sizeof(_wl_interface))
     if raw is None:
         return {}
-    iface = _wl_interface.from_buffer_copy(raw)
+    return _opcodes_of(_wl_interface.from_buffer_copy(raw), names)
+
+
+def _opcodes_of(iface, names):
+    """{name: opcode} from a wl_interface struct (a proxy's, read defensively,
+    or one of libwayland's exported ones like wl_region_interface)."""
     count = iface.method_count
     methods_ptr = ctypes.cast(iface.methods, ctypes.c_void_p).value
     out = {}
@@ -218,9 +231,18 @@ _ANY_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint
 
 
 def _on_global(data, registry, name, interface, version):
+    if interface == b"wl_compositor" and _STATE["compositor"] is None:
+        _, wl = _c()
+        comp_iface = _iface_addr(wl, "wl_compositor_interface")
+        ver = min(int(version), 4)
+        _STATE["compositor"] = wl.wl_proxy_marshal_flags(
+            registry, _STATE["opcodes"]["bind"], comp_iface, ver, 0,
+            ctypes.c_uint32(name), ctypes.c_char_p(b"wl_compositor"),
+            ctypes.c_uint32(ver), ctypes.c_void_p(None))
+        return
     if interface == b"wl_seat" and _STATE["seat"] is None:
         _, wl = _c()
-        seat_iface = ctypes.addressof(ctypes.c_char.in_dll(wl, "wl_seat_interface"))
+        seat_iface = _iface_addr(wl, "wl_seat_interface")
         ver = min(int(version), 5)
         # wl_registry.bind(name, interface, version, new_id) - "usun"
         seat = wl.wl_proxy_marshal_flags(registry, _STATE["opcodes"]["bind"], seat_iface, ver, 0,
@@ -228,7 +250,7 @@ def _on_global(data, registry, name, interface, version):
                                          ctypes.c_uint32(ver), ctypes.c_void_p(None))
         _STATE["seat"] = seat
         if seat:
-            pointer_iface = ctypes.addressof(ctypes.c_char.in_dll(wl, "wl_pointer_interface"))
+            pointer_iface = _iface_addr(wl, "wl_pointer_interface")
             # wl_seat.get_pointer(new_id) - "n", opcode 0
             ptr = wl.wl_proxy_marshal_flags(seat, 0, pointer_iface, ver, 0, ctypes.c_void_p(None))
             _STATE["pointer"] = ptr
@@ -326,8 +348,9 @@ def attach(window):
         _STATE["toplevel"] = toplevel
         _STATE["opcodes"].update(ops)
         # registry: wl_display.get_registry (opcode 1: "interface"); bind is opcode 0
-        reg_iface = ctypes.addressof(ctypes.c_char.in_dll(wl, "wl_registry_interface"))
+        reg_iface = _iface_addr(wl, "wl_registry_interface")
         _STATE["opcodes"]["bind"] = 0
+        _STATE["surface"] = surface
         reg_tab, ptr_tab = _build_listeners()
         _STATE["pointer_listener"] = ptr_tab
         registry = wl.wl_proxy_marshal_flags(display, 1, reg_iface, wl.wl_proxy_get_version(display), 0,
@@ -337,10 +360,19 @@ def attach(window):
             return False
         _STATE["registry"] = registry
         wl.wl_proxy_add_listener(registry, reg_tab, None)
-        wl.wl_display_roundtrip(display)       # globals → seat → pointer
+        wl.wl_display_roundtrip(display)       # globals: seat → pointer, compositor
         if not _STATE["pointer"]:
             _STATE["error"] = "no wl_seat advertised"
             return False
+        # Input region plumbing (set_input_rect): wl_compositor.create_region,
+        # wl_region.add/destroy, wl_surface.set_input_region - by name.
+        if _STATE["compositor"]:
+            _STATE["opcodes"].update(_opcodes(_STATE["compositor"], {b"create_region"}))
+            _STATE["opcodes"].update({"surface_" + k: v for k, v in
+                                      _opcodes(surface, {b"set_input_region"}).items()})
+            region_iface = _wl_interface.in_dll(wl, "wl_region_interface")
+            _STATE["opcodes"].update({"region_" + k: v for k, v in
+                                      _opcodes_of(region_iface, {b"add", b"destroy"}).items()})
         _STATE["prev_button_cb"] = glfw.set_mouse_button_callback(window, _glfw_button)
         _STATE["error"] = None
         return True
@@ -392,6 +424,47 @@ def begin_move(window=None):
 def begin_resize(window=None, edges=EDGE_BOTTOM_RIGHT):
     """xdg_toplevel.resize from the given edge/corner (EDGE_* constants)."""
     return _grab("resize", ctypes.c_uint32(int(edges)))
+
+
+def input_region_available():
+    ops = _STATE["opcodes"]
+    return bool(_STATE["compositor"] and _STATE["surface"]
+                and all(k in ops for k in ("create_region", "surface_set_input_region",
+                                           "region_add", "region_destroy")))
+
+
+def set_input_rect(rect):
+    """wl_surface.set_input_region: `rect` = (x, y, w, h) in surface pixels
+    that receives pointer input — the CONTENT rect of the frameless window,
+    so clicks in its transparent shadow margin fall through to whatever is
+    behind; None restores the whole surface. Takes effect at the next
+    commit (swap). The wl_region is a one-shot: the compositor copies it at
+    set time, so it is destroyed right after."""
+    if not input_region_available():
+        return False
+    _, wl = _c()
+    ops = _STATE["opcodes"]
+    surface = _STATE["surface"]
+    if rect is None:
+        wl.wl_proxy_marshal_flags(surface, ops["surface_set_input_region"], None,
+                                  wl.wl_proxy_get_version(surface), 0, ctypes.c_void_p(None))
+    else:
+        x, y, w, h = (int(v) for v in rect)
+        region_iface = _iface_addr(wl, "wl_region_interface")
+        compositor = _STATE["compositor"]
+        region = wl.wl_proxy_marshal_flags(compositor, ops["create_region"], region_iface,
+                                           wl.wl_proxy_get_version(compositor), 0, ctypes.c_void_p(None))
+        if not region:
+            return False
+        version = wl.wl_proxy_get_version(region)
+        wl.wl_proxy_marshal_flags(region, ops["region_add"], None, version, 0,
+                                  ctypes.c_int32(x), ctypes.c_int32(y), ctypes.c_int32(w), ctypes.c_int32(h))
+        wl.wl_proxy_marshal_flags(surface, ops["surface_set_input_region"], None,
+                                  wl.wl_proxy_get_version(surface), 0, ctypes.c_void_p(region))
+        wl.wl_proxy_marshal_flags(region, ops["region_destroy"], None, version,
+                                  WL_MARSHAL_FLAG_DESTROY)
+    wl.wl_display_flush(_STATE["display"])
+    return True
 
 
 def button_masked(button):

@@ -110,6 +110,23 @@ class SplitOverlayRenderer(GlfwRenderer):
 
     def process_inputs(self):
         super().process_inputs()
+        # Shadow margin (titlebar.window_inset): imgui's display is the
+        # CONTENT and the real framebuffer is wider by the inset on every
+        # side; the render methods paint into that inset viewport and the
+        # pointer shifts back by it. Melty.frame_inset / framebuffer_size
+        # carry the two numbers to the masks, tiles, etc.
+        from src.lsd.gl_gui.titlebar import window_inset
+        from src.lsd.gl_gui.melty import Melty
+        io = imgui.get_io()
+        inset = int(window_inset())
+        w, h = io.display_size
+        Melty.framebuffer_size = (int(w * io.display_fb_scale[0]), int(h * io.display_fb_scale[1]))
+        Melty.frame_inset = inset
+        if inset:
+            io.display_size = (max(1.0, w - 2 * inset), max(1.0, h - 2 * inset))
+            mx, my = io.mouse_pos
+            if mx > -1e6 and my > -1e6:      # -FLT_MAX / (-1, -1) = off-window stays as is
+                io.mouse_pos = (mx - inset, my - inset)
         # A compositor move/resize grab (gl_gui/wayland_move.py) swallowed a
         # button release, so GLFW's level state - what the stock poll above
         # copies into io.mouse_down - stays PRESS until its next real event.
@@ -234,6 +251,15 @@ class SplitOverlayRenderer(GlfwRenderer):
             self._render_command_lists(draw_data, lists[-1:])
         self._has_overlay = False
 
+    @staticmethod
+    def _frame_origin():
+        """Framebuffer origin of imgui's display: (inset, inset) while the
+        frameless window carries its shadow margin, else (0, 0). Viewports
+        move by it, scissors add it."""
+        from src.lsd.gl_gui.melty import Melty
+        inset = int(getattr(Melty, "frame_inset", 0) or 0)
+        return inset, inset
+
     def _render_overlay_channels(self, draw_data, overlay_list, ranges, Melty) -> None:
         """Render the foreground draw list one channel at a time. Channel index
         equals layer_channel(draw_state.layer); the top channel is the unmasked
@@ -264,7 +290,8 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glEnable(gl.GL_SCISSOR_TEST)
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
-        gl.glViewport(0, 0, fb_width, fb_height)
+        ox, oy = self._frame_origin()
+        gl.glViewport(ox, oy, fb_width, fb_height)
 
         ortho_projection = (ctypes.c_float * 16)(
              2.0 / display_width, 0.0,                   0.0, 0.0,
@@ -363,7 +390,7 @@ class SplitOverlayRenderer(GlfwRenderer):
             if idx_hi <= idx_lo:
                 continue
             self._setup_channel_stencil(channel_idx, top_channel, window_channels,
-                                        fb_height, fb_scale_x, fb_scale_y)
+                                        fb_height, fb_scale_x, fb_scale_y, ox, oy)
 
             for c_lo, c_hi, cmd in cmd_spans:
                 seg_lo = max(idx_lo, c_lo)
@@ -374,7 +401,7 @@ class SplitOverlayRenderer(GlfwRenderer):
                 if font_tex >= 0:
                     gl.glUniform1i(self._loc_atlas, 1 if int(cmd.texture_id) == font_tex else 0)
                 x, y, z, w = cmd.clip_rect
-                gl.glScissor(int(x), int(fb_height - w), int(z - x), int(w - y))
+                gl.glScissor(int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
                 gl.glDrawElements(gl.GL_TRIANGLES, seg_hi - seg_lo, gltype,
                                   ctypes.c_void_p(seg_lo * imgui.INDEX_SIZE))
 
@@ -425,7 +452,7 @@ class SplitOverlayRenderer(GlfwRenderer):
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
     def _setup_channel_stencil(self, channel_idx, top_channel, window_channels,
-                               fb_height, fb_scale_x, fb_scale_y) -> None:
+                               fb_height, fb_scale_x, fb_scale_y, ox=0, oy=0) -> None:
         """Top channel: no stencil (global overlay, never masked). Otherwise
         stencil=1 everywhere, then punched to 0 inside the rect of every window
         whose layer_channel is greater than this channel. The stencil test then
@@ -446,8 +473,8 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glEnable(gl.GL_SCISSOR_TEST)
         gl.glClearStencil(0)
         for win_channel, ds in higher:
-            x = int(ds.abs_left * fb_scale_x)
-            y = int(fb_height - (ds.abs_top + ds.height) * fb_scale_y)
+            x = int(ds.abs_left * fb_scale_x) + ox
+            y = int(fb_height - (ds.abs_top + ds.height) * fb_scale_y) + oy
             sw = int(ds.width * fb_scale_x)
             sh = int(ds.height * fb_scale_y)
             if sw <= 0 or sh <= 0:
@@ -502,7 +529,8 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
-        gl.glViewport(0, 0, fb_width, fb_height)
+        ox, oy = self._frame_origin()
+        gl.glViewport(ox, oy, fb_width, fb_height)
 
         ortho_projection = (ctypes.c_float * 16)(
              2.0 / display_width, 0.0,                   0.0, 0.0,
@@ -542,7 +570,7 @@ class SplitOverlayRenderer(GlfwRenderer):
                     gl.glUniform1i(self._loc_atlas, 1 if int(command.texture_id) == font_tex else 0)
 
                 x, y, z, w = command.clip_rect
-                gl.glScissor(int(x), int(fb_height - w), int(z - x), int(w - y))
+                gl.glScissor(int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
 
                 if imgui.INDEX_SIZE == 2:
                     gltype = gl.GL_UNSIGNED_SHORT

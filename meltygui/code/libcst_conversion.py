@@ -3401,6 +3401,18 @@ def _is_dunder(key):
     return isinstance(key, str) and key.startswith("__") and key.endswith("__")
 
 
+def parse_def_name(node):
+    """The class/def name of a ClassParse / FunctionParse from EITHER parser:
+    `def_name` (stamped by cst_classdef_to_dict / cst_funcdef_to_dict and by
+    core_syntax) or, for a parse pickled before the stamp existed, the libcst
+    node's name. None for anything else."""
+    name = getattr(node, "def_name", None)
+    if name is not None:
+        return name
+    cst_node = node.get("__cst__") if isinstance(node, dict) else None
+    return getattr(getattr(cst_node, "name", None), "value", None)
+
+
 # Pre-compiled struct for float32 round-trip tests (avoids per-call overhead)
 _F32_PACK = struct.Struct("f")
 
@@ -3570,7 +3582,8 @@ def str_to_cst_module(value: str) -> cst.Module:
 
 @register
 def cst_module_to_str(value: cst.Module) -> str:
-    return value.code
+    # A core_syntax reverse (dict_to_cst_module on an __origin__ node) is already text.
+    return value if isinstance(value, str) else value.code
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
@@ -4450,7 +4463,13 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     Handles: assignments, annotated assignments, class definitions,
     function definitions (default args), and decorator kwargs.
     """
-    if not isinstance(input_value, cst.Module):
+    # A str input is the core_syntax path (Toggles.TextEditor.melty_syntax):
+    # string_to_cst.Module hands the converter the TEXT itself and this node
+    # parses it to core_syntax.parse_to_dict - same dict, a text residual
+    # (gp["__origin__"]) in place of __cst__. The address / symbol tail below
+    # is shared by both parsers.
+    text_input = isinstance(input_value, str)
+    if not text_input and not isinstance(input_value, cst.Module):
         print("Expected cst.Module, got", type(input_value).__name__, file=sys.stderr)
         return input_value
     _t_start = time.monotonic()
@@ -4458,113 +4477,120 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
     # _source: the module's full code, when the caller already holds it (the
     # incremental span reconvert verified the splice against it) - skips a
     # whole-module codegen.
-    source_code = kwargs.get("_source") or input_value.code
+    source_code = input_value if text_input else (kwargs.get("_source") or input_value.code)
     _t_codegen = time.monotonic()
-    readable = GeneralParse(source=source_code)
-    _stamp_span(readable, input_value)
+    if text_input:
+        from src.lsd.gl_gui.view.core_conversion.core_syntax import parse_to_dict
+        # SAME src name scope as the libcst branch, so enum members / callables
+        # resolve to the same live objects either way.
+        with _module_scope(_build_src_scope()):
+            readable = parse_to_dict(source_code)
+    else:
+        readable = GeneralParse(source=source_code)
+        _stamp_span(readable, input_value)
 
-    # Publish the src global scope so every nested name/callable resolution
-    # below (values, classdef/funcdef defaults) resolves against project src
-    # only, no per-usage sys.modules scan. Built once here; nested classdef /
-    # funcdef conversions inherit it. The _position_map publishes a
-    # PositionProvider / the node span so extractors can stamp source spans
-    # (.span / _child_spans) with the line ↔ node map.
-    with _position_map(input_value, source=source_code), _module_scope(_build_src_scope()):
-        # Retain this conversion's position map for the incremental update
-        # merge (statement boundaries and dec_start lookups against the PREVIOUS
-        # parse). Held off-gp (id-keyed, weakref.memoized) so gp pickling
-        # (the cst-dict cache) never sees them.
-        _retain_pos_map(readable, _active_positions())
-        # Module header comments (top-of-file, before first statement)
-        _extract_comment_lines(input_value.header, readable)
+        # Publish the src symbol scope so every nested name/callable resolution
+        # below (values, classdef/funcdef defaults) resolves against the module
+        # only - no per-usage sys.modules scan. Built once here; nested classdef /
+        # funcdef conversions inherit it. The _position_map publishes a
+        # PositionProvider for the same span so the child can stamp source spans
+        # (.address / _child_spans) for the line ↔ node lookup.
+        with _position_map(input_value, source=source_code), _module_scope(_build_src_scope()):
+            # Retain this conversion's position map for the incremental span
+            # merge (line statement + dec_start lookups against the PREVIOUS
+            # parse). Held off-gp (id-keyed, weakref-finalized) so gp pickling
+            # (the cst-dict cache) never sees it.
+            _retain_pos_map(readable, _active_positions())
+            # Module header comments (top-of-file, before first statement)
+            _extract_comment_lines(input_value.header, readable)
 
-        _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
-        _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
+            _classdef_to_dict = Melty._converters.get((cst.ClassDef, dict))
+            _funcdef_to_dict = Melty._converters.get((cst.FunctionDef, dict))
 
-        # Sibling defs let a bare top-level caller bind its positional args to
-        # parameter names; call_seen keys repeat calls (configure()#1, ...).
-        local_sigs = _collect_local_signatures(input_value.body)
-        call_seen: dict[str, int] = {}
+            # Sibling keys let a bare top-level caller map its positional args to
+            # parameter names; call_seen keys repeat calls (func()#1, ...).
+            local_sigs = _collect_local_signatures(input_value.body)
+            call_seen: dict[str, int] = {}
 
-        # Incremental-merge bookkeeping (cst_dict_incremental_update): each
-        # top-level statement, its source line span and how many gp keys
-        # existed BEFORE it ran - so a later edit can identify exactly which
-        # statements/keys a merged region owns. counts has len(body)+1
-        # entries (final total appended outside the loop).
-        _stmt_lines = []
-        _stmt_key_counts = []
-        _positions_now = _active_positions() or {}
+            # Incremental-merge bookkeeping (cst_dict_incremental_update): per
+            # top-level statement: its source line span and how many gp keys
+            # existed BEFORE it ran - so a later merge can identify exactly which
+            # statements/keys a splice region owns. Each has len(body)+1
+            # entries (final total appended after the loop).
+            _stmt_lines = []
+            _stmt_key_counts = []
+            _positions_now = _active_positions() or {}
 
-        for stmt in input_value.body:
-            _yield_to_ui()  # back off mid-parse while the user is typing
+            for stmt in input_value.body:
+                _yield_to_ui()  # back off mid-parse while the user can typing
+                _stmt_key_counts.append(len(readable))
+                _sp_stmt = _positions_now.get(stmt)
+                if _sp_stmt is not None:
+                    _dstart = _positions_now.get(("dec_start", stmt))
+                    _stmt_lines.append((min(_sp_stmt.start_line, _dstart)
+                                        if _dstart else _sp_stmt.start_line,
+                                        _sp_stmt.end_line))
+                else:
+                    _stmt_lines.append((None, None))
+                if isinstance(stmt, cst.SimpleStatementLine):
+                    # Leading comments (override comments routed to the field below)
+                    _extract_leading_comments(stmt, readable, skip_overrides=True)
+
+                    last_key = None
+                    for node in stmt.body:
+                        # x = 0  /  x: int = 0 - keyed by the plain target name.
+                        name = _assign_target_name(node)
+                        if name is not None:
+                            val_node = _assign_value_node(node)
+                            py_value = (_cst_to_python_or_raw(val_node)
+                                        if val_node is not None else _UNREADABLE)
+                            if py_value is not _UNREADABLE:
+                                readable[name] = py_value
+                                _record_child(readable, name, py_value, node)
+                                last_key = name
+                            continue
+                        # Surface a lone call so its args are visible/editable: a bare
+                        # call (print(debug=True) OR a call assigned to a NON-Name
+                        # target (changed, new_dict = check_collection(...)). The latter
+                        # used to hit the Assign branch, fail the `isinstance Name` check,
+                        # and surface NOTHING - the gap that made a lone call line parse
+                        # to an empty dict. Mirrors _extract_block_assignments so a call
+                        # statement surfaces the same at module level as in a method body.
+                        call_node = _stmt_call_node(node)
+                        if call_node is not None:
+                            ck = _surface_call(call_node, readable, call_seen, local_sigs)
+                            if ck is not None:
+                                last_key = ck
+
+                    # Trailing inline comment
+                    _extract_trailing_comment(stmt, last_key, readable)
+                    _attach_field_override(stmt, last_key, readable)
+
+                elif isinstance(stmt, cst.ClassDef):
+                    _extract_leading_comments(stmt, readable, skip_overrides=True)
+                    if _classdef_to_dict is not None:
+                        try:
+                            child = _classdef_to_dict(stmt)
+                            _attach_leading_override(stmt, child)
+                            readable[stmt.name.value] = child
+                        except (TypeError, ValueError):
+                            pass
+
+                elif isinstance(stmt, cst.FunctionDef):
+                    _extract_leading_comments(stmt, readable, skip_overrides=True)
+                    if _funcdef_to_dict is not None:
+                        try:
+                            child = _funcdef_to_dict(stmt)
+                            _attach_leading_override(stmt, child)
+                            readable[stmt.name.value] = child
+                        except (TypeError, ValueError):
+                            pass
+
             _stmt_key_counts.append(len(readable))
-            _sp_stmt = _positions_now.get(stmt)
-            if _sp_stmt is not None:
-                _dstart = _positions_now.get(("dec_start", stmt))
-                _stmt_lines.append((min(_sp_stmt.start_line, _dstart)
-                                    if _dstart else _sp_stmt.start_line,
-                                    _sp_stmt.end_line))
-            else:
-                _stmt_lines.append((None, None))
-            if isinstance(stmt, cst.SimpleStatementLine):
-                # Leading comments (override comments routed to the field below)
-                _extract_leading_comments(stmt, readable, skip_overrides=True)
-
-                last_key = None
-                for node in stmt.body:
-                    # x = 0  /  x: int = 0 - keyed by the plain target name.
-                    name = _assign_target_name(node)
-                    if name is not None:
-                        val_node = _assign_value_node(node)
-                        py_value = (_cst_to_python_or_raw(val_node)
-                                    if val_node is not None else _UNREADABLE)
-                        if py_value is not _UNREADABLE:
-                            readable[name] = py_value
-                            _record_child(readable, name, py_value, node)
-                            last_key = name
-                        continue
-                    # Surface a function call so its args are visible/editable: a bare
-                    # call (configure(debug=True)) OR a call assigned to a NON-Name
-                    # target (changed, new_dict = draw_collection(...)). The latter
-                    # has to hit the Assign branch, fail the `isinstance Name` check,
-                    # and surface nothing - the gap that made a lone call line parse
-                    # to an empty dict. Mirrors _extract_block_assignments so a call
-                    # statement surfaces the same at module level as in a method body.
-                    call_node = _stmt_call_node(node)
-                    if call_node is not None:
-                        ck = _surface_call(call_node, readable, call_seen, local_sigs)
-                        if ck is not None:
-                            last_key = ck
-
-                # Trailing statement comment
-                _extract_trailing_comment(stmt, last_key, readable)
-                _attach_field_override(stmt, last_key, readable)
-
-            elif isinstance(stmt, cst.ClassDef):
-                _extract_leading_comments(stmt, readable, skip_overrides=True)
-                if _classdef_to_dict is not None:
-                    try:
-                        child = _classdef_to_dict(stmt)
-                        _attach_leading_override(stmt, child)
-                        readable[stmt.name.value] = child
-                    except (TypeError, ValueError):
-                        pass
-
-            elif isinstance(stmt, cst.FunctionDef):
-                _extract_leading_comments(stmt, readable, skip_overrides=True)
-                if _funcdef_to_dict is not None:
-                    try:
-                        child = _funcdef_to_dict(stmt)
-                        _attach_leading_override(stmt, child)
-                        readable[stmt.name.value] = child
-                    except (TypeError, ValueError):
-                        pass
-
-        _stmt_key_counts.append(len(readable))
-        readable._stmt_lines = _stmt_lines
-        readable._stmt_key_counts = _stmt_key_counts
-        readable["__cst__"] = input_value
-        # readable.usages = _collect_usages(input_value, top_scope="<module>")
+            readable._stmt_lines = _stmt_lines
+            readable._stmt_key_counts = _stmt_key_counts
+            readable["__cst__"] = input_value
+            # readable.usages = _collect_usages(input_value, top_scope="<module>")
     _t_converted = time.monotonic()
 
     # `jump_to` (a resolved source address: file + line span) rides in via
@@ -4646,8 +4672,9 @@ def cst_module_to_dict(input_value: cst.Module, run_jedi=False, **kwargs) -> dic
             symbols=_sym_note or "off")
     _slept_ms = getattr(_yield_slept, 't', 0.0) * 1000
     _im = globals().get("_inc_memo")
-    _inc_mark = " inc" if (_im is not None
-                           and getattr(_im, "pair", None) is not None) else ""
+    _inc_mark = (" melty" if text_input else
+                 " inc" if (_im is not None
+                            and getattr(_im, "pair", None) is not None) else "")
     _work_ms = _total_ms - _slept_ms
     notify(f"cst→dict{_inc_mark} {_total_ms:.0f}ms"
            + (f" (parked {_slept_ms:.0f}ms)" if _slept_ms >= 1 else "")
@@ -5273,6 +5300,18 @@ def dict_to_cst_module(input_value: dict) -> cst.Module:
     Handles assignments, ClassDef __init__ self-assignments, and
     decorator keyword arguments.
     """
+    if input_value.get("__origin__") is not None:
+        # core_syntax parse: the fallback does text surgery on the existing
+        # source (see core_syntax.general_parse_to_str) - returns a STR,
+        # which cst_module_to_str / cst_module_to_string pass through.
+        from src.lsd.gl_gui.view.core_conversion.core_syntax import (
+            general_parse_to_str, CoreSyntaxError)
+        try:
+            return general_parse_to_str(input_value)
+        except CoreSyntaxError as e:
+            return Pending(wrapped=ParseError(
+                source=e.text, error=str(e), line=e.lineno, column=e.offset,
+            ), originated=dict_to_cst_module, state=PendingState.ERROR, status=str(e))
     tree = input_value.get("__cst__")
     if tree is None:
         raise ValueError("Dict has no __cst__ key")
@@ -5649,6 +5688,7 @@ def cst_classdef_to_dict(value: cst.ClassDef) -> dict:
     """
     parse_type = EnumParse if _classdef_is_enum(value) else ClassParse
     readable = parse_type(source=_cst_node_to_code(value))
+    readable.def_name = value.name.value
     _stamp_span(readable, value)
 
     decorators = _extract_decorators(value.decorators)
@@ -6174,6 +6214,7 @@ def cst_funcdef_to_dict(value: cst.FunctionDef) -> dict:
       }
     """
     readable = FunctionParse(source=_cst_node_to_code(value))
+    readable.def_name = value.name.value
     _stamp_span(readable, value)
 
     decorators = _extract_decorators(value.decorators)

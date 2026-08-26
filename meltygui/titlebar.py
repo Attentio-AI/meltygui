@@ -450,15 +450,69 @@ def _button_layout(disp_w, maximized):
     # [tint=(1.0, 0.55, 0.2)]
     button_gap = Melty.px(3.0)
     sizes = [imgui.calc_text_size(icon) for icon in _button_icons(maximized)]
-    width = max(s.x for s in sizes) + Melty.px(15.0)
+    widths = [s.x + Melty.px(15.0) for s in sizes]      # each its own glyph, like the header
     height = max(s.y for s in sizes) + Melty.px(8.0)
-    n = len(sizes)
-    left = disp_w - button_margin - n * width - (n - 1) * button_gap
     rects = []
-    for i in range(n):
-        x0 = left + i * (width + button_gap)
-        rects.append((x0, button_margin, x0 + width, button_margin + height))
+    x1 = disp_w - button_margin
+    for width in reversed(widths):
+        rects.append((x1 - width, button_margin, x1, button_margin + height))
+        x1 -= width + button_gap
+    rects.reverse()
     return rects
+
+
+def _studio_window():
+    from src.lsd.gl_gui.melty import Melty
+    return Melty.glfw_window or getattr(Melty.vis, "window", None)
+
+
+def _main_window_ds():
+    """The Main Window's draw_state (draw_main) — the owner the controls'
+    flat-mask marks ride under. None before the root's first frame."""
+    from src.lsd.gl_gui.melty import Melty
+    registry = getattr(Melty, "draw_state_registry", None) or {}
+    return next((d for d in registry.values() if getattr(d, "name", None) == "Main Window"), None)
+
+
+def paint_window_controls(draw_list):
+    """Paint the min/max/close controls — from draw_melty_windows, on the
+    MAIN WINDOW draw list's top channel just before Melty.end_frame, i.e.
+    BEFORE the capture/shadow passes (draw_titlebar keeps the hit logic).
+    That placement is the whole point: the shadow composite paints each
+    depth mark's drop shadow and lit rim INTO the framebuffer and the
+    overlay list renders after it, so buttons drawn there covered their own
+    rim with their background (the "rect in front of it" look). Painted
+    here they get composited exactly like a header's close button.
+
+    Each button also marks the FLAT mask at the top paint rank (owner: the
+    Main Window's draw_state — an ownerless mask rect never terminates the
+    mask build's parent walk), which is what keeps a cached window blitted
+    under the corner from copying over them, and what gives them their
+    depth for the shadow pass — the same mark a window gets."""
+    global _pressed_button
+    from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.toggles import shadow_depth_at
+    if not titlebar_enabled():
+        return
+    window = _studio_window()
+    io = imgui.get_io()
+    disp_w = io.display_size.x
+    mx, my = io.mouse_pos.x, io.mouse_pos.y
+    maximized = bool(window is not None and glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    rects = _button_layout(disp_w, maximized)
+    over_button = next((i for i, (x0, y0, x1, y1) in enumerate(rects)
+                        if x0 <= mx <= x1 and y0 <= my <= y1), None)
+    # Top-most of everything painted: the highest paint rank + a little depth.
+    layer = Melty.nested_layer_max - 1
+    rank = shadow_depth_at(2, layer)
+    owner = _main_window_ds()
+    if Melty.cache is not None and owner is not None:
+        for i, (x0, y0, x1, y1) in enumerate(rects):
+            Melty.cache.mask_mark_rect(owner, layer, rank, x0, y0, x1 - x0, y1 - y0,
+                                       f"titlebar_button_{i}", corner_radius=Melty.px(6.0))
+    if Melty.channels_split:
+        draw_list.channels_set_current(Melty.max_depth - 1)
+    _paint_buttons(draw_list, rects, over_button, maximized)
 
 
 def _paint_buttons(dl, rects, over_button, maximized):
@@ -484,10 +538,10 @@ def _paint_buttons(dl, rects, over_button, maximized):
         style_manager.set_imgui_tint(*chrome_tint[:4])
     try:
         for i, (icon, (x0, y0, x1, y1)) in enumerate(zip(_button_icons(maximized), rects)):
-            # Ownerless raised mark at the current paint rank - the frame
-            # has painted everything by now, so it lands on top; no clip
-            # (the window clip stack is gone at this point of the frame).
-            add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False)
+            # The header close's own lift over its surface (+2 over the
+            # flat-mask mark paint_window_controls stamped for the button).
+            add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False,
+                       layer=Melty.nested_layer_max - 1, depth=2)
             flat_button(icon, None, view_id=f"titlebar_button_{i}",
                         width=x1 - x0, height=y1 - y0, pos=(x0, y0),
                         hovered=(over_button == i), layout=False, draw_list=dl,
@@ -523,9 +577,10 @@ def _close_blocked_by_merge():
 def draw_titlebar(window):
     """Per-frame entry point — call inside the imgui frame on the viz thread.
 
-    Handles decoration sync, the top-right window controls, the top drag
-    strip (double-click = maximize; with Toggles.Melty.move_drag_anywhere an
-    unclaimed left-drag anywhere moves too), edge/corner resize and the
+    Handles decoration sync, the top-right window controls' hit logic
+    (their paint is paint_window_controls, earlier in the frame), the top
+    drag strip (double-click = maximize; with Toggles.Melty.move_drag_anywhere
+    an unclaimed left-drag anywhere moves too), edge/corner resize and the
     right-drag resize. The WM gestures go through _NET_WM_MOVERESIZE on X11
     and wayland_move (xdg_toplevel.move/resize) on Wayland.
     """
@@ -540,10 +595,10 @@ def draw_titlebar(window):
     from src.lsd.gl_gui.toggles import Toggles
 
     io = imgui.get_io()
-    dl = imgui.get_overlay_draw_list()
     disp_w, disp_h = io.display_size.x, io.display_size.y
     mx, my = io.mouse_pos.x, io.mouse_pos.y
     maximized = bool(glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    sync_input_region(window)
     # The strip and edge gestures hand the drag to the window manager
     # (_begin_wm_move / _begin_wm_resize) - on Wayland only once wayland_move
     # is ready. The right-drag resize is app-driven (set_window_size) and
@@ -678,8 +733,8 @@ def draw_titlebar(window):
             mouse_cursor.request(_EDGE_CURSOR[direction])
             _apply_rdrag_resize(window, px, py)
 
-    # --- paint the buttons (topmost, after all the logic) ------------------
-    _paint_buttons(dl, button_rects, over_button, maximized)
+    # The buttons themselves are painted earlier in the frame, in the main
+    # window draw list (paint_window_controls) - see there for why.
 
 
 # ---------------------------------------------------------------------------
@@ -688,67 +743,186 @@ def draw_titlebar(window):
 
 def wants_transparent_framebuffer():
     """Boot hint (GLFW TRANSPARENT_FRAMEBUFFER): only a frameless window
-    with a corner radius needs per-pixel alpha at the compositor."""
+    with a corner radius or a shadow margin needs per-pixel alpha at the
+    compositor."""
     from src.lsd.gl_gui.toggles import Toggles
-    return titlebar_enabled() and Toggles.Melty.window_corner_radius > 0
+    return titlebar_enabled() and (Toggles.Melty.window_corner_radius > 0
+                                   or Toggles.Melty.window_shadow_margin > 0)
 
+
+def _frame_transparent(window):
+    """Was the OS window CREATED with an alpha framebuffer (the boot hint)?
+    Only then do the corner cut and the shadow margin make sense — on an
+    opaque window the premultiply would paint the corners black."""
+    try:
+        return bool(window is not None
+                    and glfw.get_window_attrib(window, glfw.TRANSPARENT_FRAMEBUFFER))
+    except Exception:
+        return False
+
+
+def _maximized(window):
+    try:
+        return bool(window is not None and glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    except Exception:
+        return False
+
+
+def window_inset():
+    """px of transparent shadow margin around the content THIS frame:
+    Toggles.Melty.window_shadow_margin on the transparent frameless window,
+    0 while maximized (the shadow collapses against the screen edges, as
+    GTK's does) and 0 everywhere else. imgui's display is the content:
+    SplitOverlayRenderer.process_inputs shrinks display_size by twice this
+    and shifts the pointer; the masks and tiles keep the whole surface."""
+    from src.lsd.gl_gui.toggles import Toggles
+    margin = int(Toggles.Melty.window_shadow_margin)
+    if margin <= 0:
+        return 0
+    window = _studio_window()
+    if not _frame_transparent(window) or _maximized(window):
+        return 0
+    return margin
+
+
+def frame_geometry(fb_w, fb_h):
+    """(inset, radius, content_size) of the frame for this frame's REAL
+    framebuffer, or (0, 0, (0, 0)) when the window is not transparent —
+    the shadow composite's frame uniforms (no frame → everything is content)."""
+    if not _frame_transparent(_studio_window()):
+        return 0.0, 0.0, (0.0, 0.0)
+    inset = float(window_inset())
+    return inset, frame_corner_radius(), (float(fb_w) - 2.0 * inset, float(fb_h) - 2.0 * inset)
+
+
+def frame_corner_radius():
+    """Corner radius of the content this frame: the toggle, 0 while
+    maximized (square against the screen edge)."""
+    from src.lsd.gl_gui.toggles import Toggles
+    if _maximized(_studio_window()):
+        return 0.0
+    return float(Toggles.Melty.window_corner_radius)
+
+
+# Coverage of the CONTENT rounded rect - inset `inset` px into the
+# framebuffer, `content_size` wide, `radius` corners - at a pixel centre
+# (gl_FragCoord, origin bottom-left; the rect is symmetric so the flip is
+# free). One pixel of anti-aliasing ramp across the edge.
+_COVERAGE_GLSL = """
+float coverage(vec2 p) {
+    vec2 half_size = content_size * 0.5;
+    vec2 d = abs(p - vec2(inset) - half_size) - (half_size - vec2(radius));
+    float dist = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0) - radius;
+    return 1.0 - smoothstep(-0.5, 0.5, dist);
+}
+"""
 
 _CORNER_FRAG = """
 #version 330 core
 out vec4 FragColor;
+""" + _COVERAGE_GLSL + """
 void main() {
-    // Signed distance to the rounded rect covering the whole framebuffer
-    // (gl_FragCoord is pixel-centred, origin bottom-left), 0 on the edge.
-    vec2 half_size = size * 0.5;
-    vec2 d = abs(gl_FragCoord.xy - half_size) - (half_size - vec2(radius));
-    float dist = length(max(d, vec2(0.0))) + min(max(d.x, d.y), 0.0) - radius;
-    // Anti-aliased: one pixel of ramp across the edge.
-    FragColor = vec4(0.0, 0.0, 0.0, 1.0 - smoothstep(-0.5, 0.5, dist));
+    FragColor = vec4(0.0, 0.0, 0.0, coverage(gl_FragCoord.xy));
 }
 """
 
-
 @shader_func(fragment=_CORNER_FRAG)
-def _corner_alpha_pass(gl_state: GLState = None, size=(1.0, 1.0), radius=0.0, **kwargs):
+def _corner_alpha_pass(gl_state: GLState = None, content_size=(1.0, 1.0), inset=0.0,
+                       radius=0.0, **kwargs):
     gl.glBindVertexArray(gl_state.vao("fs_triangle"))
     gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
 
-# One GLState for the pass, module-owned (hotswap keeps it).
+# The GLState for the passes, module-owned (hotswap keeps it).
 _corner_gl = globals().get("_corner_gl")
+# The input rect last handed to the compositor (sync_input_region).
+_input_rect_applied = globals().get("_input_rect_applied")
 
 
-def punch_rounded_corners(fb_w, fb_h):
-    """Last GL work of the frame (Melty.post_frame, after the overlay): write
-    the framebuffer's ALPHA only — 1 inside the rounded rect, 0 outside —
-    so the compositor clips the corners and every pixel imgui's blending
-    left translucent (dst_a = a² + dst_a·(1-a) < 1 over an opaque clear)
-    reads opaque again. No-op unless the window was created transparent
-    (wants_transparent_framebuffer at boot) and the radius is > 0."""
+def sync_input_region(window):
+    """Wayland: keep the surface's input region on the CONTENT rect so
+    clicks in the transparent shadow margin fall through to whatever is
+    behind (wayland_move.set_input_rect); the whole surface when there is
+    no margin. Re-marshalled only when the rect changes."""
+    global _input_rect_applied
+    if not _on_wayland() or not wayland_move.input_region_available():
+        return False
+    inset = window_inset()
+    if inset <= 0:
+        rect = None
+    else:
+        fb_w, fb_h = glfw.get_framebuffer_size(window)
+        rect = (inset, inset, max(1, fb_w - 2 * inset), max(1, fb_h - 2 * inset))
+    if rect == _input_rect_applied:
+        return False
+    if wayland_move.set_input_rect(rect):
+        _input_rect_applied = rect
+        return True
+    return False
+
+
+def composite_window_frame(fb_w, fb_h):
+    """Last GL work of the frame (Melty.post_frame, after the overlay): the
+    frameless window's ALPHA, one fullscreen pass over the REAL framebuffer
+    (fb_w × fb_h, the content inset window_inset() px) from the content's
+    rounded-rect coverage `cov` (1 inside, 0 outside, a one-pixel ramp).
+
+    With the shadow pass on (Toggles.filters), ShadowComposite has already
+    rewritten everything outside the content as the shadow in premultiplied
+    alpha — the OS window's shadow is that pass, nothing else draws one —
+    so this only lifts the CONTENT's alpha back to 1: imgui's own blend
+    leaves a translucent draw at dst_a = a² + dst_a·(1−a) < 1, through
+    which the desktop would bleed. MAX-blended alpha, rgb untouched.
+
+    Without it (no composite ran) the pass PREMULTIPLIES by the coverage
+    instead: rgb·cov, alpha = cov. Wayland composites premultiplied alpha,
+    so alpha 0 alone is not invisible — a view drawn over a cut corner, or
+    the brightness pass lifting the cleared black, would be ADDED onto the
+    desktop. No-op unless the window was created transparent and there is
+    a corner radius or a margin to cut."""
     global _corner_gl
     from src.lsd.gl_gui.toggles import Toggles
-    radius = float(Toggles.Melty.window_corner_radius)
-    if radius <= 0 or fb_w <= 0 or fb_h <= 0 or not is_gl_thread():
+    radius = frame_corner_radius()
+    inset = float(window_inset())
+    if fb_w <= 0 or fb_h <= 0 or not is_gl_thread():
         return False
+    if radius <= 0 and inset <= 0:
+        return False
+    if not _frame_transparent(_studio_window()):
+        return False
+    content_size = (float(fb_w) - 2.0 * inset, float(fb_h) - 2.0 * inset)
     if _corner_gl is None:
         _corner_gl = GLState()
     saved_mask = gl.glGetBooleanv(gl.GL_COLOR_WRITEMASK)
     blend = gl.glIsEnabled(gl.GL_BLEND)
+    blend_func = (int(gl.glGetIntegerv(gl.GL_BLEND_SRC_RGB)), int(gl.glGetIntegerv(gl.GL_BLEND_DST_RGB)),
+                  int(gl.glGetIntegerv(gl.GL_BLEND_SRC_ALPHA)), int(gl.glGetIntegerv(gl.GL_BLEND_DST_ALPHA)))
+    blend_eq = (int(gl.glGetIntegerv(gl.GL_BLEND_EQUATION_RGB)), int(gl.glGetIntegerv(gl.GL_BLEND_EQUATION_ALPHA)))
     scissor = gl.glIsEnabled(gl.GL_SCISSOR_TEST)
     depth = gl.glIsEnabled(gl.GL_DEPTH_TEST)
     stencil = gl.glIsEnabled(gl.GL_STENCIL_TEST)
     try:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
         gl.glViewport(0, 0, int(fb_w), int(fb_h))
-        gl.glDisable(gl.GL_BLEND)
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glDisable(gl.GL_STENCIL_TEST)
-        gl.glColorMask(gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_TRUE)
-        _corner_alpha_pass(_corner_gl, size=(float(fb_w), float(fb_h)), radius=radius)
+        gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+        gl.glEnable(gl.GL_BLEND)
+        if Toggles.filters:
+            # alpha = max(dst_a, cov); rgb = dst
+            gl.glBlendEquationSeparate(gl.GL_FUNC_ADD, gl.GL_MAX)
+            gl.glBlendFuncSeparate(gl.GL_ZERO, gl.GL_ONE, gl.GL_ONE, gl.GL_ONE)
+        else:
+            # rgb = 0·src + dst·src_a ; alpha = src_a·1 + dst_a·0
+            gl.glBlendEquationSeparate(gl.GL_FUNC_ADD, gl.GL_FUNC_ADD)
+            gl.glBlendFuncSeparate(gl.GL_ZERO, gl.GL_SRC_ALPHA, gl.GL_ONE, gl.GL_ZERO)
+        _corner_alpha_pass(_corner_gl, content_size=content_size, inset=inset, radius=radius)
         return True
     finally:
         gl.glColorMask(*[gl.GL_TRUE if bool(m) else gl.GL_FALSE for m in saved_mask])
+        gl.glBlendFuncSeparate(*blend_func)
+        gl.glBlendEquationSeparate(*blend_eq)
         (gl.glEnable if blend else gl.glDisable)(gl.GL_BLEND)
         (gl.glEnable if scissor else gl.glDisable)(gl.GL_SCISSOR_TEST)
         (gl.glEnable if depth else gl.glDisable)(gl.GL_DEPTH_TEST)

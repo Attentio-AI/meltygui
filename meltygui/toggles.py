@@ -600,6 +600,17 @@ class Toggles:
         # Falls back to the full conversion on any doubt. Read live.
         incremental_cst_parse = True
 
+        # melty_syntax: parse code with core_syntax (Python's ast + a TEXT
+        # residual, like libcst) instead of libcst - ~7x faster forward, ~50x
+        # on the reverse, but the round-trip is text surgery-only so unchanged
+        # code comes back byte-identical. Decides the parser for NEW parses
+        # (and the next edit of a held one: the parser switch forces a full
+        # reparse); every chain node dispatches on the parse it is handed
+        # (__origin__ = core_syntax, __cst__ = libcst), so it flips live.
+        # The cst-dict cache is keyed by parser. Read live.
+        melty_syntax = False
+
+
         # Fidelity gate for the merge above: regenerate the spliced module's
         # code and require it to EQUAL the new buffer (one O(file) codegen,
         # ~a sixth of full-parse cost) - any comment/whitespace attribution
@@ -1229,17 +1240,34 @@ class Toggles:
         # with this tint set in the style manager the way the header runs
         # under its window's tint — copy a window's tint here to match it.
         # [tint=(0.55, 0.75, 0.35)]
-        melty_window_tint = (0.55, 0.75, 0.35)
+        melty_window_tint = (0.653, 0.758, 0.806)
 
         # Rounded corners on the frameless OS window (px; 0 = square). The
         # window is created with a transparent framebuffer (boot-time -
-        # restart to change 0 ↔ >0) and titlebar.punch_rounded_corners runs
-        # last in Melty.post_frame: an alpha-only fullscreen pass writing 1
-        # inside the rounded rect and 0 outside (anti-aliased edge), which
-        # also repairs the alpha imgui's blending leaves below 1 - without
-        # it the desktop would bleed through every translucent draw. The
-        # radius change applies live.
+        # restart to change 0 ↔ >0) and titlebar.composite_window_frame runs
+        # last in Melty.post_frame: a fullscreen pass premultiplying the
+        # frame by the surface's rounded-rect coverage (anti-aliased mask),
+        # which also clips the alpha imgui's blending leaves below 1 -
+        # without it the desktop would bleed through every translucent
+        # draw. The radius itself applies live; 0 while maximized.
         window_corner_radius = 14
+
+        # Client-side window shadow (GNOME draws none for Wayland clients):
+        # px of transparent margin the OS surface keeps around the content.
+        # imgui sees only the content (SplitOverlayRenderer insets the
+        # viewport and offsets the pointer); the masks cover the whole
+        # surface, and the shadow pass (ShadowPass, frame_* uniforms)
+        # writes whatever shadow lands outside the content with premultiplied
+        # alpha - the inner windows' own shadow casts, continued beyond the
+        # edge. Collapses to 0 while maximized. 0 = no margin. Applies live.
+        window_shadow_margin = 40
+
+        # add_shadow lift of the whole content rect over the transparent
+        # surroundings (draw_melty_windows) - how pronounced the OS window's
+        # shadow is. Depth is at paint rank 0: keep it deep below the
+        # windows' ranks (they start at layer 64) or it would flatten the
+        # inner windows' own shadow. 0 = only the root's own mark casts.
+        window_shadow_lift = 20
 
     @defaults(tint=(0.635, 0.728, 0.725))
     class Style:
@@ -1575,6 +1603,21 @@ class Toggles:
         # reframe math (open_files._cmp_layout_reframe) keys on the SAME
         # value - change them together by changing only this.
         compare_padding = 14.0
+
+        # ── Compare With dropdown rows (open_files._draw_editor_toolbar) ──
+        # Every reference row (HEAD / Latest commit / File system / each
+        # commit) carries its date and time on the right, then the pending
+        # state's line counts against it — "+added" / "−removed" summed
+        # over the compare column's files (git.compare_counts, computed on
+        # the git module's worker thread). Colours of the two numbers:
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        compare_added_tint = (0.42, 0.80, 0.42)
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_removed_tint = (0.88, 0.40, 0.36)
+        # A reference with ZERO changes (nothing to compare) fades this far
+        # toward the menu background — 0 = not at all, 1 = invisible.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        compare_zero_fade = 0.45
 
 
     @defaults(tint=(0.72, 0.35, 0.3))

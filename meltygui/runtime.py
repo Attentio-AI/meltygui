@@ -757,6 +757,12 @@ class Melty:
     windows = []
     collection_stack = []
     glfw_window = None
+    # Frameless-window shadow margin (titlebar.window_inset): imgui's viewport
+    # is the CONTENT, painted inset by frame_inset px into a framebuffer of
+    # framebuffer_size - masks, tiles and filters point at the latter. Both
+    # stamped per frame by SplitOverlayRenderer.process_inputs.
+    frame_inset = 0
+    framebuffer_size = None
     clip_stack = []
     clip_stack_holder = {}
     annotated_window_classes = {}
@@ -2096,9 +2102,11 @@ class Melty:
         # cls._root_by_module[module_id] = root
         # cls._gen_by_module.setdefault(module_id, 0)
         # cls._path_stack.clear()
-        fb_w, fb_h = map(int, imgui.get_io().display_size)  # or your true GL FB size if HiDPI
+        fb_w, fb_h = map(int, imgui.get_io().display_size)  # WINDOW CONTENT (frame_inset)
         cls.display_size = (fb_w, fb_h)
-        cls.cache.mask_begin_frame((fb_w, fb_h))
+        # Masks/tiles cover the WHOLE framebuffer (shadow margin included).
+        real_fb = cls.framebuffer_size or (fb_w, fb_h)
+        cls.cache.mask_begin_frame((int(real_fb[0]), int(real_fb[1])))
 
         # Channel-split the foreground/overlay draw list the same way as the
         # window draw list (max_depth channels) so per-window overlays can be
@@ -3970,10 +3978,16 @@ class Melty:
         imgui_impl.begin_frame_split()
         imgui.render()
 
-        fb_w, fb_h = imgui.get_io().display_size  # or your actual GL viewport size
+        # The REAL framebuffer: imgui's display_size is the content inset by
+        # the shadow margin (frame_inset); captures, masks and the filters
+        # run over the whole surface.
+        fb_w, fb_h = cls.framebuffer_size or imgui.get_io().display_size
         draw_data = imgui.get_draw_data()
         _ps_t1 = _pp()
         imgui_impl.render_except_overlay(draw_data)
+        # The renderer paints into the inset viewport; everything below
+        # (filters, and reading GL_VIEWPORT for the FB-0 size) is full-frame.
+        gl.glViewport(0, 0, int(fb_w), int(fb_h))
         _gt.stamp("ui")
         _ps_t2 = _pp()
         Melty.cache.finalize_captures((int(fb_w), int(fb_h)))
@@ -4047,10 +4061,19 @@ class Melty:
                 _glow_tex = (Melty.cache.glow_tex
                              if Melty.cache.glow_active else None)
                 _glow_on = _glow_tex is not None and Toggles.glow
+                # The frameless window's frame (titlebar.frame_geometry):
+                # outside the content's rounded rect the composite emits the
+                # shadow as premultiplied alpha - the OS window's shadow IS
+                # this pass, cast by the root's mark / the frame add_shadow.
+                from src.lsd.gl_gui.titlebar import frame_geometry
+                _f_inset, _f_radius, _f_size = frame_geometry(int(fb_w), int(fb_h))
                 Melty.filter.shadow_composite(
                     input_framebuffer=0,
                     output_framebuffer=0,
                     shadow_map=shadow_raw,
+                    frame_inset=_f_inset,
+                    frame_radius=_f_radius,
+                    frame_size=_f_size,
                     depth_map=Melty.cache._full_mask_tex,
                     depth_scale=depth_scale,
                     shadow_opacity=float(Toggles.shadow_opacity),
@@ -4092,12 +4115,13 @@ class Melty:
         # Overlay last, so the highlight/swoosh sits on top of the shadow pass
         # (the split renderer's intended slot: "below overlay" is everything above).
         imgui_impl.render_overlay_only(draw_data)
-        # Rounded sub-window corners: alpha-only pass, the last thing rendered
-        # (titlebar.punch_rounded_corners - also clears the alpha imgui's
-        # blending left below 1 on the transparent framebuffer).
-        from src.lsd.gl_gui.titlebar import punch_rounded_corners, wants_transparent_framebuffer
+        # The frameless OS window's frame alpha - the last thing rendered
+        # (titlebar.composite_window_frame): content opaque, corners/margin
+        # cut (the shadow pass above has put the shadow there).
+        from src.lsd.gl_gui.titlebar import composite_window_frame, wants_transparent_framebuffer
         if wants_transparent_framebuffer():
-            punch_rounded_corners(int(fb_w), int(fb_h))
+            gl.glViewport(0, 0, int(fb_w), int(fb_h))
+            composite_window_frame(int(fb_w), int(fb_h))
         _gt.stamp("overlay")
         _ps_t5 = _pp()
 

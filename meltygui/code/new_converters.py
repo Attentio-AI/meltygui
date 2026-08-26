@@ -731,7 +731,16 @@ def _unwrap_call_module(module):
 
     Two shapes: `def __melty_call_wrap__()` wraps an in-function STATEMENT (recover
     its body); `def __melty_deco_wrap__()` carries a DECORATOR block (recover the
-    `@...` lines off its decorators)."""
+    `@...` lines off its decorators). A str is the core_syntax path's "module"
+    (the text itself, see _melty_syntax_source): the same two wrappers come off
+    textually."""
+    if isinstance(module, str):
+        for prefix in _CALL_WRAP_PREFIXES:
+            if module.startswith(prefix):
+                return textwrap.dedent(module[len(prefix):])
+        if module.endswith(_DECO_WRAP_SUFFIX):
+            return module[:-len(_DECO_WRAP_SUFFIX)] + "\n"
+        return module
     body = getattr(module, "body", None)
     if body and len(body) == 1 and isinstance(body[0], cst.FunctionDef):
         name = body[0].name.value
@@ -741,6 +750,36 @@ def _unwrap_call_module(module):
             blank = cst.Module(body=[])
             return "".join(blank.code_for_node(d) for d in body[0].decorators)
     return module.code
+
+
+def _melty_syntax_source(text):
+    """Toggles.TextEditor.melty_syntax: the chain's "module" is the (dedented)
+    TEXT itself — cst_module_to_dict parses a str through core_syntax. Same
+    wrap fallbacks as the libcst path below (a function wrapper for an
+    in-function statement, a throwaway def after a decorator block), checked
+    with ast; _unwrap_call_module strips them textually on the way out. Raises
+    the bare SyntaxError when nothing parses (a VALUE for _run_convert — it
+    carries `lineno` for the red highlight like _compile_check's)."""
+    import ast
+    try:
+        ast.parse(text)
+        return text
+    except SyntaxError as bare_exc:
+        indented = textwrap.indent(text, "    ")
+        for prefix in _CALL_WRAP_PREFIXES:
+            wrapped = prefix + indented
+            try:
+                ast.parse(wrapped)
+                return wrapped
+            except SyntaxError:
+                continue
+        wrapped = text.rstrip() + _DECO_WRAP_SUFFIX
+        try:
+            ast.parse(wrapped)
+            return wrapped
+        except SyntaxError:
+            pass
+        raise bare_exc
 
 
 @render_func()
@@ -755,6 +794,8 @@ def string_to_cst_module(input_value, **kwargs):
     text = textwrap.dedent(input_value) if isinstance(input_value, str) else input_value
     if not isinstance(text, str):
         return True, cst.parse_module(text)
+    if Toggles.TextEditor.melty_syntax:
+        return True, _melty_syntax_source(text)
     try:
         return True, cst.parse_module(text)
     except cst.ParserSyntaxError as bare_exc:
@@ -1113,11 +1154,25 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
         _prev_gp = _last_good_routed.get(_out_name)
         if _prev_gp is not None:
             from src.lsd.gl_gui.notifications import lag_span
-            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-                cst_dict_incremental_update)
-            with lag_span("incremental cst merge", 30):
-                _inc_gp = cst_dict_incremental_update(
-                    _prev_gp, _last_good_src, input_value)
+            _prev_melty = _prev_gp.get("__origin__") is not None
+            if _prev_melty and Toggles.TextEditor.melty_syntax:
+                # core_syntax parse: re-execute IN PLACE - every unchanged
+                # value object keeps its identity (draw_states survive). A
+                # broken keystroke falls through to the full path, which is
+                # what reports the error.
+                from src.lsd.gl_gui.view.core_conversion.core_syntax import update_in_place
+                try:
+                    with lag_span("melty_syntax update", 30):
+                        _inc_gp = update_in_place(_prev_gp, input_value)
+                except SyntaxError:
+                    _inc_gp = None
+            elif not _prev_melty and not Toggles.TextEditor.melty_syntax:
+                from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+                    cst_dict_incremental_update)
+                with lag_span("incremental cst merge", 30):
+                    _inc_gp = cst_dict_incremental_update(
+                        _prev_gp, _last_good_src, input_value)
+            # else: the parser toggle flipped since the held parse - full reconvert.
 
     if _inc_gp is not None:
         notify("chain_in: incremental cst merge", tag="chain_in")
@@ -1489,7 +1544,7 @@ def draw_with_view_funcs(input_value, view_funcs, route, routed, route_to_kwargs
         # auto_save, spins an endless reload -> redraw -> save.
         if len(tab_state.selected_tabs) == 1:
             column = None
-        m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__"],
+        m_changed, m_out = view_func(input_value=view_input, excluded=["__cst__", "__origin__"],
                                      show_system=False, draw=draw, max_width=draw_state.content_width - 10,
                                      disable_scroll=False, show_header=False,
                                      column=idx, column_width=column_width,
@@ -3415,7 +3470,7 @@ def draw_code_tabs_from_cache(input_value=None, root_input=None, tab_state: TabS
                         f"/clean=f{_dbg_t.last_clean_frame}/now=f{Melty.frame_count}"
                         if _dbg_t is not None else "tile=?")
                     m_changed, m_out = RenderFuncs.draw_collection(
-                        gp, excluded=["__cst__"],
+                        gp, excluded=["__cst__", "__origin__"],
                         child_kwargs={"show_bg": False, "shadow": False, "folder_type":(dict), "use_cache": True, "z_offset": 0, "view_func":RenderFuncs.draw_collection_as_tabs},
                         show_system=False,
                         disable_scroll=False, show_header=False, show_add_delete=False,

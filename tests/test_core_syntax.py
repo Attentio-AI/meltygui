@@ -501,7 +501,8 @@ class TestParity(unittest.TestCase):
         "def t():\n    try:\n        a = 1\n    except (OSError, ValueError):\n        a = 2\n    else:\n        a = 3\n",
         "class A:\n    def __init__(self):\n        self.x = 1\n        self.y = 'q'\n\n    def m(self, k=1):\n        z = 2\n",
         "@window(name='w')\n@other\nclass W:\n    x = 1\n",
-        "foo(1, 2, k=3)\nfoo(k=4)\n",
+        "foo(1, 2, k=3)\nfoo(k=4)\nbare()\n",
+        "def f():\n    live_view()\n    x = 1\n    live_view()\n    try:\n        live_view()\n    except Exception:\n        pass\n",
         "def f(a, b):\n    pass\n\nf(1, 2)\n",
     ]
 
@@ -557,3 +558,148 @@ class TestUpdateInPlace(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestToggleIntegration(unittest.TestCase):
+    """Toggles.TextEditor.melty_syntax routes the chain nodes through core_syntax."""
+
+    def setUp(self):
+        from src.lsd.gl_gui.toggles import Toggles
+        self._prev = Toggles.TextEditor.melty_syntax
+        Toggles.TextEditor.melty_syntax = True
+
+    def tearDown(self):
+        from src.lsd.gl_gui.toggles import Toggles
+        Toggles.TextEditor.melty_syntax = self._prev
+
+    def test_chain_nodes_round_trip(self):
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            string_to_cst_module, cst_module_to_string)
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            cst_module_to_dict, dict_to_cst_module, cst_module_to_str)
+        _c, module = string_to_cst_module.__wrapped__(SAMPLE)
+        self.assertIsInstance(module, str)
+        gp = cst_module_to_dict(module)
+        self.assertIn(ORIGIN_KEY, gp)
+        self.assertNotIn("__cst__", gp)
+        self.assertIsInstance(gp["Toggles"], ClassParse)
+        gp["Toggles"]["speed"] = 4.0
+        back = dict_to_cst_module(gp)
+        self.assertIsInstance(back, str)
+        self.assertEqual(cst_module_to_str(back), SAMPLE.replace("speed = 3.0", "speed = 4.00"))
+        _c, out = cst_module_to_string.__wrapped__(back)
+        self.assertEqual(out, SAMPLE.replace("speed = 3.0", "speed = 4.00"))
+
+    def test_indented_snippet_reindents(self):
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            string_to_cst_module, cst_module_to_string)
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            cst_module_to_dict, dict_to_cst_module)
+        snippet = "    class Inner:\n        a = 1\n"
+        _c, module = string_to_cst_module.__wrapped__(snippet)
+        gp = cst_module_to_dict(module)
+        gp["Inner"]["a"] = 2
+        _c, out = cst_module_to_string.__wrapped__(dict_to_cst_module(gp), indent="    ")
+        self.assertEqual(out, "    class Inner:\n        a = 2\n")
+
+    def test_module_level_statement_no_wrapper(self):
+        # ast accepts `return` at module level (it is a compile time error, not a
+        # parse error), so the bare text is the module, no wrapper is needed.
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            string_to_cst_module, cst_module_to_string, _CALL_WRAP_PREFIXES)
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            cst_module_to_dict, dict_to_cst_module)
+        snippet = "x = configure(debug=True)\n"
+        _c, module = string_to_cst_module.__wrapped__(snippet)
+        self.assertFalse(module.startswith(_CALL_WRAP_PREFIXES[0]))
+        gp = cst_module_to_dict(module)
+        gp["x"]["debug"] = False
+        _c, out = cst_module_to_string.__wrapped__(dict_to_cst_module(gp))
+        self.assertEqual(out, "x = configure(debug=False)\n")
+
+    def test_call_wrapper_unwraps(self):
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            _unwrap_call_module, _CALL_WRAP_PREFIXES)
+        wrapped = _CALL_WRAP_PREFIXES[0] + "    else:\n        pass\n"
+        self.assertEqual(_unwrap_call_module(wrapped), "else:\n    pass\n")
+
+    def test_decorator_block_wrapper(self):
+        from src.lsd.gl_gui.view.core_conversion.new_converters import (
+            string_to_cst_module, cst_module_to_string)
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            cst_module_to_dict, dict_to_cst_module)
+        snippet = "@window(name='w', z=1)\n"
+        _c, module = string_to_cst_module.__wrapped__(snippet)
+        gp = cst_module_to_dict(module)
+        gp["__melty_deco_wrap__"]["decorators"]["window"]["z"] = 2
+        _c, out = cst_module_to_string.__wrapped__(dict_to_cst_module(gp))
+        self.assertEqual(out, "@window(name='w', z=2)\n")
+
+    def test_syntax_error_is_a_syntaxerror(self):
+        from src.lsd.gl_gui.view.core_conversion.new_converters import string_to_cst_module
+        with self.assertRaises(SyntaxError) as ctx:
+            string_to_cst_module.__wrapped__("x = (\n")
+        self.assertIsNotNone(ctx.exception.lineno)
+
+    def test_parse_source_to_general_and_load(self):
+        from src.lsd.gl_gui.view.core_conversion.chain_converters import parse_source_to_general
+        _c, gp = parse_source_to_general.__wrapped__("x = 1\n")
+        self.assertIn(ORIGIN_KEY, gp)
+
+    def test_reverse_error_is_pending(self):
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            cst_module_to_dict, dict_to_cst_module, ParseError)
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import Pending
+        gp = cst_module_to_dict("x = 1\n")
+        gp["x"] = CodeLine("(")
+        res = dict_to_cst_module(gp)
+        self.assertIsInstance(res, Pending)
+        self.assertIsInstance(res.wrapped, ParseError)
+
+
+class TestConsumers(unittest.TestCase):
+    def test_dunder_method_locals_editable(self):
+        gp = parse_to_dict("class A:\n    def __repr__(self):\n        w = 1\n        return w\n")
+        gp["A"]["__repr__"]["locals"]["w"] = 2
+        self.assertEqual(general_parse_to_str(gp),
+                         "class A:\n    def __repr__(self):\n        w = 2\n        return w\n")
+
+    def test_pickle_round_trip(self):
+        import pickle
+        gp = parse_to_dict(SAMPLE)
+        gp2 = pickle.loads(pickle.dumps(gp, protocol=pickle.HIGHEST_PROTOCOL))
+        self.assertEqual(general_parse_to_str(gp2), SAMPLE)
+        gp2["Toggles"]["flag"] = False
+        self.assertEqual(general_parse_to_str(gp2), SAMPLE.replace("flag = True", "flag = False"))
+        # ensure unpickled leaf table still anchors identity/equality for no-op edits
+        gp2["Toggles"]["tint"] = (0.5, 0.25, 1.0)
+        self.assertEqual(len(diff(gp2)), 1)
+
+    def test_linemap_over_core_syntax_parse(self):
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import LineMap
+        gp = parse_to_dict(SAMPLE)
+        lm = LineMap(gp)
+        ref = lm.node_at_line(8)          # `speed = 3.0`
+        self.assertEqual(ref.path, ("Toggles", "speed"))
+        ref = lm.node_at_line(15)         # inside class TextEditor
+        self.assertEqual(ref.path[:2], ("Toggles", "TextEditor"))
+
+    def test_parse_def_name_both_parsers(self):
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import parse_def_name
+        ours = parse_to_dict(SAMPLE)
+        theirs = cst_module_to_dict(cst.parse_module(SAMPLE))
+        for gp in (ours, theirs):
+            self.assertEqual(parse_def_name(gp["Toggles"]), "Toggles")
+            self.assertEqual(parse_def_name(gp["my_func"]), "my_func")
+            self.assertEqual(parse_def_name(gp["Toggles"]["TextEditor"]), "TextEditor")
+        self.assertIsNone(parse_def_name(ours["configure()"]))
+
+    def test_update_in_place_keeps_symbol_usages(self):
+        gp = parse_to_dict(SAMPLE)
+        gp["__symbol_usages__"] = {"speed": object()}
+        gp["Toggles"]["__symbol_usages__"] = {"tint": object()}
+        keep_root, keep_cls = gp["__symbol_usages__"], gp["Toggles"]["__symbol_usages__"]
+        update_in_place(gp, SAMPLE.replace("speed = 3.0", "speed = 4.0"))
+        self.assertIs(gp["__symbol_usages__"], keep_root)
+        self.assertIs(gp["Toggles"]["__symbol_usages__"], keep_cls)
+        self.assertNotIn("__cst__", gp)
