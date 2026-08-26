@@ -966,32 +966,57 @@ def set_surface_size(window, width, height):
 _pending_surface_size = globals().get("_pending_surface_size")
 
 
-def request_surface_size(window, width, height):
+_pending_surface_offset = globals().get("_pending_surface_offset")
+_frame_surface_offset = globals().get("_frame_surface_offset")
+
+
+def request_surface_size(window, width, height, offset=None):
     """Queue an app-side resize (the right-drag) for the top of the NEXT
     frame (apply_pending_surface_size, before process_inputs). Applied
     mid-frame it committed a new buffer size and geometry with content laid
     out for the old size — one frame of jelly on every drag step. Later
-    requests in the same frame replace earlier ones."""
-    global _pending_surface_size
+    requests in the same frame replace earlier ones. ``offset`` = (dx, dy)
+    px to MOVE the window by in the same commit (the buffer offset of the
+    swap's attach — wayland_move.set_surface_offset; the near-edge push:
+    grow right by d and move left by d = the left edge moved out)."""
+    global _pending_surface_size, _pending_surface_offset
     _pending_surface_size = (int(width), int(height))
+    _pending_surface_offset = tuple(int(v) for v in offset) if offset else None
 
 
 def apply_pending_surface_size(window):
     """LSDStudio's loop, before process_inputs: apply the queued resize so
     this frame lays out at the new size. Returns the size applied."""
-    global _pending_surface_size
+    global _pending_surface_size, _pending_surface_offset, _frame_surface_offset
+    from src.lsd.gl_gui import wayland_move
+    wayland_move.clear_surface_offset()          # last frame's offset is spent
     size = _pending_surface_size
     if size is None or window is None:
         return None
+    offset = _pending_surface_offset
     _pending_surface_size = None
+    _pending_surface_offset = None
     from src.lsd.gl_gui.toggles import Toggles
     if Toggles.Melty.push_os_window_edges_trace:
         try:
             was = glfw.get_framebuffer_size(window)
         except Exception:
             was = None
-        print(f"[os_frame] apply pending surface size {size} (was {was})")
+        print(f"[os_frame] apply pending surface size {size} (was {was}) offset {offset}")
     set_surface_size(window, *size)
+    # The move rides the same commit: armed HERE, right after GLFW's resize
+    # (which reset the EGL window's offset to 0) and before anything is
+    # drawn. Arming it late - right before the swap - blanked every frame
+    # that carried a move: wl_egl_window_resize flags the EGL surface as
+    # resized, the driver re-creates its swapchain for that swap, and the
+    # frame already rendered on the old buffers was lost (the window
+    # vanished while the hand moved, reappeared at random). At frame start
+    # the driver's resize handling runs BEFORE the frame is drawn, exactly
+    # as for GLFW's own resizes. Nothing else touches the EGL window until
+    # the swap.
+    _frame_surface_offset = None
+    if offset and (offset[0] or offset[1]):
+        wayland_move.set_surface_offset(offset[0], offset[1])
     return size
 
 

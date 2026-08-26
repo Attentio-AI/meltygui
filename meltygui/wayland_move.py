@@ -84,6 +84,114 @@ class _wl_interface(ctypes.Structure):
 
 _libc = None
 _wl = None
+_egl = None
+_STATE.setdefault("egl_window", None)
+_STATE.setdefault("offset_armed", False)
+
+
+class _wl_egl_window(ctypes.Structure):
+    """libwayland-egl's struct wl_egl_window (public header, version 3):
+    what GLFW hands EGL for the surface. dx/dy are the buffer OFFSET the EGL
+    driver puts on the next wl_surface.attach — and for an xdg toplevel the
+    compositor applies that offset as a window MOVE (Mutter:
+    meta_window_wayland_finish_move_resize, rect.x += dx). The one
+    client-initiated move Wayland allows."""
+    _fields_ = [("version", ctypes.c_ssize_t),
+                ("width", ctypes.c_int), ("height", ctypes.c_int),
+                ("dx", ctypes.c_int), ("dy", ctypes.c_int),
+                ("attached_width", ctypes.c_int), ("attached_height", ctypes.c_int),
+                ("driver_private", ctypes.c_void_p),
+                ("resize_callback", ctypes.c_void_p),
+                ("destroy_window_callback", ctypes.c_void_p),
+                ("surface", ctypes.c_void_p)]
+
+
+_WL_EGL_WINDOW_VERSION = 3
+
+
+def _egl_lib():
+    global _egl
+    if _egl is None:
+        _egl = ctypes.CDLL("libwayland-egl.so.1")
+        _egl.wl_egl_window_resize.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+                                             ctypes.c_int, ctypes.c_int]
+        _egl.wl_egl_window_resize.restype = None
+    return _egl
+
+
+def _find_egl_window(base, surface, span=_SCAN_BYTES):
+    """The wl_egl_window in the _GLFWwindow struct at ``base``: a pointer
+    to a struct whose version word is WL_EGL_WINDOW_VERSION, whose size is
+    sane and whose surface field is OUR wl_surface."""
+    if not base or not surface:
+        return None
+    size = ctypes.sizeof(_wl_egl_window)
+    for off in range(0, span, _CHUNK):
+        chunk = _read(base + off, _CHUNK)
+        if chunk is None:
+            return None
+        for i in range(0, _CHUNK, 8):
+            cand = struct.unpack_from("<Q", chunk, i)[0]
+            if not cand or cand & 7:
+                continue
+            raw = _read(cand, size)
+            if raw is None:
+                continue
+            win = _wl_egl_window.from_buffer_copy(raw)
+            if (win.version == _WL_EGL_WINDOW_VERSION and win.surface == surface
+                    and 0 < win.width < 65536 and 0 < win.height < 65536):
+                return cand
+    return None
+
+
+def _ensure_egl_window():
+    """The EGL window, found at attach — or here, lazily, after a hotswap
+    of this module (attach runs once at boot; the surface is kept). A failed
+    scan is remembered as 0 so it isn't repeated every frame."""
+    win = _STATE["egl_window"]
+    if win is None and _STATE.get("surface"):
+        try:
+            _, wl = _c()
+            glfw_window = wl.wl_proxy_get_user_data(_STATE["surface"])
+            win = _find_egl_window(glfw_window, _STATE["surface"]) or 0
+        except Exception:
+            win = 0
+        _STATE["egl_window"] = win
+    return win or None
+
+
+def offset_available():
+    """Can the surface carry a buffer offset (a client-side window move)?"""
+    return bool(_ensure_egl_window())
+
+
+def set_surface_offset(dx, dy):
+    """Arm the buffer offset for the NEXT swap: wl_egl_window_resize with
+    the window's current size and (dx, dy) — the EGL driver's resize
+    callback records them and the swap's wl_surface.attach carries them,
+    which the compositor applies as a move of the window by (dx, dy). Call
+    right before the swap, AFTER any GLFW resize of the frame (GLFW's own
+    wl_egl_window_resize resets the offset to 0). Returns True when armed."""
+    win = _ensure_egl_window()
+    if not win:
+        return False
+    raw = _read(win, ctypes.sizeof(_wl_egl_window))
+    if raw is None:
+        _STATE["egl_window"] = None
+        return False
+    cur = _wl_egl_window.from_buffer_copy(raw)
+    _egl_lib().wl_egl_window_resize(win, cur.width, cur.height, int(dx), int(dy))
+    _STATE["offset_armed"] = bool(dx or dy)
+    return True
+
+
+def clear_surface_offset():
+    """Next frame's start: an armed offset is one-shot on the driver side
+    (Mesa zeroes it after the attach) but the struct keeps the values —
+    reset them so no later attach can carry it again."""
+    if _STATE["offset_armed"]:
+        set_surface_offset(0, 0)
+        _STATE["offset_armed"] = False
 
 
 def _c():
@@ -470,6 +578,9 @@ def attach(window):
         reg_iface = _iface_addr(wl, "wl_registry_interface")
         _STATE["opcodes"]["bind"] = 0
         _STATE["surface"] = surface
+        # The EGL window beside them: its attach offset is the client-side
+        # shadow move the window-edge push rides (os_frame.push_near).
+        _STATE["egl_window"] = _find_egl_window(glfw_window, surface)
         if _STATE.get("relative_manager_iface") is None:
             manager_iface, rel_iface = _build_relative_pointer_interfaces(wl, _STATE["keep"])
             _STATE["relative_manager_iface"] = manager_iface

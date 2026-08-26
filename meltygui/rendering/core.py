@@ -2307,10 +2307,14 @@ def render_func(*args, **o_kwargs):
                         if _near_push and not queued and draw_state._abs_left() < 0:
                             os_frame.push_near("x", -draw_state._abs_left(), draw_state, None, total=True)
                             _columns.reframe_axis(draw_state, "x", -draw_state._abs_left())
+                        elif _near_push and not queued and draw_state._abs_left() > 0:
+                            os_frame.unwind_near("x", draw_state._abs_left(), draw_state)
                         if _near_push and not queued_rows and abs_top_tl < 0:
                             os_frame.push_near("y", -abs_top_tl, draw_state, None, total=True)
                             _columns.reframe_axis(draw_state, "y", -abs_top_tl)
                             abs_top_tl = 0
+                        elif _near_push and not queued_rows and abs_top_tl > 0:
+                            os_frame.unwind_near("y", abs_top_tl, draw_state)
                         if abs_top_tl < 0 and queued_rows:
                             # The y solve owns height and position here
                             # frame: state the clamp as a cursor drag drag
@@ -2370,6 +2374,17 @@ def render_func(*args, **o_kwargs):
                         if slide > 0:
                             draw_state.window_pos = (draw_state.window_pos[0],
                                                      snap_int(draw_state.window_pos[1] - slide))
+                        # A slide carrying the top PAST the display's top is
+                        # the top colliding with the OS window. state the
+                        # push as dragging the top edge there (push_near -
+                        # far side grown, studio moved; TOTAL: this path
+                        # re-derives position from its baseline each frame), the
+                        # top held on the display edge meanwhile.
+                        _top_over = -draw_state._abs_top()
+                        if (_top_over > 0 and not queued_rows and draw_state.parent_window is None
+                                and os_frame.near_push_available()):
+                            os_frame.push_near("y", _top_over, draw_state, None, total=True)
+                            _columns.reframe_axis(draw_state, "y", _top_over)
 
                     # Horizontal version of the clamp above: keep the window's
                     # right edge on the display while resizing. When the new
@@ -2390,6 +2405,12 @@ def render_func(*args, **o_kwargs):
                         if slide > 0:
                             draw_state.window_pos = (snap_int(draw_state.window_pos[0] - slide),
                                                      draw_state.window_pos[1])
+                        # the x twin: the left colliding with the OS window
+                        _left_over = -draw_state._abs_left()
+                        if (_left_over > 0 and not queued and draw_state.parent_window is None
+                                and os_frame.near_push_available()):
+                            os_frame.push_near("x", _left_over, draw_state, None, total=True)
+                            _columns.reframe_axis(draw_state, "x", _left_over)
                 elif not (handle_press or corner_press):
                     # Not on the press branch itself - that would wipe the
                     # press-anchored baselines latched just above before the

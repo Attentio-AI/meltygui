@@ -33,6 +33,9 @@ _STATE.setdefault("push_near", [0.0, 0.0])
 _STATE.setdefault("near_requested", [0.0, 0.0])
 _STATE.setdefault("near_slid", [0.0, 0.0])
 _STATE.setdefault("near_glue", [None, None])
+_STATE.setdefault("near_move", [0.0, 0.0])
+_STATE.setdefault("near_unwound", [0.0, 0.0])
+_STATE.setdefault("near_slid_max", [0.0, 0.0])
 
 
 def _trace(msg):
@@ -82,7 +85,7 @@ def _fresh():
         _STATE["near"] = {}
 
 
-def absorb(axis, overflow, owner=None, past_edge=False):
+def absorb(axis, overflow, owner=None):
     """A far edge on ``axis`` ("x" = right, "y" = bottom) is ``overflow``
     px past the display during a live drag (negative = that far INSIDE it).
 
@@ -98,16 +101,7 @@ def absorb(axis, overflow, owner=None, past_edge=False):
     drag that pushed the studio out and returns pulls it back in. Only the
     pusher unwinds (any other window sits inside the display by its own
     margin every frame). Returns 0. Gesture state resets on release
-    (flush).
-
-    ``past_edge``: grow THROUGH the compositor's keep-on-screen edge (the
-    cap_hit below) up to the workarea-size cap — the surface grows on and
-    Mutter slides the studio the other way to keep the geometry on screen,
-    so the OS window's top / left moves 1:1 with the hand. push_far_edge
-    asks for it only once the window inside has no slide left (its near
-    edge on the display's): the melty window's top reaches the studio's
-    top FIRST, then the studio's top gives (Lukas 08-26). The request is
-    the frame's TOTAL for the axis (push is a MAX of requests)."""
+    (flush)."""
     if not _live():
         if overflow > 0:
             _trace(f"absorb {axis} overflow={overflow:.0f}: not live (toggle/drag)")
@@ -142,11 +136,10 @@ def absorb(axis, overflow, owner=None, past_edge=False):
         hit = _STATE["cap_hit"][i] = size[i]
         _trace(f"absorb {axis}: compositor slid the surface {_STATE['slid'][i]:.0f} px "
                f"— workarea edge reached, cap {cap[i]:.0f} → {hit:.0f}")
-    limit = cap[i] if (hit is None or past_edge) else min(cap[i], hit)
+    limit = cap[i] if hit is None else min(cap[i], hit)
     room = max(0.0, limit - size[i])
     absorbed = min(float(overflow), room)
-    _trace(f"absorb {axis} overflow={overflow:.0f} surface={size[i]:.0f} cap={limit:.0f}"
-           f"{' (past the compositor edge)' if past_edge and hit is not None else ''} "
+    _trace(f"absorb {axis} overflow={overflow:.0f} surface={size[i]:.0f} cap={limit:.0f} "
            f"room={room:.0f} → {absorbed:.0f}")
     if absorbed <= 0.0:
         return 0.0
@@ -158,22 +151,22 @@ def absorb(axis, overflow, owner=None, past_edge=False):
 
 def push_far_edge(axis, abs_pos, size, display, owner, cap_size=True):
     """A window's far edge ``abs_pos + size`` past ``display`` during a
-    live drag, resolved in order: (1) the OS edge out, up to the
-    compositor's edge (absorb); (2) the window pinned at the display edge
-    and slid the other way until its near edge is on the display's
-    (clamp_far_edge); (3) what is still left THROUGH the compositor's edge
-    (absorb past_edge) — the studio's own top / left then moves. Returns
-    (size, slide) like clamp_far_edge."""
+    live drag: (1) the OS edge out, up to the compositor's edge (absorb);
+    (2) the rest pins the far edge at the display edge and SLIDES the
+    window the other way — uncapped: a slide that carries the window's
+    near edge past the display's near edge is that edge COLLIDING with the
+    OS window, and the caller's near hook treats it exactly like dragging
+    the near edge there (reframe onto the edge + push_near: far side
+    grown, studio moved — Lukas 08-26: never move the OS edge by hand for
+    the inverse slide, let the edge collide). Where the near push is not
+    available (X11, no relative pointer / EGL window) the old clamp
+    applies: slide to the display's near edge, size capped at what fits.
+    Returns (size, slide) like clamp_far_edge."""
     overflow = abs_pos + size - display
     absorbed = absorb(axis, overflow, owner)
-    new_size, slide = clamp_far_edge(abs_pos, size, display, absorbed, cap_size)
-    left_over = overflow - absorbed - slide
-    if left_over > 0.5:
-        total = absorb(axis, absorbed + left_over, owner, past_edge=True)
-        if total > absorbed:
-            absorbed = total
-            new_size, slide = clamp_far_edge(abs_pos, size, display, absorbed, cap_size)
-    return new_size, slide
+    if near_push_available():
+        return size, max(0.0, overflow - absorbed)
+    return clamp_far_edge(abs_pos, size, display, absorbed, cap_size)
 
 
 def note_surface_slide(slide_x, slide_y):
@@ -189,34 +182,44 @@ def note_surface_slide(slide_x, slide_y):
     _STATE["slid"] = new
     for i, axis in enumerate(("x", "y")):
         delta = new[i] - old[i]
-        if delta > 0 and _STATE["near_glue"][i] is not None:
+        if delta and _STATE["near_glue"][i] is not None:
             _apply_near_glue(axis, delta)
 
 
 # ---------------------------------------------------------------------------
-# NEAR edges (left / top), the push-up's trick turned around. A Wayland
-# client cannot see the window, but the compositor sees it for us: a
-# surface growing past the screen's far edge is slid the other way to keep
-# its geometry on screen (whatorb past_edge rides for the push-up). So a
-# near edge dragged past the display's left / top grows the surface on the
-# FAR side through the edge, and Mutter slides the studio toward the hand.
-# Until the far side reaches the screen the growth only extends the studio
-# there (the hand runs ahead by that much - the push-up has the same
-# property); from then on the studio's near edge follows 1:1. The slide is
-# measured from the pointer (note_surface_slide), and the GLUE applies each
-# step: every root window re-based by it (the UI stays put on screen; a
-# press-anchored corner drag's baseline with it, since that path re-derives
-# pos/size from it every frame), the pushed window reframed so its near
-# edge follows the OS edge out (far edge and interior hold), and the
-# dragged column / row edge (if any) does the slide so its cascade stays
-# packed. Two request shapes: _frame_pass reports the INCREMENTAL the
-# window past the edge (the reframe puts the edge back on it every frame),
-# the direct corner path reports the TOTAL from its baseline (total=True:
-# only what is not already requested goes out). Nothing unwinds: the
-# studio's near edge cannot come back, and the far growth is dropped with
-# the rest of the sticky bookkeeping on release. The earlier
-# xdg_toplevel.resize handoff (request_near / the configure glue for the
-# content shift) is superseded by this and left in place unused.
+# NEAR PUSH (left / top). A Wayland client cannot position its window, but
+# it CAN move it: a buffer offset in wl_surface.attach (dx, dy) is applied
+# by the compositor as a move of the toplevel (wayland_move.set_surface_offset
+# via libwayland-egl's wl_egl_window.swap - the swap's attach carries it).
+# So a near edge dragged past the display's left / top grows the surface by
+# the overshoot on the FAR side and moves the window by the same amount the
+# other way, in one commit: the far edge stays on screen, the near edge
+# follows the hand 1:1 (no waiting for the far side to fill the screen,
+# which the first try - riding the compositor's keep-on-screen slide - did:
+# the left edge sat still until the right edge reached the screen, then
+# snapped). Mutter still constrains the move at the screen (keep-on-screen),
+# so the screen stays the final barrier: what it refuses shows up as the
+# surface simply having grown on the far side - the columns rule, a near
+# edge pushed into a wall pushes the whole side out. That move is measured
+# back from the pointer (note_surface_slide, the same slide bookkeeping as
+# the push-up) and the GLUE applies what actually happened: the root
+# window re-based by it (the UI stays put on screen, a press-anchored
+# corner drag's baseline with it, since that path re-derives pos/size from
+# it every frame), the pushed window reframed so its near edge follows the
+# OS edge out (far edge and interior slide), and the dragged column / row
+# edge (if any) fed the step so its cascade stays packed. STICKY: a near
+# edge pulled back inside unwinds - unwind_near shrinks the far side by what
+# came back and moves the window back by what actually moved (a clamped
+# push moves back only its clamped part), so the studio returns exactly to
+# where the push started; the glue re-bases on the negative slide. Two
+# path shapes: _frame_pass reports the INCREMENT its edge left past the
+# edge (the reframe puts the edge back on it every frame); the direct
+# corner path reports the TOTAL from its baseline (total=True: only what is
+# not already requested goes out); both report the ABSOLUTE inside distance
+# to the unwind (pending unwinds subtracted). Requires the relative
+# pointer (the slide measurement) and the EGL window (the offset). The
+# earlier xdg_toplevel.resize handoff (request_render / the configure glue /
+# the content shift) is superseded and left in place unused.
 # ---------------------------------------------------------------------------
 
 def push_near(axis, over, owner, edge=None, total=False):
@@ -245,7 +248,41 @@ def push_near(axis, over, owner, edge=None, total=False):
     if req <= 0:
         return 0.0
     _STATE["push_near"][i] += req
+    _STATE["near_move"][i] -= req          # grow far, move near: the near edge moves less
+    _STATE["near_unwound"][i] = max(0.0, _STATE["near_unwound"][i] - req)
     return req
+
+
+def unwind_near(axis, inside, owner):
+    """``owner``'s near edge sits ``inside`` px inside the display in the
+    gesture that pushed it out (the hand coming back): shrink the far side
+    by that much of what this gesture requested and move the window back by
+    what of it actually moved (the compositor may have clamped the push at
+    the screen). ``inside`` is the ABSOLUTE distance, from either path —
+    what earlier unwinds already account for is subtracted: an unwind that
+    moved the window back shows up as a slide, which re-bases the edge onto
+    the OS edge (the caller's distance shrinks by it); a shrink-only unwind
+    (the clamped part, nothing to move back) re-bases nothing, so its
+    distance stays accounted until a move-back is seen. Returns the px
+    unwound this call."""
+    i = _AXIS[axis]
+    glue = _STATE["near_glue"][i]
+    if inside <= 0 or glue is None or glue[0] is not owner or not near_push_available() or not _live():
+        return 0.0
+    _fresh()
+    requested = _STATE["near_requested"][i] + _STATE["push_near"][i]     # net, this gesture
+    slid = _STATE["near_slid"][i]
+    moved_back = _STATE["near_slid_max"][i] - slid                       # seen as slides back
+    accounted = max(0.0, _STATE["near_unwound"][i] - moved_back)
+    back = min(max(0.0, float(inside) - accounted), requested)
+    if back <= 0.5:
+        return 0.0
+    move = max(0.0, min(back, slid - (requested - back)))
+    _STATE["push_near"][i] -= back
+    _STATE["near_move"][i] += move
+    _STATE["near_unwound"][i] += back
+    _trace(f"unwind_near {axis} inside={inside:.0f} → shrink {back:.0f}, move back {move:.0f}")
+    return back
 
 
 def _apply_near_glue(axis, delta):
@@ -254,19 +291,25 @@ def _apply_near_glue(axis, delta):
     i = _AXIS[axis]
     window, edge = _STATE["near_glue"][i]
     _STATE["near_slid"][i] += delta
+    _STATE["near_slid_max"][i] = max(_STATE["near_slid_max"][i], _STATE["near_slid"][i])
     seen = set()
     for ds in _root_windows():
         seen.add(id(ds))
         _rebase(ds, axis, delta)
     if id(window) not in seen:
         _rebase(window, axis, delta)
-    # the pushed window's near edge goes back out past the OS edge
-    reframe_axis(window, axis, -delta)
-    frame = getattr(window, "_frame_edges" if axis == "x" else "_frame_rows", None) or ()
-    if edge is not None and not any(edge is fe for fe in frame):
-        _ensure_window_state(window)
-        _pending(window, axis).append((edge, edge[axis] - delta, True))
-    _trace(f"near glue {axis}: studio slid {delta:.0f}, roots re-based, edge followed")
+    if delta > 0:
+        # the pushed window's near edge goes back out onto the OS edge
+        reframe_axis(window, axis, -delta)
+        frame = getattr(window, "_frame_edges" if axis == "x" else "_frame_rows", None) or ()
+        if edge is not None and not any(edge is fe for fe in frame):
+            _ensure_window_state(window)
+            _pending(window, axis).append((edge, edge[axis] - delta, True))
+    # (a negative step - an unwind's move-back - needs only the re-base:
+    # the hand pulled the edge inside by that much, and the re-base puts
+    # it where the edge is against the returned OS edge)
+    _trace(f"near glue {axis}: studio moved {delta:.0f}, roots re-based"
+           f"{', edge followed' if delta > 0 else ''}")
     request_render()
 
 
@@ -306,12 +349,17 @@ def flush():
         _STATE["near_requested"] = [0.0, 0.0]
         _STATE["near_slid"] = [0.0, 0.0]
         _STATE["near_glue"] = [None, None]
+        _STATE["near_move"] = [0.0, 0.0]
+        _STATE["near_unwound"] = [0.0, 0.0]
+        _STATE["near_slid_max"] = [0.0, 0.0]
     px, py = _STATE["push"]
     nx, ny = _STATE["push_near"]
-    if px == 0.0 and py == 0.0 and nx == 0.0 and ny == 0.0:
+    mx, my = _STATE["near_move"]
+    if px == 0.0 and py == 0.0 and nx == 0.0 and ny == 0.0 and mx == 0.0 and my == 0.0:
         return None
     _STATE["push"] = [0.0, 0.0]
     _STATE["push_near"] = [0.0, 0.0]
+    _STATE["near_move"] = [0.0, 0.0]
     sizes = _surface_and_cap()
     if sizes is None:
         return None
@@ -323,10 +371,11 @@ def flush():
     px, py = px + nx, py + ny
     from src.lsd.gl_gui import titlebar
     size = (int(round(w + px)), int(round(h + py)))
-    _trace(f"flush: surface {w:.0f}x{h:.0f} + ({px:.0f}, {py:.0f}) → request {size}"
+    offset = (int(round(mx)), int(round(my)))
+    _trace(f"flush: surface {w:.0f}x{h:.0f} + ({px:.0f}, {py:.0f}) → request {size}, move {offset}"
            f" (grown this gesture {tuple(round(g) for g in _STATE['grown'])},"
            f" near {tuple(round(g) for g in _STATE['near_requested'])})")
-    titlebar.request_surface_size(titlebar._studio_window(), *size)
+    titlebar.request_surface_size(titlebar._studio_window(), *size, offset=offset)
     return size
 
 
@@ -417,11 +466,13 @@ def _press_travel():
 
 def near_push_available():
     """Can a near edge push the studio right now? Wayland with the relative
-    pointer (the slide is measured from it)."""
+    pointer (the move is measured back from it) and the EGL window (the
+    attach offset that moves the window)."""
     from src.lsd.gl_gui import titlebar, wayland_move
     from src.lsd.gl_gui.toggles import Toggles
     return (Toggles.Melty.push_os_window_edges and Toggles.Melty.push_os_window_near_edges
-            and titlebar._on_wayland() and wayland_move.relative_motion_available())
+            and titlebar._on_wayland() and wayland_move.relative_motion_available()
+            and wayland_move.offset_available())
 
 
 def request_near(axis, window, edge=None):

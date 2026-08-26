@@ -879,6 +879,10 @@ def _frame_pass(window, axis):
                 reframe_axis(window, axis, -abs_pos)
                 os_frame.push_near(axis, -abs_pos, window, cursor_edge)
                 moved = True
+            elif abs_pos > 0:
+                # the hand came back, the push unwinds (no-op unless this
+                # window pushed this gesture)
+                os_frame.unwind_near(axis, abs_pos, window)
     return moved
 
 
