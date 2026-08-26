@@ -6,7 +6,7 @@ core_syntax — the libcst-free cst_dict with a text residual.
   * structural edits (add / delete / reorder) are text surgery on extents
   * comments and `# [k=v]` override comments round-trip and edit
   * dict shape matches the libcst converter key-for-key on curated snippets
-  * update_in_place keeps unchanged value objects by identity
+  * reparse_reusing keeps unchanged value objects by identity, never mutates the old tree
 """
 
 import ast
@@ -16,7 +16,7 @@ from pathlib import Path
 import conftest  # noqa: F401
 
 from src.lsd.gl_gui.view.core_conversion.core_syntax import (
-    parse_to_dict, general_parse_to_str, diff, update_in_place, CoreSyntaxError,
+    parse_to_dict, general_parse_to_str, diff, reparse_reusing, CoreSyntaxError,
     ORIGIN_KEY, values_equal, render)
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     Comment, CodeLine, ClassParse, EnumParse, FunctionParse, CallParse, DecorationParse,
@@ -530,30 +530,70 @@ class TestParity(unittest.TestCase):
                 self._compare(ours, theirs, f"snippet {i}")
 
 
-class TestUpdateInPlace(unittest.TestCase):
-    def test_keeps_unchanged_objects(self):
+class TestReparseReusing(unittest.TestCase):
+    def test_keeps_unchanged_objects_in_a_new_root(self):
         gp = parse_to_dict(SAMPLE)
         toggles = gp["Toggles"]
         editor = toggles["TextEditor"]
         tint = toggles["tint"]
+        func = gp["my_func"]
         new_text = SAMPLE.replace("speed = 3.0", "speed = 4.0")
-        update_in_place(gp, new_text)
-        self.assertIs(gp["Toggles"], toggles)
-        self.assertIs(gp["Toggles"]["TextEditor"], editor)
-        self.assertIs(gp["Toggles"]["tint"], tint)
-        self.assertEqual(gp["Toggles"]["speed"], 4.0)
-        self.assertEqual(gp[ORIGIN_KEY].text, new_text)
-        # and the round trip is against the NEW residual
-        self.assertEqual(general_parse_to_str(gp), new_text)
-        gp["Toggles"]["speed"] = 5.0
-        self.assertEqual(general_parse_to_str(gp), SAMPLE.replace("speed = 3.0", "speed = 5.00"))
+        gp2 = reparse_reusing(gp, new_text)
+        self.assertIsNot(gp2, gp)                       # the changed root is fresh (libcst-incremental style)
+        self.assertIsNot(gp2["Toggles"], toggles)       # a changed subtree is fresh too
+        self.assertIs(gp2["Toggles"]["TextEditor"], editor)   # but its unchanged children are the old objects
+        self.assertIs(gp2["Toggles"]["tint"], tint)
+        self.assertIs(gp2["my_func"], func)             # an untouched top-level def is the old object
+        self.assertEqual(gp2["Toggles"]["speed"], 4.0)
+        self.assertEqual(gp["Toggles"]["speed"], 3.0)   # the old tree is untouched
+        self.assertEqual(gp2[ORIGIN_KEY].text, new_text)
+        self.assertEqual(general_parse_to_str(gp2), new_text)
+        gp2["Toggles"]["speed"] = 5.0
+        self.assertEqual(general_parse_to_str(gp2), SAMPLE.replace("speed = 3.0", "speed = 5.00"))
 
     def test_kept_object_is_the_diff_baseline(self):
         gp = parse_to_dict("x = (1, 2)\n")
         t = gp["x"]
-        update_in_place(gp, "x = (1, 2)\ny = 3\n")
-        self.assertIs(gp["x"], t)
-        self.assertEqual(diff(gp), [])
+        gp2 = reparse_reusing(gp, "x = (1, 2)\ny = 3\n")
+        self.assertIs(gp2["x"], t)
+        self.assertEqual(diff(gp2), [])
+
+    def test_unchanged_surface_keeps_the_root(self):
+        gp = parse_to_dict("x = 1\n")
+        gp2 = reparse_reusing(gp, "x = 1  # note\n")   # a trailing comment IS surfaced → new root
+        self.assertIsNot(gp2, gp)
+        gp3 = reparse_reusing(gp, "x = 1\n\n")          # nothing surfaced changed → same root, new residual
+        self.assertIs(gp3, gp)
+        self.assertEqual(general_parse_to_str(gp3), "x = 1\n\n")
+
+    def test_shifted_kept_node_has_fresh_spans(self):
+        gp = parse_to_dict("class A:\n    a = 1\n")
+        node = gp["A"]
+        gp2 = reparse_reusing(gp, "import os\n\nclass A:\n    a = 1\n")
+        self.assertIs(gp2["A"], node)
+        self.assertEqual(node.span.start_line, 3)
+        self.assertEqual(node._child_spans["a"].start_line, 4)
+
+    def test_bubbling_tree_is_never_mutated(self):
+        from src.lsd.gl_gui.view.core_conversion.bubbling import install_bubbling
+        class Root:
+            marks = 0
+            def _mark_changed(self):
+                self.marks += 1
+        root = Root()
+        gp = install_bubbling(parse_to_dict(SAMPLE), root)
+        self.assertEqual(root.marks, 0)
+        gp2 = reparse_reusing(gp, SAMPLE.replace("speed = 3.0", "speed = 4.0"))
+        self.assertEqual(root.marks, 0, "reparse notified the host as if it were a user edit")
+        self.assertIsNot(gp2, gp)
+        self.assertIs(gp2["my_func"], gp["my_func"])
+        # diff / render work through the bubbling subclasses too (lists reconvert to Bubbling_list)
+        gp3 = install_bubbling(gp2, root)
+        gp3["my_func"]["locals"]["for i in range(0, 10, 2)"]["range"][1] = 20
+        out = general_parse_to_str(gp3)
+        self.assertIn("for i in range(0, 20, 2):", out)
+        gp3["Toggles"]["tint"] = (0.5, 0.25, 0.75)
+        self.assertIn("tint = (0.5, 0.25, 0.75)", general_parse_to_str(gp3))
 
 
 if __name__ == "__main__":
@@ -694,12 +734,28 @@ class TestConsumers(unittest.TestCase):
             self.assertEqual(parse_def_name(gp["Toggles"]["TextEditor"]), "TextEditor")
         self.assertIsNone(parse_def_name(ours["configure()"]))
 
-    def test_update_in_place_keeps_symbol_usages(self):
+    def test_reparse_keeps_symbol_usages(self):
         gp = parse_to_dict(SAMPLE)
         gp["__symbol_usages__"] = {"speed": object()}
         gp["Toggles"]["__symbol_usages__"] = {"tint": object()}
         keep_root, keep_cls = gp["__symbol_usages__"], gp["Toggles"]["__symbol_usages__"]
-        update_in_place(gp, SAMPLE.replace("speed = 3.0", "speed = 4.0"))
-        self.assertIs(gp["__symbol_usages__"], keep_root)
-        self.assertIs(gp["Toggles"]["__symbol_usages__"], keep_cls)
-        self.assertNotIn("__cst__", gp)
+        gp2 = reparse_reusing(gp, SAMPLE.replace("speed = 3.0", "speed = 4.0"))
+        self.assertIs(gp2["__symbol_usages__"], keep_root)
+        self.assertIs(gp2["Toggles"]["__symbol_usages__"], keep_cls)
+        self.assertNotIn("__cst__", gp2)
+
+    def test_runtime_signature_binds_positional_args(self):
+        import builtins
+        def melty_probe_fn(value, name=None):
+            return value
+        builtins.melty_probe_fn = melty_probe_fn
+        try:
+            gp = parse_to_dict("def f():\n    melty_probe_fn(41, name='x')\n    y = melty_probe_fn(2)\n")
+        finally:
+            del builtins.melty_probe_fn
+        loc = gp["f"]["locals"]
+        self.assertEqual(loc["melty_probe_fn()"]["value"], 41)
+        self.assertEqual(loc["y"]["value"], 2)
+        self.assertEqual(loc["y"]["__pos_names__"], ["value", "name"])
+        loc["y"]["value"] = 3
+        self.assertIn("    y = melty_probe_fn(3)\n", general_parse_to_str(gp))

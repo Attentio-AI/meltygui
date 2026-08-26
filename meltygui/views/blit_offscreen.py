@@ -2068,6 +2068,40 @@ class TileCacheMasked:
             self._emit_counts.clear()
         self._rect_seq = 0
 
+    def clear_mask_outside(self, x0: int, y0: int, x1: int, y1: int) -> bool:
+        """Zero the full depth mask outside the framebuffer rect
+        (x0, y0)-(x1, y1) (fb pixels, origin bottom-left) — the frameless
+        window's shadow margin. Windows may overhang the content edge, and
+        their marks (and their children's) overhang with them, so the
+        margin's depth mask carried plateaus that cast shadows of their
+        own out there: button ghosts, a window's drop shadow running on
+        to the surface edge. Cleared, the margin only ever sees the
+        CONTENT's silhouette — an overhanging window casts from the frame
+        edge exactly like the frame does. Four scissored clears; GL state
+        restored. Call after the mask is built, before the shadow pass."""
+        if self._full_mask_fbo is None:
+            return False
+        fb_w, fb_h = self._fb_size
+        x0, y0 = max(0, int(x0)), max(0, int(y0))
+        x1, y1 = min(fb_w, int(x1)), min(fb_h, int(y1))
+        strips = [(0, 0, fb_w, y0), (0, y1, fb_w, fb_h - y1),
+                  (0, y0, x0, y1 - y0), (x1, y0, fb_w - x1, y1 - y0)]
+        strips = [s for s in strips if s[2] > 0 and s[3] > 0]
+        if not strips:
+            return False
+        st = _GLState()
+        try:
+            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
+            gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+            gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+            gl.glEnable(gl.GL_SCISSOR_TEST)
+            for sx, sy, sw, sh in strips:
+                gl.glScissor(sx, sy, sw, sh)
+                gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        finally:
+            st.restore()
+        return True
+
     def mask_mark_rect(
             self, draw_state: any, layer: int, depth_and_layer: any, x: float, y: float, w: float, h: float,
             key: str, corner_radius: float = 5.0

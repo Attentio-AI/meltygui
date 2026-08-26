@@ -68,7 +68,6 @@ succeeds. Recompile (hotswap, no disk write) is a separate concern: it just
 hotswaps the live object and flashes a checkmark.
 """
 
-import difflib
 import inspect
 import linecache
 import sys
@@ -119,8 +118,7 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save_exclude, no_save
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
-from src.lsd.gl_gui.view.core_views.pending_save import (
-    PendingSave, _diff_lines_with_numbers)
+from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 from src.lsd.gl_gui.perf_trace import (trace as _ptrace, trace_rl as _ptrace_rl,
@@ -1156,14 +1154,15 @@ def _run_chain_in(input_value, chain=None, _src_gen=None, lint_path=None,
             from src.lsd.gl_gui.notifications import lag_span
             _prev_melty = _prev_gp.get("__origin__") is not None
             if _prev_melty and Toggles.TextEditor.melty_syntax:
-                # core_syntax parse: re-execute IN PLACE - every unchanged
-                # value object keeps its identity (draw_states survive). A
-                # broken keystroke falls through to the full path, which is
-                # what reports the error.
-                from src.lsd.gl_gui.view.core_conversion.core_syntax import update_in_place
+                # core_syntax parse: a fresh parse that REUSES every unchanged
+                # value object of the held tree (draw_states survive), never
+                # mutating it - the held tree is bubbling-wrapped, and mutation
+                # would read as a user edit. A broken keystroke falls through
+                # to the full path, which is what reports the error.
+                from src.lsd.gl_gui.view.core_conversion.core_syntax import reparse_reusing
                 try:
-                    with lag_span("melty_syntax update", 30):
-                        _inc_gp = update_in_place(_prev_gp, input_value)
+                    with lag_span("melty_syntax reparse", 30):
+                        _inc_gp = reparse_reusing(_prev_gp, input_value)
                 except SyntaxError:
                     _inc_gp = None
             elif not _prev_melty and not Toggles.TextEditor.melty_syntax:
@@ -2292,44 +2291,6 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
             imgui.same_line(spacing=0)
             if RenderFuncs.button("Save", width=100, height=top_line_height, name=f"save{unique}")[0]:
                 save = True
-
-        # ── Pending diff: the span's queued edit vs its load-time original ──
-        # Pending is the current state; the diff shows what it changes.
-        # Collapsed by default behind a toggle so editors don't grow taller
-        # while editing. Memoized by object identity (both of the held
-        # objects - the queue entry and the originals entry), never hashed.
-        _p_entry = PendingSave.entry_for(address)
-        _p_base = PendingSave.original_for(address) if _p_entry is not None else None
-        _p_data = _p_entry[2].get("data") if _p_entry is not None else None
-        if (_p_base is not None and isinstance(_p_data, str)
-                and isinstance(_p_base[1], str) and _p_data != _p_base[1]):
-            imgui.same_line(spacing=8)
-            _show = bool(draw_state.misc.get("_show_pending_diff"))
-            if RenderFuncs.button(("▼" if _show else "▶") + " pending diff",
-                                  width=130, height=top_line_height,
-                                  name=f"pendingdiff{unique}")[0]:
-                _show = not _show
-                draw_state.misc["_show_pending_diff"] = _show
-                draw_state.invalidate_up(max_depth=6)
-                request_render()
-            if _show:
-                
-                _memo = draw_state.misc.get("_pending_diff_memo")
-                _dkey = (id(_p_base[1]), id(_p_data))
-                if _memo is None or _memo[0] != _dkey:
-                    _diff = difflib.unified_diff(
-                        fromfile=str(address.path), tofile=str(address.path),
-                        a=_p_base[1].splitlines(keepends=True),
-                        b=_p_data.splitlines(keepends=True), n=3)
-                    _lines, _nums = _diff_lines_with_numbers(
-                        _diff, _p_entry[0].start or 0)
-                    _memo = (_dkey, "".join(_lines), _nums)
-                    draw_state.misc["_pending_diff_memo"] = _memo
-                    # Content edge: the queued edit changed - recapture it.
-                    draw_state.invalidate_up(max_depth=6)
-                RenderFuncs.draw_text(_memo[1], show_name=False,
-                                      name=f"pending diff{unique}",
-                                      is_diff=True, line_numbers=_memo[2])
 
         # if auto_save:
         #     imgui.same_line(spacing=16)

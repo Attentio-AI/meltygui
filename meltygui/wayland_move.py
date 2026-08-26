@@ -43,6 +43,7 @@ import glfw
 _STATE = globals().get("_STATE") or {
     "attached": False, "window": None, "display": None, "toplevel": None,
     "seat": None, "pointer": None, "registry": None, "compositor": None, "surface": None,
+    "xdg_surface": None,
     "press_serial": 0,
     "press_button": None, "held": set(), "enter_serial": 0, "masked": set(), "keep": [],
     "opcodes": {}, "prev_button_cb": None, "error": None,
@@ -347,6 +348,14 @@ def attach(window):
             return False
         _STATE["toplevel"] = toplevel
         _STATE["opcodes"].update(ops)
+        # The xdg_surface beside it: set_window_geometry tells the compositor
+        # the window's REAL edges (the content rect inside the shadow margin).
+        xdg_surface = _find_proxy(glfw_window, b"xdg_surface")
+        if xdg_surface and wl.wl_proxy_get_class(xdg_surface) == b"xdg_surface":
+            geo = _opcodes(xdg_surface, {b"set_window_geometry"})
+            if "set_window_geometry" in geo:
+                _STATE["xdg_surface"] = xdg_surface
+                _STATE["opcodes"].update(geo)
         # registry: wl_display.get_registry (opcode 1: "interface"); bind is opcode 0
         reg_iface = _iface_addr(wl, "wl_registry_interface")
         _STATE["opcodes"]["bind"] = 0
@@ -424,6 +433,30 @@ def begin_move(window=None):
 def begin_resize(window=None, edges=EDGE_BOTTOM_RIGHT):
     """xdg_toplevel.resize from the given edge/corner (EDGE_* constants)."""
     return _grab("resize", ctypes.c_uint32(int(edges)))
+
+
+def geometry_available():
+    return bool(_STATE["xdg_surface"] and "set_window_geometry" in _STATE["opcodes"])
+
+
+def set_window_geometry(x, y, w, h):
+    """xdg_surface.set_window_geometry: the rect of the surface the
+    compositor treats as the window — placement, edge constraints, snapping,
+    maximize sizes all use it — so a shadow margin outside it may hang off
+    the screen. Double-buffered: applies at the next commit (swap). A
+    compositor configure then names a GEOMETRY size; GLFW applies it to the
+    surface, and titlebar.on_surface_resized grows the surface back by the
+    margin."""
+    if not geometry_available():
+        return False
+    _, wl = _c()
+    xdg_surface = _STATE["xdg_surface"]
+    wl.wl_proxy_marshal_flags(xdg_surface, _STATE["opcodes"]["set_window_geometry"], None,
+                              wl.wl_proxy_get_version(xdg_surface), 0,
+                              ctypes.c_int32(int(x)), ctypes.c_int32(int(y)),
+                              ctypes.c_int32(int(w)), ctypes.c_int32(int(h)))
+    wl.wl_display_flush(_STATE["display"])
+    return True
 
 
 def input_region_available():

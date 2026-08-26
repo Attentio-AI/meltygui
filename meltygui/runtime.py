@@ -3991,6 +3991,12 @@ class Melty:
         _gt.stamp("ui")
         _ps_t2 = _pp()
         Melty.cache.finalize_captures((int(fb_w), int(fb_h)))
+        # The frameless window's shadow margin sees only the content's
+        # silhouette in the depth mask (an overhanging window would cast
+        # its own shadows out there - see clear_mask_outside).
+        _inset = int(cls.frame_inset or 0)
+        if _inset > 0:
+            Melty.cache.clear_mask_outside(_inset, _inset, int(fb_w) - _inset, int(fb_h) - _inset)
         _gt.stamp("captures")
         _ps_t3 = _pp()
         

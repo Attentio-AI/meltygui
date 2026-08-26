@@ -26,9 +26,11 @@ dict surfaces; everything else is opaque text that survives untouched.
 Parser backend: Python's `ast` (C, native char positions since 3.8) plus
 `tokenize` for comments — no libcst anywhere. Both hold the GIL; the seam for a
 GIL-free / incremental backend (tree-sitter) is `_Src` + `_Extractor`, which
-only need (kind, start, end, fields) per node. `update_in_place` is the live
-path for now: a full re-extract that preserves the identity of every unchanged
-value object so draw_states stay stable.
+only need (kind, start, end, fields) per node. `reparse_reusing` is the live
+path for now: a full re-extract whose result reuses every unchanged value
+object of the previous parse by identity, so draw_states stay stable — the
+previous tree is never mutated (the studio's held tree is bubbling-wrapped:
+a dict mutation there reads as a user edit).
 
 Dict shape matches `libcst_conversion` key-for-key (assignment names, `x#1`
 occurrence keys in function bodies, `func()` / `func()#N` call keys with
@@ -36,8 +38,8 @@ occurrence keys in function bodies, `func()` / `func()#N` call keys with
 `for … in …` / `try` / `except …` block keys via `_occ_key`, `Comment` keys,
 `__overrides__` from `# [k=v]` comments, `decorators` / `parameters` / `locals`
 on functions, `__init__` self.X fields on classes). Positional call args bind
-to a sibling def's parameter names or `argN` (the runtime-signature resolution
-of the libcst path is not consulted here).
+to a sibling def's parameter names, else to the callee's runtime signature
+(same resolvers as the libcst path: builtins + the src scope), else `argN`.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
     _SKIP_PARAMS, _UNREADABLE, _float_to_str, _floats_match, _is_dunder, _occ_key,
     _override_changed, _parse_override_comment, _format_override_comment,
     _reformat_override_comment, _resolve_as_enum, _resolve_callable_by_name,
-    _resolve_callable_by_parts,
+    _resolve_callable_by_parts, _cached_signature,
 )
 
 ORIGIN_KEY = "__origin__"
@@ -560,7 +562,6 @@ class _Extractor:
 
     def module(self, tree):
         gp = GeneralParse(source=self.origin.text)
-        self._stamp(gp, 0, len(self.origin.text))
         seq = self.origin.new_seq((), "body", indent="", insert_at=0)
         self._body(tree.body, gp, (), seq, scope="module")
         self.origin.seal_seq(seq)
@@ -1169,6 +1170,37 @@ class _Extractor:
                     return resolved
         return CodeLine(self._text(node))
 
+    @staticmethod
+    def _runtime_positional_names(call):
+        """Ordered positional parameter names of the resolved callee (leading
+        self/cls dropped, stops at *args), or None when it can't be resolved or
+        inspected — mirrors libcst_conversion._call_positional_param_names."""
+        func = call.func
+        obj = _UNREADABLE
+        if isinstance(func, ast.Name):
+            obj = _resolve_callable_by_name(func.id)
+        elif isinstance(func, ast.Attribute):
+            parts = _dotted_parts(func)
+            if parts is not None:
+                obj = _resolve_callable_by_parts(parts)
+        if obj is _UNREADABLE or not callable(obj):
+            return None
+        try:
+            sig = _cached_signature(obj)
+        except TypeError:
+            sig = None
+        if sig is None:
+            return None
+        names = []
+        for p in sig.parameters.values():
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+                if not names and p.name in _SKIP_PARAMS:
+                    continue
+                names.append(p.name)
+            elif p.kind == p.VAR_POSITIONAL:
+                break
+        return names
+
     def _call(self, call, path, result_cls, pos_names_override, allow_empty=False):
         """Arguments keyed by parameter name (see CallParse). Returns None when
         nothing is readable (the caller falls back to a CodeLine) unless
@@ -1178,9 +1210,13 @@ class _Extractor:
         if pos_names_override is not None:
             pos_names = pos_names_override
         elif positional:
-            pos_names = [f"arg{i}" for i in range(len(positional))]
-            if any(n in {k.arg for k in call.keywords} for n in pos_names):
-                pos_names = None
+            # The callee's runtime signature (builtins + the src scope, like the
+            # libcst path - `live_view(x)` calls its arg `value`), else argN.
+            pos_names = self._runtime_positional_names(call)
+            if pos_names is None:
+                pos_names = [f"arg{i}" for i in range(len(positional))]
+                if any(n in {k.arg for k in call.keywords} for n in pos_names):
+                    pos_names = None
         else:
             pos_names = None
         seq = self.origin.new_seq(path, "args", sep=", ")
@@ -1224,6 +1260,29 @@ class _Extractor:
 # ║  Value codec: equality + rendering styled on the old text                   ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
+def _parse_kind(obj):
+    """The parse class of a node, seen through a bubbling subclass (the studio's
+    held tree is reclassed in place to `Bubbling_<Base>`)."""
+    t = type(obj)
+    # Generated `Bubbling_<Base>` reclasses AND the static `_BubblingDict` /
+    # `_BubblingList` copies that replace plain container containers.
+    if t.__module__.endswith(".bubbling") or t.__name__.startswith("Bubbling_"):
+        from src.lsd.gl_gui.view.core_conversion.bubbling import base_of_bubbling
+        return base_of_bubbling(t)
+    return t
+
+
+def _same_kind(a, b):
+    """Same container family (a bubbling list IS a list), else same type."""
+    if isinstance(a, list) or isinstance(b, list):
+        return isinstance(a, list) and isinstance(b, list)
+    if isinstance(a, tuple) or isinstance(b, tuple):
+        return isinstance(a, tuple) and isinstance(b, tuple)
+    if isinstance(a, dict) or isinstance(b, dict):
+        return isinstance(a, dict) and isinstance(b, dict)
+    return type(a) is type(b)
+
+
 def values_equal(a, b):
     """Semantic equality for leaf values: the float32-noise rule for floats,
     type-strict for bools/ints/strs (1 vs 1.0 vs True are different code),
@@ -1242,7 +1301,7 @@ def values_equal(a, b):
         return type(a) is type(b) and str(a) == str(b)
     if isinstance(a, str) and isinstance(b, str):
         return a == b
-    if isinstance(a, (list, tuple)) and type(a) is type(b):
+    if isinstance(a, (list, tuple)) and _same_kind(a, b):
         return len(a) == len(b) and all(values_equal(x, y) for x, y in zip(a, b))
     if isinstance(a, dict) and isinstance(b, dict):
         ka = [k for k in a if not _is_dunder(k)]
@@ -1324,9 +1383,9 @@ def render(value, old_text=None, orig=None):
         return opener + sep.join(parts) + ("," if trailing and parts else "") + closer
     if isinstance(value, (list, tuple)):
         is_tuple = isinstance(value, tuple)
-        style = _container_style(old_text) if type(orig) is type(value) else None
+        style = _container_style(old_text) if _same_kind(orig, value) else None
         if style is None:
-            if is_tuple and old_text and orig is not None and type(orig) is tuple and old_text[0] != "(":
+            if is_tuple and old_text and isinstance(orig, tuple) and old_text[0] != "(":
                 opener, closer = "", ""        # a bare `x = 1, 2` tuple keeps its bareness
             else:
                 opener, closer = ("(", ")") if is_tuple else ("[", "]")
@@ -1435,7 +1494,7 @@ def _diff_value(new, item, path, origin, edits):
     if isinstance(new, dict) and isinstance(orig, dict) and seq_id is not None:
         _walk(new, path, origin, edits)
         return
-    if isinstance(new, (list, tuple)) and type(new) is type(orig) and seq_id is not None:
+    if isinstance(new, (list, tuple)) and _same_kind(new, orig) and seq_id is not None:
         _walk(new, path, origin, edits)
         return
     if item.kind in ("def", "block", "pseudo"):
@@ -1724,52 +1783,79 @@ def general_parse_to_str(gp, *, check=True) -> str:
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗
-# ║  Live path: re-extract, keep unchanged value objects                        ║
+# ║  Live path: re-extract, reuse unchanged value objects                          ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-def update_in_place(gp, new_text) -> GeneralParse:
-    """Re-parse `new_text` into the EXISTING gp: keys are rewritten to the new
-    parse's order and values, but every value object that is semantically
-    unchanged keeps its identity (nested dicts recursively), so draw_states
-    keyed on those objects survive the edit. Raises SyntaxError like
-    parse_to_dict; the gp is untouched then."""
+_MISSING = object()
+
+_ROOT_CARRY_ATTRS = ("file_path", "line_offset", "address", "symbol_usage", "_symbol_gen",
+                     "usages", "source_ref")
+
+
+def reparse_reusing(gp, new_text) -> GeneralParse:
+    """A fresh parse of `new_text` in which every value object that is
+    semantically unchanged from `gp` is REUSED by identity — a nested node
+    whose whole subtree is unchanged is the old object itself (its spans
+    refreshed) — so draw_states keyed on those objects survive the edit.
+
+    `gp` is NEVER mutated: the studio's held tree is bubbling-wrapped, where a
+    dict mutation notifies the code host as a user edit — the libcst
+    incremental builds a new root the same way. The root is `gp` itself only
+    when nothing surfaced changed (then just its residual moves on). Root
+    bookkeeping (address, file_path, symbol usages, …) carries over. Raises
+    SyntaxError like parse_to_dict."""
     fresh = parse_to_dict(new_text, file_path=getattr(gp, "file_path", None),
                           line_offset=getattr(gp, "line_offset", 0))
     origin = fresh[ORIGIN_KEY]
-    _merge_node(gp, fresh, (), origin)
-    gp.source = new_text
-    for attr in ("span", "_child_spans"):
-        if hasattr(fresh, attr):
-            setattr(gp, attr, getattr(fresh, attr))
-    return gp
+    merged = _merge_node(gp, fresh, (), origin)
+    if merged is gp:
+        gp[ORIGIN_KEY] = origin            # internal key: a raw write OK on a bubbling node
+        _copy_node_attrs(gp, fresh)
+        return gp
+    for attr in _ROOT_CARRY_ATTRS:
+        if hasattr(gp, attr):
+            setattr(merged, attr, getattr(gp, attr))
+    return merged
 
 
 def _merge_node(old, fresh, path, origin):
-    kept = {}
-    for k, v in fresh.items():
+    """The node to use in place of `fresh`: `old` itself when the whole subtree
+    is unchanged (coordinates refreshed onto it), else `fresh` with every
+    unchanged child swapped for the old object. Reads `old` only; writes go
+    into `fresh`, which is a plain (unwrapped) parse."""
+    changed = [k for k in old if not _is_dunder(k)] != [k for k in fresh if not _is_dunder(k)]
+    for k in list(fresh.keys()):
         if _is_dunder(k):
-            kept[k] = v
             continue
-        ov = old.get(k) if isinstance(old, dict) else None
-        if (isinstance(ov, dict) and isinstance(v, dict) and type(ov) is type(v)
-                and not isinstance(v, CallParse)):
-            _merge_node(ov, v, path + (k,), origin)
-            _copy_node_attrs(ov, v)
-            kept[k] = ov
-        elif ov is not None and not isinstance(v, dict) and values_equal(ov, v) and type(ov) is type(v):
-            kept[k] = ov
-            item = origin.items.get(path + (k,))
+        v = fresh[k]
+        ov = old.get(k, _MISSING)
+        if ov is _MISSING:
+            changed = True
+            continue
+        item = origin.items.get(path + (k,))
+        if isinstance(ov, dict) and isinstance(v, dict) and _parse_kind(ov) is _parse_kind(v):
+            m = _merge_node(ov, v, path + (k,), origin)
+            if m is not v:
+                fresh[k] = m
+            if m is not ov:
+                changed = True
+            if item is not None:
+                item.orig = m
+        elif not isinstance(v, dict) and _same_kind(ov, v) and values_equal(ov, v):
+            fresh[k] = ov
             if item is not None:
                 item.orig = ov
         else:
-            kept[k] = v
-    # Dunder entries the fresh parse doesn't produce (`__symbol_usages__`
-    # distributed by the symbol table) stay - they hang off the root object.
-    for k, v in old.items():
-        if _is_dunder(k) and k not in kept and k != "__cst__":
-            kept[k] = v
-    old.clear()
-    old.update(kept)
+            changed = True
+    if changed:
+        # Bookkeeping the fresh parse doesn't produce (`__symbol_usages__`
+        # distributed by the symbol generator) rides along on the new node.
+        for k, v in old.items():
+            if _is_dunder(k) and k not in fresh and k != "__cst__":
+                fresh[k] = v
+        return fresh
+    _copy_node_attrs(old, fresh)
+    return old
 
 
 def _copy_node_attrs(dst, src):

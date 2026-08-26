@@ -371,8 +371,12 @@ def _workarea_for(window):
         # No window positions on Wayland: the bounds are the primary
         # monitor's workarea SIZE anchored at the window's own top-left
         # (which the compositor pins) - a cap on how far a resize may grow.
+        # The SURFACE may overhang the workarea by the shadow margin on
+        # every side (the window client is the content), so the cap is
+        # the workarea plus twice the margin.
         _ax, _ay, aw, ah = glfw.get_monitor_workarea(glfw.get_primary_monitor())
-        return 0.0, 0.0, float(aw), float(ah)
+        overhang = 2 * window_inset()
+        return 0.0, 0.0, float(aw + overhang), float(ah + overhang)
     wx, wy = glfw.get_window_pos(window)
     ww, wh = glfw.get_window_size(window)
     cx, cy = wx + ww / 2, wy + wh / 2
@@ -424,7 +428,7 @@ def _apply_rdrag_resize(window, px, py):
 
     if not _on_wayland():        # Wayland: no client positioning, size only
         glfw.set_window_pos(window, int(round(L)), int(round(T)))
-    glfw.set_window_size(window, int(round(R - L)), int(round(B - T)))
+    request_surface_size(window, int(round(R - L)), int(round(B - T)))
 
 
 # FontAwesome glyphs (merged in the default UI font - see fonts._fa_merge),
@@ -598,6 +602,7 @@ def draw_titlebar(window):
     disp_w, disp_h = io.display_size.x, io.display_size.y
     mx, my = io.mouse_pos.x, io.mouse_pos.y
     maximized = bool(glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    sync_window_geometry(window)
     sync_input_region(window)
     # The strip and edge gestures hand the drag to the window manager
     # (_begin_wm_move / _begin_wm_resize) - on Wayland only once wayland_move
@@ -768,21 +773,84 @@ def _maximized(window):
         return False
 
 
+def shadow_reach(fb_w, fb_h):
+    """px the shadow pass reaches past a caster's edge on a fb_w × fb_h
+    framebuffer, from ShadowCast's own terms: it marches 16 depth slices of
+    1/max_steps above the receiver, each contributing
+    hit_strength − height·hit_falloff (so the height budget is the smaller
+    of the 16 slices and hit_strength/hit_falloff), offsets the sample by
+    height·height_scale along the light direction — in UV, so the reach in
+    px grows with the framebuffer — and blurs by height·blur_scale. The
+    larger of the x/y reaches, rounded UP to 16 px so small resizes don't
+    wobble the margin. Measured against the real pass (4072×2136: predicts
+    69/49 px right/down, the pass fades out by 57/42). 0 with the shadow
+    pass off."""
+    import math
+    from src.lsd.gl_gui.toggles import Toggles
+    from src.lsd.gl_gui.melty import Melty
+    if not Toggles.filters or fb_w <= 0 or fb_h <= 0:
+        return 0
+    total_layers = 100.0 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0))
+    depth_step = 1.0 / max(1.0, total_layers * 65535.0 / 2.0)     # post_frame: max_steps = diff / 2
+    height = 16.0 * depth_step
+    hit_falloff = float(Toggles.shadow_hit_falloff)
+    if hit_falloff > 0.0:
+        height = min(height, float(Toggles.shadow_hit_strength) / hit_falloff)
+    offset_uv = height * (float(Toggles.shadow_height_scale) + float(Toggles.shadow_blur_scale))
+    lx, ly = Toggles.shadow_light_dir
+    norm = math.hypot(lx, ly) or 1.0
+    reach = max(offset_uv * abs(lx) / norm * fb_w, offset_uv * abs(ly) / norm * fb_h)
+    return int(math.ceil(reach / 16.0)) * 16
+
+
+def _monitor_size(window):
+    """Pixel size of the primary monitor's current video mode — the most a
+    surface can span, so the reach derived from it is a CONSTANT."""
+    try:
+        mode = glfw.get_video_mode(glfw.get_primary_monitor())
+        return int(mode.size.width), int(mode.size.height)
+    except Exception:
+        return None
+
+
 def window_inset():
-    """px of transparent shadow margin around the content THIS frame:
-    Toggles.Melty.window_shadow_margin on the transparent frameless window,
-    0 while maximized (the shadow collapses against the screen edges, as
-    GTK's does) and 0 everywhere else. imgui's display is the content:
-    SplitOverlayRenderer.process_inputs shrinks display_size by twice this
-    and shifts the pointer; the masks and tiles keep the whole surface."""
+    """px of transparent shadow margin around the content THIS frame: on
+    the transparent frameless window, the larger of
+    Toggles.Melty.window_shadow_margin and the shadow pass's reach
+    (shadow_reach — a fixed margin truncated the shadow mid-fall, a hard
+    band); 0 while maximized / fullscreen (the shadow collapses against
+    the screen edges, as GTK's does) and 0 everywhere else. The reach is
+    taken at the MONITOR's size, not the live surface: derived from the
+    surface it changed mid-resize whenever a 16 px rounding boundary went
+    by, and every change is a visible jump — the content shrinks by twice
+    it, the geometry origin moves so the compositor shifts the surface,
+    the right-drag's latched cap goes stale (a gap at the top) — and a
+    resize hovering at the boundary flickered the margin on and off. The
+    surface simply overhangs a little more than it needs on a small
+    window. imgui's display is the content: SplitOverlayRenderer
+    .process_inputs shrinks display_size by twice this and shifts the
+    pointer; the masks and tiles keep the whole surface."""
     from src.lsd.gl_gui.toggles import Toggles
     margin = int(Toggles.Melty.window_shadow_margin)
     if margin <= 0:
         return 0
     window = _studio_window()
-    if not _frame_transparent(window) or _maximized(window):
+    if not _frame_transparent(window) or _maximized(window) or _fullscreen(window):
         return 0
+    size = _monitor_size(window)
+    if size:
+        margin = max(margin, shadow_reach(int(size[0]), int(size[1])))
     return margin
+
+
+def _fullscreen(window):
+    """GLFW-fullscreen (a monitor set on the window). pyglfw hands back a
+    ctypes POINTER even when it is NULL — never compare it to None, a null
+    pointer is FALSY, not None (that mistake collapsed the margin to 0)."""
+    try:
+        return window is not None and bool(glfw.get_window_monitor(window))
+    except Exception:
+        return False
 
 
 def frame_geometry(fb_w, fb_h):
@@ -837,6 +905,98 @@ def _corner_alpha_pass(gl_state: GLState = None, content_size=(1.0, 1.0), inset=
 _corner_gl = globals().get("_corner_gl")
 # The input rect last handed to the compositor (sync_input_region).
 _input_rect_applied = globals().get("_input_rect_applied")
+# The window geometry last handed to the compositor (sync_window_geometry).
+_geometry_applied = globals().get("_geometry_applied")
+# True while OUR glfw.set_window_size is in flight - its framebuffer-size
+# callback is not a compositor configure (on_surface_resized).
+_self_resize = False
+
+
+def set_surface_size(window, width, height):
+    """The one way this module resizes the OS surface: flags the resulting
+    framebuffer-size callback as ours, so on_surface_resized leaves it
+    alone (a compositor configure would be grown by the margin)."""
+    global _self_resize
+    _self_resize = True
+    try:
+        glfw.set_window_size(window, int(width), int(height))
+    finally:
+        _self_resize = False
+
+
+# An app-side resize requested mid-frame, applied at the next frame's start.
+_pending_surface_size = globals().get("_pending_surface_size")
+
+
+def request_surface_size(window, width, height):
+    """Queue an app-side resize (the right-drag) for the top of the NEXT
+    frame (apply_pending_surface_size, before process_inputs). Applied
+    mid-frame it committed a new buffer size and geometry with content laid
+    out for the old size — one frame of jelly on every drag step. Later
+    requests in the same frame replace earlier ones."""
+    global _pending_surface_size
+    _pending_surface_size = (int(width), int(height))
+
+
+def apply_pending_surface_size(window):
+    """LSDStudio's loop, before process_inputs: apply the queued resize so
+    this frame lays out at the new size. Returns the size applied."""
+    global _pending_surface_size
+    size = _pending_surface_size
+    if size is None or window is None:
+        return None
+    _pending_surface_size = None
+    set_surface_size(window, *size)
+    return size
+
+
+def on_surface_resized(window, width, height):
+    """LSDStudio's framebuffer-size callback hook. With the window geometry
+    inset to the content, a compositor configure (interactive resize from
+    the edge zones, un-maximize, tiling) names a GEOMETRY size — GLFW makes
+    the SURFACE that size, which would shrink the content by twice the
+    margin. Grow the surface back right here, inside the callback, so the
+    frame that follows is already right (a deferred fix would jitter the
+    content edge on every configure of a drag). Our own resizes
+    (set_surface_size) are flagged and pass through; maximized/fullscreen
+    have no margin and pass through too. Returns the size applied."""
+    if not _on_wayland() or not wayland_move.geometry_available():
+        return None
+    if _self_resize:
+        # Our resize (the right-drag, a compensation): the geometry rides in
+        # the SAME commit as the new buffer. If from draw_titlebar a frame
+        # later it lagged one drag step behind - Mutter pushed the window
+        # up against a stale rect (jitter) and the last step's growth never
+        # got the push (a gap at the top).
+        sync_window_geometry(window, (int(width), int(height)))
+        return None
+    inset = window_inset()      # MAXIMIZED is already current inside GLFW's configure callback
+    if inset <= 0:
+        sync_window_geometry(window, (int(width), int(height)))
+        return None
+    grown = (int(width) + 2 * inset, int(height) + 2 * inset)
+    set_surface_size(window, *grown)      # its resize callback syncs the geometry
+    return grown
+
+
+def sync_window_geometry(window, size=None):
+    """Wayland: keep xdg_surface.set_window_geometry on the CONTENT rect
+    (the surface minus the shadow margin), the whole surface without one —
+    re-marshalled only when it changes. From on_surface_resized with the
+    new size (same commit as the buffer), and per frame from draw_titlebar
+    as the catch-all (margin toggled, maximize state)."""
+    global _geometry_applied
+    if not _on_wayland() or not wayland_move.geometry_available():
+        return False
+    inset = window_inset()
+    fb_w, fb_h = size if size is not None else glfw.get_framebuffer_size(window)
+    rect = (inset, inset, max(1, fb_w - 2 * inset), max(1, fb_h - 2 * inset))
+    if rect == _geometry_applied:
+        return False
+    if wayland_move.set_window_geometry(*rect):
+        _geometry_applied = rect
+        return True
+    return False
 
 
 def sync_input_region(window):

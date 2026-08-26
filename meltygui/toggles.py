@@ -412,7 +412,7 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.54, 0.374, 0.042))
+@window(tint=(0.07, 0.079, 0.083))
 class Toggles:
 
     @defaults(tint=(0.236, 0.26, 0.267))
@@ -608,7 +608,7 @@ class Toggles:
         # reparse); every chain node dispatches on the parse it is handed
         # (__origin__ = core_syntax, __cst__ = libcst), so it flips live.
         # The cst-dict cache is keyed by parser. Read live.
-        melty_syntax = False
+        melty_syntax = True
 
 
         # Fidelity gate for the merge above: regenerate the spliced module's
@@ -1259,7 +1259,12 @@ class Toggles:
         # surface, and the shadow pass (ShadowPass, frame_* uniforms)
         # writes whatever shadow lands outside the content with premultiplied
         # alpha - the inner windows' own shadow casts, continued beyond the
-        # edge. Collapses to 0 while maximized. 0 = no margin. Applies live.
+        # content. This is the FLOOR: the ceiling grows to the shadow's reach on
+        # the current surface (titlebar.shadow_reach, from the cast
+        # shader's terms - ~80 px at 4072 wide, ~144 at 7680), since a
+        # margin shorter than the shadow cuts it mid-fall as a hard band.
+        # Collapses to 0 while maximized / fullscreen. 0 = no margin.
+        # Applies live.
         window_shadow_margin = 40
 
         # add_shadow lift of the whole content rect over the transparent
@@ -1885,7 +1890,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by
