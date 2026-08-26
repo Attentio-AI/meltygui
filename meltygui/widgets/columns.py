@@ -1,14 +1,18 @@
-"""Demo for the new draw_columns layout (view/core_views/columns.py).
+"""Demo for the draw_columns / draw_rows layouts (view/core_views/columns.py).
 
-Lines-only stage: for n columns, n+1 draggable edge lines (window left
-edge, the column edges, window right edge) are drawn over the content and
-stored on the draw_state. Lines move independently and only carry a
-neighbour on physical contact (MIN_COLUMN_WIDTH). Views don't follow the
-lines yet — children render in normal flow underneath.
+Every edge line — the window's four frame edges, each column edge, each
+row edge — is a draggable object shared by reference between the views
+that meet on it. Lines move independently and only carry a neighbour on
+physical contact (MIN_COLUMN_WIDTH along x, MIN_ROW_HEIGHT along y);
+pushed through the pile, an interior line moves the window frame itself.
+A right-drag anywhere latches the column edge to the cursor's right AND
+the row edge below it (left+right-drag: the edges to its left / above)
+and drives both through the same solve.
 """
 import imgui
 
-from src.lsd.gl_gui.view.core_views.columns import draw_columns, Columns
+from src.lsd.gl_gui.view.core_views.columns import (draw_columns, draw_rows,
+                                                    Columns, Rows)
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 
@@ -25,11 +29,31 @@ columns_demo = Columns({
     }),
 })
 
+# Rows stack top to bottom on the same machinery. The middle row is the
+# Columns demo above, so its column edges live inside a row band; the last
+# row is a Columns whose inner cell is itself a Rows - the outer row's
+# edges are passed through the Columns cell to it, so its interior band
+# collides with the rows above and the window's bottom frame edge.
+rows_demo = Rows({
+    "toolbar": {"query": "rows", "limit": 12, "live": True},
+    "panes": columns_demo,
+    "stack": Columns({
+        "log": ["row edges collide like column edges",
+                "drag a band between rows",
+                "push through: the window frame follows"],
+        "inner_rows": Rows({
+            "a": {"x": 1},
+            "b": [2, 7, 1],
+        }),
+    }),
+})
 
-# auto_resize=False: a fixed-size window so the row has a stable frame to
+
+# auto_resize=False: a fixed-size window so the edges have a stable space to
 # resize in; edges move independently of the window either way.
 @window
 @render_func(tint=(0.16, 0.35, 0.49), auto_resize=False, min_width=720, min_height=420)
 def draw_columns_demo(_, draw_state):
-    imgui.text("draw_columns: shared edges — cells, nested rows, and the window frame all collide")
-    draw_columns(columns_demo, name="columns_demo_body")
+    imgui.text("draw_rows / draw_columns: shared edges — rows, columns, nested both ways, "
+               "and the window frame all collide")
+    draw_rows(rows_demo, name="rows_demo_body")

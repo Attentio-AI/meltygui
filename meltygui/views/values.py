@@ -176,7 +176,7 @@ def _fuzzy_substring_distance(q, k):
         prev2 = prev
         prev = cur
     return min(prev)
-
+    
 
 def _fuzzy_key_match(q, k):
     """Does query `q` match candidate `k` (both lowercase), tolerating a few
@@ -10395,7 +10395,6 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         parent_window=draw_state, swoosh=False, disable_scroll=False,
         row_tags=kwargs.get("row_tags"),
         row_tints=kwargs.get("row_tints"),
-        row_fades=kwargs.get("row_fades"),
         row_actions=kwargs.get("row_actions"),
         text_toward_bg=kwargs.get("text_toward_bg", 0.0),
         root_state=drop_down_state, path_prefix=(), return_extras=True)
@@ -10892,9 +10891,8 @@ _DD_ROW_TINT_A = 0.35
 def _dd_tag_segments(tag):
     """A row tag as [(text, rgba)] segments. A plain str is ONE segment in
     the default dim colour; a sequence mixes str items with (text, color)
-    pairs that keep their own colour (the Compare With rows: the date dim,
-    "+N" green, "−M" red) — a 3-tuple colour gets the default alpha, a
-    None colour the default colour. Empty texts drop out."""
+    pairs that keep their own colour — a 3-tuple colour gets the default
+    alpha, a None colour the default colour. Empty texts drop out."""
     if not tag:
         return []
     if isinstance(tag, str):
@@ -10982,7 +10980,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                  cursor_path, tint=None, row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, left_pad=10,
                  text_toward_bg=0.0, row_code=None, code_label_w=None,
-                 row_fades=None, row_width=None):
+                 row_width=None):
     """Render ONE leaf menu row inline with raw imgui — NO per-row render_func.
     Leaves are the bulk of a big menu, so skipping the dd_menu_row wrapper (its
     own draw_state / cache / BVH / hover machinery, tens of µs each) is the whole
@@ -10993,16 +10991,11 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
     own a nested submenu and a real draw_state. Returns the picked value when
     clicked, else UNSET_VALUE.
 
-    `draw_state` is the MENU window's draw_state (the level), not a per-row one.
-
-    `row_fades` (value → 0..1) fades ONE row's label + tag toward the menu
-    bg on top of the menu-wide `text_toward_bg` (the Compare With rows with
-    nothing to compare)."""
+    `draw_state` is the MENU window's draw_state (the level), not a per-row one."""
     row_path = tuple(path_prefix) + (key,)
     is_cursor = _dd_as_tuple(cursor_path) == row_path
     kbd_mode = getattr(root_state, "_kbd_mode", True)
-    row_fade = max(float(text_toward_bg or 0.0),
-                   float(_dd_row_lookup(row_fades, value) or 0.0))
+    row_fade = float(text_toward_bg or 0.0)
 
     pos = imgui.get_cursor_screen_pos()
     x, y = pos[0], pos[1]
@@ -11066,8 +11059,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         color = Tint.dd_text(requested_tint=color)
         # Quiet-row dimming: pull the label toward the menu bg so tinted
         # rows (the info tab's active-source yellow) stand out - menu-wide
-        # (text_toward_bg) or for this row alone (row_fades). Skipped for
-        # washed rows above — their label is already contrast-managed.
+        # (text_toward_bg). Skipped for washed rows above - their label is
+        # already contrast-managed.
         if row_fade and Melty.bg_color_stack:
             _bg = Melty.bg_color_stack[-1]
             _k = min(max(row_fade, 0.0), 1.0)
@@ -11177,17 +11170,17 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             imgui.text_colored(sfx, color[0], color[1], color[2], 0.45)
         # Claim the tag column's width as row content too, so the menu's
         # auto-resize fits label AND tag side by side instead of the tag
-        # masking the label's tail (a commit tag - date + counts - hid part
-        # of a long commit subject otherwise).
+        # masking the label's tail (a wide tag - commit date - hid most of a
+        # long commit subject label).
         if tag:
             imgui.same_line(spacing=0)
             imgui.dummy(_dd_tag_width(tag) + 16.0, 1)
 
         imgui.set_cursor_screen_pos((x, y + h))
 
-    # row kind tag, right-aligned (autocomplete's func/class/... label; the
-    # Compare With rows' date + coloured counts) - _dd_paint_tag masks the
-    # label under it and fades out the row.
+    # Dim kind tag, right-aligned (autocomplete's func/class/… label; the
+    # Compare With rows' date) - _dd_paint_tag masks the label under it and
+    # fades the hovered row.
     if tag:
         _dd_paint_tag(dl, x + w - 10, y, h, tag, active, row_tint=row_tint,
                       fade=row_fade)
@@ -11224,7 +11217,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
-                 full_render=False, row_code=None, row_fades=None, **kwargs):
+                 full_render=False, row_code=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
     the level's entries and renders each as a row (`_dd_menu_row`); a leaf click
     or a pick inside a nested sub-menu bubbles back up as (changed, value).
@@ -11398,7 +11391,7 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
                                   text_toward_bg=text_toward_bg,
                                   row_code=row_code,
                                   code_label_w=code_label_w,
-                                  row_fades=row_fades, row_width=row_width)
+                                  row_width=row_width)
             if picked is not UNSET_VALUE:
                 result = (True, picked)
     return result

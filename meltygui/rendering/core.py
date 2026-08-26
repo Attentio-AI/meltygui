@@ -1956,6 +1956,8 @@ def render_func(*args, **o_kwargs):
                     Melty.resize_press_frame = Melty.frame_count
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
+                    draw_state._resize_target_row = None
+                    draw_state._resize_target_row_y0 = None
                     draw_state._resize_from_top_left = None
                     if handle_drag is None and draw_state.window_pos is not None:
                         draw_state._initial_window_size = (draw_state.width, draw_state.height)
@@ -2014,6 +2016,15 @@ def render_func(*args, **o_kwargs):
                         except Exception:
                             draw_state._resize_target_edge = None
                         draw_state._resize_target_edge_x0 = handle_drag.total_dx
+                        # And the row edge for the new side (above the
+                        # cursor in top-left mode, below it otherwise).
+                        try:
+                            draw_state._resize_target_row = _columns.row_edge_under_cursor(
+                                draw_state, handle_drag.y - draw_state.abs_top,
+                                handle_drag.x, above=from_top_left)
+                        except Exception:
+                            draw_state._resize_target_row = None
+                        draw_state._resize_target_row_y0 = handle_drag.total_dy
                     if (draw_state._initial_window_size is None
                             or draw_state._initial_window_pos_resize is None):
                         # Resize (re-)activating mid-drag (press and first drag
@@ -2031,19 +2042,58 @@ def render_func(*args, **o_kwargs):
                     # can see it even when passed_width short-circuits the
                     # width block.
                     queued = False
+                    # The row-axis twin: True while this right-drag drives
+                    # a ROW edge (the window's own top/bottom frame edges
+                    # included) through the y-axis solve.
+                    queued_rows = False
                     if passed_height is None:
-                        new_h = snap_int(max(size_h, draw_state.min_height))
-                        draw_state.height = new_h
-                        draw_state._source["height"] = "initial window size"
-                        if from_top_left:
-                            # TOP edge follows the height: the bottom stays
-                            # fixed, so the window slides down by exactly what
-                            # the height gave up (min_height clamp included so
-                            # once the height floors, the top stops with it).
-                            draw_state.window_pos = (
-                                draw_state.window_pos[0],
-                                draw_state._initial_window_pos_resize[1]
-                                + (draw_state._initial_window_size[1] - new_h))
+                        # A right-drag (corner_drag) retargets the height to
+                        # a ROW edge latched once at drag start - the row
+                        # edge BELOW the cursor (plain drag), ABOVE it in
+                        # top-left mode - queued incrementally as a
+                        # cursor-driven drag on the window's y-axis solve
+                        # (window_edge_pass, below, same frame). The
+                        # window's own top/bottom frame edges register like
+                        # any other edge, so a window without rows resizes
+                        # exactly as before, and a drag past the row pile
+                        # pushes the far frame edge and slides or grows the
+                        # window like an interior divider. The width block
+                        # below carries the full rationale (incremental
+                        # queue survives the rebase; any columns hiccup
+                        # falls back to a plain resize).
+                        if handle_drag is corner_drag:
+                            try:
+                                if getattr(draw_state, "_resize_target_row", None) is None:
+                                    start_x_abs = handle_drag.x - handle_drag.total_dx
+                                    start_y = (handle_drag.y - handle_drag.total_dy) - draw_state.abs_top
+                                    draw_state._resize_target_row = _columns.row_edge_under_cursor(
+                                        draw_state, start_y, start_x_abs, above=from_top_left)
+                                    draw_state._resize_target_row_y0 = handle_drag.total_dy
+                                row_edge = draw_state._resize_target_row
+                                if row_edge is not None:
+                                    inc = handle_drag.total_dy - draw_state._resize_target_row_y0
+                                    draw_state._resize_target_row_y0 = handle_drag.total_dy
+                                    if inc:
+                                        _columns._ensure_window_state(draw_state)
+                                        draw_state._pending_row_drags.append(
+                                            (row_edge, row_edge["y"] + inc, True))
+                                    queued_rows = True
+                            except Exception:
+                                queued_rows = False
+                        if not queued_rows:
+                            new_h = snap_int(max(size_h, draw_state.min_height))
+                            draw_state.height = new_h
+                            draw_state._source["height"] = "initial window size"
+                            if from_top_left:
+                                # TOP edge follows the cursor: the bottom
+                                # stays fixed, so the window slides down by
+                                # exactly what the height gave up (min_height
+                                # clamp included - once the height floors,
+                                # the top stops with it).
+                                draw_state.window_pos = (
+                                    draw_state.window_pos[0],
+                                    draw_state._initial_window_pos_resize[1]
+                                    + (draw_state._initial_window_size[1] - new_h))
 
                     if passed_width is None:
                         # A right-drag (corner_drag) retargets the width to a
@@ -2084,15 +2134,6 @@ def render_func(*args, **o_kwargs):
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
                                 edge = draw_state._resize_target_edge
                                 if edge is not None:
-                                    # A latched COLUMN edge moves sideways: show
-                                    # <-> (the same shape its own left-drag
-                                    # handle carries), overriding the corner
-                                    # shape requested above. The window's OWN
-                                    # frame edge is the fallback resize target
-                                    # and keeps the corner shape.
-                                    frame_edges = getattr(draw_state, "_frame_edges", None) or ()
-                                    if not any(edge is frame_edge for frame_edge in frame_edges):
-                                        mouse_cursor.request(mouse_cursor.RESIZE_EW)
                                     inc = handle_drag.total_dx - draw_state._resize_target_edge_x0
                                     draw_state._resize_target_edge_x0 = handle_drag.total_dx
                                     if inc:
@@ -2114,6 +2155,31 @@ def render_func(*args, **o_kwargs):
                                     draw_state._initial_window_pos_resize[0]
                                     + (draw_state._initial_window_size[0] - new_w),
                                     draw_state.window_pos[1])
+
+                    # Pointer shape for what the right-drag actually moves:
+                    # a latched INTERIOR column edge moves sideways (<->, the
+                    # shape its own left-drag handle carries), an interior
+                    # row edge up/down, both at once the four-way arrow -
+                    # all overriding the corner shape requested above. The
+                    # window's OWN frame edges are the corner resize itself
+                    # and keep the corner shape.
+                    if handle_drag is corner_drag:
+                        frame_edges = getattr(draw_state, "_frame_edges", None) or ()
+                        frame_rows = getattr(draw_state, "_frame_rows", None) or ()
+                        column_edge = (getattr(draw_state, "_resize_target_edge", None)
+                                       if queued else None)
+                        row_edge = (getattr(draw_state, "_resize_target_row", None)
+                                    if queued_rows else None)
+                        column_interior = (column_edge is not None and not any(
+                            column_edge is frame_edge for frame_edge in frame_edges))
+                        row_interior = (row_edge is not None and not any(
+                            row_edge is frame_row for frame_row in frame_rows))
+                        if column_interior and row_interior:
+                            mouse_cursor.request(mouse_cursor.RESIZE_ALL)
+                        elif column_interior:
+                            mouse_cursor.request(mouse_cursor.RESIZE_EW)
+                        elif row_interior:
+                            mouse_cursor.request(mouse_cursor.RESIZE_NS)
 
                     # Anchor-managed resize positioning is stated in
                     # bottom-right corner semantics; top-left mode derives its
@@ -2165,7 +2231,13 @@ def render_func(*args, **o_kwargs):
                     # their own. Preserves the (layout-managed) x.
                     # Skipped in top-left mode: there the y IS the drag, and
                     # bottom-fixed from the baseline each frame above.
+                    # NOT while the right-drag drives a row edge
+                    # (`queued_rows`) - the y-axis twin of the x rule below:
+                    # a row pushed into the TOP frame edge makes
+                    # window_edge_pass slide window_pos and grow height, and
+                    # re-anchoring y here would undo the slide each frame.
                     if (Toggles.WindowSettings.sticky_drag and not from_top_left
+                            and not queued_rows
                             and (draw_state.anchor_pos is None
                                  or draw_state.anchor_pos in TOP_ANCHORS)):
                         draw_state.window_pos = (draw_state.window_pos[0],
@@ -2199,7 +2271,20 @@ def render_func(*args, **o_kwargs):
                     # the clamp never accumulates and releases on drag-back.
                     if from_top_left:
                         abs_top_tl = draw_state._abs_top()
-                        if abs_top_tl < 0:
+                        if abs_top_tl < 0 and queued_rows:
+                            # The y solve owns height and position here
+                            # frame: state the clamp as a cursor drag drag
+                            # into the TOP frame edge, down to the display
+                            # top, so the pass slides the window, rebases
+                            # the rows and squeezes the pile - a direct
+                            # height/pos write here would be fought by the
+                            # pass's foreign-height invariant next frame.
+                            frame_rows = getattr(draw_state, "_frame_rows", None)
+                            if frame_rows:
+                                _columns._ensure_window_state(draw_state)
+                                draw_state._pending_row_drags.append(
+                                    (frame_rows[0], frame_rows[0]["y"] - abs_top_tl, True))
+                        elif abs_top_tl < 0:
                             if passed_height is None:
                                 draw_state.height = snap_int(draw_state.height + abs_top_tl)
                             draw_state.window_pos = (draw_state.window_pos[0],
@@ -2251,6 +2336,8 @@ def render_func(*args, **o_kwargs):
                     draw_state._initial_window_pos_resize = None
                     draw_state._resize_target_edge = None
                     draw_state._resize_target_edge_x0 = None
+                    draw_state._resize_target_row = None
+                    draw_state._resize_target_row_y0 = None
                     draw_state._resize_from_top_left = None
 
             # Click-away focus clearing: non_blocking + high priority sees every

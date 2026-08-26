@@ -43,7 +43,8 @@ import glfw
 _STATE = globals().get("_STATE") or {
     "attached": False, "window": None, "display": None, "toplevel": None,
     "seat": None, "pointer": None, "registry": None, "compositor": None, "surface": None,
-    "xdg_surface": None,
+    "xdg_surface": None, "relative_manager": None, "relative_pointer": None,
+    "rel_x": 0.0, "rel_y": 0.0, "rel_events": 0,
     "press_serial": 0, "grab_serial": 0,
     "press_button": None, "held": set(), "enter_serial": 0, "masked": set(), "keep": [],
     "opcodes": {}, "prev_button_cb": None, "error": None,
@@ -216,6 +217,101 @@ def _opcodes_of(iface, names):
 
 
 # ---------------------------------------------------------------------------
+# zwp_relative_pointer_v1, built by hand (not in libwayland-client): raw
+# pointer motion in SCREEN space. A surface-drag reads the pointer in
+# surface coordinates, and when the compositor moves the surface under it
+# (its keep-on-screen push once the bottom edge leaves the screen) the
+# surface-relative pointer jumps by the same amount - the drag read that
+# as further movement, grew the window more, the compositor pushed again: a
+# feedback loop that ran the top edge straight up to the screen edge.
+# relative pointer is unaffected by where the surface is.
+# ---------------------------------------------------------------------------
+
+def _wl_message_array(entries, keep):
+    """A wl_message[] from (name, signature, [interface addr or None, ...])."""
+    arr = (_wl_message * max(1, len(entries)))()
+    for i, (name, signature, types) in enumerate(entries):
+        types_arr = (ctypes.c_void_p * max(1, len(types)))(*[t for t in types])
+        keep.append(types_arr)
+        arr[i].name = name
+        arr[i].signature = signature
+        arr[i].types = ctypes.addressof(types_arr)
+    keep.append(arr)
+    return arr
+
+
+def _build_relative_pointer_interfaces(wl, keep):
+    """The two wl_interface structs of relative-pointer-unstable-v1, kept
+    alive for the proxies' lifetime (libwayland stores the pointers)."""
+    rel = _wl_interface()
+    manager = _wl_interface()
+    keep.extend([rel, manager])
+    rel_methods = _wl_message_array([(b"destroy", b"", [])], keep)
+    rel_events = _wl_message_array([(b"relative_motion", b"uuffff", [None] * 6)], keep)
+    rel.name = b"zwp_relative_pointer_v1"
+    rel.version = 1
+    rel.method_count = 1
+    rel.methods = ctypes.cast(rel_methods, ctypes.POINTER(_wl_message))
+    rel.event_count = 1
+    rel.events = ctypes.cast(rel_events, ctypes.POINTER(_wl_message))
+    mgr_methods = _wl_message_array([
+        (b"destroy", b"", []),
+        (b"get_relative_pointer", b"no", [ctypes.addressof(rel), _iface_addr(wl, "wl_pointer_interface")]),
+    ], keep)
+    manager.name = b"zwp_relative_pointer_manager_v1"
+    manager.version = 1
+    manager.method_count = 2
+    manager.methods = ctypes.cast(mgr_methods, ctypes.POINTER(_wl_message))
+    manager.event_count = 0
+    manager.events = ctypes.cast(_wl_message_array([], keep), ctypes.POINTER(_wl_message))
+    return manager, rel
+
+
+_RELATIVE_MOTION_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                                       ctypes.c_uint32, ctypes.c_int32, ctypes.c_int32,
+                                       ctypes.c_int32, ctypes.c_int32)
+
+
+def _on_relative_motion(data, pointer, utime_hi, utime_lo, dx, dy, dx_unaccel, dy_unaccel):
+    # wl_fixed_t: 24.8 fixed point. dx/dy are the coordinate deltas - the
+    # pointer's on-screen motion.
+    _STATE["rel_x"] += int(dx) / 256.0
+    _STATE["rel_y"] += int(dy) / 256.0
+    _STATE["rel_events"] += 1
+
+
+def _setup_relative_pointer():
+    """After the registry roundtrip: a relative pointer for our wl_pointer."""
+    manager, pointer = _STATE["relative_manager"], _STATE["pointer"]
+    if not manager or not pointer or _STATE["relative_pointer"]:
+        return False
+    _, wl = _c()
+    rel_iface = _STATE["relative_iface"]
+    # get_relative_pointer(new_id, wl_pointer) - "no"
+    rel = wl.wl_proxy_marshal_flags(manager, 1, ctypes.addressof(rel_iface),
+                                    wl.wl_proxy_get_version(manager), 0,
+                                    ctypes.c_void_p(None), ctypes.c_void_p(pointer))
+    if not rel:
+        return False
+    cb = _RELATIVE_MOTION_CB(_on_relative_motion)
+    table = (ctypes.c_void_p * 1)(ctypes.cast(cb, ctypes.c_void_p).value)
+    _STATE["keep"].extend([cb, table])
+    wl.wl_proxy_add_listener(rel, ctypes.addressof(table), None)
+    _STATE["relative_pointer"] = rel
+    return True
+
+
+def relative_motion_available():
+    return bool(_STATE["relative_pointer"])
+
+
+def relative_motion_total():
+    """Accumulated screen-space pointer motion (px) since attach — an
+    arbitrary origin; gestures latch a value and use the difference."""
+    return _STATE["rel_x"], _STATE["rel_y"]
+
+
+# ---------------------------------------------------------------------------
 # Own seat + pointer: the press serial
 # ---------------------------------------------------------------------------
 
@@ -232,6 +328,15 @@ _ANY_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint
 
 
 def _on_global(data, registry, name, interface, version):
+    if interface == b"zwp_relative_pointer_manager_v1" and _STATE["relative_manager"] is None:
+        _, wl = _c()
+        manager_iface = _STATE.get("relative_manager_iface")
+        if manager_iface is not None:
+            _STATE["relative_manager"] = wl.wl_proxy_marshal_flags(
+                registry, _STATE["opcodes"]["bind"], ctypes.addressof(manager_iface), 1, 0,
+                ctypes.c_uint32(name), ctypes.c_char_p(b"zwp_relative_pointer_manager_v1"),
+                ctypes.c_uint32(1), ctypes.c_void_p(None))
+        return
     if interface == b"wl_compositor" and _STATE["compositor"] is None:
         _, wl = _c()
         comp_iface = _iface_addr(wl, "wl_compositor_interface")
@@ -337,7 +442,8 @@ def attach(window):
             # A new connection (fresh GLFW window): the old seat/pointer/registry
             # proxies are stale: never marshal on them again.
             _STATE.update(seat=None, pointer=None, registry=None, press_serial=0, grab_serial=0,
-                          press_button=None, held=set(), enter_serial=0)
+                          press_button=None, held=set(), enter_serial=0,
+                          relative_manager=None, relative_pointer=None)
         _STATE["display"] = display
         _STATE["masked"].clear()
         glfw_window = wl.wl_proxy_get_user_data(surface)
@@ -364,6 +470,10 @@ def attach(window):
         reg_iface = _iface_addr(wl, "wl_registry_interface")
         _STATE["opcodes"]["bind"] = 0
         _STATE["surface"] = surface
+        if _STATE.get("relative_manager_iface") is None:
+            manager_iface, rel_iface = _build_relative_pointer_interfaces(wl, _STATE["keep"])
+            _STATE["relative_manager_iface"] = manager_iface
+            _STATE["relative_iface"] = rel_iface
         reg_tab, ptr_tab = _build_listeners()
         _STATE["pointer_listener"] = ptr_tab
         registry = wl.wl_proxy_marshal_flags(display, 1, reg_iface, wl.wl_proxy_get_version(display), 0,
@@ -373,10 +483,11 @@ def attach(window):
             return False
         _STATE["registry"] = registry
         wl.wl_proxy_add_listener(registry, reg_tab, None)
-        wl.wl_display_roundtrip(display)       # globals: seat → pointer, compositor
+        wl.wl_display_roundtrip(display)       # globals → seat, pointer, compositor, relative manager
         if not _STATE["pointer"]:
             _STATE["error"] = "no wl_seat advertised"
             return False
+        _setup_relative_pointer()               # screen-space coordinates for the right-drag
         # Input region plumbing (set_input_rect): wl_compositor.create_region,
         # wl_region.add/destroy, wl_surface.set_input_region - by name.
         if _STATE["compositor"]:

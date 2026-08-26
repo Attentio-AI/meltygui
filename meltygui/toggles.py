@@ -1614,21 +1614,6 @@ class Toggles:
         # value - change them together by changing only this.
         compare_padding = 14.0
 
-        # ── Compare With dropdown rows (open_files._draw_editor_toolbar) ──
-        # Every reference row (HEAD / Latest commit / File system / each
-        # commit) carries its date and time on the right, then the pending
-        # state's line counts against it — "+added" / "−removed" summed
-        # over the compare column's files (git.compare_counts, computed on
-        # the git module's worker thread). Colours of the two numbers:
-        # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        compare_added_tint = (0.42, 0.80, 0.42)
-        # [tint=(0.85, 0.75, 0.05), show_tint=True]
-        compare_removed_tint = (0.88, 0.40, 0.36)
-        # A reference with ZERO changes (nothing to compare) fades this far
-        # toward the menu background — 0 = not at all, 1 = invisible.
-        # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        compare_zero_fade = 0.45
-
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:

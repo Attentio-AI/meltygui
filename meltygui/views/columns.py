@@ -11,7 +11,10 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 from src.lsd.gl_gui.view.invalidation_tracker import Note
 
 MIN_COLUMN_WIDTH = 60
-MIN_ROW_HEIGHT = 20
+# Minimum span of a ROW cell (the row-axis twin of MIN_COLUMN_WIDTH), and
+# the floor every row band / grabber reads when a host hasn't measured
+# its height yet.
+MIN_ROW_HEIGHT = 40
 EDGE_GRAB_WIDTH = 20.0
 # Band color when the cursor is over the row (hard-coded for now).
 HIGHLIGHT_TINT = (0,0,0, 1.0)
@@ -25,27 +28,78 @@ class Columns(dict):
     Columns({"a": ..., "b": Columns({...})})."""
 
 
+class Rows(dict):
+    """Marker dict: values render stacked top to bottom (draw_rows is its
+    default renderer) with draggable edges between them — the row-axis twin
+    of Columns, and the two nest freely by data:
+    Rows({"top": Columns({...}), "bottom": ...})."""
+
+
 # ---------------------------------------------------------------------------
 # Edge model
 #
-# An EDGE is a dict with a single float - {"x": 123.0} - in WINDOW
-# coordinates (offset from window.abs_left). Edges are passed around BY
+# An EDGE is a dict with a single float on its AXIS - {"x": 123.0} for a
+# column edge, {"y": 123.0} for a row edge - in WINDOW coordinates (offset
+# from window.abs_left / window.abs_top). Edges are passed around BY
 # REFERENCE: a nested columns view does not create its own far edges, it
 # adopts the two edge objects of its enclosing cell, so a shared boundary is
 # always the same object in both views and can never drift apart.
 #
-# ALL edges live on the ROOT WINDOW's draw_state: every columns view in the
-# tree upserts its edge list into window._edge_views, and drags from any
-# views land on window._pending_drags. Once per frame - triggered by the
-# first columns view that moves - the window resolves the queue in a
-# single flat collision solve over every edge sorted by x. Consecutive
-# edges always bound exactly one column of some view, so a flat
-# MIN_COLUMN_WIDTH separation gives column contact chains across nesting
-# levels for free. Net motion of the window-direct row's far edges drives
-# the window frame itself (with a re-base to the lines hold their
-# screen positions); contributors are invalidated and every view lines its
-# cells up with the new edges in that same frame.
+# ALL edges live on the ROOT WINDOW's draw_state, one registry per axis:
+# every columns view in that window upserts its edge list into
+# window._edge_views (rows views into window._row_views), and drags from any
+# view queue on window._pending_drags (window._pending_row_drags). Once per
+# frame - triggered by the first layout view that renders - the window
+# resolves each queue in one collision solve over the whole cells of that
+# axis: Each registered edge list contributes its cells (consecutive
+# pairs of its own edges, with each cell's floor / cap), so two edges only
+# ever push or pull each other from the cell that spans between them. A
+# nested layout shares its far edges with the enclosing cell by reference,
+# so contact crosses nesting levels by needed; layouts that share a cell -
+# the columns of two different rows, the rows of two different columns -
+# are independent however close their lines come (the the sort-by-
+# position version this replaced collided them, 08-26). Net motion of the
+# window-direct row's far edges drives the window size itself (with a
+# recenter so interior lines hold their screen positions); contributors are
+# invalidated and every view lines its cells up with the same edges in
+# that same frame.
+#
+# The two axes never interact: an x-edge only ever collides with x-edges.
+# Every function below that walks edges takes ``axis`` ("x" default, "y"
+# for rows) and reads the coordinate under that key.
 # ---------------------------------------------------------------------------
+
+# Per-axis registry attribute names on the window draw_state:
+# (edge views, pending drags, frame edge pair, cell specs). Cell specs are
+# keyed like the views: key → (floors, caps), one entry per cell in the
+# view's list - a cell's floor / cap belong to the VIEW that owns the
+# cell, never to the cell's the edge dict: two cells ending on the same
+# edge (an outer column and the nested view's last column, the window
+# frame and the last column) have their own.
+_REGISTRY = {"x": ("_edge_views", "_pending_drags", "_frame_edges", "_edge_cells"),
+             "y": ("_row_views", "_pending_row_drags", "_frame_rows", "_row_cells")}
+
+
+def _axis_min(axis):
+    """The flat minimum span between consecutive edges on ``axis``: a
+    column's MIN_COLUMN_WIDTH along x, a row's MIN_ROW_HEIGHT along y."""
+    return float(MIN_COLUMN_WIDTH if axis == "x" else MIN_ROW_HEIGHT)
+
+
+def _views(window, axis):
+    return getattr(window, _REGISTRY[axis][0])
+
+
+def _pending(window, axis):
+    return getattr(window, _REGISTRY[axis][1])
+
+
+def _frame(window, axis):
+    return getattr(window, _REGISTRY[axis][2], None)
+
+
+def _specs(window, axis):
+    return getattr(window, _REGISTRY[axis][3])
 
 
 def _column_floor(column_mins, i):
@@ -54,6 +108,14 @@ def _column_floor(column_mins, i):
     if column_mins and i < len(column_mins) and column_mins[i]:
         return float(column_mins[i])
     return float(MIN_COLUMN_WIDTH)
+
+
+def _row_floor(row_mins, i):
+    """Minimum height of row ``i`` — _column_floor's twin over
+    MIN_ROW_HEIGHT."""
+    if row_mins and i < len(row_mins) and row_mins[i]:
+        return float(row_mins[i])
+    return float(MIN_ROW_HEIGHT)
 
 
 def _column_cap(column_maxes, i, floor):
@@ -66,7 +128,7 @@ def _column_cap(column_maxes, i, floor):
 
 
 def resolve_column_widths(column_widths, n_cols, content_width,
-                          column_mins=None, column_maxes=None):
+                          column_mins=None, column_maxes=None, axis="x"):
     """Pixel width per column for ``n_cols`` columns in ``content_width``.
 
     Entries are pixels; None (or a missing entry — the list may be shorter
@@ -76,11 +138,15 @@ def resolve_column_widths(column_widths, n_cols, content_width,
     cap (``column_maxes`` per column, None = unbounded): a flex column
     whose equal share would overshoot its cap takes the cap, and the
     remaining flex columns split what it left on the table.
+
+    The same arithmetic sizes ROWS: ``axis="y"`` reads the row floors
+    (MIN_ROW_HEIGHT) for entries ``column_mins`` doesn't cover.
     """
     available = max(0.0, float(content_width))
     spec = list(column_widths)[:n_cols] if column_widths else []
     spec += [None] * (n_cols - len(spec))
-    mins = [_column_floor(column_mins, i) for i in range(n_cols)]
+    floor_of = _column_floor if axis == "x" else _row_floor
+    mins = [floor_of(column_mins, i) for i in range(n_cols)]
     maxes = [_column_cap(column_maxes, i, mins[i]) for i in range(n_cols)]
 
     def bounded(i, w):
@@ -108,25 +174,25 @@ def resolve_column_widths(column_widths, n_cols, content_width,
 
 
 def _seed_edges(column_widths, n_cols, content_width, base=0.0,
-                column_mins=None, column_maxes=None):
-    """Fresh edge dicts for n_cols columns: n_cols+1 lines accumulated from
-    ``base`` (window coordinates)."""
+                column_mins=None, column_maxes=None, axis="x"):
+    """Fresh edge dicts for n_cols columns (rows with ``axis="y"``):
+    n_cols+1 lines accumulated from ``base`` (window coordinates)."""
     widths = resolve_column_widths(column_widths, n_cols, content_width,
                                    column_mins=column_mins,
-                                   column_maxes=column_maxes)
-    edges = [{"x": float(base)}]
+                                   column_maxes=column_maxes, axis=axis)
+    edges = [{axis: float(base)}]
     for w in widths:
-        edges.append({"x": edges[-1]["x"] + w})
+        edges.append({axis: edges[-1][axis] + w})
     return edges
 
 
-def _edge_min(edges, m):
-    """Minimum span between edges[m-1] and edges[m]: the "min" a
-    ColumnLayout stamped on the RIGHT edge of that column (column_mins),
-    else the flat MIN_COLUMN_WIDTH. The flat solve sorts every edge by x
-    and consecutive edges always bound exactly one column of some view, so
-    a per-edge floor slots straight into the contact physics."""
-    return float(edges[m].get("min") or MIN_COLUMN_WIDTH)
+def _edge_min(edges, m, axis="x"):
+    """Minimum span between edges[m-1] and edges[m]: the "min" a layout
+    stamped on the FAR edge of that column / row (column_mins / row_mins),
+    else the axis's flat minimum. The flat solve sorts every edge by
+    position and consecutive edges always bound exactly one cell of some
+    view, so a per-edge floor slots straight into the contact physics."""
+    return float(edges[m].get("min") or _axis_min(axis))
 
 
 def _edge_max(edges, m):
@@ -139,9 +205,9 @@ def _edge_max(edges, m):
     return float(cap) if cap else None
 
 
-def _clamp_interior(edges):
-    """Pack out-of-frame interior edges back inside the far edges at
-    MIN_COLUMN_WIDTH spacing. Edges only ever move on drag CONTACT, so an
+def _clamp_interior(edges, axis="x"):
+    """Pack out-of-frame interior edges back inside the far edges at the
+    axis's minimum spacing. Edges only ever move on drag CONTACT, so an
     interior edge that lands OUTSIDE its frame — edges persisted from a
     wider window, a width change that ran while the row wasn't registered
     — would otherwise stay there for good: it sorts past the frame edge in
@@ -158,35 +224,38 @@ def _clamp_interior(edges):
     fights the width) and the pass is idempotent from then on."""
     count = len(edges)
     for m in range(count - 2, 0, -1):
-        limit = edges[m + 1]["x"] - _edge_min(edges, m + 1)
-        if edges[m]["x"] > limit:
-            edges[m]["x"] = float(limit)
+        limit = edges[m + 1][axis] - _edge_min(edges, m + 1, axis)
+        if edges[m][axis] > limit:
+            edges[m][axis] = float(limit)
     for m in range(1, count - 1):
-        floor = edges[m - 1]["x"] + _edge_min(edges, m)
-        if edges[m]["x"] < floor:
-            edges[m]["x"] = float(floor)
+        floor = edges[m - 1][axis] + _edge_min(edges, m, axis)
+        if edges[m][axis] < floor:
+            edges[m][axis] = float(floor)
     for m in range(1, count - 1):
         cap = _edge_max(edges, m)
-        if cap is not None and edges[m]["x"] - edges[m - 1]["x"] > cap:
-            edges[m]["x"] = edges[m - 1]["x"] + cap
+        if cap is not None and edges[m][axis] - edges[m - 1][axis] > cap:
+            edges[m][axis] = edges[m - 1][axis] + cap
     cap = _edge_max(edges, count - 1) if count > 2 else None
-    if cap is not None and edges[-1]["x"] - edges[-2]["x"] > cap:
-        _drag_edge(edges, count - 2, edges[-1]["x"] - cap,
-                   walls=frozenset({id(edges[0]), id(edges[-1])}))
+    if cap is not None and edges[-1][axis] - edges[-2][axis] > cap:
+        _drag_edge(edges, count - 2, edges[-1][axis] - cap,
+                   walls=frozenset({id(edges[0]), id(edges[-1])}), axis=axis)
 
 
 def _ensure_window_state(window):
-    if getattr(window, "_edge_views", None) is None:
-        window._edge_views = {}
-    if getattr(window, "_pending_drags", None) is None:
-        window._pending_drags = []
+    for views_attr, pending_attr, _frame_attr, specs_attr in _REGISTRY.values():
+        if getattr(window, views_attr, None) is None:
+            setattr(window, views_attr, {})
+        if getattr(window, pending_attr, None) is None:
+            setattr(window, pending_attr, [])
+        if getattr(window, specs_attr, None) is None:
+            setattr(window, specs_attr, {})
 
 
-def _all_edges(window):
-    """Every edge registered on the window, deduped by identity (shared
-    refs appear once)."""
+def _all_edges(window, axis="x"):
+    """Every edge of ``axis`` registered on the window, deduped by identity
+    (shared refs appear once)."""
     seen, flat = set(), []
-    for _, edge_list in window._edge_views.values():
+    for _, edge_list in _views(window, axis).values():
         for e in edge_list:
             if id(e) not in seen:
                 seen.add(id(e))
@@ -194,113 +263,219 @@ def _all_edges(window):
     return flat
 
 
-def _drag_edge(edges, k, target, walls=frozenset()):
-    """Move edge k of the sorted list to `target`. Edges are independent
-    objects: no other edge moves unless the moving edge (or one it already
-    carried) makes CONTACT — two kinds, one per side of the moving edge:
+def _cells_from_lists(edge_lists, axis="x", specs=()):
+    """The CELLS of every edge list: consecutive pairs (near, far) with the
+    cell's floor and cap — from the list's per-view spec ``(floors, caps)``
+    when one is given (``specs`` parallel to ``edge_lists``; a None floor
+    is the axis minimum, a None cap unbounded), else from the "min" /
+    "max" stamped on the far edge (_edge_min / _edge_max). A pair two
+    views both register (a shared cell) merges to the strictest floor /
+    cap. A cell is the ONLY thing that links two edges — which is what
+    makes the columns of different rows independent: their dividers share
+    no cell, just the frame edges."""
+    cells = {}
+    specs = list(specs) + [None] * (len(edge_lists) - len(specs))
+    for edges, spec in zip(edge_lists, specs):
+        for m in range(1, len(edges)):
+            near, far = edges[m - 1], edges[m]
+            if near is far:
+                continue
+            if spec is not None:
+                floors, caps = spec
+                floor = float((floors[m - 1] if m - 1 < len(floors) else None)
+                              or _axis_min(axis))
+                cap = caps[m - 1] if m - 1 < len(caps) else None
+                cap = None if not cap else max(float(cap), floor)
+            else:
+                floor, cap = _edge_min(edges, m, axis), _edge_max(edges, m)
+            key = (id(near), id(far))
+            if key in cells:
+                _near, _far, floor0, cap0 = cells[key]
+                floor = max(floor, floor0)
+                if cap is None:
+                    cap = cap0
+                elif cap0 is not None:
+                    cap = min(cap, cap0)
+            cells[key] = (near, far, floor, cap)
+    return list(cells.values())
 
-      PUSH, ahead: the column in front closes to its minimum (_edge_min)
-      and its far edge is shoved on ahead.
-      PULL, behind: the column it leaves behind opens to its maximum
-      (_edge_max) and its far edge is dragged along behind.
 
-    Either chain runs edge by edge — a pushed edge closes the next column,
-    a pulled edge opens the next — and stops at the first column with
-    slack; consecutive capped columns therefore travel as one, exactly as
-    consecutive min-packed columns do. A column with no cap never pulls.
+def _window_graph(window, axis):
+    """The cell graph of every layout registered on the window for
+    ``axis`` (per-view specs where the layouts stamped them)."""
+    views, specs = _views(window, axis), _specs(window, axis)
+    keys = list(views)
+    return _EdgeGraph(_cells_from_lists([views[k][1] for k in keys], axis,
+                                        specs=[specs.get(k) for k in keys]))
+
+
+class _EdgeGraph:
+    """Adjacency over cells: ``ahead[id(near)]`` → ``[(far, floor, cap)]``,
+    ``behind[id(far)]`` → ``[(near, floor, cap)]``, ``nodes`` id → edge."""
+
+    def __init__(self, cells):
+        self.ahead, self.behind, self.nodes = {}, {}, {}
+        for near, far, floor, cap in cells:
+            self.nodes[id(near)] = near
+            self.nodes[id(far)] = far
+            self.ahead.setdefault(id(near), []).append((far, floor, cap))
+            self.behind.setdefault(id(far), []).append((near, floor, cap))
+
+    def chain(self, start, goal, walls=frozenset(), forward=True,
+              capped_only=False):
+        """Weight of the binding chain of cells from ``start`` to ``goal``:
+        the LONGEST sum of floors (a push chain — ``capped_only=False``) or
+        the SHORTEST sum of caps over capped cells only (a pull chain —
+        ``capped_only=True``), walking cells ahead (``forward``) or behind.
+        None when no chain links them. Chains never pass through another
+        wall: a wall never moves, so nothing propagates past it."""
+        links = self.ahead if forward else self.behind
+        pick = min if capped_only else max
+        memo, on_stack = {}, set()
+
+        def best(edge):
+            edge_id = id(edge)
+            if edge_id == id(goal):
+                return 0.0
+            if edge_id in walls or edge_id in on_stack:
+                return None
+            if edge_id in memo:
+                return memo[edge_id]
+            on_stack.add(edge_id)
+            found = None
+            for other, floor, cap in links.get(edge_id, ()):
+                if capped_only:
+                    if cap is None:
+                        continue
+                    weight = cap
+                else:
+                    weight = floor
+                rest = best(other)
+                if rest is None:
+                    continue
+                total = weight + rest
+                found = total if found is None else pick(found, total)
+            on_stack.discard(edge_id)
+            memo[edge_id] = found
+            return found
+
+        return best(start)
+
+
+def _solve_graph(graph, edge, target, walls=frozenset(), axis="x"):
+    """Move ``edge`` to ``target`` through the cell graph. Edges are
+    independent objects: no other edge moves unless the moving edge (or
+    one it already carried) makes CONTACT through a cell — two kinds, one
+    per side of the moving edge:
+
+      PUSH, ahead: the cell in front closes to its floor (_edge_min) and
+      its far edge is shoved on ahead.
+      PULL, behind: the cell it leaves behind opens to its cap (_edge_max)
+      and its far edge is dragged along behind.
+
+    Either chain runs cell by cell — a pushed edge closes the next cell, a
+    pulled edge opens the next — and stops at the first cell with slack;
+    consecutive capped cells therefore travel as one, exactly as
+    consecutive floor-packed cells do. A cell with no cap never pulls. An
+    edge several cells share (a nested layout's far edge) carries every
+    cell it bounds.
 
     ``walls`` is a set of edge ids the cascade must NOT move. Contact stops
     dead at a wall: the *dragged* edge itself is clamped so the pile packs
-    against the wall at its minimums (push side) or stretches to its
-    summed caps (pull side) instead of the chain shoving the wall along.
-    Used by _solve_collisions to keep one FRAME edge from moving the other
-    (breaks the foreign-width feedback loop — see there; its mirror image
-    is a fully-capped row, which refuses a foreign widening the same way);
+    against the wall at its floors (push side) or stretches to its summed
+    caps (pull side) instead of the chain shoving the wall along. Used by
+    _solve_collisions to keep one FRAME edge from moving the other (breaks
+    the foreign-width feedback loop — see there; its mirror image is a
+    fully-capped row, which refuses a foreign widening the same way);
     interior divider drags pass no walls, so a divider can still push or
     pull a frame edge and slide/grow/shrink the window 1:1 with the
-    cursor."""
-    old = edges[k]["x"]
+    cursor. Returns True if anything moved."""
+    old = edge[axis]
+    if target == old or id(edge) not in graph.nodes:
+        return False
+    forward = target > old
+    # Wall clamps first: ahead through the floors, behind through the caps
+    # (a pull chain can only reach a wall over capped cells). The
+    # binding chain per wall is the longest floor chain / shortest cap
+    # chain - the one that would move the wall first.
+    for wall_id in walls:
+        wall = graph.nodes.get(wall_id)
+        if wall is None or wall is edge:
+            continue
+        push = graph.chain(edge, wall, walls, forward=forward)
+        if push is not None:
+            target = (min(target, wall[axis] - push) if forward
+                      else max(target, wall[axis] + push))
+        pull = graph.chain(edge, wall, walls, forward=not forward,
+                           capped_only=True)
+        if pull is not None:
+            target = (min(target, wall[axis] + pull) if forward
+                      else max(target, wall[axis] - pull))
     if target == old:
-        return
-    if target > old:
-        # Wall clamps first: ahead through the minimums, behind through the
-        # caps (the pull chain can only reach a wall over capped columns).
-        for m in range(k + 1, len(edges)):
-            if id(edges[m]) in walls:
-                target = min(target, edges[m]["x"]
-                             - sum(_edge_min(edges, j)
-                                   for j in range(k + 1, m + 1)))
-                break
-        for m in range(k - 1, -1, -1):
-            if _edge_max(edges, m + 1) is None:
-                break
-            if id(edges[m]) in walls:
-                target = min(target, edges[m]["x"]
-                             + sum(_edge_max(edges, j)
-                                   for j in range(m + 1, k + 1)))
-                break
-        edges[k]["x"] = float(target)
-        for m in range(k + 1, len(edges)):            # push ahead
-            if id(edges[m]) in walls:
-                break
-            need = edges[m - 1]["x"] + _edge_min(edges, m)
-            if edges[m]["x"] >= need:
-                break
-            edges[m]["x"] = need
-        for m in range(k - 1, -1, -1):                # pull behind
-            if id(edges[m]) in walls:
-                break
-            cap = _edge_max(edges, m + 1)
-            if cap is None:
-                break
-            need = edges[m + 1]["x"] - cap
-            if edges[m]["x"] >= need:
-                break
-            edges[m]["x"] = need
-    else:
-        for m in range(k - 1, -1, -1):
-            if id(edges[m]) in walls:
-                target = max(target, edges[m]["x"]
-                             + sum(_edge_min(edges, j)
-                                   for j in range(m + 1, k + 1)))
-                break
-        for m in range(k + 1, len(edges)):
-            if _edge_max(edges, m) is None:
-                break
-            if id(edges[m]) in walls:
-                target = max(target, edges[m]["x"]
-                             - sum(_edge_max(edges, j)
-                                   for j in range(k + 1, m + 1)))
-                break
-        edges[k]["x"] = float(target)
-        for m in range(k - 1, -1, -1):                # push ahead
-            if id(edges[m]) in walls:
-                break
-            need = edges[m + 1]["x"] - _edge_min(edges, m + 1)
-            if edges[m]["x"] <= need:
-                break
-            edges[m]["x"] = need
-        for m in range(k + 1, len(edges)):            # pull behind
-            if id(edges[m]) in walls:
-                break
-            cap = _edge_max(edges, m)
-            if cap is None:
-                break
-            need = edges[m - 1]["x"] + cap
-            if edges[m]["x"] <= need:
-                break
-            edges[m]["x"] = need
+        return False
+    edge[axis] = float(target)
+    # Propagate contact. Every relaxation moves an edge the way the drag
+    # went and never back, so this is a monotone worklist that settles on
+    # its own; the guard only ever trips on a cyclic (corrupt) cell graph.
+    pending = [edge]
+    guard = 64 * (len(graph.nodes) + 1)
+    while pending and guard > 0:
+        guard -= 1
+        current = pending.pop()
+        current_id = id(current)
+        if forward:
+            for far, floor, _cap in graph.ahead.get(current_id, ()):    # push ahead
+                if id(far) in walls:
+                    continue
+                need = current[axis] + floor
+                if far[axis] < need:
+                    far[axis] = need
+                    pending.append(far)
+            for near, _floor, cap in graph.behind.get(current_id, ()):  # pull behind
+                if cap is None or id(near) in walls:
+                    continue
+                need = current[axis] - cap
+                if near[axis] < need:
+                    near[axis] = need
+                    pending.append(near)
+        else:
+            for near, floor, _cap in graph.behind.get(current_id, ()):  # push ahead
+                if id(near) in walls:
+                    continue
+                need = current[axis] - floor
+                if near[axis] > need:
+                    near[axis] = need
+                    pending.append(near)
+            for far, _floor, cap in graph.ahead.get(current_id, ()):    # pull behind
+                if cap is None or id(far) in walls:
+                    continue
+                need = current[axis] + cap
+                if far[axis] > need:
+                    far[axis] = need
+                    pending.append(far)
+    return True
 
 
-def _solve_collisions(window):
-    """Apply every queued drag against the FULL edge population, one flat
-    sorted-by-x list — contact chains cross view boundaries naturally.
+def _drag_edge(edges, k, target, walls=frozenset(), axis="x"):
+    """Move edge k of ONE ordered edge list to ``target`` — the single-list
+    case of _solve_graph (consecutive edges of one list are its cells);
+    _clamp_interior's cap repair runs through here."""
+    graph = _EdgeGraph(_cells_from_lists([edges], axis))
+    _solve_graph(graph, edges[k], target, walls=walls, axis=axis)
+
+
+def _solve_collisions(window, axis="x"):
+    """Apply every queued drag of ``axis`` against the FULL cell graph of
+    that axis — every registered edge list's cells at once — so contact
+    chains cross view boundaries through shared edges and nothing else.
     Returns True if anything moved. (No standing repair pass: edges only
     move while a drag is applied.)"""
-    pending, window._pending_drags = window._pending_drags, []
+    pending_attr = _REGISTRY[axis][1]
+    pending = getattr(window, pending_attr)
+    setattr(window, pending_attr, [])
     if not pending:
         return False
-    flat = _all_edges(window)
+    graph = _window_graph(window, axis)
     # A FRAME edge drag must never shove the OTHER frame edge. The danger
     # case is the foreign-width invariant drag (window_edge_pass queues
     # right→window.width): when an outside writer re-stamps width below the
@@ -313,7 +488,7 @@ def _solve_collisions(window):
     # INTERIOR divider drags keep an empty wall set: pushing the window's
     # left edge with a divider (slide or grow) is normal normal and only
     # ever moves 1:1 with the cursor.
-    frame_ids = {id(e) for e in (getattr(window, "_frame_edges", None) or [])}
+    frame_ids = {id(e) for e in (_frame(window, axis) or [])}
     moved = False
     for item in pending:
         # Optional third slot marks a CURSOR-DRIVEN drag (the right-drag
@@ -323,43 +498,41 @@ def _solve_collisions(window):
         # the other (slide the window), just like an interior divider.
         edge, target = item[0], item[1]
         cursor_driven = len(item) > 2 and bool(item[2])
-        flat.sort(key=lambda e: e["x"])
-        k = next((i for i, e in enumerate(flat) if e is edge), None)
-        if k is None or target == edge["x"]:
-            continue
         if cursor_driven:
             walls = frozenset()
         else:
             walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
-        _drag_edge(flat, k, target, walls=walls)
+        if not _solve_graph(graph, edge, target, walls=walls, axis=axis):
+            continue
         if cursor_driven and id(edge) in frame_ids:
-            _hold_frame_min_width(window, edge)
+            _hold_frame_min(window, edge, axis)
         moved = True
     return moved
 
 
-def _hold_frame_min_width(window, dragged):
-    """A cursor-driven FRAME edge dragged past the window's min_width pushes
-    the OTHER frame edge along — the window slides (right edge dragged left)
-    or grows (left edge dragged right) — instead of stopping short of the
-    cursor. Without this the solve left the frame pair narrower than
-    min_width, the wrapper's `width = max(width, min_width)` re-stamp (after
-    the pass) widened it again, and the next pass's foreign-width invariant
-    dragged the cursor edge BACK every frame: the right edge yanked between
-    the cursor and min_width while the left edge kept sliding, width
-    ratcheting up mid-drag. Interior edges need no cascade: the pushed edge
-    only ever moves AWAY from them."""
-    fe = getattr(window, "_frame_edges", None)
+def _hold_frame_min(window, dragged, axis="x"):
+    """A cursor-driven FRAME edge dragged past the window's min_width
+    (min_height on the row axis) pushes the OTHER frame edge along — the
+    window slides (right edge dragged left) or grows (left edge dragged
+    right) — instead of stopping short of the cursor. Without this the
+    solve left the frame pair narrower than min_width, the wrapper's
+    `width = max(width, min_width)` re-stamp (after the pass) widened it
+    again, and the next pass's foreign-width invariant dragged the cursor
+    edge BACK every frame: the right edge yanked between the cursor and
+    min_width while the left edge kept sliding, width ratcheting up
+    mid-drag. Interior edges need no cascade: the pushed edge only ever
+    moves AWAY from them."""
+    fe = _frame(window, axis)
     if not fe:
         return
-    left, right = fe
-    floor = float(window.min_width or 0)
-    if right["x"] - left["x"] >= floor:
+    near, far = fe
+    floor = float((window.min_width if axis == "x" else window.min_height) or 0)
+    if far[axis] - near[axis] >= floor:
         return
-    if dragged is right:
-        left["x"] = right["x"] - floor
+    if dragged is far:
+        near[axis] = far[axis] - floor
     else:
-        right["x"] = left["x"] + floor
+        far[axis] = near[axis] + floor
 
 
 def _drag_live():
@@ -381,55 +554,73 @@ def _defer_freeze_settle(window, draw_state):
 
 
 def release_row(draw_state):
-    """Drop this host's registered edge row. Hosts that sometimes render
-    WITHOUT columns (the code editor leaving a compare split) must call this
-    on their column-less frames: window_edge_pass only evicts rows whose ds
-    is CLOSED, and a host whose ds IS its window never closes while open —
-    the stale row keeps feeding edge_under_cursor and the frame-edge solve,
-    so right-drag resizes latch an invisible stale divider and the window
-    width freezes. ColumnLayout re-registers on construction, so releasing
-    before building columns later in the same frame is safe."""
+    """Drop this host's registered edge rows (both axes). Hosts that
+    sometimes render WITHOUT columns (the code editor leaving a compare
+    split) must call this on their column-less frames: window_edge_pass
+    only evicts rows whose ds is CLOSED, and a host whose ds IS its window
+    never closes while open — the stale row keeps feeding edge_under_cursor
+    and the frame-edge solve, so right-drag resizes latch an invisible
+    stale divider and the window width freezes. ColumnLayout / RowLayout
+    re-register on construction, so releasing before building them later
+    in the same frame is safe."""
     window = draw_state.parent_window or draw_state
-    views = getattr(window, "_edge_views", None)
-    if views is not None:
-        views.pop(("row", draw_state.id), None)
+    for axis, key in (("x", ("row", draw_state.id)), ("y", ("rows", draw_state.id))):
+        views = getattr(window, _REGISTRY[axis][0], None)
+        if views is not None:
+            views.pop(key, None)
+        specs = getattr(window, _REGISTRY[axis][3], None)
+        if specs is not None:
+            specs.pop(key, None)
     draw_state._column_container = False
+    draw_state._row_container = False
 
 
-def _has_columns_ancestor(draw_state):
-    """True when another columns container sits between this view and its
-    window. Used to decide window-frame adoption: a row with NO columns
-    ancestor is the window's row — however many plain wrapper views
+def _has_layout_ancestor(draw_state, flag):
+    """True when another layout container carrying ``flag``
+    (``_column_container`` / ``_row_container``) sits between this view
+    and its window. Used to decide window-frame adoption: a row with NO
+    such ancestor is the window's row — however many plain wrapper views
     (window bodies, code_file_io, …) sit in between — and adopts the
-    window's frame edges; a row under another columns container gets its
-    far edges from the enclosing cell instead (passed refs, or its own as
-    the deep-nesting fallback). The climb is scoped to the parent window
-    and guards the root ds's self-parent loop."""
+    window's frame edges on that axis; a row under another container of
+    its axis gets its far edges from the enclosing cell instead (passed
+    refs, or its own as the deep-nesting fallback). The climb is scoped to
+    the parent window and guards the root ds's self-parent loop. A Rows
+    host is transparent to a Columns view and vice versa: the axes don't
+    share edges."""
     window = draw_state.parent_window
     node = draw_state._parent
     while node is not None and node is not node._parent:
         if node is window:
             break
-        if getattr(node, "_column_container", False):
+        if getattr(node, flag, False):
             return True
         node = node._parent
     return False
 
 
-def window_edge_pass(window):
-    """Every window's left/right FRAME edges as draggable edge objects —
-    run once per frame per window (idempotent; called from core_render's
-    melty-window path for ALL windows, and from draw_columns as a fallback).
+def _has_columns_ancestor(draw_state):
+    return _has_layout_ancestor(draw_state, "_column_container")
 
-    The window owns two edge dicts seeded at [0, width] (window coords) and
-    registered in the same solve as every column edge. Native resizes
-    (corner drag, right-click draw, programmatic width writes) are folded
-    in through the invariant right.x == window.width: any foreign width
-    change queues a drag of the right frame edge, so it runs the SAME
-    collision solve and frame and lines can never desync. After the solve
-    the window lines up with its edges exactly like cells do: left edge
-    off 0 → window_pos slides + everything re-bases; right edge off width
-    → width follows."""
+
+def _has_rows_ancestor(draw_state):
+    return _has_layout_ancestor(draw_state, "_row_container")
+
+
+def window_edge_pass(window):
+    """Every window's FRAME edges — left/right on the x axis, top/bottom on
+    the y axis — as draggable edge objects, run once per frame per window
+    (idempotent; called from core_render's melty-window path for ALL
+    windows, and from the layouts as a fallback).
+
+    Per axis the window owns two edge dicts seeded at [0, size] (window
+    coords) and registered in the same solve as every column / row edge.
+    Native resizes (corner drag, right-click draw, programmatic size
+    writes) are folded in through the invariant far.pos == window.size:
+    any foreign size change queues a drag of the far frame edge, so it runs
+    the SAME collision solve and frame and lines can never desync. After
+    the solve the window lines up with its edges exactly like cells do:
+    near edge off 0 → window_pos slides + everything re-bases; far edge off
+    the size → the size follows."""
     from src.lsd.gl_gui.melty import Melty
     if getattr(window, "_edges_frame", None) == Melty.frame_count:
         return
@@ -452,109 +643,158 @@ def window_edge_pass(window):
         window._freeze_settle = {}
         request_render()
 
-    fe = getattr(window, "_frame_edges", None)
+    moved = _frame_pass(window, "x")
+    moved = _frame_pass(window, "y") or moved
+
+    if moved:
+        seen = set()
+        for axis in _REGISTRY:
+            for ds, _ in _views(window, axis).values():
+                if id(ds) in seen:
+                    continue
+                seen.add(id(ds))
+                # A view whose box already disagrees with its tile
+                # (size_change) is live-rendered by blit_offscreen as-is -
+                # cached image and cached masks are both refused mid-resize,
+                # and the tile is rebuilt once on mouse release.
+                # Invalidating it here would only queue per-frame tile
+                # copies at the wrong size. Only views whose own box is
+                # UNCHANGED while their edges move (interior layout drags)
+                # still need the explicit invalidate or they blit stale.
+                # freeze_resize views are the exception BOTH ways: mid-drag
+                # they WANT to blit stale (that's the freeze contract -
+                # invalidating would force a live body re-render every drag
+                # frame, since a box-unchanged view never hits the size
+                # size-mismatch gate), so their invalidate is deferred to the
+                # release settle above.
+                if not ds.size_change:
+                    if getattr(ds, "freeze_resize", False) and _drag_live():
+                        _defer_freeze_settle(window, ds)
+                    else:
+                        ds.invalidate(note=Note(reason="edge solve", **_NOTE))
+
+
+def _frame_pass(window, axis):
+    """One axis of window_edge_pass: seed / register the frame pair, fold
+    the foreign size change in, floor the window's minimum at the pile,
+    offer the frame drag handles, solve, and line the window up with its
+    frame edges. Returns True when any edge of the axis moved."""
+    from src.lsd.gl_gui.melty import Melty
+    frame_attr = _REGISTRY[axis][2]
+    size = window.width if axis == "x" else window.height
+    fe = getattr(window, frame_attr, None)
     if not fe:
-        fe = [{"x": 0.0}, {"x": float(window.width)}]
-        window._frame_edges = fe
-    window._edge_views[window.id] = (window, fe)
-    left, right = fe
+        fe = [{axis: 0.0}, {axis: float(size)}]
+        setattr(window, frame_attr, fe)
+    views, specs = _views(window, axis), _specs(window, axis)
+    views[window.id] = (window, fe)
+    # The frame pair is a cell too (it keeps the window's own span in the
+    # graph), without the flat floor and uncapped - the caps on the far edge
+    # belong to the LAST column / row, never to the window.
+    specs[window.id] = ([None], [None])
+    near, far = fe
 
-    for key, (ds, _) in list(window._edge_views.items()):
+    for key, (ds, _) in list(views.items()):
         if ds is not window and getattr(ds, "closed", False):
-            del window._edge_views[key]
+            del views[key]
+            specs.pop(key, None)
 
-    # Foreign width change since last pass → the right frame edge follows
-    # it in the collision solve.
-    if abs(right["x"] - window.width) > 0.5:
-        window._pending_drags.append((right, float(window.width)))
+    # Foreign size change since last frame → the far frame edge follows it
+    # THROUGH the collision solve.
+    if abs(far[axis] - size) > 0.5:
+        _pending(window, axis).append((far, float(size)))
 
-    # The pile can never out-compress the window: keep min_width at the
-    # fully-compressed span so a native shrink always completes its
-    # collision pass instead of fighting the resize latch. Raise-only,
-    # re-stamped every frame (the wrapper rewrites min_width from resolved
-    # contents every frame).
-    _flat = _all_edges(window)
-    need = snap_int(left["x"]
-                    + max(MIN_COLUMN_WIDTH,
-                          sum(float(e.get("min") or MIN_COLUMN_WIDTH)
-                              for e in _flat if e is not left)))
-    if (window.min_width or 0) < need:
-        window.min_width = need
+    # The frame can never out-compress the window: keep min_width /
+    # min_height at the fully-compressed span so a pending shrink always
+    # triggers its collision pass instead of fighting the resize latch.
+    # Raise-only, re-stamped every frame (the wrapper rewrites the minimum
+    # from resolved kwargs each frame).
+    # The compressed span is the LONGEST chain of cell floors from the near
+    # frame edge to the far one - NOT the sum over every edge, which
+    # double-counts layouts stacked in different rows.
+    graph = _window_graph(window, axis)
+    span = graph.chain(near, far)
+    need = snap_int(near[axis] + max(_axis_min(axis), span or 0.0))
+    if axis == "x":
+        if (window.min_width or 0) < need:
+            window.min_width = need
+    elif (window.min_height or 0) < need:
+        window.min_height = need
 
-    # Frame edge drag handles, full window height.
+    # Frame edge drag handles: full window height for the left/right pair,
+    # full window width for the top/bottom pair. The band straddles the
+    # edge, so the top handle's inner rect covers the header's top rows -
+    # the buttons sit above it (flat_button priority_delta 4), the
+    # window move sits below (priority_delta 0 / -2).
     win_x, win_y = window.abs_left, window.abs_top
-    active = None
     seen_handles = set()
     for k, e in enumerate(fe):
-        x = win_x + e["x"]
-        rect = (x - EDGE_GRAB_WIDTH / 2, win_y,
-                x + EDGE_GRAB_WIDTH / 2, win_y + window.height)
-        drag = window.on_action("left_mouse_drag", view_id=f"win_edge_{k}",
-                                rect=rect, priority_delta=1,
-                                cursor=mouse_cursor.RESIZE_EW)
-        press = window.on_action("left_mouse_down", view_id=f"win_edge_{k}",
+        if axis == "x":
+            x = win_x + e["x"]
+            rect = (x - EDGE_GRAB_WIDTH / 2, win_y,
+                    x + EDGE_GRAB_WIDTH / 2, win_y + window.height)
+            cursor, total = mouse_cursor.RESIZE_EW, "total_dx"
+        else:
+            y = win_y + e["y"]
+            rect = (win_x, y - EDGE_GRAB_WIDTH / 2,
+                    win_x + window.width, y + EDGE_GRAB_WIDTH / 2)
+            cursor, total = mouse_cursor.RESIZE_NS, "total_dy"
+        view_id = f"win_edge_{axis}_{k}"
+        drag = window.on_action("left_mouse_drag", view_id=view_id,
+                                rect=rect, priority_delta=1, cursor=cursor)
+        press = window.on_action("left_mouse_down", view_id=view_id,
                                  rect=rect, priority_delta=1)
         if press:
             # Resize press, before any edge motion: freeze views snap their
             # clean pre-drag capture this frame (mark_start_offscreen).
-            from src.lsd.gl_gui.melty import Melty
             Melty.resize_press_frame = Melty.frame_count
         if not drag:
             continue
-        active = k
-        seen_handles.add(f"win_{k}")
-        inc = _drag_inc(window, f"win_{k}", drag)
+        handle = f"win_{axis}_{k}"
+        seen_handles.add(handle)
+        inc = _drag_inc(window, handle, drag, total=total)
         if inc:
-            window._pending_drags.append((e, e["x"] + inc))
+            _pending(window, axis).append((e, e[axis] + inc))
     totals = getattr(window, "_drag_totals", None)
     if totals:
-        # Purge ONLY our own "win_*" namespace: when a ColumnLayout host ds
-        # IS the window (code review compare split), its int handles live in
-        # this same dict - deleting them here resets the divider to the
-        # baseline every frame, so every frame re-applies the FULL total_dx
-        # and the edge flings away from the cursor.
+        # Prune ONLY this axis's "win_<axis>_*" namespace: when a layout
+        # host ds IS the window (code editor compare split), its divider
+        # handles live in this same dict - deleting them here resets the
+        # divider's drag baseline every frame, so each frame re-applies
+        # the FULL total and the edge flings away from the cursor. The other
+        # axis's frame handles are pruned by its own pass.
+        prefix = f"win_{axis}_"
         for h in [h for h in totals
-                  if isinstance(h, str) and h.startswith("win_")
+                  if isinstance(h, str) and h.startswith(prefix)
                   and h not in seen_handles]:
             del totals[h]
 
-    moved = _solve_collisions(window)
-
+    moved = _solve_collisions(window, axis)
 
     # Line the WINDOW up with its frame edges: the same rule cells use.
-    d_left = left["x"]
-    if d_left:
+    d_near = near[axis]
+    if d_near:
         pos = window.window_pos or (0, 0)
-        window.window_pos = (pos[0] + d_left, pos[1])
-        window.width = snap_int(window.width - d_left)
-        for e in _all_edges(window):
-            e["x"] -= d_left
+        if axis == "x":
+            window.window_pos = (pos[0] + d_near, pos[1])
+            window.width = snap_int(window.width - d_near)
+        else:
+            window.window_pos = (pos[0], pos[1] + d_near)
+            window.height = snap_int(window.height - d_near)
+        for e in _all_edges(window, axis):
+            e[axis] -= d_near
         moved = True
-    if abs(right["x"] - window.width) > 0.5:
-        window.width = snap_int(right["x"])
+    size = window.width if axis == "x" else window.height
+    if abs(far[axis] - size) > 0.5:
+        size = snap_int(far[axis])
+        if axis == "x":
+            window.width = size
+        else:
+            window.height = size
         moved = True
     # Kill snap drift so the invariant check doesn't re-fire every frame.
-    right["x"] = float(window.width)
-
-    if moved:
-        for ds, _ in window._edge_views.values():
-            # A view whose box already disagrees with its tile (size_change)
-            # is live-rendering by blit_offscreen as-is - the image and
-            # cached masks are both refused mid-resize, and the image is
-            # rebuilt once on mouse release. Invalidating it here would only
-            # queue per-frame tile copies at the stale size. Only cells whose
-            # own size is UNCHANGED while their edges move (interior-edge
-            # drags) still need the explicit invalidate or they blit stale.
-            # freeze_resize views are the exception both ways: mid-drag they
-            # WANT to blit stale (that's the freeze contract - invalidating
-            # would force a live body re-render every drag frame, while a
-            # box-unchanged view never hits the frozen size-mismatch gate),
-            # so their invalidate is deferred to the release case above.
-            if not ds.size_change:
-                if getattr(ds, "freeze_resize", False) and _drag_live():
-                    _defer_freeze_settle(window, ds)
-                else:
-                    ds.invalidate(note=Note(reason="edge solve", **_NOTE))
+    far[axis] = float(size)
+    return moved
 
 
 def reframe_window(window, d_left, d_right, extra_edges=()):
@@ -595,6 +835,53 @@ def reframe_window(window, d_left, d_right, extra_edges=()):
     request_render()
 
 
+def _across_band(ds, axis):
+    """The span a view's edges of ``axis`` cover on the OTHER axis (absolute
+    screen coords): its visible clip when it has one, else its box from the
+    last measured band extent. An x-edge row spans a y band; a y-edge
+    column of rows spans an x band."""
+    clip = getattr(ds, "abs_clip_rect", None)
+    if axis == "x":
+        if clip:
+            return clip[1], clip[3]
+        top = ds.abs_top
+        return top, top + max(getattr(ds, "_edge_lines_height", 0.0),
+                              MIN_ROW_HEIGHT)
+    if clip:
+        return clip[0], clip[2]
+    left = ds.abs_left
+    return left, left + max(getattr(ds, "_edge_lines_width", 0.0),
+                            MIN_COLUMN_WIDTH)
+
+
+def _edge_under_cursor(window, axis, along, across_abs, before=False):
+    """The edge of ``axis`` a right-drag resize should move: the nearest
+    edge strictly AHEAD of the cursor (``along``, window coords on the
+    axis) — or strictly BEHIND it with ``before=True`` — among the views
+    whose band on the other axis contains ``across_abs`` (absolute), i.e.
+    the far edge of the INNERMOST cell under the cursor. Falls back to the
+    window's frame edge on that side (every window registers its pair over
+    the full window) — None only if no edges exist yet."""
+    _ensure_window_state(window)
+    best, best_pos = None, None
+    for ds, edge_list in _views(window, axis).values():
+        lo, hi = _across_band(ds, axis)
+        if not (lo - 1 <= across_abs <= hi + 1):
+            continue
+        for e in edge_list:
+            pos = e[axis]
+            if before:
+                if pos < along - 0.5 and (best_pos is None or pos > best_pos):
+                    best, best_pos = e, pos
+            elif pos > along + 0.5 and (best_pos is None or pos < best_pos):
+                best, best_pos = e, pos
+    if best is None:
+        fe = _frame(window, axis)
+        if fe:
+            best = fe[0] if before else fe[1]
+    return best
+
+
 def edge_under_cursor(window, cursor_x_window, cursor_y_abs, left=False):
     """The column edge a right-drag resize should move, given the drag-start
     cursor (``cursor_x_window`` in window coords — offset from window.abs_left
@@ -609,57 +896,52 @@ def edge_under_cursor(window, cursor_x_window, cursor_y_abs, left=False):
     a drag in the outermost column — lands on the window's frame edge on
     that side and the frame resizes exactly as a plain resize.
     Returns None only if no edges exist yet."""
-    _ensure_window_state(window)
-    best, best_x = None, None
-    for ds, edge_list in window._edge_views.values():
-        clip = getattr(ds, "abs_clip_rect", None)
-        if clip:
-            top, bottom = clip[1], clip[3]
-        else:
-            top = ds.abs_top
-            bottom = top + max(getattr(ds, "_edge_lines_height", 0.0),
-                               MIN_ROW_HEIGHT)
-        if not (top - 1 <= cursor_y_abs <= bottom + 1):
-            continue
-        for e in edge_list:
-            if left:
-                if e["x"] < cursor_x_window - 0.5 and (best_x is None or e["x"] > best_x):
-                    best, best_x = e, e["x"]
-            elif e["x"] > cursor_x_window + 0.5 and (best_x is None or e["x"] < best_x):
-                best, best_x = e, e["x"]
-    if best is None:
-        fe = getattr(window, "_frame_edges", None)
-        if fe:
-            best = fe[0] if left else fe[1]
-    return best
+    return _edge_under_cursor(window, "x", cursor_x_window, cursor_y_abs,
+                              before=left)
 
 
-def _grab_zone(edges, k):
-    """Horizontal grab span for edge k of this view's list: EDGE_GRAB_WIDTH
-    centered on the line, but split at the midpoint toward each neighbouring
-    edge so adjacent zones never overlap."""
-    x = edges[k]["x"]
-    lo, hi = x - EDGE_GRAB_WIDTH / 2, x + EDGE_GRAB_WIDTH / 2
+def row_edge_under_cursor(window, cursor_y_window, cursor_x_abs, above=False):
+    """edge_under_cursor's row-axis twin: the nearest row edge strictly
+    BELOW the drag-start cursor (``cursor_y_window`` in window coords —
+    offset from window.abs_top; ``cursor_x_abs`` absolute) among the rows
+    views whose band horizontally contains it — the bottom edge of the
+    INNERMOST row under the cursor; ``above=True`` (top-left corner mode)
+    takes the nearest edge strictly ABOVE. A window with no rows — or a
+    drag in the outermost row — lands on the window's top/bottom frame
+    edge, so the frame resizes exactly as a plain resize."""
+    return _edge_under_cursor(window, "y", cursor_y_window, cursor_x_abs,
+                              before=above)
+
+
+def _grab_zone(edges, k, axis="x"):
+    """Grab span for edge k of this view's list along its axis:
+    EDGE_GRAB_WIDTH centered on the line, but split at the midpoint toward
+    each neighbouring edge so adjacent zones never overlap."""
+    pos = edges[k][axis]
+    lo, hi = pos - EDGE_GRAB_WIDTH / 2, pos + EDGE_GRAB_WIDTH / 2
     if k > 0:
-        lo = max(lo, (edges[k - 1]["x"] + x) / 2)
+        lo = max(lo, (edges[k - 1][axis] + pos) / 2)
     if k < len(edges) - 1:
-        hi = min(hi, (x + edges[k + 1]["x"]) / 2)
+        hi = min(hi, (pos + edges[k + 1][axis]) / 2)
     return lo, hi
 
 
-def _drag_inc(draw_state, handle, drag):
-    """Per-frame pixel delta for a drag handle, from total_dx against the
-    last seen total. State is PER-HANDLE (dict), never a shared slot: with a
+def _drag_inc(draw_state, handle, drag, total="total_dx"):
+    """Per-frame pixel delta for a drag handle, from the drag's running
+    total (``total_dx``, or ``total_dy`` for a row edge) against the last
+    seen total. State is PER-HANDLE (dict), never a shared slot: with a
     shared slot, two events alive in the same frame alternate ownership and
-    each re-fires its full total against a zero baseline — moving edges that
-    were never dragged. Entries are pruned by the caller when their handle
-    has no event, so a new gesture always starts from a clean baseline."""
+    each re-fires its full total against a zero baseline — moving edges
+    that were never dragged. Entries are pruned by the caller when their
+    handle has no event, so a new gesture always starts from a clean
+    baseline."""
     totals = getattr(draw_state, "_drag_totals", None)
     if totals is None:
         totals = draw_state._drag_totals = {}
     last = totals.get(handle, 0.0)
-    totals[handle] = drag.total_dx
-    return drag.total_dx - last
+    now = getattr(drag, total)
+    totals[handle] = now
+    return now - last
 
 
 class ColumnLayout:
@@ -799,6 +1081,13 @@ class ColumnLayout:
         # drag (the divider reads as "not draggable"). Keys are opaque
         # (consumers iterate them); the eviction pass matches by ds.
         window._edge_views[("row", draw_state.id)] = (draw_state, edges)
+        # The cells' floors & caps, owned by THIS view (not _REGISTRY): the
+        # solve reads these, not the far-edge state, so a nested layout
+        # ending on the same edge can't read (or wipe) this row's specs.
+        _specs(window, "x")[("row", draw_state.id)] = (
+            [_column_floor(column_mins, i) for i in range(n_cols)],
+            [_column_cap(column_maxes, i, _column_floor(column_mins, i))
+             for i in range(n_cols)])
 
         # Grab handles for OWNED edges (foreign far edges already have the
         # container's handles on the same line).
@@ -848,7 +1137,8 @@ class ColumnLayout:
             if totals:
                 # Mirror of the window_edge_pass prune scoping: our handles
                 # are the int edge indices; leave the window's "frame total"
-                # baselines alone (same dict when the host ds IS the window).
+                # baselines (and a Row host's "row_*") alone - same dict
+                # when the host ds IS the window or hosts both rows.
                 for h in [h for h in totals
                           if isinstance(h, int) and h not in seen_handles]:
                     del totals[h]
@@ -878,15 +1168,6 @@ class ColumnLayout:
         # container's visible box (the clip) there - a owned row's band
         # lands exactly in the panel band's middle. -----
         if self.padding > 0 and self.border_color is not None:
-
-            # The band spans the VISIBLE viewport: its bottom comes from the
-            # host's clip, not from measured row height - a short row
-            # still frames the whole pane, and there's no settle lag.
-            if self.clip is not None:
-                band_bottom = self.clip[3]
-            else:
-                band_bottom = self.top + max(draw_state.height or 0.0,
-                                             MIN_ROW_HEIGHT)
             radius = getattr(draw_state, "_band_radius", 6.0) + self.padding
             # Highlight the band when a divider drag is in progress
             # (self.active_edge) or the cursor sits over a draggable edge
@@ -901,7 +1182,7 @@ class ColumnLayout:
                 snap_int(self.win_x + self._band_left()),
                 snap_int(self.top),
                 snap_int(self.win_x + self._band_right()),
-                snap_int(band_bottom),
+                snap_int(self._band_bottom()),
                 imgui.get_color_u32_rgba(*band_color),
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
@@ -928,6 +1209,16 @@ class ColumnLayout:
             return self.clip[2] - self.win_x
         return self.edges[-1]["x"] - self.padding
 
+    def _band_bottom(self):
+        """Band bottom (SCREEN y): the host's visible viewport — its clip —
+        not the measured content height, so a short row still frames the
+        whole pane, there's no settle lag, and a cell holding a
+        height-filling child (a Rows) has room to fill. No clip: the
+        measured height."""
+        if self.clip is not None:
+            return self.clip[3]
+        return self.top + max(self.draw_state.height or 0.0, MIN_ROW_HEIGHT)
+
     def _bound_left(self, idx):
         return self._band_left() if idx == 0 else self.edges[idx]["x"]
 
@@ -944,14 +1235,17 @@ class ColumnLayout:
         """The screen-space (x, y, w, h) content box `cell(idx, height)`
         clips to — for a caller decorating a cell from OUTSIDE it, e.g. a
         card shadow (cast beyond the box, it would be scissored away by
-        the cell's own clip)."""
+        the cell's own clip). Without an explicit ``height`` the box runs
+        to the band bottom (the host's visible viewport), the same
+        authority the band paints to."""
         pad = self.padding
         pad_y = self.padding_y
         x0 = snap_int(self.win_x + self._bound_left(idx) + pad)
         y0 = snap_int(self.top + pad_y)
-        clip_h = height if height is not None else (self.draw_state.height
-                                                    or MIN_ROW_HEIGHT)
-        y1 = snap_int(self.top) + snap_int(clip_h) - snap_int(pad_y)
+        if height is not None:
+            y1 = snap_int(self.top) + snap_int(height) - snap_int(pad_y)
+        else:
+            y1 = snap_int(self._band_bottom()) - snap_int(pad_y)
         return x0, y0, snap_int(self.inner_width(idx)), y1 - y0
 
     @contextmanager
@@ -1022,6 +1316,310 @@ class ColumnLayout:
         imgui.dummy(0, 0)
 
 
+class RowLayout:
+    """ColumnLayout's row-axis twin: manual-cell access to the shared edge
+    system for cells stacked top to bottom.
+
+        rows = RowLayout(draw_state, n_rows, row_edges=row_edges,
+                         row_heights=row_heights)
+        for idx in range(n_rows):
+            with rows.cell(idx) as height:
+                any_renderer(..., height=height, width=rows.inner_width())
+        rows.finish()
+
+    Declare ``row_edges=None`` as a named param on the host render_func and
+    pass its resolved value through — RowLayout stamps draw_state.row_edges
+    on seed/adoption changes, so auto-state persists the ``{"y": …}`` edge
+    dicts exactly like draw_rows. Edges register on the root window's
+    ``_row_views`` and solve in the y-axis flat pass; the window's top and
+    bottom frame edges are the far edges of a window-direct rows view, so a
+    top/bottom frame drag squeezes the first/last row and an interior edge
+    pushed into the frame slides or grows the window — the same physics
+    columns run along x. The orthogonal extent is simpler than a column's:
+    a row's WIDTH is pinned by the host's visible box, so no measure step
+    is needed to size the cells."""
+
+    def __init__(self, draw_state, n_rows, row_edges=None, row_heights=None,
+                 top_edge=None, bottom_edge=None, resizable=True,
+                 padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9),
+                 padding_x=None, row_mins=None, row_maxes=None):
+        self.draw_state = draw_state
+        self.n_rows = n_rows
+        n_lines = self.n_lines = n_rows + 1
+        # Same band + padding contract as ColumnLayout; ``padding_x``
+        # overrides the HORIZONTAL inset alone. ``row_mins`` / ``row_maxes``
+        # stamp "min" / "max" on each row's BOTTOM edge (see _edge_min /
+        # _edge_max).
+        self.padding = float(padding)
+        self.padding_x = float(padding if padding_x is None else padding_x)
+        self.border_color = border_color
+        self._cell_radius = {}
+
+        window = draw_state.parent_window or draw_state
+        _ensure_window_state(window)
+        window_edge_pass(window)  # idempotent; usually ran via the wrapper
+        self.window = window
+        self.win_x, self.win_y = window.abs_left, window.abs_top
+
+        # The host's VISIBLE box (or clip, screen coords): the rows's full
+        # horizontal extent, and the authority of the adopted top/bottom.
+        self.clip = Core.melty.get_clip_rect() or draw_state.abs_clip_rect
+        origin = imgui.get_cursor_screen_pos()
+        # Where the flow cursor stood: an adopted top edge (the window frame
+        # top sits at the header's top) never starts the first row above
+        # this.
+        self.origin_y = origin[1]
+        if self.clip is not None:
+            self.left, self.right = self.clip[0], self.clip[2]
+        else:
+            self.left = origin[0]
+            self.right = origin[0] + float(draw_state.content_width or 0)
+        self._right = self.left
+
+        # Mark the host so descendants' adoption climbs can ignore it.
+        draw_state._row_container = True
+
+        # Far edges belong to the CONTAINER: the enclosing cell when given;
+        # else the WINDOW's top/bottom frame when no other rows
+        # container sits above this view; else own edges (fallback).
+        if top_edge is None and bottom_edge is None and not _has_rows_ancestor(draw_state):
+            frame_rows = _frame(window, "y")
+            if frame_rows:
+                top_edge, bottom_edge = frame_rows
+
+        stored = row_edges if isinstance(row_edges, list) else []
+        ok = (len(stored) == n_lines and
+              all(isinstance(e, dict) and "y" in e for e in stored))
+        seed_valid = True
+        if ok:
+            edges = list(stored)
+        else:
+            if top_edge is not None and bottom_edge is not None:
+                # Share over the VISIBLE span: the adopted top may sit above
+                # the flow origin (window frame top → header top), and the
+                # shares only split the room the rows actually get.
+                base = max(top_edge["y"], self.origin_y - self.win_y)
+                extent = bottom_edge["y"] - base
+            else:
+                base = self.origin_y - self.win_y
+                extent = float(draw_state.height or 0)
+            min_total = sum(_row_floor(row_mins, i) for i in range(n_rows))
+            seed_valid = extent > min_total
+            extent = max(extent, min_total)
+            edges = _seed_edges(row_heights, n_rows, extent, base=base,
+                                column_mins=row_mins, column_maxes=row_maxes,
+                                axis="y")
+        owned = [True] * n_lines
+        if top_edge is not None:
+            edges[0] = top_edge
+            owned[0] = False
+        if bottom_edge is not None:
+            edges[-1] = bottom_edge
+            owned[-1] = False
+        self.edges = edges
+        self.owned = owned
+        for i in range(n_rows):
+            floor = row_mins[i] if row_mins and i < len(row_mins) else None
+            if floor:
+                edges[i + 1]["min"] = float(floor)
+            else:
+                edges[i + 1].pop("min", None)
+            cap = _column_cap(row_maxes, i, _row_floor(row_mins, i))
+            if cap is not None:
+                edges[i + 1]["max"] = cap
+            else:
+                edges[i + 1].pop("max", None)
+        # The LEAD: an adopted top edge can sit well above where the first
+        # row begins (window frame top → the header and anything drawn
+        # before the rows). The flat solve measures the first row from the
+        # edge, so its floor is raised by that lead - the VISIBLE first row
+        # keeps its minimum when the window frame edge is dragged, and the
+        # frame-fit clamp places it correctly.
+        lead = self._band_top() - edges[0]["y"]
+        if lead > 0.5:
+            edges[1]["min"] = _row_floor(row_mins, 0) + lead
+        _clamp_interior(edges, axis="y")
+        if seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
+            draw_state.row_edges = edges
+
+        # Keyed ("rows", id) - see ColumnLayout's ("row", id) note: a host
+        # ds that IS the window must not clobber the spec entry.
+        _views(window, "y")[("rows", draw_state.id)] = (draw_state, edges)
+        floors = [_row_floor(row_mins, i) for i in range(n_rows)]
+        if lead > 0.5:
+            floors[0] += lead
+        _specs(window, "y")[("rows", draw_state.id)] = (
+            floors,
+            [_column_cap(row_maxes, i, _row_floor(row_mins, i))
+             for i in range(n_rows)])
+
+        self.active_edge = None
+        self.edge_hovered = False
+        if resizable:
+            seen_handles = set()
+            for k in range(n_lines):
+                if not owned[k]:
+                    continue
+                lo, hi = _grab_zone(edges, k, axis="y")
+                rect = (self.left, self.win_y + lo, self.right, self.win_y + hi)
+                if draw_state.hover_eligible(rect=rect):
+                    self.edge_hovered = True
+                drag = draw_state.on_action("left_mouse_drag",
+                                            view_id=f"row_edge_{k}",
+                                            rect=rect, priority_delta=1,
+                                            cursor=mouse_cursor.RESIZE_NS)
+                press = draw_state.on_action("left_mouse_down",
+                                             view_id=f"row_edge_{k}",
+                                             rect=rect, priority_delta=1)
+                if press:
+                    from src.lsd.gl_gui.melty import Melty
+                    Melty.resize_press_frame = Melty.frame_count
+                if not drag:
+                    continue
+                self.active_edge = k
+                handle = f"row_{k}"
+                seen_handles.add(handle)
+                inc = _drag_inc(draw_state, handle, drag, total="total_dy")
+                if inc:
+                    _pending(window, "y").append(
+                        (edges[k], edges[k]["y"] + inc))
+
+            totals = getattr(draw_state, "_drag_totals", None)
+            if totals:
+                # Own namespace only ("row_*"): a ColumnLayout on the same
+                # host keeps its intents, the window its "win_*".
+                for h in [h for h in totals
+                          if isinstance(h, str) and h.startswith("row_")
+                          and h not in seen_handles]:
+                    del totals[h]
+            if self.active_edge is not None:
+                if not draw_state.size_change:
+                    if getattr(draw_state, "freeze_resize", False):
+                        _defer_freeze_settle(window, draw_state)
+                    else:
+                        draw_state.invalidate(note=Note(reason="edge drag",
+                                                        **_NOTE))
+
+        # ----- the column band: a filled rounded rectangle, the cells'
+        # rounded backgrounds its holes (see ColumnLayout) -----
+        if self.padding > 0 and self.border_color is not None:
+            radius = getattr(draw_state, "_band_radius", 6.0) + self.padding
+            band_color = (HIGHLIGHT_TINT
+                          if self.edge_hovered or self.active_edge is not None
+                          else self.border_color)
+            draw_list = imgui.get_window_draw_list()
+            draw_list.channels_set_current(Core.melty.get_channel() - 1)
+            draw_list.add_rect_filled(
+                snap_int(self.left),
+                snap_int(self.win_y + self._band_top()),
+                snap_int(self.right),
+                snap_int(self.win_y + self._band_bottom()),
+                imgui.get_color_u32_rgba(*band_color),
+                rounding=radius)
+            draw_list.channels_set_current(Core.melty.get_channel())
+
+    def height(self, idx):
+        return self.edges[idx + 1]["y"] - self.edges[idx]["y"]
+
+    def _band_top(self):
+        """Band top bound (window coords). An owned edge is the row's own
+        line; an ADOPTED one is the container's boundary, so the band
+        starts at the flow origin — never above the container's visible
+        box."""
+        if self.owned[0]:
+            return self.edges[0]["y"]
+        top = self.origin_y - self.win_y
+        if self.clip is not None:
+            top = max(top, self.clip[1] - self.win_y)
+        return top
+
+    def _band_bottom(self):
+        """Band bottom bound (window coords): the adopted edge's line, but
+        never past the container's visible box (a window-direct view ends
+        at the window's content clip, a cell-nested one at its cell)."""
+        if self.owned[-1]:
+            return self.edges[-1]["y"]
+        bottom = self.edges[-1]["y"]
+        if self.clip is not None:
+            bottom = min(bottom, self.clip[3] - self.win_y)
+        else:
+            bottom -= self.padding
+        return bottom
+
+    def _bound_top(self, idx):
+        return self._band_top() if idx == 0 else self.edges[idx]["y"]
+
+    def _bound_bottom(self, idx):
+        return (self._band_bottom() if idx == self.n_rows - 1
+                else self.edges[idx + 1]["y"])
+
+    def inner_height(self, idx):
+        """Content height of row idx: the effective span minus padding."""
+        return max(0.0, self._bound_bottom(idx) - self._bound_top(idx)
+                   - 2 * self.padding)
+
+    def inner_width(self):
+        """Content width every row gets: the visible box minus the
+        horizontal padding."""
+        return max(0.0, self.right - self.left - 2 * self.padding_x)
+
+    def cell_rect(self, idx, width=None):
+        """The screen-space (x, y, w, h) content box `cell(idx, width)`
+        clips to. ``width`` is the FULL cell band including padding; by
+        default the box runs to the visible box's right."""
+        pad = self.padding
+        pad_x = self.padding_x
+        x0 = snap_int(self.left + pad_x)
+        y0 = snap_int(self.win_y + self._bound_top(idx) + pad)
+        if width is not None:
+            x1 = snap_int(self.left) + snap_int(width) - snap_int(pad_x)
+        else:
+            x1 = snap_int(self.right) - snap_int(pad_x)
+        y1 = snap_int(self.win_y + self._bound_bottom(idx)) - snap_int(pad)
+        return x0, y0, x1 - x0, y1 - y0
+
+    @contextmanager
+    def cell(self, idx, width=None):
+        """Position the cursor at row idx's content origin, clip to the
+        content box, and yield the content HEIGHT (pass it as ``height=``
+        to the child, with ``width=inner_width()`` — a passed height pins
+        the child fixed-size, so its width must be pinned too)."""
+        x0, y0, box_w, box_h = self.cell_rect(idx, width)
+        imgui.set_cursor_screen_pos((x0, y0))
+        Core.melty.push_clip((x0, y0, x0 + box_w, y0 + box_h))
+        imgui.begin_group()
+        try:
+            yield self.inner_height(idx)
+        finally:
+            imgui.end_group()
+            Core.melty.pop_clip()
+            right = imgui.get_item_rect_max()[0]
+            self._right = max(self._right, right + self.padding_x)
+
+    def note_child(self, idx, child_ds):
+        if child_ds is not None:
+            radius = getattr(child_ds, "corner_radius", None)
+            if radius is not None:
+                self._cell_radius[idx] = float(radius)
+
+    def finish(self):
+        """Stamp the measured band width (edge_under_cursor's fallback
+        band) and the band rounding, and leave the flow cursor below the
+        last row."""
+        ds = self.draw_state
+        prev_w = getattr(ds, "_edge_lines_width", None)
+        ds._edge_lines_width = max(self._right - self.left, MIN_COLUMN_WIDTH)
+        ds._band_radius = (max(self._cell_radius.values())
+                           if self._cell_radius else 6.0)
+        if prev_w is None:
+            if not ds.size_change:
+                ds.invalidate(note=Note(reason="row band settle", **_NOTE))
+            request_render()
+        imgui.set_cursor_screen_pos((self.left,
+                                     self.win_y + self._band_bottom()))
+        imgui.dummy(0, 0)
+
+
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
              is_default_for=Columns)
 def draw_columns(input_value, column_widths=None, column_edges=None,
@@ -1070,6 +1668,13 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
             if isinstance(item, Columns):
                 item_kwargs |= {"left_edge": cols.edges[idx],
                                 "right_edge": cols.edges[idx + 1]}
+            if isinstance(item, (Columns, Rows)):
+                # Row edges pass THROUGH a Columns cell: a Rows nested in
+                # this cell adopts the enclosing row's edges (handed to us
+                # by draw_rows), so its cells will collide with them.
+                for key in ("top_edge", "bottom_edge"):
+                    if kwargs.get(key) is not None:
+                        item_kwargs[key] = kwargs[key]
             item_changed, out_value, cell_ds = draw_any(
                 item, return_extras=True, **item_kwargs)
             cols.note_child(idx, cell_ds)  # border follows the child's corners
@@ -1079,5 +1684,72 @@ def draw_columns(input_value, column_widths=None, column_edges=None,
                 input_value[key] = out_value
 
     cols.finish()
+
+    return changed, input_value
+
+
+@render_func(use_cache=True, show_bg=False, shadow=False, selectable=False,
+             is_default_for=Rows)
+def draw_rows(input_value, row_heights=None, row_edges=None,
+              draw_state=None, resizable=True, child_kwargs=None, **kwargs):
+    """Stacked cells lined up with shared draggable edges — draw_columns
+    along y.
+
+    Edges are {"y": float} dicts in window coordinates. This view owns its
+    interior edges (auto-state ``row_edges``); as a cell of another rows
+    view it adopts the enclosing cell's two edge objects as its far edges
+    (``top_edge``/``bottom_edge`` kwargs, by reference); as the window's
+    rows view it adopts the window's top/bottom frame edges. Every cell is
+    pinned to its row's height AND the rows' width (a passed height alone
+    collapses a child's width), so a Columns cell fills its row.
+    """
+    if child_kwargs is None:
+        child_kwargs = {}
+
+    if isinstance(input_value, dict):
+        keys = [k for k in input_value
+                if not (isinstance(k, str) and (k.startswith("_") or k.endswith("_")))]
+    elif isinstance(input_value, (list, tuple)):
+        keys = list(range(len(input_value)))
+    else:
+        imgui.text(f"draw_rows: no view for {type(input_value).__name__}")
+        return False, input_value
+
+    if not keys:
+        return False, input_value
+    n_rows = len(keys)
+
+    rows = RowLayout(draw_state, n_rows, row_edges=row_edges,
+                     row_heights=row_heights,
+                     top_edge=kwargs.get("top_edge"),
+                     bottom_edge=kwargs.get("bottom_edge"),
+                     resizable=resizable)
+
+    changed = False
+    cell_width = rows.inner_width()
+    for idx, key in enumerate(keys):
+        item = input_value[key]
+        with rows.cell(idx) as cell_height:
+            item_kwargs = {"name": f"{key}", "align_header": False,
+                           "height": cell_height,
+                           "width": cell_width} | child_kwargs
+            if isinstance(item, (Rows, Columns)):
+                # A nested Rows adopts this row's edges; a Columns carries
+                # them through to any Rows in ITS cells (draw_columns).
+                item_kwargs |= {"top_edge": rows.edges[idx],
+                                "bottom_edge": rows.edges[idx + 1]}
+                # And column edges pass THROUGH a Rows cell to the_columns.
+                for key in ("left_edge", "right_edge"):
+                    if kwargs.get(key) is not None:
+                        item_kwargs[key] = kwargs[key]
+            item_changed, out_value, cell_ds = draw_any(
+                item, return_extras=True, **item_kwargs)
+            rows.note_child(idx, cell_ds)
+        if item_changed:
+            changed = True
+            if isinstance(input_value, (dict, list)):
+                input_value[key] = out_value
+
+    rows.finish()
 
     return changed, input_value

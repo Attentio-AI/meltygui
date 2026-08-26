@@ -711,9 +711,16 @@ def draw_titlebar(window):
             _rdrag = None
             return
         if wayland:
-            # Surface-relative pointer: only deltas matter, and the window's
-            # top-left never moves here, so the frame of reference holds.
-            px, py = mx, my
+            if wayland_move.relative_motion_available():
+                # Screen-space motion (zwp_relative_pointer): the surface
+                # moves under the pointer when the compositor pushes the
+                # window to keep it on screen, and a surface-relative delta
+                # then grew by the push, grew the window more, got pushed
+                # again - the top edge raced to the screen edge.
+                px, py = wayland_move.relative_motion_total()
+            else:
+                # Surface-relative pointer: only deltas matter.
+                px, py = mx, my
         else:
             try:
                 x11 = _lib()
