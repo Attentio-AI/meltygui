@@ -2419,23 +2419,14 @@ def render_func(*args, **o_kwargs):
                         pos_x = draw_state._initial_window_pos[0] + move_drag.total_dx
                         pos_y = draw_state._initial_window_pos[1] + move_drag.total_dy
                         draw_state.window_pos = (pos_x, pos_y)
-                        # Don't let a window be dragged above the top of the
-                        # DISPLAY (at y < 0) - not above its parent. Use
-                        # _abs_top, the true screen-absolute top (same method the
-                        # resize clamp uses): it includes the window's layout
-                        # offset within its parent (top_offset), so for a nested
-                        # window abs_top is its real screen position. (Don't use
-                        # _abs_top_true here - its top_offset_true is never read,
-                        # so it omits the layout offset and returns ~0 at the
-                        # parent's top, which wrongly pinned nested windows there.)
-                        # It's linear in window_pos[1] (slope 1), so a single
-                        # comparison pins the top to 0. The candidate pos_y is
-                        # recomputed from _initial_window_pos every frame, so the
-                        # bounce never accumulates and releases the moment you drag
-                        # back down.
-                        abs_top = draw_state._abs_top()
-                        if abs_top < 0:
-                            draw_state.window_pos = (pos_x, pos_y - abs_top)
+                        # A hand move: the edge pass below (window_edge_pass →
+                        # os_frame) pushes the OS window's edges out of the
+                        # window's way, and NOTHING clamps the move - a window
+                        # may be dragged partly off the display (Lukas 08-27;
+                        # the "never above the content header" clamp that lived
+                        # here is gone: it pinned the window at the content's
+                        # top before the top edge could ever push the OS edge).
+                        draw_state._hand_move_frame = Melty.frame_count
                     elif imgui_active or (left_mouse_down is None and on_held is None):
                         # Keep the press-anchored baseline alive through the
                         # pre-activation held frames (button down, or below

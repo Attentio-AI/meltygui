@@ -1259,6 +1259,12 @@ class Toggles:
         # display. Off, or with no position feed: the display edges are
         # immovable walls and the old in-display pin-and-slide remains.
         push_os_window_edges = True
+        # A window MOVED by hand (left-drag) pushes the OS window's edge it
+        # runs into out of its way, like any collision - but the move
+        # itself is not clamped: the OS edge stops at the wall and the
+        # window keeps going, so a window can be dragged partly off the
+        # display on purpose (Lukas 08-27).
+        window_move_pushes_os_edges = True
         # Console trace of the OS edge model (foreign moves / resizes seen,
         # OS edges pushed and the surface request per frame). Off: it prints
         # per push and per frame, a real cost at 120 fps.

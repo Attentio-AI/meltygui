@@ -498,7 +498,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     pending = getattr(window, pending_attr)
     setattr(window, pending_attr, [])
     os_items = list(os_ctx.drags) if os_ctx is not None else []
-    if not pending and not os_items:
+    if not pending and not os_items and not (os_ctx is not None and os_ctx.move):
         return False
     fe = _frame(window, axis) or ()
     local_graph = _window_graph(window, axis)
@@ -532,6 +532,19 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     # pair before/after tells.
     frame_before = tuple(e[axis] for e in fe)
     moved = False
+    if os_ctx is not None and os_ctx.move and os_pair is not None and len(fe) == 2:
+        # A HAND MOVE of this window (its position already applied by the
+        # desktop's move drag): whatever OS edge its frame now overlaps is
+        # pushed out to meet - up to the screen, where the OS edge stops
+        # and the window keeps going (the move is never clamped: windows
+        # may be dragged partly off the display, Lukas 08-27). The push is
+        # the OS edge pushed to the window's edge with the screen as the
+        # wall; the window's own edges are not part of it.
+        os_near, os_far = os_pair
+        if os_far[axis] < fe[1][axis]:
+            _solve_graph(os_graph, os_far, fe[1][axis], walls=base_walls, axis=axis)
+        if os_near[axis] > fe[0][axis]:
+            _solve_graph(os_graph, os_near, fe[0][axis], walls=base_walls, axis=axis)
     for item in os_items + pending:
         # Optional third slot marks a CURSOR-DRIVEN drag (the right-drag
         # corner resize queues frame edges around it): those move 1:1 with the
@@ -853,7 +866,8 @@ def _frame_pass(window, axis):
     # window's own edges are never written unless the solve moves them; an
     # idle frame moves nothing. Nested windows solve only their own frame.
     from src.lsd.gl_gui import os_frame
-    os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)))
+    os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)),
+                             hand_move=getattr(window, "_hand_move_frame", None) == Melty.frame_count)
     moved = _solve_collisions(window, axis, os_ctx)
     if os_ctx is not None:
         os_frame.detach(window, axis, os_ctx)    # books the OS near edge's motion for apply_rebase

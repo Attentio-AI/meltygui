@@ -151,10 +151,13 @@ def _rebase(ds, axis, delta):
     way — the press-anchored corner drag's baseline with it."""
     pos = ds.window_pos or (0, 0)
     ds.window_pos = (pos[0] + delta, pos[1]) if axis == "x" else (pos[0], pos[1] + delta)
-    base = getattr(ds, "_initial_window_pos_resize", None)
-    if base is not None:
-        ds._initial_window_pos_resize = ((base[0] + delta, base[1]) if axis == "x"
-                                         else (base[0], base[1] + delta))
+    # press-anchored baselines ride along: the corner resize's and the
+    # window move's (the window dragging the studio along to stay under
+    # the hand - its position is re-derived from this every frame)
+    for attr in ("_initial_window_pos_resize", "_initial_window_pos"):
+        base = getattr(ds, attr, None)
+        if base is not None:
+            setattr(ds, attr, (base[0] + delta, base[1]) if axis == "x" else (base[0], base[1] + delta))
 
 
 def _set_mode(new_mode):
@@ -260,7 +263,7 @@ class Context:
     (by -base) for the solve and back in detach — the window's own edges
     are never touched unless the solve moves them."""
     __slots__ = ("axis", "base", "os_near0", "lists", "specs", "walls",
-                 "drags", "os_ids", "shifted")
+                 "drags", "os_ids", "shifted", "move")
 
     def __init__(self, axis):
         self.axis = axis
@@ -270,6 +273,7 @@ class Context:
         self.walls = frozenset()
         self.os_ids = frozenset()
         self.shifted = ()
+        self.move = False              # the window was moved by hand this frame
 
 
 def queue_drag(axis, index, inc):
@@ -280,19 +284,24 @@ def queue_drag(axis, index, inc):
         _STATE["pending"][axis].append((int(index), float(inc)))
 
 
-def attach(window, axis, has_pending=True):
+def attach(window, axis, has_pending=True, hand_move=False):
     """Called by columns._frame_pass for a ROOT window before its solve:
     the OS-level cells / walls / drags to add, in the WINDOW's coordinates
     (the OS and screen dicts shifted by -base, base = the screen coordinate
     of the window's near edge; detach shifts them back). None when the OS
     level is off, or when there is nothing to solve at all — no queued
-    drag of the window (``has_pending``), none of the OS window's own, no
-    OS edge moved since this window last saw it — so an idle frame
-    touches nothing."""
+    drag of the window (``has_pending``), no hand move of it this frame
+    (``hand_move``: its frame pushes the OS edge it overlaps,
+    Toggles.Melty.window_move_pushes_os_edges), none of the OS window's
+    own drags, no OS edge moved since this window last saw it — so an
+    idle frame touches nothing."""
     from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.toggles import Toggles
     if (not _enabled() or getattr(window, "parent_window", None) is not None
             or _STATE["frame"] != Melty.frame_count):     # only on a frame begin_frame set up
         return None
+    hand_move = bool(hand_move and Toggles.Melty.window_move_pushes_os_edges
+                     and _STATE["mode"] != "walls")
     near, far = _STATE["edges"][axis]
     seen_all = getattr(window, "_os_seen", None)
     if seen_all is None or getattr(window, "_os_gen", None) != _STATE["generation"]:
@@ -304,9 +313,10 @@ def attach(window, axis, has_pending=True):
     own = bool(_STATE["pending"][axis]) and not _STATE["consumed"][axis]
     if seen is None:
         seen_all[axis] = cur
-    if not (has_pending or os_moved or own):
+    if not (has_pending or os_moved or own or hand_move):
         return None
     ctx = Context(axis)
+    ctx.move = hand_move
     ctx.os_ids = frozenset({id(near), id(far)})
     ctx.os_near0 = near[axis]
     i = _AXIS[axis]
