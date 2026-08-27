@@ -282,8 +282,10 @@ def _cells_from_lists(edge_lists, axis="x", specs=()):
                 continue
             if spec is not None:
                 floors, caps = spec
-                floor = float((floors[m - 1] if m - 1 < len(floors) else None)
-                              or _axis_min(axis))
+                floor = floors[m - 1] if m - 1 < len(floors) else None
+                # None = the axis minimum; an explicit 0.0 is a GAP cell (the
+                # OS level's "os_near, W),) contact at zero width
+                floor = _axis_min(axis) if floor is None else float(floor)
                 cap = caps[m - 1] if m - 1 < len(caps) else None
                 cap = None if not cap else max(float(cap), floor)
             else:
@@ -300,13 +302,16 @@ def _cells_from_lists(edge_lists, axis="x", specs=()):
     return list(cells.values())
 
 
-def _window_graph(window, axis):
+def _window_graph(window, axis, extra_lists=(), extra_specs=()):
     """The cell graph of every layout registered on the window for
-    ``axis`` (per-view specs where the layouts stamped them)."""
+    ``axis`` (per-view specs where the layouts stamped them), plus
+    ``extra_lists`` / ``extra_specs`` — the OS level's cells a root
+    window's pass adds for the solve only (os_frame.attach)."""
     views, specs = _views(window, axis), _specs(window, axis)
     keys = list(views)
-    return _EdgeGraph(_cells_from_lists([views[k][1] for k in keys], axis,
-                                        specs=[specs.get(k) for k in keys]))
+    lists = [views[k][1] for k in keys] + list(extra_lists)
+    spec_list = [specs.get(k) for k in keys] + list(extra_specs)
+    return _EdgeGraph(_cells_from_lists(lists, axis, specs=spec_list))
 
 
 class _EdgeGraph:
@@ -464,18 +469,47 @@ def _drag_edge(edges, k, target, walls=frozenset(), axis="x"):
     _solve_graph(graph, edges[k], target, walls=walls, axis=axis)
 
 
-def _solve_collisions(window, axis="x"):
+def _solve_collisions(window, axis="x", os_ctx=None):
     """Apply every queued drag of ``axis`` against the FULL cell graph of
     that axis — every registered edge list's cells at once — so contact
     chains cross view boundaries through shared edges and nothing else.
     Returns True if anything moved. (No standing repair pass: edges only
-    move while a drag is applied.)"""
+    move while a drag is applied.)
+
+    ``os_ctx`` (os_frame.attach, root windows only) adds the OS level to
+    the graph: the OS window's frame pair, the screen walls, and two
+    zero-floor gap cells linking this window's frame to the OS frame — so
+    a cursor-driven drag pushed through the frame moves the OS edge, and
+    the OS edge pushed into the screen is clamped like any wall. Its own
+    drags (the OS window's frame edges, foreign motion since this window
+    last saw them) ride along in the same solve. Only the HAND moves the
+    OS window: a foreign size write of this window (its content grew)
+    sees the OS edges as walls.
+
+    THE FLIP: a cursor-driven drag whose owner is blocked by a wall grows
+    that window on the OPPOSITE side by the remainder — the rule melty
+    windows always had against the display ("pin the bottom, let the top
+    rise"), now for the OS window too, and the only way a near edge ever
+    moves outward on its own: W's right edge blocked at the screen → W's
+    left edge moves left → pushes the OS left edge → the OS window grows
+    left (and moves) → the screen's left edge stops it."""
+    from src.lsd.gl_gui import os_frame
     pending_attr = _REGISTRY[axis][1]
     pending = getattr(window, pending_attr)
     setattr(window, pending_attr, [])
-    if not pending:
+    os_items = list(os_ctx.drags) if os_ctx is not None else []
+    if not pending and not os_items:
         return False
-    graph = _window_graph(window, axis)
+    fe = _frame(window, axis) or ()
+    local_graph = _window_graph(window, axis)
+    if os_ctx is not None and len(fe) == 2:
+        gap_lists, gap_specs = os_frame.gap_lists(os_ctx, fe[0], fe[1])
+        os_graph = _window_graph(window, axis, extra_lists=list(os_ctx.lists) + gap_lists,
+                                 extra_specs=list(os_ctx.specs) + gap_specs)
+        base_walls, os_ids = os_ctx.walls, os_ctx.os_ids
+        os_pair = tuple(os_frame.edges(axis))
+    else:
+        os_graph, base_walls, os_ids, os_pair = local_graph, frozenset(), frozenset(), None
     # A FRAME edge drag must never shove the OTHER frame edge. The danger
     # case is the foreign-width invariant drag (window_edge_pass queues
     # right→window.width): when an outside writer re-stamps width below the
@@ -488,9 +522,17 @@ def _solve_collisions(window, axis="x"):
     # INTERIOR divider drags keep an empty wall set: pushing the window's
     # left edge with a divider (slide or grow) is normal normal and only
     # ever moves 1:1 with the cursor.
-    frame_ids = {id(e) for e in (_frame(window, axis) or [])}
+    frame_ids = {id(e) for e in fe}
+    # ``moved`` = THIS window's frame moved. An OS edge moving on its own
+    # (the OS window's frame, a foreign move every root folds in) is not a
+    # change of this window - and reporting it as one invalidated every
+    # view of every root on every frame of an OS-window gesture (08-27:
+    # 120 → 65 fps on the corner, 12 fps on a move). The OS level reaches
+    # this window's interior only THROUGH its frame pair, so the frame
+    # pair before/after tells.
+    frame_before = tuple(e[axis] for e in fe)
     moved = False
-    for item in pending:
+    for item in os_items + pending:
         # Optional third slot marks a CURSOR-DRIVEN drag (the right-drag
         # corner resize queues frame edges around it): those move 1:1 with the
         # cursor, so the foreign-width feedback loop the walls guard against
@@ -498,14 +540,45 @@ def _solve_collisions(window, axis="x"):
         # the other (slide the window), just like an interior divider.
         edge, target = item[0], item[1]
         cursor_driven = len(item) > 2 and bool(item[2])
-        if cursor_driven:
-            walls = frozenset()
-        else:
-            walls = frame_ids - {id(edge)} if id(edge) in frame_ids else frozenset()
-        if not _solve_graph(graph, edge, target, walls=walls, axis=axis):
+        is_os = os_pair is not None and (edge is os_pair[0] or edge is os_pair[1])
+        # Only the HAND moves the OS window: a foreign size write of this
+        # window (its content grew) solves in its own graph, so it
+        # overflows the screen window as intended instead of being
+        # clamped by it or growing the studio.
+        graph = os_graph if (cursor_driven or is_os) else local_graph
+        walls = set(base_walls)                      # the screen never moves
+        if not cursor_driven:
+            if is_os:
+                walls |= os_ids - {id(edge)}         # a foreign OS edge IS where it is; the other holds
+            elif id(edge) in frame_ids:
+                walls |= frame_ids - {id(edge)}
+        walls = frozenset(walls)
+        if _solve_graph(graph, edge, target, walls=walls, axis=axis) and not is_os:
+            moved = True
+        if is_os and not cursor_driven:
+            # A foreign OS edge IS where it is: the pile packed against it
+            # as much as it could (the wall clamp), the rest overflows.
+            # Forced HERE, before this window's own drags run - forced
+            # after the solve (detach) it ate away the push those drags
+            # gave the same edge, so the OS edge advanced only every other
+            # frame, with a double step (one sub-pixel the begin_frame gives
+            # the far edge when a drag lands on every frame "moves").
+            edge[axis] = float(target)
+        if not cursor_driven:
             continue
-        if cursor_driven and id(edge) in frame_ids:
+        if id(edge) in frame_ids:
             _hold_frame_min(window, edge, axis)
+        residual = target - edge[axis]
+        if abs(residual) <= 1e-6:
+            continue
+        pair = os_pair if is_os else (fe if len(fe) == 2 else None)
+        if pair is None:
+            continue
+        opposite = pair[0] if residual > 0 else pair[1]
+        if opposite is edge:                         # dragged inward, blocked: nothing to flip
+            continue
+        _solve_graph(graph, opposite, opposite[axis] - residual, walls=walls, axis=axis)
+    if tuple(e[axis] for e in fe) != frame_before:
         moved = True
     return moved
 
@@ -689,9 +762,12 @@ def _frame_pass(window, axis):
     views, specs = _views(window, axis), _specs(window, axis)
     views[window.id] = (window, fe)
     # The frame pair is a cell too (it keeps the window's own span in the
-    # graph), without the flat floor and uncapped - the caps on the far edge
-    # belong to the LAST column / row, never to the window.
-    specs[window.id] = ([None], [None])
+    # graph): floored at the window's minimum (never below the flat floor)
+    # and uncapped - the stamps on the far edge belong to the LAST column /
+    # row, never to the frame. The floor is what an OS edge pushing the
+    # window meets (os_frame): the window compresses to it, then slides.
+    declared = float((window.min_width if axis == "x" else window.min_height) or 0)
+    specs[window.id] = ([max(_axis_min(axis), declared)], [None])
     near, far = fe
 
     for key, (ds, _) in list(views.items()):
@@ -770,31 +846,32 @@ def _frame_pass(window, axis):
                   and h not in seen_handles]:
             del totals[h]
 
-    # Only a CURSOR-DRIVEN drag in this pass may push / unwind the OS edge
-    # below - every live drag but the foreign-size invariant (third None
-    # above): column and row cascade, the frame handles, the corner drag.
-    # A gesture elsewhere on the app queues nothing here, but a window drag
-    # past the display edge moves the OS edge on its own.
-    cursor_items = [item for item in _pending(window, axis)
-                    if not (len(item) > 2 and item[2] is None)]
-    cursor_driven = bool(cursor_items)
-    cursor_edge = cursor_items[0][0] if cursor_items else None
-    # The window's screen position before this pass moves it: the near-edge
-    # check below adds this pass's own window_pos delta to it (abs_left /
-    # abs_top are the wrapper's per-frame values, not live).
-    _pos_before = tuple(window.window_pos or (0, 0))
-    _abs_before = window.abs_left if axis == "x" else window.abs_top
-    moved = _solve_collisions(window, axis)
+    # ---- The OS level. A root window's frame pair collides with the OS
+    # window's pair (os_frame: zero-floor gap cells link them, the screen
+    # is the wall outside) - attach shifts the OS and screen dicts into
+    # THIS window's coordinates for the solve (and back in detach), so the
+    # window's own edges are never written unless the solve moves them; an
+    # idle frame moves nothing. Nested windows solve only their own frame.
+    from src.lsd.gl_gui import os_frame
+    os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)))
+    moved = _solve_collisions(window, axis, os_ctx)
+    if os_ctx is not None:
+        os_frame.detach(window, axis, os_ctx)    # books the OS near edge's motion for apply_rebase
 
-    # Line the WINDOW up with its frame edges: the same rule cells use.
+    # Line the WINDOW up with its frame edges - the same rule cells follow:
+    # near edge off 0 → window_pos slides and every edge re-bases so
+    # interior lines hold their screen position; far edge off the size →
+    # the size snaps. (The OS near edge's own motion re-bases every root
+    # when the surface actually moves - os_frame.apply_rebase, next frame
+    # below - not here.)
     d_near = near[axis]
     if d_near:
         pos = window.window_pos or (0, 0)
+        window.window_pos = ((pos[0] + d_near, pos[1]) if axis == "x"
+                             else (pos[0], pos[1] + d_near))
         if axis == "x":
-            window.window_pos = (pos[0] + d_near, pos[1])
             window.width = snap_int(window.width - d_near)
         else:
-            window.window_pos = (pos[0], pos[1] + d_near)
             window.height = snap_int(window.height - d_near)
         for e in _all_edges(window, axis):
             e[axis] -= d_near
@@ -809,151 +886,6 @@ def _frame_pass(window, axis):
         moved = True
     # Kill snap drift so the invariant check doesn't re-fire every frame.
     far[axis] = float(size)
-    # A far edge driven past the display edge by a live drag (frame handles,
-    # column cascade) pushes the OS window's edge out (os_frame); what the
-    # surface can't take - at the boundary - pins there and slides the
-    # window all other way, capped at the display's near edge (the corner
-    # right-drag's limit). STICKY: the slide is remembered for the gesture
-    # and unwound first as the far edge comes back (the bottom stays
-    # pinned while the top comes down), then the OS edge comes back by
-    # what is left (os_frame), then the far edge lifts off.
-    if cursor_driven and _drag_live() and getattr(window, "parent_window", None) is None:
-        from src.lsd.gl_gui import os_frame
-        from src.lsd.gl_gui.toggles import Toggles
-        # While the near push is at the screen edge (os_frame.near_walled)
-        # the far edge is accounted for AFTER the near hook, from the live
-        # position: its translate is what moves the far edge then, and this
-        # pre-translate position would file a stale unwind against it.
-        if (Toggles.Melty.push_os_window_edges and Melty.display_size and _abs_before is not None
-                and not (os_frame.near_push_available() and os_frame.near_walled(axis))):
-            # LIVE position: the wrapper's abs_left/abs_top predate this
-            # pass's line-up. A left-edge drag slides window_pos left and
-            # grows the width by the same amount - read with the stale left
-            # that overstated the right edge by the drag amount: a false
-            # overflow, a spurious surface growth this frame and a
-            # pin-and-slide that threw the window to the display's left.
-            i = 0 if axis == "x" else 1
-            abs_pos = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
-            display = Melty.display_size[i]
-            if display:
-                slid = getattr(window, "_push_slide", None)
-                if slid is None:
-                    slid = window._push_slide = {"x": 0.0, "y": 0.0}
-                overflow = abs_pos + far[axis] - display
-                if overflow > 0:
-                    # OS edge out → pin-and-slide → through the compositor's
-                    # edge once the near edge is past the window's
-                    size, slide = os_frame.push_far_edge(axis, abs_pos, far[axis], display, window)
-                    if slide > 0:
-                        pos = window.window_pos or (0, 0)
-                        window.window_pos = ((pos[0] - slide, pos[1]) if axis == "x"
-                                             else (pos[0], pos[1] - slide))
-                        slid[axis] += slide
-                        moved = True
-                    if size < far[axis]:
-                        far[axis] = float(size)
-                        if axis == "x":
-                            window.width = snap_int(size)
-                        else:
-                            window.height = snap_int(size)
-                        moved = True
-                elif overflow < 0:
-                    gap = -overflow
-                    back = min(slid[axis], gap)
-                    if back > 0:
-                        pos = window.window_pos or (0, 0)
-                        window.window_pos = ((pos[0] + back, pos[1]) if axis == "x"
-                                             else (pos[0], pos[1] + back))
-                        slid[axis] -= back
-                        moved = True
-                    os_frame.absorb(axis, -(gap - back), window)
-    elif not _drag_live() and getattr(window, "_push_slide", None):
-        window._push_slide = None
-        window._near_slide = None
-    # NEAR edge (left / top) driven past the display's near edge by a
-    # cursor-driven drag: the studio moves only through the compositor —
-    # os_frame.push_near grows the far edge to translates the studio toward
-    # the hand; this window's near edge stays AT the display edge meanwhile
-    # (reframe: far edge and interior stay on screen) and the glue takes it
-    # back out by each move seen. At the WALL (the studio's near edge on
-    # the screen's, os_frame.near_walled) the overshoot goes the other way
-    # - the mirror of the far hook's pin-and-slide: the window TRANSLATES
-    # with its near edge pinned on the screen edge, and its far edge, now
-    # past the display, pushes the OS far edge out (absorb) or is clamped
-    # at the screen. STICKY like the far slide (window._near_slide): the
-    # hand coming back unwinds the translate first (near edge pinned, far
-    # edge returning), then the OS window comes back (unwind_near), then
-    # the near edge lifts off the display.
-    if cursor_driven and _drag_live() and getattr(window, "parent_window", None) is None:
-        from src.lsd.gl_gui import os_frame
-        if os_frame.near_push_available() and _abs_before is not None:
-            i = 0 if axis == "x" else 1
-            abs_pos = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
-            near_slid = getattr(window, "_near_slide", None)
-            if near_slid is None:
-                near_slid = window._near_slide = {"x": 0.0, "y": 0.0}
-            # Moves the compositor refused: the near edge was reframed onto
-            # the display for it (the window that is narrower than the
-            # screen's) - un-reframe, then translate by the same px: the near
-            # edge stays where it is, the far edge moves out with it.
-            handed = os_frame.take_wall_px(axis, window)
-            if handed > 0:
-                reframe_axis(window, axis, -handed)
-                pos = window.window_pos or (0, 0)
-                window.window_pos = ((pos[0] + handed, pos[1]) if axis == "x"
-                                     else (pos[0], pos[1] + handed))
-                near_slid[axis] += handed
-                moved = True
-            if abs_pos < 0:
-                over = -abs_pos
-                if os_frame.near_walled(axis):
-                    # pin the near edge on the display edge, slide the
-                    # window the other way by the overshoot
-                    pos = window.window_pos or (0, 0)
-                    window.window_pos = ((pos[0] + over, pos[1]) if axis == "x"
-                                         else (pos[0], pos[1] + over))
-                    near_slid[axis] += over
-                else:
-                    reframe_axis(window, axis, over)
-                    os_frame.push_near(axis, over, window, cursor_edge)
-                moved = True
-            elif abs_pos > 0:
-                # the hand coming back: the translate unwinds first - the
-                # near edge stays pinned while the far edge comes back -
-                # then the OS window's move (no-op unless this window
-                # pushed this gesture)
-                back = min(near_slid[axis], abs_pos)
-                if back > 0:
-                    pos = window.window_pos or (0, 0)
-                    window.window_pos = ((pos[0] - back, pos[1]) if axis == "x"
-                                         else (pos[0], pos[1] - back))
-                    near_slid[axis] -= back
-                    abs_pos -= back
-                    moved = True
-                if abs_pos > 0:
-                    os_frame.unwind_near(axis, abs_pos, window)
-            # The far edge while the near edge holds at the wall, from the
-            # LIVE position (the far hook above stood down): past the
-            # display it pushes the OS far edge out; what the surface can't
-            # take is clamped there (and slide back while the near edge is on
-            # the wall); inside the display it lets the OS window move back
-            # (absorb's sticky unwind) as the translate unwinds.
-            if os_frame.near_walled(axis) and Melty.display_size and Melty.display_size[i]:
-                display = Melty.display_size[i]
-                abs_now = _abs_before + ((window.window_pos or (0, 0))[i] - _pos_before[i])
-                overflow = abs_now + far[axis] - display
-                if overflow > 0:
-                    absorbed = os_frame.absorb(axis, overflow, window)
-                    size, _slide = os_frame.clamp_far_edge(abs_now, far[axis], display, absorbed, True)
-                    if size < far[axis]:
-                        far[axis] = float(size)
-                        if axis == "x":
-                            window.width = snap_int(size)
-                        else:
-                            window.height = snap_int(size)
-                        moved = True
-                elif overflow < 0:
-                    os_frame.absorb(axis, overflow, window)
     return moved
 
 

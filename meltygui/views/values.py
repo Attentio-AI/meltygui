@@ -5193,11 +5193,15 @@ def draw_melty_windows(vis):
 
     Core.melty.begin_frame()
 
-    # The OS window shrinking pushes the root windows to stay in view
-    # (os_frame / sticky to the gesture, cascading through their columns) -
-    # before they draw, at the display size begin_frame just updated.
+    # The OS window's edge model (os_frame): bring it up to date with the
+    # real window size / observed screen position before the root windows
+    # solve against it - on the display size begin_frame just stamped.
     from src.lsd.gl_gui import os_frame
-    os_frame.fit_windows_to_display()
+    os_frame.begin_frame()
+    # ... and this frame's mouse-drag in the background as drags of the OS
+    # window's own edges, queued before the roots solve.
+    from src.lsd.gl_gui.titlebar import poll_os_window_drag
+    poll_os_window_drag()
 
     # imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
     imgui.set_cursor_screen_pos((0, 0))
@@ -5240,10 +5244,9 @@ def draw_melty_windows(vis):
 
     Core.melty.end_frame()
 
-    # The frame's pushes against the OS window's edges (os_frame.absorb from
-    # the corner drag / edge solves - which run in end_frame's window
-    # dispatch, so this must follow it) → one surface resize when next frame
-    # start.
+    # The OS window's edges: the root windows' have left edge (they run
+    # in end_frame's window dispatch, so this must follow it) → one surface
+    # size / move request, applied at the next frame's start.
     from src.lsd.gl_gui import os_frame
     os_frame.flush()
 

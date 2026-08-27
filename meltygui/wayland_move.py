@@ -579,7 +579,7 @@ def attach(window):
         _STATE["opcodes"]["bind"] = 0
         _STATE["surface"] = surface
         # The EGL window beside them: its attach offset is the client-side
-        # shadow move the window-edge push rides (os_frame.push_near).
+        # window rect the OS-edge physics rides (os_frame.flush at the flip).
         _STATE["egl_window"] = _find_egl_window(glfw_window, surface)
         if _STATE.get("relative_manager_iface") is None:
             manager_iface, rel_iface = _build_relative_pointer_interfaces(wl, _STATE["keep"])

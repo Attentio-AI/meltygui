@@ -1,0 +1,7 @@
+{
+  "uuid": "lsd-window-geometry@latent-descent",
+  "name": "LSD Window Geometry",
+  "description": "Publishes window frame rectangles and monitor work areas over the session D-Bus (org.latentdescent.WindowGeometry). Wayland never tells a client where its window sits on the screen; LSD Studio needs that to treat the screen edges as collision walls for its own window edges. Installed and managed from the studio (gl_gui/installation_helper.py).",
+  "shell-version": ["45", "46", "47", "48"],
+  "version": 1
+}

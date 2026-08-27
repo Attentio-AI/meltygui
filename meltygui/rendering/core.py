@@ -2278,156 +2278,42 @@ def render_func(*args, **o_kwargs):
                         draw_state.window_pos = (draw_state._initial_window_pos_resize[0],
                                                  draw_state.window_pos[1])
 
-                    # Top-left mode twin of the bottom clamp below: keep the
-                    # window's TOP on the display while growing upward. When
-                    # the top would rise past the display top, pin it at 0 and
-                    # cap the height there - the bottom stays put. The
-                    # position is re-derived from the baseline every frame, so
-                    # the clamp never accumulates and releases on drag-back.
-                    if from_top_left:
-                        # (imported here too: the corner clamp below imports
-                        # the same name later in this function, which makes
-                        # it a LOCAL for the whole body - an unbound read
-                        # here otherwise)
-                        from src.lsd.gl_gui import os_frame
+                    # The display edges: a window whose frame edges ride the
+                    # edge solve (`queued` / `queued_rows`) collides with the
+                    # OS window's edges THERE (columns._frame_pass → os_frame:
+                    # the OS window grows / moves, the edge is the wall, a
+                    # blocked edge grows the window from the other side). Only
+                    # the DIRECT path - no edge latches, a plain size write -
+                    # keeps growing in-place pin-and-slide here: the far edge
+                    # pins at the display edge and the near edge gives.
+                    from src.lsd.gl_gui import os_frame
+                    if from_top_left and not queued_rows:
                         abs_top_tl = draw_state._abs_top()
-                        # The display's top / left are movable OS edges on the
-                        # frameless Wayland window: past them os_frame.push_near
-                        # pushes the surface through the compositor's edge and
-                        # the studio slides toward the hand; this window's
-                        # edge stays on the display edge meanwhile
-                        # (reframe_axis keeps the OS edge and the interior on
-                        # screen). This path re-derives pos/size from the press
-                        # baseline every frame, so it reports the TOTAL past
-                        # the edge (the with total=True sends only what's
-                        # not already requested) and the glue re-bases the
-                        # baseline with the frame. The queued paths report
-                        # increments from _frame_pass.
-                        # At the WALL (the studio's edge on the screen's,
-                        # os_frame.near_walled) the overshoot goes the other
-                        # way instead: the window translates with its near
-                        # edge pinned on the display edge, and the far
-                        # clamps below take its far edge into the OS edge.
-                        # Sticky by construction - pos/size come from the
-                        # press baseline every frame, so the translate
-                        # unwinds as the hand comes back.
-                        _near_push = os_frame.near_push_available() and draw_state.parent_window is None
-                        if _near_push and not queued and draw_state._abs_left() < 0:
-                            _over_x = -draw_state._abs_left()
-                            if os_frame.near_walled("x"):
-                                draw_state.window_pos = (snap_int(draw_state.window_pos[0] + _over_x),
-                                                         draw_state.window_pos[1])
-                            else:
-                                os_frame.push_near("x", _over_x, draw_state, None, total=True)
-                                _columns.reframe_axis(draw_state, "x", _over_x)
-                        elif _near_push and not queued and draw_state._abs_left() > 0:
-                            os_frame.unwind_near("x", draw_state._abs_left(), draw_state)
-                        if _near_push and not queued_rows and abs_top_tl < 0:
-                            if os_frame.near_walled("y"):
-                                draw_state.window_pos = (draw_state.window_pos[0],
-                                                         snap_int(draw_state.window_pos[1] - abs_top_tl))
-                            else:
-                                os_frame.push_near("y", -abs_top_tl, draw_state, None, total=True)
-                                _columns.reframe_axis(draw_state, "y", -abs_top_tl)
-                            abs_top_tl = 0
-                        elif _near_push and not queued_rows and abs_top_tl > 0:
-                            os_frame.unwind_near("y", abs_top_tl, draw_state)
-                        if abs_top_tl < 0 and queued_rows:
-                            # The y solve owns height and position here
-                            # frame: state the clamp as a cursor drag drag
-                            # into the TOP frame edge, down to the display
-                            # top, so the pass slides the window, rebases
-                            # the rows and squeezes the pile - a direct
-                            # height/pos write here would be fought by the
-                            # pass's foreign-height invariant next frame.
-                            frame_rows = getattr(draw_state, "_frame_rows", None)
-                            if frame_rows:
-                                _columns._ensure_window_state(draw_state)
-                                draw_state._pending_row_drags.append(
-                                    (frame_rows[0], frame_rows[0]["y"] - abs_top_tl, True))
-                        elif abs_top_tl < 0:
+                        if abs_top_tl < 0:
                             if passed_height is None:
                                 draw_state.height = snap_int(draw_state.height + abs_top_tl)
                             draw_state.window_pos = (draw_state.window_pos[0],
                                                      snap_int(draw_state.window_pos[1] - abs_top_tl))
-
-                    # Keep the window's bottom on the display while resizing.
-                    # When the new bottom would extend past the bottom of the
-                    # main display, pin the bottom to the display edge and let
-                    # the top rise instead. This lets a window already low on
-                    # screen be grown in one continuous right-drag (the cursor
-                    # stays mid-window with room to keep dragging) without
-                    # first dragging it up to make room. Stated in absolute
-                    # coords via _abs_top (linear in window_pos[1]) so nested
-                    # windows clamp against the display correctly too. Only
-                    # fires during real resizing, so the corner handle - whose
-                    # cursor can't pass the the edge - is unaffected.
-                    # The display bottom is itself movable now (os_frame): the
-                    # overflow first pushes the OS window's bottom edge out,
-                    # and only what the surface can't take - at the screen -
-                    # pins and slides as before.
-                    from src.lsd.gl_gui import os_frame
                     display_h = imgui.get_io().display_size[1]
                     abs_top = draw_state._abs_top()
-                    # Reported every frame of the drag: a positive overflow
-                    # pushes the OS edge out, a negative one (the hand
-                    # returning) lets it come back - sticky, they level out.
-                    # Only on the DIRECT path: when the drag is queued onto
-                    # the row solve, the height here is last frame's and
-                    # _frame_pass reports the real one (a stale push and a
-                    # real unwind in one frame fought over the OS edge).
-                    _overflow_y = abs_top + draw_state.height - display_h
-                    if _overflow_y <= 0 and not queued_rows:
-                        os_frame.absorb("y", _overflow_y, draw_state)      # the sticky unwind
-                    if _overflow_y > 0 and not queued_rows:
-                        # OS edge out → pin-and-slide (top down to the
-                        # display edge) → through the compositor's edge (the
-                        # studio's top moves) - os_frame.push_far_edge.
-                        new_h, slide = os_frame.push_far_edge(
-                            "y", abs_top, draw_state.height, display_h, draw_state,
-                            cap_size=passed_height is None)
+                    if abs_top + draw_state.height > display_h and not queued_rows:
+                        new_h, slide = os_frame.clamp_far_edge(
+                            abs_top, draw_state.height, display_h, cap_size=passed_height is None)
                         if new_h != draw_state.height:
                             draw_state.height = snap_int(new_h)
                         if slide > 0:
                             draw_state.window_pos = (draw_state.window_pos[0],
                                                      snap_int(draw_state.window_pos[1] - slide))
-                        # A slide carrying the top PAST the display's top is
-                        # the top colliding with the OS window. state the
-                        # push as dragging the top edge there (push_near -
-                        # far side grown, studio moved; TOTAL: this path
-                        # re-derives position from its baseline each frame), the
-                        # top held on the display edge meanwhile.
-                        _top_over = -draw_state._abs_top()
-                        if (_top_over > 0 and not queued_rows and draw_state.parent_window is None
-                                and os_frame.near_push_available()):
-                            os_frame.push_near("y", _top_over, draw_state, None, total=True)
-                            _columns.reframe_axis(draw_state, "y", _top_over)
-
-                    # Horizontal version of the clamp above: keep the window's
-                    # right edge on the display while resizing. When the new
-                    # right edge would extend past the right of the main
-                    # display, pin it to the display edge and push the window
-                    # left instead, capping the width at the display width.
                     display_w = imgui.get_io().display_size[0]
                     abs_left = draw_state._abs_left()
-                    _overflow_x = abs_left + draw_state.width - display_w
-                    if _overflow_x <= 0 and not queued:
-                        os_frame.absorb("x", _overflow_x, draw_state)      # the sticky unwind
-                    if _overflow_x > 0 and not queued:
-                        new_w, slide = os_frame.push_far_edge(
-                            "x", abs_left, draw_state.width, display_w, draw_state,
-                            cap_size=passed_width is None)
+                    if abs_left + draw_state.width > display_w and not queued:
+                        new_w, slide = os_frame.clamp_far_edge(
+                            abs_left, draw_state.width, display_w, cap_size=passed_width is None)
                         if new_w != draw_state.width:
                             draw_state.width = snap_int(new_w)
                         if slide > 0:
                             draw_state.window_pos = (snap_int(draw_state.window_pos[0] - slide),
                                                      draw_state.window_pos[1])
-                        # the x twin: the left colliding with the OS window
-                        _left_over = -draw_state._abs_left()
-                        if (_left_over > 0 and not queued and draw_state.parent_window is None
-                                and os_frame.near_push_available()):
-                            os_frame.push_near("x", _left_over, draw_state, None, total=True)
-                            _columns.reframe_axis(draw_state, "x", _left_over)
                 elif not (handle_press or corner_press):
                     # Not on the press branch itself - that would wipe the
                     # press-anchored baselines latched just above before the

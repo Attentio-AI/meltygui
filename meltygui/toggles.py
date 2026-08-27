@@ -1248,33 +1248,20 @@ class Toggles:
         resize_border = 6
         resize_corner = 18
 
-        # The OS window's right/bottom edges join the column collision
-        # system (gl_gui/os_frame.py): a melty window edge or a column
-        # cascade that reaches the display edge during a drag pushes the OS
-        # surface out instead of stopping there; the workarea (the screen)
-        # is the final barrier, where the OS pin-and-slide takes over.
+        # The GLFW window's four edges are collision edges in the column
+        # edge model, one level outside the root melty windows
+        # (gl_gui/os_frame.py): a melty window edge or a column cascade
+        # collapsing into the OS edge moves it (the surface grows, or the
+        # window moves). The screen's work area is the wall outside it (its
+        # position from the GNOME extension's feed - installation_helper
+        # - None on X11), and an edge blocked by a wall grows its window on
+        # the other side, just like a melty window's edge against the
+        # display. Off, or with no position feed: the display edges are
+        # immovable walls and the old in-display pin-and-slide remains.
         push_os_window_edges = True
-        # The LEFT/TOP half of that (os_frame.push_near): a near edge
-        # dragged past the display's left/top grows the window on the FAR
-        # side through the compositor's keep-on-screen edge, so Mutter
-        # slides the edge toward the hand - the same slide the push-up
-        # rides - while every other window is re-based to the room and the
-        # dragged window's edge keeps the OS edge out. (The earlier
-        # xdg_toplevel.resize handoff is superseded.) Off: the near edge
-        # just runs off the display.
-        push_os_window_near_edges = True
-        # The REVERSE push (os_frame.fit_windows_to_display): the OS window
-        # growing - right-drag on bare background, a compositor resize,
-        # maximize - pushes the root melty windows to stay in view: a
-        # window slides until its left/top edge reaches the display's, then
-        # shrinks, cascading through its columns/rows to fill the edge.
-        # STICKY for the gesture: every step is re-applied against the layout
-        # at the gesture's start, so growing the OS window back restores
-        # the windows exactly; at release the pushed layout is kept.
-        os_edges_push_windows = True
-        # Console trace of the OS-edge push chain (absorb → flush → apply,
-        # the compositor handoff and its glue, the reverse push). Off: it
-        # prints per configure and per absorb, a real cost at 120 Hz.
+        # Console trace of the OS edge model (foreign moves / resizes seen,
+        # OS edges pushed and the surface request per frame). Off: it prints
+        # per push and per frame, a real cost at 120 fps.
         push_os_window_edges_trace = False
 
         # Tint of the OS-window chrome: the minimize / maximize / close

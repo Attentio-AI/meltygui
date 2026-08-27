@@ -13,11 +13,12 @@ switched libdecor off at the first glfw.init (glfw_utils
 .apply_wayland_frame_hint) — or, with Toggles.Melty.wayland_show_frame off
 (the default), no frame at all. This module then contributes the buttons
 (always on Wayland; Toggles.Melty.enhanced_titlebar is an X11 knob), the
-right-drag resize (app-driven set_window_size, bottom-right corner only —
-the top-left is pinned) and, through gl_gui/wayland_move.py, the SAME
-strip / drag-anywhere move and edge resize as X11: xdg_toplevel.move /
-.resize sent straight to the compositor (what Super+drag and the caption
-strip do), the grab then driven by GNOME. With libdecor still on, its own
+right-drag resize (a cursor-driven drag of the OS window's own frame edges
+through the edge physics, gl_gui/os_frame.py — bottom-right corner, or the
+top-left on a DOUBLE right-drag, the melty windows' rule) and, through
+gl_gui/wayland_move.py, the SAME strip / drag-anywhere move and edge resize
+as X11: xdg_toplevel.move / .resize sent straight to the compositor (what
+Super+drag and the caption strip do), the grab then driven by GNOME. With libdecor still on, its own
 title bar carries the buttons and nothing here draws (backend_supported
 is False).
 
@@ -198,18 +199,9 @@ _RESIZE_ID = "enhanced_titlebar_rdrag_resize"
 _STRIP_PRIORITY = 10 ** 9
 _wm_move_started = False  # latch: dragged is per-frame, the WM move starts once
 
-# Right-drag resize gesture state, latched on the first dragged event:
-# (L0, T0, R0, B0, px0, py0, (grab_right, grab_bottom), workarea). App-side
-# (glfw set_window_pos/size per frame) rather than a pointer grab, so the melty
-# display-edge behavior works: an edge dragged past the workarea edge pins
-# there but moves the OPPOSITE edge instead (slide + resize), capping the
-# window at the workarea.
+# Right-drag resize gesture: {"top_left": bool, "x": last total_dx, "y":
+# last total_dy}, latched on the first dragged frame and dropped on release.
 _rdrag = None
-_MIN_W, _MIN_H = 320.0, 200.0
-# Corner-priority band: the top/left edges only grab within this many px of
-# their edge; everything past it belongs to the bottom-right corner, which
-# is the overwhelmingly common resize.
-_GRAB_BAND = 50.0
 
 
 def top_inset():
@@ -393,46 +385,6 @@ def _workarea_for(window):
         target = glfw.get_primary_monitor()
     ax, ay, aw, ah = glfw.get_monitor_workarea(target)
     return float(ax), float(ay), float(ax + aw), float(ay + ah)
-
-
-def _apply_rdrag_resize(window, px, py, grab=None):
-    """One frame of the right-drag resize: move the grabbed corner's two
-    edges by the pointer delta since the gesture latched, with the melty
-    window clamp — an edge dragged past the workarea edge pins there and the
-    remaining growth pushes the OPPOSITE edge (slide + resize), so the
-    window maxes out filling the workarea instead of running off-screen.
-    `grab` = (right, bottom) overrides the latched corner for this frame
-    (X11: the double right-drag's top-left mode)."""
-    L0, T0, R0, B0, px0, py0, latched, wa = _rdrag
-    grab_right, grab_bottom = grab if grab is not None else latched
-    wa_l, wa_t, wa_r, wa_b = wa
-    dx, dy = px - px0, py - py0
-
-    L, T, R, B = L0, T0, R0, B0
-    if grab_right:
-        R = max(R0 + dx, L + _MIN_W)
-        if R > wa_r:
-            L = max(L - (R - wa_r), wa_l)
-            R = wa_r
-    else:
-        L = min(L0 + dx, R - _MIN_W)
-        if L < wa_l:
-            R = min(R + (wa_l - L), wa_r)
-            L = wa_l
-    if grab_bottom:
-        B = max(B0 + dy, T + _MIN_H)
-        if B > wa_b:
-            T = max(T - (B - wa_b), wa_t)
-            B = wa_b
-    else:
-        T = min(T0 + dy, B - _MIN_H)
-        if T < wa_t:
-            B = min(B + (wa_t - T), wa_b)
-            T = wa_t
-
-    if not _on_wayland():        # Wayland: no client positioning, size only
-        glfw.set_window_pos(window, int(round(L)), int(round(T)))
-    request_surface_size(window, int(round(R - L)), int(round(B - T)))
 
 
 # FontAwesome glyphs (merged in the default UI font - see fonts._fa_merge),
@@ -692,75 +644,54 @@ def draw_titlebar(window):
     # any view that actually uses a right drag (camera orbits, melty window
     # resize) captures it first, and plain right-CLICKS are untouched
     # (dragged only fires past the handler's drag threshold, so context
-    # menus keep working). The grabbed corner is the one nearest the pointer
-    # at gesture start. App-side geometry rather than a WM grab so the melty
-    # display-edge fix applies (see _apply_rdrag_resize) - the tradeoff is
-    # a client-driven resize, which the per-drag-event render keeps smooth.
+    # menus keep working). The drag is a cursor-driven drag of the OS
+    # window's OWN frame edges through the edge physics (os_frame.queue_drag
+    # → the roots' solve passes): the bottom-right corner, or the top-left
+    # on a DOUBLE right-drag (press-press-drag - the melty windows' rule),
+    # decided at the press for the whole gesture. The window's input area is
+    # the border; an edge blocked there grows the window on the other side,
+    # exactly like a melty window's edge at the display.
     if not maximized and over_button is None and edge is None:
         Melty.event_handler.register_hovered(
             _RESIZE_ID, ["right_mouse_dragged", "right_mouse_double_dragged"], priority=_STRIP_PRIORITY)
-    resize_events = (getattr(Melty, "events", None) or {}).get(_RESIZE_ID, {})
-    if _rdrag is not None and not Melty.event_handler.is_down("right_mouse"):
-        _rdrag = None  # gesture ended - re-latch on the next drag
-    double_drag = "right_mouse_double_dragged" in resize_events
-    if "right_mouse_dragged" in resize_events or double_drag or _rdrag is not None:
-        # A DOUBLE right-drag = the TOP-LEFT corner (the melty windows' own
-        # rule), decided on the press for the whole gesture. X11: the
-        # app-side drag slides the window. Wayland: that corner only moves
-        # through the compositor - xdg_toplevel.resize(top_left) - so the
-        # gesture is handed over as it starts (a fresh press: no travel for
-        # the compositor's corner-anchored resize to jump by).
-        both = double_drag and _rdrag is None
-        if both and wayland and wayland_move.begin_resize(window, wayland_move.EDGE_TOP_LEFT):
-            _release_after_wayland_grab(window)
-            _rdrag = None
-            return
-        if wayland:
-            if wayland_move.relative_motion_available():
-                # Screen-space motion (zwp_relative_pointer): the surface
-                # moves under the pointer when the compositor pushes the
-                # window to keep it on screen, and a surface-relative delta
-                # then grew by the push, grew the window more, got pushed
-                # again - the top edge raced to the screen edge.
-                px, py = wayland_move.relative_motion_total()
-            else:
-                # Surface-relative pointer: only deltas matter.
-                px, py = mx, my
-        else:
-            try:
-                x11 = _lib()
-                dpy, _win = _handles(window)
-                px, py = _root_pointer(x11, dpy, x11.XDefaultRootWindow(dpy))
-            except Exception:
-                px = py = None
-        if px is not None:
-            if _rdrag is None:
-                ww, wh = glfw.get_window_size(window)
-                wx, wy = (0, 0) if wayland else glfw.get_window_pos(window)
-                # Corner pick: bottom-right gets most of the window - the
-                # top/left grabs only apply within the first _GRAB_BAND px of
-                # their edge (halved on windows too small for two full bands,
-                # so tiny windows still resize sensibly). Wayland: always the
-                # bottom-right - a left/top grab would need the window placed
-                # it, and clients can't position themselves there.
-                band_x = min(_GRAB_BAND, ww / 2)
-                band_y = min(_GRAB_BAND, wh / 2)
-                grab = (True, True) if wayland else (mx >= band_x, my >= band_y)
-                _rdrag = (float(wx), float(wy), float(wx + ww), float(wy + wh),
-                          px, py, grab, _workarea_for(window))
-            # X11: a double right-drag is the top-left corner for the whole
-            # gesture (latched below); Wayland handed it over above.
-            if both:
-                _rdrag = _rdrag[:6] + ((False, False),) + _rdrag[7:]
-            grab_right, grab_bottom = _rdrag[6]
-            direction = ((_SIZE_BOTTOMRIGHT if grab_right else _SIZE_BOTTOMLEFT)
-                         if grab_bottom else
-                         (_SIZE_TOPRIGHT if grab_right else _SIZE_TOPLEFT))
-            mouse_cursor.request(_EDGE_CURSOR[direction])
-            _apply_rdrag_resize(window, px, py, grab=(grab_right, grab_bottom))
+    # (the drag events themselves are consumed by poll_os_window_drag at
+    # the frame's START - before the root windows solve - so the OS edge
+    # moves in the same frame the hand did)
+    if _rdrag is not None:
+        mouse_cursor.request(_EDGE_CURSOR[_SIZE_TOPLEFT if _rdrag["top_left"] else _SIZE_BOTTOMRIGHT])
 
     # The buttons themselves are painted earlier in the frame, in the main
     # window draw list (paint_window_controls) - see there for why.
+
+
+def poll_os_window_drag():
+    """Frame START (draw_melty_windows, right after os_frame.begin_frame):
+    turn this frame's right-drag events on the background (_RESIZE_ID,
+    registered by draw_titlebar) into cursor-driven drags of the OS
+    window's frame edges — os_frame.queue_drag with the drag total's
+    per-frame increment — so the first root window's pass solves them in
+    THIS frame. Polled at the end of the frame (draw_titlebar runs after
+    the melty windows and os_frame.flush) the drag landed a frame late."""
+    global _rdrag
+    from src.lsd.gl_gui.melty import Melty
+    handler = getattr(Melty, "event_handler", None)
+    if handler is None:
+        return
+    resize_events = (getattr(Melty, "events", None) or {}).get(_RESIZE_ID, {})
+    if _rdrag is not None and not handler.is_down("right_mouse"):
+        _rdrag = None  # cursor ended - re-latch on the next drag
+    drag = resize_events.get("right_mouse_double_dragged") or resize_events.get("right_mouse_dragged")
+    if drag is None:
+        return
+    from src.lsd.gl_gui import os_frame
+    if _rdrag is None:
+        _rdrag = {"top_left": "right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0}
+    index = 0 if _rdrag["top_left"] else 1
+    for axis, total in (("x", "total_dx"), ("y", "total_dy")):
+        now = float(getattr(drag, total, 0.0) or 0.0)
+        inc = now - _rdrag[axis]
+        _rdrag[axis] = now
+        os_frame.queue_drag(axis, index, inc)
 
 
 # ---------------------------------------------------------------------------
@@ -888,17 +819,12 @@ def frame_geometry(fb_w, fb_h):
 
 def content_origin():
     """(x, y) of the content's top-left inside the surface: the shadow
-    margin plus the left/top content shift the OS-edge handoff leaves
-    behind (os_frame.content_shift — see there). (0, 0) while maximized /
-    fullscreen, which also collapses the shift."""
-    from src.lsd.gl_gui import os_frame
+    margin; (0, 0) while maximized / fullscreen."""
     window = _studio_window()
     if _maximized(window) or _fullscreen(window):
-        os_frame.reset_shift()
         return (0.0, 0.0)
     inset = float(window_inset())
-    sx, sy = os_frame.content_shift()
-    return (inset + sx, inset + sy)
+    return (inset, inset)
 
 
 def frame_corner_radius():
@@ -988,8 +914,11 @@ def apply_pending_surface_size(window):
     """LSDStudio's loop, before process_inputs: apply the queued resize so
     this frame lays out at the new size. Returns the size applied."""
     global _pending_surface_size, _pending_surface_offset, _frame_surface_offset
-    from src.lsd.gl_gui import wayland_move
+    from src.lsd.gl_gui import wayland_move, os_frame
     wayland_move.clear_surface_offset()          # last frame's offset is spent
+    # The roots' passes re-base with the OS near edge's motion lands HERE,
+    # with the move it compensates (os_frame: the solve booked it).
+    os_frame.apply_rebase()
     size = _pending_surface_size
     if size is None or window is None:
         return None
@@ -1040,16 +969,15 @@ def on_surface_resized(window, width, height):
         # got the push (a gap at the top).
         sync_window_geometry(window, (int(width), int(height)))
         return None
-    inset = window_inset()      # MAXIMIZED is already current inside GLFW's configure callback
-    # A compositor-driven size names the GEOMETRY: the left/top pushoff's
-    # glue adjusts it (os_frame), then the surface is regrown around it
-    # (geometry origin on the left/top, shadow margin on the right/bottom).
-    from src.lsd.gl_gui import os_frame
-    os_frame.on_compositor_size(int(width), int(height))
-    grown = os_frame.surface_for_geometry(int(width), int(height))
-    if inset <= 0 and grown == (int(width), int(height)):
+    inset = window_inset()      # MAXIMIZED is already current inside GLFW's configure handling
+    # A compositor-driven size names the GEOMETRY (the content): the
+    # surface is regrown outside it by the margin on every side. The OS
+    # edge model (os_frame.begin_frame) reads the new content size next
+    # frame and folds it into the roots' passes as the near edge's motion.
+    if inset <= 0:
         sync_window_geometry(window, (int(width), int(height)))
         return None
+    grown = (int(width) + 2 * inset, int(height) + 2 * inset)
     set_surface_size(window, *grown)      # its resize callback syncs the geometry
     return grown
 
@@ -1063,9 +991,9 @@ def sync_window_geometry(window, size=None):
     global _geometry_applied
     if not _on_wayland() or not wayland_move.geometry_available():
         return False
-    from src.lsd.gl_gui import os_frame
     fb_w, fb_h = size if size is not None else glfw.get_framebuffer_size(window)
-    rect = os_frame.geometry_rect(fb_w, fb_h)
+    inset = int(window_inset())
+    rect = (inset, inset, max(1, int(fb_w) - 2 * inset), max(1, int(fb_h) - 2 * inset))
     if rect == _geometry_applied:
         return False
     if wayland_move.set_window_geometry(*rect):

@@ -312,7 +312,6 @@ class SplitOverlayRenderer(GlfwRenderer):
             cy += d_rel[1]
         self._slide_clamped = (cx, cy)
         self._slide_last = ((mx, my), rel)
-        moved = (d_rel[0] != 0.0, d_rel[1] != 0.0)
         (bx, by), (rx0, ry0) = self._slide_base
         slide_x = (mx - bx) - (rel[0] - rx0 - cx)
         slide_y = (my - by) - (rel[1] - ry0 - cy)
@@ -320,12 +319,6 @@ class SplitOverlayRenderer(GlfwRenderer):
             slide_x = 0.0
         if abs(slide_y) < self.SLIDE_DEADBAND:
             slide_y = 0.0
-        # os_frame reads the slide as the workarea edge: the OS-edge push
-        # stops moving an axis the compositor has slid on; the the
-        # push's glue applies the moves it asked for, and counts the hand
-        # frames a move stays unseen (the wall).
-        from src.lsd.gl_gui import os_frame
-        os_frame.note_surface_slide(slide_x, slide_y, moved=moved)
         if slide_x or slide_y:
             io.mouse_pos = (mx - slide_x, my - slide_y)
 
