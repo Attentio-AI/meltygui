@@ -909,13 +909,14 @@ def _frame_pass(window, axis):
     # as far as the screen lets it, the remainder - the window's top still
     # above the display top - is clamped by sliding the window back down.
     # Written to window_pos directly (a near-edge shift through the frame
-    # pair would be a RESIZE: interior edges lose their screen position),
-    # so it is a clean move; the press baseline is untouched, the window
-    # re-tracks the cursor when the cursor is back. Pinned windows are
-    # re-placed by their anchor every frame and are left alone.
+    # pair would be a RESIZE: interior edges hold their screen position),
+    # so it is a pure move; the press baseline is untouched, the window
+    # re-tracks the hand if the pointer is moved. Nested windows too, pinned
+    # or not (Lukas 08-28): window_pos is an additive offset on top of the
+    # parent / OS anchor, so the shift holds - the child slides down inside
+    # the parent, the parent is never moved for it.
     if (axis == "y" and Toggles.Melty.window_top_hard_limit
-            and _hand_moved(window, Melty.frame_count)
-            and getattr(window, "pin_to_clip", None) is None):
+            and _hand_moved(window, Melty.frame_count)):
         limit = os_frame.display_top()
         top = float(window.abs_top or 0)
         if top < limit - 1e-6:

@@ -280,6 +280,26 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
+    @defaults(tint=(0.30, 0.34, 0.40))
+    def scope_guide():
+        # The text editor's indent guides for the file with no tint: the
+        # window background lifted a little, so the line reads as
+        # "background, slightly brighter" whatever the theme (the
+        # Toggles.TextEditor.scope_guide_* knobs adjust it later).
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.85
+        value_factor = 2.2
+        min_value = 0.12
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      min(max(active_hsv[2] * value_factor, min_value), Tint.max_value))
+        return hsv_to_rgb(*active_hsv)
+
+    @staticmethod
     @defaults(tint=(0.367, 0.112, 0.112))
     def subtle_text():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -894,6 +914,34 @@ class Toggles:
         # involved, so it works in any text, mid-edit or unparseable. Flip the
         # toggle to disable; the (r, g, b, a) tint is read live.
         highlight_token_matches = True
+
+        # Scope guides: a thin vertical line down the indent column of every
+        # indented block. A tinted def/class draws its guide in its
+        # definition tint, nested blocks inherit the nearest enclosing
+        # tinted block's, and outside any tinted block the file's tint
+        # (else Tint.scope_guide) applies. Colours run through the
+        # same hsv adjustment as the washes with the four knobs below
+        # (saturation / value multipliers, then a brightness clamp).
+        # [tint=(0.0875, 0.2815, 0.477, 1.00), show_tint=True]
+        scope_guides = True
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
+        scope_guide_alpha = 0.5
+        scope_guide_thickness = 1.0
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        scope_guide_saturation = 0.8
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        scope_guide_value = 1.6
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        scope_guide_min_value = 0.16
+        scope_guide_max_value = 0.32
+        # The guide of the block the caret sits in (focused editor): its
+        # own alpha / value / brightness cap, so it stands out from the rest.
+        # [tint=(0.72, 0.11, 0.11), show_tint=True]
+        scope_guide_active_alpha = 0.9
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        scope_guide_active_value = 2.6
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        scope_guide_active_max_value = 0.55
 
         # [tint=(0.72, 0.11, 0.11), show_tint=True]
         def_block_alpha = 1.0

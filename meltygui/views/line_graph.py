@@ -723,10 +723,4 @@ window(draw_line_graph, name="line_host_4d", input_value=line_host_4d, tint=(0.2
 window(draw_line_graph, name="line_host_5d", input_value=line_host_5d, tint=(0.09, 0.50, 0.77))
 
 
-@window(input_value=line_host_torus, tint=(0.78, 0.67, 0.61))
-@render_func(show_bg=True, use_cache=True)
-def draw_line_graph_torus(input_value=None, **kwargs):
-    # draw_voxel_4d's torus volume as lines, width vs x, one line per
-    # height row, scrub time/depth.
-    draw_line_graph(input_value.get("value"), name="lines_torus", mode=Modes.WINDOW,
-                    dim_names=("time", "depth", "height", "width"))
+window(draw_line_graph, input_value=line_host_torus, name="line_host_torus", tint=(0.78, 0.67, 0.61))

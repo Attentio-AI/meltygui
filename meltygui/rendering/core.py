@@ -567,7 +567,6 @@ def _selection_for_search(owner_ds):
         return None
     return sel
 
-# [tint=(0.373, 0.672, 0.373), show_tint=True]
 def _str_change_span(old, new):
     """(start, end) of the region of `new` that differs from `old` — common
     prefix / common suffix trimmed (suffix bounded so it never overlaps the

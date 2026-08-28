@@ -4649,7 +4649,6 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text=
 def draw_draw_state(input_value, **kwargs):
     pass
 
-
 @render_func(use_cache=False, shadow=False, show_bg=False, disable_scroll=False, selectable=False)
 def run_chain(input_value, chain=None, draw_state=None, route=None,
               s_key_pressed=False, enter_key_pressed=False, unique=None, debug=False, **kwargs):
@@ -4727,8 +4726,7 @@ def run_chain(input_value, chain=None, draw_state=None, route=None,
 
     cache_tree.end()
 
-    return changed, value
-
+    return changed, value     
 
 some_test_tensor = torch.randn(3, 3)
 

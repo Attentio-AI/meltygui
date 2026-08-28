@@ -8339,6 +8339,94 @@ _FOLD_CLOSE_RE = {d: re.compile(r"\\.|" + re.escape(d))
                   for d in ('"', "'", '"""', "'''")}
 
 
+def _guide_code_part(stripped):
+    """`stripped` minus a trailing `# comment` (quotes honoured), rstripped."""
+    quote = None
+    i, n = 0, len(stripped)
+    while i < n:
+        c = stripped[i]
+        if quote is None:
+            if c == '#':
+                return stripped[:i].rstrip()
+            if c in '"\'':
+                quote = c
+        elif c == '\\':
+            i += 1
+        elif c == quote:
+            quote = None
+        i += 1
+    return stripped.rstrip()
+
+
+def _scope_guide_tints(segments, blocks):
+    """{segment: rgb} for every guide whose head line lies inside a
+    definition-tint block — the INNERMOST such block, `blocks` being the
+    `_dt_blocks` 4-tuples `(start_line, char_idx, end_line, tint)` the
+    washes paint (start = the decorator run's first line). One merged
+    sweep over both sorted lists; segments outside every block are absent
+    from the result (they take the file / neutral colour)."""
+    sorted_blocks = sorted(((_b[0], _b[2], tuple(_b[3][:3]))
+                            for _b in blocks if _b[3]),
+                           key=lambda _b: (_b[0], -_b[1]))
+    tints, open_blocks, next_block = {}, [], 0
+    for segment in segments:
+        head = segment[0]
+        while next_block < len(sorted_blocks) and sorted_blocks[next_block][0] <= head:
+            open_blocks.append(sorted_blocks[next_block])
+            next_block += 1
+        while open_blocks and open_blocks[-1][1] < head:
+            open_blocks.pop()
+        owner = next((_b for _b in reversed(open_blocks)
+                      if _b[0] <= head <= _b[1]), None)
+        if owner is not None:
+            tints[segment] = owner[2]
+    return tints
+
+
+def _scope_guide_segments(text):
+    """Indent-guide segments for `text`: (head_line, end_line, column) per
+    indented BLOCK — `head_line` is a code line ending in ':' (a trailing
+    comment allowed) whose next non-blank line is indented deeper,
+    `column` its indent (chars), `end_line` the last non-blank line before
+    the indent drops back to the head's level or less. The ':' rule keeps
+    wrapped statements (a long call's continuation lines, an indented
+    comment before one) from reading as scopes. Purely line-based like
+    _scope_fold_ranges: O(lines), works mid-edit on broken buffers.
+    Sorted by head line."""
+    segments = []
+    stack = []                  # (indent, head_line) of the open blocks
+    # The current logical STATEMENT: a deeper-indented line after a line
+    # that did not open a block continues it (a wrapped call, a multi-line
+    # def signature), so a block whose ':' closes a wrapped header is keyed
+    # on the statement's FIRST line - the `def` line the definition washes
+    # use - at the statement's indent.
+    stmt_line = stmt_indent = None
+    prev_opens = False
+    last_code = -1
+    for i, line in enumerate(text.split('\n')):
+        stripped = line.lstrip()
+        if not stripped:
+            continue
+        indent = len(line) - len(stripped)
+        if prev_opens and stmt_indent is not None and indent > stmt_indent:
+            stack.append((stmt_indent, stmt_line))
+            stmt_line, stmt_indent = i, indent
+        elif stmt_indent is None or indent <= stmt_indent or prev_opens:
+            while stack and indent <= stack[-1][0]:
+                open_indent, head = stack.pop()
+                segments.append((head, last_code, open_indent))
+            stmt_line, stmt_indent = i, indent
+        # Else: a continuation line of the current statement
+        last_code = i
+        prev_opens = (not stripped.startswith('#')
+                      and _guide_code_part(stripped).endswith(':'))
+    while stack:
+        open_indent, head = stack.pop()
+        segments.append((head, last_code, open_indent))
+    segments.sort()
+    return segments
+
+
 def _scope_fold_ranges(text):
     """(ranges, default_collapsed, key_of) fold sources for `text` — the
     scope_collapse=True feed for draw_text's fold layer. key_of maps each
@@ -12669,6 +12757,108 @@ def draw_text(input_value: str, height=None,
         # Back to the body's text channel for everything after the washes.
         if Melty.channels_split:
             draw_list.channels_set_current(Core.melty.get_channel() + 1)
+
+    # Scope guides: a thin vertical line down the head column of every
+    # indented block (IntelliJ-style), from the top of the block to
+    # the block's last line. Colour is PROGRESSIVE: a tinted def/class
+    # block's guide wears its definition tint, a guide with no tint of its
+    # own wears its nearest enclosing tinted block's, and outside any
+    # tinted block it wears the file's tint, else the neutral
+    # Tint.scope_guide. All guide colours go through _bg_adjust
+    # with the scope_guide_* hsv knobs. Segments are scanned once per
+    # DISPLAY text identity (collapsed folds hide their body, so no guide
+    # spans a fold seam); the per-frame work is the lineing only.
+    if (Toggles.TextEditor.scope_guides and syntax_highlight
+            and not single_line and not is_search_box and line_px):
+        _sg_memo = getattr(ds, '_scope_guide_memo', None)
+        if _sg_memo is None or _sg_memo[0] is not text:
+            _sg_memo = ds._scope_guide_memo = (text, _scope_guide_segments(text))
+        _sg_segments = _sg_memo[1]
+        if _sg_segments:
+            _sg_factors = (Toggles.TextEditor.scope_guide_saturation,
+                           Toggles.TextEditor.scope_guide_value,
+                           Toggles.TextEditor.scope_guide_min_value,
+                           Toggles.TextEditor.scope_guide_max_value)
+            _sg_alpha = Toggles.TextEditor.scope_guide_alpha
+            _sg_thick = Toggles.TextEditor.scope_guide_thickness
+            # Colour per segment, PROGRESSIVE and by the washes' own rule:
+            # a segment wears the tint of its INNERMOST definition block
+            # (_dt_blocks - the very rects painted above, decorator-run
+            # start to body end) whose extent contains its head line; no
+            # containing block, base (the file/neutral base). Resolved
+            # once per (segments, definition tints) identity pair - one
+            # merged sweep over the two sorted lists - never per frame.
+            _sg_cmemo = getattr(ds, '_scope_guide_color_memo', None)
+            _sg_blocks = _dt_blocks if _dt_on else ()
+            if (_sg_cmemo is None or _sg_cmemo[0] is not _sg_segments
+                    or _sg_cmemo[1] is not _sg_blocks):
+                _sg_tints = _scope_guide_tints(_sg_segments, _sg_blocks)
+                _sg_cmemo = ds._scope_guide_color_memo = (
+                    _sg_segments, _sg_blocks, _sg_tints)
+            _sg_tinted = _sg_cmemo[2]
+            _sg_path = (getattr(jump_to, 'path', None) if jump_to is not None
+                        else getattr(ds, '_file_meta', None))
+            _sg_file_rgb = (_uj_file_tint(_sg_path) if _sg_path is not None
+                            else None)
+            _sg_base = tuple((_sg_file_rgb or Tint.scope_guide())[:3])
+            _sg_base_col = None
+            # The guide the caret sits ON - its line inside the block's span
+            # AND its column equals the guide's column (this display focused) -
+            # draws brighter: the scope_guide_active_* knobs replace alpha
+            # and value for it. Merely being inside the block is not enough
+            # (Lukas 08-28): the caret has to touch the line.
+            _sg_active = None
+            if (Melty.text_focused_ds is ds and ds.text_cursor_pos is not None):
+                _sg_cpos = min(ds.text_cursor_pos, len(text))
+                _sg_cline = text.count('\n', 0, _sg_cpos)
+                _sg_ccol = _sg_cpos - (text.rfind('\n', 0, _sg_cpos) + 1)
+                for _sg_seg in _sg_segments:
+                    if _sg_seg[0] > _sg_cline:
+                        break
+                    if (_sg_seg[0] < _sg_cline <= _sg_seg[1]
+                            and _sg_seg[2] == _sg_ccol):
+                        _sg_active = _sg_seg
+                        break
+            _sg_active_factors = (_sg_factors[0],
+                                  Toggles.TextEditor.scope_guide_active_value,
+                                  _sg_factors[2],
+                                  Toggles.TextEditor.scope_guide_active_max_value)
+            _sg_active_alpha = Toggles.TextEditor.scope_guide_active_alpha
+            _sg_v0 = int((rect_min_y - origin_y) / line_px) - 1
+            _sg_v1 = int((rect_max_y - origin_y) / line_px) + 1
+            # Segments sorted by head line; the ones on screen are those whose
+            # span meets the visible band.
+            for _sg_head, _sg_end, _sg_colc in _sg_segments:
+                if _sg_end < _sg_v0:
+                    continue
+                if _sg_head > _sg_v1:
+                    break
+                _sg_x = origin_x + _sg_colc * char_w + 0.5
+                if _sg_x < rect_min_x:
+                    continue
+                _sg_y0 = max(origin_y + (_sg_head + 1) * line_px, rect_min_y)
+                _sg_y1 = min(origin_y + (_sg_end + 1) * line_px, rect_max_y)
+                if _sg_y1 <= _sg_y0:
+                    continue
+                _sg_tint = _sg_tinted.get((_sg_head, _sg_end, _sg_colc))
+                if (_sg_head, _sg_end, _sg_colc) == _sg_active:
+                    _sg_rgb = _bg_adjust(
+                        _sg_tint if _sg_tint is not None else _sg_base,
+                        _sg_active_factors)
+                    _sg_col = imgui.get_color_u32_rgba(
+                        _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_active_alpha)
+                elif _sg_tint is not None:
+                    _sg_rgb = _bg_adjust(_sg_tint, _sg_factors)
+                    _sg_col = imgui.get_color_u32_rgba(
+                        _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_alpha)
+                else:
+                    if _sg_base_col is None:
+                        _sg_rgb = _bg_adjust(_sg_base, _sg_factors)
+                        _sg_base_col = imgui.get_color_u32_rgba(
+                            _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_alpha)
+                    _sg_col = _sg_base_col
+                draw_list.add_line(_sg_x, _sg_y0, _sg_x, _sg_y1,
+                                   _sg_col, _sg_thick)
 
     _pf("body:washes")
     # Selection
