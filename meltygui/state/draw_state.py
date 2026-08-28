@@ -101,6 +101,25 @@ class TabState(DictConversion):
         self.tab_icons = {}
 
 
+@no_save("fit_phase")
+class ContextMenuWindowState(DictConversion):
+    """Per-menu persisted state for the context menu WINDOW, draw_context_menu
+    (injected via `menu_state: ContextMenuWindowState = None` — the TabState
+    pattern). Not the input tab's host cache, new_core_view.ContextMenuState."""
+
+    def __init__(self):
+        super().__init__()
+        # True once the menu's first-load auto-fit has sized the window.
+        # PERSISTED on purpose: the menu draw_state (so its width/height)
+        # survives a restart, and a menu restored open must not be re-fitted -
+        # it overwrote the user's size with the default width + a content
+        # fit (an underscore draw_state attr never serialized, 08-27).
+        self.fit_done = False
+        # The fit's two-frame sequence (0: stamp header width, 1: measure
+        # height). Session-only - a fit never spans a restart.
+        self.fit_phase = 0
+
+
 @exclude("restore_first_line", "restore_total_lines", "restore_text",
          "restore_gutter_digits", "restore_line_offset", "restore_fold_keys",
          "restore_gutter_rows")

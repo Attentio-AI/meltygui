@@ -534,10 +534,12 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     moved = False
     if os_ctx is not None and os_ctx.move and os_pair is not None and len(fe) == 2:
         # A HAND MOVE of this window (its position already applied by the
-        # desktop's move drag): whatever OS edge its frame now overlaps is
-        # pushed out to meet - up to the screen, where the OS edge stops
-        # and the window keeps going (the move is never clamped: windows
-        # may be dragged partly off the display, Lukas 08-27). The push is
+        # wrapper's move drag): the OS edge its frame now overlaps is
+        # pushed out to it — up to the screen, where the OS edge stops
+        # and the window keeps moving (a move is not clamped: windows
+        # may be dragged partly off the display, Lukas 08-27 - not
+        # above the screen limit, clamped after the solve in _frame_pass,
+        # Toggles.Melty.window_top_hard_limit). The push is
         # the OS edge pushed to the window's edge with the screen as the
         # wall; the window's own edges are not part of it.
         os_near, os_far = os_pair
@@ -770,6 +772,13 @@ def _hand_moved(window, frame):
     while node is not None and depth < 64:
         if getattr(node, "_hand_move_frame", None) == frame:
             return True
+        # An ANCESTOR resized by hand this frame (_frame_pass stamps
+        # _hand_resize_frame) moves the cell the child hangs from, so the
+        # child rides exactly as under a hand move and must collide with
+        # the OS edges the same way. The window's OWN resize is not a move
+        # of it (its frame drags solve in its pass already).
+        if node is not window and getattr(node, "_hand_resize_frame", None) == frame:
+            return True
         node = getattr(node, "parent_window", None)
         depth += 1
     return False
@@ -781,6 +790,7 @@ def _frame_pass(window, axis):
     offer the frame drag handles, solve, and line the window up with its
     frame edges. Returns True when any edge of the axis moved."""
     from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.toggles import Toggles
     frame_attr = _REGISTRY[axis][2]
     size = window.width if axis == "x" else window.height
     fe = getattr(window, frame_attr, None)
@@ -881,11 +891,36 @@ def _frame_pass(window, axis):
     # window's own edges are never written unless the solve moves them; an
     # idle frame moves nothing. Nested windows solve only their own frame.
     from src.lsd.gl_gui import os_frame
+    # a cursor-driven drag of THIS window's frame (handle / corner right-drag;
+    # a foreign size write queues None): a hand resize, stamped for the
+    # nested windows that hang off the moved corner (_hand_moved)
+    hand_resize = any(len(item) < 3 or bool(item[2]) for item in _pending(window, axis))
     os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)),
                              hand_move=_hand_moved(window, Melty.frame_count))
     moved = _solve_collisions(window, axis, os_ctx)
+    if hand_resize and moved:
+        window._hand_resize_frame = Melty.frame_count
+
     if os_ctx is not None:
         os_frame.detach(window, axis, os_ctx)    # books the OS near edge's motion for apply_rebase
+
+    # The display's TOP is a hard limit for a hand move
+    # (Toggles.Melty.window_top_hard_limit): the solve above took the OS edge
+    # as far as the screen lets it, the remainder - the window's top still
+    # above the display top - is clamped by sliding the window back down.
+    # Written to window_pos directly (a near-edge shift through the frame
+    # pair would be a RESIZE: interior edges lose their screen position),
+    # so it is a clean move; the press baseline is untouched, the window
+    # re-tracks the cursor when the cursor is back. Pinned windows are
+    # re-placed by their anchor every frame and are left alone.
+    if (axis == "y" and Toggles.Melty.window_top_hard_limit
+            and _hand_moved(window, Melty.frame_count)
+            and getattr(window, "pin_to_clip", None) is None):
+        limit = os_frame.display_top()
+        top = float(window.abs_top or 0)
+        if top < limit - 1e-6:
+            pos = window.window_pos or (0, 0)
+            window.window_pos = (pos[0], pos[1] + (limit - top))
 
     # Line the WINDOW up with its frame edges - the same rule cells follow:
     # near edge off 0 → window_pos slides and every edge re-bases so

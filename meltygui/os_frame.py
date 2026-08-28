@@ -125,6 +125,28 @@ def screen_edges(axis):
     return _STATE["screen"][axis] if available() else None
 
 
+def display_top():
+    """The top of the DISPLAY (the work area's top edge — below GNOME's
+    bar) in the studio's CONTENT coordinates, comparable straight against a
+    window's abs_top. The hard limit a melty window's top may never pass
+    (columns._frame_pass, Toggles.Melty.window_top_hard_limit). Against the
+    APPLIED surface origin (the model's near edge less what apply_rebase
+    has not applied yet — attach's ctx.base convention), so it holds on
+    the frames between an OS edge pushed in the model and the surface
+    move landing. Negative while the studio sits below the display top: a
+    window may rise above the STUDIO's top (pushing the OS edge ahead of
+    it) and stops only where the OS edge stops. Walls mode / no model: 0 —
+    the studio's top is the display's."""
+    if not _enabled():
+        return 0.0
+    near, _far = _STATE["edges"]["y"]
+    applied = near["y"] - _STATE["unapplied"][1]
+    if _STATE["mode"] == "walls":
+        return applied
+    scr_near, _scr_far = _STATE["screen"]["y"]
+    return scr_near["y"] - applied
+
+
 # ---------------------------------------------------------------------------
 # Private
 # ---------------------------------------------------------------------------
@@ -434,6 +456,14 @@ def attach(window, axis, has_pending=True, hand_move=False):
     # there to here through this window's cells (foreign: the other OS
     # edge and the screen are walls - the edge IS where it is, the pile
     # packs against it or overflows)
+    if os_moved and hand_move:
+        # A hand-moved window is where the cursor put it: the OS edges'
+        # motion since it last looked (its PARENT's frame pushing the same
+        # edge, this very frame, ahead of the child riding with it) is
+        # not a foreign drag to fold through its cells - folded in, the
+        # edge the parent pushed OUT pushed the child back next to it. The
+        # push block (_solve_collisions - ctx.move) handles the rest.
+        os_moved = False
     if os_moved:
         # (the foreign drag is forced to its floor right after it is
         # solved - columns._solve_collisions - so the edge ends where it
@@ -507,14 +537,28 @@ def _flat_chain_ranked(os_pair, roots, axis):
     for _ds, n, f, _floor in roots:
         ranked.append((f, ROOT_FAR))
         ranked.append((n, ROOT_NEAR))
-    ranked.sort(key=lambda item: item[0][axis])
-    # neighbours within tolerance settle by rank (a bubble over a short list)
+    # An edge PAST the OS edge is in that edge's way: it orders as if inside
+    # it (its sort key clamped into the OS span; the roles then place it
+    # just inside), so an OS edge moving inward pushes it back to itself
+    # and on from there. Sorted by its real position it sat beyond the OS
+    # edge, which never touched it again - a popover hung off a corner
+    # near the OS edge is never overhanging and stayed clipped for good
+    # (Lukas 08-27); a root dragged partly off the display comes back the
+    # other way. Outward motion of the OS edge never pulls (no caps).
+    lo, hi = near[axis], far[axis]
+    ranked.sort(key=lambda item: item[0][axis] if item[1] in (OS_FAR, OS_NEAR)
+                else min(max(item[0][axis], lo), hi))
+    # neighbours within tolerance settle by rank (a bubble over a short
+    # list) - measured on the clamped keys, so an edge past the OS edge
+    # ties with it and its role puts it inside
+    def key(item):
+        return item[0][axis] if item[1] in (OS_FAR, OS_NEAR) else min(max(item[0][axis], lo), hi)
     changed = True
     while changed:
         changed = False
         for k in range(len(ranked) - 1):
             a, b = ranked[k], ranked[k + 1]
-            if abs(b[0][axis] - a[0][axis]) < CHAIN_TOL and a[1] > b[1]:
+            if abs(key(b) - key(a)) < CHAIN_TOL and a[1] > b[1]:
                 ranked[k], ranked[k + 1] = b, a
                 changed = True
     return ranked
@@ -583,20 +627,6 @@ def _colliding_windows():
               if getattr(ds, "parent_window", None) is not None and _open(ds)
               and id(_root_of(ds)) in root_ids]
     return roots + nested
-
-
-def _driven_edge(child, axis):
-    """Which of a nested window's two edges on ``axis`` its parent DRIVES:
-    the child is placed by a corner of its parent (the top-left in most
-    cases), so that edge is a function of the parent's position and never
-    moves on its own — "near" (left / top), or "far" for a child anchored
-    by a right / bottom corner (draw_state.anchor_pos). The other edge is
-    the child's own (its size) and collides normally (Lukas 08-27)."""
-    anchor = getattr(child, "anchor_pos", None)
-    name = getattr(anchor, "value", anchor) or ""
-    if axis == "x":
-        return "far" if str(name).endswith("right") else "near"
-    return "far" if str(name).startswith("bottom") else "near"
 
 
 def _driving_parent_edge(child, axis):
@@ -758,34 +788,39 @@ def solve():
             # rewound at `seen` for the foreign fold-in above
             drags.append(((near, far)[index], cur[index] + inc, True))
 
-        # ---- phase A: every window its own object; the DRIVING pairs are
-        # walls - each child's driven edge (the one its parent's corner
-        # places, _driven_edge) and the parent edge that places it
-        # (_driving_parent_edge), both a function of the parent's position.
-        # Every other edge collides normally: a child compresses from its
-        # free edge and pushes its parent's free edge too (the parent
-        # compresses - Lukas 08-27: "the child window should collide with
-        # the right edge of its parent and move it"); a push that needs a
-        # driving edge to move is the cascade phase B answers
+        # ---- phase A: every window its own object. A child's own edges
+        # are ordinary: its far edge compresses it to its minimum and then
+        # pushes its near edge (the child moves relative to its corner),
+        # like any window. The ONLY special case is a child and its DRIVING
+        # edge (Lukas 08-27): the parent corner that places it
+        # (_driver_of, up the ancestors) is a wall - a child pushing it
+        # would move the parent, hence the corner, hence the child again.
+        # For the same reason a child may push a parent edge only INWARD
+        # (compressing the parent, the pending_waves window pushing its
+        # parent's right edge), never OUTWARD (that moves the whole parent,
+        # its cell capped at its size): the parent edge a drag would move
+        # outward is a wall for that drag. A push that causes the driving edge
+        # to move is the cascade phase B answers.
         cells_a = [(ds, n, f, floor, size) for ds, (n, f, floor, size) in ((ds, frames[id(ds)]) for ds in windows)]
-        parent_walls = set()
+        driving_walls, parent_near, parent_far = set(), set(), set()
         for ds in windows:
             parent = getattr(ds, "parent_window", None)
             if parent is None:
                 continue
-            n, f, _fl, _sz = frames[id(ds)]
-            parent_walls.add(id(n) if _driven_edge(ds, axis) == "near" else id(f))
-            # the driving edge of every parent up to the root: each is a
-            # function of its own parent's corner in turn
             node = parent
             while node is not None and id(node) in frames:
                 pn, pf, _pfl, _psz = frames[id(node)]
-                parent_walls.add(id(pn) if _driver_of(ds, axis) == "near" else id(pf))
+                driving_walls.add(id(pn) if _driver_of(ds, axis) == "near" else id(pf))
+                parent_near.add(id(pn))
+                parent_far.add(id(pf))
                 node = getattr(node, "parent_window", None)
         graph_a = graph_of(cells_a)
         residual = []
         for edge, target, cursor in drags:
-            edge_walls = (walls | parent_walls) if cursor else (walls | parent_walls | ({id(near), id(far)} - {id(edge)}))
+            outward = parent_far if target > edge[axis] else parent_near   # the parent edges this drag would push OUT
+            edge_walls = walls | driving_walls | outward
+            if not cursor:
+                edge_walls = edge_walls | ({id(near), id(far)} - {id(edge)})
             _solve_graph(graph_a, edge, target, walls=frozenset(edge_walls), axis=axis)
             if abs(target - edge[axis]) > 1e-6:
                 residual.append((edge, target, cursor))

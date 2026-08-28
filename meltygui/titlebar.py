@@ -266,7 +266,11 @@ def sync_decoration(window):
 
 
 def _edge_at(mx, my, w, h, border, corner):
-    """EWMH resize direction for a pointer at (mx, my), or None."""
+    """EWMH resize direction for a pointer at (mx, my), or None. An
+    off-window pointer — the backend's (-1, -1) / -FLT_MAX sentinel — is
+    never on an edge (it used to read as the top-left corner)."""
+    if mx < 0 or my < 0:
+        return None
     on_l, on_r = mx <= border, mx >= w - border
     on_t, on_b = my <= border, my >= h - border
     near_l, near_r = mx <= corner, mx >= w - corner

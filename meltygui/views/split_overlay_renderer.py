@@ -18,6 +18,7 @@ import ctypes
 
 import OpenGL.GL as gl
 import imgui
+import glfw
 from imgui.integrations.glfw import GlfwRenderer
 from imgui.integrations.opengl import (
     get_common_gl_state,
@@ -110,6 +111,18 @@ class SplitOverlayRenderer(GlfwRenderer):
 
     def process_inputs(self):
         super().process_inputs()
+        io = imgui.get_io()
+        # The stock backend reports the pointer as (-1, -1) whenever the OS
+        # window is not FOCUSED - but mouse hovers an unfocused window just
+        # fine, and a pointer at (-1, -1) reads as the top-left corner to
+        # titlebar._edge_at (the ↘ resize shape over the whole unfocused
+        # studio). While the pointer is over the window (GLFW's HOVERED
+        # flag) report its real position, so hover cursors and highlights
+        # resolve exactly as they do focused; off the window it stays the
+        # stock off-window sentinel.
+        if not glfw.get_window_attrib(self.window, glfw.FOCUSED) and \
+                glfw.get_window_attrib(self.window, glfw.HOVERED):
+            io.mouse_pos = glfw.get_cursor_pos(self.window)
         # Shadow margin (titlebar.window_inset): imgui's display is the
         # CONTENT and the real framebuffer is wider by the inset on every
         # side; the render methods paint into that inset viewport and the
@@ -117,7 +130,6 @@ class SplitOverlayRenderer(GlfwRenderer):
         # carry the two numbers to the masks, tiles, etc.
         from src.lsd.gl_gui.titlebar import window_inset, content_origin
         from src.lsd.gl_gui.melty import Melty
-        io = imgui.get_io()
         inset = int(window_inset())
         ox, oy = (int(v) for v in content_origin())
         w, h = io.display_size

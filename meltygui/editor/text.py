@@ -8716,6 +8716,33 @@ def _string_neutral_ranges(ds, text, ranges):
     return out
 
 
+def fold_root_scopes(ranges, skip=()):
+    """The collapse/expand-all target set: the ranges of the FIRST nesting
+    level holding at least two scopes. `ranges` are normalized (start, end)
+    line ranges sorted by start; `skip` (default-collapsed: imports,
+    comment runs) never counts toward the two. A level that is a single
+    scope — a file that is one class or one function — is looked through
+    to its children, so collapse-all folds the members rather than the
+    one span; a level with nothing inside the lone scope stays at it."""
+    ranges = list(ranges)
+    skip = set(skip or ())
+    while True:
+        level, open_end = [], -1
+        for fold_range in ranges:
+            if fold_range[0] > open_end:
+                level.append(fold_range)
+                open_end = fold_range[1]
+        counted = [r for r in level if r not in skip]
+        if len(counted) != 1:
+            return level
+        lone = counted[0]
+        inner = [r for r in ranges
+                 if r != lone and lone[0] <= r[0] and r[1] <= lone[1]]
+        if not inner:
+            return level
+        ranges = inner
+
+
 def _fold_normalize_ranges(n_lines, ranges):
     """Caller fold ranges → sorted, clipped (start, end) tuples. 0-based
     INCLUSIVE buffer lines; a collapsed range keeps line `start` visible and
@@ -9347,14 +9374,10 @@ def draw_text(input_value: str, height=None,
                 ds.invalidate()
                 request_render()
             elif ctrl_shift_minus_down or ctrl_shift_equal_down:
-                # Root scopes = enclosing ranges not nested in another
-                # (sorted -> strict nesting only - a range starting past the
-                # open enclosing end is a new root).
-                _roots, _open_end = [], -1
-                for _r in _rngs:
-                    if _r[0] > _open_end:
-                        _roots.append(_r)
-                        _open_end = _r[1]
+                # Root scopes: the first nesting level with at least two
+                # scopes (see fold_root_scopes - a lone top-level class or
+                # function is looked through so collapse-all folds its
+                # members, not the whole span).
                 # Default-collapsed ranges (top import block, comment runs)
                 # are ASYMMETRIC: collapse-all folds them along with the
                 # roots (nested comment runs included, so they're still
@@ -9362,6 +9385,7 @@ def draw_text(input_value: str, height=None,
                 # leaves them untouched - they only expand via their own
                 # badge or the caret-scoped shortcuts.
                 _skip = set(_fold_default_col or ())
+                _roots = fold_root_scopes(_rngs, _skip)
                 if ctrl_shift_minus_down:
                     _targets = set(_roots) | _skip
                     ds._fold_collapsed.update(_targets)

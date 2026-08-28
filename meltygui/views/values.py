@@ -26,7 +26,7 @@ from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
 from src.lsd.gl_gui.shaped import Shaped
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, \
-    ExpandMode
+    ExpandMode, ContextMenuWindowState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.notifications import display
@@ -3484,6 +3484,62 @@ def _merge_tiers(results, text_results, local_results, fuzzy_results, q):
     return by_kind, fast_by_kind, ranked
 
 
+def _place_global_search_window(gs, mouse_pos, disp_h):
+    """Where the GlobalSearch window `gs` lands when Ctrl+Shift+F opens it.
+
+    "Never placed" = no size yet (never rendered) OR window_pos still at the
+    (0, 0) default — a draw_state that didn't survive a past save reloads at
+    the top-left default, and opening it there is never what anyone wants.
+    Those are summoned to the cursor (`mouse_pos`, a little above it so the
+    box sits under the pointer); a window the user has actually positioned
+    (nonzero window_pos, persisted) reopens in place.
+
+    Bottom-half rule: either way the top edge never lands above
+    Toggles.GlobalSearch.summon_min_top_fraction of the display, so the
+    results always open in the lower half of the screen.
+
+    Both paths go through Melty.summon_window, whose clamp_window_pos keeps
+    the WHOLE window inside the display — a remembered spot can sit outside
+    it (dragged off the edge on purpose, the OS window shrunk, or the layout
+    reloaded on a smaller display since), and reopening there put the search
+    box off-screen. A taller-than-half window therefore settles a little
+    above the half line rather than hanging off the bottom."""
+    if gs is None:
+        return
+    min_top = (disp_h * Toggles.GlobalSearch.summon_min_top_fraction
+               if disp_h and disp_h > 0 else 0.0)
+    window_pos = gs.window_pos
+    if not gs.width or not window_pos or tuple(window_pos) == (0, 0):
+        mouse_x, mouse_y = mouse_pos
+        Core.melty.summon_window(gs, mouse_x, max(mouse_y - 65, min_top))
+    else:
+        left = gs.abs_left if gs.abs_left is not None else window_pos[0]
+        top = gs.abs_top if gs.abs_top is not None else window_pos[1]
+        Core.melty.summon_window(gs, left, max(top, min_top))
+
+
+def _lift_window_bottom_on_display(draw_state, height, disp_h):
+    """Shift a TOP-LEVEL window up so its bottom (abs_top + height) stays
+    `Toggles.WindowSettings.edge_margin` inside a display `disp_h` tall,
+    never past the margin at the top. Nested windows and unknown displays are
+    left alone. window_pos moves by the delta in ABS coordinates (same as
+    summon_window) so anchor offsets ride along."""
+    if disp_h is None or disp_h <= 0 or not height:
+        return
+    if draw_state.parent_window is not None and draw_state.parent_window is not draw_state:
+        return
+    edge_margin = Toggles.WindowSettings.edge_margin
+    top = draw_state._abs_top()
+    below = (top + height) - (disp_h - edge_margin)
+    if below <= 0:
+        return
+    lift = min(below, max(0, top - edge_margin))
+    if lift <= 0:
+        return
+    window_pos = draw_state.window_pos or (0, 0)
+    draw_state.window_pos = (window_pos[0], window_pos[1] - lift)
+
+
 @render_func(show_bg=True, use_cache=True, selectable=False, header_single_line=False, align_header=False,
              with_header=None, bg_offset=4, auto_resize=False,
              # The wrapper's scrollbar would drag the search box and the tabs
@@ -3986,6 +4042,13 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         if draw_state.height is None or abs(draw_state.height - new_h) > 1:
             draw_state.height = new_h
             draw_state._source["height"] = "global search content auto-fit"
+            # The window is summoned before it has results, so the fit
+            # GROWS it in place (up to 0.8 x display)): a window opened in
+            # the lower half then ran past the display bottom. Keep the
+            # whole window on-screen: lift a top-aligned window by its
+            # overflow, not above the edge margin (the wrapper's own
+            # bottom-on-display rule only runs on a window's first frames).
+            _lift_window_bottom_on_display(draw_state, new_h, disp_h)
             draw_state.invalidate()
             request_render()
     # ---- rows scroll. The rows region is [rows_top, view_bottom): the
@@ -4722,32 +4785,11 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 GlobalSearch.window_ds.invalidate()
         else:
             gs = Core.melty.open_window("GlobalSearch")
-            # Bottom-half rule: wherever the window reappears - the cursor
-            # for a never-placed one, its remembered place otherwise - its top
-            # edge never lands above Toggles.GlobalSearch.summon_min_top_fraction
-            # of the display, so the results always open on the lower half
-            # of the screen. summon_window's own edge clamp still keeps the
-            # whole window on-screen, so a taller-than-half window settles a
-            # little above the line rather than hanging off the top.
-            _disp_h = imgui.get_io().display_size.y
-            _min_top = (_disp_h * Toggles.GlobalSearch.summon_min_top_fraction
-                        if _disp_h > 0 else 0.0)
-            # "Never used" = no size yet (never rendered) OR window_pos still
-            # at the (0, 0) default. a draw_state that didn't survive a past
-            # session reloads at the top-left default, and opening it there is
-            # never what anyone wants. Summon those to the cursor; a window the
-            # user has actually positioned (nonzero window_pos, persisted)
-            # reopens in place. open_window alone un-hides and raises it.
-            _wp = gs.window_pos if gs is not None else None
-            if gs is not None and (not gs.width or not _wp
-                                   or tuple(_wp) == (0, 0)):
-                mx, my = imgui.get_mouse_pos()
-                Core.melty.summon_window(gs, mx, max(my - 65, _min_top))
-            elif gs is not None:
-                _gx = gs.abs_left if gs.abs_left is not None else _wp[0]
-                _gy = gs.abs_top if gs.abs_top is not None else _wp[1]
-                if _gy < _min_top:
-                    Core.melty.summon_window(gs, _gx, _min_top)
+            # Cursor for a never-placed window, its previous spot
+            # otherwise; bottom-half rule + clamped to on-screen - see
+            # _place_global_search_window.
+            _place_global_search_window(gs, imgui.get_mouse_pos(),
+                                        imgui.get_io().display_size.y)
             GlobalSearch._focus_requested = True
         request_render()
 
@@ -9794,7 +9836,8 @@ def _ancestor_call_line(target_ds, ancestor_ds):
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
                       search_active=False,
-                      enter_key_down=None, tab_state: TabState = None, **kwargs):
+                      enter_key_down=None, tab_state: TabState = None,
+                      menu_state: ContextMenuWindowState = None, **kwargs):
     if input_value is None:
         return False, None
     context_menu_offset = input_value.context_menu_offset
@@ -10076,8 +10119,10 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # auto-fit): until the menu has been fitted once, hand the tab bodies NO
     # height so they render at their natural extent - the usual tab_h derives
     # from the current window clip rect which is circular while we're still
-    # choosing the window height.
-    fitting = not getattr(draw_state, "_ctx_fit_done", False)
+    # choosing the window height. fit_done PERSISTS with the menu's
+    # draw_state (ContextMenuWindowState): a menu restored open at boot
+    # already had its size, and re-fitting it overwrote that size.
+    fitting = not menu_state.fit_done
     tab_h = max(60.0, (clip[3] - top_y) / n_sel - 6) if (clip is not None and not fitting) else None
 
     for t_idx, static_tab in enumerate(tab_state.selected_tabs):
@@ -10145,8 +10190,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # ONCE per menu draw_state: the ds persists across open/close, so reopens
     # and tab switches keep the user's size.
     if fitting:
-        if getattr(draw_state, "_ctx_fit_phase", 0) == 0:
-            draw_state._ctx_fit_phase = 1
+        if menu_state.fit_phase == 0:
+            menu_state.fit_phase = 1
             if (draw_state.width or 0) < 520:
                 draw_state.width = 520
                 draw_state._source["width"] = "context menu first-load default width"
@@ -10163,7 +10208,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
                 draw_state._source["height"] = "context menu first-load auto-fit"
                 draw_state.invalidate()
                 request_render()
-            draw_state._ctx_fit_done = True
+            menu_state.fit_done = True
 
     # Never open the menu partially off-display. While the window offset is
     # still the fresh default reset (0,0) - core_render does that on every

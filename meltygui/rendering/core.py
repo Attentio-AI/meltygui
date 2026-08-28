@@ -2421,11 +2421,13 @@ def render_func(*args, **o_kwargs):
                         draw_state.window_pos = (pos_x, pos_y)
                         # A hand move: the edge pass below (window_edge_pass →
                         # os_frame) pushes the OS window's edges out of the
-                        # window's way, and NOTHING clamps the move - a window
+                        # window's way, and nothing clamps the move - a window
                         # may be dragged partly off the display (Lukas 08-27;
-                        # the "never above the content header" clamp that lived
+                        # the "never above the display top" clamp that lived
                         # here is gone: it pinned the window at the content's
-                        # top before the top edge could ever push the OS edge).
+                        # top before the top edge could ever push the OS edge)
+                        # - except the DISPLAY's top, clamped in _frame_pass
+                        # AFTER the move (Toggles.Melty.window_top_hard_limit).
                         draw_state._hand_move_frame = Melty.frame_count
                     elif imgui_active or (left_mouse_down is None and on_held is None):
                         # Keep the press-anchored baseline alive through the

@@ -17,6 +17,7 @@ import re
 import select
 import shlex
 import shutil
+import signal
 import struct
 import subprocess
 import termios
@@ -103,15 +104,44 @@ def _set_winsize(fd, rows, cols):
 
 
 
-def _preexec():
-    # New session + make the pty slave (fd 0) the controlling terminal, so the
-    # child has a real session leader with job control - what an interactive shell
-    # and the programs it launches expect.
-    os.setsid()
-    try:
-        fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    except OSError:
-        pass
+def _inheritable_fds():
+    """Every fd >= 3 that would survive an exec (not FD_CLOEXEC). Python-created fds are
+    CLOEXEC by default (PEP 446); this catches the C libraries' (CUDA / GL / inotify)."""
+    fds = []
+    for name in os.listdir("/proc/self/fd"):
+        fd = int(name)
+        if fd < 3:
+            continue
+        try:
+            if not (fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC):
+                fds.append(fd)
+        except OSError:
+            pass          # closed between the listdir and the fcntl
+    return fds
+
+
+def _spawn_in_pty(argv, slave, env):
+    """Run `argv` on the pty `slave` as a session leader with the pty as its controlling
+    terminal, and return the child's pid. NEVER fork()s: `os.posix_spawn` is glibc's
+    vfork/CLONE_VM path — the child shares our address space until it execs, so there is
+    no page-table copy of the studio's huge CUDA/GL/torch mappings and NO at-fork handler
+    runs. The old `subprocess.Popen(..., preexec_fn=setsid+TIOCSCTTY)` had to fork() the
+    whole process (preexec_fn rules out posix_spawn) and the single-threaded child
+    deadlocked in an inherited lock before it ever reached exec — Popen then blocked on
+    the exec-errpipe read forever and the terminal sat on "starting…" (08-27).
+
+    Controlling tty without TIOCSCTTY: the file actions run AFTER the child's setsid, so
+    OPENing the slave's path (no O_NOCTTY) as the new session leader makes it the
+    controlling terminal — the same rule login programs rely on. The CLOSE actions are
+    Popen's close_fds=True: glibc ignores EBADF on an in-range fd, so an fd another
+    thread closed in the meantime is harmless. Signals match Popen's restore_signals."""
+    executable = shutil.which(argv[0]) or argv[0]       # posix_spawn wants a path
+    actions = [(os.POSIX_SPAWN_CLOSE, fd) for fd in _inheritable_fds()]
+    actions += [(os.POSIX_SPAWN_OPEN, 0, os.ttyname(slave), os.O_RDWR, 0),
+                (os.POSIX_SPAWN_DUP2, 0, 1),
+                (os.POSIX_SPAWN_DUP2, 0, 2)]
+    return os.posix_spawn(executable, argv, env, file_actions=actions, setsid=True,
+                          setsigmask=(), setsigdef=(signal.SIGPIPE, signal.SIGXFSZ))
 
 
 _TERM_SCREEN_CLS = None
@@ -173,6 +203,7 @@ _OWNED_SESSION_PREFIX = "claude-d-"
 # mmap_lock + GIL held across the fork). Full path + close_fds=False is what triggers the
 # posix_spawn path on this Python. See claude_terminals._list_claude_sessions.
 _TMUX = shutil.which("tmux") or "/usr/bin/tmux"
+_GNOME_TERMINAL = shutil.which("gnome-terminal") or "/usr/bin/gnome-terminal"
 
 # OWNED claude-d sessions run on a DEDICATED tmux server (`-L claude-d`) started with
 # `-f /dev/null` so it ignores ~/.tmux.conf (which sets `mouse on` + rebinds the arrows).
@@ -227,7 +258,8 @@ def _handoff_to_gnome(session):
              'trap "' + _CD_TMUX + ' kill-session -t ' + q + ' 2>/dev/null" EXIT HUP TERM INT; '
              'env -u TMUX ' + _CD_TMUX + ' new-session -A -s ' + q)
     try:
-        subprocess.Popen(["gnome-terminal", "--", "bash", "-c", inner])
+        # Full path + close_fds=False → posix_spawn, never a fork of the studio (see _TMUX).
+        subprocess.Popen([_GNOME_TERMINAL, "--", "bash", "-c", inner], close_fds=False)
     except Exception:
         pass
 
@@ -283,7 +315,7 @@ class Terminal:
         # and doesn't create a duplicate.
         self.id = tmux_session
         self.master_fd = None
-        self.proc = None
+        self.pid = None            # the PTY child (a bash → tmux client); reaped by the reader
         self.screen = None
         self.stream = None
         self.lock = threading.Lock()
@@ -337,9 +369,10 @@ class Terminal:
             env = dict(os.environ, TERM="xterm-256color",
                        COLUMNS=str(cols), LINES=str(rows))
             env.pop("TMUX", None)
-            proc = subprocess.Popen(
-                self.launch_cmd, stdin=slave, stdout=slave, stderr=slave,
-                cwd=os.getcwd(), env=env, preexec_fn=_preexec, close_fds=True)
+            # posix_spawn, not fork - see _spawn_in_pty. The child inherits our cwd.
+            # The slave stays open here until the spawn returns (the child has opened
+            # its own by then - posix_spawn resumes here only after the exec).
+            pid = _spawn_in_pty(self.launch_cmd, slave, env)
             os.close(slave)
             # Publish the live objects under the lock so the render thread either sees a
             # fully-wired terminal or still-None (placeholder), never a half-built one.
@@ -347,7 +380,7 @@ class Terminal:
                 self.screen = screen
                 self.stream = stream
                 self.master_fd = master
-                self.proc = proc
+                self.pid = pid
             # The PTY has forked (owned sessions: created via new-session -A): hand off to
             # its own gnome-terminal window (a second client that owns the lifetime), and
             # disable tmux mouse for claude-d sessions so normal text selection works.
@@ -449,7 +482,23 @@ class Terminal:
             if ended:
                 break
         finally:
+            self._reap()
             self._reader_alive = False   # reader exited -> is_dead = True -> io drops us
+
+    def _reap(self):
+        """Collect the PTY child's exit status so it doesn't linger as a zombie. The
+        master hit EOF/EIO, which normally means the child is gone; a child that merely
+        closed its tty and lives on is left alone after a short bounded wait."""
+        pid, self.pid = self.pid, None
+        if pid is None:
+            return
+        for _ in range(20):
+            try:
+                if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                    return
+            except ChildProcessError:
+                return
+            time.sleep(0.05)
 
     def write(self, data):
         fd = self.master_fd
