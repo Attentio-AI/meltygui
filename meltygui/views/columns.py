@@ -760,6 +760,21 @@ def window_edge_pass(window):
                         ds.invalidate(note=Note(reason="edge solve", **_NOTE))
 
 
+def _hand_moved(window, frame):
+    """Was ``window`` moved by hand this frame — itself (the move drag
+    stamps ``_hand_move_frame``) or through an ANCESTOR it rides with (a
+    nested window's window_pos is parent-relative: dragging the parent
+    moves the child on screen, and the child's frame must push the OS
+    edge it reaches exactly as the parent's does)."""
+    node, depth = window, 0
+    while node is not None and depth < 64:
+        if getattr(node, "_hand_move_frame", None) == frame:
+            return True
+        node = getattr(node, "parent_window", None)
+        depth += 1
+    return False
+
+
 def _frame_pass(window, axis):
     """One axis of window_edge_pass: seed / register the frame pair, fold
     the foreign size change in, floor the window's minimum at the pile,
@@ -867,7 +882,7 @@ def _frame_pass(window, axis):
     # idle frame moves nothing. Nested windows solve only their own frame.
     from src.lsd.gl_gui import os_frame
     os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)),
-                             hand_move=getattr(window, "_hand_move_frame", None) == Melty.frame_count)
+                             hand_move=_hand_moved(window, Melty.frame_count))
     moved = _solve_collisions(window, axis, os_ctx)
     if os_ctx is not None:
         os_frame.detach(window, axis, os_ctx)    # books the OS near edge's motion for apply_rebase

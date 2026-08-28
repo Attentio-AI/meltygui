@@ -5202,6 +5202,10 @@ def draw_melty_windows(vis):
     # window's own edges, queued before the roots solve.
     from src.lsd.gl_gui.titlebar import poll_os_window_drag
     poll_os_window_drag()
+    # The GLFW window-sizes - its own drag, the compositor's - solved
+    # against every root window's frame at once (window-to-window contact
+    # exists only here).
+    os_frame.solve()
 
     # imgui.invisible_button("window_blocker", width=fb_w, height=fb_h)
     imgui.set_cursor_screen_pos((0, 0))

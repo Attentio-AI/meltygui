@@ -18,9 +18,11 @@ queue work on the existing task queue — the same path as the Ctrl+Enter re-run
 """
 
 import functools
+import logging
 import re
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
@@ -162,6 +164,51 @@ class _Tee:
         return getattr(self._stream, name)
 
 
+class _HttpRequestLine(logging.Handler):
+    """Prints httpx's per-response INFO record as ONE short console line:
+
+        [http] 20:26:36 GET localhost:11434/api/tags 200
+
+    httpx logs `'HTTP Request: %s %s "%s %d %s"'` with args (method, url,
+    http_version, status, reason); the scheme is dropped and the reason kept
+    only for non-2xx/3xx answers (`… 429 Too Many Requests`). Any other record
+    on the logger falls back to its plain message. Goes through print() so
+    the log tee mirrors it into console.log like every other line.
+    """
+
+    def emit(self, record):
+        try:
+            args = record.args if isinstance(record.args, tuple) else ()
+            if len(args) == 5 and str(record.msg).startswith("HTTP Request:"):
+                method, url, _version, status, reason = args
+                url = re.sub(r"^https?://", "", str(url))
+                status = int(status)
+                tail = f"{status}" if status < 400 else f"{status} {reason}"
+                text = f"{method} {url} {tail}"
+            else:
+                text = record.getMessage()
+            print(f"[http] {time.strftime('%H:%M:%S')} {text}")
+        except Exception:
+            pass
+
+
+_http_logging_installed = False
+
+
+def install_concise_http_logging():
+    """Route the `httpx` logger to _HttpRequestLine and stop it propagating,
+    so the request lines never reach whatever handler sits on the root.
+    Idempotent."""
+    global _http_logging_installed
+    if _http_logging_installed:
+        return
+    _http_logging_installed = True
+    http_logger = logging.getLogger("httpx")
+    http_logger.setLevel(logging.INFO)
+    http_logger.propagate = False
+    http_logger.addHandler(_HttpRequestLine())
+
+
 def install_log_tee():
     """Mirror stdout/stderr into LOG_PATH (fresh per process). Idempotent."""
     global _tee_installed
@@ -223,7 +270,6 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
 
     try:
         import asyncio
-        import logging
         import uvicorn
         from mcp.server.fastmcp import FastMCP, Image
     except Exception as e:
@@ -236,7 +282,21 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
                   "mcp", "mcp.server", "sse_starlette"):
         logging.getLogger(_name).setLevel(logging.WARNING)
 
+    # FastMCP's constructor calls logging.basicConfig(level=INFO) with a rich
+    # handler on the ROOT logger, which then rendered every library INFO
+    # record - httpx's `HTTP Request: GET http://... "HTTP/1.1 200 OK"` for each
+    # Ollama probe / Anthropic call - as a wide rich line with file-link
+    # escapes, or one character per line when it misjudged the tee's width.
+    # Snapshot the root logger before the constructor and set it back, then
+    # give httpx its own one-line handler (install_concise_http_logging).
+    root_logger = logging.getLogger()
+    root_handlers, root_level = list(root_logger.handlers), root_logger.level
     mcp = FastMCP("latent-descent-launcher", host=host, port=port)
+    for handler in list(root_logger.handlers):
+        if handler not in root_handlers:
+            root_logger.removeHandler(handler)
+    root_logger.setLevel(root_level)
+    install_concise_http_logging()
 
     def logged_tool():
         """Like ``mcp.tool()`` but records each call to ``MCPServerLog.logs``.

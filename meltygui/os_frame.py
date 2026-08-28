@@ -55,12 +55,49 @@ _STATE = globals().get("_STATE") or {
 # same commit as the move. Re-based at the solve they were drawn shifted
 # to a surface that had not moved yet: one frame of jelly per step.
 _STATE.setdefault("unapplied", [0.0, 0.0])
+# The OS edges as of the last OS-level solve (solve): what the roots were
+# last laid out against. Any difference at the next solve is the OS window
+# having moved on its own - a compositor's resize - and is pushed through
+# the roots; a landing of our own request only snaps it.
+_STATE.setdefault("os_seen", [None, None])
+_STATE.setdefault("window_id", None)
+# the feed's own far edge (x + width) per axis as last observed - a
+# foreign change is classified against THIS (one frame edge), rat
+# against our size
+_STATE.setdefault("feed_far", [None, None])
+_STATE.setdefault("reset_frame", 0)
+
+
+# Frames from a reset (studio start) during which the_frame's events print
+# without the toggle - boot is where a stale model does the most damage,
+# and the first report of it was undiagnosable.
+BOOT_TRACE_FRAMES = 600
 
 
 def _trace(msg):
     from src.lsd.gl_gui.toggles import Toggles
-    if Toggles.Melty.push_os_window_edges_trace:
+    if Toggles.Melty.push_os_window_edges_trace or _STATE.get("frame", 0) - _STATE.get("reset_frame", 0) < BOOT_TRACE_FRAMES:
         print(f"[os_frame] {msg}")
+
+
+def reset(reason="studio start"):
+    """Forget the previous session's window: expected position, in-flight
+    moves, booked re-bases, the edges the roots were laid out against.
+    _STATE outlives a studio restart inside the server process, and a new
+    window met the old one's numbers as a giant foreign change — roots
+    re-based against a stale origin, pushed, left outside (08-27)."""
+    from src.lsd.gl_gui.melty import Melty
+    _STATE["expected"] = [None, None]
+    _STATE["inflight"] = [None, None]
+    _STATE["size_expected"] = [None, None]
+    _STATE["unapplied"] = [0.0, 0.0]
+    _STATE["os_seen"] = [None, None]
+    _STATE["pending"] = {"x": [], "y": []}
+    _STATE["window_id"] = None
+    _STATE["feed_far"] = [None, None]
+    _STATE["generation"] += 1
+    _STATE["reset_frame"] = getattr(Melty, "frame_count", 0) or 0
+    _trace(f"reset ({reason})")
 
 
 def _enabled():
@@ -93,8 +130,10 @@ def screen_edges(axis):
 # ---------------------------------------------------------------------------
 
 def _observe():
-    """((x, y), (work_x, work_y, work_w, work_h), mode) of the content rect
-    on screen, or None when no position is known."""
+    """((x, y), (work_x, work_y, work_w, work_h), mode, (far_x, far_y),
+    window_id) of the content rect on screen — the far edges from the
+    SAME source as the position (the feed's own width / height; glfw's on
+    X11) — or None when no position is known."""
     from src.lsd.gl_gui import titlebar
     if titlebar._on_wayland():
         from src.lsd.gl_gui import geometry_feed
@@ -103,16 +142,20 @@ def _observe():
         rect, area = geometry_feed.frame_rect(), geometry_feed.workarea()
         if rect is None or area is None:
             return None
-        return (float(rect[0]), float(rect[1])), tuple(float(v) for v in area), "feed"
+        frame = geometry_feed._STATE.get("frame") or {}
+        return ((float(rect[0]), float(rect[1])), tuple(float(v) for v in area), "feed",
+                (float(rect[0] + rect[2]), float(rect[1] + rect[3])), frame.get("id"))
     window = titlebar._studio_window()
     if window is None:
         return None
     try:
         x, y = glfw.get_window_pos(window)
+        w, h = glfw.get_window_size(window)
         wa_l, wa_t, wa_r, wa_b = titlebar._workarea_for(window)
     except Exception:
         return None
-    return (float(x), float(y)), (wa_l, wa_t, wa_r - wa_l, wa_b - wa_t), "x11"
+    return ((float(x), float(y)), (wa_l, wa_t, wa_r - wa_l, wa_b - wa_t), "x11",
+            (float(x + w), float(y + h)), id(window))
 
 
 def _root_windows():
@@ -140,9 +183,38 @@ def _root_windows():
 def _movable_roots():
     """The roots that hold their SCREEN position when the OS near edge moves:
     closable floating windows. The Main Window (not closable) IS the
-    content and rides with the OS frame."""
+    content and rides with the OS frame. NESTED windows are not here: their
+    window_pos is parent-relative, they ride with their parent."""
     return [ds for ds in _root_windows()
             if getattr(ds, "closable", False) and ds.window_pos is not None]
+
+
+def _depth(ds):
+    depth, node = 0, getattr(ds, "parent_window", None)
+    while node is not None and depth < 64:
+        depth += 1
+        node = getattr(node, "parent_window", None)
+    return depth
+
+
+def _all_windows():
+    """Every melty window that collides at the OS level — the roots AND
+    the nested windows (Melty.root_draw_states holds those under their
+    parent's id) — parents before children (write-backs of a child are
+    relative to its parent's motion). Deduped by identity."""
+    from src.lsd.gl_gui.melty import Melty
+    seen, windows = set(), []
+    for ds in _root_windows():
+        seen.add(id(ds))
+        windows.append(ds)
+    for group in list(getattr(Melty, "root_draw_states", {}).values()):
+        for ds in list(group):
+            if id(ds) in seen:
+                continue
+            seen.add(id(ds))
+            windows.append(ds)
+    windows.sort(key=_depth)
+    return windows
 
 
 def _rebase(ds, axis, delta):
@@ -189,9 +261,13 @@ def begin_frame():
         for axis, i in _AXIS.items():
             near, far = _STATE["edges"][axis]
             near[axis], far[axis] = 0.0, size[i]
+            _STATE["os_seen"][i] = (0.0, size[i])
         return
-    (pos, area, new_mode) = observed
+    (pos, area, new_mode, feed_far, window_id) = observed
     _set_mode(new_mode)
+    if _STATE["window_id"] is not None and window_id != _STATE["window_id"]:
+        reset(f"window {_STATE['window_id']} → {window_id}")
+    _STATE["window_id"] = window_id
     for axis, i in _AXIS.items():
         scr_near, scr_far = _STATE["screen"][axis]
         scr_near[axis], scr_far[axis] = area[i], area[i] + area[i + 2]
@@ -201,6 +277,8 @@ def begin_frame():
             near[axis], far[axis] = pos[i], pos[i] + size[i]
             _STATE["expected"][i] = pos[i]
             _STATE["size_expected"][i] = size[i]
+            _STATE["os_seen"][i] = (near[axis], far[axis])
+            _STATE["feed_far"][i] = feed_far[i]
             _trace(f"{axis}: first sight near={pos[i]:.0f} size={size[i]:.0f}")
             continue
         # Position: our requests land a frame or two later; before then the
@@ -213,42 +291,58 @@ def begin_frame():
                 d = pos[i] - expected
                 _STATE["expected"][i] = pos[i]
                 _STATE["inflight"][i] = None
-                _foreign_change(axis, d, size[i])
+                far_seen = _STATE["feed_far"][i]
+                far_held = far_seen is not None and abs(feed_far[i] - far_seen) < 1.0
+                _STATE["feed_far"][i] = feed_far[i]
+                _foreign_change(axis, d, size[i], far_held)
                 continue
         else:
             _STATE["inflight"][i] = None
+            _STATE["feed_far"][i] = feed_far[i]
         # Size: ours lands at frame start (size_expected); anything else is
         # the compositor's - the far edge moved.
         if size[i] != far[axis] - near[axis]:
             if _STATE["size_expected"][i] != size[i]:
                 _trace(f"{axis}: foreign far edge {far[axis]:.0f} → {near[axis] + size[i]:.0f}")
-            far[axis] = near[axis] + size[i]
+                far[axis] = near[axis] + size[i]
+            else:
+                # our resize landed: the integer size snaps the model's far
+                # edge by a fraction - not a move, nothing to solve
+                seen = _STATE["os_seen"][i]
+                far[axis] = near[axis] + size[i]
+                if seen is not None and abs(seen[1] - far[axis]) < 1.0:
+                    _STATE["os_seen"][i] = (seen[0], far[axis])
             _STATE["size_expected"][i] = size[i]
 
 
-def _foreign_change(axis, d, size):
+def _foreign_change(axis, d, size, far_held):
     """The window's near edge is ``d`` px from where we expected it and we
-    asked for nothing: the compositor moved or resized the studio. Far
-    edge still where it was → a NEAR RESIZE: the roots hold their screen
-    positions (re-base) and get pushed by the edge where it reaches them
-    (each root's pass folds the drag from ``_os_seen``). Otherwise a MOVE
-    by ``d`` (the roots ride along, nothing to solve) plus whatever the
-    far edge did on top."""
+    asked for nothing: the compositor moved or resized the studio.
+    ``far_held`` — the feed's own far edge (x + width) did not move → a
+    NEAR RESIZE: the roots hold their screen positions (re-base) and get
+    pushed by the edge where it reaches them (solve). Otherwise a MOVE by
+    ``d`` (the roots ride along, nothing to solve) plus whatever the far
+    edge did on top. Classified from ONE source on purpose: the feed's
+    position against our own size read as a resize whenever the two were
+    a frame apart."""
     i = _AXIS[axis]
     near, far = _STATE["edges"][axis]
     old_far = far[axis]
     near[axis] += d
-    if abs((near[axis] + size) - old_far) < 0.5:
+    if far_held:
         _trace(f"{axis}: foreign near resize {d:+.0f} — roots hold the screen")
         for ds in _movable_roots():
             _rebase(ds, axis, -d)
         far[axis] = near[axis] + size
     else:
         _trace(f"{axis}: foreign move {d:+.0f} (size {old_far - (near[axis] - d):.0f} → {size:.0f})")
-        for ds in _root_windows():
+        for ds in _all_windows():
             seen = getattr(ds, "_os_seen", None)
             if seen and axis in seen:
                 seen[axis] = (seen[axis][0] + d, seen[axis][1] + d)
+        os_seen = _STATE["os_seen"][i]
+        if os_seen is not None:
+            _STATE["os_seen"][i] = (os_seen[0] + d, os_seen[1] + d)
         far[axis] = near[axis] + size
     _STATE["size_expected"][i] = size
 
@@ -297,9 +391,11 @@ def attach(window, axis, has_pending=True, hand_move=False):
     idle frame touches nothing."""
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.toggles import Toggles
-    if (not _enabled() or getattr(window, "parent_window", None) is not None
-            or _STATE["frame"] != Melty.frame_count):     # only on a frame begin_frame set up
+    if not _enabled() or _STATE["frame"] != Melty.frame_count:     # only in a frame begin_frame set up
         return None
+    # Nested windows take part exactly like roots (Lukas 08-27): their
+    # abs_left / abs_top IS their screen position (OS offsets folded
+    # in), and their parent-relative window_pos takes the same px deltas.
     hand_move = bool(hand_move and Toggles.Melty.window_move_pushes_os_edges
                      and _STATE["mode"] != "walls")
     near, far = _STATE["edges"][axis]
@@ -310,10 +406,9 @@ def attach(window, axis, has_pending=True, hand_move=False):
     seen = seen_all.get(axis)
     cur = (near[axis], far[axis])
     os_moved = seen is not None and (abs(seen[0] - cur[0]) > 1e-6 or abs(seen[1] - cur[1]) > 1e-6)
-    own = bool(_STATE["pending"][axis]) and not _STATE["consumed"][axis]
     if seen is None:
         seen_all[axis] = cur
-    if not (has_pending or os_moved or own or hand_move):
+    if not (has_pending or os_moved or hand_move):
         return None
     ctx = Context(axis)
     ctx.move = hand_move
@@ -323,8 +418,7 @@ def attach(window, axis, has_pending=True, hand_move=False):
     # the window's frame origin: its own coordinate is relative to the
     # screen origin its frame was last re-based for (the model's near
     # origin less what apply_rebase has not applied yet)
-    ctx.base = (near[axis] - _STATE["unapplied"][i]
-                + float((window.abs_left if axis == "x" else window.abs_top) or 0))
+    ctx.base = near[axis] - _STATE["unapplied"][i] + _screen_pos(window, axis)
     if _STATE["mode"] == "walls":
         ctx.lists.append([near, far])
         ctx.specs.append(([MIN_SIZE[i]], [None]))
@@ -351,13 +445,6 @@ def attach(window, axis, has_pending=True, hand_move=False):
             ctx.drags.append((far, cur[1] - ctx.base, None))
     for e in ctx.shifted:
         e[axis] -= ctx.base
-    # the OS window's own drags, once per frame
-    if own:
-        _STATE["consumed"][axis] = True
-        for index, inc in _STATE["pending"][axis]:
-            edge = (near, far)[index]
-            ctx.drags.append((edge, edge[axis] + inc, True))
-        _STATE["pending"][axis] = []
     return ctx
 
 
@@ -402,31 +489,364 @@ def apply_rebase():
         _trace(f"{axis}: roots re-based {-d:+.0f} with the move")
 
 
-def _bare_pass(axis):
-    """The OS window's own drags when no root window ran a pass this
-    frame: OS frame against the screen alone."""
-    from src.lsd.gl_gui.view.core_views.columns import _cells_from_lists, _EdgeGraph, _solve_graph
-    near, far = _STATE["edges"][axis]
-    i = _AXIS[axis]
-    if _STATE["mode"] == "walls":
-        lists, specs, walls = [[near, far]], [([MIN_SIZE[i]], [None])], frozenset()
-    else:
-        scr_near, scr_far = _STATE["screen"][axis]
-        lists = [[scr_near, near, far, scr_far]]
-        specs = [([0.0, MIN_SIZE[i], 0.0], [None, None, None])]
-        walls = frozenset({id(scr_near), id(scr_far)})
-    graph = _EdgeGraph(_cells_from_lists(lists, axis, specs=specs))
-    for index, inc in _STATE["pending"][axis]:
-        edge = (near, far)[index]
-        target = edge[axis] + inc
-        _solve_graph(graph, edge, target, walls=walls, axis=axis)
-        residual = target - edge[axis]
-        opposite = near if residual > 0 else far
-        if residual and opposite is not edge:           # the flip
-            _solve_graph(graph, opposite, opposite[axis] - residual, walls=walls, axis=axis)
-    d_os = near[axis] - _STATE.get("bare_near0", near[axis])
-    _STATE["pending"][axis] = []
-    return d_os
+# Edges closer than this occupy one place in the flat chain (tie by role).
+CHAIN_TOL = 1.0
+
+
+# Edge roles in the flat chain (also the tie order): a far edge sits before
+# a near edge at the same place, the OS far edge last of the fars, the OS
+# near edge first of the nears.
+ROOT_FAR, OS_FAR, OS_NEAR, ROOT_NEAR = 0, 1, 2, 3
+
+
+def _flat_chain_ranked(os_pair, roots, axis):
+    """Every OS-level edge in position order as (edge, role), ties (within
+    CHAIN_TOL) by role."""
+    near, far = os_pair
+    ranked = [(far, OS_FAR), (near, OS_NEAR)]
+    for _ds, n, f, _floor in roots:
+        ranked.append((f, ROOT_FAR))
+        ranked.append((n, ROOT_NEAR))
+    ranked.sort(key=lambda item: item[0][axis])
+    # neighbours within tolerance settle by rank (a bubble over a short list)
+    changed = True
+    while changed:
+        changed = False
+        for k in range(len(ranked) - 1):
+            a, b = ranked[k], ranked[k + 1]
+            if abs(b[0][axis] - a[0][axis]) < CHAIN_TOL and a[1] > b[1]:
+                ranked[k], ranked[k + 1] = b, a
+                changed = True
+    return ranked
+
+
+def _flat_chain(os_pair, roots, axis):
+    return [edge for edge, _role in _flat_chain_ranked(os_pair, roots, axis)]
+
+
+def _chain_floor(a, role_a, b, role_b, axis):
+    """The floor of the cell between consecutive chain edges ``a`` → ``b``.
+    Against an OS edge: 0 (a window touches the OS edge). A window's far
+    edge followed by another's near edge: 0 — the windows meet on the
+    OUTSIDE and touch (the collision rects do not extend past the
+    windows, Lukas 08-27). Anything else — a near edge inside another
+    window, a far edge inside another window — keeps the columns' usual
+    margin, the axis minimum, never more than the edges are apart now
+    (freely placed overlaps must not snap apart on a first push)."""
+    if role_a in (OS_FAR, OS_NEAR) or role_b in (OS_FAR, OS_NEAR):
+        return 0.0
+    if role_a == ROOT_FAR and role_b == ROOT_NEAR:
+        return 0.0
+    from src.lsd.gl_gui.view.core_views.columns import _axis_min
+    return min(_axis_min(axis), max(0.0, b[axis] - a[axis]))
+
+
+def _screen_pos(ds, axis):
+    """A window's content position on ``axis`` as DRAWN (the wrapper's
+    abs_left / abs_top — a nested window's sliver cap included: solving on
+    the uncapped position made a parent drag push the OS edge out to where
+    a scrolled-off child "really" was, and the studio jumped — reverted,
+    Lukas 08-27)."""
+    return float((ds.abs_left if axis == "x" else ds.abs_top) or 0)
+
+
+def _window_floor(ds, axis):
+    """How far the OS-level solve may compress ``ds`` on ``axis``: its
+    declared minimum (raised to its columns' pile by its own pass), never
+    below the axis minimum, never above its size."""
+    from src.lsd.gl_gui.view.core_views.columns import _axis_min
+    size = float(ds.width if axis == "x" else ds.height)
+    declared = float((ds.min_width if axis == "x" else ds.min_height) or 0)
+    return min(size, max(_axis_min(axis), declared))
+
+
+def _open(ds):
+    return (getattr(ds, "closable", False) and ds.window_pos is not None
+            and not getattr(ds, "closed", False) and getattr(ds, "expanded", True)
+            and bool(ds.width) and bool(ds.height))
+
+
+def _root_of(ds):
+    node, depth = ds, 0
+    while getattr(node, "parent_window", None) is not None and depth < 64:
+        node = node.parent_window
+        depth += 1
+    return node
+
+
+def _colliding_windows():
+    """The windows of the OS-level solve, parents before children: the
+    open movable roots and their open nested descendants."""
+    roots = [ds for ds in _movable_roots() if _open(ds)]
+    root_ids = {id(r) for r in roots}
+    nested = [ds for ds in _all_windows()
+              if getattr(ds, "parent_window", None) is not None and _open(ds)
+              and id(_root_of(ds)) in root_ids]
+    return roots + nested
+
+
+def _driven_edge(child, axis):
+    """Which of a nested window's two edges on ``axis`` its parent DRIVES:
+    the child is placed by a corner of its parent (the top-left in most
+    cases), so that edge is a function of the parent's position and never
+    moves on its own — "near" (left / top), or "far" for a child anchored
+    by a right / bottom corner (draw_state.anchor_pos). The other edge is
+    the child's own (its size) and collides normally (Lukas 08-27)."""
+    anchor = getattr(child, "anchor_pos", None)
+    name = getattr(anchor, "value", anchor) or ""
+    if axis == "x":
+        return "far" if str(name).endswith("right") else "near"
+    return "far" if str(name).startswith("bottom") else "near"
+
+
+def _driving_parent_edge(child, axis):
+    """Which of the PARENT's edges on ``axis`` places ``child``: the
+    corner of the parent the child is positioned from
+    (draw_state.parent_anchor_pos, the top-left by default) — "near", or
+    "far" for a right / bottom parent corner. The parent's OTHER edge is an
+    ordinary edge: a child's free edge pushing it compresses the parent."""
+    anchor = getattr(child, "parent_anchor_pos", None)
+    name = getattr(anchor, "value", anchor) or ""
+    if axis == "x":
+        return "far" if str(name).endswith("right") else "near"
+    return "far" if str(name).startswith("bottom") else "near"
+
+
+def _driver_of(child, axis):
+    """The parent edge that drives ``child`` on ``axis`` — read off the
+    draw_state, never guessed: ``parent_anchor_pos`` names the corner of
+    the parent the child hangs from in BOTH placement paths (the pin's
+    clip_anchor_base and the unpinned parent_anchor_offset) — a right /
+    bottom parent anchor is the far edge, anything else the near edge
+    (Lukas 08-27: "you have the draw_state, you don't need to guess
+    anything, just look at the clip option")."""
+    return _driving_parent_edge(child, axis)
+
+
+def _frame_of(ds, axis, applied):
+    """A window's frame as two fresh proxy edges (screen coords) with its
+    floor and cap: it may compress to its minimum, never widen."""
+    pos = _screen_pos(ds, axis)
+    size = float(ds.width if axis == "x" else ds.height)
+    floor = _window_floor(ds, axis)
+    return {axis: applied + pos}, {axis: applied + pos + size}, floor, size
+
+
+def _extent_of(root, children, frames, axis):
+    """``root``'s collision EXTENT as fresh proxy edges: the union of its
+    frame and its ``children``'s frames (all taken from ``frames``, the
+    positions phase A left them at), with the floor that keeps every
+    child inside — the root compresses down to its own minimum or to the
+    farthest child's far edge relative to the root's near edge, whichever
+    is larger (a child overhanging the far side leaves no give at all:
+    compressing a parent never moves its children, they hang off its near
+    edge). Returns (near, far, floor) with floor as the cell's floor."""
+    from src.lsd.gl_gui.view.core_views.columns import _axis_min
+    r_n, r_f, r_floor, _size0 = frames[id(root)]
+    r_size = r_f[axis] - r_n[axis]                # as phase A left it, not as built
+    near, far = r_n[axis], r_f[axis]
+    floor = r_floor
+    for child in children:
+        if getattr(child, "_capped_x" if axis == "x" else "_capped_y", False):
+            continue                              # drawn at the display's sliver cap: scrolled off
+        c_n, c_f, _fl, _sz = frames[id(child)]
+        near, far = min(near, c_n[axis]), max(far, c_f[axis])
+        if _driver_of(child, axis) == "far":
+            # driven by the root's far edge: it moves with that edge when
+            # the root compresses - the still leave the root's give
+            continue
+        # a child inside keeps the minimum margin from the root's far edge
+        # (as phase A left); an overhanging child leaves no give at all
+        margin = min(_axis_min(axis), max(0.0, r_f[axis] - c_f[axis]))
+        floor = max(floor, c_f[axis] - r_n[axis] + margin)
+    floor = min(floor, r_size)
+    give = max(0.0, r_size - floor)
+    return {axis: near}, {axis: far}, max(0.0, (far - near) - give)
+
+
+def solve():
+    """Frame start, after begin_frame and the titlebar's poll: the OS
+    window's own drags (queue_drag) and the OS edges' motion since the last
+    solve (the compositor's resize) — the GLFW window resizes — solved ONCE
+    per axis against every root window and nested window, all edges
+    independent collidable objects in screen coordinates (Lukas 08-27):
+    every window's frame as a cell floored at its minimum and capped at
+    its size, the OS frame cell, the screen walls, and a cell between each
+    consecutive pair of edges in position order (_chain_floor). No other
+    drag collides windows with each other: a melty window's own resize and
+    a hand move solve in the window's own pass (attach).
+
+    NESTED windows in two phases (Lukas 08-27: "child windows collide
+    normally, only revert to adjusting the parent when the collision
+    cascades into the parent"). Phase A solves everything as independent
+    objects with the PARENTS' edges as walls: a child compresses and
+    slides inside its parent, pushes its siblings and the OS edge, but
+    nothing can move a parent — a child's position is a function of its
+    parent's, and a push that cascades into the parent re-lays the parent
+    out and moves the child again (the feedback loop). Whatever the drag
+    could not do against those walls — a child pinned against its parent,
+    the OS edge on a parent itself — is phase B: the parents as EXTENTS
+    (their frame ∪ their children where phase A left them, _extent_of),
+    pushed as blocks; the children ride and are never written for it.
+    Pushed windows get position / size written back; their own pass packs
+    their columns as a foreign size write. The OS near edge's motion is
+    booked for apply_rebase like any other."""
+    from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.view.core_views.columns import (_cells_from_lists, _EdgeGraph,
+                                                        _solve_graph, snap_int)
+    if not _enabled() or _STATE["frame"] != Melty.frame_count:
+        return
+    for axis, i in _AXIS.items():
+        near, far = _STATE["edges"][axis]
+        cur = (near[axis], far[axis])
+        seen = _STATE["os_seen"][i]
+        own = _STATE["pending"][axis]
+        _STATE["pending"][axis] = []
+        os_moved = seen is not None and (abs(seen[0] - cur[0]) > 1e-6 or abs(seen[1] - cur[1]) > 1e-6)
+        if not own and not os_moved:
+            continue
+        walls_mode = _STATE["mode"] == "walls"
+        applied = near[axis] - _STATE["unapplied"][i]
+        near0 = near[axis]
+        if os_moved:
+            # the OS edges start from where the windows were laid out
+            # against (the graph's position order must see them THERE, or a
+            # moved edge sorts past the very edges it tries to shift)
+            near[axis], far[axis] = seen
+        windows = _colliding_windows()
+        children_of = {}
+        for ds in windows:
+            parent = getattr(ds, "parent_window", None)
+            if parent is not None:
+                children_of.setdefault(id(_root_of(ds)), []).append(ds)
+        frames = {id(ds): _frame_of(ds, axis, applied) for ds in windows}
+        start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
+
+        if walls_mode:
+            os_list, os_spec = [near, far], ([MIN_SIZE[i]], [None])
+            walls = frozenset({id(near), id(far)})
+        else:
+            scr_near, scr_far = _STATE["screen"][axis]
+            os_list, os_spec = [scr_near, near, far, scr_far], ([0.0, MIN_SIZE[i], 0.0], [None, None, None])
+            walls = frozenset({id(scr_near), id(scr_far)})
+
+        def graph_of(cells):
+            """cells: [(ds_or_None, n, f, floor, cap)] → the cell graph with
+            the OS list and the flat chain over all of them."""
+            lists, specs = [os_list], [os_spec]
+            ranked_roots = []
+            for _ds, n, f, floor, cap in cells:
+                lists.append([n, f]); specs.append(([floor], [max(floor, cap)]))
+                ranked_roots.append((None, n, f, floor))
+            ranked = _flat_chain_ranked([near, far], ranked_roots, axis)
+            if len(ranked) > 1:
+                floors = [_chain_floor(a, ra, b, rb, axis)
+                          for (a, ra), (b, rb) in zip(ranked, ranked[1:])]
+                lists.append([edge for edge, _role in ranked])
+                specs.append((floors, [None] * len(floors)))
+            return _EdgeGraph(_cells_from_lists(lists, axis, specs=specs))
+
+        # the drags: the OS edges' foreign motion (the edge IS where it is;
+        # the other OS edge holds), then the OS window's own drags
+        drags = []
+        if os_moved:
+            for edge, target in ((near, cur[0]), (far, cur[1])):
+                if abs(target - edge[axis]) > 1e-6:
+                    drags.append((edge, target, False))
+        for index, inc in own:
+            # relative to where the edge really is (cur) - the edge may be
+            # rewound at `seen` for the foreign fold-in above
+            drags.append(((near, far)[index], cur[index] + inc, True))
+
+        # ---- phase A: every window its own object; the DRIVING pairs are
+        # walls - each child's driven edge (the one its parent's corner
+        # places, _driven_edge) and the parent edge that places it
+        # (_driving_parent_edge), both a function of the parent's position.
+        # Every other edge collides normally: a child compresses from its
+        # free edge and pushes its parent's free edge too (the parent
+        # compresses - Lukas 08-27: "the child window should collide with
+        # the right edge of its parent and move it"); a push that needs a
+        # driving edge to move is the cascade phase B answers
+        cells_a = [(ds, n, f, floor, size) for ds, (n, f, floor, size) in ((ds, frames[id(ds)]) for ds in windows)]
+        parent_walls = set()
+        for ds in windows:
+            parent = getattr(ds, "parent_window", None)
+            if parent is None:
+                continue
+            n, f, _fl, _sz = frames[id(ds)]
+            parent_walls.add(id(n) if _driven_edge(ds, axis) == "near" else id(f))
+            # the driving edge of every parent up to the root: each is a
+            # function of its own parent's corner in turn
+            node = parent
+            while node is not None and id(node) in frames:
+                pn, pf, _pfl, _psz = frames[id(node)]
+                parent_walls.add(id(pn) if _driver_of(ds, axis) == "near" else id(pf))
+                node = getattr(node, "parent_window", None)
+        graph_a = graph_of(cells_a)
+        residual = []
+        for edge, target, cursor in drags:
+            edge_walls = (walls | parent_walls) if cursor else (walls | parent_walls | ({id(near), id(far)} - {id(edge)}))
+            _solve_graph(graph_a, edge, target, walls=frozenset(edge_walls), axis=axis)
+            if abs(target - edge[axis]) > 1e-6:
+                residual.append((edge, target, cursor))
+        after_a = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
+
+        # ---- phase B: the remainder, parents as blocks (their children flat)
+        extents = {}
+        if residual:
+            cells_b = []
+            for ds in windows:
+                if getattr(ds, "parent_window", None) is not None:
+                    continue                          # folded into its root's extent
+                kids = children_of.get(id(ds))
+                if kids:
+                    n, f, floor = _extent_of(ds, kids, frames, axis)
+                    extents[id(ds)] = (n, f, n[axis], f[axis])
+                    cells_b.append((ds, n, f, floor, f[axis] - n[axis]))
+                else:
+                    n0, f0, floor, _size = frames[id(ds)]
+                    n, f = {axis: n0[axis]}, {axis: f0[axis]}
+                    extents[id(ds)] = (n, f, n[axis], f[axis])
+                    cells_b.append((ds, n, f, floor, f[axis] - n[axis]))
+            graph_b = graph_of(cells_b)
+            for edge, target, cursor in residual:
+                edge_walls = walls if cursor else (walls | ({id(near), id(far)} - {id(edge)}))
+                _solve_graph(graph_b, edge, target, walls=frozenset(edge_walls), axis=axis)
+                left = target - edge[axis]
+                if cursor:
+                    opposite = near if left > 0 else far
+                    if abs(left) > 1e-6 and opposite is not edge:           # the flip
+                        _solve_graph(graph_b, opposite, opposite[axis] - left, walls=frozenset(edge_walls), axis=axis)
+                else:
+                    edge[axis] = float(target)                             # forced: it's there
+
+        # ---- fold back (children: their phase-A motion, parent-relative;
+        # roots: phase A + their block's phase B; round off the size)
+        for ds in windows:
+            wid = id(ds)
+            n0, f0 = start[wid]
+            n_a, f_a = after_a[wid]
+            delta, new_size = n_a - n0, f_a - n_a
+            if getattr(ds, "parent_window", None) is None and wid in extents:
+                n_b, f_b, nb0, fb0 = extents[wid]
+                delta += n_b[axis] - nb0
+                new_size -= (fb0 - nb0) - (f_b[axis] - n_b[axis])
+            if abs(delta) > 1e-6:
+                _rebase(ds, axis, delta)
+            size = float(ds.width if axis == "x" else ds.height)
+            if abs(new_size - size) > 0.5:
+                if axis == "x":
+                    ds.width = snap_int(new_size)
+                else:
+                    ds.height = snap_int(new_size)
+            seen_all = getattr(ds, "_os_seen", None)
+            if seen_all is not None:
+                seen_all[axis] = (near[axis], far[axis])
+        d_os = near[axis] - near0
+        if d_os:
+            _STATE["unapplied"][i] += d_os
+            _trace(f"{axis}: OS near edge moved {d_os:+.0f} (OS-level solve)")
+        _STATE["os_seen"][i] = (near[axis], far[axis])
 
 
 # ---------------------------------------------------------------------------
@@ -442,14 +862,6 @@ def flush():
     from src.lsd.gl_gui.melty import Melty
     if not _enabled():
         return None
-    for axis in _AXIS:
-        if not _STATE["consumed"][axis] and _STATE["pending"][axis]:
-            near0 = _STATE["edges"][axis][0][axis]
-            _STATE["bare_near0"] = near0
-            d_os = _bare_pass(axis)
-            if d_os:
-                _STATE["unapplied"][_AXIS[axis]] += d_os
-            _STATE["consumed"][axis] = True
     window = titlebar._studio_window()
     display = Melty.display_size
     if window is None or not display:

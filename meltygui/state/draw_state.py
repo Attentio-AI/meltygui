@@ -1354,7 +1354,15 @@ class DrawState(DictConversion):
             return pos
         keep = min(48, size)
         lo, hi = keep - size, disp[axis] - keep
-        if lo <= pos <= hi:
+        # whether the cap is holding this axis: the OS-edge physics
+        # (os_frame._root_extent) pull a scrolled-out nested window out of
+        # its parent's collision extent
+        capped = not (lo <= pos <= hi)
+        if axis == 0:
+            self._capped_x = capped
+        else:
+            self._capped_y = capped
+        if not capped:
             return pos
         try:
             from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
