@@ -3174,7 +3174,8 @@ def draw_text_from_code_cache(input_value=None, root_input=None, error=None,
             changed, value, ds = RenderFuncs.draw_text(buffer_text, code_dict=code_dict,
                                                        code_tree=cache_error, error=error,
                                                        import_fixes=import_fixes,
-                                                       return_extras=True, **{**kwargs, "is_tree": False})
+                                                       return_extras=True,
+                                                       **{"gutter_indent": True, **kwargs, "is_tree": False})
             _t_dt1 = time.monotonic()
             # Every frame's editor draws: mark as a LIVE user so the idle sweep
             # keeps the host registered (and repaint it when a background parse

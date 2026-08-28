@@ -9089,6 +9089,7 @@ def draw_text(input_value: str, height=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               code_diff_mode=False, fold_all_collapsed=None,
+              gutter_indent=False,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
               autocomplete=True, unique=0,
               show_widgets=True, show_root_backgrounds=True,
@@ -10212,6 +10213,13 @@ def draw_text(input_value: str, height=None,
     # gutter_w, so the numbers stay snug in their column and the margin
     # reads the editor background.
     gutter_margin = 5.0 if gutter_w > 0 else 0.0
+    # gutter_indent: an extra inset of one indentation level (4 columns -
+    # the editor's `indent = '    '`) between the gutter and column 0, so
+    # root-level guides and glyphs don't sit flush against the numbers.
+    # Folded into the same margin, so every consumer of the text inset
+    # (origin_x, rect_min_x, h-scroll limits, caret hit-test) follows.
+    if gutter_indent:
+        gutter_margin += 4 * char_w
 
     text_visible_width = draw_state.content_width - gutter_w - gutter_margin
     # Snapshot the clip rect in the same scroll frame as `left`/`top`. Those
@@ -12772,7 +12780,13 @@ def draw_text(input_value: str, height=None,
             and not single_line and not is_search_box and line_px):
         _sg_memo = getattr(ds, '_scope_guide_memo', None)
         if _sg_memo is None or _sg_memo[0] is not text:
-            _sg_memo = ds._scope_guide_memo = (text, _scope_guide_segments(text))
+            # The ROOT scope is one big guide at column 0 spanning the
+            # whole file - head -1 so it starts on line 0, and it REPLACES
+            # the column-0 block guides (a root-level def's own guide would
+            # only retrace it).
+            _sg_memo = ds._scope_guide_memo = (
+                text, [(-1, text.count('\n'), 0)]
+                + [_seg for _seg in _scope_guide_segments(text) if _seg[2] > 0])
         _sg_segments = _sg_memo[1]
         if _sg_segments:
             _sg_factors = (Toggles.TextEditor.scope_guide_saturation,
@@ -12816,7 +12830,8 @@ def draw_text(input_value: str, height=None,
                     if _sg_seg[0] > _sg_cline:
                         break
                     if (_sg_seg[0] < _sg_cline <= _sg_seg[1]
-                            and _sg_seg[2] == _sg_ccol):
+                            and _sg_seg[2] == _sg_ccol
+                            and _sg_seg[0] >= 0):        # never the root guide
                         _sg_active = _sg_seg
                         break
             _sg_active_factors = (_sg_factors[0],
@@ -12833,11 +12848,17 @@ def draw_text(input_value: str, height=None,
                     continue
                 if _sg_head > _sg_v1:
                     break
-                _sg_x = origin_x + _sg_colc * char_w + 0.5
-                if _sg_x < rect_min_x:
+                # Three pixels left of the column so the line never touches
+                # the glyphs in it (+0.5 centres the 1 px stroke).
+                _sg_x = origin_x + _sg_colc * char_w - 3.0 + 0.5
+                # Scrolled under the gutter → hidden (the root line at
+                # column 0 sits LEFT of the text inset, so minus that much).
+                if _sg_x < rect_min_x - 3.0:
                     continue
                 _sg_y0 = max(origin_y + (_sg_head + 1) * line_px, rect_min_y)
-                _sg_y1 = min(origin_y + (_sg_end + 1) * line_px, rect_max_y)
+                # Bottom end pulled up 2 px so the line stops short of the
+                # next row's glyphs.
+                _sg_y1 = min(origin_y + (_sg_end + 1) * line_px - 2.0, rect_max_y)
                 if _sg_y1 <= _sg_y0:
                     continue
                 _sg_tint = _sg_tinted.get((_sg_head, _sg_end, _sg_colc))
@@ -12857,8 +12878,23 @@ def draw_text(input_value: str, height=None,
                         _sg_base_col = imgui.get_color_u32_rgba(
                             _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_alpha)
                     _sg_col = _sg_base_col
-                draw_list.add_line(_sg_x, _sg_y0, _sg_x, _sg_y1,
-                                   _sg_col, _sg_thick)
+                if _sg_x < rect_min_x:
+                    # The root line sits left of the body clip pushed at
+                    # the top of the draw pass: pop it, push one left for
+                    # the offset (intersected with the OUTER clip, so the
+                    # tile bounds still hold), stroke, restore. Once per
+                    # frame - only the root guide gets here.
+                    draw_list.pop_clip_rect()
+                    draw_list.push_clip_rect(rect_min_x - 3.0, rect_min_y,
+                                             rect_max_x, rect_max_y, True)
+                    draw_list.add_line(_sg_x, _sg_y0, _sg_x, _sg_y1,
+                                       _sg_col, _sg_thick)
+                    draw_list.pop_clip_rect()
+                    draw_list.push_clip_rect(rect_min_x, rect_min_y,
+                                             rect_max_x, rect_max_y, True)
+                else:
+                    draw_list.add_line(_sg_x, _sg_y0, _sg_x, _sg_y1,
+                                       _sg_col, _sg_thick)
 
     _pf("body:washes")
     # Selection
