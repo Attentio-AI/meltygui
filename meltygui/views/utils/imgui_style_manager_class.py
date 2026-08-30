@@ -153,14 +153,23 @@ class ImGuiStyleManager:
                 b1 * (1 - alpha) + b2 * alpha
             )
 
-        # hn, sn, vn = colorsys.rgb_to_hsv(r, g, b)
-        h, s, v = self.hsv
+        # Pure function of the current tint and the arguments - memoize:
+        # flat_button / tabs / dock rows call this twice per widget per
+        # frame with a handful of distinct values (two hsv round trips each).
+        key = (self.current_rgb, r, g, b, saturation_scale, alpha, factor, value)
+        hit = _MAKE_COLOR_RGB_MEMO.get(key)
+        if hit is not None:
+            return hit
 
         modified_rgb = self.make_custom(*self.current_rgb, value, saturation_scale=saturation_scale, alpha=alpha)
         # Apply alpha blending with the original color
         modified_rgb = mix(r, g, b, modified_rgb[0], modified_rgb[1], modified_rgb[2], factor)
 
-        return modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha
+        result = (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        if len(_MAKE_COLOR_RGB_MEMO) > 4096:
+            _MAKE_COLOR_RGB_MEMO.clear()      # bounded: drags mint many times
+        _MAKE_COLOR_RGB_MEMO[key] = result
+        return result
 
     def make_color_style_imgui(self, input, alpha=1.0):
         """
@@ -381,7 +390,20 @@ class ImGuiStyleManager:
         h, s, v = self._safe_rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)
         style = imgui.get_style()
-        colors = style.colors
+        # The 35-entry table below is a pure function of the final (r, g, b)
+        # and the widget brightness cap, so it's memoized per tint: the
+        # editor's inline widgets push + restore a tint each (60+ widgets a
+        # frame on a Toggles-like file = ~2.8 ms of hsv conversion per frame).
+        from src.lsd.gl_gui.toggles import Toggles
+        widget_max_b = Toggles.Style.widget_max_brightness
+        real_colors = style.colors
+        cache_key = (round(r, 5), round(g, 5), round(b, 5), widget_max_b)
+        cached = _TINT_TABLE_CACHE.get(cache_key)
+        if cached is not None:
+            for idx, col in cached:
+                real_colors[idx] = col
+            return
+        colors = _TintTableRecorder()
 
         def make_color(input, alpha=1.0):
             value = input["value"]
@@ -456,3 +478,27 @@ class ImGuiStyleManager:
         colors[imgui.COLOR_SCROLLBAR_GRAB] = make_color(glb_cst["widget"]["scrollbar_grab"])
         colors[imgui.COLOR_SCROLLBAR_GRAB_HOVERED] = make_color(glb_cst["widget"]["scrollbar_grab_hovered"])
         colors[imgui.COLOR_SCROLLBAR_GRAB_ACTIVE] = make_color(glb_cst["widget"]["scrollbar_grab_active"])
+
+        table = colors.entries
+        for idx, col in table:
+            real_colors[idx] = col
+        if len(_TINT_TABLE_CACHE) > 512:
+            _TINT_TABLE_CACHE.clear()      # bounded: a slider will muck many tints
+        _TINT_TABLE_CACHE[cache_key] = table
+
+
+class _TintTableRecorder:
+    """Stand-in for style.colors while set_imgui_tint computes a table:
+    records (index, color) so the result can be memoized and replayed."""
+    __slots__ = ("entries",)
+
+    def __init__(self):
+        self.entries = []
+
+    def __setitem__(self, idx, col):
+        self.entries.append((idx, col))
+
+
+_TINT_TABLE_CACHE = globals().get("_TINT_TABLE_CACHE", {})   # (r, g, b, cap) → [(idx, color)]
+# (current tint, r, g, b, sat, alpha, factor, cap) → rgba - make_color_rgb
+_MAKE_COLOR_RGB_MEMO = globals().get("_MAKE_COLOR_RGB_MEMO", {})

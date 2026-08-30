@@ -1915,7 +1915,10 @@ class DrawState(DictConversion):
 
         return (left, top, right, bottom)
 
-    def hover_eligible(self, rect=None, ignore_reports=True):
+    def hover_eligible(self, rect=None, ignore_reports=True, clip_rect=None):
+        # `clip_rect`: a caller that already read abs_clamped_rect this call
+        # passes it in - on_action's registration computes it for the cursor
+        # rect too, ~240 registrations a frame on the code editor window.
         if self.just_shadow:
             return False
 
@@ -1933,7 +1936,8 @@ class DrawState(DictConversion):
                 return False
             # The BVH stores raw bboxes, not clipped ones, so still check the
             # cursor inside the active clip (scrolled-away views aren't hovered).
-            clip_rect = self.abs_clamped_rect
+            if clip_rect is None:
+                clip_rect = self.abs_clamped_rect
             if clip_rect is not None:
                 mx, my = imgui.get_mouse_pos()
                 if not (clip_rect[0] <= mx <= clip_rect[2] and clip_rect[1] <= my <= clip_rect[3]):
@@ -1944,7 +1948,8 @@ class DrawState(DictConversion):
             # a view scrolled under its parent's header still has the header
             # band inside its bbox, and clipping only to the bbox let it report
             # hover there and steal the header's drag (window_move) event.
-            clip_rect = self.abs_clamped_rect
+            if clip_rect is None:
+                clip_rect = self.abs_clamped_rect
             if clip_rect is not None:
                 rect = (max(rect[0], clip_rect[0]), max(rect[1], clip_rect[1]),
                         min(rect[2], clip_rect[2]), min(rect[3], clip_rect[3]))
@@ -1970,6 +1975,16 @@ class DrawState(DictConversion):
         """The registration half of on_action: hover-test `rect` (None = this
         view's bbox) and subscribe. Shared by the live call and the cache-hit
         replay so both obey the same z-order / blocker rules."""
+        if rect is not None:
+            # Cheapest test first: ~330 registrations a frame on the code
+            # editor window (frame edges, scrollbars, buttons, dials), and the
+            # pointer is inside a handful of them. hover_eligible clips the
+            # rect before calling, and the clip can only shrink it, so a
+            # pointer outside the input rect is outside the clipped one too -
+            # skip the priority / clamped-rect work on those.
+            mx, my = imgui.get_mouse_pos()
+            if not (rect[0] <= mx <= rect[2] and rect[1] <= my <= rect[3]):
+                return
         if not self.hover_eligible(rect):
             return
         cursor_rect = None

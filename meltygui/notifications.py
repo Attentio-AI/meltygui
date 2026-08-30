@@ -334,13 +334,54 @@ def _draw_column_entry(draw_list, column_left, content_width, line_height, paddi
     return bg_top - padding
 
 
-def _draw_column_title(draw_list, x, y, color, title, hit_rects=None, copy_text=None):
-    """Draw a column's title and register its text box as a click target that
-    copies `copy_text` (the whole column)."""
-    draw_list.add_text(x, y, color, title)
+# Tags whose band is collapsed to its title strip (toggled by the tree arrow
+# beside the title, see _draw_column_title / _handle_arrow_click). Hotswap-safe.
+_collapsed_tags = globals().get("_collapsed_tags") or set()
+
+
+def _draw_column_title(draw_list, x, y, color, title, hit_rects=None, copy_text=None,
+                       arrow_rects=None, collapsed=False):
+    """Draw a column's tree arrow + title. The arrow (▾ open / ▸ collapsed)
+    is a click target that toggles the band (registered on `arrow_rects` as
+    (rect, tag)); the title text is a click target that copies `copy_text`
+    (the whole column). Returns the title's right edge."""
+    # [tint=(0.95, 0.61, 0.07)]
+    arrow_size = 8
+    # [tint=(0.36, 0.68, 0.89)]
+    arrow_gap = 6
+
+    line_height = imgui.get_text_line_height()
+    cx = x + arrow_size / 2
+    cy = y + line_height / 2
+    half = arrow_size / 2
+    if collapsed:   # ▸
+        draw_list.add_triangle_filled(cx - half / 2, cy - half, cx - half / 2, cy + half,
+                                      cx + half, cy, color)
+    else:           # ▾
+        draw_list.add_triangle_filled(cx - half, cy - half / 2, cx + half, cy - half / 2,
+                                      cx, cy + half, color)
+    if arrow_rects is not None:
+        arrow_rects.append(((x - 2, y, x + arrow_size + arrow_gap, y + line_height), title))
+
+    text_x = x + arrow_size + arrow_gap
+    draw_list.add_text(text_x, y, color, title)
+    size = imgui.calc_text_size(title)
     if hit_rects is not None and copy_text:
-        size = imgui.calc_text_size(title)
-        hit_rects.append(((x, y, x + size.x, y + size.y), copy_text, None))
+        hit_rects.append(((text_x, y, text_x + size.x, y + size.y), copy_text, None))
+    return text_x + size.x
+
+
+def _handle_arrow_click(arrow_rects):
+    """A click on a band's tree arrow toggles that band between its full
+    height and just its title strip. Returns True when it consumed the click."""
+    if not arrow_rects or not imgui.is_mouse_clicked(0):
+        return False
+    mouse = imgui.get_io().mouse_pos
+    for (x0, y0, x1, y1), tag in arrow_rects:
+        if x0 <= mouse.x <= x1 and y0 <= mouse.y <= y1:
+            _collapsed_tags.symmetric_difference_update({tag})
+            return True
+    return False
 
 
 def _draw_scrolled_column(draw_list, io, tag, rows, column_left, content_width,
@@ -586,21 +627,31 @@ def draw_notifications():
         column_left = display_size.x - column_width - edge_margin
         hit_rects = []
         badge_rects = []
+        arrow_rects = []
+        # Bottom of the NEXT band to lay out; bands stack upward, a collapsed
+        # band taking only its title strip so the ones above it pack down.
+        next_band_bottom = [display_size.y]
 
-        def band_rect(band_index):
-            """(title_top, viewport_top, viewport_bottom) of the band_index-th
-            category_height band, counted upward from the window's bottom."""
-            band_bottom = display_size.y - band_index * category_height
+        def band_rect(tag):
+            """(title_top, viewport_top, viewport_bottom, collapsed) of `tag`'s
+            band, stacked above the previously laid-out one."""
+            collapsed = tag in _collapsed_tags
+            band_bottom = next_band_bottom[0]
             title_top = band_bottom - title_strip
-            return title_top, band_bottom - category_height, title_top - padding
+            height = title_strip if collapsed else category_height
+            next_band_bottom[0] = band_bottom - height
+            return title_top, band_bottom - height, title_top - padding, collapsed
 
-        for band_index, (tag, notifications) in enumerate(tagged_columns):
-            title_top, viewport_top, viewport_bottom = band_rect(band_index)
+        for tag, notifications in tagged_columns:
+            title_top, viewport_top, viewport_bottom, collapsed = band_rect(tag)
 
             # tag title pinned at the bottom of the band; clicking it copies
             # the band's whole history, not just the entries on screen.
             _draw_column_title(draw_list, column_left, title_top, title_color, tag,
-                               hit_rects, "\n".join(n.copy_text for n in notifications))
+                               hit_rects, "\n".join(n.copy_text for n in notifications),
+                               arrow_rects=arrow_rects, collapsed=collapsed)
+            if collapsed:
+                continue
 
             rows = []
             for n in notifications:
@@ -617,13 +668,15 @@ def draw_notifications():
         # it scrolls like the others but skips the "new" badge (in-place
         # updates would keep it lit permanently).
         if live_entries:
-            title_top, viewport_top, viewport_bottom = band_rect(len(tagged_columns))
+            title_top, viewport_top, viewport_bottom, collapsed = band_rect("Live")
             label_color = (0.6, 0.6, 0.6, 1)
 
             _draw_column_title(draw_list, column_left, title_top, title_color, "Live",
                                hit_rects, "\n".join(f"{label}{value_str}"
-                                                    for label, value_str in live_entries))
+                                                    for label, value_str in live_entries),
+                               arrow_rects=arrow_rects, collapsed=collapsed)
 
+        if live_entries and not collapsed:
             rows = [(live_tag + " ", label_color, value_str, color, created_at, None, None)
                     for live_tag, (value_str, color, _time_label, created_at)
                     in NotificationCenter.live_values.items()]
@@ -631,7 +684,7 @@ def draw_notifications():
                                   line_height, padding, viewport_top, viewport_bottom,
                                   hit_rects, badge_rects, show_badge=False)
 
-        if not _handle_badge_click(badge_rects):
+        if not _handle_arrow_click(arrow_rects) and not _handle_badge_click(badge_rects):
             _handle_entry_click(hit_rects)
         _draw_copy_flash(draw_list)
     finally:

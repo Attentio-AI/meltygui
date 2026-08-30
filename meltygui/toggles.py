@@ -1369,6 +1369,12 @@ class Toggles:
         # windows' ranks (they start at layer 64) or it would flatten the
         # inner windows' own shadow. 0 = only the root's own mark casts.
         window_shadow_lift = 20
+        # add_shadow() rect marks stamped as ONE instanced draw per blend
+        # equation (blit_offscreen._stamp_shadow_marks_batched) instead of
+        # ~10 GL calls per mark: 2.5 ms → ~0.3 ms a frame with ~280 marks.
+        # Off = the per-mark path (compare if a shadow looks different).
+        # [tint=(0.95, 0.55, 0.15)]
+        batch_shadow_stamps = True
 
     @defaults(tint=(0.635, 0.728, 0.725))
     class Style:

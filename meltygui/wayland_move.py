@@ -481,7 +481,16 @@ def _on_enter(data, pointer, serial, surface, sx, sy):
 
 
 def _on_leave(data, pointer, serial, surface):
-    pass
+    # Under an exclusive grab the compositor sends no leave until the release,
+    # so a leave with buttons still held means the grab was broken (a freeze
+    # tripped Mutter's not-responding handling, a focus steal): the release
+    # will be delivered elsewhere and GLFW's button state stays PRESS for
+    # good. Mark the buttons as up, and mask GLFW's stale reading until
+    # its next real event on them (note_glfw_button).
+    held = _STATE["held"]
+    if held:
+        _STATE["masked"].update(held)
+        held.clear()
 
 
 def _on_button(data, pointer, serial, time_ms, button, state):
@@ -751,6 +760,15 @@ def button_masked(button):
 
 def masked_buttons():
     return set(_STATE["masked"])
+
+
+def button_held(button):
+    """Our own wl_pointer's level state for `button` (GLFW index): True /
+    False, or None when no pointer is bound (X11, attach failed) — then
+    there is no independent truth and the caller must not trust this."""
+    if not _STATE["pointer"]:
+        return None
+    return button in _STATE["held"]
 
 
 def note_glfw_button(button, action):

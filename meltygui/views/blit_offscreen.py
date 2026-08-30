@@ -723,6 +723,68 @@ void main() {
 }
 """
 
+# Batched rect marks (goggles.Melty.batch_shadow_stamps): the SAME gradient
+# as _SHADOW_GRAD_FS, but one instanced quad per mark with the per-mark
+# uniforms riding as instance attributes - ~280 marks a frame cost 2.5 ms
+# of per-mark GL state on PyOpenGL; batched they are one buffer upload
+# and one draw per blend equation. The quad is the mark's rect clipped to
+# its scissor (aClip) but vUV stays RECT-relative, so the gradient is
+# exact for any size (the per-mark path approximates a 4096 px rect by
+# re-evaluating its corners at the clamped edges).
+_SHADOW_BATCH_VS = """
+#version 330 core
+layout(location = 0) in vec4 aRect;    // x0, y0, w, h — framebuffer px, y up
+layout(location = 1) in vec4 aClip;    // x0, y0, x1, y1 — rect ∩ scissor
+layout(location = 2) in vec4 aRanks;   // (TL, TR, BL, BR) / 65535.5
+layout(location = 3) in vec4 aParams;  // corner radius, margin, winZ, unused
+uniform vec2 uFBSize;
+out vec2 vUV;
+flat out vec4 vRanks;
+flat out vec4 vParams;
+flat out vec2 vRectSize;
+void main() {
+    vec2 c = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+    vec2 p = mix(aClip.xy, aClip.zw, c);
+    vUV = (p - aRect.xy) / aRect.zw;
+    vRanks = aRanks;
+    vParams = aParams;
+    vRectSize = aRect.zw;
+    gl_Position = vec4(p / uFBSize * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+_SHADOW_BATCH_FS = """
+#version 330 core
+uniform sampler2D uWinMask;  // window-occlusion mask (_build_window_mask)
+uniform vec2 uFBSize;        // full-mask dims, for gl_FragCoord -> mask UV
+in vec2 vUV;
+flat in vec4 vRanks;
+flat in vec4 vParams;
+flat in vec2 vRectSize;
+out vec4 oColor;
+
+float sdRoundedBox(vec2 p, vec2 b, float r, float margin) {
+    vec2 q = abs(p) - b + r;
+    return min(max(q.x, q.y), margin) + length(max(q, margin)) - r;
+}
+
+void main() {
+    vec2 pixelPos = (vUV - 0.5) * vRectSize;
+    vec2 halfSize = vRectSize * 0.5;
+    float r = min(vParams.x, min(halfSize.x, halfSize.y));
+    if (sdRoundedBox(pixelPos, halfSize, r, vParams.y) > 0.0) {
+        discard;
+    }
+    if (texture(uWinMask, gl_FragCoord.xy / uFBSize).r > vParams.z + 0.00048) {
+        discard;
+    }
+    vec2 t = vUV * vUV * (3.0 - 2.0 * vUV);
+    float top    = mix(vRanks.x, vRanks.y, t.x);
+    float bottom = mix(vRanks.z, vRanks.w, t.x);
+    oColor = vec4(mix(bottom, top, t.y), 0.0, 0.0, 1.0);
+}
+"""
+
 # add_shadow_shape() marks: arbitrary triangle-strip geometry with a rank per
 # VERTEX - the complex-shape sibling of the rect gradient above (compare
 # ribbons, future non-rect chrome). Positions arrive pre-transformed to NDC
@@ -2229,14 +2291,19 @@ class TileCacheMasked:
                 raise ValueError(
                     "add_shadow offset must be a scalar or a 4-tuple "
                     "(top_left, top_right, bottom_left, bottom_right)")
+            # MIN-blend (recess) only when the whole quad sits at-or-below
+            # the surface; any raised corner stamps MAX so the mark can't
+            # carve neighbours it eases across.
+            inset = all(o <= 0 for o in offs) and any(o < 0 for o in offs)
+            ranks = tuple(max(0.0, shadow_depth_at(depth + o, layer))
+                          for o in offs)
         else:
-            offs = (float(offset),) * 4
-        # MIN-blend (recess) only when the whole quad is at-or-below the
-        # surface; any raised corner stamps MAX so the mark doesn't carve
-        # neighbours it eases across.
-        inset = all(o <= 0 for o in offs) and any(o < 0 for o in offs)
-        ranks = tuple(max(0.0, shadow_depth_at(depth + o, layer))
-                      for o in offs)
+            # Scalar offset - the common case, ~100 marks a frame: one rank,
+            # four equal entries, no generator round trips.
+            o = float(offset)
+            inset = o < 0
+            rank = max(0.0, shadow_depth_at(depth + o, layer))
+            ranks = (rank, rank, rank, rank)
         mark = (x, y, w, h, ranks, corner_radius, margin, clip_xyxy,
                 owner_key, inset)
         self._shadow_rects.append(mark)
@@ -2804,6 +2871,125 @@ class TileCacheMasked:
         gl.glDisable(gl.GL_BLEND)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
 
+    def _ensure_batch_state(self) -> None:
+        """Program + instanced VAO/VBO for the batched rect marks. Re-keyed
+        on the newest uniform's location (hotswap onto a live instance)."""
+        if (getattr(self, "_prog_shadow_batch", None) is None
+                or getattr(self, "_loc_sb_uFBSize", None) is None):
+            vs = _compile(gl.GL_VERTEX_SHADER, _SHADOW_BATCH_VS)
+            fs = _compile(gl.GL_FRAGMENT_SHADER, _SHADOW_BATCH_FS)
+            self._prog_shadow_batch = _link(vs, fs)
+            self._loc_sb_uWinMask = gl.glGetUniformLocation(
+                self._prog_shadow_batch, "uWinMask")
+            self._loc_sb_uFBSize = gl.glGetUniformLocation(
+                self._prog_shadow_batch, "uFBSize")
+        if getattr(self, "_batch_vao", None) is None:
+            vao = gl.glGenVertexArrays(1)
+            vbo = gl.glGenBuffers(1)
+            gl.glBindVertexArray(vao)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+            stride = 16 * 4
+            for loc in range(4):
+                gl.glEnableVertexAttribArray(loc)
+                gl.glVertexAttribPointer(loc, 4, gl.GL_FLOAT, gl.GL_FALSE,
+                                         stride, ctypes.c_void_p(loc * 16))
+                gl.glVertexAttribDivisor(loc, 1)
+            gl.glBindVertexArray(self._dummy_vao)
+            self._batch_vao = int(vao)
+            self._batch_vbo = int(vbo)
+
+    def _stamp_shadow_marks_batched(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
+                                    scissor_fb=None, win_gate=True):
+        """Batched twin of _stamp_shadow_marks (Toggles.Melty
+        .batch_shadow_stamps): rect marks become instance records — 16
+        floats each — drawn as ONE instanced quad strip per blend equation
+        (GL_MAX for casters, GL_MIN for insets); strip marks (shape payload)
+        still go through the per-mark path. Same GL state contract on exit."""
+        # [tint=(0.95, 0.55, 0.15)]
+        rank_scale = 1.0 / 65535.5
+        _fbw, _fbh = self._fb_size
+        max_recs, min_recs, strips = [], [], []
+        floor_, ceil_ = floor, ceil
+        win_z = {}     # owner key to encoded rank, resolved once per owner
+        for s in shadows:
+            (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
+             inset) = s[:10]
+            if len(s) > 10 and s[10] is not None:
+                strips.append(s)
+                continue
+            # _screen_rect_to_fb_xyxy inlined (this loop runs ~300× a frame)
+            x0 = (sx - dp_x) * s_x
+            x1 = (sx + sw - dp_x) * s_x
+            y0 = fb_h - (sy + sh - dp_y) * s_y
+            y1 = fb_h - (sy - dp_y) * s_y
+            ix0, iy0 = floor_(x0), floor_(y0)
+            ix1, iy1 = ceil_(x1), ceil_(y1)
+            if ix1 <= ix0 or iy1 <= iy0:
+                continue
+            sc = scissor_fb
+            if clip_xyxy is not None:
+                cx0, cy0, cx1, cy1 = clip_xyxy
+                fx0 = (cx0 - dp_x) * s_x
+                fx1 = (cx1 - dp_x) * s_x
+                fy0 = fb_h - (cy1 - dp_y) * s_y
+                fy1 = fb_h - (cy0 - dp_y) * s_y
+                sc = ((fx0, fy0, fx1, fy1) if sc is None else
+                      (max(sc[0], fx0), max(sc[1], fy0),
+                       min(sc[2], fx1), min(sc[3], fy1)))
+            if sc is not None:
+                # The integer scissor the per-mark clip sets, applied as
+                # the quad's clip so no glScissor call is needed per mark.
+                kx0, ky0 = max(ix0, floor_(sc[0])), max(iy0, floor_(sc[1]))
+                kx1, ky1 = min(ix1, ceil_(sc[2])), min(iy1, ceil_(sc[3]))
+                if kx1 <= kx0 or ky1 <= ky0:
+                    continue
+            else:
+                kx0, ky0, kx1, ky1 = ix0, iy0, ix1, iy1
+            rec = (float(ix0), float(iy0), float(ix1 - ix0), float(iy1 - iy0),
+                   float(kx0), float(ky0), float(kx1), float(ky1),
+                   d_and_l[0] * rank_scale, d_and_l[1] * rank_scale,
+                   d_and_l[2] * rank_scale, d_and_l[3] * rank_scale,
+                   max(0.0, float(cr)), float(margin), 1.0, 0.0)
+            if win_gate:
+                z = win_z.get(_owner)
+                if z is None:
+                    z = win_z[_owner] = self._win_z_for_owner(_owner)
+                rec = rec[:14] + (z, 0.0)
+            (min_recs if inset else max_recs).extend(rec)
+        if max_recs or min_recs:
+            self._ensure_batch_state()
+            gl.glEnable(gl.GL_BLEND)
+            gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
+            gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glViewport(0, 0, max(1, _fbw), max(1, _fbh))
+            gl.glUseProgram(self._prog_shadow_batch)
+            _win_tex = getattr(self, "_win_mask_tex", None)
+            gl.glActiveTexture(gl.GL_TEXTURE1)
+            gl.glBindTexture(gl.GL_TEXTURE_2D,
+                             _win_tex if (win_gate and _win_tex) else 0)
+            gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glUniform1i(self._loc_sb_uWinMask, 1)
+            gl.glUniform2f(self._loc_sb_uFBSize,
+                           float(max(1, _fbw)), float(max(1, _fbh)))
+            gl.glBindVertexArray(self._batch_vao)
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._batch_vbo)
+            for recs, equation in ((max_recs, gl.GL_MAX), (min_recs, gl.GL_MIN)):
+                if not recs:
+                    continue
+                buf = (ctypes.c_float * len(recs))(*recs)
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, len(recs) * 4, buf,
+                                gl.GL_STREAM_DRAW)
+                gl.glBlendEquation(equation)
+                gl.glDrawArraysInstanced(gl.GL_TRIANGLE_STRIP, 0, 4,
+                                         len(recs) // 16)
+            gl.glBindVertexArray(self._dummy_vao)
+            gl.glBlendEquation(gl.GL_FUNC_ADD)
+            gl.glDisable(gl.GL_BLEND)
+        if strips:
+            self._stamp_shadow_marks(strips, dp_x, dp_y, s_x, s_y, fb_h,
+                                     scissor_fb=scissor_fb, win_gate=win_gate,
+                                     _batched=False)
+
     def _ensure_shape_state(self) -> None:
         """Lazily create the strip-mark program + streaming VAO/VBO (getattr
         pattern: a hotswap patches methods onto a live instance whose
@@ -2840,8 +3026,11 @@ class TileCacheMasked:
             self._shape_vbo = int(vbo)
 
     def _stamp_shadow_marks(self, shadows, dp_x, dp_y, s_x, s_y, fb_h,
-                            scissor_fb=None, win_gate=True):
+                            scissor_fb=None, win_gate=True, _batched=None):
         """Draw add_shadow() marks into the currently bound R16 mask FBO.
+        Rect marks take the batched path (_stamp_shadow_marks_batched) under
+        Toggles.Melty.batch_shadow_stamps; `_batched=False` is that path
+        handing the strip marks back here.
         Raised marks MAX-blend (can only raise depth), inset marks MIN-blend
         (can only lower it — the recess carve); either way stamping the same
         mark into several masks (tile caches in PASS 4 + the full mask in
@@ -2854,6 +3043,14 @@ class TileCacheMasked:
         tile bakes pass False (cached masks outlive today's overlaps and are
         z-composited by PASS 5). Leaves scissor disabled and blend restored
         to FUNC_ADD/off."""
+        if _batched is None:
+            from src.lsd.gl_gui.toggles import Toggles
+            _batched = bool(Toggles.Melty.batch_shadow_stamps)
+        if _batched:
+            self._stamp_shadow_marks_batched(shadows, dp_x, dp_y, s_x, s_y, fb_h,
+                                             scissor_fb=scissor_fb,
+                                             win_gate=win_gate)
+            return
         gl.glEnable(gl.GL_BLEND)
         gl.glBlendFunc(gl.GL_ONE, gl.GL_ONE)
         gl.glUseProgram(self._prog_shadow_grad)

@@ -370,6 +370,10 @@ class ImGuiBackend:
 # GLFW Callback Backend (event-queued, frame-rate independent)
 # =============================================================================
 
+# input_id -> GLFW button index (ImGuiBackend.MOUSE_BUTTONS inverted).
+_BUTTON_INDEX = {name: i for i, name in ImGuiBackend.MOUSE_BUTTONS.items()}
+
+
 class GlfwQueueBackend:
     """Feeds the InputHandler from GLFW callbacks instead of sampling state once
     per frame.
@@ -405,6 +409,40 @@ class GlfwQueueBackend:
         # Mouse motion (for hover/drag) - only used to defer the background parse
         # while the mouse is busy; chains to whatever imgui registered (if any).
         self._prev_cursor = glfw.set_cursor_pos_callback(window, self._on_move)
+        # The handler asks this before emitting HELD/DRAGGED each frame.
+        from src.lsd.gl_gui.events.input_handler import set_button_probe
+        set_button_probe(self.button_really_down)
+
+    def button_really_down(self, input_id):
+        """The REAL level state of a mouse button, or None for anything that
+        isn't one. Three sources, any of which saying UP wins — after a
+        freeze every single one can be stale on its own:
+          - glfw.get_mouse_button: fed by the same event stream as our
+            callbacks, so it misses the same lost release;
+          - wayland_move.button_masked: a compositor grab (xdg move/resize)
+            swallowed the release and GLFW still reads PRESS;
+          - wayland_move's own wl_pointer `held` set: cleared by the release
+            AND by a pointer `leave` while buttons are held (the compositor
+            broke the implicit grab — the release goes elsewhere, the freeze
+            case), which GLFW never reflects in its button state."""
+        button = _BUTTON_INDEX.get(input_id)
+        if button is None:
+            return None
+        try:
+            if glfw.get_mouse_button(self.window, button) == glfw.RELEASE:
+                return False
+        except Exception:
+            pass
+        try:
+            from src.lsd.gl_gui import wayland_move
+            if wayland_move.button_masked(button):
+                return False
+            held = wayland_move.button_held(button)
+            if held is False:
+                return False
+        except Exception:
+            pass
+        return True
 
     @staticmethod
     def _content_cursor(window):
@@ -545,16 +583,12 @@ class GlfwQueueBackend:
             self.handler.feed_move(mx, my, mx - px, my - py)
         self._prev_mouse_pos = (mx, my)
         # Missed-release guard: the handler's drag capture latches on is_down,
-        # and is_down only clears via feed_up. GLFW RELEASE can be lost (session
-        # restart mid-press reuses the persistent Melty.event_handler and an
-        # exception happens in _on_button), leaving a phantom drag that continues
-        # every frame with no button held. GLFW's own button state is populated
-        # by the same event stream that drives our callbacks, so a
-        # handler-down / glfw-up disagreement can only mean the release was
-        # lost - synthesize it so the capture unlatches cleanly.
+        # and is_down only clears via feed_up. See button_really_down for the
+        # sources of truth; the handler's own process_frame runs the same
+        # probe (button_probe) right before it emits HELD/DRAGGED, so a
+        # phantom drag can't outlive the frame the button is seen up.
         for i, name in ImGuiBackend.MOUSE_BUTTONS.items():
-            if self.handler.is_down(name) and \
-                    glfw.get_mouse_button(self.window, i) == glfw.RELEASE:
+            if self.handler.is_down(name) and self.button_really_down(name) is False:
                 # io.mouse_pos is -FLT_MAX with the cursor off-window; fall
                 # back to the handler's last known position.
                 ux, uy = (mx, my) if mx >= 0 and my >= 0 else self.handler.cursor()

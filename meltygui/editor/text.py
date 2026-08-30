@@ -3881,7 +3881,7 @@ def _lv_line_map(parse_source, buffer_text):
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None, buffer_text=None,
                           sel_lo=None, sel_hi=None, fold_line_map=None,
-                          sel_caret=None):
+                          sel_caret=None, fold_d2b=None):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
@@ -3914,6 +3914,7 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
             line_map = _lv_line_map(_src, buffer_text)
             ds._lv_lmap_src, ds._lv_lmap_buf = _src, buffer_text
             ds._lv_lmap = line_map
+    _bridge = line_map     # the edit bridge alone - the prune below rounds
     if fold_line_map is not None:
         # Folds collapsed: the diff bridge above ran against the FULL buffer
         # (buffer_text=_fold_full at the call site) - it can only describe ONE
@@ -3959,12 +3960,26 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
         span = getattr(node, 'span', None)
         if span is not None and _vis_lo is not None:
             _p0, _p1 = span.start_line, getattr(span, 'end_line', span.start_line)
-            _b0 = line_map(_p0) if line_map else _p0
-            _b1 = line_map(_p1) if line_map else _p1
-            if (_b0 is not None and _b1 is not None
-                    and (_b1 < _vis_lo or _b0 > _vis_hi)):
-                _tvw[1] += 1
-                return
+            # Prune on the BUFFER span through the edit bridge only, then
+            # round it onto visible display lines through the fold table:
+            # first visible line at/after the start, last at/before the
+            # end. The composed line_map returned None for an endpoint
+            # hidden in a collapsed fold, and None read as "visit normally"
+            # — with the diff-mode folds collapsed that walked 4.4k nodes a
+            # frame and pruned 160 (8 ms of every selection frame).
+            _b0 = _bridge(_p0) if _bridge else _p0
+            _b1 = _bridge(_p1) if _bridge else _p1
+            if _b0 is not None and _b1 is not None:
+                if fold_d2b is not None:
+                    _i0 = bisect.bisect_left(fold_d2b, _b0 - 1)
+                    _i1 = bisect.bisect_right(fold_d2b, _b1 - 1) - 1
+                    if _i0 > _i1:
+                        _tvw[1] += 1    # the whole subtree is folded away
+                        return
+                    _b0, _b1 = _i0 + 1, _i1 + 1
+                if _b1 < _vis_lo or _b0 > _vis_hi:
+                    _tvw[1] += 1
+                    return
         if span is not None:
             for ktype, spec in type_specs:
                 if isinstance(node, ktype):
@@ -9484,7 +9499,14 @@ def draw_text(input_value: str, height=None,
             # wherever the fold is now; a key whose fold vanished simply
             # projects to nothing until it reappears. Map stashed on the
             # draw_state for the external writers (fold_project_jump).
-            _fold_range_of = {k: r for r, k in _fold_key_of.items()}
+            # Inverse map memoized on the key map's identity (~2.5k entries
+            # on a big file - rebuilding it every frame was 0.4 ms).
+            _fro = getattr(ds, '_fold_range_of_memo', None)
+            if _fro is not None and _fro[0] is _fold_key_of:
+                _fold_range_of = _fro[1]
+            else:
+                _fold_range_of = {k: r for r, k in _fold_key_of.items()}
+                ds._fold_range_of_memo = (_fold_key_of, _fold_range_of)
             ds._fold_key_of = _fold_key_of
             # Session restore: a brandless draw_state (keys and tuples both
             # unset) gets the persisted fold keys captured last session
@@ -9592,7 +9614,7 @@ def draw_text(input_value: str, height=None,
                      or (Melty.text_focused_ds is not None
                          and getattr(Melty.text_focused_ds, '_tile_id', None)
                          == ds._tile_id))):
-            _rngs = _fold_normalize_ranges(input_value.count('\n') + 1,
+            _rngs = _fold_normalize_ranges(len(_line_starts(input_value)),
                                            fold_ranges)
             _fstarts = _line_starts(input_value)
             # The caret and selection live in DISPLAY coords - last frame's
@@ -9824,8 +9846,14 @@ def draw_text(input_value: str, height=None,
             ds._fold_search_exp_keys = {
                 _fold_key_of[r] for r in ds._fold_search_exp
                 if r in _fold_key_of}
-        _fk = (tuple(tuple(r) for r in fold_ranges),
-               frozenset(ds._fold_collapsed))
+        # The range tuple is memoized on the fold_ranges list's identity:
+        # the scope scan hands the same list every frame (~2.4k ranges on a
+        # big file, so the tuple was 2.3k genexpr calls a frame).
+        _frt = getattr(ds, '_fold_ranges_tuple', None)
+        if _frt is None or _frt[0] is not fold_ranges:
+            _frt = (fold_ranges, tuple(tuple(r) for r in fold_ranges))
+            ds._fold_ranges_tuple = _frt
+        _fk = (_frt[1], frozenset(ds._fold_collapsed))
         _fc = getattr(ds, '_fold_cache', None)
         if _fc is not None and _fc[0] is input_value and _fc[1] == _fk:
             _fold_built = _fc[2]
@@ -10242,7 +10270,7 @@ def draw_text(input_value: str, height=None,
     # click (pre-edit text) and the render (post-edit text) each get a window
     # for their state, but the render loop reuses the click's computation.
     def _window():
-        nlines = text.count('\n') + 1
+        nlines = len(_line_starts(text))
         # Visible line band from the clip rect (Y only) - the SAME live
         # abs_clip_rect + bar_height the draw-cull below uses, so the window
         # always covers exactly the lines that get drawn. A few lines of margin
@@ -10372,7 +10400,7 @@ def draw_text(input_value: str, height=None,
         gutter_w = gutter_digits * char_w + 12.0
     elif show_gutter:
         line_offset = jump_to.start
-        last_line_no = line_offset + text.count('\n') + 1
+        last_line_no = line_offset + len(_line_starts(text))
         gutter_digits = max(len(str(last_line_no)), 2)
         gutter_w = gutter_digits * char_w + 12.0
     else:
@@ -10780,7 +10808,7 @@ def draw_text(input_value: str, height=None,
                              recheck_ms=f"{_ms:.1f}",
                              usage_off=_usage_off,
                              view_start=getattr(jump_to, 'start', None),
-                             view_lines=_fold_full.count('\n') + 1,
+                             view_lines=len(_line_starts(_fold_full)),
                              graph_source=usage_graph_source(
                                  str(_vpath), _file_line, _file_line + 1),
                              pending_gen=PendingSave.pending_gen_for(_vpath),
@@ -10877,7 +10905,7 @@ def draw_text(input_value: str, height=None,
         graph is only the fallback when it resolves nothing under the
         caret."""
         _vpath = getattr(jump_to, 'path', None) if jump_to is not None else None
-        _view_span = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
+        _view_span = (_usage_off + 1, _usage_off + len(_line_starts(_fold_full)))
         _rechecked = False
         # Try roster first (Toggles.TextEditor.SymbolUsages.ctrl_b_roster):
         # textual resolution over pending/live spans - a usage jumps to its
@@ -10951,7 +10979,7 @@ def draw_text(input_value: str, height=None,
             return False
         _l0 = _lss[line]
         _l1 = _lss[line + 1] if line + 1 < len(_lss) else len(text) + 1
-        _vspan = (_usage_off + 1, _usage_off + _fold_full.count('\n') + 1)
+        _vspan = (_usage_off + 1, _usage_off + len(_line_starts(_fold_full)))
         _groups, _seen, _anchor, _names = {}, set(), None, {}
         for _us, _ue, _su, _at_def in _view_usage_spans(_vpath):
             if _us < _l0:
@@ -11812,7 +11840,7 @@ def draw_text(input_value: str, height=None,
                 _dbg[-1]['cursor_moved'] = True
             ds.text_cursor_blink_time = time.time()
             line, col = _index_to_line_col(text, ds.text_cursor_pos)
-            total_lines = text.count('\n')
+            total_lines = len(_line_starts(text)) - 1
             if line < total_lines:
                 ds.text_cursor_pos = _line_col_to_index(text, line + 1, col)
             else:
@@ -12509,7 +12537,14 @@ def draw_text(input_value: str, height=None,
     # plain character count (vcols now covers only the visible window, not the
     # whole buffer); inline widgets widen a line by a couple of cells, so the
     # h-scroll limit can be a hair short on widget-heavy lines - harmless.
-    max_line_width = max((len(l) for l in text.split('\n')), default=0) * char_w
+    # Memoized by text IDENTITY: the buffer object is stable across
+    # selection / caret / scroll frames, so the O(N) scan runs only
+    # when the content actually changes.
+    _mll = getattr(ds, '_max_line_len', None)
+    if _mll is None or _mll[0] is not text:
+        _mll = (text, max(map(len, text.split('\n')), default=0))
+        ds._max_line_len = _mll
+    max_line_width = _mll[1] * char_w
     max_h_scroll = max(0.0, max_line_width - visible_width + 50.0)
     ds.text_h_scroll = max(0.0, min(ds.text_h_scroll, max_h_scroll))
     origin_x = left + gutter_w + gutter_margin - ds.text_h_scroll
@@ -12543,7 +12578,7 @@ def draw_text(input_value: str, height=None,
     # folds / opens the usage picker / places the caret, and a press below
     # the last line puts the caret at the end.
     text_rows_rect = (rect_min_x, max(rect_min_y, origin_y), rect_max_x,
-                      min(rect_max_y, origin_y + (text.count('\n') + 1) * line_px))
+                      min(rect_max_y, origin_y + len(_line_starts(text)) * line_px))
     draw_state.event_rect(("left_mouse_drag", "left_mouse_held"), text_rows_rect)
 
     # Native I-beam over the text rows (gutter, jump bar, scrollbar and the
@@ -12616,10 +12651,12 @@ def draw_text(input_value: str, height=None,
         if (_dt_path is None and (roster_world is not None or roster_table is not None)
                 and isinstance(getattr(ds, '_file_meta', None), str)):
             _dt_path = ds._file_meta
+        _pf("dt:pre")
         _dt_blocks, _dt_spans, _dt_lines, _ = _def_tints(
             ds, _dt_full, _usage_tree, _usage_off, _dt_path,
             vis=_dt_vis, hold_live=roster_live_hold, world=roster_world,
             table=roster_table)
+        _pf("dt:def_tints")
         # Fold remap: def tints resolve against the FULL buffer (keeps the
         # last-good/anchor caches fold-independent); project the back into
         # display coords. Blocks whose head line is visible keep their wash,
@@ -12667,7 +12704,9 @@ def draw_text(input_value: str, height=None,
         # into display coords: a collapsed run's visible header line keeps
         # its paint, clamped to that line so the color can't run past the
         # seam onto whatever follows the fold badge.
+        _pf("dt:fold_remap")
         _dt_comments = _comment_tints(ds, _dt_full)
+        _pf("dt:comment_tints")
         if _fold_bl is not None and _dt_comments:
             _rc = []
             for _c_si, _c_ei, _c_rgb in _dt_comments:
@@ -12690,6 +12729,7 @@ def draw_text(input_value: str, height=None,
             _dt_blocks, _dt_lines, _dt_spans, _dt_comments = (
                 _display_splice_shift(_disp_sp, text, _dt_blocks, _dt_lines,
                                       _dt_spans, _dt_comments))
+        _pf("dt:comment_remap+splice")
         _pf_info['dt_call_ms'] = round((time.perf_counter() - _t_dt) * 1000.0, 1)
         _pf_info['dt_miss'] = _k_dt is not getattr(ds, "_def_tints_key", None)
         _pf_info['dt_n'] = (len(_dt_blocks), len(_dt_lines), len(_dt_spans))
@@ -12805,6 +12845,7 @@ def draw_text(input_value: str, height=None,
                            or getattr(ds, "_dt_line_lens_text", None) is not text):
             _ll = ds._dt_line_lens = [len(_l.rstrip()) for _l in text.split('\n')]
             ds._dt_line_lens_text = text
+        _pf("w:pre_blocks")
         for _bi, (_b_line, _b_idx, _b_end, _b_tint) in enumerate(_dt_blocks):
             if not show_root_backgrounds and _b_lvls and _b_lvls[_bi] == 0:
                 continue  # the embed paints non-symbol backgrounds itself
@@ -13003,9 +13044,11 @@ def draw_text(input_value: str, height=None,
                                        _s_ol[0], _s_ol[1], _s_ol[2],
                                        _dt_sym_ol_a * _s_scale), 3.0,
                                    thickness=_dt_sym_ol_t)
+        _pf("w:lines+spans")
         # Back to the body's text channel for everything after the washes.
         if Melty.channels_split:
             draw_list.channels_set_current(Core.melty.get_channel() + 1)
+    _pf("w:channel")
 
     # Scope guides: a thin vertical line down the head column of every
     # indented block (IntelliJ-style), from the top of the block to
@@ -13065,7 +13108,7 @@ def draw_text(input_value: str, height=None,
             _sg_active = None
             if (Melty.text_focused_ds is ds and ds.text_cursor_pos is not None):
                 _sg_cpos = min(ds.text_cursor_pos, len(text))
-                _sg_cline = text.count('\n', 0, _sg_cpos)
+                _sg_cline = bisect.bisect_right(_line_starts(text), _sg_cpos) - 1
                 _sg_ccol = _sg_cpos - (text.rfind('\n', 0, _sg_cpos) + 1)
                 for _sg_seg in _sg_segments:
                     if _sg_seg[0] > _sg_cline:
@@ -13142,22 +13185,33 @@ def draw_text(input_value: str, height=None,
     if _has_selection(ds):
         sel_color = (*Tint.text_selection()[:3], 0.4)
         lo, hi = _sel_range(ds)
-        lines = text.split('\n')
-        line_abs_start = 0
-        for line_idx, line_text in enumerate(lines):
-            line_abs_end = line_abs_start + len(line_text)
+        # Only the lines the selection touches AND the visible band - the
+        # buffer-wide range+enumerate this replaced cost ~1.5ms a second on a
+        # 12k-line file for every selection drag (memoized line starts →
+        # two bisects, then a range over the visible rows).
+        _starts = _line_starts(text)
+        _n_lines = len(_starts)
+        _first = max(bisect.bisect_right(_starts, lo) - 1,
+                     int((rect_min_y - origin_y) // line_px) - 1, 0)
+        _last = min(bisect.bisect_right(_starts, hi) - 1,
+                    int((rect_max_y - origin_y) // line_px) + 1, _n_lines - 1)
+        sel_u32 = imgui.get_color_u32_rgba(*sel_color)
+        for line_idx in range(_first, _last + 1):
+            line_abs_start = _starts[line_idx]
+            line_abs_end = (_starts[line_idx + 1] - 1
+                            if line_idx + 1 < _n_lines else len(text))
             sy = origin_y + line_idx * line_px
             if (line_abs_end >= lo and line_abs_start <= hi
                     and sy + line_px >= rect_min_y and sy <= rect_max_y):
                 sel_start_in_line = max(0, lo - line_abs_start)
-                sel_end_in_line = min(len(line_text), hi - line_abs_start)
+                sel_end_in_line = min(line_abs_end - line_abs_start,
+                                      hi - line_abs_start)
                 sx = origin_x + _colx(line_abs_start + sel_start_in_line, line_start=line_abs_start)
                 ex = origin_x + _colx(line_abs_start + sel_end_in_line, line_start=line_abs_start)
                 if hi > line_abs_end and line_abs_end >= lo:
                     # selection runs past the newline → extend one cell past EOL
                     ex = origin_x + _colx(line_abs_end, line_start=line_abs_start) + char_w
-                draw_list.add_rect_filled(sx, sy, ex, sy + line_px, imgui.get_color_u32_rgba(*sel_color))
-            line_abs_start = line_abs_end + 1
+                draw_list.add_rect_filled(sx, sy, ex, sy + line_px, sel_u32)
 
     _pf("body:selection")
     # Token-occurrence highlight: when the caret rests on an identifier that
@@ -13981,7 +14035,7 @@ def draw_text(input_value: str, height=None,
                               line_offset=_usage_off, jump_to=jump_to,
                               buffer_text=_tv_buf, sel_lo=_sel_lo,
                               sel_hi=_sel_hi, fold_line_map=_tv_fold_lm,
-                              sel_caret=_sel_caret)
+                              sel_caret=_sel_caret, fold_d2b=_fold_d2b)
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------
@@ -14061,8 +14115,13 @@ def draw_text(input_value: str, height=None,
     # before subsequent passes that append to them (gutter chevrons below, collapsed
     # "N lines" labels in the folding pass above the body).
     ds._fold_badge_rects = []
-    _fold_hdr = ({f[1]: (f[0], f[2]) for f in _fold_folds}
-                 if _fold_folds else {})
+    _fh_c = getattr(ds, '_fold_hdr_cache', None)
+    if _fold_folds and _fh_c is not None and _fh_c[0] is _fold_folds:
+        _fold_hdr = _fh_c[1]     # same fold layout as last frame
+    else:
+        _fold_hdr = ({f[1]: (f[0], f[2]) for f in _fold_folds}
+                     if _fold_folds else {})
+        ds._fold_hdr_cache = (_fold_folds, _fold_hdr)
     if _restore_hdr:
         # Stand-in frames: chevrons replayed throughout the gutter (the fold
         # layer sits restore frames below, so _fold_folds is empty). Range is
@@ -14400,7 +14459,17 @@ def draw_text(input_value: str, height=None,
         _def_tv = token_views.get('def_name') if token_views else None
         _trail_px = (_def_tv.get("trail_cells", 0) * char_w
                      if isinstance(_def_tv, dict) else 0.0)
-        for _rng, _dl, _fcol, _nh, _hlen, _fa, _fhl in _fold_folds:
+        # Folds are in display-line order; bisect to the visible band rather
+        # than the every fold in the file (2.5k in a 12k-line file).
+        _fdl_c = getattr(ds, '_fold_dl_cache', None)
+        if _fdl_c is None or _fdl_c[0] is not _fold_folds:
+            _fdl_c = (_fold_folds, [_f[1] for _f in _fold_folds])
+            ds._fold_dl_cache = _fdl_c
+        _fv0 = int((rect_min_y - origin_y) // line_px) - 2
+        _fv1 = int((rect_max_y - origin_y) // line_px) + 1
+        for _rng, _dl, _fcol, _nh, _hlen, _fa, _fhl in _fold_folds[
+                bisect.bisect_left(_fdl_c[1], _fv0):
+                bisect.bisect_right(_fdl_c[1], _fv1)]:
             _fy = origin_y + _dl * line_px
             if _fy > rect_max_y or _fy + 2 * line_px < rect_min_y:
                 continue
@@ -14448,7 +14517,7 @@ def draw_text(input_value: str, height=None,
     if changed:
         text_height = (text.count('\n') + 1) * line_px + 2
     else:
-        text_height = (input_value.count('\n') + 1) * line_px + 2
+        text_height = len(_line_starts(input_value)) * line_px + 2
 
     # text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
 
@@ -15107,7 +15176,7 @@ def draw_text(input_value: str, height=None,
             and not single_line and not is_search_box and line_px):
         try:
             _clip = draw_state.abs_clip_rect
-            _sn_n = text.count("\n") + 1
+            _sn_n = len(_line_starts(text))
             _sv0 = max(0, min(int((_clip[1] + bar_height - top) / line_px) - 3,
                               _sn_n - 1))
             _sv1 = max(_sv0, min(int((_clip[3] - top) / line_px) + 3, _sn_n - 1))
@@ -15178,7 +15247,7 @@ def draw_text(input_value: str, height=None,
             _bd += f" (tokenize_miss={_pf_tok[0] * 1000.0:.1f}x{_pf_tok[1]})"
         _ptrace("draw_text perf", name=ds.name, total_ms=round(_pf_total_ms, 1),
                 cpu_ms=round((time.thread_time() - _pf_cpu0) * 1000.0, 1),
-                changed=changed, lines=text.count('\n') + 1, breakdown=_bd,
+                changed=changed, lines=len(_line_starts(text)), breakdown=_bd,
                 **_pf_info)
 
     if changed:

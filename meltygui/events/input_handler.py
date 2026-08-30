@@ -133,6 +133,18 @@ class _InputState:
     chord: bool = False
 
 
+# Missed-release safety (InputHandler._reconcile_held). The backend installs
+# a probe `fn(input_id) -> bool | None` via set_button_probe: True/False =
+# the button's REAL level state, None = unknown (not a platform guess, no
+# platform truth). Module-level and hotswap-survive because the handler
+# instance (Melty.event_handler) outlives both hotswaps and studio restarts.
+_BUTTON_PROBE: dict = globals().get("_BUTTON_PROBE") or {"fn": None}
+
+
+def set_button_probe(fn):
+    _BUTTON_PROBE["fn"] = fn
+
+
 _parse_cache: dict[str, tuple[str, str, bool, bool]] = {}  # (input_id, action, inverted, non_blocking)
 _view_id_names_cache: dict[Any, dict[tuple[str, str], str]] = {}
 _view_id_flags_cache: dict[
@@ -289,6 +301,29 @@ class InputHandler:
         self._view_cursor: dict[Any, tuple] = {}   # view_id -> (shape, rect | None)
         self._drag_cursor: dict[str, Any] = {}
         self.cursor_shape = None
+
+    def _reconcile_held(self, t: float):
+        """Drop any press the handler still holds that the platform says is
+        UP. is_down only ever clears through feed_up, and a RELEASE can be
+        lost — a freeze (the compositor breaks the implicit grab and hands the
+        release elsewhere), a restart mid-press reusing the persistent
+        handler, an exception in the button callback. Without this the drag
+        captured on the DOWN fires DRAGGED every frame with nothing held, and
+        the window / selection / column edge stays glued to the cursor.
+        Synthesizing feed_up runs the normal release path (UP, DRAG_RELEASED,
+        capture unlatched, cursor unpinned)."""
+        probe = _BUTTON_PROBE.get("fn")
+        if probe is None:
+            return
+        for input_id, state in list(self._states.items()):
+            if not state.is_down:
+                continue
+            try:
+                really_down = probe(input_id)
+            except Exception:
+                really_down = None
+            if really_down is False:
+                self.feed_up(input_id, self._cursor_x, self._cursor_y, t)
 
     def _state(self, input_id: str) -> _InputState:
         s = self._states.get(input_id)
@@ -637,6 +672,7 @@ class InputHandler:
         result: dict[Any, dict[str, InputEvent]] = {}
         result_by_type: dict[Any, dict[str, InputEvent]] = {}
         t = time.perf_counter()
+        self._reconcile_held(t)
 
         # Build current hover dict with priorities
         current_hovered: dict[Any, tuple[int, frozenset]] = {

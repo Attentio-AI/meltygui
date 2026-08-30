@@ -251,6 +251,20 @@ def render_search(search_ds, draw_state, unique=None, width=None, regrab_focus=T
         imgui.text_colored("", 0.74, 0.5, 0.5, 1.0)
 
 
+def _brightness_clamp_fn():
+    """new_core_view._brightness_clamp through sys.modules (that module
+    imports this one, so the import stays lazy; a dict lookup per call
+    instead of an import statement, and a hotswapped body is still seen)."""
+    module = sys.modules.get("src.lsd.gl_gui.view.core_views.new_core_view")
+    if module is None:
+        from src.lsd.gl_gui.view.core_views import new_core_view as module
+    return module._brightness_clamp
+
+
+# (r, g, b, hovered) → label rgb for flat_button's explicit text_color path
+_TEXT_COLOR_MEMO = globals().get("_TEXT_COLOR_MEMO", {})
+
+
 @window(tint=(0.0, 0.335, 0.772, 1.0))
 def flat_button(label, draw_state, view_id, width=None, height=None,
                 color=(0.533, 0.068, 0.5), tint_value=0.16, text_value=1.023,
@@ -279,10 +293,11 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     cursor position and the owning draw_state."""
     if style_manager is None:
         style_manager = Melty.style_manager
+    scale = Melty.ui_scale        # Melty.px inlined: ~170 calls a frame
     text = str(label).split("##")[0]
     ts = imgui.calc_text_size(text)
-    w = width if width is not None else ts.x + Melty.px(text_pad)
-    h = height if height is not None else ts.y + Melty.px(8.0)
+    w = width if width is not None else ts.x + text_pad * scale
+    h = height if height is not None else ts.y + 8.0 * scale
     x, y = pos if pos is not None else imgui.get_cursor_screen_pos()
     mx, my = imgui.get_mouse_pos()
     if hovered is None:
@@ -302,28 +317,35 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         # they ride an overlay list outside the mark's snapshotted clip.
         # shadow_offset = the lift (depth delta); a smaller one sits the
         # button lower, so e.g. inactive tabs stay under the active tab.
+        rounding = corner_radius * scale
         if shadow and layout:
             add_shadow((x, y, w, h), offset=shadow_offset,
-                       corner_radius=Melty.px(corner_radius))
-        from src.lsd.gl_gui.view.core_views.new_core_view import _brightness_clamp
+                       corner_radius=rounding)
+        clamp = _brightness_clamp_fn()
         bg = style_manager.make_color_rgb(
             color[0], color[1], color[2],
             value=tint_value + (hover_boost if hovered else 0.0),
             factor=factor, saturation_scale=saturation, alpha=1.0)
-        bg = _brightness_clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
+        bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
         dl.add_rect_filled(x, y, x + w, y + h,
                            imgui.get_color_u32_rgba(bg[0], bg[1], bg[2], alpha),
-                           rounding=Melty.px(corner_radius))
+                           rounding=rounding)
     # text_color: use this exact rgb for the label instead of the theme-mix
     # pipeline below — that pipeline only lets text_value/text_saturation
     # touch `factor` worth of the final color (the rest is the raw `color`),
     # so callers needing FULL-range text control (the editor tabs' hsv
     # knobs) pre-compute the color and pass it here. Hover still brightens.
     if text_color is not None:
-        th, tsat, tv = colorsys.rgb_to_hsv(*text_color[:3])
-        if hovered:
-            tv = min(1.0, tv + 0.25)
-        tc = colorsys.hsv_to_rgb(th, tsat, tv)
+        tc_key = (text_color[0], text_color[1], text_color[2], hovered)
+        tc = _TEXT_COLOR_MEMO.get(tc_key)
+        if tc is None:
+            th, tsat, tv = colorsys.rgb_to_hsv(*text_color[:3])
+            if hovered:
+                tv = min(1.0, tv + 0.25)
+            tc = colorsys.hsv_to_rgb(th, tsat, tv)
+            if len(_TEXT_COLOR_MEMO) > 2048:
+                _TEXT_COLOR_MEMO.clear()
+            _TEXT_COLOR_MEMO[tc_key] = tc
     else:
         tc = style_manager.make_color_rgb(
             color[0], color[1], color[2],
@@ -335,7 +357,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     # Optical-centering nudges (same as the fast dock / `button`): glyphs sit
     # low-left of their geometric cell, so shift right and up a hair.
     tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
-    dl.add_text(tx + Melty.px(2.0), y + (h - ts.y) * 0.5 + Melty.px(-1.0),
+    dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
                 imgui.get_color_u32_rgba(tc[0], tc[1], tc[2], 1.0), text)
     # layout=False: draw-only — no dummy (nothing submitted to the window
     # group, so an out-of-flow draw like a DragDrop ghost can't stretch the

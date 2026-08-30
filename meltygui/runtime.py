@@ -558,6 +558,9 @@ class FileWatch:
         save_cst_dict_cache()
 
 
+_RESOLVED_PATH_MEMO = globals().get("_RESOLVED_PATH_MEMO", {})   # str(path) → resolved key (Melty.read_code)
+
+
 class Melty:
 
     draw_state_registry = None
@@ -1053,7 +1056,17 @@ class Melty:
         """File text via code_cache, invalidated by FileWatch on change. Returns
         None on read error. Use for repeated reads of the same source (e.g. the
         symbol-usage index) so an unchanged file isn't re-read every pass."""
-        key = str(Path(path).resolve())
+        # Path.resolve() is a realpath call (syscalls per component); the
+        # roster's _file_changed calls this every frame, so the result is
+        # memoized on the path string (bounded, never invalidated - a
+        # symlink retarget mid-session is not a case this handles).
+        path_str = str(path)
+        key = _RESOLVED_PATH_MEMO.get(path_str)
+        if key is None:
+            key = str(Path(path).resolve())
+            if len(_RESOLVED_PATH_MEMO) > 4096:
+                _RESOLVED_PATH_MEMO.clear()
+            _RESOLVED_PATH_MEMO[path_str] = key
         text = cls.code_cache.get(key)
         if text is None:                       # absent (not an empty file)
             try:

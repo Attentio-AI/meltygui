@@ -113,8 +113,6 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
-
-
 def some_text(input_value: str, draw_state, **kwargs):
     imgui.text(f"Text: {input_value}")
 
@@ -249,6 +247,8 @@ def _edit_distance(a, b, cap):
         prev = cur
     return prev[n]
 
+def print_hello():
+    print("Hello, world!")        
 
 def _word_edits(w, tw, budget):
     """Cost of query word `w` claiming target word `tw`: 0 for an exact
@@ -425,7 +425,7 @@ def _query_terms(q):
     the next term's first letter -- "brightness c" reads as "brightness"
     until "co" lands. When every term is too short the whole query stands
     as one term (matching nothing, like today)."""
-    min_term_chars = 2
+    min_term_chars = 7
     if " " not in q and "\t" not in q:
         return (q,)
     out = []
@@ -2634,7 +2634,6 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
                 scores[id(hit)] = (_dist, _prefix, _terms)
     return out
 
-
 def _dismiss_global_search():
     """Close the GlobalSearch window and release the box's text focus — called
     after a result is activated (clicked or Enter), so picking a result also
@@ -4652,7 +4651,6 @@ def draw_with_modes(input_value, modes, tab_state: TabState = None, search_text=
 
     return changed, value
 
-
 @render_func
 def draw_draw_state(input_value, **kwargs):
     pass
@@ -6205,6 +6203,8 @@ def compute_bg_color(bg_offset=0, tint=None, nested_bg=False, max_bg_depth=None,
     return _clamp_bg_value(bg_color, max_bg_value)
 
 
+
+
 @window
 def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset=0,
             outline=True, bg_color=None, opacity=0.0,
@@ -6314,21 +6314,32 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # ── Background bleed color ─────────────────────────────────
     bleed_factor = bleed_mix['nested'] if nested_bg else bleed_mix['default']
 
-    bleed_base = Core.melty.get_bg_color(-2)
-    bleed_color = style_manager.make_custom_styled(
-        *bleed_base, input=bg_style, **bleed_style,
-    )
-    bleed_base = mix(*Core.melty.get_bg_color(-1)[:3], *bleed_color[:3], 0.32)
-    bleed_color = style_manager.make_custom_styled(
-        *bleed_base, input=bg_style, **bleed_style,
-    )
-
-    # ── Outline rendering ──────────────────────────────────────
+    # The bleed / outline colours are a pure function of the style manager,
+    # the two bg-stack colours behind this box and a few scalars - memoized,
+    # since ~40 draw_bg calls a frame (inline widgets, flat buttons) each
+    # require four hsv round trips for the same handful of params.
+    bg_m2 = Core.melty.get_bg_color(-2)
+    bg_m1 = Core.melty.get_bg_color(-1)
     outline_value = max(min_value, depth_intensity * depth_mul + outline_base + hover_offset)
-    outline_color = style_manager.make_color_style_value(
-        input=bg_style, saturation=sat, value=outline_value,
-    )
-    outline_color = mix_colors(outline_color, bleed_color, outline_bleed_mix)
+    colour_key = (style_manager.hsv, bg_m2, bg_m1, outline_value, sat)
+    memo = _DRAW_BG_COLOUR_MEMO.get(colour_key)
+    if memo is None:
+        bleed_color = style_manager.make_custom_styled(
+            *bg_m2, input=bg_style, **bleed_style,
+        )
+        bleed_base = mix(*bg_m1[:3], *bleed_color[:3], 0.32)
+        bleed_color = style_manager.make_custom_styled(
+            *bleed_base, input=bg_style, **bleed_style,
+        )
+        # ── Outline rendering ──────────────────────────────────────
+        outline_color = style_manager.make_color_style_value(
+            input=bg_style, saturation=sat, value=outline_value,
+        )
+        outline_color = mix_colors(outline_color, bleed_color, outline_bleed_mix)
+        if len(_DRAW_BG_COLOUR_MEMO) > 2048:
+            _DRAW_BG_COLOUR_MEMO.clear()
+        memo = _DRAW_BG_COLOUR_MEMO[colour_key] = (bleed_color, outline_color)
+    bleed_color, outline_color = memo
 
     if outline:
         packed_outline = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
@@ -6356,6 +6367,10 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
 
     return False, bg_color
+
+
+# (style hsv, bg colour −2, bg colour −1, outline value, sat) → (bleed, outline)
+_DRAW_BG_COLOUR_MEMO = globals().get("_DRAW_BG_COLOUR_MEMO", {})
 
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
@@ -7469,11 +7484,164 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
     return changed, input_value
 
 
+def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
+                    outline=False, info=None, priority_delta=4):
+    """draw_tuple's colour chip for immediate-mode bodies (the code editor's
+    tab bar) — the fast_dock idea: no render_func / imgui widget per chip,
+    the swatch goes straight to the draw list and the click is a plain
+    `draw_state.on_action` sub on the chip's rect, so a bar of N tabs pays
+    N rects instead of N wrapper calls. The picker is the same
+    `draw_color_picker` POPOVER draw_tuple opens; several chips share one
+    draw_state, so the open one is `draw_state._tint_edit_key == view_id`
+    (beside Melty.popover_focused_ds, which names the draw_state). `x`/`y`
+    default to the current cursor screen position; the chip claims no
+    layout. Returns (changed, value) like draw_tuple."""
+    # [tint=(0.85, 0.75, 0.05)]
+    corner_radius = 4.0
+    # [tint=(0.85, 0.75, 0.05)]
+    outline_color = (1.0, 1.0, 1.0, 0.55)
+    # The checker under a translucent chip (draw_tuple's COLOR_PREVIEW_HALF).
+    checker_dark, checker_light = (0.25, 0.25, 0.25), (0.6, 0.6, 0.6)
+
+    changed = False
+    if x is None or y is None:
+        cx, cy = imgui.get_cursor_screen_pos()
+        x = cx if x is None else x
+        y = cy if y is None else y
+    rect = (x, y, x + size, y + size)
+    draw_list = imgui.get_window_draw_list()
+
+    is_color = (isinstance(input_value, tuple) and len(input_value) in (3, 4)
+                and all(isinstance(c, (float, int)) for c in input_value))
+    if not is_color:
+        # Missing tint: a hollow chip; a click stamps in an opaque black.
+        draw_list.add_rect(x, y, x + size, y + size,
+                           imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.35),
+                           rounding=corner_radius)
+        if draw_state.on_action("left_mouse_down", view_id=view_id, rect=rect,
+                                priority_delta=priority_delta) is not None:
+            request_render()
+            return True, (0.0, 0.0, 0.0, 1.0)
+        return False, input_value
+
+    r, g, b = float(input_value[0]), float(input_value[1]), float(input_value[2])
+    alpha = float(input_value[3]) if len(input_value) == 4 else 1.0
+    if alpha < 1.0:
+        # Left half: colour over a checkerboard at its real alpha; right
+        # half: the colour opaque - so transparency shows in the chip.
+        half = x + size * 0.5
+        draw_list.add_rect_filled(x, y, half, y + size,
+                                  imgui.get_color_u32_rgba(*checker_dark, 1.0),
+                                  rounding=corner_radius,
+                                  flags=imgui.DRAW_ROUND_CORNERS_LEFT)
+        cell = size * 0.5
+        draw_list.add_rect_filled(x + cell * 0.5, y, half, y + cell * 0.5,
+                                  imgui.get_color_u32_rgba(*checker_light, 1.0))
+        draw_list.add_rect_filled(x, y + cell * 0.5, x + cell * 0.5, y + size,
+                                  imgui.get_color_u32_rgba(*checker_light, 1.0))
+        draw_list.add_rect_filled(x, y, half, y + size,
+                                  imgui.get_color_u32_rgba(r, g, b, alpha),
+                                  rounding=corner_radius,
+                                  flags=imgui.DRAW_ROUND_CORNERS_LEFT)
+        draw_list.add_rect_filled(half, y, x + size, y + size,
+                                  imgui.get_color_u32_rgba(r, g, b, 1.0),
+                                  rounding=corner_radius,
+                                  flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
+    else:
+        draw_list.add_rect_filled(x, y, x + size, y + size,
+                                  imgui.get_color_u32_rgba(r, g, b, 1.0),
+                                  rounding=corner_radius)
+    if outline:
+        draw_list.add_rect(x - 1.5, y - 1.5, x + size + 1.5, y + size + 1.5,
+                           imgui.get_color_u32_rgba(*outline_color),
+                           rounding=corner_radius)
+
+    # `owner`: this chip last opened the popover. It stays the owner past an
+    # outside click / Esc / re-render (which clears the slot), so it can draw
+    # the for ONE more frame with closed=True - a nested window is only
+    # hidden on a frame it is drawn) - before letting go.
+    # draw_tuple's difference: the popover slot holds a draw_state whose
+    # ancestor closure is protected from the click's clear_focus. In
+    # draw_tuple that's the chip's OWN draw_state; here every chip shares
+    # the host's (the whole editor is its closure - nothing outside the
+    # picker could ever close it), so the slot is the PICKER WINDOW's
+    # draw_state (its own closure = the picker) once it opens, and the
+    # host only for the opening frame (protected by the popover grace).
+    owner = getattr(draw_state, "_tint_edit_key", None) == view_id
+    picker_name = f"color_picker{view_id}"
+    picker_ds = None
+    if owner:
+        for nested in Melty.root_draw_states.get(draw_state.id, ()):
+            if getattr(nested, "name", None) == picker_name:
+                picker_ds = nested
+                break
+    is_open = owner and Melty.popover_focused_ds is not None and (
+        Melty.popover_focused_ds is draw_state
+        or Melty.popover_focused_ds is picker_ds)
+    if draw_state.on_action("left_mouse_down", view_id=view_id, rect=rect,
+                            priority_delta=priority_delta) is not None:
+        if is_open:
+            Melty.popover_focused_ds = None
+        else:
+            Melty.popover_focused_ds = draw_state
+            draw_state._tint_edit_key = view_id
+            Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+            owner = True
+        is_open = not is_open
+        draw_state.invalidate()
+        request_render()
+    if not owner:
+        return False, input_value
+
+    # ---- the picker popover: drawn while owned, closed once not open ----
+    _info = (info() if callable(info) else info) if is_open else None
+    picker_h = 180 + 14 + 4 * 26 + 26 + (22 if _info else 0)
+    # Anchor under the chip; flip up past the display bottom (draw_tuple).
+    _pop_y = 10
+    _disp_h = imgui.get_io().display_size[1]
+    if y + size + _pop_y + picker_h > _disp_h - 10:
+        _pop_y = -(picker_h + 38)
+    imgui.set_cursor_screen_pos((x, y + size))
+    color_changed, new_color = draw_color_picker(
+        input_value, name=picker_name, closed=not is_open,
+        window_pos=(0, _pop_y), info=_info, parent_window=draw_state,
+        width=216, height=picker_h, mode=Modes.POPOVER)
+    if is_open and Melty.popover_focused_ds is draw_state:
+        # Hand the slot from the host to the picker window now that it is
+        # registered (same frame, under the opening grace).
+        for nested in Melty.root_draw_states.get(draw_state.id, ()):
+            if getattr(nested, "name", None) == picker_name:
+                Melty.popover_focused_ds = nested
+                break
+    if not is_open:
+        draw_state._tint_edit_key = None
+        draw_state.invalidate()
+        request_render()
+        return False, input_value
+    if color_changed:
+        input_value = tuple(new_color) if new_color is not None else None
+        changed = True
+        request_render()
+    if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
+        Melty.popover_focused_ds = None
+        request_render()
+    # Keep re-rendering while a slider/square drag is live.
+    if Melty.imgui_any_item_active or imgui.is_mouse_down(0):
+        Melty.cache.invalidate_up(draw_state._tile_id, max_depth=10, force=True)
+        request_render()
+    return changed, input_value
+
+
 class TestClass(DictConversion):
     def __init__(self):
         super().__init__()
         self.value = 2
         self.str_val = "Test"
+
+
+
+
+
 
 
 @render_func
@@ -7588,8 +7756,8 @@ def draw_mapping_proxy(input_value):
         return False, input_value
 
     return changed, input_value
-
-
+    
+    
 @render_func(wraps=render_func, show_add_delete=False, with_header=draw_header)
 def eval_function(input_value, draw_state):
     signature = inspect.signature(input_value)
@@ -8338,10 +8506,10 @@ class _SourceItem(str):
 
 _ACTIVE_SRC_TINT = (0.9, 0.8, 0.2)
 
-# Per-key override kwargs carried by the collection dict itself (core_render's
-# __getitem__ path): the info tab's 'header' group starts collapsed -
-# 'initial' only applies on the child's first frames, so the chevron click
-# works normally. The dunder key never renders (underscore-skipped).
+# Multi-key child kwargs carried by the collection dict itself (it's
+# __overrides__ path): the info tab's 'header' group starts collapsed —
+# `initial` only applies on the child's first frames, so the chevron still
+# works afterwards. The dunder key never renders (underscore-skipped).
 _INFO_GROUP_OVERRIDES = {"__header__": {"initial": {"expanded": False}}}
 
 
