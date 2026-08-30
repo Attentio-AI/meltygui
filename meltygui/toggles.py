@@ -432,13 +432,17 @@ class Swoosh:
                                        # the rect, then drop off; 1 = linear)
 
 
-@window(tint=(0.78, 0.41, 0.13))
+@window(tint=(0.27, 0.19, 0.14))
 class Toggles:
 
     @defaults(tint=(0.811, 0.59, 0.29))
     class TextEditor:
 
         some_list = [63,-70,276]
+        
+        some_new_dict= {
+            "key": ""
+        }
 
         enable_spell_check = False
         # Long-line token clipping (_window_tokens band): a line longer
@@ -770,47 +774,47 @@ class Toggles:
                 Snippet("brown", "tint=(0.45, 0.28, 0.12)", "", tint=(0.45, 0.28, 0.12)),
             ],
 
-            ("white", "("): [
+            ("white", "(1"): [
                 Snippet("", "(1.0, 1.0, 1.0, 1.0)", ""),
             ],
-            ("black", "("): [
+            ("black", "(0"): [
                 Snippet("", "(0.0, 0.0, 0.0, 1.0)", "", tint=(0.05, 0.05, 0.05)),
             ],
-            ("blue", "("): [
+            ("blue", "(0."): [
                 Snippet("", "(0.071, 0.354, 0.511)", "", tint=(0.071, 0.354, 0.511)),
 
             ],
-            ("red", "("): [
+            ("red", "(0."): [
                 Snippet("", "(0.72, 0.11, 0.11)", "", tint=(0.72, 0.11, 0.11)),
             ],
-            ("green", "("): [
+            ("green", "(0."): [
                 Snippet("", "(0.13, 0.55, 0.13)", "", tint=(0.13, 0.55, 0.13)),
             ],
-            ("orange", "("): [
+            ("orange", "(0."): [
                 Snippet("", "(0.85, 0.45, 0.05)", "", tint=(0.85, 0.45, 0.05)),
             ],
-            ("yellow", "("): [
+            ("yellow", "(0."): [
                 Snippet("", "(0.85, 0.75, 0.05)", "", tint=(0.85, 0.75, 0.05)),
             ],
-            ("purple", "("): [
+            ("purple", "(0."): [
                 Snippet("", "(0.45, 0.15, 0.60)", "", tint=(0.45, 0.15, 0.60)),
             ],
-            ("teal", "("): [
+            ("teal", "(0."): [
                 Snippet("", "(0.05, 0.55, 0.55)", "", tint=(0.05, 0.55, 0.55)),
             ],
-            ("pink", "("): [
+            ("pink", "(0."): [
                 Snippet("", "(0.90, 0.40, 0.60)", "", tint=(0.90, 0.40, 0.60)),
             ],
-            ("gray", "("): [
+            ("gray", "(0."): [
                 Snippet("", "(0.5, 0.5, 0.5)", "", tint=(0.5, 0.5, 0.5)),
             ],
-            ("cyan", "("): [
+            ("cyan", "(0."): [
                 Snippet("", "(0.05, 0.70, 0.85)", "", tint=(0.05, 0.70, 0.85)),
             ],
-            ("magenta", "("): [
+            ("magenta", "(0."): [
                 Snippet("", "(0.80, 0.10, 0.80)", "", tint=(0.80, 0.10, 0.80)),
             ],
-            ("brown", "("): [
+            ("brown", "(0."): [
                 Snippet("", "(0.45, 0.28, 0.12)", "", tint=(0.45, 0.28, 0.12)),
             ],
 
@@ -1556,7 +1560,7 @@ class Toggles:
         ini_save = False
 
 
-    @defaults(tint=(0.36, 0.56, 0.44))
+    @defaults(tint=(0.04, 0.05, 0.07))
     class CodeEditor:
         # Record navigation (file tab switches, jump-to, split open/close)
         # onto NavUndo's own stack - separate from the Ctrl+Z edit history.
@@ -1642,8 +1646,8 @@ class Toggles:
         take_arrow_alpha = 1.0
         # ── Editor tab bar (open_files.draw_code_editor) ──
         # Styling knobs for the file tabs, read live per frame. The ACTIVE
-        # tab draws a tinted bg + text; INACTIVE tabs are label-only, so
-        # only their text knobs apply.
+        # tab draws a tinted bg + text; INACTIVE tabs draw a MUTED bg
+        # (the tab_inactive_bg_* knobs below) plus their own text knobs.
         #
         # The bg pair feeds flat_button's theme-mix pipeline (value /
         # saturation_scale of make_color_rgb).
@@ -1656,6 +1660,23 @@ class Toggles:
         # knob tops out here.
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
         tab_active_bg_max_brightness = 0.31
+        # Inactive-tab bg: the same theme-mix pipeline, muted — lower
+        # brightness / saturation and a cap well under the active tab's so
+        # the selected tab still reads first. Alpha 0 = no bg at all.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        tab_inactive_bg_brightness = 0.30
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        tab_inactive_bg_saturation = 0.45
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tab_inactive_bg_max_brightness = 0.08
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tab_inactive_bg_alpha = 0.6
+        # Shadow lift (add_shadow offset) of the tab bgs — keep the inactive
+        # one under the active so the selected tab pops out.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tab_active_shadow_offset = 2.0
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tab_inactive_shadow_offset = 0.21
         # The text pairs are FULL-RANGE hsv multipliers applied directly to
         # each tab's tint (open_files._tab_text_color → flat_button
         # text_color): brightness scales hsv value (0 = black, 1 = the

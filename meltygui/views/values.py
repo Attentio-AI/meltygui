@@ -67,6 +67,7 @@ from src.lsd.gl_gui.view.core_views.text_editor import draw_text, _scroll_into_v
 from src.lsd.gl_gui.view.core_views.search_glow import draw_search_highlight
 from src.shader_library.shader_manager.texture_manager import PendingTexture
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from src.lsd.gl_gui.view.core_conversion.symbol_roster import pass_scope
 
 
 @render_func(use_cache=True, show_bg=True, width=20, height=22, tile_mode=TileMode.MAX,
@@ -83,8 +84,8 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
     file_name_truncated = Path(input_value.f_code.co_filename).name
     imgui.text(f"{file_name_truncated}:{input_value.f_lineno} in {input_value.f_code.co_name}")
 
-    # Jump-to-error: open the frame's source file at the failing line. Same
-    # threaded open_in_intellij pattern the jump-to-caller button uses.
+  
+    # threaded open_in_intellij pattern the jump-to-calling button uses.    # Jump-to-error: open the frame's source file at the failing line. Same
     if button(f"{file_name_truncated}:{input_value.f_lineno}",
               height=30, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
@@ -112,6 +113,10 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
 def draw_module(input_value: types.ModuleType, draw_state, **kwargs):
     imgui.text(f"Module: {input_value.__name__}")
 
+
+
+def some_text(input_value: str, draw_state, **kwargs):
+    imgui.text(f"Text: {input_value}")
 
 @render_func(is_default_for=(type), tint=(0.928, 0.836, 0.655, 0.308), use_cache=True,
              header_single_line=True, show_name=True, temp=True, is_tree=False, shadow=False,
@@ -320,6 +325,7 @@ def _segment_match(q, twords, budget):
 
     rec(0, 0)
     return best[0]
+
 
 def _word_match(q, qws, twords, budget):
     """Total edit cost of query `q` (lowercased; `qws` its words) against a
@@ -6050,6 +6056,7 @@ bg_style_default = {
     "alpha": 1.0,
     'max_value': 1.0
 }
+
 
 
 def get_bg_color(depth, rounding, style_manager, auto_resize):

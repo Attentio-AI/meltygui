@@ -259,7 +259,8 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 hover_text_boost=2.2, max_bg_brightness=0.25,
                 event="left_mouse_clicked", text_offset_x=None,
                 style_manager=None, layout=True, draw_list=None,
-                shadow=True, text_color=None, pos=None, hovered=None, **kwargs):
+                shadow=True, shadow_offset=2.0, text_color=None, pos=None,
+                hovered=None, **kwargs):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
     rect + centered label straight to the draw list, hover from the live
@@ -299,8 +300,11 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         # (alpha=0, e.g. inactive tabs) cast nothing, matching the old
         # per-call-site marks. layout=False draw-only ghosts skip it too —
         # they ride an overlay list outside the mark's snapshotted clip.
+        # shadow_offset = the lift (depth delta); a smaller one sits the
+        # button lower, so e.g. inactive tabs stay under the active tab.
         if shadow and layout:
-            add_shadow((x, y, w, h), corner_radius=Melty.px(corner_radius))
+            add_shadow((x, y, w, h), offset=shadow_offset,
+                       corner_radius=Melty.px(corner_radius))
         from src.lsd.gl_gui.view.core_views.new_core_view import _brightness_clamp
         bg = style_manager.make_color_rgb(
             color[0], color[1], color[2],

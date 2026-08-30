@@ -48,6 +48,7 @@ COLORS = {
     'def': _hex('#cc7832'),  # bare `def` keyword - own key so token_views can target defs
     'operator_word': _hex('#cc7832'),  # Operator.Word (and, or, not, in, is)
     'builtin_pseudo': _hex('#94558d'),  # Name.Builtin.Pseudo (self, cls)
+    'builtin': _hex('#8888c6'),  # Name.Builtin (len, isinstance, str, Exception, ...) - Darcula's purple
     'def_name': _hex('#56a8f5'),  # Name.Function (declaration) - IntelliJ Dark blue
     'decorator': _hex('#bbb529'),  # Name.Decorator
     'string': _hex('#6a8759'),  # String
@@ -82,6 +83,12 @@ KEYWORD_CONSTS = {'True', 'False', 'None'}
 OPERATOR_WORDS = {'and', 'or', 'not', 'in', 'is'}
 
 BUILTIN_PSEUDO = {'self', 'cls'}
+
+# Every builtin function / type / exception (`len`, `isinstance`, `str`,
+# `frozenset`, `Exception`, ...) colors light purple. Not the dunders
+# (`__import__`) and not the keyword constants, those keep their own kinds.
+BUILTINS = frozenset(n for n in dir(_builtins)
+                     if not n.startswith('_') and n not in KEYWORD_CONSTS)
 
 WORD_DELIMITERS = ' \t\n\r,.;:!?()[]{}\'\"=+-*/<>@#$%^&|~`\\'
 
@@ -6747,6 +6754,10 @@ def _tokenize_raw(text):
                 yield word, 'builtin_pseudo'
             elif after_def:
                 yield word, 'def_name'
+            elif word in BUILTINS and not (i > 0 and text[i - 1] == '.'):
+                # `len(x)` but not `foo.len` - an attribute named after a
+                # builtin is the object's own, not the builtin.
+                yield word, 'builtin'
             else:
                 yield word, 'default'
             after_def = word == 'def'
@@ -7958,6 +7969,17 @@ def _word_under_cursor(text, pos):
     return start, end, text[start:end]
 
 
+def _is_highlightable_word(word):
+    """True for a word the caret token-match wash should light: a plain
+    identifier. Keywords, `True`/`False`/`None`, `and`/`or`/`not`/`in`/`is`
+    and number literals (a leading digit — `_word_under_cursor` lumps digits
+    into 'word') are not symbols and never highlight."""
+    if not word or word[0].isdigit():
+        return False
+    return not (word in KEYWORDS or word in KEYWORD_CONSTS
+                or word in OPERATOR_WORDS or word in _PY_KEYWORDS)
+
+
 def _word_match_ranges(text, word):
     """Whole-word (identifier-bounded) occurrences of `word` in `text` as
     (start, end) ranges — a dumb, case-sensitive character match that ignores
@@ -8093,6 +8115,82 @@ def _code_tree_errors(code_tree):
         if code_tree.get('__error__'):
             return [(int(code_tree.get('__line__') or 1), str(code_tree['__error__']))]
     return []
+
+
+def _top_level_chunks(lines):
+    """Start indices of the top-level statement chunks of dedented `lines`:
+    a column-0 line at bracket depth 0 (strings / comments skipped), and
+    always a `def` / `class` / `@` / `import` / `from` line (they can't sit
+    inside a bracket, so an unclosed one above stops swallowing the file).
+    A decorator run joins the def below it."""
+    starts = []
+    depth = 0
+    quote = None
+    deco_open = False     # the current chunk is a decorator run awaiting its def
+    for idx, ln in enumerate(lines):
+        head = ln[:1]
+        if head and not head.isspace() and head not in ')]}#' and quote is None:
+            if depth == 0 or ln.startswith(('def ', 'class ', '@', 'import ', 'from ', 'async def ')):
+                depth = 0
+                quote = None
+                is_def = ln.startswith(('def ', 'class ', 'async def '))
+                if deco_open:
+                    deco_open = not is_def      # join; a def closes the run
+                else:
+                    starts.append(idx)
+                    deco_open = ln.startswith('@')
+        k, n = 0, len(ln)
+        while k < n:
+            c = ln[k]
+            if quote is None:
+                if c == '#':
+                    break
+                if ln.startswith(('"""', "'''"), k):
+                    quote = ln[k:k + 3]
+                    k += 3
+                    continue
+                if c in '"\'':
+                    quote = c
+                elif c in '([{':
+                    depth += 1
+                elif c in ')]}':
+                    depth = max(0, depth - 1)
+            elif c == '\\':
+                k += 1
+            elif ln.startswith(quote, k):
+                k += len(quote)
+                quote = None
+                continue
+            k += 1
+        if quote is not None and len(quote) == 1:
+            quote = None      # a single-quoted string never spans lines
+    return starts
+
+
+def _compile_check_more(text, first_error, max_more=8):
+    """Further SyntaxErrors beside `first_error` (compile() reports only one,
+    and not the topmost): compile every top-level chunk (`_top_level_chunks`)
+    on its own and collect one error per chunk, in line order, skipping the
+    chunk that holds the first error. `lineno`s are in `text`'s coordinates.
+    A chunk cut mid-construct can report a spurious error; rare in practice."""
+    import textwrap
+    from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
+    lines = textwrap.dedent(text).split('\n')
+    starts = _top_level_chunks(lines)
+    first_ln = getattr(first_error, 'lineno', None) or 0
+    found = []
+    for n, s0 in enumerate(starts):
+        s1 = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        if s0 < first_ln <= s1:
+            continue
+        err = _compile_check('\n'.join(lines[s0:s1]))
+        if err is None or getattr(err, 'lineno', None) is None:
+            continue
+        err.lineno = err.lineno + s0
+        found.append(err)
+        if len(found) >= max_more:
+            break
+    return found
 
 
 def _exception_errors(error):
@@ -9856,6 +9954,11 @@ def draw_text(input_value: str, height=None,
         # full text, never the fold-spliced display text.
         if _fs is not None and _fs[0] is _fold_full and _fs[1] is not None:
             _err_markers = _exception_errors(_fs[1])
+            # Errors past the first (see _compile_check_more), THIS buffer.
+            _fx = getattr(ds, '_fast_err_extra', None)
+            if _fx is not None and _fx[0] is _fold_full:
+                for _xe in _fx[1]:
+                    _err_markers += _exception_errors(_xe)
             _fast_fresh_err = True
     # Import quick-fix bookkeeping. `_qf_fixes` maps line → candidate import
     # statements, fed from the SEPARATE suggestions channel (`import_fixes`,
@@ -12979,9 +13082,21 @@ def draw_text(input_value: str, height=None,
     if (is_focused and not is_search_box and highlight_token_matches
             and Toggles.TextEditor.highlight_token_matches):
         _tok = _word_under_cursor(text, ds.text_cursor_pos)
+        # Only IDENTIFIERS light up: keywords (`if`, `None`, `del`), number
+        # literals and a caret inside a string / comment wash nothing, and a
+        # token that sits inside a string or comment is dropped - the lexer
+        # state comes from the same incremental line_open the tokenizer keeps,
+        # so each check scans only its own line (see _line_lex_at).
+        if _tok is not None and _is_highlightable_word(_tok[2]):
+            _lo_offs, _lo_open = _ac_lex_state(ds, text)
+            if _pos_in_string_or_comment(text, _tok[0], _lo_offs, _lo_open):
+                _tok = None
+        else:
+            _tok = None
         if _tok is not None:
             _t_start, _t_end, _t_word = _tok
-            _ranges = _word_match_ranges(text, _t_word)
+            _ranges = [r for r in _word_match_ranges(text, _t_word)
+                       if not _pos_in_string_or_comment(text, r[0], _lo_offs, _lo_open)]
             # Only when the token recurs (its own occurrence plus at least one
             # other) - so the caret's own occurrence is washed too.
             if len(_ranges) > 1:
@@ -13092,18 +13207,22 @@ def draw_text(input_value: str, height=None,
 
 
 
-    # Parse/compile-error line highlight from the routed code_tree or a routed
-    # exception: a translucent red band spanning the offending line, drawn under
-    # the glyphs so the code stays readable. The message itself floats in a
-    # small box above the error line (drawn after the body), not over it.
-    if _err_markers:
-        err_bg = (0.824, 0.157, 0.157, 0.431)  # translucent red
-        for err_line, _msg in _err_markers:
-            ey0 = origin_y + (err_line - 1) * line_px
+    # Parse/semantic messages: each marker is a red button in the GUTTER over
+    # its line number (see the gutter pass - `_err_by_line`), clamped to the
+    # view's top / bottom with an arrow when the line is off screen. Only the
+    # CLICKED marker (`ds._err_open_line`) washes its line red - under the
+    # glyphs, with its message box beside it - so errors stay out of the way
+    # while scrolling.
+    _err_open_ln = getattr(ds, '_err_open_line', None)
+    if _err_markers and _err_open_ln is not None:
+        # [tint=(0.95, 0.25, 0.25)]
+        error_line_wash = (0.824, 0.157, 0.157, 0.431)
+        if any(err_line - 1 == _err_open_ln for err_line, _msg in _err_markers):
+            ey0 = origin_y + _err_open_ln * line_px
             ey1 = ey0 + line_px
-            if ey1 < rect_min_y or ey0 > rect_max_y:
-                continue
-            draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1, imgui.get_color_u32_rgba(*err_bg))
+            if not (ey1 < rect_min_y or ey0 > rect_max_y):
+                draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1,
+                                          imgui.get_color_u32_rgba(*error_line_wash))
     # Import quick-fix affordance: every symbol an import would bind wears a
     # translucent yellow underline, and the floating Alt+Enter hint appears at
     # the end of the line only when the mouse is over one of those underlined
@@ -13907,11 +14026,87 @@ def draw_text(input_value: str, height=None,
         _gl0 = max(0, int((gutter_top - origin_y) // line_px))
         _gl1 = min(total_lines, int((rect_max_y - origin_y) // line_px) + 2)
 
+        # Error buttons: one per marker line, red flat_button with the
+        # warning glyph over the number. Off-screen markers still show —
+        # clamped to the strip's top / bottom row with an arrow toward the
+        # line (see _draw_error_button). A click toggles the message box
+        # (`ds._err_open_line`); the box also closes when its marker goes.
+        # [tint=(0.95, 0.25, 0.25)]
+        error_button_color = (0.85, 0.12, 0.14)
+        # Bg brightness knobs: flat_button's theme mix + clamp mute a bg to
+        # 0.25 brightness by default - lifted here so the chip reads RED.
+        error_button_value = 0.45
+        error_button_max_brightness = 0.6
+        # [tint=(1.0, 0.75, 0.72)]
+        error_icon_color = (1.0, 0.80, 0.78, 1.0)
+        error_icon = "\uf071"
+        error_up_icon = "\uf077"
+        error_down_icon = "\uf078"
+        _err_by_line = {}
+        for _el, _em in _err_markers:
+            _err_by_line.setdefault(_el - 1, _em)
+        if (getattr(ds, '_err_open_line', None) is not None
+                and ds._err_open_line not in _err_by_line):
+            ds._err_open_line = None
+
+        def _draw_error_button(line_idx, ly, x1, arrow=None):
+            """The marker's gutter button at row `ly` — its own line, or the
+            clamped top / bottom row with `arrow` = up / down glyph, where
+            the arrow is its OWN button (left) that scrolls the error line
+            into view (centered), next to the error button proper."""
+            from src.lsd.gl_gui.view.core_views.headers import flat_button
+            _eb_x0 = left + _lv_btn_w + 2.0
+            _eb_h = max(6.0, line_px - 4.0)
+            _eb_save = imgui.get_cursor_screen_pos()
+            if arrow is not None:
+                _ar_w = max(10.0, (x1 - _eb_x0) * 0.4)
+                imgui.set_cursor_screen_pos((_eb_x0, ly + (line_px - _eb_h) * 0.5))
+                ds._plain_tv_rects.append((_eb_x0, ly, _eb_x0 + _ar_w, ly + line_px))
+                if flat_button(f"{arrow}##{ds.name}errgo{line_idx}", ds,
+                               f"errgo::{line_idx}", width=_ar_w, height=_eb_h,
+                               color=error_button_color, corner_radius=4.0,
+                               shadow=True, text_pad=1,
+                               tint_value=error_button_value,
+                               max_bg_brightness=error_button_max_brightness,
+                               text_color=error_icon_color):
+                    # Center the error line (the Ctrl+B goto's math: an
+                    # offset in tile coords, capped at the max scroll).
+                    _target = (line_idx * line_px
+                               - max(0.0, (ds.height or 0) - line_px) * 0.5)
+                    _mx = getattr(ds, '_max_scroll_y', None)
+                    if _mx is not None:
+                        _target = min(_target, _mx)
+                    ds.scroll_offset = (ds.scroll_offset[0], max(0.0, _target))
+                    ds.invalidate()
+                    request_render()
+                _eb_x0 += _ar_w + 2.0
+            _eb_w = max(12.0, x1 - _eb_x0)
+            _eb_label = error_icon
+            imgui.set_cursor_screen_pos((_eb_x0, ly + (line_px - _eb_h) * 0.5))
+            ds._plain_tv_rects.append((_eb_x0, ly, _eb_x0 + _eb_w, ly + line_px))
+            _eb_hit = flat_button(f"{_eb_label}##{ds.name}err{line_idx}", ds,
+                           f"err::{line_idx}", width=_eb_w, height=_eb_h,
+                           color=error_button_color, corner_radius=4.0,
+                           shadow=True, text_pad=2, factor=0.1,
+                           tint_value=error_button_value,
+                           max_bg_brightness=error_button_max_brightness,
+                           text_color=error_icon_color)
+            imgui.set_cursor_screen_pos(_eb_save)
+            if _eb_hit:
+                ds._err_open_line = (None if getattr(ds, '_err_open_line', None) == line_idx
+                                     else line_idx)
+                ds.invalidate()
+                request_render()
+                
         def _draw_gutter_widget(line_idx, ly, x1):
-            """Draw the line's gutter widget (a `gutter: True` token view —
-            the def run buttons) in the number cell, from the live-marker
-            button column to `x1`. True when drawn; False (draw the number
+            """Draw the line's gutter widget in the number cell, from the
+            live-marker button column to `x1`: an ERROR button when the line
+            carries a parse/compile marker, else a `gutter: True` token view
+            (the def run buttons). True when drawn; False (draw the number
             instead) when the line has none or the cell is too narrow."""
+            if line_idx in _err_by_line:
+                _draw_error_button(line_idx, ly, x1)
+                return True
             _gv = _gutter_views.get(line_idx)
             if _gv is None:
                 return False
@@ -14082,6 +14277,19 @@ def draw_text(input_value: str, height=None,
         # An unconsumed press stash dies with the pass - a press on a line
         # whose marker disappeared must not fire on a later frame's layout.
         ds._lv_btn_pressed_line = None
+        # Off-screen markers: clamp their buttons to the strip's top /
+        # bottom row (still on the gutter) with an arrow toward the line, so
+        # an error anywhere in the file is one click away.
+        if _err_by_line:
+            _eb_x1 = left + gutter_w - 3.0
+            _eb_up = [l for l in _err_by_line if origin_y + (l + 1) * line_px < gutter_top]
+            _eb_dn = [l for l in _err_by_line if origin_y + l * line_px > rect_max_y]
+            if _eb_up:
+                _draw_error_button(max(_eb_up), gutter_top + 2.0, _eb_x1,
+                                   arrow=error_up_icon)
+            if _eb_dn:
+                _draw_error_button(min(_eb_dn), rect_max_y - line_px - 2.0, _eb_x1,
+                                   arrow=error_down_icon)
         draw_list.pop_clip_rect()
 
     # --- Fold labels ---------------------------------------------------------
@@ -14594,29 +14802,38 @@ def draw_text(input_value: str, height=None,
     # covers the line it describes. Long messages wrap inside a capped-width
     # box. Drawn after the body (and after the monospace font pop, so it uses
     # the default UI font); save the cursor, paint, restore, layout untouched.
-    if jump_to is not None and _err_msg:
+    _err_open_line = getattr(ds, '_err_open_line', None)
+    _err_open_msg = (dict((l - 1, m) for l, m in _err_markers).get(_err_open_line)
+                     if _err_markers and _err_open_line is not None else None)
+    if jump_to is not None and _err_msg and _err_open_msg is not None:
         _save_cursor = imgui.get_cursor_screen_pos()
         clip_l, clip_t, clip_r, clip_b = draw_state.abs_clip_rect
-        pad_x, pad_y, margin = 6, 4, 6
-        # The box shows the FIRST marker (every marker still gets its red line
-        # wash); with more than one, say so rather than risk hiding the rest.
-        msg = str(_err_msg).split('\n', 1)[0]
-        if len(_err_markers) > 1:
-            msg = f"{msg}   (+{len(_err_markers) - 1} more)"
-        max_w = min(420.0, max(80.0, (clip_r - clip_l) - 2 * (margin + pad_x)))
+        # Right margin clears the overlay scrollbar (it draws over the
+        # content edge) plus breathing room — the old 6 px sat under it.
+        # [tint=(0.95, 0.55, 0.35)]
+        error_box_right_margin = 26
+        pad_x, pad_y, margin = 8, 5, 6
+        # The box shows the CLICKED marker's FULL message (every marker has
+        # a gutter icon); a click on the box copies it.
+        msg = str(_err_open_msg).rstrip()
+        max_w = min(520.0, max(80.0, (clip_r - clip_l) - 2 * pad_x
+                                       - margin - error_box_right_margin))
         _ts = imgui.calc_text_size(msg, False, max_w)
         box_w = _ts.x + 2 * pad_x
         box_h = _ts.y + 2 * pad_y
-        bx1 = clip_r - margin
+        bx1 = clip_r - error_box_right_margin
         bx0 = bx1 - box_w
         # Anchor flush against the error line's top (no gap); if the line sits
         # too close to the viewport top for the box to fit, flip it below.
-        _err_line_top = origin_y + (_err_markers[0][0] - 1) * line_px
+        _err_line_top = origin_y + _err_open_line * line_px
         by1 = min(_err_line_top, clip_b - margin)
         by0 = by1 - box_h
         if by0 < clip_t + margin:
             by0 = min(_err_line_top + line_px, clip_b - margin - box_h)
             by1 = by0 + box_h
+        # Keep the box inside the viewport vertically.
+        by0 = max(clip_t + margin, min(by0, clip_b - margin - box_h))
+        by1 = by0 + box_h
         fill_col = (0.275, 0.118, 0.157, 0.922)
         line_col = (0.588, 0.235, 0.275, 1.0)
         err_draw_list = imgui.get_window_draw_list()
@@ -14627,6 +14844,16 @@ def draw_text(input_value: str, height=None,
         imgui.text_colored(msg, 1.0, 0.72, 0.68, 1.0)
         imgui.pop_text_wrap_pos()
         imgui.set_cursor_screen_pos(_save_cursor)
+        # Click on the message = copy it (draw_button's routing: an on_action
+        # claim on the editor's draw_state, bypassed on cache hits). A press
+        # here must not move the caret either.
+        ds._plain_tv_rects.append((bx0, by0, bx1, by1))
+        if ds.on_action("left_mouse_clicked", view_id="err_box",
+                        rect=(bx0, by0, bx1, by1), priority_delta=4,
+                        cursor=mouse_cursor.ARROW) is not None:
+            imgui.set_clipboard_text(msg)
+            from src.lsd.gl_gui.notifications import notify
+            notify("Error message copied", tag="error_copy")
     # window_pos is an offset from the parent window's absolute origin. The menu
     # window carries an intrinsic ~one-row top offset (draw_dropdown back-compensates
     # the same way), so anchor at the caret's line top minus a line to sit it snug
@@ -14685,7 +14912,10 @@ def draw_text(input_value: str, height=None,
                     and not single_line)
         if _fast_ok and len(_full_now) <= Toggles.TextEditor.fast_check_max_chars:
             from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
-            ds._fast_err_state = (_full_now, _compile_check(_full_now))
+            _fe = _compile_check(_full_now)
+            ds._fast_err_state = (_full_now, _fe)
+            ds._fast_err_extra = ((_full_now, _compile_check_more(_full_now, _fe))
+                                  if _fe is not None else None)
             # Import-suggestion fast path (consumed by the quick-fix block up
             # top): a warm incremental scan is O(changed region) per keystroke
             # (~0.4ms). Gated on has_scan_state - a path's first scan is
@@ -14770,6 +15000,8 @@ def draw_text(input_value: str, height=None,
         else:
             ds._fast_err_state = None
             ds._fast_imports_state = None
+        if not (_fast_ok and len(_full_now) <= Toggles.TextEditor.fast_check_max_chars):
+            ds._fast_err_extra = None   # over-cap / off: only the first error
     elif getattr(ds, '_err_stale', False):
         _sp = getattr(ds, '_err_stale_pair', (None, None))
         if not (error is _sp[0] and code_tree is _sp[1]):
