@@ -1750,15 +1750,19 @@ def _plain_tv_bg(x, y, w, h, tint=None, bg_offset=0, max_bg_value=None,
     if shadow_offset is not None:
         add_shadow((x, y, w, h), offset=shadow_offset, corner_radius=5.0)
     sm = Melty.global_attrs['style_manager']
-    prev = sm.get_tint()
+    # Field-only tint swap (push_tint_fields): draw_bg colours from the
+    # style manager's current_rgb / hsv, not from imgui's colour tables, so
+    # re-applying the 35-entry table twice per widget (~6 µs, half the
+    # widget's cost at ~40 widgets per frame) bought nothing.
+    prev = None
     if tint is not None and len(tint) >= 3:
-        sm.set_imgui_tint(*tint[:4])
+        prev = sm.push_tint_fields(*tint[:4])
     draw_bg(bypass=True, left=x, top=y, width=w, height=h,
             rounding=5.0, bg_offset=bg_offset, depth=Melty.shadow_depth,
             opacity=1.0, style_manager=sm, nested_bg=bg_offset >= 0,
             max_bg_value=max_bg_value)
     if prev is not None:
-        sm.set_imgui_tint(*prev)
+        sm.pop_tint_fields(prev)
 
 
 def draw_bool_token_plain(input_value, width=20, height=20, name=None,
@@ -13604,9 +13608,33 @@ def draw_text(input_value: str, height=None,
             and _tc_memo[0][4:] == _tc_key[4:]):
         _tok_colors = _tc_memo[1]
     _tok_colors_new = [] if _tok_colors is None else None
+    # Draw runs (built with the colour memo): consecutive PLAIN tokens on a
+    # line with the same resolved colour become one run - {first token
+    # index: (n_tokens, text, num_chars, colour)} - so a memo hit draws a run
+    # with one add_text and skips its member tokens with a counter instead
+    # of pushing ~900 tokens through the per-token path every frame.
+    _runs = _tc_memo[2] if (_tok_colors is not None and len(_tc_memo) > 2) else None
+    _plain_rec = [] if _tok_colors_new is not None else None
+    _skip_n = 0
     _ti = -1
     for token, color_key in tokens:
         _ti += 1
+        if _skip_n:
+            _skip_n -= 1
+            continue
+        if _runs is not None:
+            _run = _runs.get(_ti)
+            if _run is not None:
+                _rn, _rtext, _rchars, _rcol = _run
+                if _rtext and y + line_px >= rect_min_y and y <= rect_max_y:
+                    _seg_col = (_rcol if _pres_lines is None
+                                or _cur_ln in _pres_lines
+                                else _mix_packed(_rcol, (0.0, 0.0, 0.0), _pres_k))
+                    draw_list.add_text(x, y, _seg_col, _rtext)
+                x += _rchars * char_w
+                src_i += _rchars
+                _skip_n = _rn - 1
+                continue
         if color_key == 'clipped':
             # Off-screen stretch on a visible line (see _window_tokens band):
             # never contains a newline, never draws - just advance.
@@ -13906,6 +13934,8 @@ def draw_text(input_value: str, height=None,
             continue
         if not _inline and color_key != 'icon' and '\n' not in token:
             # Plain single-line token (the common case): no segment loop.
+            if _plain_rec is not None:
+                _plain_rec.append((_ti, color, token.isascii() and '\t' not in token, token))
             if token and y + line_px >= rect_min_y and y <= rect_max_y:
                 _seg_col = (color if _pres_lines is None
                             or _cur_ln in _pres_lines
@@ -13999,7 +14029,29 @@ def draw_text(input_value: str, height=None,
         draw_list.add_text(_run_x, _run_y, _run_col, ''.join(_run_parts))
         _run_parts = None
     if _tok_colors_new is not None and len(_tok_colors_new) == len(tokens):
-        ds._tok_color_memo = (_tc_key, _tok_colors_new)
+        # Fold the plain tokens into runs (see _plain above).
+        _new_runs = {}
+        _r_start = _r_n = _r_chars = 0
+        _r_parts = []
+        _r_col = None
+        _r_merge = False
+        _prev_ti = -2
+        for _pti, _pcol, _pmerge, _ptok in _plain_rec:
+            if (_r_n and _pti == _prev_ti + 1 and _pmerge and _r_merge
+                    and _pcol == _r_col):
+                _r_parts.append(_ptok)
+                _r_n += 1
+                _r_chars += len(_ptok)
+            else:
+                if _r_n:
+                    _new_runs[_r_start] = (_r_n, ''.join(_r_parts), _r_chars, _r_col)
+                _r_start, _r_n, _r_chars = _pti, 1, len(_ptok)
+                _r_parts = [_ptok]
+                _r_col, _r_merge = _pcol, _pmerge
+            _prev_ti = _pti
+        if _r_n:
+            _new_runs[_r_start] = (_r_n, ''.join(_r_parts), _r_chars, _r_col)
+        ds._tok_color_memo = (_tc_key, _tok_colors_new, _new_runs)
 
     _pf("body:glyphs")
     # An inline view (e.g. the icon dropdown) changed its value - splice the new
@@ -14379,20 +14431,38 @@ def draw_text(input_value: str, height=None,
             imgui.set_cursor_screen_pos(_gv_save)
             return True
 
+        # Per-line number string + x memo, keyed on the numbers table's
+        # identity, the offset and the gutter geometry (~60 visible lines a
+        # frame built `str(num)` and a float expression each; the visible band
+        # only changes on scroll, so this fills lazily and then hits).
+        _gn_key = (line_numbers, line_offset, char_w, left + gutter_w)
+        _gn_memo = getattr(ds, '_gutter_num_memo', None)
+        if (_gn_memo is None or _gn_memo[0][0] is not line_numbers
+                or _gn_memo[0][1:] != _gn_key[1:]):
+            _gn_memo = (_gn_key, {})
+            ds._gutter_num_memo = _gn_memo
+        _gn = _gn_memo[1]
+        _gn_base = left + gutter_w - 6.0
         for line_idx in range(_gl0, _gl1):
             ly = origin_y + line_idx * line_px
             if ly + line_px < gutter_top or ly > rect_max_y:
                 continue
-            if line_numbers is not None:
-                # Trailing empty line (diff text ends in \n) has no number; so do
-                # any line whose number was explicitly None.
-                num = line_numbers[line_idx] if line_idx < len(line_numbers) else None
-                if num is None:
-                    continue
-                num_str = str(num)
-            else:
-                num_str = str(line_offset + line_idx + 1)
-            nx = left + gutter_w - 6.0 - len(num_str) * char_w
+            _gne = _gn.get(line_idx)
+            if _gne is None:
+                if line_numbers is not None:
+                    # Trailing empty line (the text ends in \n) has no number; so do
+                    # any line whose number was explicitly None.
+                    num = line_numbers[line_idx] if line_idx < len(line_numbers) else None
+                    if num is None:
+                        _gn[line_idx] = False
+                        continue
+                    num_str = str(num)
+                else:
+                    num_str = str(line_offset + line_idx + 1)
+                _gne = _gn[line_idx] = (num_str, _gn_base - len(num_str) * char_w)
+            elif _gne is False:
+                continue
+            num_str, nx = _gne
             # Usage heat box (see the aggregation pass above): a rounded wash
             # around the number, summed over every usage token on the line -
             # colored by the line's definition tint when it has one, so the
@@ -14473,7 +14543,10 @@ def draw_text(input_value: str, height=None,
                                                   _gcx, _gcy + 3.5, _gcc)
                 if _rng_g is not None:   # None = no replay, paint-only
                     ds._fold_badge_rects.append((_gr, _rng_g))
-            elif not _draw_gutter_widget(line_idx, ly, left + gutter_w - 3.0):
+            elif ((line_idx in _err_by_line or line_idx in _gutter_views)
+                  and _draw_gutter_widget(line_idx, ly, left + gutter_w - 3.0)):
+                pass    # a gutter widget took the number cell
+            else:
                 # Plain line: the number (a gutter widget takes its cell -
                 # def lines are fold headers, so they mostly land above).
                 draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)

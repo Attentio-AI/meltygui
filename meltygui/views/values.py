@@ -6412,9 +6412,17 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
     # ── Fill rendering ─────────────────────────────────────────
     if bg_color is None:
-        bg_color = style_manager.make_color_style_value(input=bg_style, saturation=bg_style['saturation'] * saturation,
-                                                        value=max(min_value, depth_intensity))
-        bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
+        # Fill colour memoized beside the bleed/outline memo: same inputs
+        # plus the fill's own saturation / depth intensity / bleed factor.
+        fill_key = (colour_key, saturation, depth_intensity, bleed_factor)
+        bg_color = _DRAW_BG_FILL_MEMO.get(fill_key)
+        if bg_color is None:
+            bg_color = style_manager.make_color_style_value(input=bg_style, saturation=bg_style['saturation'] * saturation,
+                                                            value=max(min_value, depth_intensity))
+            bg_color = mix_colors(bg_color, bleed_color, bleed_factor)
+            if len(_DRAW_BG_FILL_MEMO) > 2048:
+                _DRAW_BG_FILL_MEMO.clear()
+            _DRAW_BG_FILL_MEMO[fill_key] = bg_color
 
     # Applies to whatever ends up as the fill - depth-ramp color OR a passed
     # bg_color/tint, so the cap holds regardless of the input's hue/brightness.
@@ -6432,6 +6440,7 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
 
 # (style hsv, bg colour −2, bg colour −1, outline value, sat) → (bleed, outline)
 _DRAW_BG_COLOUR_MEMO = globals().get("_DRAW_BG_COLOUR_MEMO", {})
+_DRAW_BG_FILL_MEMO = globals().get("_DRAW_BG_FILL_MEMO", {})     # (colour key, sat, depth, bleed) → fill rgb
 
 
 @render_func(use_cache=True, selectable=False, disable_scroll=True, indent_size=0, show_bg=False, min_width=5,
@@ -7232,6 +7241,7 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
     if changed:
         return True, value
     return False, input_value
+
 
 
 @render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
@@ -10921,7 +10931,7 @@ def _dd_fit_label(s, px):
         s = s[:-1]
     return s + "..."
     
-    
+
 
 
 def _dd_obj_tint(obj, fallback=None):

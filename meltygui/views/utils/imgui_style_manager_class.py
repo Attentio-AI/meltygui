@@ -365,6 +365,26 @@ class ImGuiStyleManager:
         """
         return self.current_rgb
 
+    def push_tint_fields(self, r, g, b, a=1.0):
+        """set_imgui_tint's COLOUR MATH without the imgui table apply: sets
+        `current_rgb` / `hsv` (what make_color_* and draw_bg read) and
+        returns the previous pair for pop_tint_fields. For draw-list code
+        that only needs draw_bg to colour from a tint (the editor's inline
+        widgets, ~40 a frame) — the 35-entry imgui table isn't consulted
+        there, and applying it twice per widget was half the widget's cost."""
+        prev = (self.current_rgb, self.hsv)
+        if a < 1.0 and self.current_rgb is not None:
+            pr, pg, pb = self.current_rgb
+            r = r * a + pr * (1.0 - a)
+            g = g * a + pg * (1.0 - a)
+            b = b * a + pb * (1.0 - a)
+        self.current_rgb = (r, g, b)
+        self.hsv = self._safe_rgb_to_hsv(r, g, b)
+        return prev
+
+    def pop_tint_fields(self, prev):
+        self.current_rgb, self.hsv = prev
+
     def set_imgui_tint(self, r, g, b, a=1.0):
         """
         Sets a global tint color for ImGui by adjusting all style colors based on a single RGB color.
