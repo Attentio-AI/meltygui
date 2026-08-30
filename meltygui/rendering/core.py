@@ -646,6 +646,16 @@ def render_func(*args, **o_kwargs):
     merge_o_kwargs = {k: v for k, v in o_kwargs.items() if k != "tint"}
     header_defaults = merge_o_kwargs
     param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
+    # Decoration-time plan for the per-call "get the params the caller
+    # didn't pass" loop: (param, wanted_type) with the pass-through names
+    # already dropped and `Parameter.empty` already mapped to None, so the
+    # per-call loop is one membership test per param (90 wrapper calls a
+    # frame × ~50 params on the largest views).
+    _default_plan = tuple(
+        (p, (None if name_to_param_type.get(p) is inspect.Parameter.empty
+             else name_to_param_type.get(p)))
+        for p in wanted_params
+        if p not in ("kwargs", "args", "o_kwargs", "next_kwargs"))
 
     # Auto-state param names for this func, resolved lazily (DrawState must be
     # constructible to know what names its real fields reserve) and cached
@@ -1032,14 +1042,9 @@ def render_func(*args, **o_kwargs):
                 draw_state.closed = False
 
         _restamp_kwargs(draw_state, kwargs)
-        ds_kwargs = copy(kwargs)
-        exclude_ds_kwargs = ["input_value", "wanted_params", "depth", "shadow_depth",
-                             "name", "z_offset", "use_cache", "active_layer", "auto_resize",
-                             "unique", "suffix", "collection", "expanded_rect", "z_pos", "bg_offset",
-                             "max_bg_depth", "max_bg_value",
-                             "meta", "depth", "next_kwargs", "param_types"]
-        for exclude_key in exclude_ds_kwargs:
-            ds_kwargs.pop(exclude_key, None)
+        # One filtered copy instead of copy() + 20 pops (each runs for every
+        # window call; the heavy-arg views have 60+ keys).
+        ds_kwargs = {k: v for k, v in kwargs.items() if k not in _DS_KWARGS_EXCLUDE}
 
         draw_state.unique = unique
         draw_state._collection = Melty.collection_stack[-1] if len(Melty.collection_stack) > 0 else None
@@ -1683,11 +1688,8 @@ def render_func(*args, **o_kwargs):
                     if p in auto_state_values and p not in explicit_param_keys:
                         kwargs[p] = auto_state_values[p]
 
-            for param in wanted_params:
-                if param not in kwargs and param != "kwargs" and param != 'args' and param != 'o_kwargs' and param != 'next_kwargs':
-                    wanted_type = name_to_param_type.get(param, None)
-                    if wanted_type is inspect.Parameter.empty:
-                        wanted_type = None
+            for param, wanted_type in _default_plan:
+                if param not in kwargs:
                     set_default(param, None, wanted_type)
 
             # Auto-state post-pass: mirror every resolved param onto the
@@ -5668,6 +5670,15 @@ def get_draw_state(unique: int) -> DrawState:
 
 _headless_draw_state_registry = {}
 
+# kwargs the wrapper never copies onto ds_kwargs (see the wrapper's
+# `ds_kwargs` build) - a frozenset so the per-call check is one pass.
+_DS_KWARGS_EXCLUDE = frozenset((
+    "input_value", "wanted_params", "depth", "shadow_depth",
+    "name", "z_offset", "use_cache", "active_layer", "auto_resize",
+    "unique", "suffix", "collection", "expanded_rect", "z_pos", "bg_offset",
+    "max_bg_depth", "max_bg_value",
+    "meta", "next_kwargs", "param_types"))
+
 
 def _restamp_kwargs(draw_state, kwargs):
     """draw_state._kwargs = kwargs, breaking the PREVIOUS dict's self-cycle
@@ -5758,6 +5769,12 @@ def ui_id(suffix=None, idx=0) -> int:
     - meta: optional Meta object to fold in attribute name/type
     - max_depth: limit to avoid walking the whole interpreter stack
     """
+    # Pure function of (suffix, idx) - memoized: every wrapper call builds
+    # its suffix string and hashed it twice (crc32 + str round trip).
+    memo_key = (suffix, idx)
+    hit = _UI_ID_MEMO.get(memo_key)
+    if hit is not None:
+        return hit
     h = 0
     # frame = sys._getframe(2)  # skip ui_id itself
     code = None
@@ -5773,7 +5790,13 @@ def ui_id(suffix=None, idx=0) -> int:
     unique = h if suffix is None else (((h * 16777619) ^ suffix_int) + (idx + 1))
     unique = strhash(str(unique))
 
+    if len(_UI_ID_MEMO) > 65536:
+        _UI_ID_MEMO.clear()     # bounded: dynamic names (table-row ids) churn
+    _UI_ID_MEMO[memo_key] = unique
     return unique
+
+
+_UI_ID_MEMO = globals().get("_UI_ID_MEMO", {})    # (suffix, idx) → stable id
 
 
 class WrapType(Enum):

@@ -5037,6 +5037,21 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # root they ran BEFORE the dragged window's position update and trailed
     # window drags by one frame.)
 
+    # Registered windows that are CLOSED this frame, by their registered
+    # name: the loop below skips their wrapper call outright. Calling it
+    # costs every closed window (~56% of 59 registered) a draw_list
+    # lookup, kwargs restorer and the preamble before its own `closed`
+    # early-return - ~0.9 ms of every frame for windows drawing nothing.
+    # This skip replicates what that early-return did (see the wrapper's
+    # `draw_state.closed` branch): keep the persisted draw_state alive and
+    # clear the root's nested list. A window opened by any path sets
+    # closed=False on this same draw_state, so it draws the next frame.
+    _closed_windows = {}
+    for _mw in Core.melty.registered_windows.values():
+        _mds = _mw.draw_state
+        if _mds is not None and _mds.closed and _mw.name:
+            _closed_windows[_mw.name] = _mds
+
     for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
 
         # Copy: the stored dict is the @window decorator kwargs and persists
@@ -5070,6 +5085,14 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 base = kwargs['name']
                 label, sep, tag = base.partition("##")
                 kwargs['name'] = f"{label}#{instance}{sep}{tag}"
+
+            _closed_ds = _closed_windows.get(kwargs['name'])
+            if (_closed_ds is not None and _closed_ds.closed
+                    and kwargs.get('input_value') is not Core.melty.registered_windows):
+                # Same bookkeeping as the wrapper's closed early-return.
+                _closed_ds.dlt_count = Core.melty.save_draw_state_for
+                Core.melty.root_draw_states[_closed_ds.id] = []
+                continue
 
             is_render_func = hasattr(window_cls, "__render_func__")
             if is_render_func:

@@ -263,6 +263,12 @@ def _wrap_text(text, max_width):
     its own line (it overflows rather than being split mid-word)."""
     if max_width <= 0:
         return [text]
+    # Memoized per (text, width): every visible toast re-wraps its text
+    # twice a frame (height measure + draw), each a calc_text_size per word.
+    memo_key = (text, max_width)
+    hit = _WRAP_MEMO.get(memo_key)
+    if hit is not None:
+        return hit
     lines = []
     for paragraph in text.split("\n"):
         current = ""
@@ -274,7 +280,13 @@ def _wrap_text(text, max_width):
                 lines.append(current)
                 current = word
         lines.append(current)
+    if len(_WRAP_MEMO) > 1024:
+        _WRAP_MEMO.clear()
+    _WRAP_MEMO[memo_key] = lines
     return lines
+
+
+_WRAP_MEMO = globals().get("_WRAP_MEMO", {})     # (text, max_width) → lines
 
 
 def _entry_height(label, content, content_width, line_height, padding):

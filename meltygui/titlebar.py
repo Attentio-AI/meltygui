@@ -787,29 +787,16 @@ def window_inset():
     .process_inputs shrinks display_size by twice this and shifts the
     pointer; the masks and tiles keep the whole surface."""
     from src.lsd.gl_gui.toggles import Toggles
-    from src.lsd.gl_gui.melty import Melty
-    # Per-frame memo: a dozen times a second, and each of the three GLFW
-    # attribute / monitor queries is a Wayland round trip (~1 ms a frame
-    # together under a selection drag). Same answer all frame.
-    memo = _INSET_MEMO
-    if memo[0] == Melty.frame_count and memo[1] is not None:
-        return memo[1]
     margin = int(Toggles.Melty.window_shadow_margin)
-    if margin > 0:
-        window = _studio_window()
-        if not _frame_transparent(window) or _maximized(window) or _fullscreen(window):
-            margin = 0
-        else:
-            size = _monitor_size(window)
-            if size:
-                margin = max(margin, shadow_reach(int(size[0]), int(size[1])))
-    else:
-        margin = 0
-    _INSET_MEMO[0], _INSET_MEMO[1] = Melty.frame_count, margin
+    if margin <= 0:
+        return 0
+    window = _studio_window()
+    if not _frame_transparent(window) or _maximized(window) or _fullscreen(window):
+        return 0
+    size = _monitor_size(window)
+    if size:
+        margin = max(margin, shadow_reach(int(size[0]), int(size[1])))
     return margin
-
-
-_INSET_MEMO = globals().get("_INSET_MEMO", [-1, None])   # [frame_count, inset]
 
 
 def _fullscreen(window):
@@ -976,7 +963,6 @@ def on_surface_resized(window, width, height):
     content edge on every configure of a drag). Our own resizes
     (set_surface_size) are flagged and pass through; maximized/fullscreen
     have no margin and pass through too. Returns the size applied."""
-    _INSET_MEMO[0] = -1    # maximize state might have flipped inside this frame
     if not _on_wayland() or not wayland_move.geometry_available():
         return None
     if _self_resize:
