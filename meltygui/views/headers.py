@@ -545,9 +545,16 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         # is drawn by draw_tuple around the chip itself (outline=True) — the
         # widget's draw_state box is far wider than the swatch.
         imgui.same_line(spacing=0)
-        _aw_ch, _aw_val = RenderFuncs.draw_tuple(
-            _aw_tint, show_name=False, show_header=False,
-            name=f"aw_tint", info=_aw_source_info)
+        # draw_tuple_fast, not the draw_tuple render_func: every window
+        # header paid a full wrapper call per frame for this 17 px chip
+        # (~0.19 ms each, use_cache=False). The chip claims its own 17×17
+        # footprint here since the fast path draws without layout.
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple_fast
+        _aw_x, _aw_y = imgui.get_cursor_screen_pos()
+        _aw_ch, _aw_val = draw_tuple_fast(
+            _aw_tint, draw_state, view_id="aw_tint", x=_aw_x, y=_aw_y,
+            size=17, outline=True, info=_aw_source_info)
+        imgui.dummy(17, 17)
         if _aw_ch:
             draw_state.locate_tint = _aw_val
         same_line()

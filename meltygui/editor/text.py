@@ -3952,56 +3952,60 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
 
     _tvw = [0, 0, 0]   # nodes visited, pruned, renderer calls (perf trace)
 
-    def walk(node, depth=0):
-        if not isinstance(node, dict) or depth > 64 or id(node) in seen:
-            return
-        seen.add(id(node))
-        _tvw[0] += 1
-        span = getattr(node, 'span', None)
-        if span is not None and _vis_lo is not None:
-            _p0, _p1 = span.start_line, getattr(span, 'end_line', span.start_line)
-            # Prune on the BUFFER span through the edit bridge only, then
-            # round it onto visible display lines through the fold table:
-            # first visible line at/after the start, last at/before the
-            # end. The composed line_map returned None for an endpoint
-            # hidden in a collapsed fold, and None read as "visit normally"
-            # — with the diff-mode folds collapsed that walked 4.4k nodes a
-            # frame and pruned 160 (8 ms of every selection frame).
-            _b0 = _bridge(_p0) if _bridge else _p0
-            _b1 = _bridge(_p1) if _bridge else _p1
-            if _b0 is not None and _b1 is not None:
-                if fold_d2b is not None:
-                    _i0 = bisect.bisect_left(fold_d2b, _b0 - 1)
-                    _i1 = bisect.bisect_right(fold_d2b, _b1 - 1) - 1
-                    if _i0 > _i1:
-                        _tvw[1] += 1    # the whole subtree is folded away
+    # The walk only decides WHICH (node, span, spec) get a renderer call;
+    # the calls themselves run every frame below. That decision depends on
+    # the tree, the visible band, the fold layout, the edit bridge and the
+    # type specs - all unchanged from frame to frame during a selection
+    # drag or hover repaint - so the hit list is memoized on the draw_state
+    # (~570 nodes visited per frame for ~30 hits, 0.7 ms → a list walk).
+    _tv_key = (code_tree, _vis_lo, _vis_hi, fold_d2b, _bridge,
+               tuple(id(k) for k, _ in type_specs))
+    _tv_memo = getattr(ds, '_tv_walk_memo', None)
+    if (_tv_memo is not None and _tv_memo[0][0] is code_tree
+            and _tv_memo[0][3] is fold_d2b and _tv_memo[0][4] is _bridge
+            and _tv_memo[0][1:3] == _tv_key[1:3] and _tv_memo[0][5] == _tv_key[5]):
+        _hits = _tv_memo[1]
+    else:
+        _hits = []
+
+        def walk(node, depth=0):
+            if not isinstance(node, dict) or depth > 64 or id(node) in seen:
+                return
+            seen.add(id(node))
+            _tvw[0] += 1
+            span = getattr(node, 'span', None)
+            if span is not None and _vis_lo is not None:
+                _p0, _p1 = span.start_line, getattr(span, 'end_line', span.start_line)
+                # Prune on the BUFFER span through the edit bridge only, then
+                # round it onto visible display lines through the fold table:
+                # first visible line at/after the start, last at/before the
+                # end. The composed line_map returned None for an endpoint
+                # hidden in a collapsed fold, and None read as "visit normally"
+                # - with the diff-mode folds collapsed that walked 4.4k nodes a
+                # frame and pruned 160 (8 ms of every selection frame).
+                _b0 = _bridge(_p0) if _bridge else _p0
+                _b1 = _bridge(_p1) if _bridge else _p1
+                if _b0 is not None and _b1 is not None:
+                    if fold_d2b is not None:
+                        _i0 = bisect.bisect_left(fold_d2b, _b0 - 1)
+                        _i1 = bisect.bisect_right(fold_d2b, _b1 - 1) - 1
+                        if _i0 > _i1:
+                            _tvw[1] += 1    # the whole subtree is folded away
+                            return
+                        _b0, _b1 = _i0 + 1, _i1 + 1
+                    if _b1 < _vis_lo or _b0 > _vis_hi:
+                        _tvw[1] += 1
                         return
-                    _b0, _b1 = _i0 + 1, _i1 + 1
-                if _b1 < _vis_lo or _b0 > _vis_hi:
-                    _tvw[1] += 1
-                    return
-        if span is not None:
-            for ktype, spec in type_specs:
-                if isinstance(node, ktype):
-                    _sl = line_map(span.start_line) if line_map else span.start_line
-                    if _sl is None:
-                        break   # starts inside the changed region - skip this frame
-                    y = origin_y + (_sl - 1) * line_px
-                    h = (span.end_line - span.start_line + 1) * line_px
-                    x = origin_x + getattr(span, 'start_col', 0) * char_w
-                    _tvw[2] += 1
-                    try:
-                        spec["renderer"](x=x, y=y, w=max(0.0, ds.content_width - (x - origin_x)),
-                                         h=h, draw_state=ds, char_w=char_w, line_px=line_px,
-                                         node=node, span=span, root=code_tree,
-                                         line_offset=line_offset, jump_to=jump_to,
-                                         line_map=line_map, sel_lo=sel_lo,
-                                         sel_hi=sel_hi)
-                    except Exception:
-                        pass
-                    break
-        for v in node.values():
-            walk(v, depth + 1)
+            if span is not None:
+                for ktype, spec in type_specs:
+                    if isinstance(node, ktype):
+                        _hits.append((node, span, spec))
+                        break
+            for v in node.values():
+                walk(v, depth + 1)
+
+        walk(code_tree)
+        ds._tv_walk_memo = (_tv_key, _hits)
 
     # Cursor aware, like the inline token views: renderers position
     # themselves with set_cursor_screen_pos (the live_view markers), so the
@@ -4009,7 +4013,23 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
     # the cursor - just below the last marker drawn.
     _save_cur = imgui.get_cursor_screen_pos()
     _tvt0 = time.perf_counter()
-    walk(code_tree)
+    for node, span, spec in _hits:
+        _sl = line_map(span.start_line) if line_map else span.start_line
+        if _sl is None:
+            continue   # starts inside the edit region - skip this frame
+        y = origin_y + (_sl - 1) * line_px
+        h = (span.end_line - span.start_line + 1) * line_px
+        x = origin_x + getattr(span, 'start_col', 0) * char_w
+        _tvw[2] += 1
+        try:
+            spec["renderer"](x=x, y=y, w=max(0.0, ds.content_width - (x - origin_x)),
+                             h=h, draw_state=ds, char_w=char_w, line_px=line_px,
+                             node=node, span=span, root=code_tree,
+                             line_offset=line_offset, jump_to=jump_to,
+                             line_map=line_map, sel_lo=sel_lo,
+                             sel_hi=sel_hi)
+        except Exception:
+            pass
     _tvms = (time.perf_counter() - _tvt0) * 1000.0
     # TEMP perf: one dump per slow overlay pass - who costs most the walk itself
     # or the renderer calls (see the snapshot overlay's own line and its keys).
@@ -12708,18 +12728,28 @@ def draw_text(input_value: str, height=None,
         _dt_comments = _comment_tints(ds, _dt_full)
         _pf("dt:comment_tints")
         if _fold_bl is not None and _dt_comments:
-            _rc = []
-            for _c_si, _c_ei, _c_rgb in _dt_comments:
-                _dsi = _fold_off(_c_si)
-                if _dsi is None:
-                    continue
-                _dei = _fold_off(_c_ei)
-                if _dei is None:      # tail hidden - clamp to the header end
-                    _dei = text.find('\n', _dsi)
-                    if _dei == -1:
-                        _dei = len(text)
-                _rc.append((_dsi, _dei, _c_rgb))
-            _dt_comments = tuple(_rc)
+            # Memoized like _fold_remap_spans (inputs + fold layout by
+            # identity): the glyph pass's per-token surface memo keys on
+            # the tuple's identity, and a fresh tuple every frame missed
+            # it on every frame with a fold collapsed.
+            _cm = getattr(ds, '_fold_comment_memo', None)
+            if (_cm is not None and _cm[0] is _dt_comments
+                    and _cm[1] is _fold_built):
+                _dt_comments = _cm[2]
+            else:
+                _rc = []
+                for _c_si, _c_ei, _c_rgb in _dt_comments:
+                    _dsi = _fold_off(_c_si)
+                    if _dsi is None:
+                        continue
+                    _dei = _fold_off(_c_ei)
+                    if _dei is None:      # tail hidden - clamp to the header line
+                        _dei = text.find('\n', _dsi)
+                        if _dei == -1:
+                            _dei = len(text)
+                    _rc.append((_dsi, _dei, _c_rgb))
+                ds._fold_comment_memo = (_dt_comments, _fold_built, tuple(_rc))
+                _dt_comments = ds._fold_comment_memo[2]
         if _disp_sp is not None:
             # Edit frame with a fold collapsed: everything above (resolve +
             # fold remap) is frame-start; shift all four overlay families
@@ -13548,54 +13578,94 @@ def draw_text(input_value: str, height=None,
     # one identity test per render (see _fnrun_auto_exec_scan).
     _fnrun_auto_exec_scan(ds, text_editor_state, text,
                           code_dict if code_dict is not None else code_tree)
+    # Glyph pass. ~900 tokens a frame: the plain single-line token is the
+    # common case and gets the fast path below: no segment loop, and
+    # consecutive same-colour ASCII tokens on a line merge to ONE add_text
+    # (monospace: imgui's advance per glyph == char_w, so a merged run lands
+    # every glyph exactly where separate draws did - the harness in the
+    # perf notes asserts calc_text_size(run) == len(run) * char_w). Runs are
+    # flushed before any other draw path so screen order is unchanged.
+    _inline_by_key = ({k: (v, v.get("char_width") is not None)
+                       for k, v in token_views.items() if isinstance(k, str)}
+                      if token_views else {})
+    _run_parts = None       # pending merged run: [tokens], start x/y, color, end x
+    _run_x = _run_y = _run_end = 0.0
+    _run_col = 0
+    # Per-token packed colours memoized in the draw_state: the comment-tint /
+    # def-tint resolution below (a bisect + span walk + hsv mix per token)
+    # depends only on the cached token window and the cached tint tables,
+    # which are the same objects frame after frame during a drag / hover
+    # session - so a hit replaces all of it with a packed value per token.
+    _tc_key = (tokens, win_off, _dt_spans, _dt_comments, _dt_mix, _ct_factors, _tx_f)
+    _tc_memo = getattr(ds, '_tok_color_memo', None)
+    _tok_colors = None
+    if (_tc_memo is not None and _tc_memo[0][0] is tokens and _tc_memo[0][1] == win_off
+            and _tc_memo[0][2] is _dt_spans and _tc_memo[0][3] is _dt_comments
+            and _tc_memo[0][4:] == _tc_key[4:]):
+        _tok_colors = _tc_memo[1]
+    _tok_colors_new = [] if _tok_colors is None else None
+    _ti = -1
     for token, color_key in tokens:
+        _ti += 1
         if color_key == 'clipped':
             # Off-screen stretch on a visible line (see _window_tokens band):
             # never contains a newline, never draws - just advance.
+            if _run_parts is not None:
+                draw_list.add_text(_run_x, _run_y, _run_col, ''.join(_run_parts))
+                _run_parts = None
+            if _tok_colors_new is not None:
+                _tok_colors_new.append(0)
             x += len(token) * char_w
             src_i += len(token)
             continue
-        color = COLORS[color_key]
-        # Inside a tint-carrying override comment, the comment text and the
-        # merged color-tuple token (color3 - the picker's `(r, g, b)` text)
-        # wear the comment's adjusted color; other value widgets (numbers,
-        # bools) keep their own token color.
-        if _ct_starts is not None and color_key in ('comment', 'color3'):
-            _ci = bisect.bisect_right(_ct_starts, src_i) - 1
-            if _ci >= 0 and src_i < _dt_comments[_ci][1]:
-                _cc = _dt_comments[_ci][2]
+        if _tok_colors is not None:
+            color = _tok_colors[_ti]
+        else:
+            color = COLORS[color_key]
+            # Inside a color-carrying override comment, the comment text AND the
+            # merged color-tuple token (color3 - the token's `(r, g, b)` text)
+            # wear the comment's adjusted color; other value types (numbers,
+            # bools) keep their own token colors.
+            if _ct_starts is not None and color_key in ('comment', 'color3'):
+                _ci = bisect.bisect_right(_ct_starts, src_i) - 1
+                if _ci >= 0 and src_i < _dt_comments[_ci][1]:
+                    _cc = _dt_comments[_ci][2]
 
-                _ck = (_cc, _ct_factors)
-                _pk = _COMMENT_TINT_CACHE.get(_ck)
-                if _pk is None:
-                    _cr, _cg, _cb = _comment_tint_color(_cc)
-                    _pk = imgui.get_color_u32_rgba(_cr, _cg, _cb, 1.0)
-                    if len(_COMMENT_TINT_CACHE) > 1024:
-                        _COMMENT_TINT_CACHE.clear()
-                    _COMMENT_TINT_CACHE[_ck] = _pk
-                color = _pk
-        elif _dt_mix > 0:
-            # Spans sort (start, -len): at a shared start the SHORTEST is
-            # last, so bisect lands on the base symbol for a given token; the
-            # short backward walk finds the chain span still covering a
-            # member token at the base's end.
-            _si = bisect.bisect_right(_dt_starts, src_i) - 1
-            for _k in range(_si, max(-1, _si - 4), -1):
-                _sp = _dt_spans[_k]
-                if _sp[1] <= src_i:
-                    continue
-                if _sp[0] <= src_i:
-                    # Mix toward the wash through the TEXT factor pair
-                    # (text_tint_saturation/value + shared brightness clamp).
-                    color = _mix_packed(color, _bg_adjust(tuple(_sp[2][:3]), _tx_f),
-                                        _dt_mix * _sp[3])
-                break
-        # Inline token view: a str-keyed token_views entry with a char_width draws
-        # a widget INSTEAD of this token's text, occupying char_width cells (see
-        # the token-views note above). type-keyed entries are handled by the
-        # overlay pass after the body.
-        _view = token_views.get(color_key) if token_views else None
-        _inline = _view is not None and _view.get("char_width") is not None
+                    _ck = (_cc, _ct_factors)
+                    _pk = _COMMENT_TINT_CACHE.get(_ck)
+                    if _pk is None:
+                        _cr, _cg, _cb = _comment_tint_color(_cc)
+                        _pk = imgui.get_color_u32_rgba(_cr, _cg, _cb, 1.0)
+                        if len(_COMMENT_TINT_CACHE) > 1024:
+                            _COMMENT_TINT_CACHE.clear()
+                        _COMMENT_TINT_CACHE[_ck] = _pk
+                    color = _pk
+            elif _dt_mix > 0:
+                # Spans sort (start, -width): at a given start the SHORTEST comes
+                # last, so bisect lands on the base symbol for the base token; the
+                # short backward walk finds the chain span still covering a
+                # member token past the base's end.
+                _si = bisect.bisect_right(_dt_starts, src_i) - 1
+                for _k in range(_si, max(-1, _si - 4), -1):
+                    _sp = _dt_spans[_k]
+                    if _sp[1] <= src_i:
+                        continue
+                    if _sp[0] <= src_i:
+                        # Mix toward the tint through the TEXT factor pair
+                        # (text_tint_saturation/value + shared brightness clamp).
+                        color = _mix_packed(color, _bg_adjust(tuple(_sp[2][:3]), _tx_f),
+                                            _dt_mix * _sp[3])
+                    break
+            # Inline token view: a str-keyed token_views entry with a char_width draws
+            # a widget INSTEAD of this token's text, occupying char_width cells (see
+            # the token-views note above). type-keyed entries are handled by the
+            # gutter pass after the body.
+            _tok_colors_new.append(color)
+        _vi = _inline_by_key.get(color_key)
+        if _vi is None:
+            _view, _inline = None, False
+        else:
+            _view, _inline = _vi
         # Whole-token inline view: one widget for the entire token (e.g. a
         # clickable "True" word, a drag for "3.14") rather than one per char.
         # These tokens never contain '\n', so no segment loop is needed. Two
@@ -13609,6 +13679,9 @@ def draw_text(input_value: str, height=None,
         #    (e.g. a color swatch). vcols reflects the shift for caret/click.
         # Either way a changed return splices the whole token.
         if _inline and _view.get("whole_token") and token and '\n' not in token:
+            if _run_parts is not None:
+                draw_list.add_text(_run_x, _run_y, _run_col, ''.join(_run_parts))
+                _run_parts = None
             # Presentation dim for the whole-token paths below (caret-in text,
             # with lead text) - safe to overwrite as this branch continues.
             if _pres_lines is not None and _cur_ln not in _pres_lines:
@@ -13831,6 +13904,33 @@ def draw_text(input_value: str, height=None,
             x += _cells * char_w
             src_i += len(token)
             continue
+        if not _inline and color_key != 'icon' and '\n' not in token:
+            # Plain single-line token (the common case): no segment loop.
+            if token and y + line_px >= rect_min_y and y <= rect_max_y:
+                _seg_col = (color if _pres_lines is None
+                            or _cur_ln in _pres_lines
+                            else _mix_packed(color, (0.0, 0.0, 0.0), _pres_k))
+                _mergeable = token.isascii() and '\t' not in token
+                if (_run_parts is not None and _mergeable and _run_y == y
+                        and _run_col == _seg_col and _run_end == x):
+                    _run_parts.append(token)
+                    _run_end = x + len(token) * char_w
+                else:
+                    if _run_parts is not None:
+                        draw_list.add_text(_run_x, _run_y, _run_col, ''.join(_run_parts))
+                        _run_parts = None
+                    if _mergeable:
+                        _run_parts = [token]
+                        _run_x, _run_y, _run_col = x, y, _seg_col
+                        _run_end = x + len(token) * char_w
+                    else:
+                        draw_list.add_text(x, y, _seg_col, token)
+            x += len(token) * char_w
+            src_i += len(token)
+            continue
+        if _run_parts is not None:
+            draw_list.add_text(_run_x, _run_y, _run_col, ''.join(_run_parts))
+            _run_parts = None
         start = 0
 
         while True:
@@ -13895,6 +13995,11 @@ def draw_text(input_value: str, height=None,
 
             start = nl + 1
         src_i += len(token)
+    if _run_parts is not None:
+        draw_list.add_text(_run_x, _run_y, _run_col, ''.join(_run_parts))
+        _run_parts = None
+    if _tok_colors_new is not None and len(_tok_colors_new) == len(tokens):
+        ds._tok_color_memo = (_tc_key, _tok_colors_new)
 
     _pf("body:glyphs")
     # An inline view (e.g. the icon dropdown) changed its value - splice the new

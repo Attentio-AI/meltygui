@@ -3026,13 +3026,21 @@ def _host_relint_and_fixes(dict_host, _str_host, wds):
             dict_host._relint_pending = False
             dict_host._last_relint_t = _rl_now
     _lk = dict_host.child_kwargs.get('run_chain_kwargs') or {}
-    if _lk.get('lint_path') and len(_str_host.values()) > 0:
+    # The runner is a render_func: polling it every frame cost its wrapper
+    # (~0.2 ms) for nothing while idle. Call it only from a start edge
+    # until that run has reported (busy → done), then stop polling.
+    if _relint:
+        dict_host._relint_active = True
+    if (_lk.get('lint_path') and len(_str_host.values()) > 0
+            and getattr(dict_host, '_relint_active', False)):
         _rl_done, _rl_payload = run_in_background(
             _run_relint,
             child_kwargs={'input_value': list(_str_host.values())[0],
                           'lint_path': _lk.get('lint_path'),
                           'lint_span': _lk.get('lint_span', False)},
             name=f"relint{id(dict_host)}", start=_relint, debounce_ms=400)
+        if _rl_done:
+            dict_host._relint_active = False    # reported; stop polling
         if _rl_done and isinstance(_rl_payload, dict):
             for v in (getattr(wds, "misc", None) or {}).values():
                 if isinstance(v, ModesState):

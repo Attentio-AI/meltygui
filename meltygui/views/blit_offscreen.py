@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import time
 import random
 import sys
 import traceback
@@ -722,6 +723,10 @@ void main() {
     oColor = vec4(mix(bottom, top, t.y), 0.0, 0.0, 1.0);
 }
 """
+
+# flush_captures logs its per-pass split for any call slower than this
+# (ms) - see the _fc_marks stamps. [text_color=(0.95, 0.55, 0.15)]
+_FC_TRACE_MS = 1.0
 
 # Batched rect marks (goggles.Melty.batch_shadow_stamps): the SAME gradient
 # as _SHADOW_GRAD_FS, but one instanced quad per mark with the per-mark
@@ -4509,6 +4514,11 @@ class TileCacheMasked:
 
         self.all_keys = set()
         self.last_capture_stats = (0, 0, 0)
+        # Per-pass wall stamps (draw_text's _pf idiom). a call over
+        # _FC_TRACE_MS logs its split to the perf log (Toggles.symbol_perf_log).
+        _fc_t0 = time.perf_counter()
+        _fc_marks = []
+        _fc_counts = (len(self._shadow_rects), len(self._mask_rects), len(self._pending))
         if self._snapshot_fbo is None:
             return
 
@@ -4588,6 +4598,7 @@ class TileCacheMasked:
             gl.glBindVertexArray(self._dummy_vao)
 
             # ================================================================
+            _fc_marks.append(("setup", time.perf_counter()))
             # PASS 1: Snapshot the current framebuffer
             # ================================================================
             gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
@@ -4598,6 +4609,7 @@ class TileCacheMasked:
             _cp_t1 = _cp()
 
             # ================================================================
+            _fc_marks.append(("pass1_snapshot", time.perf_counter()))
             # PASS 2: Build _mask_tex (flat, fresh geometry only)
             # ================================================================
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._mask_fbo)
@@ -4618,6 +4630,7 @@ class TileCacheMasked:
             _cp_t2 = _cp()
 
             # ================================================================
+            _fc_marks.append(("pass2_flat_mask", time.perf_counter()))
             # PASS 3: Process dirty tiles - copy pixels using the mask
             # ================================================================
             gl.glUseProgram(self._prog_copy)
@@ -4717,6 +4730,7 @@ class TileCacheMasked:
 
             _cp_t3 = _cp()
             # ================================================================
+            _fc_marks.append(("pass3_copy_tiles", time.perf_counter()))
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
             # ================================================================
             background_depth = 0.001
@@ -4916,6 +4930,7 @@ class TileCacheMasked:
 
             # ================================================================
             _cp_t4 = _cp()
+            _fc_marks.append(("pass4_tile_masks", time.perf_counter()))
             # PASS 5: Build _full_mask_tex using cached subtree masks
             # ================================================================
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
@@ -5053,6 +5068,7 @@ class TileCacheMasked:
                                          dp_x, dp_y, s_x, s_y, fb_h)
 
             # ================================================================
+            _fc_marks.append(("pass5_full_mask", time.perf_counter()))
             # PASS 6: Glow stencil buffer (after PASS 5 - the stamp shader
             # samples the finished full depth mask for its depth gate).
             # Retention is keyed by EMITTING draw_state, decoupled from tile
@@ -5526,6 +5542,20 @@ class TileCacheMasked:
             self._recording = False
             self.did_deviate.clear()
             self.seen_ids.clear()
+        try:
+            _fc_marks.append(("pass6_glow+tail", time.perf_counter()))
+            _fc_total = (_fc_marks[-1][1] - _fc_t0) * 1000.0
+            if _fc_total >= _FC_TRACE_MS:
+                from src.lsd.gl_gui.perf_trace import trace as _fc_trace
+                _fc_prev, _fc_parts = _fc_t0, []
+                for _fc_lbl, _fc_t in _fc_marks:
+                    _fc_parts.append(f"{_fc_lbl}={(_fc_t - _fc_prev) * 1000.0:.2f}")
+                    _fc_prev = _fc_t
+                _fc_trace("finalize perf", total_ms=round(_fc_total, 2),
+                          shadows=_fc_counts[0], masks=_fc_counts[1], pending=_fc_counts[2],
+                          breakdown=" ".join(_fc_parts))
+        except Exception:
+            pass
 
 
 def add_shadow(rect, offset=2.0, layer=None, depth=None, corner_radius=5.0,

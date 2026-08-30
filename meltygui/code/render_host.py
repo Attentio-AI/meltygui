@@ -809,9 +809,14 @@ class RenderHost(_DeepAttrMixin, dict):
             if Melty.cache is not None and wds0._tile_id is not None:
                 Melty.cache.invalidate_up(wds0._tile_id, force=True, max_depth=4)
             return True
-        if self.window or not getattr(self, "evictable", False) \
-                or not self.name.startswith("##"):
-            return True
+        # Every host is windowed (draw() gives each a 40x40 stub envelope at
+        # (-38, 100) - invisible chrome; the DATA windows a host feeds are
+        # separate subwindows drawn from draw_main's registered loop), so
+        # `self.window` used to short-circuit this gate for code hosts and the
+        # event-driven pump below never ran: 17 hosts × ~0.2 ms of envelope +
+        # io-wrapper blit-replay on every frame the mouse wasn't held (Lukas
+        # 08-31: dropped the window term - flags, upstream identity, dirty
+        # tiles and the heartbeat cover every possible reason to draw).
         if self.hidden:
             return False
         if self._external_change or self._pending_external:
@@ -828,7 +833,17 @@ class RenderHost(_DeepAttrMixin, dict):
         cache = Melty.cache
         if cache is not None:
             for ds in (env_ds, wds):
-                if cache._is_dirty(cache._tiles.get(getattr(ds, "_tile_id", None))):
+                tile = cache._tiles.get(getattr(ds, "_tile_id", None))
+                if tile is None:
+                    # No tile: a zero-size host view (the voxel / line hosts'
+                    # wrappers are 0 px wide - their output flows through
+                    # the held value, not pixels) never gets one, and
+                    # _is_dirty(None) read as "dirty" every frame. Only a
+                    # NEVER-drawn view needs a first run.
+                    if getattr(ds, "frame_count", 0) == 0:
+                        return True
+                    continue
+                if cache._is_dirty(tile):
                     return True
         return (Melty.frame_count + (id(self) >> 4)) % 30 == 0
 

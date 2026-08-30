@@ -343,6 +343,7 @@ def _word_match(q, qws, twords, budget):
 
 
 
+
 # --- Global search indexes ---------------------------------------------------
 # Global search queries a fixed set of index providers instead of walking the
 # live draw_state tree. Each provider returns SearchHit entries — a display
@@ -4749,6 +4750,10 @@ dropdown_demo_data = {
 }
 
 drop_down_selection = None
+# draw_main logs its section split to the perf log for any call slower than
+# this (ms) - the root handler's frame-by-frame spikes were untraceable
+# otherwise. [tint=(0.95, 0.55, 0.15)]
+_DM_TRACE_MS = 1.5
 # hey there
 @render_func(use_cache=False, show_bg=True, selectable=False, shadow=False, show_name=False,
              show_tint=True, is_tree=False, bg_offset=0, disable_scroll=True, max_bg_value=0.130, with_header=draw_header)
@@ -4756,6 +4761,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     global test_obj
     global cst_dict
     global test_code
+    import time as _time
+    # Section stamps (same shape as draw_text's _dt): a call over
+    # _DM_TRACE_MS logs its per-section split to the perf log
+    # (Toggles.symbol_perf_log), so a spiky frame names its section.
+    _dm_marks = [("start", _time.perf_counter())]
+    _dm_mark = lambda label: _dm_marks.append((label, _time.perf_counter()))
     from src.lsd.gl_gui.view.mode import Mode
 
     # Guarantee the persistent search store exists on the live root (a root
@@ -5046,6 +5057,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # `draw_state.closed` branch): keep the persisted draw_state alive and
     # clear the root's nested list. A window opened by any path sets
     # closed=False on this same draw_state, so it draws the next frame.
+    _dm_mark("head")
     _closed_windows = {}
     for _mw in Core.melty.registered_windows.values():
         _mds = _mw.draw_state
@@ -5063,6 +5075,17 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             name = kwargs.get("name", f"Unnamed {window_cls.__class__.__name__}")
 
         instances = stored_kwargs.get("instances", 1)
+        if instances == 1:
+            # Closed single-instance window: decide BEFORE building its
+            # kwargs (the common case - ~56 of 59 registered classes are
+            # closed on a typical frame; the per-class dict work below was
+            # 40% of draw_any's body). Same bookkeeping as the in-loop skip.
+            _closed_ds = _closed_windows.get(stored_kwargs.get('name', name))
+            if (_closed_ds is not None and _closed_ds.closed
+                    and stored_kwargs.get('input_value') is not Core.melty.registered_windows):
+                _closed_ds.dlt_count = Core.melty.save_draw_state_for
+                Core.melty.root_draw_states[_closed_ds.id] = []
+                continue
         for instance in range(instances):
             kwargs = dict(stored_kwargs)
             kwargs.pop("instances", None)
@@ -5105,6 +5128,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 window_func = kwargs.pop("view_func", code_file_io)
                 window_func(window_cls, **kwargs)
 
+    _dm_mark("window_loop")
     from src.lsd.gl_gui.model.app_model import TensorView
     draw_any(TensorView, name="Tensorview", mode=(Mode.WINDOW))
     #
@@ -5166,11 +5190,13 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     draw_any(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
              max_brightness=30, name="full_mask_tex", live=True, mode=Mode.WINDOW)
 
+    _dm_mark("draw_any_windows")
     mouse_pos = imgui.get_mouse_pos()
     ds_under_mouse = Core.melty.bvh_query(mouse_pos[0], mouse_pos[1])
     ds_names = [ds.name for ds in ds_under_mouse]
     draw_any(ds_names, name="Draw State under mouse", show_bg=True, wrap=True, use_cache=True, mode=Mode.WINDOW,
              live=True)
+    _dm_mark("ds_under_mouse")
 
     # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
     # is a stateful wrapper that draws into its own window. Snapshot the values - a
@@ -5192,6 +5218,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # visualization for the whole typing burst (they replayed stale blits and
     # only caught up at the 500ms debounce edge).
     typing_held = RenderHost.typing_hold()
+    _dm_marks.append((f"hosts_gate(held={int(any_mouse_held)},typing={int(bool(typing_held))})",
+                      _time.perf_counter()))
     if not any_mouse_held and not Melty.on_scroll:
         for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
             if (typing_held and getattr(host, "evictable", False)
@@ -5206,8 +5234,18 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             if not host.draw_needed():
                 continue
             host.draw()
+            _dm_marks.append((f"host[{str(host.name)[:24]}]", _time.perf_counter()))
 
     display(len(Core.melty.render_hosts), tag="Render Hosts Count")
+    _dm_mark("tail")
+    _dm_total = (_dm_marks[-1][1] - _dm_marks[0][1]) * 1000.0
+    if _dm_total >= _DM_TRACE_MS:
+        from src.lsd.gl_gui.perf_trace import trace as _dm_trace
+        _dm_parts = []
+        for (_l0, _t0), (_l1, _t1) in zip(_dm_marks, _dm_marks[1:]):
+            _dm_parts.append(f"{_l1}={(_t1 - _t0) * 1000.0:.2f}")
+        _dm_trace("draw_main perf", total_ms=round(_dm_total, 2),
+                  breakdown=" ".join(_dm_parts))
 
 
 @render_func
