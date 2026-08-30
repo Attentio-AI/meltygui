@@ -439,7 +439,7 @@ class Toggles:
     class TextEditor:
 
         some_list = [63,-70,276]
-        
+
         some_new_dict= {
             "key": ""
         }
@@ -1694,7 +1694,7 @@ class Toggles:
         tab_active_text_min_brightness = 0.83
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         tab_inactive_text_brightness = 0.390
-        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        # [tint=(0.923, 0.989, 0.0), show_tint=True]
         tab_inactive_text_saturation = 0.522
         # Floor on the inactive-tab label's hsv value AFTER the brightness
         # scale — dark tints stay legible instead of scaling toward black.
@@ -1949,7 +1949,7 @@ class Toggles:
         # Minimum spacing for a collect that at the moment the window
         # LOSES focus (alt-tab / minimize): the one frame nobody is watching.
         # Focus-gain restarts the idle clock, so returning never collects.
-        unfocus_collect_s = 2000000.0
+        unfocus_collect_s = 200.0
         # Minimum spacing between post-run collects (collect_after_run -
         # the live lab's per-run VRAM retirement). Auto Execute runs the
         # previewed function per mouse-drag tick; collecting after every

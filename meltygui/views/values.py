@@ -7572,7 +7572,6 @@ def draw_parameter(input_value):
     else:
         return draw_any(parameter_default, show_name=False, show_add_delete=False)
 
-
 @render_func(is_default_for=(types.MappingProxyType), shadow=False, show_bg=False, show_add_delete=False,
              with_header=draw_header)
 def draw_mapping_proxy(input_value):
@@ -10944,7 +10943,10 @@ def _dd_menu_fit(menu_ds):
 _DD_CODE_LBL_MAX_W = 150.0
 
 
+
+
 def _dd_row_lookup(mapping, value):
+
     """mapping.get(value), tolerant of UNHASHABLE row values — a BRANCH row's
     value is the nested collection dict itself, which raised TypeError from
     every value-keyed style lookup (row_tags/row_tints/...)."""

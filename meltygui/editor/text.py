@@ -48,8 +48,8 @@ COLORS = {
     'def': _hex('#cc7832'),  # bare `def` keyword - own key so token_views can target defs
     'operator_word': _hex('#cc7832'),  # Operator.Word (and, or, not, in, is)
     'builtin_pseudo': _hex('#94558d'),  # Name.Builtin.Pseudo (self, cls)
-    'builtin': _hex('#8888c6'),  # Name.Builtin (len, isinstance, str, Exception, ...) - Darcula's purple
-    'def_name': _hex('#56a8f5'),  # Name.Function (declaration) - IntelliJ Dark blue
+    'builtin': _hex('#8583cf'),  # Name.Builtin (len, isinstance, str, Exception, ...) - Darcula light purple
+    'def_name': _hex('#56a8f5'),  # Name.Function (declaration) — IntelliJ Dark blue
     'decorator': _hex('#bbb529'),  # Name.Decorator
     'string': _hex('#6a8759'),  # String
     'string_doc': _hex('#629755'),  # String.Doc (docstrings)
@@ -57,6 +57,7 @@ COLORS = {
     'line_no': _hex('#808080'),  # Gutter numbers keep the old comment color
     'number': _hex('#6897bb'),  # Number
     'color3': _hex('#6897bb'),  # merged color tuple `(r, g, b[, a])` (fallback text color)
+    'colorhex': _hex('#6a8759'),  # a string literal that IS a hex color (`'#8888c6'`) - string color, swatch beside it
     'icon': _hex('#56b6c2'),  # Font Awesome / PUA glyph (cyan, distinct from strings)
 }
 
@@ -68,7 +69,6 @@ class _LoadingSentinel(str):
     without running the body; the value is deliberately unequal to any
     real buffer so input-change detection always fires on the swap-in."""
     __slots__ = ()
-
 
 LOADING = _LoadingSentinel("\x00__lsd_loading__\x00")
 
@@ -2049,8 +2049,6 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
     - While the picker is being dragged the EDITOR tile is force-invalidated
       each frame: the edit round-trips through the source splice, so a cached
       editor would freeze the value after its first change."""
-    from src.lsd.gl_gui.view.mode import Mode
-    from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
     s = input_value if isinstance(input_value, str) else str(input_value)
     parts = [p.strip() for p in s.strip('()').split(',')]
     try:
@@ -2059,6 +2057,56 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
         return False, s
     if len(vals) not in (3, 4):
         return False, s
+    def _splice(new_color):
+        return "(" + ", ".join(
+            old_text if new_v == old_v else _fmt_color_channel(new_v)
+            for old_text, old_v, new_v in zip(parts, vals, new_color)) + ")"
+    return _color_swatch_plain(s, vals, _splice, width, height, name, editor_ds)
+
+draw_color3_token_plain._plain_tv = True
+
+
+def _parse_hex_color(s):
+    """`'#rgb'` / `'#rrggbb'` / `'#rrggbbaa'` (quotes included) → list of
+    0..1 floats, or None."""
+    body = s[2:-1]
+    if len(body) == 3:
+        body = ''.join(c * 2 for c in body)
+    try:
+        return [int(body[i:i + 2], 16) / 255.0 for i in range(0, len(body), 2)]
+    except ValueError:
+        return None
+
+
+def draw_colorhex_token_plain(input_value, width=20, height=20, name=None,
+                              editor_ds=None, **kwargs):
+    """Inline color swatch for a hex-color STRING literal (`'#8888c6'`,
+    `"#fff"`, RGBA `'#8888c680'`) — the 'colorhex' token kind, split off by
+    _split_icons. Same ACCESSORY contract and picker as
+    draw_color3_token_plain; an edit writes the color back as lowercase
+    `#rrggbb` (`#rrggbbaa` when the literal carried alpha) inside the
+    original quotes, so a 3-digit short form expands on its first edit."""
+    s = input_value if isinstance(input_value, str) else str(input_value)
+    vals = _parse_hex_color(s)
+    if vals is None or len(vals) not in (3, 4):
+        return False, s
+    quote = s[0]
+
+    def _splice(new_color):
+        chans = ''.join(f"{round(max(0.0, min(1.0, v)) * 255):02x}"
+                        for v in new_color[:len(vals)])
+        return f"{quote}#{chans}{quote}"
+    return _color_swatch_plain(s, vals, _splice, width, height, name, editor_ds)
+
+draw_colorhex_token_plain._plain_tv = True
+
+
+def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
+    """The swatch + latched picker shared by the tuple and hex-string color
+    widgets: `vals` are the 3/4 parsed channels, `splice(new_color)` renders
+    the edited channels back into source text. Returns (changed, text)."""
+    from src.lsd.gl_gui.view.mode import Mode
+    from src.lsd.gl_gui.view.core_views.new_core_view import draw_color_picker
     has_alpha = len(vals) == 4
     r, g, b = vals[0], vals[1], vals[2]
     a = vals[3] if has_alpha else 1.0
@@ -2132,9 +2180,7 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
             Melty.cache.invalidate_up(editor_ds._tile_id, max_depth=10, force=True)
             request_render()
         if color_changed and new_color is not None:
-            out = [old_text if new_v == old_v else _fmt_color_channel(new_v)
-                   for old_text, old_v, new_v in zip(parts, vals, new_color)]
-            return True, "(" + ", ".join(out) + ")"
+            return True, splice(new_color)
     else:
         if getattr(editor_ds, '_c3_open_name', None) == name:
             editor_ds._c3_open_name = None
@@ -2143,8 +2189,6 @@ def draw_color3_token_plain(input_value, width=20, height=20, name=None,
         if open_prev or clicked:
             request_render()
     return False, s
-
-draw_color3_token_plain._plain_tv = True
 
 
 def _fnrun_extract_def(file_path, def_line, def_name):
@@ -3716,8 +3760,8 @@ draw_run_fn_token_plain._plain_tv = True
 # The default callback-widget set: when draw_text is called with no token_views,
 # Font Awesome glyphs ("icon" tokens) become inline icon-picker dropdowns,
 # True/False become double-click-to-toggle words, numeric literals become drag
-# widgets, and color tuples (3 or 4 numeric channels, RGBA) become color
-# swatches. Add more entries here to make other token kinds interactive by
+# widgets, and color tuples (3 or 4 numeric channels, RGBA) and hex color
+# strings (`'#8888c6'`) become color swatches. Add more entries here to make other token kinds interactive by
 # default.
 # For whole_token entries char_width is also the "this is inline" flag - the
 # widget REPLACES the text at exactly token-width (len(token) cells), unless
@@ -3752,6 +3796,9 @@ DEFAULT_TOKEN_VIEWS = {
                "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
     "color3": {"renderer": draw_color3_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
+    # Hex color strings (`'#8888c6'`) get the same swatch beside the literal.
+    "colorhex": {"renderer": draw_colorhex_token_plain, "char_width": 1, "whole_token": True,
+                 "owns_mouse": True, "lead_cells": 2},
     # Function definitions: the run buttons live in the GUTTER, in place of
     # the def line's number (`gutter: True` - see the gutter-widget note in
     # the token-views block above); the name draws and edits normally and
@@ -6600,10 +6647,19 @@ def _is_icon_char(c):
     return '\ue000' <= c <= '\uf8ff'
 
 
+# `'#rgb'`, `'#rrggbb'` or `'#rrggbbaa'` between matching quotes, nothing else.
+_HEX_COLOR_STRING_RE = re.compile(r"""^(['"])#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\1$""")
+
+
 def _split_icons(s, base):
     """Split `s` into (substr, color_key) runs so PUA icon glyphs paint as 'icon'
     while the surrounding text keeps `base` — lets an icon embedded in a string
     token (the common case) stand out without recolouring the whole literal."""
+    if base == 'string' and _HEX_COLOR_STRING_RE.match(s):
+        # The string literal is a hex color (`'#8888c6'`, `"#fff"`, RGBA
+        # `'#8888c680'`): its own kind so the inline swatch widget targets it.
+        yield s, 'colorhex'
+        return
     start, run_icon = 0, None
     for j, c in enumerate(s):
         ic = _is_icon_char(c)
@@ -8129,7 +8185,10 @@ def _top_level_chunks(lines):
     deco_open = False     # the current chunk is a decorator run awaiting its def
     for idx, ln in enumerate(lines):
         head = ln[:1]
-        if head and not head.isspace() and head not in ')]}#' and quote is None:
+        # Clauses of the statement above (`except:` / `else:` / `elif` /
+        # `finally` / `case`) continue its chunk.
+        _clause = ln.startswith(('except', 'else', 'elif', 'finally', 'case '))
+        if head and not head.isspace() and head not in ')]}#' and quote is None and not _clause:
             if depth == 0 or ln.startswith(('def ', 'class ', '@', 'import ', 'from ', 'async def ')):
                 depth = 0
                 quote = None
@@ -8167,12 +8226,33 @@ def _top_level_chunks(lines):
     return starts
 
 
-def _compile_check_more(text, first_error, max_more=8):
+def _mask_error_line(lines, idx):
+    """`lines` with line `idx` replaced by a harmless statement at its own
+    indent — `if 1:` when a deeper-indented line follows (the broken line
+    opened a block), else `pass` — so the chunk can be re-checked for the
+    NEXT error past this one."""
+    ln = lines[idx]
+    indent = len(ln) - len(ln.lstrip())
+    nxt_indent = None
+    for k in range(idx + 1, len(lines)):
+        if lines[k].strip():
+            nxt_indent = len(lines[k]) - len(lines[k].lstrip())
+            break
+    stub = 'if 1:' if (nxt_indent is not None and nxt_indent > indent) else 'pass'
+    out = list(lines)
+    out[idx] = ' ' * indent + stub
+    return out
+
+
+def _compile_check_more(text, first_error, max_more=8, per_chunk=4):
     """Further SyntaxErrors beside `first_error` (compile() reports only one,
     and not the topmost): compile every top-level chunk (`_top_level_chunks`)
-    on its own and collect one error per chunk, in line order, skipping the
-    chunk that holds the first error. `lineno`s are in `text`'s coordinates.
-    A chunk cut mid-construct can report a spurious error; rare in practice."""
+    on its own; after each error the offending line is masked
+    (`_mask_error_line`) and the chunk re-checked, up to `per_chunk` errors
+    per chunk — so several mistakes inside ONE def are all found. Results in
+    line order, `lineno` in `text`'s coordinates, the first error's own line
+    left out. A masked / cut construct can report a spurious follow-up; rare
+    in practice."""
     import textwrap
     from src.lsd.gl_gui.view.core_conversion.new_converters import _compile_check
     lines = textwrap.dedent(text).split('\n')
@@ -8181,16 +8261,24 @@ def _compile_check_more(text, first_error, max_more=8):
     found = []
     for n, s0 in enumerate(starts):
         s1 = starts[n + 1] if n + 1 < len(starts) else len(lines)
-        if s0 < first_ln <= s1:
-            continue
-        err = _compile_check('\n'.join(lines[s0:s1]))
-        if err is None or getattr(err, 'lineno', None) is None:
-            continue
-        err.lineno = err.lineno + s0
-        found.append(err)
+        chunk = lines[s0:s1]
+        seen = set()
+        for _ in range(per_chunk):
+            err = _compile_check('\n'.join(chunk))
+            if err is None or getattr(err, 'lineno', None) is None:
+                break
+            rel = err.lineno - 1
+            if rel in seen or not (0 <= rel < len(chunk)):
+                break
+            seen.add(rel)
+            err.lineno = err.lineno + s0
+            if err.lineno != first_ln:
+                found.append(err)
+            chunk = _mask_error_line(chunk, rel)
         if len(found) >= max_more:
             break
-    return found
+    found.sort(key=lambda e: e.lineno)
+    return found[:max_more]
 
 
 def _exception_errors(error):
