@@ -1609,6 +1609,7 @@ def render_func(*args, **o_kwargs):
             # load's pending path never stamps), so the value can't always
             # carry its codec.
             _fk = kwargs.get("file_key", None)
+            _wtD = time.perf_counter()   # TEMP perf: codec/file-key prologue
             if _fk is not None and not isinstance(getattr(draw_state, "_file_meta", None), str):
                 draw_state._file_meta = str(_fk)
             # The ACTIVE codec: this value's own, or inherited from the
@@ -1771,6 +1772,7 @@ def render_func(*args, **o_kwargs):
             # Wrapping
             parent_wrap = Melty.wrap_stack[-1] if len(Melty.wrap_stack) > 0 else False
             this_wrap = kwargs.get("wrap", False)
+            _wtE = time.perf_counter()   # TEMP perf: injected/auto-state params
             if not auto_resize:
                 parent_wrap = False
                 this_wrap = False
@@ -2354,6 +2356,7 @@ def render_func(*args, **o_kwargs):
             # dict/list collection offers its window as a drag handle. The
             # gesture itself is owned by DragDrop.frame_update (Melty.end_frame).
             _drag_drop.DragDrop.register_item(draw_state)
+            _wtF = time.perf_counter()   # TEMP perf: size/resize time
             if draw_state.window_pos is not None and closable:
                 _explicit_window_pos = kwargs.get("window_pos", None) is not None
                 if not _explicit_window_pos:
@@ -2855,6 +2858,7 @@ def render_func(*args, **o_kwargs):
 
             hover_changed = last_bounding_hovered != new_bounding_hovered
             draw_state._bounding_hovered = new_bounding_hovered
+            _wtG = time.perf_counter()   # TEMP perf: hover/bounding hovered
             if (draw_state.width is None or draw_state.height is None or hover_changed or
                     draw_state._bounding_hovered or draw_state._imgui_popover_open):
                 someone_elses_scroll = Melty.on_scroll and not draw_state.scroll_visible
@@ -4926,16 +4930,19 @@ def render_func(*args, **o_kwargs):
                     _nm = getattr(func, "__name__", "?") + "~r"
                     _e = _vm.get(_nm)
                     _vm[_nm] = ((_e[0] + _tot, _e[1] + 1) if _e else (_tot, 1))
-                if _ves_pushed and _tot > 0.030:
+                if _ves_pushed and _tot > 0.0008:
                     from src.lsd.gl_gui.perf_trace import trace as _wtr
+                    _b0 = getattr(draw_state, "_wt_body0", _wt2)
+                    _b1 = getattr(draw_state, "_wt_body1", _wt2)
+                    _ms = lambda a, b: f"{(b - a) * 1000.0:.2f}"
                     _wtr("wrapper split",
                          view=getattr(func, "__name__", "?"),
-                         merge=round((_wtA - _wt0) * 1000.0, 1),
-                         resolve=round((_wtB - _wtA) * 1000.0, 1),
-                         checks=round((_wtC - _wtB) * 1000.0, 1),
-                         setup=round((_wt1 - _wtC) * 1000.0, 1),
-                         inner_ms=round((_wt2 - _wt1) * 1000.0, 1),
-                         epi_ms=round((_wt3 - _wt2) * 1000.0, 1))
+                         merge=_ms(_wt0, _wtA), resolve=_ms(_wtA, _wtB),
+                         chk1=_ms(_wtB, _wtD), state=_ms(_wtD, _wtE),
+                         size=_ms(_wtE, _wtF), pos=_ms(_wtF, _wtG),
+                         hover=_ms(_wtG, _wtC), setup=_ms(_wtC, _wt1),
+                         pre=_ms(_wt1, _b0), body=_ms(_b0, _b1),
+                         post=_ms(_b1, _wt2), epi=_ms(_wt2, _wt3))
             except Exception:
                 pass
 
@@ -5294,7 +5301,9 @@ def render_func(*args, **o_kwargs):
                             call_with_body_capture)
                         return_value = call_with_body_capture(func, clean_args)
                     else:
+                        draw_state._wt_body0 = time.perf_counter()   # TEMP perf
                         return_value = func(**clean_args)
+                        draw_state._wt_body1 = time.perf_counter()   # TEMP perf
 
 
                     # Stack cleanup handled by the finally block below

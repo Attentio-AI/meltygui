@@ -3261,6 +3261,11 @@ class Melty:
 
     @classmethod
     def end_frame(cls):
+        # TEMP perf: section stamps (draw_main's _dm_marks pattern); a frame
+        # over _ef_trace_ms logs the split to the perf log.
+        _ef_trace_ms = 0.9
+        _ef_marks = [("start", time.perf_counter())]
+        _ef_mark = lambda label: _ef_marks.append((label, time.perf_counter()))
         if glfw_utils.frames_left > 0:
             request_render()
 
@@ -3324,6 +3329,7 @@ class Melty:
                                    f"Melty.z_pos {Melty.z_pos} "
                                    f"Melty.depth {Melty.depth}")
 
+        _ef_mark("pre")   # TEMP perf
         cls.root_draw_states_by_layer = defaultdict(list)
         dynamic_offset = 0
         empty_parents = set()
@@ -3386,6 +3392,7 @@ class Melty:
         # _nested_index stamp in the dispatch loop below). Built after
         # DragDrop.frame_update so a re-registered floating drag window is
         # included.
+        _ef_mark("discard")   # TEMP perf
         raw_window_indices = set()
         for w in cls.registered_windows.values():
             w_ds = getattr(w, 'draw_state', None)
@@ -3437,6 +3444,7 @@ class Melty:
         # focus mode reads that half: hovering the PARENT view lights its
         # connectors, but hovering a child window itself does not - only
         # dragging it does.
+        _ef_mark("paint_order")   # TEMP perf
         swoosh_targets = defaultdict(set)  # id(hoverable ds) -> {id(window ds)}
         spawner_targets = defaultdict(set)
         for ds_list in cls.root_draw_states_by_layer.values():
@@ -3481,6 +3489,7 @@ class Melty:
                     if vid.endswith(suffix):
                         dragging_tiles.add(vid[:-len(suffix)])
 
+        _ef_mark("swoosh")   # TEMP perf
         cls._last_paint_rank = -1
         for idx in range(len(cls.layers)):
             layer = cls.layers[idx]
@@ -3702,6 +3711,7 @@ class Melty:
                 #         draw_state._bounding_hovered != draw_state._imgui_popover_open):
                 #     Melty.cache.invalidate(draw_state._tile_id)
                 #     # draw_state.draw_rect()
+        _ef_mark("layer_loop")   # TEMP perf
         cls.layers = []
 
         is_popup_open = imgui.is_popup_open("", flags=imgui.POPUP_ANY_POPUP)
@@ -3745,6 +3755,7 @@ class Melty:
             overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
                              f"FPS: {imgui.get_io().framerate:.1f}")
 
+        _ef_mark("post_layers")   # TEMP perf
         to_unselect = set()
         for selected_ds in cls.selected:
             if selected_ds.abs_closed or selected_ds.closed:
@@ -3799,6 +3810,7 @@ class Melty:
         # frame-count scale as the InvalidateTracker notes below. Manual
         # (auto_fade=False) notes hold at full alpha until the caller
         # releases them with an auto_fade=True call.
+        _ef_mark("selection")   # TEMP perf
         for key in list(cls.emphasis_notes.keys()):
             note = cls.emphasis_notes[key]
             if (not note.auto_fade and cls.frame_count
@@ -3924,6 +3936,7 @@ class Melty:
                     overlay.add_rect_filled(x0, y0, x1, y1, fill_col)
                     overlay.add_rect(x0, y0, x1, y1, edge_col, thickness=1.0)
 
+        _ef_mark("emphasis+debug_draw")   # TEMP perf
         Collisions.handle_collisions()
 
         if Toggles.developer_mode:
@@ -3939,7 +3952,15 @@ class Melty:
         # windows drawn above in this method's layer loop (the editors, the
         # floating search box). Clearing earlier would empty the buffer before
         # those windows read it, which is why text input saw no keys.
+        _ef_mark("debug")   # TEMP perf
         cls.frame_key_events = []
+        _ef_mark("tail")   # TEMP perf: end of section split
+        _ef_total = (_ef_marks[-1][1] - _ef_marks[0][1]) * 1000.0
+        if _ef_total >= _ef_trace_ms:
+            from src.lsd.gl_gui.perf_trace import trace as _ef_trace
+            _ef_trace("end_frame perf", total_ms=round(_ef_total, 2),
+                      breakdown=" ".join(f"{_l1}={(_t1 - _t0) * 1000.0:.2f}"
+                                         for (_l0, _t0), (_l1, _t1) in zip(_ef_marks, _ef_marks[1:])))
 
 
 
