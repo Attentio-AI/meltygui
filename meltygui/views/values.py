@@ -5339,7 +5339,7 @@ def draw_melty_windows(vis):
         # window_shadow_lift over the (transparent) surroundings and cast by
         # the very shadow pass the windows use - into the shadow margin.
         if Toggles.Melty.window_shadow_lift > 0:
-            add_shadow((0, 0, fb_w, fb_h), offset=float(Toggles.Melty.window_shadow_lift),
+            add_shadow((0, 0, fb_w, fb_h), offset=0.5,
                        corner_radius=_radius, clip=False)
     else:
         draw_main(name="Main Window", vis=vis, width=fb_w, height=fb_h)
@@ -7699,12 +7699,6 @@ class TestClass(DictConversion):
         self.value = 2
         self.str_val = "Test"
 
-
-
-
-
-
-
 @render_func
 def draw_float_ctx(input_value):
     imgui.text('Float content menu')
@@ -8572,7 +8566,6 @@ _ACTIVE_SRC_TINT = (0.9, 0.8, 0.2)
 # `initial` only applies on the child's first frames, so the chevron still
 # works afterwards. The dunder key never renders (underscore-skipped).
 _INFO_GROUP_OVERRIDES = {"__header__": {"initial": {"expanded": False}}}
-
 
 class _InfoRow:
     """One info-tab row: a param name plus the shared per-render tab context

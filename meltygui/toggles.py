@@ -1375,6 +1375,13 @@ class Toggles:
         # Off = the per-mark path (compare if a shadow looks different).
         # [tint=(0.95, 0.55, 0.15)]
         batch_shadow_stamps = True
+        # finalize_captures rebuilds the tile / full depth masks and the glow
+        # buffer (passes 4–6) only when their INPUTS changed — mask rects,
+        # shadow marks, retained emitters, window order — and keeps last
+        # frame's textures otherwise (a keystroke or selection drag changes
+        # pixels, not geometry). Off = the old rebuild-every-frame path.
+        # [tint=(0.95, 0.55, 0.15)]
+        mask_rebuild_on_change = True
 
     @defaults(tint=(0.635, 0.728, 0.725))
     class Style:

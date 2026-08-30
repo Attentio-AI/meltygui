@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import time
+from array import array
 import random
 import sys
 import traceback
@@ -2916,51 +2917,68 @@ class TileCacheMasked:
         max_recs, min_recs, strips = [], [], []
         floor_, ceil_ = floor, ceil
         win_z = {}     # owner key to encoded rank, resolved once per owner
+        # Per-frame transform cache keyed on the shadow tuple's identity: the
+        # same ~115 marks are stamped up to four times a frame (each
+        # pending tile's shadow set, the standalone pass, the depth pass),
+        # and only the per-call scissor and the window mask differ.
+        _xf = getattr(self, '_stamp_xf_cache', (-1, None))
+        if _xf[0] != self._frame_id:
+            _xf = self._stamp_xf_cache = (self._frame_id, {})
+        _xf = _xf[1]
+        _sc_fb = scissor_fb
+        _sc_key = None
         for s in shadows:
-            (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
-             inset) = s[:10]
             if len(s) > 10 and s[10] is not None:
                 strips.append(s)
                 continue
-            # _screen_rect_to_fb_xyxy inlined (this loop runs ~300× a frame)
-            x0 = (sx - dp_x) * s_x
-            x1 = (sx + sw - dp_x) * s_x
-            y0 = fb_h - (sy + sh - dp_y) * s_y
-            y1 = fb_h - (sy - dp_y) * s_y
-            ix0, iy0 = floor_(x0), floor_(y0)
-            ix1, iy1 = ceil_(x1), ceil_(y1)
+            base = _xf.get(id(s))
+            if base is None:
+                (sx, sy, sw, sh, d_and_l, cr, margin, clip_xyxy, _owner,
+                 inset) = s[:10]
+                x0 = (sx - dp_x) * s_x
+                x1 = (sx + sw - dp_x) * s_x
+                y0 = fb_h - (sy + sh - dp_y) * s_y
+                y1 = fb_h - (sy - dp_y) * s_y
+                ix0, iy0 = floor_(x0), floor_(y0)
+                ix1, iy1 = ceil_(x1), ceil_(y1)
+                if clip_xyxy is not None:
+                    cx0, cy0, cx1, cy1 = clip_xyxy
+                    own_clip = ((cx0 - dp_x) * s_x, fb_h - (cy1 - dp_y) * s_y,
+                                (cx1 - dp_x) * s_x, fb_h - (cy0 - dp_y) * s_y)
+                else:
+                    own_clip = None
+                base = _xf[id(s)] = (
+                    s, ix0, iy0, ix1, iy1, own_clip, _owner, inset,
+                    (ix0, iy0, ix1 - ix0, iy1 - iy0),
+                    (d_and_l[0] * rank_scale, d_and_l[1] * rank_scale,
+                     d_and_l[2] * rank_scale, d_and_l[3] * rank_scale,
+                     cr if cr > 0 else 0.0, margin))
+            _, ix0, iy0, ix1, iy1, own_clip, _owner, inset, rect4, tail6 = base
             if ix1 <= ix0 or iy1 <= iy0:
                 continue
-            sc = scissor_fb
-            if clip_xyxy is not None:
-                cx0, cy0, cx1, cy1 = clip_xyxy
-                fx0 = (cx0 - dp_x) * s_x
-                fx1 = (cx1 - dp_x) * s_x
-                fy0 = fb_h - (cy1 - dp_y) * s_y
-                fy1 = fb_h - (cy0 - dp_y) * s_y
-                sc = ((fx0, fy0, fx1, fy1) if sc is None else
-                      (max(sc[0], fx0), max(sc[1], fy0),
-                       min(sc[2], fx1), min(sc[3], fy1)))
+            sc = _sc_fb
+            if own_clip is not None:
+                sc = (own_clip if sc is None else
+                      (max(sc[0], own_clip[0]), max(sc[1], own_clip[1]),
+                       min(sc[2], own_clip[2]), min(sc[3], own_clip[3])))
             if sc is not None:
-                # The integer scissor the per-mark clip sets, applied as
-                # the quad's clip so no glScissor call is needed per mark.
                 kx0, ky0 = max(ix0, floor_(sc[0])), max(iy0, floor_(sc[1]))
                 kx1, ky1 = min(ix1, ceil_(sc[2])), min(iy1, ceil_(sc[3]))
                 if kx1 <= kx0 or ky1 <= ky0:
                     continue
             else:
                 kx0, ky0, kx1, ky1 = ix0, iy0, ix1, iy1
-            rec = (float(ix0), float(iy0), float(ix1 - ix0), float(iy1 - iy0),
-                   float(kx0), float(ky0), float(kx1), float(ky1),
-                   d_and_l[0] * rank_scale, d_and_l[1] * rank_scale,
-                   d_and_l[2] * rank_scale, d_and_l[3] * rank_scale,
-                   max(0.0, float(cr)), float(margin), 1.0, 0.0)
             if win_gate:
                 z = win_z.get(_owner)
                 if z is None:
                     z = win_z[_owner] = self._win_z_for_owner(_owner)
-                rec = rec[:14] + (z, 0.0)
-            (min_recs if inset else max_recs).extend(rec)
+            else:
+                z = 1.0
+            recs = min_recs if inset else max_recs
+            recs.extend(rect4)
+            recs.append(kx0); recs.append(ky0); recs.append(kx1); recs.append(ky1)
+            recs.extend(tail6)
+            recs.append(z); recs.append(0.0)
         if max_recs or min_recs:
             self._ensure_batch_state()
             gl.glEnable(gl.GL_BLEND)
@@ -2981,8 +2999,8 @@ class TileCacheMasked:
             for recs, equation in ((max_recs, gl.GL_MAX), (min_recs, gl.GL_MIN)):
                 if not recs:
                     continue
-                buf = (ctypes.c_float * len(recs))(*recs)
-                gl.glBufferData(gl.GL_ARRAY_BUFFER, len(recs) * 4, buf,
+                buf = array('f', recs).tobytes()   # C-speed pack; (c_float*n)(*recs) was 0.1 ms
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, len(buf), buf,
                                 gl.GL_STREAM_DRAW)
                 gl.glBlendEquation(equation)
                 gl.glDrawArraysInstanced(gl.GL_TRIANGLE_STRIP, 0, 4,
@@ -4518,6 +4536,7 @@ class TileCacheMasked:
         # _FC_TRACE_MS logs its split to the perf log (Toggles.symbol_perf_log).
         _fc_t0 = time.perf_counter()
         _fc_marks = []
+        _rebuild_masks = True      # set by the rebuild-on-demand gate below
         _fc_counts = (len(self._shadow_rects), len(self._mask_rects), len(self._pending))
         if self._snapshot_fbo is None:
             return
@@ -4733,757 +4752,827 @@ class TileCacheMasked:
             _fc_marks.append(("pass3_copy_tiles", time.perf_counter()))
             # PASS 4: Build tile.mask_tex for each dirty tile (full subtree)
             # ================================================================
-            background_depth = 0.001
-            background_depth = 0
+            # ── Rebuild-on-change gate (Toggles.Melty.mask_rebuild_on_change) ──
+            # Passes 4–6 rebuild the pending tiles' subtree masks, the full
+            # depth mask and the glow buffer from geometry alone: root rects,
+            # shadow marks, retained emitters, window order. A pixel-only
+            # frame (a keystroke, a selection drag) leaves all of that as it
+            # was, so the rebuilt textures would be identical - compare the
+            # inputs and keep last frame's textures instead (Lukas 08-31:
+            # "move away from restamp everything every frame"). Compared by
+            # value with ==, never hashed (mark tuples carry lists).
+            _mask_sig = None
+            _rebuild_masks = True
+            try:
+                if Toggles.Melty.mask_rebuild_on_change:
+                    _sig_rects = []
+                    for _rk, _rects in subtree_rects_by_root.items():
+                        for r in _rects:
+                            _ds = self.key_to_draw_state.get(r.key)
+                            _t = self._tiles.get(r.key)
+                            _sig_rects.append((
+                                _rk, r.key, r.x, r.y, r.w, r.h, r.depth_and_layer,
+                                r.corner_radius, getattr(r, "layer", None),
+                                None if _ds is None else (
+                                    _ds.abs_left, _ds.abs_top, _ds.width, _ds.height,
+                                    bool(_ds.size_change), bool(getattr(_ds, "freeze_resize", False)),
+                                    _ds.shadow_margin,
+                                    tuple(_ds.clipped_by_rect) if _ds.clipped_by_rect is not None else None),
+                                None if _t is None else (_t.mask_tex is not None, _t.mask_layer, tuple(_t.size)),
+                                r.key in self._key_to_ctx))
+                    _sig_windows = tuple(
+                        (id(_w), _w.abs_left, _w.abs_top, _w.width, _w.height, bool(_w.closed),
+                         getattr(_w, "corner_radius", None))
+                        for _w in (getattr(Melty, "paint_ordered_ds", None) or ()))
+                    _sig_retained = tuple(
+                        (_k, len(_m), id(_e), _e.abs_left, _e.abs_top, _a)
+                        for _k, (_m, _e, _a) in list(self._depth_marks_by_emitter.items())
+                    ) + tuple(
+                        (_k, len(_m), id(_e), _e.abs_left, _e.abs_top, _a)
+                        for _k, (_m, _e, _a) in list(self._glow_marks_by_emitter.items()))
+                    _settled_sig = (imgui.is_mouse_down(0), imgui.is_mouse_down(1),
+                                    imgui.is_mouse_down(2), bool(Melty.on_drag))
+                    _mask_sig = [
+                        (fb_w, fb_h, dp_x, dp_y, s_x, s_y),
+                        _sig_rects, list(self._shadow_rects), _sig_windows, _sig_retained,
+                        list(self._depth_frame), list(getattr(self, "_glow_rects", ()) or ()),
+                        set(self._glow_cleared), set(self._depth_cleared), _settled_sig,
+                        tuple((p.key, p.depth_and_layer) for p in local_pending),
+                    ]
+                    _rebuild_masks = (
+                        self._full_mask_tex is None
+                        or getattr(self, "_mask_sig_prev", None) != _mask_sig
+                        or any(p.tile is None or p.tile.mask_tex is None for p in local_pending))
+            except Exception:
+                _mask_sig = None
+                _rebuild_masks = True
+            if _rebuild_masks:
+                background_depth = 0.001
+                background_depth = 0
 
-            for p in local_pending_rev:
-                x, y = p.pos
-                w, h = p.size
-                x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
+                for p in local_pending_rev:
+                    x, y = p.pos
+                    w, h = p.size
+                    x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(x, y, w, h, dp_x, dp_y, s_x, s_y, fb_h)
 
-                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_sub_mask_fbo)
+                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_sub_mask_fbo)
+                    gl.glViewport(0, 0, fb_w, fb_h)
+
+                    sc_x0, sc_y0 = int(floor(x0)), int(floor(y0))
+                    sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
+                    sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
+
+                    # clip = p.draw_state.clip_rect
+                    # clipped = self._clip_rect(x, y, w, h, clip)
+                    # if clipped:
+                    #     cx, cy, cw, ch = clipped
+                    #     cx, cy, cw, ch = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y, fb_h)
+                    #     sc_x0, sc_y0 = max(0, int(cx)), max(0, int(cy))
+                    #     sc_w, sc_h = max(1, int(cw)), max(1, int(ch))
+
+                    gl.glEnable(gl.GL_SCISSOR_TEST)
+                    gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
+
+                    gl.glDisable(gl.GL_BLEND)
+                    gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
+                    gl.glClearColor(background_depth, 0, 0, 0.0)
+                    gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+                    for r in subtree_rects_by_root.get(p.key, ()):
+                        draw_state = self.key_to_draw_state.get(r.key)
+                        size_change = draw_state.size_change if draw_state else False
+                        t_child = self._tiles.get(r.key)
+                        is_self = (r.key == p.key)
+
+                        # freeze_resize child mid-drag: the body (and its whole
+                        # subtree) skipped this frame, so the fresh-flat draw
+                        # below would stamp one featureless rect and erase every
+                        # nested mark baked in its cached mask - nested child
+                        # windows visibly drop out for the drag. Serve the cached
+                        # mask the way the frozen pixel blit serves the tile:
+                        # captured (t_child.size) quad, top-left anchored, the
+                        # live-rect scissor as a shrink. The not-size_change
+                        # stretch guard does not apply - the quad is at the
+                        # tile's own size, so uv mapping stays unstretched.
+                        frozen_child = (
+                                (not is_self) and size_change
+                                and t_child is not None
+                                and t_child.mask_tex is not None
+                                and draw_state is not None
+                                and getattr(draw_state, "freeze_resize", False))
+                        use_child_cache = (
+                                (not is_self)
+                                and (t_child is not None)
+                                and (t_child.mask_tex is not None)
+                                and (not size_change or frozen_child)
+                        )
+
+                        self.apply_blend_mode(r)
+
+                        clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
+                            r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
+                        )
+                        clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
+                        clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
+                        clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
+
+                        gl.glEnable(gl.GL_SCISSOR_TEST)
+                        gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                        gl.glDisable(gl.GL_BLEND)
+
+                        # Quad rect comes from the LIVE draw_state, never from
+                        # _key_to_ctx: the ctx is only refreshed when a view
+                        # actually re-renders (mark_end_offscreen), so after a
+                        # reflow moves a cache-served sibling its ctx.pos is stale
+                        # and the cached depths land at the old pos while the
+                        # scissor (this frame's mask rect) sits at the new one.
+                        # Mirrors PASS 5. Under the not-size_change guard the live
+                        # rect equals the tile's logical size, so uv_rect mapping
+                        # stays unstretched.
+                        if frozen_child:
+                            cx, cy = draw_state.abs_left, draw_state.abs_top
+                            cw, ch = t_child.size
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
+                        elif (draw_state is not None and draw_state.width is not None
+                              and draw_state.height is not None):
+                            cx, cy = draw_state.abs_left, draw_state.abs_top
+                            cw, ch = draw_state.width, draw_state.height
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
+                        else:
+                            sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
+                                                                              fb_h)
+
+                        ix0, iy0 = int(floor(sx0)), int(floor(sy0))
+                        ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
+                        iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
+                        if iw <= 0 or ih <= 0:
+                            continue
+
+                        depth_and_layer = r.depth_and_layer
+
+                        ix0, iy0 = ix0, iy0
+                        ix1, iy1 = ix1, iy1
+                        iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
+                        if use_child_cache:
+                            offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
+                            self._draw_mask_rect_cached(
+                                t_child.mask_tex,
+                                ix0,
+                                iy0,
+                                iw,
+                                ih,
+                                offset,
+                                r.corner_radius,
+                                r.draw_state.shadow_margin if r.draw_state is not None else 0.0,
+                                uv_rect=_tile_uv_rect(t_child),
+                            )
+                        else:
+                            if r.draw_state.parent_window is not None:
+                                if r.draw_state.parent_window._is_nested:
+                                    gl.glEnable(gl.GL_SCISSOR_TEST)
+                                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                            rank_norm = float(depth_and_layer) / 65535.5
+
+                            gl.glViewport(ix0, iy0, iw, ih)
+                            if r.corner_radius > 0:
+                                gl.glUseProgram(self._prog_mask_rounded)
+                                gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
+                                gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
+                                gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
+                                shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
+                                gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+
+                            else:
+                                gl.glUseProgram(self._prog_mask)
+                                gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
+                            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+
+                    # Bake add_shadow() marks owned by this tile's subtree into
+                    # the cached mask, so they keep casting on frames where the
+                    # owner's tile is cache-served - the only persistence regular
+                    # view marks get from this rebuild. A body only runs when its
+                    # tile is dirty, so the frame a shadow is (re)marked is always
+                    # a frame its tile is marked local_pending; conversely the next
+                    # mask capture without the call ages the mark out.
+                    if self._shadow_rects:
+                        _owned = self._shadows_owned_by(p.key)
+                        if _owned:
+                            self._stamp_shadow_marks(_owned, dp_x, dp_y, s_x, s_y,
+                                                     fb_h, scissor_fb=(x0, y0, x1, y1),
+                                                     win_gate=False)
+
+                    gl.glDisable(gl.GL_SCISSOR_TEST)
+
+                    # Save _full_sub_mask_tex to tile's mask_tex and record the layer
+                    if p.tile is not None and p.tile.mask_tex is not None:
+                        p.tile.mask_layer = p.depth_and_layer
+                        _cb = p.draw_state.clipped_by_rect if p.draw_state is not None else None
+                        p.tile.mask_clip_insets = tuple(_cb) if _cb is not None else (0.0, 0.0, 0.0, 0.0)
+
+                        gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._scratch_fbo)
+                        gl.glFramebufferTexture2D(
+                            gl.GL_FRAMEBUFFER,
+                            gl.GL_COLOR_ATTACHMENT0,
+                            gl.GL_TEXTURE_2D,
+                            p.tile.mask_tex,
+                            0,
+                        )
+                        gl.glDrawBuffers(1, [gl.GL_COLOR_ATTACHMENT0])
+
+                        gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._full_sub_mask_fbo)
+
+                        # Dst is the top-anchored logical subrect of the (possibly
+                        # bucket-ized) mask texture, mirroring PASS 3's viewport.
+                        m_lw, m_lh = int(p.tile.size[0]), int(p.tile.size[1])
+                        m_ah = int(_tile_alloc(p.tile)[1])
+                        gl.glBlitFramebuffer(
+                            int(x0),
+                            int(y0),
+                            int(x1),
+                            int(y1),
+                            0,
+                            m_ah - m_lh,
+                            m_lw,
+                            m_ah,
+                            gl.GL_COLOR_BUFFER_BIT,
+                            gl.GL_NEAREST,
+                        )
+
+                # ================================================================
+                _cp_t4 = _cp()
+                _fc_marks.append(("pass4_tile_masks", time.perf_counter()))
+                # PASS 5: rebuild _full_mask_tex using cached subtree masks
+                # ================================================================
+                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
                 gl.glViewport(0, 0, fb_w, fb_h)
-
-                sc_x0, sc_y0 = int(floor(x0)), int(floor(y0))
-                sc_x1, sc_y1 = int(ceil(x1)), int(ceil(y1))
-                sc_w, sc_h = max(0, sc_x1 - sc_x0), max(0, sc_y1 - sc_y0)
-
-                # clip = p.draw_state.clip_rect
-                # clipped = self._clip_rect(x, y, w, h, clip)
-                # if clipped:
-                #     cx, cy, cw, ch = clipped
-                #     cx, cy, cw, ch = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y, fb_h)
-                #     sc_x0, sc_y0 = max(0, int(cx)), max(0, int(cy))
-                #     sc_w, sc_h = max(1, int(cw)), max(1, int(ch))
-
-                gl.glEnable(gl.GL_SCISSOR_TEST)
-                gl.glScissor(sc_x0, sc_y0, sc_w, sc_h)
-
+                gl.glDisable(gl.GL_SCISSOR_TEST)
                 gl.glDisable(gl.GL_BLEND)
-                gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE, gl.GL_FALSE)
+                gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
                 gl.glClearColor(background_depth, 0, 0, 0.0)
                 gl.glClear(gl.GL_COLOR_BUFFER_BIT)
 
-                for r in subtree_rects_by_root.get(p.key, ()):
-                    draw_state = self.key_to_draw_state.get(r.key)
-                    size_change = draw_state.size_change if draw_state else False
-                    t_child = self._tiles.get(r.key)
-                    is_self = (r.key == p.key)
+                # gl.glDisable(gl.GL_BLEND)
+                for key in reversed(list((subtree_rects_by_root.keys()))):
+                    for r in subtree_rects_by_root.get(key, ()):
+                        draw_state = self.key_to_draw_state.get(r.key)
+                        t = self._tiles.get(r.key)
 
-                    # A frozen child mid-drag: its body (and its whole
-                    # subtree) skipped this frame, so the fresh-flat fallback
-                    # below would render a featureless rect and erase every
-                    # nested mark baked in its cached mask - nested child
-                    # would visibly drop out of the drag. Serve the cached
-                    # mask the way the frozen pixel blit serves the tile:
-                    # captured (t_child.size) quad, top-left anchored, the
-                    # live-rect scissor crops a shrink. The not-size_change
-                    # below guard doesn't apply - the quad stays at the
-                    # tile's own size, so uv mapping is unstretched.
-                    frozen_child = (
-                            (not is_self) and size_change
-                            and t_child is not None
-                            and t_child.mask_tex is not None
-                            and draw_state is not None
-                            and getattr(draw_state, "freeze_resize", False))
-                    use_child_cache = (
-                            (not is_self)
-                            and (t_child is not None)
-                            and (t_child.mask_tex is not None)
-                            and (not size_change or frozen_child)
-                    )
+                        size_change = draw_state.size_change if draw_state else False
+                        # freeze_resize mid-drag: same serve-the-cached-mask
+                        # exception as PASS 4's frozen tiles - the flat fallback
+                        # would flatten the whole frozen subtree's depth for the
+                        # drag. Quad at the tile's captured size (unstretched),
+                        # live-rect scissor.
+                        frozen_mask = (size_change and t is not None
+                                       and t.mask_tex is not None
+                                       and draw_state is not None
+                                       and getattr(draw_state, "freeze_resize", False))
+                        can_use_cached = ((t is not None) and (t.mask_tex is not None)
+                                          and (not size_change or frozen_mask))
 
-                    self.apply_blend_mode(r)
-
-                    clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
-                        r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
-                    )
-                    clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
-                    clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
-                    clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
-
-                    gl.glEnable(gl.GL_SCISSOR_TEST)
-                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                    gl.glDisable(gl.GL_BLEND)
-
-                    # Quad geometry comes from the LIVE draw_state, never the
-                    # _key_to_ctx: the ctx is only refreshed when a view
-                    # actually re-nders (mark_end_offscreen), so after a
-                    # reflow moves a cache-served sibling its ctx.pos is stale
-                    # and the cached depths land at the old position while the
-                    # scissor (this frame's dirty mark) sits at the new one.
-                    # Mirrors PASS 5. Under the not-size_change guard the live
-                    # size equals the tile's logical size, so uv_rect mapping
-                    # stays unstretched.
-                    if frozen_child:
-                        cx, cy = draw_state.abs_left, draw_state.abs_top
-                        cw, ch = t_child.size
-                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
-                                                                          fb_h)
-                    elif (draw_state is not None and draw_state.width is not None
-                          and draw_state.height is not None):
-                        cx, cy = draw_state.abs_left, draw_state.abs_top
-                        cw, ch = draw_state.width, draw_state.height
-                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(cx, cy, cw, ch, dp_x, dp_y, s_x, s_y,
-                                                                          fb_h)
-                    else:
-                        sx0, sy0, sx1, sy1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y,
-                                                                          fb_h)
-
-                    ix0, iy0 = int(floor(sx0)), int(floor(sy0))
-                    ix1, iy1 = int(ceil(sx1)), int(ceil(sy1))
-                    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-
-                    if iw <= 0 or ih <= 0:
-                        continue
-
-                    depth_and_layer = r.depth_and_layer
-
-                    ix0, iy0 = ix0, iy0
-                    ix1, iy1 = ix1, iy1
-                    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-
-                    if use_child_cache:
-                        offset = (float(depth_and_layer) - float(t_child.mask_layer)) * float(INV_65535)
-                        self._draw_mask_rect_cached(
-                            t_child.mask_tex,
-                            ix0,
-                            iy0,
-                            iw,
-                            ih,
-                            offset,
-                            r.corner_radius,
-                            r.draw_state.shadow_margin if r.draw_state is not None else 0.0,
-                            uv_rect=_tile_uv_rect(t_child),
+                        # abs_clip = draw_state.abs_clip_rect if draw_state else None
+                        # abs_clip_w = abs_clip[2] - abs_clip[0] if abs_clip is not None else r.w
+                        # abs_clip_h = abs_clip[3] if abs_clip else r.h
+                        clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
+                            r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
                         )
-                    else:
-                        if r.draw_state.parent_window is not None:
-                            if r.draw_state.parent_window._is_nested:
-                                gl.glEnable(gl.GL_SCISSOR_TEST)
-                                gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                        rank_norm = float(depth_and_layer) / 65535.5
+                        clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
+                        clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
+                        clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
 
-                        gl.glViewport(ix0, iy0, iw, ih)
-                        if r.corner_radius > 0:
-                            gl.glUseProgram(self._prog_mask_rounded)
-                            gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
-                            gl.glUniform2f(self._loc_maskr_uRectSize, float(iw), float(ih))
-                            gl.glUniform1f(self._loc_maskr_uCornerRadius, r.corner_radius)
-                            shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
-                            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+                        tile_ctx = self._key_to_ctx.get(r.key)
 
+                        if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
+                            tx, ty = draw_state.abs_left, draw_state.abs_top
+                            if frozen_mask:
+                                tw, th = t.size
+                            else:
+                                tw, th = draw_state.width, draw_state.height
+                            x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
                         else:
-                            gl.glUseProgram(self._prog_mask)
-                            gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
-                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
+                            x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
 
-                # Bake add_shadow() marks owned by this tile's subtree into
-                # the cached mask, so they keep casting on frames where the
-                # owner's tile is cache-served - the same persistence regular
-                # view marks get from this rebuild. A body only runs when its
-                # tile is dirty, so the frame a body is (re)marked is always
-                # a frame its tile is in local cache; conversely the next
-                # local capture without the call ages the mark out.
-                if self._shadow_rects:
-                    _owned = self._shadows_owned_by(p.key)
-                    if _owned:
-                        self._stamp_shadow_marks(_owned, dp_x, dp_y, s_x, s_y,
-                                                 fb_h, scissor_fb=(x0, y0, x1, y1),
-                                                 win_gate=False)
+                        ix0, iy0 = int(floor(x0)), int(floor(y0))
+                        ix1, iy1 = int(ceil(x1)), int(ceil(y1))
+                        iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
+
+                        if r.w <= 0 or r.h <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
+                            continue
+
+                        gl.glEnable(gl.GL_SCISSOR_TEST)
+                        gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                        gl.glViewport(ix0, iy0, iw, ih)
+
+                        depth_and_layer = r.depth_and_layer
+                        if can_use_cached:
+
+                            offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
+
+                            shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
+
+                            self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
+                                                        r.corner_radius, shadow_margin,
+                                                        uv_rect=_tile_uv_rect(t))
+                        else:
+                            rank_norm = float(depth_and_layer) / 65535.5
+                            gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
+                            cr = r.corner_radius
+                            if cr > 0:
+                                gl.glUseProgram(self._prog_mask_rounded)
+                                gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
+                                gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
+                                gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
+                                shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
+                                gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+
+                            else:
+                                gl.glUseProgram(self._prog_mask)
+                                gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
+
+                            gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
 
                 gl.glDisable(gl.GL_SCISSOR_TEST)
 
-                # Save _full_sub_mask_tex to tile's mask_tex and remember the layer
-                if p.tile is not None and p.tile.mask_tex is not None:
-                    p.tile.mask_layer = p.depth_and_layer
-                    _cb = p.draw_state.clipped_by_rect if p.draw_state is not None else None
-                    p.tile.mask_clip_insets = tuple(_cb) if _cb is not None else (0.0, 0.0, 0.0, 0.0)
+                # Standalone add_shadow() marks are stamped last, MAX-blended so they
+                # can only raise depth - a shadow under an already-higher window
+                # mark is a no-op, everywhere else it leaves a caster edge for
+                # the post_frame shadow_cast pass. (Owned marks were already baked
+                # into their pending tile's cached mask in PASS 4; MAX blend makes
+                # the double-stamp idempotent.) OWNED INSET marks are excluded: a
+                # MIN inset stamped over the finished full mask would reach into
+                # other windows floating above the owner - they reach the
+                # full mask only through their tile's cached mask (PASS 4), which
+                # scopes the carve to the owner's subtree.
+                # ... with one exception: an owned inset whose cached-mask path
+                # was skipped THIS frame (owner mid-resize: size_change makes
+                # PASS 5 stamp the owner as a flat rank rect, or the tile has no
+                # mask yet). Excluding it there would drop the recess for exactly
+                # the resize frames, so stamp it directly - still MIN-blended and
+                # scissored to its own snapshotted clip, which keeps the
+                # transient carve inside the owner view's region.
+                # Window-occlusion mask for every stamp below (fresh standalone
+                # here, retained depth re-stamps + glow in PASS 6): live clip
+                # rects from Melty.paint_ordered_ds, so front windows mask
+                # stamps IN REGION even mid-resize. Rebind the full-mask FBO
+                # after - the build leaves its own FBO active.
+                self._build_window_mask(dp_x, dp_y, s_x, s_y, fb_w, fb_h)
+                gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
 
-                    gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._scratch_fbo)
-                    gl.glFramebufferTexture2D(
-                        gl.GL_FRAMEBUFFER,
-                        gl.GL_COLOR_ATTACHMENT0,
-                        gl.GL_TEXTURE_2D,
-                        p.tile.mask_tex,
-                        0,
-                    )
-                    gl.glDrawBuffers(1, [gl.GL_COLOR_ATTACHMENT0])
-
-                    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, self._full_sub_mask_fbo)
-
-                    # Dst is the top-anchored logical subrect of the (possibly
-                    # bucket-padded) mask texture, mirroring PASS 3's viewport.
-                    m_lw, m_lh = int(p.tile.size[0]), int(p.tile.size[1])
-                    m_ah = int(_tile_alloc(p.tile)[1])
-                    gl.glBlitFramebuffer(
-                        int(x0),
-                        int(y0),
-                        int(x1),
-                        int(y1),
-                        0,
-                        m_ah - m_lh,
-                        m_lw,
-                        m_ah,
-                        gl.GL_COLOR_BUFFER_BIT,
-                        gl.GL_NEAREST,
-                    )
-
-            # ================================================================
-            _cp_t4 = _cp()
-            _fc_marks.append(("pass4_tile_masks", time.perf_counter()))
-            # PASS 5: Build _full_mask_tex using cached subtree masks
-            # ================================================================
-            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
-            gl.glViewport(0, 0, fb_w, fb_h)
-            gl.glDisable(gl.GL_SCISSOR_TEST)
-            gl.glDisable(gl.GL_BLEND)
-            gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
-            gl.glClearColor(background_depth, 0, 0, 0.0)
-            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
-
-            # gl.glDisable(gl.GL_BLEND)
-            for key in reversed(list((subtree_rects_by_root.keys()))):
-                for r in subtree_rects_by_root.get(key, ()):
-                    draw_state = self.key_to_draw_state.get(r.key)
-                    t = self._tiles.get(r.key)
-
-                    size_change = draw_state.size_change if draw_state else False
-                    # freeze_resize mid-drag: same serve-the-cached-mask
-                    # exception as PASS 4's frozen_child - a flat fallback
-                    # would flatten the whole frozen subtree's depth for the
-                    # drag. Quad at the tile's logical size (unstretched),
-                    # clip-rect scissor.
-                    frozen_mask = (size_change and t is not None
-                                   and t.mask_tex is not None
-                                   and draw_state is not None
-                                   and getattr(draw_state, "freeze_resize", False))
-                    can_use_cached = ((t is not None) and (t.mask_tex is not None)
-                                      and (not size_change or frozen_mask))
-
-                    # abs_clip = draw_state.abs_clip_rect if draw_state else None
-                    # abs_clip_w = abs_clip[2] - abs_clip[0] if abs_clip is not None else r.w
-                    # abs_clip_h = abs_clip[3] if abs_clip else r.h
-                    clip_x0, clip_y0, clip_x1, clip_y1 = self._screen_rect_to_fb_xyxy(
-                        r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h
-                    )
-                    clip_ix0, clip_iy0 = int(floor(clip_x0)), int(floor(clip_y0))
-                    clip_ix1, clip_iy1 = int(ceil(clip_x1)), int(ceil(clip_y1))
-                    clip_iw, clip_ih = max(0, clip_ix1 - clip_ix0), max(0, clip_iy1 - clip_iy0)
-
-                    tile_ctx = self._key_to_ctx.get(r.key)
-
-                    if (can_use_cached or size_change) and tile_ctx and not draw_state is None:
-                        tx, ty = draw_state.abs_left, draw_state.abs_top
-                        if frozen_mask:
-                            tw, th = t.size
-                        else:
-                            tw, th = draw_state.width, draw_state.height
-                        x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(tx, ty, tw, th, dp_x, dp_y, s_x, s_y, fb_h)
-                    else:
-                        x0, y0, x1, y1 = self._screen_rect_to_fb_xyxy(r.x, r.y, r.w, r.h, dp_x, dp_y, s_x, s_y, fb_h)
-
-                    ix0, iy0 = int(floor(x0)), int(floor(y0))
-                    ix1, iy1 = int(ceil(x1)), int(ceil(y1))
-                    iw, ih = max(0, ix1 - ix0), max(0, iy1 - iy0)
-
-                    if r.w <= 0 or r.h <= 0 or iw <= 0 or ih <= 0 or clip_iw <= 0 or clip_ih <= 0:
+                _standalone = []
+                for s in self._shadow_rects:
+                    if not (s[9] and s[8] is not None):
+                        _standalone.append(s)
                         continue
+                    _ot = self._tiles.get(s[8])
+                    _ods = self.key_to_draw_state.get(s[8])
+                    # size_change no longer voids the cached-mask path for
+                    # freeze_resize owners (frozen_mask serves it above), but
+                    # their insets stay excluded here.
+                    _served = (_ot is not None and _ot.mask_tex is not None
+                               and not (_ods is not None and _ods.size_change
+                                        and not getattr(_ods, "freeze_resize", False)))
+                    if not _served:
+                        _standalone.append(s)
+                if _standalone:
+                    self._stamp_shadow_marks(_standalone,
+                                             dp_x, dp_y, s_x, s_y, fb_h)
 
-                    gl.glEnable(gl.GL_SCISSOR_TEST)
-                    gl.glScissor(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                    gl.glViewport(ix0, iy0, iw, ih)
+                # ================================================================
+                _fc_marks.append(("pass5_full_mask", time.perf_counter()))
+                # PASS 6: Glow light buffer (after PASS 5 - the stamp shader
+                # samples the finished full depth mask for its receiver gate).
+                # Retention is keyed by EMITTING draw state, decoupled from tile
+                # life: clear_glows(ds) still means the emitter's body ran this
+                # frame, so its retained entry dies and this frame's captures
+                # re-add it; bodies that were cache-skipped keep the entry
+                # untouched. Every retained entry re-stamps at the emitter's
+                # LIVE clip pos (record-time coords go stale when a cache-served
+                # sibling reflows - see project_blit_shadow_clip). Emitterless
+                # marks are one-shot.
+                # ================================================================
+                # Glow must never abort a capture pass (an exception here would
+                # leave tiles half-processed AND read as a state hotswap to the
+                # rollback guard) - it is purely UI, so trap and report once.
+                try:
+                    self._ensure_glow_state()
+                    _glow_retained = self._glow_marks_by_emitter
+                    _depth_retained = self._depth_marks_by_emitter
+                    for _eid in self._glow_cleared:
+                        _glow_retained.pop(_eid, None)
+                    # Depth retain fold per (emitter, group) - see
+                    # _fold_depth_retention; the glow store stays id-keyed.
+                    _depth_emitted = self._fold_depth_retention()
 
-                    depth_and_layer = r.depth_and_layer
-                    if can_use_cached:
+                    # Kill evidence shared by BOTH retained stores: the rects of
+                    # every tile capturing FRESH this frame, tagged with their
+                    # root window AND their live ancestor chain. A capture in
+                    # the emitter's OWN window that repaints its territory
+                    # without the emitter re-emitting tells the pixels under the
+                    # glow were replaced (tab switch, jump-to content swap, any
+                    # culled content) - the marks die. Two exemptions keep
+                    # legitimate repaints from flickering the glow:
+                    # - captures INSIDE the emitter's subtree (scrolled-in
+                    #   widgets capturing during a scroll or frame_delta widget,
+                    #   token overlays) repaint fragments OF the glowing
+                    #   content, not over it - walking the CAPTURING view's
+                    #   _parent chain is safe, it just rendered so its links
+                    #   are live (only the culled emitter's chain goes stale);
+                    # - the territory is the marks INTERSECTED with the
+                    #   emitter's live rect (same origin-clip from stamp
+                    #   below), so a freeze-resize drag that shrinks the view
+                    #   stops stale-wide marks from overlapping the sibling
+                    #   tile's every-frame captures across the window.
+                    # Captures in OTHER windows (popups floating above) never
+                    # repaint the emitter's surface - same-root scoping keeps
+                    # them from killing marks beneath.
+                    def _anc_ids(node):
+                        ids = set()
+                        hops = 0
+                        while node is not None and hops < 64:
+                            ids.add(id(node))
+                            parent = getattr(node, "_parent", None)
+                            if parent is None or parent is node:
+                                break
+                            node = parent
+                            hops += 1
+                        return ids
 
-                        offset = (float(depth_and_layer) - float(t.mask_layer)) * float(INV_65535)
+                    _pend_rects = []
+                    for p in local_pending:
+                        try:
+                            _pend_rects.append(
+                                (p.pos[0], p.pos[1],
+                                 p.pos[0] + p.size[0], p.pos[1] + p.size[1],
+                                 self._glow_root_ds(p.draw_state),
+                                 _anc_ids(p.draw_state), p.draw_state))
+                        except Exception:
+                            pass
 
-                        shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
+                    def _live_clip_of(eds):
+                        # The emitter's live rect - clips mark ORIGIN rects,
+                        # re-stamped depth marks and kill territory alike (never
+                        # the rendered light): during a freeze-resize drag the
+                        # body didn't re-run, but width/height keep the drag
+                        # live. Intersected with the enclosing windows' live
+                        # clip (_enclosing_window_clip): an emitter its window
+                        # scrolled / shrank out of view keeps its own rect, but
+                        # no pixel of it shows, so none of its marks may cast -
+                        # an empty rect here makes the code skip them.
+                        if eds is None:
+                            return None
+                        try:
+                            l, t = eds.abs_left, eds.abs_top
+                            w, h = eds.width, eds.height
+                            rect = ((l, t, l + w, t + h)
+                                    if w is not None and h is not None else None)
+                        except Exception:
+                            rect = None
+                        try:
+                            win = self._enclosing_window_clip(eds)
+                        except Exception:
+                            win = None
+                        if win is None:
+                            return rect
+                        if rect is None:
+                            return win
+                        return (max(rect[0], win[0]), max(rect[1], win[1]),
+                                min(rect[2], win[2]), min(rect[3], win[3]))
 
-                        self._draw_mask_rect_cached(t.mask_tex, ix0, iy0, iw, ih, offset,
-                                                    r.corner_radius, shadow_margin,
-                                                    uv_rect=_tile_uv_rect(t))
-                    else:
-                        rank_norm = float(depth_and_layer) / 65535.5
-                        gl.glViewport(clip_ix0, clip_iy0, clip_iw, clip_ih)
-                        cr = r.corner_radius
-                        if cr > 0:
-                            gl.glUseProgram(self._prog_mask_rounded)
-                            gl.glUniform1f(self._loc_maskr_uRankNorm, rank_norm)
-                            gl.glUniform2f(self._loc_maskr_uRectSize, float(clip_iw), float(clip_ih))
-                            gl.glUniform1f(self._loc_maskr_uCornerRadius, cr)
-                            shadow_margin = r.draw_state.shadow_margin if r.draw_state is not None else 0.0
-                            gl.glUniform1f(self._loc_maskr_uMargin, shadow_margin)
+                    # Kills only EXECUTE when interaction has settled: mid-drag
+                    # repaints (column resize, window resize reflows) hit the
+                    # glow territory constantly and immediate kills kill the
+                    # glow for the whole drag. Unsettled hits flag the entry
+                    # (it keeps glowing); the kill executes on settle unless
+                    # the emitter re-emitted since (which clears it).
+                    _settled = not (imgui.is_mouse_down(0)
+                                    or imgui.is_mouse_down(1)
+                                    or imgui.is_mouse_down(2)
+                                    or Melty.on_drag)
 
-                        else:
-                            gl.glUseProgram(self._prog_mask)
-                            gl.glUniform1f(self._loc_mask_uRankNorm, rank_norm)
-
-                        gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3)
-
-            gl.glDisable(gl.GL_SCISSOR_TEST)
-
-            # Standalone add_shadow() marks: stamped last, MAX-blended so they
-            # can only shadow depth - a shadow under an already-higher window
-            # mark is a no-op, everywhere else it becomes a caster edge for
-            # the post_frame shadow_cast pass. (Owned marks were also baked
-            # into their pending tile's cached mask in PASS 4; MAX blend makes
-            # the double-stamp idempotent.) OWNED INSET marks are excluded: a
-            # MIN carve stamped over the finished full mask would cut into
-            # surrounding windows floating above the recess - they reach the
-            # full mask only through their tile's cached mask (PASS 4), which
-            # scopes the carve to the owner's subtree.
-            # ...with one exception: an owned inset whose cached-mask path
-            # was skipped this frame (likely mid-resize: size_change makes
-            # PASS 5 stamp the owner with a flat rank mask, or the tile has no
-            # mask yet). Excluding it here would drop the recess for exactly
-            # the resize frames, so stamp it again - still MIN-blended and
-            # scissored to its own snapshotted clip, which keeps the
-            # transient carve inside the resizing view's region.
-            # Window-occlusion mask for every stamp below (fresh standalone
-            # here, retained depth re-stamps + glow in PASS 6): live window
-            # rects from Melty.paint_ordered_ds, so front windows mask
-            # stamps by rank even mid-resize. Rebind the full mask FBO
-            # first - the build leaves its own FBO bound.
-            self._build_window_mask(dp_x, dp_y, s_x, s_y, fb_w, fb_h)
-            gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._full_mask_fbo)
-
-            _standalone = []
-            for s in self._shadow_rects:
-                if not (s[9] and s[8] is not None):
-                    _standalone.append(s)
-                    continue
-                _ot = self._tiles.get(s[8])
-                _ods = self.key_to_draw_state.get(s[8])
-                # size_change no longer voids the cached-mask path for
-                # freeze_resize tiles (frozen_mask serves it above), so
-                # their insets stay excluded here.
-                _served = (_ot is not None and _ot.mask_tex is not None
-                           and not (_ods is not None and _ods.size_change
-                                    and not getattr(_ods, "freeze_resize", False)))
-                if not _served:
-                    _standalone.append(s)
-            if _standalone:
-                self._stamp_shadow_marks(_standalone,
-                                         dp_x, dp_y, s_x, s_y, fb_h)
-
-            # ================================================================
-            _fc_marks.append(("pass5_full_mask", time.perf_counter()))
-            # PASS 6: Glow stencil buffer (after PASS 5 - the stamp shader
-            # samples the finished full depth mask for its depth gate).
-            # Retention is keyed by EMITTING draw_state, decoupled from tile
-            # captures: clear_glows(ds) ran → the emitter's body ran this
-            # frame, so its retained entry drops AND this frame's emissions
-            # re-add it; bodies that were cache-skipped keep their entry
-            # untouched. Every retained entry re-stamps at the emitter's
-            # LIVE abs pos (record-time clips go stale when a cache-skip
-            # sibling reflows - see project_blit_shadow_clip). Emitterless
-            # marks are one-shot.
-            # ================================================================
-            # Glow must never abort the capture pass (an exception here would
-            # leave tiles un-processed AND read as a broken hotswap to the
-            # rollback guard) - it's purely visual, so trap and report once.
-            try:
-                self._ensure_glow_state()
-                _glow_retained = self._glow_marks_by_emitter
-                _depth_retained = self._depth_marks_by_emitter
-                for _eid in self._glow_cleared:
-                    _glow_retained.pop(_eid, None)
-                # Depth marks fold per (emitter, origin) - see
-                # _fold_depth_retention; the glow store stays id-keyed.
-                _depth_emitted = self._fold_depth_retention()
-
-                # Kill evidence shared by BOTH retained stores: the rects of
-                # every tile that FUTURE this frame, tagged with their
-                # root emitter AND their live ancestor chain. A capture in
-                # the emitter's OWN subtree that repaints its territory
-                # without the emitter re-emitting means the views under the
-                # marks were replaced (tab switch, jump-to-line swap, any
-                # culled branch) - the marks die. Two exemptions keep
-                # legitimate repaints from flickering the glow:
-                # - captures INSIDE the emitter's subtree (scrolled-in
-                #   widgets capturing during the parent's frame_delta window,
-                #   token overlays) repaint fragments OF the glowing
-                #   content, not over it - walking the CAPTURING tile's
-                #   _parent chain is safe, it just rendered so its pointers
-                #   are fresh (only the culled emitter's parent goes stale);
-                # - the territory is the marks INTERSECTED with the
-                #   emitter's LIVE rect (same origin-clip the stamp
-                #   applies), so a freeze-resize drag that shrinks the view
-                #   stops stale-wide marks from overlapping the sibling
-                #   column's next-frame captures across the seam.
-                # Captures in OTHER columns (popups and tooltips) never
-                # repaint the emitter's surface - glow-root scoping keeps
-                # them from killing marks beneath.
-                def _anc_ids(node):
-                    ids = set()
-                    hops = 0
-                    while node is not None and hops < 64:
-                        ids.add(id(node))
-                        parent = getattr(node, "_parent", None)
-                        if parent is None or parent is node:
-                            break
-                        node = parent
-                        hops += 1
-                    return ids
-
-                _pend_rects = []
-                for p in local_pending:
-                    try:
-                        _pend_rects.append(
-                            (p.pos[0], p.pos[1],
-                             p.pos[0] + p.size[0], p.pos[1] + p.size[1],
-                             self._glow_root_ds(p.draw_state),
-                             _anc_ids(p.draw_state), p.draw_state))
-                    except Exception:
-                        pass
-
-                def _live_clip_of(eds):
-                    # The emitter's LIVE rect - clips mark ORIGIN rects,
-                    # re-stamp positions, and kill territory alike (never
-                    # the rendered light): during a freeze-resize drag the
-                    # body doesn't re-run, so width/ height track the drag
-                    # live. Intersected with the enclosing windows' live
-                    # clip (_enclosing_window_clip): an emitter whose window
-                    # scrolled / shrank out of view keeps its own rect, but
-                    # no pixel of it shows, so none of its marks may cast -
-                    # an empty rect here makes every stamp skip them.
-                    if eds is None:
+                    def _territory_hit(marks, delta, root, eds, live):
+                        # Returns the pending capture that repainted the
+                        # emitter's territory, or None. Exempt: captures inside
+                        # the emitter's subtree (live _parent walk) and small
+                        # fragment captures fully CONTAINED in the emitter's
+                        # live rect (< half its area) - inline children / token
+                        # overlays hosted outside the emitter's parent chain
+                        # repaint fragments OF the glowing content on hover; a
+                        # real content swap covers the region wholesale.
+                        e_id = id(eds)
+                        e_area = ((live[2] - live[0]) * (live[3] - live[1])
+                                  if live is not None else None)
+                        for m in marks:
+                            mx0 = m[0] + delta[0]
+                            my0 = m[1] + delta[1]
+                            mx1, my1 = mx0 + m[2], my0 + m[3]
+                            if live is not None:
+                                mx0, my0 = max(mx0, live[0]), max(my0, live[1])
+                                mx1, my1 = min(mx1, live[2]), min(my1, live[3])
+                                if mx1 <= mx0 or my1 <= my0:
+                                    continue
+                            for pr in _pend_rects:
+                                px0, py0, px1, py1, proot, p_ancs, _pds = pr
+                                if proot is not root or e_id in p_ancs:
+                                    continue
+                                if (e_area
+                                        and px0 >= live[0] and py0 >= live[1]
+                                        and px1 <= live[2] and py1 <= live[3]
+                                        and ((px1 - px0) * (py1 - py0)
+                                             < 0.5 * e_area)):
+                                    continue
+                                if (mx0 < px1 and px0 < mx1
+                                        and my0 < py1 and py0 < my1):
+                                    return pr
                         return None
-                    try:
-                        l, t = eds.abs_left, eds.abs_top
-                        w, h = eds.width, eds.height
-                        rect = ((l, t, l + w, t + h)
-                                if w is not None and h is not None else None)
-                    except Exception:
-                        rect = None
-                    try:
-                        win = self._enclosing_window_clip(eds)
-                    except Exception:
-                        win = None
-                    if win is None:
-                        return rect
-                    if rect is None:
-                        return win
-                    return (max(rect[0], win[0]), max(rect[1], win[1]),
-                            min(rect[2], win[2]), min(rect[3], win[3]))
 
-                # Kills only EXECUTE while interaction is settled: mid-drag
-                # repaints (column resize, freeze resize reflows) hit live
-                # glow territory constantly and immediate kills lost the
-                # glow for the whole drag. Unsettled hits flag the emitter
-                # (it keeps glowing); the flag executes on settle unless
-                # the emitter re-emitted since (which clears it).
-                _settled = not (imgui.is_mouse_down(0)
-                                or imgui.is_mouse_down(1)
-                                or imgui.is_mouse_down(2)
-                                or Melty.on_drag)
+                    def _log_kill(kind, eds, hit, deferred):
+                        if not Toggles.glow_debug_log:
+                            return
+                        _pds = hit[6]
+                        print(f"glow kill[{kind}]"
+                              f"{' DEFERRED' if deferred else ''}: "
+                              f"emitter={getattr(eds, 'name', None)!r} "
+                              f"by={getattr(_pds, 'name', None)!r} "
+                              f"cap_rect=({hit[0]:.0f},{hit[1]:.0f},"
+                              f"{hit[2]:.0f},{hit[3]:.0f})")
 
-                def _territory_hit(marks, delta, root, eds, live):
-                    # Returns the pending capture that repainted the
-                    # emitter's territory, or None. Exempt: captures inside
-                    # the emitter's subtree (live _parent walk) and small
-                    # fragment captures fully CONTAINED inside the emitter's
-                    # live rect (< half its area) - inline widgets / token
-                    # overlays hosted outside the emitter's parent chain
-                    # repaint fragments OF the glowing content on hover; a
-                    # real content swap covers the region wholesale.
-                    e_id = id(eds)
-                    e_area = ((live[2] - live[0]) * (live[3] - live[1])
-                              if live is not None else None)
-                    for m in marks:
-                        mx0 = m[0] + delta[0]
-                        my0 = m[1] + delta[1]
-                        mx1, my1 = mx0 + m[2], my0 + m[3]
-                        if live is not None:
-                            mx0, my0 = max(mx0, live[0]), max(my0, live[1])
-                            mx1, my1 = min(mx1, live[2]), min(my1, live[3])
-                            if mx1 <= mx0 or my1 <= my0:
-                                continue
-                        for pr in _pend_rects:
-                            px0, py0, px1, py1, proot, p_ancs, _pds = pr
-                            if proot is not root or e_id in p_ancs:
-                                continue
-                            if (e_area
-                                    and px0 >= live[0] and py0 >= live[1]
-                                    and px1 <= live[2] and py1 <= live[3]
-                                    and ((px1 - px0) * (py1 - py0)
-                                         < 0.5 * e_area)):
-                                continue
-                            if (mx0 < px1 and px0 < mx1
-                                    and my0 < py1 and py0 < my1):
-                                return pr
-                    return None
-
-                def _log_kill(kind, eds, hit, deferred):
-                    if not Toggles.glow_debug_log:
-                        return
-                    _pds = hit[6]
-                    print(f"glow kill[{kind}]"
-                          f"{' DEFERRED' if deferred else ''}: "
-                          f"emitter={getattr(eds, 'name', None)!r} "
-                          f"by={getattr(_pds, 'name', None)!r} "
-                          f"cap_rect=({hit[0]:.0f},{hit[1]:.0f},"
-                          f"{hit[2]:.0f},{hit[3]:.0f})")
-
-                # Retained DEPTH marks re-stamp into the full mask FIRST -
-                # before the glow stamp samples it - so on frames when an
-                # enclosing tile rebuilt its mask without this emitter's
-                # body running, its interior depth change (block peels, chip
-                # lifts) is retained instead of flashing. The additive blend
-                # makes re-stamping marks that were also freshly emitted
-                # this frame idempotent.
-                _depth_stamp = []
-                # _key = (id(emitter), owner); kill-pending is per key too,
-                # so a killed body group mark takes the scrollbar's with
-                # it on a frame the bar legitimately re-emitted.
-                for _key, (marks, _eds, _anchor) in list(
-                        _depth_retained.items()):
-                    if _eds is None or getattr(_eds, "abs_closed", False):
-                        _depth_retained.pop(_key, None)
-                        self._depth_kill_pending.discard(_key)
-                        continue
-                    if _key in _depth_emitted:
-                        self._depth_kill_pending.discard(_key)
-                        continue  # stamped via the normal fresh path already
-                    _delta = (_eds.abs_left - _anchor[0],
-                              _eds.abs_top - _anchor[1])
-                    _root_ds = self._glow_root_ds(_eds)
-                    if self._pixels_preserved(_eds):
-                        # Emitter reached this frame, or an ancestor was
-                        # reached and blit-served (subtile pixels intact).
-                        # Tab-switched/culled emitters fail both, so real
-                        # content swaps still kill.
-                        self._depth_kill_pending.discard(_key)
-                    else:
-                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
-                                              _live_clip_of(_eds))
-                        if _hit is not None:
-                            _log_kill("depth", _eds, _hit, not _settled)
-                            if _settled:
-                                _depth_retained.pop(_key, None)
-                                self._depth_kill_pending.discard(_key)
-                                continue
-                            self._depth_kill_pending.add(_key)
-                        elif _settled and _key in self._depth_kill_pending:
+                    # Retained DEPTH marks re-stamp to the the mask FIRST -
+                    # before the glow band samples it - so on frames where an
+                    # enclosing tile rebuilt the mask without this emitter's
+                    # body running, the interior depth detail (block peels, chip
+                    # lifts) is preserved instead of flashing flat. MAX stability
+                    # makes re-stamping marks that were also freshly emitted
+                    # this frame idempotent.
+                    _depth_stamp = []
+                    # _key = (id(emitter), group); kill-pending is per key too,
+                    # so a killed body group never takes the scrollbar's with
+                    # it on a frame the bar legitimately re-emitted.
+                    for _key, (marks, _eds, _anchor) in list(
+                            _depth_retained.items()):
+                        if _eds is None or getattr(_eds, "abs_closed", False):
                             _depth_retained.pop(_key, None)
                             self._depth_kill_pending.discard(_key)
                             continue
-                    dx, dy = _delta
-                    # Re-stamped marks clip to the emitter's LIVE rect -
-                    # same rule as glow origin rects: during a freeze-resize
-                    # drag the body doesn't re-run but width/height track
-                    # the drag, so record-time clips (and clip=False marks
-                    # like the header strip) must not stamp depth past the
-                    # live clip edge.
-                    _live = _live_clip_of(_eds)
-                    # Live rank shift (see the above comment in
-                    # add_shadow): re-anchor absolute mark ranks on the
-                    # emitter's CURRENT surface rank so z reorders since
-                    # record re-gate them; falls back to the ROOT window's
-                    # delta when the emitter's own stamp is stale (ancestor
-                    # blit-served, emitter never entered this frame).
-                    _shift = self._anchor_rank_shift(_eds, _root_ds, _anchor)
-                    for m in marks:
-                        (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
-                         _ins) = m[:10]
-                        _shape = m[10] if len(m) > 10 else None
-                        if mclip is not None:
-                            _c = (mclip[0] + dx, mclip[1] + dy,
-                                  mclip[2] + dx, mclip[3] + dy)
-                            if _live is not None:
-                                _c = (max(_c[0], _live[0]),
-                                      max(_c[1], _live[1]),
-                                      min(_c[2], _live[2]),
-                                      min(_c[3], _live[3]))
+                        if _key in _depth_emitted:
+                            self._depth_kill_pending.discard(_key)
+                            continue  # stamped via the normal emit path already
+                        _delta = (_eds.abs_left - _anchor[0],
+                                  _eds.abs_top - _anchor[1])
+                        _root_ds = self._glow_root_ds(_eds)
+                        if self._pixels_preserved(_eds):
+                            # Emitter reached this frame, or an ancestor was
+                            # reached and blit-served (subtree pixels intact).
+                            # Tab-switched/culled emitters fail both, so real
+                            # content swaps still kill.
+                            self._depth_kill_pending.discard(_key)
                         else:
-                            _c = _live
-                        if _c is not None and (_c[2] <= _c[0]
-                                               or _c[3] <= _c[1]):
-                            continue
-                        if _shift:
-                            ranks = tuple(max(0.0, rk + _shift)
-                                          for rk in ranks)
-                        # Strip payloads have position AND rank per vertex -
-                        # translate and re-anchor them the same way.
-                        if _shape is not None and (dx or dy or _shift):
-                            _shape = tuple(
-                                (vx + dx, vy + dy, max(0.0, vr + _shift))
-                                for (vx, vy, vr) in _shape)
-                        # Owner is passed along so the window-occlusion gate
-                        # can resolve the mark's own window at stamp time.
-                        _depth_stamp.append(
-                            (mx + dx, my + dy, mw, mh, ranks, cr, margin,
-                             _c, _own, False, _shape))
-                if _depth_stamp:
-                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
-                                         self._full_mask_fbo)
-                    gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE,
-                                   gl.GL_FALSE)
-                    self._stamp_shadow_marks(_depth_stamp, dp_x, dp_y,
-                                             s_x, s_y, fb_h)
-                    gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE,
-                                   gl.GL_TRUE)
-
-                # Tunable band offsets, applied LINEARLY in mask units -
-                # never by shifting shadow_depth_at's depth directly (its
-                # depth term is non-monotone: spikes ~530 rank units at d~59
-                # then decreases, so a large depth offset can LOWER a bound
-                # and collapse the band). Toggle unit is one mask depth
-                # step (~layer_inc * 53.42/5.975 rank units).
-                _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
-                _g_lo_off = float(getattr(
-                    Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
-                _g_hi_off = float(getattr(
-                    Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
-
-                def _resolve_glow(m, delta, eds, root_ds, anchor=None):
-                    # Band anchors are the view shadow_depth properties -
-                    # the exact scalar ranks those views' mask rects stamp
-                    # (view_and_layer ( shadow_depth_at), so the band
-                    # is always in the emitter's own layer. Emitter anchor:
-                    # the emitting view's surface + the mark's relative
-                    # offset; floor anchor: the root window's surface. The
-                    # emitter's "live" shadow_depth is only live when its
-                    # wrapper ran this frame - resolve it through the
-                    # absolute anchor comment (record rank + live shift) so
-                    # a z reorder while everything blit-serves still moves
-                    # the band via the root window's delta.
-                    _anchor_rank = None
-                    if eds is not None:
-                        try:
-                            if (anchor is not None and len(anchor) > 2
-                                    and anchor[2] is not None):
-                                _anchor_rank = (
-                                    anchor[2]
-                                    + self._anchor_rank_shift(
-                                        eds, root_ds, anchor)
-                                    + m[6] * _g_step)
-                            else:
-                                _anchor_rank = (float(eds.shadow_depth)
-                                                + m[6] * _g_step)
-                        except Exception:
-                            _anchor_rank = None
-                    if _anchor_rank is None:
-                        _anchor_rank = m[7]  # record-time rank fallback
-                    _lo_anchor = None
-                    if root_ds is not None:
-                        try:
-                            _lo_anchor = float(root_ds.shadow_depth)
-                        except Exception:
-                            _lo_anchor = None
-                    if _lo_anchor is None:
-                        _lo_anchor = _anchor_rank
-                    _rank = (_anchor_rank + _g_hi_off) / 65535.5
-                    _floor = (_lo_anchor + _g_lo_off) / 65535.5
-                    return (m, delta, min(1.0, _rank), max(0.0, _floor),
-                            _live_clip_of(eds), self._win_z_for_ds(eds))
-
-                _stamp_list = []
-                _emitted_now = defaultdict(list)
-                for mark, _eds, _anchor in self._glow_rects:
-                    if _eds is None:
-                        _stamp_list.append(
-                            _resolve_glow(mark, (0.0, 0.0), None, None))
-                    else:
-                        _emitted_now[id(_eds)].append((mark, _eds, _anchor))
-                for _eid, entries in _emitted_now.items():
-                    _glow_retained[_eid] = (
-                        [m for m, _d, _a in entries],
-                        entries[0][1], entries[0][2])
-
-                for _eid, (marks, _eds, _anchor) in list(
-                        _glow_retained.items()):
-                    if _eds is None or getattr(_eds, "abs_closed", False):
-                        _glow_retained.pop(_eid, None)
-                        self._glow_kill_pending.discard(_eid)
-                        continue
-                    _delta = (_eds.abs_left - _anchor[0],
-                              _eds.abs_top - _anchor[1])
-                    _root_ds = self._glow_root_ds(_eds)
-                    # Freshly-emitted entries skip the kill: their own
-                    # tile's capture legitimately overlaps their territory.
-                    if _eid in _emitted_now:
-                        self._glow_kill_pending.discard(_eid)
-                    elif self._pixels_preserved(_eds):
-                        # Emitter reached this frame, or an ancestor was
-                        # reached and blit-served (its blit carried the
-                        # emitter's pixels intact - a doubly-cache-served
-                        # case that used to read as "changed" and cull the
-                        # glow). Culled/tab-switched emitters fail both, so
-                        # content swaps still kill.
-                        self._glow_kill_pending.discard(_eid)
-                    else:
-                        _hit = _territory_hit(marks, _delta, _root_ds, _eds,
-                                              _live_clip_of(_eds))
-                        if _hit is not None:
-                            _log_kill("glow", _eds, _hit, not _settled)
-                            if _settled:
-                                _glow_retained.pop(_eid, None)
-                                self._glow_kill_pending.discard(_eid)
+                            _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                                  _live_clip_of(_eds))
+                            if _hit is not None:
+                                _log_kill("depth", _eds, _hit, not _settled)
+                                if _settled:
+                                    _depth_retained.pop(_key, None)
+                                    self._depth_kill_pending.discard(_key)
+                                    continue
+                                self._depth_kill_pending.add(_key)
+                            elif _settled and _key in self._depth_kill_pending:
+                                _depth_retained.pop(_key, None)
+                                self._depth_kill_pending.discard(_key)
                                 continue
-                            self._glow_kill_pending.add(_eid)
-                        elif (_settled
-                              and _eid in self._glow_kill_pending):
+                        dx, dy = _delta
+                        # Re-stamped marks clip to the emitter's LIVE rect -
+                        # same rule as glow origin rects: during a freeze-resize
+                        # drag the body doesn't re-run but width/height track
+                        # the drag, so record-time clips (or clip=False marks
+                        # like the gutter strip) may't stamp depth past the
+                        # live clip edge.
+                        _live = _live_clip_of(_eds)
+                        # Live rank shift (see the anchor comment in
+                        # add_shadow): re-anchor absolute mark ranks on the
+                        # emitter's CURRENT surface rank so z reorders that
+                        # record re-gate them; falls back to the ROOT window's
+                        # delta if the emitter's rank stamp is stale (ancestor
+                        # blit-served, wrapper never entered this frame).
+                        _shift = self._anchor_rank_shift(_eds, _root_ds, _anchor)
+                        for m in marks:
+                            (mx, my, mw, mh, ranks, cr, margin, mclip, _own,
+                             _ins) = m[:10]
+                            _shape = m[10] if len(m) > 10 else None
+                            if mclip is not None:
+                                _c = (mclip[0] + dx, mclip[1] + dy,
+                                      mclip[2] + dx, mclip[3] + dy)
+                                if _live is not None:
+                                    _c = (max(_c[0], _live[0]),
+                                          max(_c[1], _live[1]),
+                                          min(_c[2], _live[2]),
+                                          min(_c[3], _live[3]))
+                            else:
+                                _c = _live
+                            if _c is not None and (_c[2] <= _c[0]
+                                                   or _c[3] <= _c[1]):
+                                continue
+                            if _shift:
+                                ranks = tuple(max(0.0, rk + _shift)
+                                              for rk in ranks)
+                            # Shape payloads carry position AND rank per vertex -
+                            # translate and re-anchor them the same way.
+                            if _shape is not None and (dx or dy or _shift):
+                                _shape = tuple(
+                                    (vx + dx, vy + dy, max(0.0, vr + _shift))
+                                    for (vx, vy, vr) in _shape)
+                            # Owner key passed along so the window-occlusion gate
+                            # can resolve the emitter's own clip at stamp time.
+                            _depth_stamp.append(
+                                (mx + dx, my + dy, mw, mh, ranks, cr, margin,
+                                 _c, _own, False, _shape))
+                    if _depth_stamp:
+                        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,
+                                             self._full_mask_fbo)
+                        gl.glColorMask(gl.GL_TRUE, gl.GL_FALSE, gl.GL_FALSE,
+                                       gl.GL_FALSE)
+                        self._stamp_shadow_marks(_depth_stamp, dp_x, dp_y,
+                                                 s_x, s_y, fb_h)
+                        gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE,
+                                       gl.GL_TRUE)
+
+                    # Tunable band offsets, applied LINEARLY in rank units -
+                    # never by shifting shadow_depth_at's depth argument (its
+                    # depth term is non-monotone: spikes ~530 rank units at z~59
+                    # then decreases, so a large depth offset can LOWER a mark
+                    # and collapse the band). Toggle units: one shallow depth
+                    # step (~layer_inc * 53.42/5.975 rank units).
+                    _fc_marks.append(("pass6a_depth_retained", time.perf_counter()))
+                    _g_step = float(Melty.layer_inc) * (53.42 / 5.975)
+                    _g_lo_off = float(getattr(
+                        Toggles, "glow_mask_lower_offset", -4.0)) * _g_step
+                    _g_hi_off = float(getattr(
+                        Toggles, "glow_mask_upper_offset", 8.0)) * _g_step
+
+                    def _resolve_glow(m, delta, eds, root_ds, anchor=None):
+                        # Band anchors are the LIVE shadow_depth properties -
+                        # the same scalar ranks those views' mask rects stamp
+                        # (depth_at_layer through shadow_depth_at), so the band
+                        # is always in the mask's own units. Emitter anchor:
+                        # the emitting view's surface + the mark's relative
+                        # offset; floor anchor: the root window's surface. The
+                        # emitter's "live" shadow_depth is only live if the
+                        # was rendered this frame - resolve it through the
+                        # retained mark instead (record rank + live shift), so
+                        # a z reorder while everything blit-serves still moves
+                        # the band via the root window's delta.
+                        _anchor_rank = None
+                        if eds is not None:
+                            try:
+                                if (anchor is not None and len(anchor) > 2
+                                        and anchor[2] is not None):
+                                    _anchor_rank = (
+                                        anchor[2]
+                                        + self._anchor_rank_shift(
+                                            eds, root_ds, anchor)
+                                        + m[6] * _g_step)
+                                else:
+                                    _anchor_rank = (float(eds.shadow_depth)
+                                                    + m[6] * _g_step)
+                            except Exception:
+                                _anchor_rank = None
+                        if _anchor_rank is None:
+                            _anchor_rank = m[7]  # record-time absolute fallback
+                        _lo_anchor = None
+                        if root_ds is not None:
+                            try:
+                                _lo_anchor = float(root_ds.shadow_depth)
+                            except Exception:
+                                _lo_anchor = None
+                        if _lo_anchor is None:
+                            _lo_anchor = _anchor_rank
+                        _rank = (_anchor_rank + _g_hi_off) / 65535.5
+                        _floor = (_lo_anchor + _g_lo_off) / 65535.5
+                        return (m, delta, min(1.0, _rank), max(0.0, _floor),
+                                _live_clip_of(eds), self._win_z_for_ds(eds))
+
+                    _stamp_list = []
+                    _emitted_now = defaultdict(list)
+                    for mark, _eds, _anchor in self._glow_rects:
+                        if _eds is None:
+                            _stamp_list.append(
+                                _resolve_glow(mark, (0.0, 0.0), None, None))
+                        else:
+                            _emitted_now[id(_eds)].append((mark, _eds, _anchor))
+                    for _eid, entries in _emitted_now.items():
+                        _glow_retained[_eid] = (
+                            [m for m, _d, _a in entries],
+                            entries[0][1], entries[0][2])
+
+                    for _eid, (marks, _eds, _anchor) in list(
+                            _glow_retained.items()):
+                        if _eds is None or getattr(_eds, "abs_closed", False):
                             _glow_retained.pop(_eid, None)
                             self._glow_kill_pending.discard(_eid)
                             continue
-                    for m in marks:
-                        _stamp_list.append(
-                            _resolve_glow(m, _delta, _eds, _root_ds,
-                                          _anchor))
-                # Per-surface dedupe: identical origin rects (same pos,
-                # size, color after the live-position delta) collapse to
-                # ONE emission at the strongest intensity. The old
-                # draw-list blur alpha-blended duplicates into
-                # near-invisibility; the light field is ADDITIVE, so a
-                # doubled origin (duplicate _dt_lines entries, a body
-                # drawn twice through different paths) appear as a glaring
-                # 2x glow.
-                _dedup = {}
-                _dup_count = 0
-                for _se in _stamp_list:
-                    _m, _d = _se[0], _se[1]
-                    _k = (round(_m[0] + _d[0], 1), round(_m[1] + _d[1], 1),
-                          round(_m[2], 1), round(_m[3], 1), _m[4])
-                    _prev = _dedup.get(_k)
-                    if _prev is None or _se[0][5] > _prev[0][5]:
-                        if _prev is not None:
+                        _delta = (_eds.abs_left - _anchor[0],
+                                  _eds.abs_top - _anchor[1])
+                        _root_ds = self._glow_root_ds(_eds)
+                        # Freshly-emitted entries skip the kill: their own
+                        # frame's capture legitimately overlaps their origin.
+                        if _eid in _emitted_now:
+                            self._glow_kill_pending.discard(_eid)
+                        elif self._pixels_preserved(_eds):
+                            # Emitter ran this frame, or an ancestor was
+                            # reached and blit-served (its blit carried the
+                            # emitter's pixels intact - the doubly-cache-served
+                            # case that used to read as "inactive" and cull the
+                            # glow). Culled cache-switched emitters fail here, so
+                            # content swaps still kill.
+                            self._glow_kill_pending.discard(_eid)
+                        else:
+                            _hit = _territory_hit(marks, _delta, _root_ds, _eds,
+                                                  _live_clip_of(_eds))
+                            if _hit is not None:
+                                _log_kill("glow", _eds, _hit, not _settled)
+                                if _settled:
+                                    _glow_retained.pop(_eid, None)
+                                    self._glow_kill_pending.discard(_eid)
+                                    continue
+                                self._glow_kill_pending.add(_eid)
+                            elif (_settled
+                                  and _eid in self._glow_kill_pending):
+                                _glow_retained.pop(_eid, None)
+                                self._glow_kill_pending.discard(_eid)
+                                continue
+                        for m in marks:
+                            _stamp_list.append(
+                                _resolve_glow(m, _delta, _eds, _root_ds,
+                                              _anchor))
+                    # Same-surface dedupe: identical glow marks (same pos,
+                    # size, color after the live-position delta) collapse to
+                    # ONE emission at the strongest intensity. The old
+                    # draw-list blur alpha-blended duplicates into
+                    # near-invisibility; the light map is ADDITIVE, so any
+                    # doubled surface (duplicate _dt_lines entries, a window
+                    # drawn twice through different windows) reads as a glaring
+                    # 2x glow.
+                    _dedup = {}
+                    _dup_count = 0
+                    for _se in _stamp_list:
+                        _m, _d = _se[0], _se[1]
+                        _k = (round(_m[0] + _d[0], 1), round(_m[1] + _d[1], 1),
+                              round(_m[2], 1), round(_m[3], 1), _m[4])
+                        _prev = _dedup.get(_k)
+                        if _prev is None or _se[0][5] > _prev[0][5]:
+                            if _prev is not None:
+                                _dup_count += 1
+                            _dedup[_k] = _se
+                        else:
                             _dup_count += 1
-                        _dedup[_k] = _se
-                    else:
-                        _dup_count += 1
-                _stamp_list = list(_dedup.values())
+                    _stamp_list = list(_dedup.values())
 
-                if Toggles.glow_debug_log and self._frame_id % 60 == 0:
-                    _s0 = _stamp_list[0] if _stamp_list else None
-                    print(
-                        f"glow6 f{self._frame_id}: glow={Toggles.glow} "
-                        f"frame_marks={len(self._glow_rects)} "
-                        f"retained={len(_glow_retained)} "
-                        f"cleared={len(self._glow_cleared)} "
-                        f"stamped={len(_stamp_list)} dups={_dup_count} "
-                        f"tex={getattr(self, '_glow_size', None)} "
-                        f"empty={self._glow_tex_empty}"
-                        + (f" first: rect={tuple(round(v, 1) for v in _s0[0][:4])}"
-                           f" rank={_s0[2]:.5f} floor={_s0[3]:.5f}"
-                           f" inten={_s0[0][5]:.3f}" if _s0 else ""))
-                if not Toggles.glow:
-                    _stamp_list = []  # retained entries stay warm
-                if _stamp_list or not self._glow_tex_empty:
-                    self._stamp_glow_marks(_stamp_list, dp_x, dp_y, s_x, s_y,
-                                           fb_w, fb_h)
-            except Exception:
-                if not getattr(self, "_glow_error_logged", False):
-                    self._glow_error_logged = True
-                    print("glow PASS 6 failed (glow disabled this frame):")
-                    traceback.print_exc()
+                    if Toggles.glow_debug_log and self._frame_id % 60 == 0:
+                        _s0 = _stamp_list[0] if _stamp_list else None
+                        print(
+                            f"glow6 f{self._frame_id}: glow={Toggles.glow} "
+                            f"frame_marks={len(self._glow_rects)} "
+                            f"retained={len(_glow_retained)} "
+                            f"cleared={len(self._glow_cleared)} "
+                            f"stamped={len(_stamp_list)} dups={_dup_count} "
+                            f"tex={getattr(self, '_glow_size', None)} "
+                            f"empty={self._glow_tex_empty}"
+                            + (f" first: rect={tuple(round(v, 1) for v in _s0[0][:4])}"
+                               f" rank={_s0[2]:.5f} floor={_s0[3]:.5f}"
+                               f" inten={_s0[0][5]:.3f}" if _s0 else ""))
+                    if not Toggles.glow:
+                        _stamp_list = []  # retained entries stay warm
+                    if _stamp_list or not self._glow_tex_empty:
+                        self._stamp_glow_marks(_stamp_list, dp_x, dp_y, s_x, s_y,
+                                               fb_w, fb_h)
+                except Exception:
+                    if not getattr(self, "_glow_error_logged", False):
+                        self._glow_error_logged = True
+                        print("glow PASS 6 failed (glow disabled this frame):")
+                        traceback.print_exc()
 
-            gl.glViewport(0, 0, fb_w, fb_h)
-            gl.glDisable(gl.GL_BLEND)
-            gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
-            gl.glUseProgram(0)
-            _cp_t5 = _cp()
+                gl.glViewport(0, 0, fb_w, fb_h)
+                gl.glDisable(gl.GL_BLEND)
+                gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+                gl.glUseProgram(0)
+                _cp_t5 = _cp()
+                self._mask_sig_prev = _mask_sig
+            else:
+                # Skipped: leave the GL state just as pass 6's tail does -
+                # _GLState.restore() below puts back the FBO bindings, scissor,
+                # blend and colour mask, but NOT the viewport or the bound
+                # program, and pass 3 exits with the last tile's viewport and
+                # the copy shader current (the every-other-sideile flash).
+                self._mask_skips = getattr(self, "_mask_skips", 0) + 1
+                gl.glViewport(0, 0, fb_w, fb_h)
+                gl.glDisable(gl.GL_BLEND)
+                gl.glDisable(gl.GL_SCISSOR_TEST)
+                gl.glColorMask(gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE, gl.GL_TRUE)
+                gl.glUseProgram(0)
+                gl.glActiveTexture(gl.GL_TEXTURE0)
 
         finally:
             st.restore()
@@ -5553,6 +5642,7 @@ class TileCacheMasked:
                     _fc_prev = _fc_t
                 _fc_trace("finalize perf", total_ms=round(_fc_total, 2),
                           shadows=_fc_counts[0], masks=_fc_counts[1], pending=_fc_counts[2],
+                          rebuilt=int(_rebuild_masks),
                           breakdown=" ".join(_fc_parts))
         except Exception:
             pass
