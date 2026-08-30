@@ -104,9 +104,18 @@ def find_intellij_executable() -> Optional[str]:
                 '/Applications/JetBrains Toolbox/IntelliJ IDEA.app/Contents/MacOS/idea',
             ])
 
+    # PATH first: the version the desktop actually uses (`idea.sh`), which
+    # beats guessing among sibling installs (`/opt/idea-*_old` sorts LAST
+    # and won the "newest" pick below).
+    import shutil
+    for name in ('idea.sh', 'idea'):
+        found = shutil.which(name)
+        if found:
+            return found
+
     # Search for IntelliJ in common locations
     for pattern in search_patterns:
-        matches = glob.glob(pattern)
+        matches = [m for m in glob.glob(pattern) if not m.split('/bin/')[0].endswith('_old')]
         if matches:
             # Return the latest version if multiple found
             return max(matches)
@@ -139,7 +148,13 @@ def open_in_intellij(file_path, line_number=None):
     else:
         cmd = [f'{idea_path}', project_root, file_path]
 
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if idea_path is None:
+        print("IntelliJ executable not found (set INTELLIJ_HOME)")
+        return
+    # Full-path executable + close_fds=False keeps this on posix_spawn - a
+    # fork() of the studio deadlocks (see CL-MDE.md, "never fork the studio").
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   close_fds=False)
 
 def build_function_map(module) -> Dict[str, Dict[str, Any]]:
     """

@@ -336,6 +336,7 @@ def _word_match(q, qws, twords, budget):
     return _segment_match(q, twords, budget)
 
 
+
 # --- Global search indexes ---------------------------------------------------
 # Global search queries a fixed set of index providers instead of walking the
 # live draw_state tree. Each provider returns SearchHit entries — a display
@@ -1765,6 +1766,7 @@ def _local_symbol_hits(rows, q, cancelled=None):
         qn = f"{pq}.{ident}" if pq else ident
         out.append(SearchHit(f"{qn} @ {row['rel']}:{line}", _LOCAL_TINT,
                              (lambda p=path, l=line: _jump_to_text_hit(p, l)),
+                             
                              kind=CODE_CATEGORY, match=ident,
                              code_row=(path, line, "", code, str(line)),
                              sym=CodeSym(path, qn, "local", line, parent, ident),
@@ -5025,7 +5027,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
         from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock, fast_dock_sync
         fast_dock_sync()
         draw_fast_dock(Core.melty.registered_windows, name="Fast Dock", with_header=draw_header,
-                       mode=Mode.WINDOW, bg_offset=-3)
+                       mode=Mode.WINDOW, bg_offset=1)
 
     # (Multi-split overlays moved to Melty.end_frame - drawn from this
     # root they ran BEFORE the dragged window's position update and trailed

@@ -3403,12 +3403,11 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                             tv_text=None, def_disp_line=None,
                             editor_state=None, fn_tint=None,
                             **kwargs):
-    """Inline run buttons for a function definition — TRAILING accessory
-    renderer for 'def_name' tokens: the name text draws normally and this
-    widget rides in the `trail_cells` area right AFTER it, between the name
-    and the parameter list (`def f[==][=](a, b):`); the rest of the line
-    shifts right by the trail (vcols carries it, like lead_cells). Two
-    flat_buttons: the double-wide PLAY runs the
+    """Run buttons for a function definition — GUTTER widget for 'def_name'
+    tokens (`gutter: True` in DEFAULT_TOKEN_VIEWS): the name text draws
+    normally in the code and this widget is drawn by the gutter pass IN
+    PLACE OF the def line's number, sized to the number strip (`width` /
+    `height` = the cell). Two flat_buttons: the double-wide PLAY runs the
     INSTRUMENTED twin (run_instrumented — live_view_forward's path), so
     every assignment publishes a snapshot and its marker anchors right in
     this editor via the snapshot overlay (inline, running always means
@@ -3492,6 +3491,10 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                if editor_state is not None else {})
     if params_clicked:
         _pp_vis[def_name] = not _pp_vis.get(def_name, False)
+    elif live_clicked and not _pp_vis.get(def_name, False):
+        # A manual run SHOWS the params panel (the run itself happens below,
+        # in the live_clicked branch) - it never closes an open panel.
+        _pp_vis[def_name] = True
     _pp_wins = getattr(editor_ds, '_fnrun_params_wins', None)
     if _pp_wins is None:
         _pp_wins = editor_ds._fnrun_params_wins = {}
@@ -3714,7 +3717,12 @@ draw_run_fn_token_plain._plain_tv = True
 # lead_cells=N makes it an ACCESSORY: the text draws normally (shifted N cells
 # right) and the widget gets only the N-cell lead space beside it, or
 # trail_cells=N makes it TRAILING: the text draws in place and the widget
-# gets the N-cell area right after it (the rest of the text shifts). owns_mouse
+# gets the N-cell area directly after it (the rest of the line shifts).
+# gutter=True makes it a GUTTER widget: the token draws as plain text and the
+# renderer runs in the gutter pass on the token's line, IN PLACE OF the line
+# number (cell = the number strip right of the live-marker buttons, width /
+# height passed like any token widget). The body only records it
+# (ds._gutter_views), so it costs nothing on the text grid. owns_mouse
 # marks widgets that consume clicks (they subscribe to the left_mouse_*
 # events); for REPLACE widgets draw_text then emulates the caret placement a
 # text click would have given. pad_px widens a REPLACE widget's view N px per
@@ -3737,13 +3745,14 @@ DEFAULT_TOKEN_VIEWS = {
                "owns_mouse": True, "pad_px": 2, "tint": (0.026, 0.041, 0.056)},
     "color3": {"renderer": draw_color3_token_plain, "char_width": 1, "whole_token": True,
                "owns_mouse": True, "lead_cells": 2},
-    # Function definitions: run buttons TRAIL the def's name token - between
-    # the name and its parameter list (`def f[==][>>](a, b):`); the name
-    # itself draws and edits normally. The double-wide play runs the
+    # Function definitions: the run buttons live in the GUTTER, in place of
+    # the def line's number (`gutter: True` - see the gutter-widget note in
+    # the token-views block above); the name draws and edits normally and
+    # the code tree is untouched. The double-wide play runs the
     # instrumented twin (live_view_forward's path); the sliders open the
     # params panel (cst-dict defaults, syncable back into the signature).
     "def_name": {"renderer": draw_run_fn_token_plain, "char_width": 1,
-                 "whole_token": True, "owns_mouse": True, "trail_cells": 9},
+                 "whole_token": True, "owns_mouse": True, "gutter": True},
 }
 
 # live_view() call sites get an anchor marker + nested value window (the first
@@ -7615,6 +7624,22 @@ def _get_indent(text, index):
     return indent
 
 
+def _block_open_extra(text, pos, block_indent=4):
+    """Extra indent Enter adds when the code BEFORE `pos` on its line opens a
+    block — `def f():`, `class C:`, `if x:` ... — i.e. the line's code part
+    (trailing comment stripped, quotes honoured) ends with ':' and nothing
+    remains after the caret but whitespace / a comment. 0 otherwise. The
+    caller has already ruled out an unclosed bracket (a `:` inside one is a
+    slice or a dict, not a block)."""
+    head = _guide_code_part(text[_get_line_start(text, pos):pos].strip())
+    if not head.endswith(':'):
+        return 0
+    rest = text[pos:_get_line_end(text, pos)].strip()
+    if rest and not rest.startswith('#'):
+        return 0
+    return block_indent
+
+
 def _unclosed_opener(text, pos):
     """Index of the innermost (, [ or { still open just before `pos`, ignoring
     brackets inside strings and # comments, or None.
@@ -9076,7 +9101,7 @@ def draw_text(input_value: str, height=None,
               left_mouse_down=False,
               left_mouse_drag=False, left_mouse_held=False,
               horizontal_scroll_drag=False, search_text="", 
-              ctrl_b_down=False,
+              ctrl_b_down=False, ctrl_shift_b_down=False,
               ctrl_minus_down=False, ctrl_equal_down=False,
               ctrl_shift_minus_down=False, ctrl_shift_equal_down=False,
               single_line=False, is_search_box=False, focusable=True,
@@ -10976,6 +11001,29 @@ def draw_text(input_value: str, height=None,
                 f"(focus_owner={getattr(Melty.text_focused_ds, 'name', None)!r}) "
                 f"uj_open={getattr(ds, '_uj_open', False)} "
                 f"caret={ds.text_cursor_pos} text_len={len(text)}")
+    # Ctrl+Shift+B - open the CARET's line in the external editor (IntelliJ).
+    # Same routing/focus gates as Ctrl+B; the display line maps through the
+    # fold remap to the full buffer, plus the view's file offset gives the
+    # 1-based source line. The launch runs off the render thread - the GUI
+    # command blocks until the running instance answers.
+    if (ctrl_shift_b_down and is_focused and not single_line
+            and not is_search_box):
+        _xp = getattr(jump_to, 'path', None) if jump_to is not None else None
+        if _xp is not None:
+            _xpos = min(ds.text_cursor_pos, max(len(text) - 1, 0))
+            _xdl = text.count('\n', 0, _xpos)
+            _xfl = (_fold_d2b[_xdl] if _fold_d2b is not None
+                    and _xdl < len(_fold_d2b) else _xdl)
+            _xline = _usage_off + _xfl + 1
+            import threading
+            from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
+            threading.Thread(target=open_in_intellij, args=(str(_xp), _xline),
+                             daemon=True, name="open_in_intellij").start()
+        else:
+            from src.lsd.gl_gui.notifications import notify
+            notify("No file path for this buffer — can't open it externally.",
+                   tint=(1.0, 0.65, 0.4, 1.0), tag="external_editor")
+
     if (ctrl_b_down and is_focused and not single_line and not is_search_box
             and not getattr(ds, '_uj_open', False)):
         _cb_pos = min(ds.text_cursor_pos, max(len(text) - 1, 0))
@@ -11386,7 +11434,7 @@ def draw_text(input_value: str, height=None,
                 if indent is None:
                     opener = _unclosed_opener(_bt, _get_line_start(_bt, _bp))
                     indent = _get_indent(_bt, opener) if opener is not None \
-                        else _get_indent(_bt, _bp)
+                        else _get_indent(_bt, _bp) + _block_open_extra(_bt, _bp)
                 text = text[:pos] + '\n' + ' ' * indent + text[pos:]
                 ds.text_cursor_pos = pos + 1 + indent
                 ds.text_selection_start = ds.text_cursor_pos
@@ -11408,8 +11456,10 @@ def draw_text(input_value: str, height=None,
                 indent = _open_bracket_indent(_bt, _bp)
                 if indent is None:
                     opener = _unclosed_opener(_bt, _get_line_start(_bt, _bp))
+                    # Block opener (`def f():` / `class C:` / `if x:`) →
+                    # one level deeper, see _block_open_extra.
                     indent = _get_indent(_bt, opener) if opener is not None \
-                        else _get_indent(_bt, _bp)
+                        else _get_indent(_bt, _bp) + _block_open_extra(_bt, _bp)
                 # The remainder of the current line moves down to the new line. Strip
                 # ITS leading spaces (only up to the line's end - never the next
                 # line's indent) so they don't stack on top of the indent we insert.
@@ -13230,6 +13280,9 @@ def draw_text(input_value: str, height=None,
     # drag doesn't grow a text selection. Scroll/edit invalidations re-run the
     # body, so the rects track the screen pixels the user actually sees.
     ds._plain_tv_rects = []
+    # Gutter widgets recorded by this body run (display line -> (spec, token,
+    # name, kwargs)), consumed by the gutter pass below. Frame-local.
+    _gutter_views = {}
     # Auto-exec edit watch for defs whose widget is scrolled out of view:
     # one identity test per render (see _fnrun_auto_exec_scan).
     _fnrun_auto_exec_scan(ds, text_editor_state, text,
@@ -13299,11 +13352,15 @@ def draw_text(input_value: str, height=None,
             # with lead text) - safe to overwrite as this branch continues.
             if _pres_lines is not None and _cur_ln not in _pres_lines:
                 color = _mix_packed(color, (0.0, 0.0, 0.0), _pres_k)
-            _lead = _view.get("lead_cells", 0)
+            # GUTTER (`gutter`): the token is plain text only; the widget is
+            # recorded for the gutter pass (drawn on this line in place of
+            # the line number) - no lead / trail cells, no caret hiding.
+            _gutter = bool(_view.get("gutter"))
+            _lead = 0 if _gutter else _view.get("lead_cells", 0)
             # TRAILING (`trail_cells`): the accessory's mirror - the token
             # text draws in place, the widget gets the trail cells right
             # after it (the rest of the line shifts; vcols carries it).
-            _trail = _view.get("trail_cells", 0)
+            _trail = 0 if _gutter else _view.get("trail_cells", 0)
             _cells = _lead + len(token) + _trail
             _wx = x + (_lead + len(token)) * char_w if _trail else x
             # While the editor caret sits on TOP a REPLACE token, the widget
@@ -13313,7 +13370,7 @@ def draw_text(input_value: str, height=None,
             # composites ABOVE the editor tile, so a caret under it would be
             # invisible anyway.) _tv_idx is still consumed so the OTHER
             # visible widgets keep their render-order names (and state).
-            _caret_in = (not _lead and not _trail
+            _caret_in = (not _lead and not _trail and not _gutter
                          and Melty.text_focused_ds is ds
                          and src_i <= ds.text_cursor_pos <= src_i + len(token))
             if _caret_in and y + line_px >= rect_min_y and y <= rect_max_y:
@@ -13455,14 +13512,21 @@ def draw_text(input_value: str, height=None,
                     # lead area there, so the token text keeps normal clicks
                     # while a press on the swatch doesn't move the caret
                     # (the wrapped version's left_mouse_down latch did this).
-                    if _view.get("owns_mouse"):
+                    if _view.get("owns_mouse") and not _gutter:
                         ds._plain_tv_rects.append((_wx - _pad, y, _wx - _pad + _w, y + line_px))
-                try:
-                    _res = _view["renderer"](token, width=_w, height=line_px,
-                                             name=_name, **_extra)
-                except Exception:                    _res = None
+                if _gutter:
+                    # Deferred to the gutter pass: it draws the widget on
+                    # this display line (the gutter owns the cell geometry and
+                    # the owns_mouse rect) - here the token is plain text.
+                    _gutter_views[_cur_ln] = (_view, token, _name, _extra)
+                    _res = None
+                else:
+                    try:
+                        _res = _view["renderer"](token, width=_w, height=line_px,
+                                                 name=_name, **_extra)
+                    except Exception:                    _res = None
                 imgui.set_cursor_screen_pos(_save_cur)
-                if _lead or _trail:
+                if _lead or _trail or _gutter:
                     draw_list.add_text(x + _lead * char_w, y, color, token)
                 if (isinstance(_res, tuple) and len(_res) >= 2 and _res[0]
                         and isinstance(_res[1], str) and _res[1] != token):
@@ -13487,6 +13551,7 @@ def draw_text(input_value: str, height=None,
                 # their text takes normal editor clicks, and a press on an
                 # accessory (opening its popover) shouldn't move the caret.
                 if (_view.get("owns_mouse") and not _lead and not _trail
+                        and not _gutter
                         and x <= io.mouse_pos.x < x + _cells * char_w
                         and y <= io.mouse_pos.y < y + line_px):
                     if imgui.is_mouse_clicked(0):
@@ -13816,7 +13881,14 @@ def draw_text(input_value: str, height=None,
             add_shadow((left, gutter_top, gutter_w, rect_max_y - gutter_top),
                        offset=_gut_sh, corner_radius=0.0, clip=False,
                        draw_state=ds)
-        draw_list.push_clip_rect(left, gutter_top, left + gutter_w, rect_max_y, True)
+        # gutter_indent: the fold chevrons move out of the number strip
+        # into the indent band to its right (the 4-column inset through
+        # column 0), right-aligned there — so the numbers keep their column
+        # and the arrow sits where the root-level indent guide would start.
+        # The clip widens to cover the band; the fill stays the strip.
+        _chev_in_indent = bool(gutter_indent)
+        _gut_clip_r = left + gutter_w + (gutter_margin if _chev_in_indent else 0.0)
+        draw_list.push_clip_rect(left, gutter_top, _gut_clip_r, rect_max_y, True)
         draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, imgui.get_color_u32_rgba(*gutter_bg))
         # Line-tint lookup for the heat wash below: a line with a definition
         # tint draws its number with THAT color instead of the usage heat ramp.
@@ -13834,6 +13906,32 @@ def draw_text(input_value: str, height=None,
         # and iterate just those.
         _gl0 = max(0, int((gutter_top - origin_y) // line_px))
         _gl1 = min(total_lines, int((rect_max_y - origin_y) // line_px) + 2)
+
+        def _draw_gutter_widget(line_idx, ly, x1):
+            """Draw the line's gutter widget (a `gutter: True` token view —
+            the def run buttons) in the number cell, from the live-marker
+            button column to `x1`. True when drawn; False (draw the number
+            instead) when the line has none or the cell is too narrow."""
+            _gv = _gutter_views.get(line_idx)
+            if _gv is None:
+                return False
+            _gv_spec, _gv_tok, _gv_name, _gv_extra = _gv
+            _gv_x0 = left + _lv_btn_w + 2.0
+            if x1 - _gv_x0 < 12.0:
+                return False
+            _gv_save = imgui.get_cursor_screen_pos()
+            imgui.set_cursor_screen_pos((_gv_x0, ly))
+            if _gv_spec.get("owns_mouse"):
+                ds._plain_tv_rects.append((_gv_x0, ly, x1, ly + line_px))
+            try:
+                _gv_spec["renderer"](_gv_tok, width=x1 - _gv_x0,
+                                     height=line_px, name=_gv_name,
+                                     **_gv_extra)
+            except Exception:
+                pass
+            imgui.set_cursor_screen_pos(_gv_save)
+            return True
+
         for line_idx in range(_gl0, _gl1):
             ly = origin_y + line_idx * line_px
             if ly + line_px < gutter_top or ly > rect_max_y:
@@ -13863,7 +13961,7 @@ def draw_text(input_value: str, height=None,
                     _hb = _usage_wash_color(heat)
                 _hx0, _hx1 = nx - 3.0, left + gutter_w - 3.0
                 _hy0, _hy1 = ly + 1, ly + line_px - 1
-                if line_idx in _fold_hdr:
+                if line_idx in _fold_hdr and not _chev_in_indent:
                     # Fold header: no number for the box, and the fold
                     # arrow shares the cell - shrink to a half-size strip
                     # (right-aligned, vertically centered) so the arrow gets
@@ -13887,7 +13985,16 @@ def draw_text(input_value: str, height=None,
                 # toggle handler at the top of the body reads these on
                 # next frame.
                 _rng_g, _col_g = _fh
-                if heat:
+                if _chev_in_indent:
+                    # Indent band: arrow right-aligned in the band, number
+                    # keeps its place in the strip; the hit zone is the band.
+                    _band_l = left + gutter_w
+                    _gcx = _gut_clip_r - 4.0 - char_w * 0.5
+                    _gr = (_band_l, ly, _gut_clip_r, ly + line_px)
+                    if not _draw_gutter_widget(line_idx, ly, left + gutter_w - 3.0):
+                        draw_list.add_text(nx, ly, cur_color if line_idx == cur_line
+                                           else num_color, num_str)
+                elif heat:
                     # Heat chip exists (right half of the cell): arrow sits
                     # left of it with breathing room, and the hit region stops
                     # at the chip so clicking it still opens the usage box
@@ -13896,9 +14003,12 @@ def draw_text(input_value: str, height=None,
                     _gcx = max(_chip_l - 8.0, left + _lv_btn_w + 5.0)
                     _gr = (left + _lv_btn_w, ly, _chip_l - 2.0, ly + line_px)
                 else:
-                    # No chip: right-align the arrow with the line numbers.
+                    # No chip: right-align the arrow with the line numbers;
+                    # a gutter widget takes the cell left of the arrow.
                     _gcx = left + gutter_w - 6.0 - char_w
                     _gr = (left + _lv_btn_w, ly, left + gutter_w, ly + line_px)
+                    if _draw_gutter_widget(line_idx, ly, _gcx - 8.0):
+                        _gr = (_gcx - 6.0, ly, left + gutter_w, ly + line_px)
                 _ghov = (_gr[0] <= io.mouse_pos.x < _gr[2]
                          and _gr[1] <= io.mouse_pos.y < _gr[3])
                 _gcc = imgui.get_color_u32_rgba(
@@ -13916,7 +14026,9 @@ def draw_text(input_value: str, height=None,
                                                   _gcx, _gcy + 3.5, _gcc)
                 if _rng_g is not None:   # None = no replay, paint-only
                     ds._fold_badge_rects.append((_gr, _rng_g))
-            else:
+            elif not _draw_gutter_widget(line_idx, ly, left + gutter_w - 3.0):
+                # Plain line: the number (a gutter widget takes its cell -
+                # def lines are fold headers, so they mostly land above).
                 draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
             _mlist = _lv_marks.get(line_idx)
             if _mlist:

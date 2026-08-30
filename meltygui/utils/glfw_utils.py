@@ -1143,4 +1143,4 @@ def request_render(for_frames:int | None=None):
     try:
         glfw.post_empty_event()
     except Exception:
-        pass    # glfw torn down mid-event (shutdown/restart) - nothing to wake
+        pass    # glfw torn down mid-call (shutdown/restart) - nothing to wake

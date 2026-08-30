@@ -1972,7 +1972,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = False
+    developer_mode = True
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by
