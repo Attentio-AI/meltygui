@@ -624,10 +624,18 @@ def _key_line(key_path):
     return int(num) if num.isdigit() else None
 
 
+class RerunHint(str):
+    """The 'Rerun to visualize …' placeholder a released site holds. A str
+    subclass so every existing consumer (the value window's str view, tests)
+    keeps working, while views that treat plain strings specially can tell
+    it apart: the marker's INLINE label refuses it (it's an affordance, not
+    a captured value) and keeps the click/caret popover for it."""
+
+
 def rerun_hint(store_obj, key_path):
     """The placeholder a loop site holds while nothing shows it."""
     label = (vars(store_obj).get("__live_labels__") or {}).get(key_path)
-    return f"Rerun to visualize {label or key_path[-1]}"
+    return RerunHint(f"Rerun to visualize {label or key_path[-1]}")
 
 
 def park_rerun_hint(store_obj, key_path):
@@ -907,6 +915,15 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     # GIL, so the rendering thread always reads either the old or new value.
     _stamp_publish_gen(display)
     store[site.key_path] = display
+    # Publish ORDER, one int per key: the inline USAGE labels resolve a
+    # usage to the binding above it that actually published LAST (the
+    # branch-not-taken rule - see live_usage.governing_key). Monotonic
+    # across the process via the shared generation counter.
+    try:
+        vars(site.store_obj).setdefault("__live_pub_seq__", {})[
+            site.key_path] = next(_PUBLISH_GEN)
+    except (AttributeError, TypeError):
+        pass
     # Run-scope liveness: while a run_capture is active for this store,
     # every published key is recorded so the run's exit can prune the rest
     # (set.add - atomic under the GIL).
@@ -1643,24 +1660,46 @@ def publish_frame_snapshot(fn, scope, upto_lineno=None):
     Accepts a render_func WRAPPER too — unwrapped here, since anchors and
     the store must live on the real body function (the wrapper's __code__
     points at core_render)."""
+    fn, items = _frame_snapshot_items(fn, scope)
+    if fn is None:
+        return
+    new_keys = set()
+    for disk, n, val in items:
+        site = _Site((f"line:{disk}#{n}",), None, None, fn, disk)
+        _publish(site, val, n, bare=False)
+        new_keys.add(site.key_path)
+    try:
+        prev = vars(fn).get("__frame_snapshot_keys__") or set()
+        _prune_keys(fn, [k for k in prev - new_keys])
+        vars(fn)["__frame_snapshot_keys__"] = new_keys
+    except (AttributeError, TypeError):
+        pass
+
+
+def _frame_snapshot_items(fn, scope):
+    """(unwrapped_fn, [(disk_lineno, name, value), ...]) anchoring a
+    ``{name: value}`` scope onto every occurrence of each captured name in
+    ``fn``'s def (see _occurrence_lines) — the pure computation shared by
+    publish_frame_snapshot (global store) and frame_value_store (local
+    store). (None, []) when the function/scope can't be resolved."""
     try:
         fn = inspect.unwrap(fn)
     except Exception:
         pass
     code = getattr(fn, "__code__", None)
     if code is None or not isinstance(fn, types.FunctionType) or not scope:
-        return
+        return None, []
     path = Path(code.co_filename).resolve()
     try:
         tree, _text, _sig = _ast_for(path, path.stat().st_mtime)
     except (OSError, SyntaxError, ValueError):
-        return
+        return None, []
     delta = _stamp_delta(path, code.co_firstlineno)   # pending = disk + delta
     fdef = _def_node_for(tree, fn, code.co_firstlineno + delta)
     if fdef is None:
-        return
+        return None, []
     anchors = _occurrence_lines(fdef)
-    new_keys = set()
+    items = []
     for n, lns in anchors.items():
         if "." in n:
             # Attribute chain (`draw_state.some_val`, each segment of
@@ -1676,16 +1715,47 @@ def publish_frame_snapshot(fn, scope, upto_lineno=None):
         else:
             continue
         for ln in lns:
-            disk = ln - delta
-            site = _Site((f"line:{disk}#{n}",), None, None, fn, disk)
-            _publish(site, val, n, bare=False)
-            new_keys.add(site.key_path)
-    try:
-        prev = vars(fn).get("__frame_snapshot_keys__") or set()
-        _prune_keys(fn, [k for k in prev - new_keys])
-        vars(fn)["__frame_snapshot_keys__"] = new_keys
-    except (AttributeError, TypeError):
-        pass
+            items.append((ln - delta, n, val))
+    return fn, items
+
+
+class LocalValueStore:
+    """A live-value store computed locally and PASSED IN (draw_text's
+    ``live_store=``) instead of published onto the live function. Same
+    attach-to-object shape the whole live-view stack reads — values, labels
+    and watchers all ride this object (live_values_for, label_for, watch) —
+    so the overlay/marker/window machinery works unchanged, but nothing
+    global ever sees it: two views of two different captures of the same
+    function coexist, and dropping the store releases everything it pinned.
+    `__def_line__` (disk line of the owning def) is how the snapshot overlay
+    matches the store to ITS def node and no other."""
+
+    def __init__(self, qualname="?", def_line=None):
+        self.__qualname__ = qualname
+        self.__name__ = qualname.rsplit(".", 1)[-1]
+        self.__def_line__ = def_line
+        self.__live_values__ = {}
+        self.__live_labels__ = {}
+
+
+def frame_value_store(fn, scope):
+    """A LocalValueStore of ``scope`` anchored on ``fn``'s def — the same
+    anchor computation publish_frame_snapshot uses, with NOTHING written to
+    ``fn`` and nothing registered globally. For callers that own their
+    capture (the stack trace view): build once, hand to draw_text as
+    ``live_store=``, drop when done. Returns None when unresolvable."""
+    fn, items = _frame_snapshot_items(fn, scope)
+    if fn is None or not items:
+        return None
+    code = fn.__code__
+    delta = _stamp_delta(Path(code.co_filename).resolve(), code.co_firstlineno)
+    store = LocalValueStore(qualname=getattr(fn, "__qualname__", fn.__name__),
+                            def_line=code.co_firstlineno - delta)
+    for disk, n, val in items:
+        key_path = (f"line:{disk}#{n}",)
+        store.__live_values__[key_path] = val
+        store.__live_labels__[key_path] = n
+    return store
 
 
 def _def_node_for(tree, fn, target_lineno):

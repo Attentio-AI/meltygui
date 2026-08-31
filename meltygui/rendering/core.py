@@ -557,6 +557,17 @@ def _selection_for_search(owner_ds):
     if lo > hi:
         lo, hi = hi, lo
     text = ds._raw_input_value
+    # Selection offsets index the editor's DISPLAY text - the buffer with
+    # every collapsed fold's hidden lines spliced out (_fold_build) - not
+    # the raw buffer. Slice the text the offsets were set against, else
+    # a collapsed region above the selection shifts the slice and the
+    # find box seeds the wrong text. _fold_cache = (source, depth, built),
+    # built = (display_text, segments, spans, disp_to_buf); disp_to_buf
+    # None means identity (nothing collapsed), where raw slicing is fine.
+    fold_cache = getattr(ds, "_fold_cache", None)
+    if (fold_cache is not None and fold_cache[0] is text
+            and fold_cache[2][3] is not None):
+        text = fold_cache[2][0]
     if lo == hi or not isinstance(text, str):
         return None
     # Trim surrounding whitespace so a line-swipe selection (which picks up
@@ -801,8 +812,13 @@ def render_func(*args, **o_kwargs):
 
             from src.lsd.gl_gui.view.core_views.headers import draw_header_end
             from src.lsd.gl_gui.view.core_views.headers import draw_header
-            kwargs['with_header_end'] = draw_header_end
-            kwargs['with_header'] = draw_header
+            # A caller-passed header wins (SourcePriority: caller kwargs beat
+            # defaults) - the window chrome fills in the empty slots, so a
+            # custom header like fast_dock.dock_header isn't clobbered here.
+            if kwargs.get('with_header_end') is None:
+                kwargs['with_header_end'] = draw_header_end
+            if kwargs.get('with_header') is None:
+                kwargs['with_header'] = draw_header
 
 
         # kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
@@ -1029,6 +1045,18 @@ def render_func(*args, **o_kwargs):
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not id(input_value) == id(Melty.registered_windows):
+                # The table reads a row's icon from draw_state._kwargs (_row_icon),
+                # but a closed window returns here BEFORE _restamp_kwargs, so a
+                # call-site icon= never reached the draw_state and the Important
+                # Button dropped the row. Stamp just the icon, never the full
+                # kwargs: that would pin input values on a closed window.
+                icon = kwargs.get("icon")
+                if icon:
+                    if type(draw_state._kwargs) is dict:
+                        if draw_state._kwargs.get("icon") != icon:
+                            draw_state._kwargs["icon"] = icon
+                    else:
+                        draw_state._kwargs = {"icon": icon}
 
                 if draw_state._is_nested:
                     draw_state.dlt_count = 0

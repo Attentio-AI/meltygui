@@ -145,6 +145,33 @@ def set_button_probe(fn):
     _BUTTON_PROBE["fn"] = fn
 
 
+# Orchestrator record/replay funnel. Every REAL input reaches the handler
+# through the feed_* methods below (the GLFW backend's callbacks and its
+# per-frame cursor sample), so this one tap taps the whole stream: the
+# Orchestrator (view/playback/orchestrator.py) registers
+# `fn(kind, *args) -> bool` here - it records the event while a recording is
+# armed, and returns True to CONSUME the real event while a replay is
+# driving (the mute that keeps a stray real click from corrupting the replay).
+# The key/char callbacks in event_backends.py call the input tap for the
+# events that bypass the handler (Melty.frame_key_events and imgui events).
+# Module-level and hotswap-surviving, same shape as _BUTTON_PROBE.
+_INPUT_TAP: dict = globals().get("_INPUT_TAP") or {"fn": None}
+
+
+def set_input_tap(fn):
+    _INPUT_TAP["fn"] = fn
+
+
+def input_tap(kind, *args):
+    fn = _INPUT_TAP["fn"]
+    if fn is None:
+        return False
+    try:
+        return bool(fn(kind, *args))
+    except Exception:
+        return False
+
+
 _parse_cache: dict[str, tuple[str, str, bool, bool]] = {}  # (input_id, action, inverted, non_blocking)
 _view_id_names_cache: dict[Any, dict[tuple[str, str], str]] = {}
 _view_id_flags_cache: dict[
@@ -438,6 +465,9 @@ class InputHandler:
         x = self._cursor_x if x is None else x
         y = self._cursor_y if y is None else y
 
+        if input_tap("down", input_id, x, y):
+            return
+
         state = self._state(input_id)
         state.chord = False
 
@@ -509,6 +539,9 @@ class InputHandler:
         x = self._cursor_x if x is None else x
         y = self._cursor_y if y is None else y
 
+        if input_tap("up", input_id, x, y):
+            return
+
         state = self._state(input_id)
         was_down = state.is_down
         state.is_down = False
@@ -544,6 +577,8 @@ class InputHandler:
         t = t or time.perf_counter()
         dx = x - self._cursor_x if dx is None else dx
         dy = y - self._cursor_y if dy is None else dy
+        if input_tap("move", x, y):
+            return
         self._cursor_x, self._cursor_y = x, y
         self._last_dx = dx
         self._last_dy = dy
@@ -551,6 +586,8 @@ class InputHandler:
         self._emit("cursor", EventAction.MOVED, x, y, dx, dy, t=t)
 
     def feed_change(self, input_id: str, value: float, t: float = None):
+        if input_tap("change", input_id, value):
+            return
         # Coalesce repeated CHANGED events for the same input within a frame by
         # summing their values. Scroll-wheel notches arrive as separate
         # callbacks; when the framerate drops, many come between two

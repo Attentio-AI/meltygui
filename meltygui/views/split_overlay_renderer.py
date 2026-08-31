@@ -152,6 +152,14 @@ class SplitOverlayRenderer(GlfwRenderer):
             for button in masked:
                 if 0 <= button < 3:
                     io.mouse_down[button] = False
+        # Orchestrator replay: while a replay drives, its VCR cursor /
+        # buttons / modifiers / chars replace the OS ones for imgui (the
+        # handler side is muted at the input remap funnel). No-op otherwise.
+        try:
+            from src.lsd.gl_gui.view.playground.orchestrator import Orchestrator
+            Orchestrator.stamp_io(imgui.get_io())
+        except Exception:
+            pass
 
     def _create_device_objects(self):
         """Build the LCD program; if the driver can't link it (no dual-source

@@ -105,6 +105,10 @@ class Font(RelaxedEnum):
     DEJAVU_SANS_18 = FontSpec(_DEJAVU_SANS, 18.0, eager=True)
     FONTAWESOME_14 = _fa_merge(14.0, eager=True)
     DEJAVU_SANS_50 = FontSpec(_DEJAVU_SANS, 50.0)
+    # The Fast Dock's Important tab: a step up from the default UI group for
+    # larger icon tiles (icons render at the merged FA size, ~0.78x the host).
+    DEJAVU_SANS_24 = FontSpec(_DEJAVU_SANS, 24.0)
+    FONTAWESOME_18 = _fa_merge(18.5)
     # DEJAVU_SANS_22 = FontSpec(_DEJAVU_SANS, 22.0)
 
     JETBRAINS_MONO_30 = FontSpec(_JETBRAINS_MONO, 30.0)

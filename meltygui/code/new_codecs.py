@@ -1144,9 +1144,15 @@ class ImageCodec(Codec):
     @staticmethod
     def load(address, **kwargs):
         path = address.path
-        key = str(path)
-        raw = path.read_bytes()
+        return ImageCodec.decode_bytes(path.read_bytes(), str(path))
 
+    @staticmethod
+    def decode_bytes(raw, key):
+        """PIL-decode `raw` into a PendingTexture registered under `key` —
+        load()'s body, shared with the code editor's compare pane, which
+        renders a git BLOB of the image (bytes that never exist on disk;
+        the caller keys those per (path, reference) so they never clobber
+        the live file's texture)."""
         image = Image.open(io.BytesIO(raw))
         if image.mode == "P":
             image = image.convert("RGBA" if "transparency" in image.info else "RGB")

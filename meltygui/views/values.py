@@ -87,7 +87,7 @@ def draw_frame(input_value: types.FrameType, draw_state, **kwargs):
   
     # threaded open_in_intellij pattern the jump-to-calling button uses.    # Jump-to-error: open the frame's source file at the failing line. Same
     if button(f"{file_name_truncated}:{input_value.f_lineno}",
-              height=30, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
+              height=59, value=0.4, saturation=1.5, name="jump_to_frame")[0]:
         from src.lsd.gl_gui.utils.jump_to_code import open_in_intellij
 
         threading.Thread(
@@ -5038,10 +5038,18 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # changes update the cached tile. Hidden in presentation mode (windows
     # stay visible through the global search); the sync's signature check
     # catches up on whatever changed while hidden.
+    # Orchestrator: cue capture while a recording is armed, plus a repaint of
+    # the window's cached tile whenever engine state changes (replay progress,
+    # record pulse). Unconditional - a replay may be verifying cues even in
+    # presentation mode.
+    from src.lsd.gl_gui.view.playground.orchestrator import orchestrator_sync
+    orchestrator_sync()
+
     if not Toggles.presentation_mode:
-        from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock, fast_dock_sync
+        from src.lsd.gl_gui.view.core_views.fast_dock import fast_dock_sync
         fast_dock_sync()
-        draw_fast_dock(Core.melty.registered_windows, name="Fast Dock", with_header=draw_header,
+        from src.lsd.gl_gui.view.core_views.fast_dock import draw_fast_dock
+        draw_fast_dock(Core.melty.registered_windows, name="Fast Dock",
                        mode=Mode.WINDOW, bg_offset=1)
 
     # (Multi-split overlays moved to Melty.end_frame - drawn from this
@@ -5145,7 +5153,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     #     drop_down_selection = selection
     #     print("Drop down change", repr(selection))
     #
-    draw_collection(vis.root.lora_collection, name="Loras", mode=Mode.WINDOW)
+    draw_collection(vis.root.lora_collection, name="Loras", icon="", mode=Mode.WINDOW)
     draw_any(vis.root.lora_collection, name="Loras Alt View", mode=Mode.WINDOW)
     # draw_any(vis.root.lora_collection.loras, name="Loras View Three", child_kwargs={
     #     'is_tree': True, 'expanded': False, 'show_add_delete': False}, mode=Mode.WINDOW)
@@ -5153,7 +5161,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # normalized_sub_mask, _, _ = Melty.filter.normalize(Melty.cache._mask_tex)
     # draw_texture(normalized_sub_mask, show_bg=True, max_contrast=30, jet=True,
     #             max_brightness=30, name="mask_tex", live=True, mode=Mode.WINDOW)
-    draw_any(Core.melty.cache.snapshot_tex, show_bg=True, name="Viewport", live=True, mode=Mode.WINDOW)
+    draw_any(Core.melty.cache.snapshot_tex, show_bg=True, name="Viewport", icon="", live=True, mode=Mode.WINDOW)
 
     # The normalize is a FULL-SCREEN GPU min-max reduction (~6-8ms CPU + real
     # GPU fill per frame). Only run it while the debug window is actually open
@@ -5246,7 +5254,6 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             _dm_parts.append(f"{_l1}={(_t1 - _t0) * 1000.0:.2f}")
         _dm_trace("draw_main perf", total_ms=round(_dm_total, 2),
                   breakdown=" ".join(_dm_parts))
-
 
 @render_func
 def test_widget(input_value, name, unique, **kwargs):

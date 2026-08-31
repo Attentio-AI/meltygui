@@ -492,6 +492,12 @@ class GlfwQueueBackend:
             x, y = self._content_cursor(window)
             name = ImGuiBackend.KEY_NAMES.get(key, f"key_{key}")
             if action == glfw.PRESS or action == glfw.REPEAT:
+                # Orchestrator funnel: records the keystroke for a replayable
+                # take, or consumes it while a replay is driving (Esc aborts
+                # there). Consumed = imgui never sees it either (chain skipped).
+                from src.lsd.gl_gui.events.input_handler import input_tap
+                if input_tap("key", key, mods):
+                    return
                 # Ordered record for the text editor (preserves typed order, and
                 # repeats so a held key still inserts/navigates).
                 Melty.frame_key_events.append((key, mods))
@@ -523,6 +529,11 @@ class GlfwQueueBackend:
     def _on_char(self, window, codepoint):
         # imgui consumes this for its own text editor; the app's text input
         # uses frame_key_events. Just chain so imgui still gets the character.
+        # The Orchestrator tap records the char for replay (injected back via
+        # io.add_input_character) and mutes real typing while replaying.
+        from src.lsd.gl_gui.events.input_handler import input_tap
+        if input_tap("char", codepoint):
+            return
         self._chain(self._prev_char, window, codepoint)
 
     def _on_button(self, window, button, action, mods):

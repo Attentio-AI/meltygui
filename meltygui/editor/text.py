@@ -3885,7 +3885,8 @@ def _lv_line_map(parse_source, buffer_text):
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None, buffer_text=None,
                           sel_lo=None, sel_hi=None, fold_line_map=None,
-                          sel_caret=None, fold_d2b=None):
+                          sel_caret=None, fold_d2b=None, caret_line=None,
+                          live_store=None, col_shift=0):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
     for nodes matching a key type and call its renderer positioned at the node's
     span. Lines are 1-indexed relative to the editor's source (== code_tree.source),
@@ -4031,7 +4032,8 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
                              node=node, span=span, root=code_tree,
                              line_offset=line_offset, jump_to=jump_to,
                              line_map=line_map, sel_lo=sel_lo,
-                             sel_hi=sel_hi)
+                             sel_hi=sel_hi, caret_line=caret_line,
+                             live_store=live_store, col_shift=col_shift)
         except Exception:
             pass
     _tvms = (time.perf_counter() - _tvt0) * 1000.0
@@ -5763,13 +5765,26 @@ def fold_focus_scope(ds, text, li):
                 and r not in default_col):
             continue  # a scope nested inside the landed one: open
         col.add(r)
-    ds._fold_collapsed = col
-    ds._fold_keys = {kf[r] for r in col if r in kf}
+    # `ranges` is the layout's combined tuple (scope + diff spans) - split
+    # the new collapse set between the two stores so the body's key harvest
+    # and the diff layer's drift carry each see only their own tuples.
+    diff_set = getattr(ds, '_diff_rng_set', None) or frozenset()
+    ds._fold_collapsed = {r for r in col if r not in diff_set}
+    if getattr(ds, '_diff_fold_collapsed', None) is not None:
+        new_diff = {r for r in col if r in diff_set}
+        if new_diff != ds._diff_fold_collapsed:
+            # A deliberate reshape of the diff layer: count it as a hand
+            # takeover so an automatic expand_diff switch doesn't undo it.
+            ds._diff_manual_gen = getattr(ds, '_diff_manual_gen', 0) + 1
+        ds._diff_fold_collapsed = new_diff
+    ds._fold_keys = {kf[r] for r in ds._fold_collapsed if r in kf}
     exp = getattr(ds, '_fold_search_exp', None)
     if exp:
         exp.clear()
     if getattr(ds, '_fold_search_exp_keys', None):
         ds._fold_search_exp_keys = set()
+    if getattr(ds, '_diff_search_exp', None):
+        ds._diff_search_exp = set()
     built = _fold_build(text, ranges, col)
     ds._fold_cache = (text, (ranges, frozenset(col)), built)
     ds.invalidate()
@@ -5782,7 +5797,8 @@ def fold_display_line(ds, text, bli):
     another buffer). A line hidden inside a collapsed fold maps to the
     fold's head line. Read-only counterpart of fold_project_jump -- expands
     nothing."""
-    if not getattr(ds, '_fold_collapsed', None):
+    if not (getattr(ds, '_fold_collapsed', None)
+            or getattr(ds, '_diff_fold_collapsed', None)):
         return bli
     _fc = getattr(ds, '_fold_cache', None)
     if _fc is None or _fc[0] is not text:
@@ -5802,8 +5818,9 @@ def fold_buffer_line_at(ds, text, pos):
     through the layout's disp->buf table. Identity while nothing is
     collapsed / the layout was built against another buffer."""
     _fc = getattr(ds, '_fold_cache', None)
-    if (not getattr(ds, '_fold_collapsed', None) or _fc is None
-            or _fc[0] is not text):
+    if (not (getattr(ds, '_fold_collapsed', None)
+             or getattr(ds, '_diff_fold_collapsed', None))
+            or _fc is None or _fc[0] is not text):
         return text.count('\n', 0, pos)
     disp, d2b = _fc[2][0], _fc[2][3]
     dl = disp.count('\n', 0, max(0, min(pos, len(disp))))
@@ -7506,13 +7523,19 @@ def _mono_char_w():
     return imgui.calc_text_size("0").x
 
 
-def _build_vcols(text, tokens, token_views):
+def _build_vcols(text, tokens, token_views, pos_trails=None):
     """Per-source-char VISUAL-COLUMN map for inline token-view widths. Returns a
     list `vcols` (len = len(text)+1) where vcols[i] = the visual column (in cells,
     line-relative — reset after each '\\n') at which source char i starts. A
     char_width-N inline widget thus reserves N cells visually while staying ONE
     source character for editing/caret. Returns None when no inline views apply
-    (the fast path: 1 char == 1 cell everywhere)."""
+    (the fast path: 1 char == 1 cell everywhere).
+
+    `pos_trails` maps a WINDOW-RELATIVE char index to a cell count inserted
+    right BEFORE that char — a POSITIONAL trailing accessory (the live-usage
+    value labels: the gap opens after a specific symbol occurrence rather
+    than after every token of a kind). The rest of the line shifts right by
+    the inserted cells, exactly like a trail_cells view."""
     # Whole-token widgets are exactly token-width (1 cell per source char), so
     # they don't disturb the column map - except lead_cells / trail_cells
     # accessory views, which shift the token's text (lead) or the rest of
@@ -7524,15 +7547,16 @@ def _build_vcols(text, tokens, token_views):
         if v.get("whole_token"):
             return bool(v.get("lead_cells") or v.get("trail_cells"))
         return True
-    if not token_views or not any(
-            isinstance(k, str) and _bends_grid(v) for k, v in token_views.items()):
-        return None
-    # Only the VISIBLE tokens matter: if none of them carries a grid-bending
-    # view there is nothing to map (the common case - and on a long-line
-    # window it avoids building a per-char array the size of the line).
-    if not any(ck != 'clipped' and _bends_grid(token_views.get(ck))
-               for _, ck in tokens):
-        return None
+    if not pos_trails:
+        if not token_views or not any(
+                isinstance(k, str) and _bends_grid(v) for k, v in token_views.items()):
+            return None
+        # Only the VISIBLE tokens matter: if none of them carries a grid-bending
+        # view there is nothing to map (the common case - and on a long-line
+        # window it skips creating a per-char array the size of the buffer).
+        if not any(ck != 'clipped' and _bends_grid(token_views.get(ck))
+                   for _, ck in tokens):
+            return None
     n = len(text)
     vcols = [0.0] * (n + 1)
     col = 0.0
@@ -7547,7 +7571,8 @@ def _build_vcols(text, tokens, token_views):
             col += L
             i += L
             continue
-        view = token_views.get(ck) if isinstance(ck, str) else None
+        view = (token_views.get(ck)
+                if token_views and isinstance(ck, str) else None)
         cw = view.get("char_width") if (view and view.get("char_width") is not None) else None
         trail = 0
         if cw is not None and view.get("whole_token"):
@@ -7561,10 +7586,18 @@ def _build_vcols(text, tokens, token_views):
         for ch in tok:
             if i >= n:
                 break
+            if pos_trails is not None:
+                _pt = pos_trails.get(i)
+                if _pt:
+                    col += _pt      # positional gap right BEFORE this char
             vcols[i] = col
             col = 0.0 if ch == '\n' else col + (cw if cw is not None else 1.0)
             i += 1
         col += trail
+    if pos_trails is not None:
+        _pt = pos_trails.get(n)
+        if _pt:
+            col += _pt              # gap opens at the window's end
     vcols[n] = col
     return vcols
 
@@ -9054,6 +9087,63 @@ def _string_neutral_ranges(ds, text, ranges):
     return out
 
 
+def _nest_diff_ranges(gaps, forest):
+    """Split diff gap ranges against the SCOPE fold forest so every piece
+    nests — _fold_normalize_ranges DROPS ranges that partially overlap an
+    already-open range, and a diff gap routinely starts or ends mid-scope
+    (mid-def, mid-comment-run), which silently killed the whole gap when
+    the two sets were combined. Each piece keeps its own header line
+    visible (the fold model's invariant), so a gap crossing a def boundary
+    folds up to the boundary, shows the def header, and re-folds inside it
+    — a couple of extra context lines, never a lost fold. A piece also
+    never STARTS on a scope range's start line (equal starts collide in
+    the normalize — whichever sorts second is dropped, which could kill
+    the scope fold). `gaps` and `forest` are normalized (sorted, clipped);
+    returns sorted disjoint pieces."""
+    if not forest:
+        return list(gaps)
+    starts = [r[0] for r in forest]
+    starts_set = set(starts)
+    out = []
+    for gap_start, gap_end in gaps:
+        # Scopes overlapping this gap, in start order.
+        relevant = [r for r in forest[:bisect.bisect_right(starts, gap_end)]
+                    if r[1] >= gap_start]
+        cur = gap_start
+        while cur < gap_end:
+            if cur in starts_set:       # never share a start with a scope
+                cur += 1
+                continue
+            # The innermost scope containing `cur` caps the piece - running
+            # past its end would be a partial overlap.
+            limit = gap_end
+            for scope_start, scope_end in relevant:
+                if scope_start > cur:
+                    break
+                if scope_end >= cur:
+                    limit = min(limit, scope_end)
+            piece_end = limit
+            # A scope starting inside the piece but ending past it forces an
+            # earlier stop (the scope's header stays visible; the loop then
+            # descends into it). Repeat until stable - shrinking the piece
+            # can expose an earlier scope as a crossing.
+            while True:
+                crossing = None
+                for scope_start, scope_end in relevant:
+                    if scope_start > piece_end:
+                        break
+                    if scope_start > cur and scope_end > piece_end:
+                        crossing = scope_start
+                        break
+                if crossing is None:
+                    break
+                piece_end = crossing - 1
+            if piece_end > cur:
+                out.append((cur, piece_end))
+            cur = max(piece_end, cur) + 1
+    return out
+
+
 def fold_root_scopes(ranges, skip=()):
     """The collapse/expand-all target set: the ranges of the FIRST nesting
     level holding at least two scopes. `ranges` are normalized (start, end)
@@ -9180,9 +9270,11 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     force-expands that fold (its hidden text is still spliced back, clamped
     to the edit region's end) — the neighborhood changed under it, so showing
     everything beats guessing. Returns (full_text, new_collapsed_set,
-    force_expanded) — force_expanded holds the ORIGINAL range tuples of
-    seam-expanded folds so the caller can drop their fold KEYS (the durable
-    collapse state; see the projection block in the draw_text body)."""
+    force_expanded, moved) — force_expanded holds the ORIGINAL range tuples
+    of seam-expanded folds so the caller can drop their fold KEYS (the
+    durable collapse state; see the projection block in the draw_text body);
+    moved maps each dnl-shifted collapsed tuple old -> new so the caller can
+    replay the shift onto its own per-set stores (scope vs diff)."""
     lo, ln = len(old_disp), len(new_disp)
     m = min(lo, ln)
     # Maximal SUFFIX first, prefix capped to what's left: at a seam an
@@ -9214,6 +9306,7 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
            - old_disp.count('\n', p, lo - suf))
     new_col = set(collapsed)
     force_expanded = set()
+    moved = {}      # old range tuple -> its dnl-shifted replacement
     parts, pos = [], 0
     for a, hidden, rng in sorted(segments):
         # A pure insertion exactly at the anchor whose text STARTS with a
@@ -9233,6 +9326,7 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
             if dnl:
                 new_col.discard(rng)
                 new_col.add((rng[0] + dnl, rng[1] + dnl))
+                moved[rng] = (rng[0] + dnl, rng[1] + dnl)
         elif a < p or (a == p and delta > 0):
             # Edit strictly after the seam (below the fold).
             na = a
@@ -9264,7 +9358,7 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
         parts.append(hidden)
         pos = na
     parts.append(new_disp[pos:])
-    return ''.join(parts), new_col, force_expanded
+    return ''.join(parts), new_col, force_expanded, moved
 
 
 def fold_project_jump(ds, text, pos, li):
@@ -9279,7 +9373,9 @@ def fold_project_jump(ds, text, pos, li):
     same text identity, same range tuple, same collapsed set as the next body
     run will compute, so the body gets a cache hit and lays out exactly the
     geometry these coordinates were mapped through."""
-    col = getattr(ds, '_fold_collapsed', None)
+    scope_col = getattr(ds, '_fold_collapsed', None) or set()
+    diff_col = getattr(ds, '_diff_fold_collapsed', None)
+    col = scope_col | (diff_col or set())     # the layout's collapse union
     if not col:
         return pos, li
     _fc = getattr(ds, '_fold_cache', None)
@@ -9287,7 +9383,9 @@ def fold_project_jump(ds, text, pos, li):
         # The fold_cache was built against a different buffer than the
         # jump's - rather than guess a mapping, expand everything. With no
         # collapsed fold, full coords ARE display coords.
-        col.clear()
+        scope_col.clear()
+        if diff_col:
+            diff_col.clear()
         if getattr(ds, '_fold_keys', None) is not None:
             ds._fold_keys = set()   # keys are the durable truth - sync them
         ds.invalidate()
@@ -9299,6 +9397,13 @@ def fold_project_jump(ds, text, pos, li):
     hiding = [r for r in col if r[0] <= li <= r[1]]
     for r in hiding:
         col.discard(r)
+        scope_col.discard(r)
+        if diff_col and r in diff_col:
+            diff_col.discard(r)
+            # An ACTIVE expand_diff=False switch would re-collapse this
+            # piece next frame and swallow the landing - the reveal counts
+            # as a hand takeover, so the owner clears its switch to None.
+            ds._diff_manual_gen = getattr(ds, '_diff_manual_gen', 0) + 1
     # External mutation: the body's harvest won't run until its next frame,
     # and its top-of-frame key->range projection would otherwise re-collapse
     # what this jump just expanded - drop the expanded folds' keys too.
@@ -9334,11 +9439,12 @@ def draw_text(input_value: str, height=None,
               request_focus=False, select_all_on_focus=False,
               wrap=False, line_height=1.2, font=Font.FONTAWESOME_MONO_19, jump_to=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
+              live_store=None,
               import_fixes=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
-              code_diff_mode=False, fold_all_collapsed=None,
+              diff_fold_ranges=None, expand_diff=None,
               gutter_indent=False,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
               autocomplete=True, unique=0,
@@ -9444,11 +9550,13 @@ def draw_text(input_value: str, height=None,
     # fold_ranges passes. Gated on syntax_highlight - plain-text buffers have
     # no Python context.
     _fold_default_col = None
-    # code_diff_mode (compare split): the usual per-scope collapse zones are
-    # OFF; the caller passes fold_ranges for the unchanged gaps BETWEEN
-    # change blocks instead (open_file._diff_gap_folds), so collapse-all
-    # skims the diff. The flag here suppresses the scope fallback - without
-    # it an empty gap list (whole file changed) would re-enable scope folds.
+    # diff_fold_ranges (compare splits): a SECOND, caller-owned span set -
+    # the unchanged gaps between code blocks (open_files._diff_gap_folds)
+    # - that lives ALONGSIDE the scope folds instead of replacing them. Both
+    # sets splice into the one display layout below, each with its own
+    # collapse state: scope folds keep ds._fold_keys / _fold_collapsed
+    # (keyboard shortcuts, default-collapsed seeding, session restore) while
+    # diff folds track on ds._diff_fold_collapsed, seeded by `expand_diff`.
     # In-function import, same cycle-avoidance as the main Toggles import
     # further down (which harmlessly re-binds the same name).
     from src.lsd.gl_gui.toggles import Toggles
@@ -9462,7 +9570,7 @@ def draw_text(input_value: str, height=None,
     # real text even lands. The fold layer sits the stand-in frames out.
     if (scope_collapse and not fold_ranges and syntax_highlight
             and Toggles.TextEditor.scope_fold_ranges
-            and not code_diff_mode and not restore_active
+            and not restore_active
             and not single_line and not is_search_box):
         _sc = getattr(ds, '_scope_rng_cache', None)
         # Keyed on text identity AND _FOLD_SEED_VER: a hotswap that changed
@@ -9508,12 +9616,170 @@ def draw_text(input_value: str, height=None,
         if _sc[3]:
             request_render()   # provisional: the trailing rescan needs a frame
         fold_ranges, _fold_default_col, _fold_key_of = _sc[1]
-    if (code_diff_mode and fold_ranges and syntax_highlight
+    # --- DIFF fold layer (diff_fold_ranges + expand_diff) --------------------
+    # Collapse state per diff span lives on ds._diff_fold_collapsed, a set of
+    # the normalized range tuples (no keys - the spans re-derive from the
+    # live diff every frame and are carried across drift by overlap below).
+    # `expand_diff` is the OWNER's tri-state switch (draw_code_editor /
+    # merge_files auto-state - one value for the whole editor): True keeps
+    # EVERY span expanded proactively, False keeps every span collapsed
+    # (new gaps included; only the search reveal opens spans, restored by
+    # its own machinery), None is neutral - each span's badge state is
+    # tracked individually and carried across drift by overlap. A manual
+    # badge toggle bumps ds._diff_manual_gen; the owner watches that and
+    # clears its switch to None in the same frame, so the toggle sticks.
+    _diff_rngs, _diff_rng_set = [], frozenset()
+    if (diff_fold_ranges and not restore_active and not single_line
+            and not is_search_box):
+        # Caller gaps → the body's working ranges: normalize, SPLIT against
+        # the scope forest (_nest_diff_ranges - a gap crossing a fold
+        # boundary would otherwise be dropped whole by the combined
+        # normalize), make string-neutral (multiline string delimiters must
+        # never be hidden one-sided). Memoized: the gaps re-derive every
+        # frame but rarely change, and the split/string scan are O(gap
+        # count).
+        _n_lines = len(_line_starts(input_value))
+        _gaps_norm = _fold_normalize_ranges(_n_lines, diff_fold_ranges)
+        _dsm = getattr(ds, '_diff_split_memo', None)
+        if (_dsm is not None and _dsm[0] == _gaps_norm
+                and _dsm[1] is fold_ranges and _dsm[2] is input_value):
+            _diff_rngs = _dsm[3]
+            ds._diff_gap_index = _dsm[4]
+        else:
+            _forest = _fold_normalize_ranges(_n_lines, fold_ranges or ())
+            _pieces = _nest_diff_ranges(_gaps_norm, _forest)
+            if syntax_highlight:
+                _pieces = _string_neutral_ranges(ds, input_value, _pieces)
+            _diff_rngs = _fold_normalize_ranges(_n_lines, _pieces)
+            # Piece -> owning-gap ordinal, for the two-level owner (pane
+            # sync / switch inference in open_files): the panes' gaps
+            # correspond by index across the compare split, their pieces
+            # don't (each side splits against its own scope structure).
+            _gap_starts = [g[0] for g in _gaps_norm]
+            _gap_of = {}
+            for _p in _diff_rngs:
+                _gi = bisect.bisect_right(_gap_starts, _p[0]) - 1
+                if _gi >= 0:
+                    _gap_of[_p] = _gi
+            ds._diff_gap_index = _gap_of
+            ds._diff_split_memo = (_gaps_norm, fold_ranges, input_value,
+                                   _diff_rngs, _gap_of)
+        _diff_rng_set = frozenset(_diff_rngs)
+        _diff_col = getattr(ds, '_diff_fold_collapsed', None)
+        _diff_sx = getattr(ds, '_diff_search_exp', None)
+        if _diff_sx is None:
+            _diff_sx = ds._diff_search_exp = set()
+        # A manual-gen bump not yet seen by THIS frame (a badge click last
+        # frame, an external fold_project_jump between frames) suspends the
+        # active switch for one frame - the owner's watch clears the switch
+        # to None in the same frame it sees the bump, so without this the
+        # enforcement would undo the hand's change one frame earlier.
+        _gen = getattr(ds, '_diff_manual_gen', 0)
+        _fresh_manual = _gen != getattr(ds, '_diff_manual_seen_self', 0)
+        ds._diff_manual_seen_self = _gen
+        # A FLIP of the owner's switch (collapse-all ↔ expand-all) is the
+        # only reflow that should keep the view where it was - a set change
+        # from drift under a held switch must NOT re-anchor (it would fight
+        # the typing scroll).
+        _switch_flip = (expand_diff is not None
+                        and getattr(ds, '_diff_switch_seen', '?') != expand_diff)
+        ds._diff_switch_seen = expand_diff
+        if _fresh_manual:
+            if _diff_col is None:
+                _diff_col = set()
+        elif expand_diff is not None:
+            # ACTIVE switch: every span kept folded (False - new gaps,
+            # drift, external writes included; only the search reveal opens
+            # spans, restored by its own machinery) or open (True), every
+            # frame. Change-edge gated: writes only when different.
+            _new_col = (set(_diff_rngs) - _diff_sx if expand_diff is False
+                        else set())
+            if _diff_col != _new_col:
+                if _switch_flip:
+                    # Hold one reference line across the reflow: the CARET's
+                    # line when a caret is set and on-screen, otherwise the
+                    # viewport's midpoint. Mapped to its buffer line through
+                    # the OLD layout now (line_px/height from last frame's
+                    # stamps); the post-build block projects it into the new
+                    # layout and arms the _fold_scroll_anchor hold.
+                    _lp = getattr(ds, '_diff_line_px', None)
+                    _ofc = getattr(ds, '_fold_cache', None)
+                    if _lp and _ofc is not None and _ofc[0] is input_value:
+                        _sy = ds.scroll_offset[1]
+                        _mid_dl = (_sy + (ds.height or 0) * 0.5) / _lp
+                        _odisp, _od2b = _ofc[2][0], _ofc[2][3]
+                        _cp = ds.text_cursor_pos
+                        _cp_full_flip = None
+                        if _cp is not None:
+                            # The caret rides the flip: its FULL-buffer
+                            # offset (through the OLD layout) is re-projected
+                            # into the new layout post-build - without this
+                            # the display offset is stale, gets clamped by
+                            # the shorter collapsed text, and the vertical
+                            # caret-follow yanks the view away from the
+                            # anchor.
+                            _cp_c = min(max(_cp, 0), len(_odisp))
+                            _cdl = _odisp.count('\n', 0, _cp_c)
+                            if _od2b:
+                                _col = _cp_c - (_odisp.rfind('\n', 0, _cp_c)
+                                                + 1)
+                                _cbl = _od2b[min(_cdl, len(_od2b) - 1)]
+                                _cp_full_flip = (
+                                    _line_starts(input_value)[_cbl] + _col)
+                            else:
+                                _cp_full_flip = _cp_c
+                            # Anchor line: the CARET's when it's on-screen;
+                            # an off-screen caret keeps the midpoint
+                            # (anchoring it would pull the view away).
+                            if (_sy / _lp - 1.0 <= _cdl
+                                    <= (_sy + (ds.height or 0)) / _lp + 1.0):
+                                _mid_dl = _cdl + 0.5
+                        if _od2b:
+                            _mi = min(max(int(_mid_dl), 0), len(_od2b) - 1)
+                            _mid_bl = _od2b[_mi] + (_mid_dl - int(_mid_dl))
+                        else:
+                            _mid_bl = _mid_dl
+                        ds._diff_flip_anchor = (_mid_bl, _mid_dl, _sy,
+                                                _cp_full_flip)
+                ds.invalidate()
+                request_render()
+            _diff_col = _new_col
+        elif _diff_col is None:
+            _diff_col = set()      # Fresh seed: expanded
+        elif getattr(ds, '_diff_prev_ranges', None) != _diff_rngs:
+            # Neutral drift (an edit moved the span around): carry each
+            # span's state onto the new span(s) overlapping it; a gap
+            # overlapping nothing from last frame starts expanded.
+            _prev = getattr(ds, '_diff_prev_ranges', None) or []
+            _new_col, _pi = set(), 0
+            for _r in _diff_rngs:
+                while _pi < len(_prev) and _prev[_pi][1] < _r[0]:
+                    _pi += 1
+                _pj = _pi
+                while _pj < len(_prev) and _prev[_pj][0] <= _r[1]:
+                    if _prev[_pj] in _diff_col:
+                        _new_col.add(_r)
+                        break
+                    _pj += 1
+            _diff_col = _new_col
+        ds._diff_fold_collapsed = _diff_col
+        if getattr(ds, '_diff_prev_ranges', None) != _diff_rngs:
+            ds._diff_prev_ranges = list(_diff_rngs)
+    elif (getattr(ds, '_diff_fold_collapsed', None) is not None
+          and not restore_active):
+        # Compare off: drop the diff state so the next compare reseeds from
+        # the switch. (Restore stand-in frames keep it - the real buffer is
+        # about to land.)
+        ds._diff_fold_collapsed = None
+        ds._diff_prev_ranges = None
+        ds._diff_search_exp = None
+        ds._diff_gap_index = None
+    # Stamped for the badge painters (gutter chevrons, fold labels): a range
+    # in this set wears the diff tint (Toggles.TextEditor.diff_fold_tint)
+    # and its badge toggles the DIFF collapse set.
+    ds._diff_rng_set = _diff_rng_set
+    if ((fold_ranges or _diff_rngs) and not restore_active
             and not single_line and not is_search_box):
-        # Diff-gap ranges know nothing about the lexer - keep lite
-        # string delimiters out of the hidden segments (see the helper).
-        fold_ranges = _string_neutral_ranges(ds, input_value, fold_ranges)
-    if fold_ranges and not restore_active and not single_line and not is_search_box:
         if _fold_key_of is not None:
             # Collapse state is stored as line-independent KEYS (ds._fold_keys
             # / _fold_search_exp_keys); the range-tuple sets every editor
@@ -9578,18 +9844,6 @@ def draw_text(input_value: str, height=None,
             if _new:
                 ds._fold_collapsed |= _new
                 ds.invalidate()
-        # fold_all_collapsed: ONE expanded/collapsed state owned by the
-        # CALLER (the code editor's diff collapse mode shares it across all
-        # views/panes). On seed - or whenever the caller's value changes -
-        # collapse EVERY range or none; between changes, individual badge/
-        # keyboard toggles work as usual.
-        if (fold_all_collapsed is not None
-                and getattr(ds, '_fold_all_seen', None) != fold_all_collapsed):
-            ds._fold_all_seen = fold_all_collapsed
-            ds._fold_collapsed = (set(_fold_normalize_ranges(
-                input_value.count('\n') + 1, fold_ranges))
-                if fold_all_collapsed else set())
-            ds.invalidate()
         if getattr(ds, '_fold_search_exp', None) is None:
             # Folds auto-expanded to reveal the current search match, pending
             # re-collapse when the selection moves on (see the search-driven
@@ -9603,15 +9857,30 @@ def draw_text(input_value: str, height=None,
                 if (_fr[0] <= left_mouse_down.x < _fr[2]
                         and _fr[1] <= left_mouse_down.y < _fr[3]):
                     _fold_toggled = _rng
-                    if _rng in ds._fold_collapsed:
-                        ds._fold_collapsed.discard(_rng)
+                    # A diff span toggles the DIFF collapse set; scope /
+                    # caller ranges toggle the classic set (the durable one).
+                    _is_diff_toggle = (_rng in _diff_rng_set
+                                       and ds._diff_fold_collapsed is not None)
+                    _tgt = (ds._diff_fold_collapsed if _is_diff_toggle
+                            else ds._fold_collapsed)
+                    if _rng in _tgt:
+                        _tgt.discard(_rng)
                     else:
-                        ds._fold_collapsed.add(_rng)
+                        _tgt.add(_rng)
+                    if _is_diff_toggle:
+                        # Tell the owner a hand took over: draw_code_editor /
+                        # merge_files watch this and clear their expand_diff
+                        # switch to None (else the active switch would
+                        # re-assert next frame and undo the click).
+                        ds._diff_manual_gen = getattr(
+                            ds, '_diff_manual_gen', 0) + 1
                     # A manual toggle overrides any pending search-restore.
                     ds._fold_search_exp.discard(_rng)
+                    if getattr(ds, '_diff_search_exp', None):
+                        ds._diff_search_exp.discard(_rng)
                     ds.invalidate()
                     request_render()
-                    
+
 
                     break
         # Keyboard folding — Ctrl+Minus/Equal collapse/expand the scope at
@@ -9638,8 +9907,10 @@ def draw_text(input_value: str, height=None,
                      or (Melty.text_focused_ds is not None
                          and getattr(Melty.text_focused_ds, '_tile_id', None)
                          == ds._tile_id))):
+            # SCOPE ranges only - the Ctrl+-/= family never touches the
+            # diff spans (they answer to expand_diff and their own badges).
             _rngs = _fold_normalize_ranges(len(_line_starts(input_value)),
-                                           fold_ranges)
+                                           fold_ranges or ())
             _fstarts = _line_starts(input_value)
             # The caret and selection live in DISPLAY coords - last frame's
             # layout maps them back to full-buffer coords (identity when
@@ -9815,12 +10086,22 @@ def draw_text(input_value: str, height=None,
                     if _scur < len(_smc[2]):
                         _sli = input_value.count('\n', 0, _smc[2][_scur][0])
                 _fold_sch = False
+                _diff_col_live = getattr(ds, '_diff_fold_collapsed', None)
+                _diff_exp_live = getattr(ds, '_diff_search_exp', None)
                 if _sli is not None:
                     for _r in [r for r in ds._fold_collapsed
                                if r[0] < _sli <= r[1]]:
                         ds._fold_collapsed.discard(_r)
                         ds._fold_search_exp.add(_r)
                         _fold_sch = True
+                    # A collapsed DIFF gap hiding the match expands the same
+                    # way and restored through its own pending set.
+                    if _diff_col_live is not None and _diff_exp_live is not None:
+                        for _r in [r for r in _diff_col_live
+                                   if r[0] < _sli <= r[1]]:
+                            _diff_col_live.discard(_r)
+                            _diff_exp_live.add(_r)
+                            _fold_sch = True
                 # Folds expanded for an EARLIER match restore once the
                 # current match leaves them (moves on, or left this editor).
                 for _r in [r for r in ds._fold_search_exp
@@ -9828,6 +10109,12 @@ def draw_text(input_value: str, height=None,
                     ds._fold_search_exp.discard(_r)
                     ds._fold_collapsed.add(_r)
                     _fold_sch = True
+                if _diff_col_live is not None and _diff_exp_live is not None:
+                    for _r in [r for r in _diff_exp_live
+                               if _sli is None or not (r[0] < _sli <= r[1])]:
+                        _diff_exp_live.discard(_r)
+                        _diff_col_live.add(_r)
+                        _fold_sch = True
                 if _fold_sch:
                     # MANY folds could move at once - reuse the collapse/
                     # expand-all caret projection: map the caret to full
@@ -9856,11 +10143,14 @@ def draw_text(input_value: str, height=None,
                     ds.invalidate()
                     request_render()
         elif (ds._fold_search_exp
+              or getattr(ds, '_diff_search_exp', None)
               or getattr(ds, '_fold_search_seen', None) is not None):
             # Search over, or focus moved into this editor: commit - the
             # auto-expanded folds stay open. Seen-key resets too, so a
             # reopened search with the same term immediately re-runs the expand.
             ds._fold_search_exp.clear()
+            if getattr(ds, '_diff_search_exp', None):
+                ds._diff_search_exp.clear()
             ds._fold_search_seen = None
         if _fold_key_of is not None:
             # Harvest: every mutation above worked on the projected tuples;
@@ -9873,16 +10163,22 @@ def draw_text(input_value: str, height=None,
         # The range tuple is memoized on the fold_ranges list's identity:
         # the scope scan hands the same list every frame (~2.4k ranges on a
         # big file, so the tuple was 2.3k genexpr calls a frame).
+        # The diff spans are few and re-built per frame, so their tuple is
+        # rebuilt inline and simply concatenated on - _fold_build normalizes
+        # the union (partial scope/diff overlaps merge deterministically).
         _frt = getattr(ds, '_fold_ranges_tuple', None)
         if _frt is None or _frt[0] is not fold_ranges:
-            _frt = (fold_ranges, tuple(tuple(r) for r in fold_ranges))
+            _frt = (fold_ranges, tuple(tuple(r) for r in (fold_ranges or ())))
             ds._fold_ranges_tuple = _frt
-        _fk = (_frt[1], frozenset(ds._fold_collapsed))
+        _fold_union_col = ds._fold_collapsed
+        if getattr(ds, '_diff_fold_collapsed', None):
+            _fold_union_col = ds._fold_collapsed | ds._diff_fold_collapsed
+        _fk = (_frt[1] + tuple(_diff_rngs), frozenset(_fold_union_col))
         _fc = getattr(ds, '_fold_cache', None)
         if _fc is not None and _fc[0] is input_value and _fc[1] == _fk:
             _fold_built = _fc[2]
         else:
-            _fold_built = _fold_build(input_value, _fk[0], ds._fold_collapsed)
+            _fold_built = _fold_build(input_value, _fk[0], _fold_union_col)
             ds._fold_cache = (input_value, _fk, _fold_built)
         _disp, _fold_segments, _fold_folds, _fold_d2b = _fold_built
         # Caret keeps its glyph across a toggle: offsets up to the toggled
@@ -9939,6 +10235,45 @@ def draw_text(input_value: str, height=None,
                     _line_starts(_disp), ds.text_cursor_pos) - 1)
                 ds._fold_scroll_anchor = (_new_dl, _fold_old_dline,
                                           ds.scroll_offset[1], 8)
+        # expand_diff flip: hold the viewport's MIDPOINT line fixed. The
+        # midpoint's buffer line was mapped through the OLD layout at the
+        # flip (the diff state machine above); project it into NEW
+        # layout's display line - a midline now hidden inside a collapsed
+        # gap lands on the gap's header row - and arm the same multi-frame
+        # scroll-anchor as the keyboard collapse/expand-all above.
+        _dfa = getattr(ds, '_diff_flip_anchor', None)
+        if _dfa is not None:
+            ds._diff_flip_anchor = None
+            _mid_bl, _old_mid_dl, _o_sy, _cp_full_flip = _dfa
+            if _fold_d2b is None:
+                _new_mid_dl = _mid_bl
+            else:
+                _bi = int(_mid_bl)
+                _new_mid_dl = (max(bisect.bisect_right(_fold_d2b, _bi) - 1, 0)
+                               + (_mid_bl - _bi))
+            ds._fold_scroll_anchor = (_new_mid_dl, _old_mid_dl, _o_sy, 8)
+            if _cp_full_flip is not None:
+                # Re-project the caret into the new layout (a caret inside a
+                # now-hidden body clamps to its covering fold header's end -
+                # the kb collapse-all's rule), and sync prev so the vertical
+                # caret-follow reads no move: the anchor holds the view.
+                if _fold_d2b is None:
+                    _new_cp = min(_cp_full_flip, len(input_value))
+                else:
+                    _ffs = _line_starts(input_value)
+                    _dstarts_f = _line_starts(_disp)
+                    _bl_f = bisect.bisect_right(_ffs, _cp_full_flip) - 1
+                    _i_f = max(bisect.bisect_right(_fold_d2b, _bl_f) - 1, 0)
+                    if _fold_d2b[_i_f] == _bl_f:
+                        _new_cp = _dstarts_f[_i_f] + (_cp_full_flip
+                                                      - _ffs[_bl_f])
+                    else:
+                        _new_cp = (_dstarts_f[_i_f + 1] - 1
+                                   if _i_f + 1 < len(_dstarts_f)
+                                   else len(_disp))
+                ds.text_cursor_pos = _new_cp
+                ds.text_selection_start = ds.text_selection_end = _new_cp
+                ds.text_prev_cursor_pos = _new_cp
         if _fold_segments:
             input_value = _disp
             # Full → display coordinate bridges for the tree-derived overlays
@@ -10172,6 +10507,7 @@ def draw_text(input_value: str, height=None,
     # offset (tree-derived washes) - no header bar. The search's code rows
     # use a bare offset shim that isn't a full Address, so the bar (which
     # reads .source/.file for its label) must not draw for them.
+    show_jump_bar = False # Pin to false
     if jump_to is not None and show_jump_bar:
         _err_msg = _err_markers[0][1] if _err_markers else None
         if not show_file_header:
@@ -10270,12 +10606,20 @@ def draw_text(input_value: str, height=None,
     if _fsa is not None:
         _t_line, _o_line, _o_sy, _fsa_left = _fsa
         if getattr(ds, 'scroll_visible', False):
-            _target = max(0.0, _o_sy + (_t_line - _o_line) * line_px)
+            # Whole pixels only: line_px is fractional (font height ×
+            # line_height), so the anchor target has a sub-pixel part while
+            # wheel scrolling keeps scroll_offset integral (core_render ceils
+            # it). A fractional scroll shifts the editor's rasterization
+            # phase, so lines snapped up/down a pixel after each collapse/
+            # expand-all. Rounding also makes the round trip exact:
+            # round(round(x) - x) == 0, so expand lands back on the original
+            # scroll. The max clamp floors for the same reason.
+            _target = float(round(max(0.0, _o_sy + (_t_line - _o_line) * line_px)))
             _mx = getattr(ds, '_max_scroll_y', None)
             if _mx is not None and not ds.invalid_content_height:
-                _target = min(_target, _mx)   # live max only - stale would cap
-            # The editor already positioned this frame's content cursor with
-            # the PRE-write scroll, so a bare write only shows NEXT frame -
+                _target = min(_target, float(math.floor(_mx)))   # live max only - stale would cap
+            # The wrapper already positioned this frame's content cursor with
+            # the PRE-write scroll, so a bare write only shows NEXT frame —
             # the toggle frame flashed the un-adjusted view. origin_y below
             # subtracts this shift so the very first frame paints anchored.
             _fold_scroll_shift = _target - ds.scroll_offset[1]
@@ -10301,12 +10645,19 @@ def draw_text(input_value: str, height=None,
         # keep caret/selection edges just past the clip correct and absorb a
         # frame of drag-scroll.
         _clip = draw_state.abs_clip_rect
+        # origin_y, not `top`: on a fold toggle frame the buffer was
+        # rewritten mid-body and origin_y carries the same-frame
+        # compensation (_fold_scroll_shift) - banding off the stale `top`
+        # tokenized the pre-anchor viewport (and, past the shrunken
+        # buffer's end, triggered the plain path below). Every call site
+        # runs after origin_y is updated; on normal frames the two are
+        # identical.
         if line_px:
-            v0 = int((_clip[1] + bar_height - top) / line_px) - 3
-            v1 = int((_clip[3] - top) / line_px) + 3
+            v0 = int((_clip[1] + bar_height - origin_y) / line_px) - 3
+            v1 = int((_clip[3] - origin_y) / line_px) + 3
         else:
             v0, v1 = 0, nlines - 1
-        v0 = max(0, min(v0, nlines - -12))
+        v0 = max(0, min(v0, nlines - 1))
         v1 = max(v0, min(v1, nlines - 1))
         # Horizontal band (long lines only): the visible column span from the
         # clip rect's X extent and the h-scroll, widened to a margin and
@@ -10329,7 +10680,8 @@ def draw_text(input_value: str, height=None,
                 _bc0 = max(0, (_bc0 // _step - 1) * _step)
                 _bc1 = (_bc1 // _step + 2) * _step
                 band = (_bc0, _bc1, _long_cols)
-        key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0, band)
+        key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0, band,
+               getattr(ds, '_lv_trail_gen', 0))
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
 
@@ -10343,8 +10695,33 @@ def draw_text(input_value: str, height=None,
             wl, start_off, toks = _window_tokens(text, ds._lo_offs, ds._lo_open, v0, v1,
                                                  band=band)
             win_len = sum(len(t) for t, _ in toks)
-            arr = _build_vcols(text[start_off:start_off + win_len], toks, token_views) \
-                if token_views else None
+            # Positional trailing gaps (variable- and value labels): the usage
+            # overlay stamps {def_start: (frame, {(line0, col): cells})} on
+            # the ds; fold the visible entries into window-relative indexes
+            # so _build_vcols opens the gaps, then publish each gap's start
+            # cell back (ds._lv_trail_cells) for the overlay to paint into.
+            pos_trails = None
+            _trail_cells_out = {}
+            _tv_subs = getattr(ds, '_lv_trail_views', None)
+            if _tv_subs:
+                _offs_t = _line_offsets_cached(text)
+                pos_trails = {}
+                _tc_src = []
+                for _f, _sub in _tv_subs.values():
+                    for (_tl, _tc), _cells in _sub.items():
+                        if v0 <= _tl <= v1 and _tl < len(_offs_t):
+                            _wi = _offs_t[_tl] + _tc - start_off
+                            pos_trails[_wi] = _cells
+                            _tc_src.append(((_tl, _tc), _wi, _cells))
+                pos_trails = pos_trails or None
+            arr = _build_vcols(text[start_off:start_off + win_len], toks, token_views,
+                               pos_trails=pos_trails) \
+                if (token_views or pos_trails) else None
+            if arr is not None and pos_trails:
+                for _key_t, _wi, _cells in _tc_src:
+                    if 0 <= _wi < len(arr):
+                        _trail_cells_out[_key_t] = arr[_wi] - _cells
+            ds._lv_trail_cells = _trail_cells_out
             vcols = _WinVCols(arr, start_off) if arr is not None else None
         else:
             # Plain mode: the visible lines as ONE 'default' token (the segment
@@ -10376,6 +10753,7 @@ def draw_text(input_value: str, height=None,
                 win_text = text[start_off:end_off]
                 toks = [(win_text, 'default')] if win_text else []
             vcols = None
+            ds._lv_trail_cells = {}
         ds._win_key = key
         ds._win_data = (wl, start_off, toks, vcols)
         _pf_tok[0] += time.perf_counter() - _pf_miss_t
@@ -14160,6 +14538,14 @@ def draw_text(input_value: str, height=None,
         # The caret (the selection's MOVING end) rides along too: of the
         # widgets inside the selection only the one nearest it - the last
         # one selected - shows its window (live_view_views.flush_selected()).
+        # Caret's 0-based DISPLAY line while this editor owns text focus -
+        # the live-view inline pills hide on that line so the real code is
+        # editable under the caret. `text` is display space here (widgets token
+        # spliced), same space as the pills' fold to lines. O(caret offset)
+        # once per focused repaint.
+        _tv_caret_line = None
+        if Melty.text_focused_ds is ds:
+            _tv_caret_line, _ = _index_to_line_col(text, ds.text_cursor_pos)
         _sel_lo = _sel_hi = _sel_caret = None
         if Melty.text_focused_ds is ds and _has_selection(ds):
             _s0, _s1 = _sel_range(ds)
@@ -14192,7 +14578,24 @@ def draw_text(input_value: str, height=None,
                               line_offset=_usage_off, jump_to=jump_to,
                               buffer_text=_tv_buf, sel_lo=_sel_lo,
                               sel_hi=_sel_hi, fold_line_map=_tv_fold_lm,
-                              sel_caret=_sel_caret, fold_d2b=_fold_d2b)
+                              sel_caret=_sel_caret, fold_d2b=_fold_d2b,
+                              caret_line=_tv_caret_line, live_store=live_store,
+                              col_shift=_tv_shift)
+
+    # Live-usage trailing gaps: drop labels from defs whose overlay didn't
+    # re-stamp THIS frame (scrolled out, store cleared, live view toggled
+    # off) so their reserved gaps close on the next layout. The usage pass
+    # stamps (frame, span) per def - see live_view_views._draw_usage_labels.
+    _tv_trails = getattr(ds, '_lv_trail_views', None)
+    if _tv_trails:
+        _tv_now = Melty.frame_count
+        _tv_stale = [k for k, (f, _s) in _tv_trails.items() if f != _tv_now]
+        for k in _tv_stale:
+            del _tv_trails[k]
+        if _tv_stale:
+            ds._lv_trail_gen = getattr(ds, '_lv_trail_gen', 0) + 1
+            ds.invalidate()
+            request_render()
 
     _pf("body:tv_overlay")
     # --- Spell-check squiggles -------------------------------------------------
@@ -14528,8 +14931,16 @@ def draw_text(input_value: str, height=None,
                         _gr = (_gcx - 6.0, ly, left + gutter_w, ly + line_px)
                 _ghov = (_gr[0] <= io.mouse_pos.x < _gr[2]
                          and _gr[1] <= io.mouse_pos.y < _gr[3])
-                _gcc = imgui.get_color_u32_rgba(
-                    0.9, 0.9, 0.9, 0.55 if _ghov else 0.31)
+                # Diff folds wear their own tint so the two fold kinds read
+                # apart in the strip (scope folds stay the neutral grey).
+                if _rng_g is not None and _rng_g in (
+                        getattr(ds, '_diff_rng_set', None) or ()):
+                    _dft = Toggles.TextEditor.diff_fold_tint
+                    _gcc = imgui.get_color_u32_rgba(
+                        *_dft[:3], min(1.0, _dft[3] + (0.35 if _ghov else 0.0)))
+                else:
+                    _gcc = imgui.get_color_u32_rgba(
+                        0.9, 0.9, 0.9, 0.55 if _ghov else 0.31)
                 _gcy = ly + line_px * 0.5
                 if _col_g:
                     # right-pointing chevron: click to expand
@@ -14553,9 +14964,16 @@ def draw_text(input_value: str, height=None,
             _mlist = _lv_marks.get(line_idx)
             if _mlist:
                 _open = any(getattr(m, "_lv_open", False) for m in _mlist)
+                # Every marker on the line renders its value INLINE (simple
+                # builtins - see draw_live_view_marker's inline=True): no
+                # window to open or close, so the cell shows an inert info
+                # glyph instead of the magnifier toggle.
+                _inline_all = all(getattr(m, "_lv_inline", False)
+                                  for m in _mlist)
                 # Hit zone: the FULL button cell (whole column width x whole
                 # line height), not just the glyph - the icon itself is tiny.
-                _bhov = (left <= io.mouse_pos.x < left + _lv_btn_w
+                _bhov = (not _inline_all
+                         and left <= io.mouse_pos.x < left + _lv_btn_w
                          and ly <= io.mouse_pos.y < ly + line_px)
                 # Icon tint defaults to the LINE's color: the definition tint when
                 # the line has one (same adjust as the heat box), else the
@@ -14573,7 +14991,15 @@ def draw_text(input_value: str, height=None,
                         left + 1.0, ly + 1.0, left + _lv_btn_w - 1.0,
                         ly + line_px - 1.0,
                         imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.10), 3.0)
-                if _open:
+                if _inline_all:
+                    # info icon: circle + dot + stem - the value is already
+                    # shown inline, nothing to open.
+                    _br = 3.6
+                    draw_list.add_circle(_bcx, _bcy, _br, _bc, 12, 1.2)
+                    draw_list.add_circle_filled(_bcx, _bcy - 1.6, 0.8, _bc)
+                    draw_list.add_line(_bcx, _bcy - 0.1,
+                                       _bcx, _bcy + 2.0, _bc, 1.2)
+                elif _open:
                     # × close button
                     _br = 3.5
                     draw_list.add_line(_bcx - _br, _bcy - _br,
@@ -14591,12 +15017,13 @@ def draw_text(input_value: str, height=None,
                                        _bc, 1.4)
                 if getattr(ds, "_lv_btn_pressed_line", None) == line_idx:
                     ds._lv_btn_pressed_line = None
-                    from src.lsd.gl_gui.view.core_views.live_view_views import (
-                        set_marker_open)
-                    for m in _mlist:
-                        set_marker_open(m, not _open)
-                    ds.invalidate()
-                    request_render()
+                    if not _inline_all:
+                        from src.lsd.gl_gui.view.core_views.live_view_views import (
+                            set_marker_open)
+                        for m in _mlist:
+                            set_marker_open(m, not _open)
+                        ds.invalidate()
+                        request_render()
                     
                 
         # An unconsumed press stash dies with the pass - a press on a line
@@ -14671,8 +15098,23 @@ def draw_text(input_value: str, height=None,
             _fhov = (_fr[0] <= io.mouse_pos.x < _fr[2]
                      and _fr[1] <= io.mouse_pos.y < _fr[3])
 
-            _fcc = imgui.get_color_u32_rgba(
-                0.9, 0.9, 0.9, 0.4 if _fhov else 0.31)
+            _is_diff_fold = _rng in (getattr(ds, '_diff_rng_set', None) or ())
+            if _is_diff_fold:
+                _dft = Toggles.TextEditor.diff_fold_tint
+                _fcc = imgui.get_color_u32_rgba(
+                    *_dft[:3], min(1.0, _dft[3] + (0.3 if _fhov else 0.0)))
+                if _fcol:
+                    # Collapsed diff gap: a thin separator line across the
+                    # row under the header - hidden UNCHANGED code, visually
+                    # distinct from a folded scope.
+                    _dby = _fy + line_px - 1.5
+                    draw_list.add_rect_filled(
+                        left + gutter_w, _dby, left + ds.content_width,
+                        _dby + 1.5,
+                        imgui.get_color_u32_rgba(*_dft[:3], 0.35))
+            else:
+                _fcc = imgui.get_color_u32_rgba(
+                    0.9, 0.9, 0.9, 0.4 if _fhov else 0.31)
             _fcx, _fcy = _fr[0] + 8.0, (_fr[1] + _fr[3]) * 0.5
             if _need_chev:
                 if _fcol:
@@ -14689,6 +15131,11 @@ def draw_text(input_value: str, height=None,
             # if _fcol:
             # #     draw_list.add_text(_fr[0] + (16.0 if _need_chev else 4.
             #                        _fy + _fm_y, _fcc, _lbl)
+            # Collapsed diff gaps DO display their count - "N lines" in the
+            # diff tint beside the badge, part of the fold styling.
+            if _is_diff_fold and _fcol:
+                draw_list.add_text(_fr[0] + (16.0 if _need_chev else 4.0),
+                                   _fy + _fm_y, _fcc, _lbl)
             ds._fold_badge_rects.append((_fr, _rng))
         draw_list.pop_clip_rect()
 
@@ -14700,70 +15147,8 @@ def draw_text(input_value: str, height=None,
     # text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
 
     _pf("gutter")
-    # --- Live-scope indicator (autocomplete status badge) ---------------------
-    # Small badge at the editor's top-right showing whether completion has LIVE
-    # runtime types for this span - the debugging surface for the FuncsMetadata
-    # pipeline (context-menu stack capture -> _ac_live_context -> popup):
-    #   green  "live N"  - a live function resolved AND has N recorded scope
-    #                      names (typing `var_name.` answers from them)
-    #   amber  "live fn" - a live function resolved but nothing recorded yet
-    #                      (open the widget's context menu to capture, or the
-    #                      recording was keyed elsewhere - capture-side gap)
-    #   gray   "static"  - no live function resolves for this span (module not
-    #                      imported / span not attributable - jedi only)
     if jump_to is not None and not single_line and not is_search_box:
-        _li_fn = _ac_live_context(ds, text, jump_to)[1]
-        _li_n = 0
-        if _li_fn is not None:
-            from src.lsd.gl_gui.func_metadata import FuncsMetadata
-            _li_n = len(FuncsMetadata.get(_li_fn))
-        if _li_fn is None:
-            _li_dot, _li_txt = (0.5, 0.5, 0.5, 0.6), "static"
-        elif not _li_n:
-            _li_dot, _li_txt = (0.9, 0.65, 0.15, 0.9), "live fn"
-        else:
-            _li_dot, _li_txt = (0.25, 0.85, 0.35, 0.95), f"live {_li_n}"
-        _li_x1 = rect_max_x - 8.0
-        _li_y0 = rect_min_y + 4.0
-        _li_w = len(_li_txt) * 7.5 + 20.0
-        # Clear affordance: a little × after the count that drops the file's
-        # live_view stores (captured values, value windows, run markers - via
-        # clear_file_stores) plus this span's recorded live scope
-        # (FuncsMetadata). Shown when either has something to clear: recorded
-        # scope names, or any live markers in the gutter registry.
-        _li_clear = ((_li_fn is not None and _li_n > 0)
-                     or bool(getattr(ds, '_lv_gutter_markers', None)))
-        if _li_clear:
-            _li_w += 14.0
-        draw_list.add_rect_filled(_li_x1 - _li_w, _li_y0, _li_x1, _li_y0 + 17.0,
-                                  imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 0.6), 8.5)
-        draw_list.add_circle_filled(_li_x1 - _li_w + 9.0, _li_y0 + 8.5, 3.5,
-                                    imgui.get_color_u32_rgba(*_li_dot))
-        draw_list.add_text(_li_x1 - _li_w + 16.0, _li_y0 + 1.5,
-                           imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85), _li_txt)
-        if _li_clear:
-            _xc_x, _xc_y = _li_x1 - 11.0, _li_y0 + 8.5
-            _x_hov = (abs(io.mouse_pos.x - _xc_x) <= 7.0
-                      and _li_y0 <= io.mouse_pos.y <= _li_y0 + 17.0)
-            _xa = 0.95 if _x_hov else 0.5
-            _xc = imgui.get_color_u32_rgba(0.9, 0.9, 0.9, _xa)
-            draw_list.add_line(_xc_x - 3.0, _xc_y - 3.0, _xc_x + 3.0, _xc_y + 3.0, _xc, 1.5)
-            draw_list.add_line(_xc_x - 3.0, _xc_y + 3.0, _xc_x + 3.0, _xc_y - 3.0, _xc, 1.5)
-            # Same treatment as the plain token widgets: a click on the ×
-            # must not move the editor caret / select a widget.
-            ds._plain_tv_rects.append((_xc_x - 7.0, _li_y0, _xc_x + 7.0, _li_y0 + 17.0))
-            if _x_hov and imgui.is_mouse_clicked(0):
-                if _li_fn is not None:
-                    FuncsMetadata.clear(_li_fn)
-                _p = getattr(jump_to, 'path', None)
-                if _p is not None:
-                    from src.lsd.gl_gui.view.core_conversion.live_view import (
-                        clear_file_stores)
-                    clear_file_stores(str(_p))
-                ds.invalidate()
-                request_render()
-
-        # --- Usage-graph source (debug badge, left of the live badge) ------
+        # --- Usage-graph source (debug label, at top-right) ------------
         # Where this span's symbol-usage graph came from: "fresh" (full
         # recompute this session), "disk" (pickle warm-start), "sys" (adopted
         # across a restart-in-place) - plus "+Ni" for N incremental passes on
@@ -14782,14 +15167,15 @@ def draw_text(input_value: str, height=None,
                        "sys": (0.35, 0.6, 0.9, 0.9)}.get(
                 (_ug_txt or "").split("+")[0], (0.5, 0.5, 0.5, 0.6))
             _ug_txt = _ug_txt or "none"
-            _ug_x1 = _li_x1 - _li_w - 6.0
+            _ug_x1 = rect_max_x - 8.0
+            _ug_y0 = rect_min_y + 4.0
             _ug_w = len(_ug_txt) * 7.5 + 20.0
             draw_list.add_rect_filled(
-                _ug_x1 - _ug_w, _li_y0, _ug_x1, _li_y0 + 17.0,
+                _ug_x1 - _ug_w, _ug_y0, _ug_x1, _ug_y0 + 17.0,
                 imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 0.6), 8.5)
-            draw_list.add_circle_filled(_ug_x1 - _ug_w + 9.0, _li_y0 + 8.5, 3.5,
+            draw_list.add_circle_filled(_ug_x1 - _ug_w + 9.0, _ug_y0 + 8.5, 3.5,
                                         imgui.get_color_u32_rgba(*_ug_dot))
-            draw_list.add_text(_ug_x1 - _ug_w + 16.0, _li_y0 + 1.5,
+            draw_list.add_text(_ug_x1 - _ug_w + 16.0, _ug_y0 + 1.5,
                                imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85),
                                _ug_txt)
 
@@ -15211,8 +15597,19 @@ def draw_text(input_value: str, height=None,
     # before.
     if _fold_segments:
         if changed:
-            _full_now, ds._fold_collapsed, _fold_dropped = _fold_reassemble(
-                original_input, text, _fold_segments, ds._fold_collapsed)
+            # The reassemble works on the layout's UNION collapse set; the
+            # moved map replays each dnl shift onto the diff collapse, so
+            # scope and diff state stay separate.
+            _full_now, _union_after, _fold_dropped, _fold_moved = \
+                _fold_reassemble(original_input, text, _fold_segments,
+                                 _fold_union_col)
+            ds._fold_collapsed = {_fold_moved.get(r, r)
+                                  for r in ds._fold_collapsed
+                                  if r not in _fold_dropped}
+            if getattr(ds, '_diff_fold_collapsed', None):
+                ds._diff_fold_collapsed = {
+                    _fold_moved.get(r, r) for r in ds._diff_fold_collapsed
+                    if r not in _fold_dropped}
             # A seam-edited fold force-expanded: its KEY must drop too, or
             # the key->range projection next frame will re-collapse it.
             # (The dnl-shifted tuples change nothing - keys are line-only.)

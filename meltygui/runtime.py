@@ -42,7 +42,8 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, c
 from src.lsd.gl_gui.perf_trace import trace as _ptrace
 
 import OpenGL.GL as gl
-from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults, no_save
+from src.lsd.gl_gui.model.dict_conversion import DictConversion
 
 _MOUSE_INPUTS = frozenset({'left_mouse', 'right_mouse', 'middle_mouse',
                            'cursor', 'scroll_y', 'scroll_x'})
@@ -1071,7 +1072,10 @@ class Melty:
         if text is None:                       # absent (not an empty file)
             try:
                 text = Path(key).read_text()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
+                # UnicodeDecodeError: binary file (an image) - this is a
+                # TEXT cache; binary reads go to the git/file_system
+                # proxies, which return bytes.
                 return None
             cls.code_cache[key] = text
         return text
@@ -1991,6 +1995,14 @@ class Melty:
         #         Melty.cache.invalidate(last_hovered, do_store=False, force=True)
 
         cls.backend.pump()
+
+        # Orchestrator record/replay: inject the next slice of a replayed
+        # orchestration into the SAME handler the real backend feeds - after
+        # the backend's pump and before process_frame, so injected events are
+        # dispatched this frame (real input is muted by the handler funnel
+        # while a replay drives).
+        from src.lsd.gl_gui.view.playground.orchestrator import Orchestrator
+        Orchestrator.pump()
 
         cls.last_draw_state = [(None, None)] * cls.max_layer
 
@@ -4546,6 +4558,30 @@ class Melty:
         # Melty.cache.invalidate_up(tile_id)
 
     @classmethod
+    def adopt_registered_windows(cls, app_model):
+        """Point Melty.registered_windows at the APP MODEL's dict so window
+        z-order persists between runs: the dict's insertion order IS the
+        z-order (apply_move_to_front pops + reinserts on every raise), and as
+        an AppModel field it pickles/unpickles with the rest of the app.
+        Called once from LSDStudio right after load_app_model. Saved keys
+        keep their saved position; anything registered before the load (or
+        first seen this session) merges in behind them. A pickled defaultdict
+        comes back a plain dict, so the adopted dict is re-wrapped; loaded
+        values are hollow ManagedWindows (name/hidden only) that re-fill at
+        registration/draw like any never-drawn window."""
+        loaded = getattr(app_model, "registered_windows", None)
+        adopted = defaultdict(lambda: ManagedWindow())
+        if isinstance(loaded, dict):
+            for window_key, managed_window in loaded.items():
+                adopted[window_key] = (managed_window if isinstance(managed_window, ManagedWindow)
+                                       else ManagedWindow(name=str(window_key)))
+        for window_key, managed_window in cls.registered_windows.items():
+            adopted[window_key] = managed_window
+        cls.registered_windows = adopted
+        app_model.registered_windows = adopted
+        return adopted
+
+    @classmethod
     def apply_move_to_front(cls):
         # # No bring-to-front when the press lands on an imgui widget - the
         # # raise reshuffles z-order/caches mid-gesture and disrupts the
@@ -5793,9 +5829,17 @@ class MeltyState:
 
 
 
+@no_save("input_value", "draw_state", "window_args")
 @defaults(tint=(0.2391563206911087, 0.47928887605667114, 0.7674418687820435))
-class ManagedWindow:
+class ManagedWindow(DictConversion):
+    """One registered window. A DictConversion so registered_windows can live
+    on the AppModel and pickle with it — but only `name`/`hidden` persist: the
+    dict's KEY ORDER is the payload (it IS the window z-order), while
+    input_value / draw_state / window_args re-bind at registration and would
+    drag arbitrary runtime graphs into custom.pkl."""
+
     def __init__(self, input_value=None, draw_state=None, window_args=None, name=None):
+        super().__init__()
         self.input_value = input_value
         self.draw_state = draw_state
         self.window_args = window_args

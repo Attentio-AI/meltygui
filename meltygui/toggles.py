@@ -470,6 +470,13 @@ class Toggles:
         # finally/with/match/case) alongside the def/class scopes. Read on
         # the next fold rescan (text edit), not per frame.
         block_fold_ranges = True
+        # Diff fold spans (draw_text's diff_fold_ranges — the compare
+        # splits' unchanged gaps) wear THIS tint on their chevrons/badges
+        # and, while collapsed, a thin separator band across the row — so
+        # they read apart from the grey scope folds at a glance. 4th value
+        # is the badge alpha at rest (hover lifts it). Read live.
+        # [tint=(0.36, 0.62, 0.85)]
+        diff_fold_tint = (0.36, 0.62, 0.85, 0.55)
         # Enter inside a single-quoted string literal closes it and reopens
         # it on the next line (implicit concatenation, parenthesised when
         # not already inside parentheses) instead of leaving an unterminated
@@ -495,6 +502,13 @@ class Toggles:
         # otherwise pop one window per captured tensor. A site can opt back
         # in with `# [auto_open=True]`. Read live per marker render.
         live_auto_open_volumes = False
+
+        # Paint a captured SIMPLE value over all USAGES of its symbol too
+        # (e x = 301, then `.view(1, 301, ...)` further down). Display-time
+        # only: usages are resolved from the text (live_usage.py) and read
+        # the binding's single store entry - no extra runs and nothing
+        # is captured in the instrumented function. Read live per repaint.
+        live_inline_usages = True
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
@@ -1414,6 +1428,30 @@ class Toggles:
         # keeps its top-left in view and overflows the far edge. Read live.
         edge_margin = 20
 
+    @defaults(tint=(0.719, 0.478, 0.208))
+    class Orchestrator:
+        # Replay pacing multiplier over the recorded timeline: 1.0 replays in
+        # real time, 2.0 twice as fast. The event stream keeps its ordering
+        # either way; cues still gate progress regardless of speed. Read live.
+        # [tint=(0.939, 0.453, 0.245)]
+        replay_speed = 1.0
+        # How many frames a replay waits at a cue for the expected undo-stack
+        # change to appear before trying its correction (re-aiming the click
+        # at the cue target's LIVE rect), and again before aborting. At 120fps
+        # this is ~0.75s — enough for background converters to land a value.
+        # [tint=(0.939, 0.453, 0.245)]
+        cue_wait_frames = 90
+        # Cursor moves smaller than this (px, either axis) are not recorded —
+        # keeps a long hover from bloating the event list with jitter. Replay
+        # interpolates nothing, so keep it small or drags get steppy.
+        # [tint=(0.939, 0.453, 0.245)]
+        move_sample_min_px = 1.0
+        # When True a cue only matches a live change whose recorded value repr
+        # equals the recorded one - strict verification. Off by default:
+        # value reprs drift for coalesced drags, the change type + target
+        # name is the reliable part of the anchor.
+        cue_match_values = False
+
     @defaults(tint=(0.103, 0.341, 0.617))
     class FastDock:
         # Floor on the hsv VALUE of an OPEN (active) row's name/icon text in
@@ -1713,7 +1751,7 @@ class Toggles:
         # scale — dark tints stay legible instead of scaling toward black.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         tab_inactive_text_min_brightness = 0.387
-        # in_diff_mode gap folding (open_files._diff_gap_folds): unchanged
+        # Diff gap folds (open_files._diff_gap_folds): unchanged
         # context lines kept visible on each side of a change block; the
         # rest of the gap folds away, so collapse-all skims the changes
         # without scrolling.

@@ -14,7 +14,13 @@ editor tile, never per frame.
 
 Only explicit live_view() call tokens auto-open their window the first time a
 marker renders while a value exists — you typed the call, so the value shows
-without a click. Snapshot/param markers (every captured assignment from an
+without a click. SIMPLE builtin values (int/float/str/bool/tuple of ≤4
+scalars/enum members, never None) skip the window entirely and render as an
+inline pill drawn directly over the symbol in the editor's font
+(_inline_value_text + the inline block in draw_live_view_marker) — for
+explicit live_view() tokens AND snapshot markers alike. An inline marker has
+no value window at all (no auto-open, preview, or double-click; the gutter
+shows an inert info glyph instead of the magnifier). Snapshot/param markers (every captured assignment from an
 instrumented run) start closed and open on box click, so a run doesn't bury
 the code under one window per local. Sites the dict conversion can't surface
 (while/with/match bodies — line-keyed fallback stores) have no CallParse token
@@ -22,6 +28,7 @@ to anchor and get no marker yet.
 """
 
 import bisect
+import enum
 import inspect
 import re
 import sys
@@ -36,10 +43,12 @@ from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
     live_values_for, label_for, site_for_line, watch, install_builtin,
-    auto_dim_names_for)
+    auto_dim_names_for, RerunHint)
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import draw_header
+from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+from src.lsd.gl_gui.view.core_views import live_usage
 
 # The seamless path: any app can call live_view() with no import (like
 # breakpoint()). Installed when the editor side loads - i.e. every studio
@@ -156,6 +165,158 @@ def _stable_key_names(all_keys):
                 parts.append(label if o == 0 else f"{label}~{o}")
         out[k] = "/".join(parts)
     return out
+
+
+def _inline_value_text(value, max_chars=48):
+    """Format a simple builtin value for the marker's INLINE label, or None
+    when the value isn't simple enough (those keep the popover window).
+    Simple: bool, int, float, str, enum members, and tuples of up to 4 such
+    scalars. `max_chars` caps a string's printed length (ellipsis past it) —
+    the label floats over code, so it must stay short."""
+    if value is None:
+        return None     # None is NOT on the supported list - no label
+    if isinstance(value, RerunHint):
+        # The parked 'Rerun to visualize ...' placeholder is an affordance,
+        # not a captured value - it keeps the popover, not a label.
+        return None
+    # bool before int (bool IS-A int), Enum before int (IntEnum members).
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, enum.Enum):
+        return value.name
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    if isinstance(value, str):
+        text = repr(value)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "…"
+        return text
+    if isinstance(value, tuple) and len(value) <= 4:
+        parts = []
+        for item in value:
+            part = (None if isinstance(item, tuple)
+                    else _inline_value_text(item, max_chars))
+            if part is None:
+                return None
+            parts.append(part)
+        tail = "," if len(value) == 1 else ""
+        return "(" + ", ".join(parts) + tail + ")"
+    return None
+
+
+def _paint_value_pill(inline_text, span_x, text_y, span_width=None,
+                      allow_overflow=False, fill=False, outline_rect=None):
+    """The shared inline-value pill on the window draw list, in the CURRENT
+    (editor) font, over the code span [span_x, span_x + span_width).
+
+    Placement rules: a value narrower than the span RIGHT-ALIGNS on it, so
+    the span's FIRST characters peek through beside it; a wider value
+    either grows right past the span (`allow_overflow` — the span is the
+    last code on its line, nothing there to cover) or is elided with an
+    ellipsis to the span's width. `fill=True` stretches the card over the
+    whole span regardless of the value's width (a live_view() call token is
+    instrumentation, not code worth peeking at). span_width=None is the
+    simple left-anchored unlimited pill (no span geometry known).
+
+    `outline_rect` (x0, y0, x1, y1) rings the ASSOCIATED TOKEN — the symbol
+    the value belongs to — in the label's own green, tying the two together
+    visually (the pill can sit at the RHS end, far from its symbol).
+
+    Fixed design colours, dark FOREST green on purpose — a live value must
+    read as data the run produced, not as more source code."""
+    # [tint=(0.36, 0.85, 0.46)] pad_x = 3.0
+    pad_x = 3.0
+    pad_y = 1.0
+    shadow_offset = 2.0
+    corner_radius = 4.0
+    text_size = imgui.calc_text_size(inline_text)
+    if (span_width is not None and text_size.x > span_width
+            and not allow_overflow):
+        while inline_text and imgui.calc_text_size(
+                inline_text + "…").x > span_width:
+            inline_text = inline_text[:-1]
+        if not inline_text:
+            return              # not even one character fits - draw nothing
+        inline_text += "…"
+        text_size = imgui.calc_text_size(inline_text)
+    if span_width is not None and text_size.x <= span_width:
+        text_x = span_x + span_width - text_size.x      # right-aligned
+    else:
+        text_x = span_x
+    card_left = span_x if (fill or text_x == span_x) else text_x
+    card_right = text_x + text_size.x
+    if fill and span_width is not None:
+        card_right = max(card_right, span_x + span_width)
+    box_x = card_left - pad_x
+    box_y = text_y - pad_y
+    box_width = (card_right - card_left) + 2 * pad_x
+    box_height = text_size.y + 2 * pad_y
+    add_shadow((box_x, box_y, box_width, box_height),
+               offset=shadow_offset, corner_radius=corner_radius)
+    draw_list: _DrawList = imgui.get_window_draw_list()
+    draw_list.add_rect_filled(
+        box_x, box_y, box_x + box_width, box_y + box_height,
+        imgui.get_color_u32_rgba(0.085, 0.145, 0.055, 0.96),
+        rounding=corner_radius)
+    draw_list.add_text(text_x, text_y,
+                       imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.95),
+                       inline_text)
+    if outline_rect is not None:
+        draw_list.add_rect(outline_rect[0], outline_rect[1],
+                           outline_rect[2], outline_rect[3],
+                           imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.6),
+                           rounding=corner_radius)
+
+
+# Assignment operators the inline binding pill replaces the right side of:
+# augmented forms first (so `+=` doesn't read as a bare `=`), walrus, then a
+# bare `=` that is neither ==/<=/>=/!= nor the tail of an augmented form.
+_ASSIGN_OP_RE = re.compile(
+    r"\*\*=|//=|>>=|<<=|[+\-*/%&|^@]=|:=|(?<![=<>!+\-*/%&|^@:])=(?!=)")
+
+
+def _code_end_col(line_text):
+    """Column where the line's CODE ends: before an inline # comment
+    (quote-aware scan, so a '#' inside a string literal doesn't count) and
+    before trailing whitespace."""
+    quote = None
+    i = 0
+    n = len(line_text)
+    while i < n:
+        ch = line_text[i]
+        if quote is not None:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "#":
+            return len(line_text[:i].rstrip())
+        i += 1
+    return len(line_text.rstrip())
+
+
+def _rhs_span(line_text, from_col):
+    """(start_col, end_col) of the assignment's right-hand side on
+    `line_text`, searching for the assignment operator from `from_col` (the
+    boxed symbol's end) — so `seq_len = input_ids.shape[1]` pills over the
+    RHS and reads `seq_len = 301`. None when the line has no assignment
+    after the symbol (bare live_view() calls, expression statements) or the
+    RHS continues on the next line with nothing on this one."""
+    match = _ASSIGN_OP_RE.search(line_text, from_col or 0)
+    if match is None:
+        return None
+    start = match.end()
+    while start < len(line_text) and line_text[start] == " ":
+        start += 1
+    end = _code_end_col(line_text)
+    if end <= start:
+        return None
+    return start, end
 
 
 def _stacked_list_value(value, ds):
@@ -444,12 +605,23 @@ def _left_of_window_pos(anchor_left, marker_x, marker_y=None, win_h=None,
 
 
 def _token_in_selection(line, start_col, end_col, sel_lo, sel_hi):
-    """True when the token on buffer `line` spanning [start_col, end_col) lies
-    entirely within the editor selection `sel_lo..sel_hi` ((line, col) tuples,
-    None when the editor has no selection / isn't focused)."""
+    """True when the editor selection is EXACTLY the token on buffer `line`
+    spanning [start_col, end_col) ((line, col) tuples, None when the editor
+    has no selection / isn't focused). Exact on purpose: only selecting the
+    symbol and JUST the symbol (a double-click select) previews its value
+    window — a sweep that happens to contain instrumented tokens must not
+    pop windows over the text being selected."""
     if line is None or sel_lo is None or sel_hi is None:
         return False
-    return sel_lo <= (line, start_col) and (line, end_col) <= sel_hi
+    return sel_lo == (line, start_col) and sel_hi == (line, end_col)
+
+
+def _line_in_selection(line, sel_lo, sel_hi):
+    """True when buffer `line` (1-based) intersects the editor selection's
+    line range — inline value pills hide there so the text being selected
+    stays readable."""
+    return (line is not None and sel_lo is not None and sel_hi is not None
+            and sel_lo[0] <= line <= sel_hi[0])
 
 
 def _draw_marker_at(editor_ds, pos, cursor_inside, token_span, token,
@@ -644,21 +816,46 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         if _mds is None or _w is None or _w.closed:
             return
         _frozen_pos = (_mds.abs_left, _mds.abs_top)
-    if _frozen_pos is None and _marker_idle_skip(
-            draw_state, _mname, x - pad, y - pad,
-            token_cells * char_w + 2 * pad, line_px + 2 * pad,
-            key_path in snap, cursor_inside, store_obj, key_path,
-            (_sl or span.start_line) - 1, True):
+    _value = snap.get(key_path)
+    # A marker with an inline value draws every editor repaint (the value
+    # bakes into the tile), so it can never take the idle skip.
+    if (_frozen_pos is None
+            and _inline_value_text(_value) is None
+            and _marker_idle_skip(
+                draw_state, _mname, x - pad, y - pad,
+                token_cells * char_w + 2 * pad, line_px + 2 * pad,
+                key_path in snap, cursor_inside, store_obj, key_path,
+                (_sl or span.start_line) - 1, True)):
         return
+    # Inline pill over a live_view() call: the call is instrumentation, not
+    # code worth peeking at, so the card FILLS the entire call span; the
+    # value may grow past it only when the span ends its line's code
+    # (source split shared with the snapshot overlay's memo, same memo
+    # invalidation).
+    _memo_ent = draw_state.__dict__.get("_lv_snap_memo")
+    _rsrc = getattr(root, "source", "") or ""
+    if _memo_ent is None or _memo_ent[0] is not _rsrc or len(_memo_ent) < 3:
+        _memo_ent = (_rsrc, {}, _rsrc.split("\n"))
+        object.__setattr__(draw_state, "_lv_snap_memo", _memo_ent)
+    _lines = _memo_ent[2]
+    _ltext = (_lines[span.start_line - 1]
+              if 1 <= span.start_line <= len(_lines) else "")
+    _tok_end = span.start_col + token_cells
+    _overflow = _tok_end >= _code_end_col(_ltext)
     _draw_marker_at(draw_state,
                     _frozen_pos if _frozen_pos is not None
                     else (x - pad, y - pad),
                     cursor_inside,
                     (_sl, span.start_col, span.start_col + token_cells),
                     "/".join(map(str, key_path)),
-                    value=snap.get(key_path),
+                    value=_value,
                     captured=key_path in snap,
                     store_obj=store_obj, key_path=key_path,
+                    inline_values=True,
+                    inline_span_w=token_cells * char_w,
+                    inline_overflow=_overflow, inline_fill=True,
+                    in_selection=_line_in_selection(_sl, sel_lo, sel_hi),
+                    caret_line=kwargs.get("caret_line"),
                     width=token_cells * char_w + 2 * pad,
                     height=line_px + 2 * pad,
                     buffer_line=(_sl or span.start_line) - 1,
@@ -722,6 +919,10 @@ def _mouse_in_window_tree(win_ds, mx, my):
 def draw_live_view_marker(input_value=None, draw_state=None,
                           store_obj=None, key_path=None, captured=False,
                           code_tree_node=None, auto_open=True,
+                          inline_values=False, inline_dx=0.0,
+                          inline_span_w=None, inline_overflow=False,
+                          inline_fill=False,
+                          in_selection=False, caret_line=None,
                           corner_radius=4.0, value=None,
                           left_mouse_double_clicked=False,
                           cursor_inside=False, editor_ds=None,
@@ -909,6 +1110,25 @@ def draw_live_view_marker(input_value=None, draw_state=None,
 
     auto_open = comment_args.get("auto_open", auto_open)
 
+    # ── INLINE VALUE: a simple builtin (int/float/str/bool/shortlist/enum)
+    # renders as a text label overlapping the top of its code line instead
+    # of a separate window. Both modes pass inline_values=True (explicit
+    # live_view() tokens and instrumented-run snapshot markers alike):
+    # every boxed symbol with a simple value shows up in place.
+    inline_text = (_inline_value_text(value)
+                   if captured and inline_values else None)
+    # An inline value has NO value window at all - no auto-open, no
+    # preview, no double-click toggle. A window still open (persisted state,
+    # or the value just turned simple) closes through the ordinary closing
+    # draw_any call below. _lv_open resets to None, so a value that later
+    # turns complex (str → tensor between runs) auto-opens again.
+    if inline_text is not None and getattr(ds, "_lv_open", False):
+        ds._lv_open = None
+    # The gutter swaps the magnifier for an info glyph on inline markers
+    # (no open/close left to toggle) - after the _lv_open pass in text.py.
+    if getattr(ds, "_lv_inline", None) != (inline_text is not None):
+        ds._lv_inline = inline_text is not None
+
     # Manual window-ds tracking (see docstring).
     win_ds = getattr(ds, "_lv_window_ds", None)
     if not captured and win_ds is not None and not win_ds.closed:
@@ -921,7 +1141,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         ds._lv_open = None
         from src.lsd.gl_gui.utils.glfw_utils import request_render
         request_render()
-    if getattr(ds, "_lv_open", None) is None and captured and auto_open:
+    if (getattr(ds, "_lv_open", None) is None and captured and auto_open
+            and inline_text is None):
         ds._lv_open = True  # first value seen → show it without a click
     elif win_ds is not None and win_ds.closed and getattr(ds, "_lv_open", False):
         ds._lv_open = False  # user closed the window via its own header X
@@ -951,8 +1172,8 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # had been double-clicked; the focus check remains as the late-signal
     # fallback (e.g. focus handed over without a press). The header X still
     # unpins via the win_ds.closed branch above.
-    if (captured and not open_now and win_ds is not None
-            and not win_ds.closed):
+    if (captured and not open_now and inline_text is None
+            and win_ds is not None and not win_ds.closed):
         _m = Core.melty
         pin = any(f is not None and _ds_in_window(f, win_ds)
                   for f in (_m.focused_ds, _m.text_focused_ds,
@@ -1019,7 +1240,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if getattr(ds, "_lv_cursor_in", None) != cursor_inside:
         ds._lv_cursor_in = cursor_inside
         ds.invalidate()
-    preview_show = (captured and not open_now
+    preview_show = (captured and not open_now and inline_text is None
                     and ((hovered and hover_mode) or cursor_inside))
     if preview_show and hover_mode:
         from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -1037,14 +1258,59 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         base = (0.45, 0.45, 0.45)
     if hovered:
         base = tuple(min(1.0, c + 0.18) for c in base)
-    # Outline only under the mouse - the boxes read as clutter when every
-    # instrumented site is permanently framed. hover reveals the affordance.
-    if hovered:
+    # Outline only under the mouse — the boxes read as clutter when every
+    # instrumented symbol is permanently framed; hover reveals the
+    # affordance. An inline marker skips it: its token wears the pill's
+    # green ring instead (painted with the pill below), and there's no
+    # window gesture for hover to advertise.
+    if hovered and inline_text is None:
         dl: _DrawList = imgui.get_window_draw_list()
         dl.add_rect(x, y + 2, x + w, y + h - 3,
                     imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6),
                     rounding=corner_radius)
     imgui.dummy(w, h)
+
+    if inline_text is not None:
+        # The label must repaint on every publish - the first_only watch
+        # above fires once; this full watch invalidates per value.
+        watch(store_obj, key_path, ds)
+        # Caret on this line, or the line inside the text selection: show
+        # the real code, nothing painted - typing or deleting under a pill
+        # would be blind. The pill comes back when the caret/selection
+        # leave (the kwarg change re-renders this).
+        if ((caret_line is None or caret_line != buffer_line)
+                and not in_selection):
+            # Drawn IN PLACE in the editor's code font (the current font -
+            # no push). For an assignment site the overlay hands inline_dx
+            # + inline_span_w: the span is the RHS expression and the value
+            # RIGHT-ALIGNS on it (`seq_len = input_ids.sha…[301]`, first
+            # RHS characters to fall through). Without them (live_view()
+            # call tokens, no `=` on the line) it sits on the boxed token
+            # itself. The marker rect wraps the token with a 2 px pad, so
+            # the token's text starts at x + 2.
+            text_x = x + 2.0 + inline_dx
+            text_y = y + 2.0
+            # The editor clipped this body to the token's own rect; the
+            # pill is value-sized and can sit past that (the RHS). Pop out
+            # to the ENCLOSING clip (the editor window) through Melty's own
+            # stack and re-push the SAME rect after: push_clip intersects
+            # with its parent, so pushing the saved (already-intersected)
+            # rect restores it exactly, and the clip bookkeeping the tile
+            # engine reads stays coherent.
+            saved_clip = (Core.melty.clip_stack[-1]
+                          if Core.melty.clip_stack else None)
+            if saved_clip is not None:
+                Core.melty.pop_clip()
+            # The ring goes around the marker's entire TOKEN (the symbol) -
+            # same rect the hover outline uses - so an inline pill far down
+            # the RHS still points back at its symbol.
+            _paint_value_pill(inline_text, text_x, text_y,
+                              span_width=inline_span_w,
+                              allow_overflow=inline_overflow,
+                              fill=inline_fill,
+                              outline_rect=(x, y + 2, x + w, y + h - 3))
+            if saved_clip is not None:
+                Core.melty.push_clip(saved_clip)
 
     # Double-click toggles the value window. Read RAW imgui here (the same
     # split the single-click version used): the declared event param is the
@@ -1052,7 +1318,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # renders on the very frame is_mouse_double_clicked is true - while the raw
     # read is the single trigger, so the two halves can never toggle twice
     # for one gesture.
-    if hovered and imgui.is_mouse_double_clicked(0):
+    if hovered and inline_text is None and imgui.is_mouse_double_clicked(0):
         open_now = not open_now
         ds._lv_open = open_now
         if open_now:
@@ -1409,22 +1675,43 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     if not _is_funcdef_node(node) or span is None:
         return
     from src.lsd.gl_gui.toggles import Toggles
-    if not Toggles.TextEditor.enable_live_view:
+    live_store = kwargs.get("live_store")
+    if live_store is None and not Toggles.TextEditor.enable_live_view:
         return
-    filename = (getattr(root, "file_path", None)
-                or getattr(getattr(root, "address", None), "path", None)
-                or getattr(jump_to, "path", None))
-    if filename is None:
-        return
-    fn = _scope_function(str(filename), span.start_line + line_offset)
-    if fn is None:
-        return
-    # Store-level registration BEFORE any values exist: the first instrumented
-    # run's brand-new keys invalidate this editor, the overlay re-runs, and
-    # the markers materialize (closed - these auto_open=False boxes wait for
-    # a click). Without it the first run stays invisible until an unrelated
-    # repaint.
-    watch(fn, None, draw_state)
+    if live_store is not None:
+        # PASSED-IN store (draw_text's live_store=, e.g. the stack trace
+        # window): no global resolution at all - the caller computed the
+        # values locally (live_view.frame_value_store), and this overlay
+        # reads only what it was handed. Act on exactly the def the store
+        # was built for: name match (rules out enclosing defs, whose spans
+        # also contain the target's lines) + the store's def line inside
+        # this node's span (rules out unrelated same-named defs).
+        from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+            parse_def_name)
+        _def_line = getattr(live_store, "__def_line__", None)
+        if (_def_line is None
+                or parse_def_name(node) != getattr(live_store, "__name__", None)
+                or not (span.start_line + line_offset <= _def_line
+                        <= getattr(span, "end_line", span.start_line)
+                        + line_offset)):
+            return
+        fn = live_store
+    else:
+        filename = (getattr(root, "file_path", None)
+                    or getattr(getattr(root, "address", None), "path", None)
+                    or getattr(jump_to, "path", None))
+        if filename is None:
+            return
+        fn = _scope_function(str(filename), span.start_line + line_offset)
+        if fn is None:
+            return
+        # Store-level registration before any markers exist: the first
+        # instrumented run's brand-new keys invalidate this editor, the
+        # overlay re-runs, and the markers materialize (closed - these
+        # auto_open=False boxes wait for a click). Without it the first run
+        # stays invisible until an instrument happens. (A passed-in store is
+        # a static snapshot - nothing will ever publish to it, so no watch.)
+        watch(fn, None, draw_state)
 
     # Parse→buffer line bridge (dispatch passes it while a merge is in
     # flight): the given y is already mapped, so deriving origin from the
@@ -1731,12 +2018,16 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
                 and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
-        if _frozen_pos is None and _marker_idle_skip(
-                draw_state, _snm,
-                origin_x + start_col * char_w - pad, _my - pad,
-                max(1, end_col - start_col) * char_w + 2 * pad,
-                line_px + 2 * pad, True, cursor_inside,
-                fn, key_path, _ml - 1, _sao):
+        # An inline-labeled marker (simple builtin value) draws every buffer
+        # repaint - the label bakes into the tile - so it never idle-skips.
+        if (_frozen_pos is None
+                and _inline_value_text(value) is None
+                and _marker_idle_skip(
+                    draw_state, _snm,
+                    origin_x + start_col * char_w - pad, _my - pad,
+                    max(1, end_col - start_col) * char_w + 2 * pad,
+                    line_px + 2 * pad, True, cursor_inside,
+                    fn, key_path, _ml - 1, _sao)):
             _soc[2] += 1
             continue
         _soc[3] += 1
@@ -1754,6 +2045,21 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # comment source from it and splats it 1:1 onto the popup window's
         # draw_state (not onto the marker's own wrapper - show_bg=True with a
         # dark tint would draw an opaque bg over the very symbol it boxes).
+        # Assignment sites pill on the RHS - the symbol stays visible and
+        # the value RIGHT-ALIGNS on the RHS span (which runs to the line's
+        # code end by construction), so the line reads
+        # `seq_len = input_ids.sha…[301]` with the RHS's first characters
+        # peeking through. The pill offset is a pixel delta from the boxed
+        # symbol's start. A non-assignment site's pill right-aligns on its
+        # token span the same way; either kind grows past its span only
+        # when the marker ends the line's code.
+        _rhs = _rhs_span(text, end_col)
+        if _rhs is not None:
+            _span_w = max(1, _rhs[1] - _rhs[0]) * char_w
+            _overflow = True
+        else:
+            _span_w = max(1, end_col - start_col) * char_w
+            _overflow = end_col >= _code_end_col(text)
         _draw_marker_at(
             draw_state,
             _frozen_pos if _frozen_pos is not None
@@ -1765,7 +2071,23 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             height=line_px + 2 * pad,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
             buffer_line=_ml - 1, name=_snm, auto_open=_sao,
-            def_node=node)
+            inline_values=True,
+            inline_dx=((_rhs[0] - start_col) * char_w if _rhs else 0.0),
+            inline_span_w=_span_w, inline_overflow=_overflow,
+            in_selection=_line_in_selection(_ml, kwargs.get("sel_lo"),
+                                            kwargs.get("sel_hi")),
+            caret_line=kwargs.get("caret_line"), def_node=node)
+    # Inline USAGE labels: `seq_len=384` inserted after every later
+    # occurrence of a captured symbol - the code text is SHIFTED to make
+    # room (display-time only - see live_usage + the positional-trail
+    # machinery in draw_text's _window/_build_vcols).
+    try:
+        _draw_usage_labels(draw_state, fn, node, span, source_lines,
+                           _snap_vals, _ilines, _ikeys, origin_x, origin_y,
+                           char_w, line_px, _lmap, _clip,
+                           kwargs.get("col_shift", 0))
+    except Exception as e:
+        print(f"live_view: usage labels failed: {e!r}", file=sys.stderr)
     # TEMP perf: one line per slow enough pass (keys=store size for this
     # def, culled=off-viewport, idle=fast-id skips, drawn=full wrapper calls).
     _soms = (time.perf_counter() - _sot0) * 1000.0
@@ -1774,6 +2096,126 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _sotrace("snapshot_overlay", fn=getattr(fn, "__qualname__", "?"),
                  ms=round(_soms, 1), keys=_soc[0], culled=_soc[1],
                  idle=_soc[2], drawn=_soc[3])
+
+
+def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
+                       anchor_lines, anchor_keys, origin_x, origin_y,
+                       char_w, line_px, lmap, clip, col_shift=0):
+    """Every later USAGE of a captured symbol reads `seq_len=384` — the
+    value is INSERTED right after the symbol and the rest of the line
+    shifts to make room, so name and value show together (the same
+    grid-bending draw_text uses for inline color swatches).
+
+    Two halves, one frame apart: this pass STAMPS the wanted gaps on the
+    editor ds (`_lv_trail_views`: def start → (frame, {(display line0,
+    buffer col): cells}); a change bumps `_lv_trail_gen` + invalidates, and
+    draw_text's _window folds them into _build_vcols as positional trails
+    on its next layout, publishing each gap's start CELL back in
+    `_lv_trail_cells`) — and PAINTS the value pill into every gap already
+    laid out. Raw draw-list paint: no draw_states, no hit rects (clicks
+    fall through; caret/click math stays exact through vcols), no captures
+    — each pill reads the binding's single store entry at draw time (see
+    live_usage's module docstring). The occurrence index is memoized per
+    (source, def, store size); the per-repaint work is one cheap loop over
+    the def's occurrences. Stale defs' stamps are pruned by draw_text after
+    the overlay pass. No caret/selection suppression here: the code text
+    stays fully visible and closing the gap under an active caret would
+    shift the line mid-edit."""
+    from src.lsd.gl_gui.toggles import Toggles
+    if not Toggles.TextEditor.live_inline_usages or not snap_vals:
+        return
+    memo = draw_state.__dict__.get("_lv_usage_memo")
+    if memo is None or memo[0] is not source_lines:
+        memo = (source_lines, {})
+        object.__setattr__(draw_state, "_lv_usage_memo", memo)
+    entry = memo[1].get(span.start_line)
+    if entry is None or entry[0]() is not fn or entry[1] != len(snap_vals):
+        labels = vars(fn).get("__live_labels__") or {}
+        # Binding sites extracted from the store's reverse index: name →
+        # (all binding lines, their store keys). The store IS the
+        # binding registry - a usage can only ever show a captured value.
+        bindings = {}
+        for line, key in zip(anchor_lines, anchor_keys):
+            name = live_usage.binding_name(key, labels)
+            if name is None:
+                continue
+            binding_lines, binding_keys = bindings.setdefault(name, ([], []))
+            binding_lines.append(line)
+            binding_keys.append(key)
+        # Nested defs: an occurrence inside a closure's body is that
+        # scope's own name (or a closure read at a DIFFERENT time), never a
+        # plain read of an outer binding - keep out.
+        exclude = []
+        _locals = node.get("locals") if isinstance(node, dict) else None
+        if isinstance(_locals, dict):
+            for child in _locals.values():
+                if isinstance(child, dict) and _is_funcdef_node(child):
+                    child_span = getattr(child, "span", None)
+                    if child_span is not None:
+                        exclude.append((child_span.start_line + 1,
+                                        child_span.end_line))
+        def_text = "\n".join(source_lines[span.start_line - 1:span.end_line])
+        occurrences = live_usage.build_usage_index(
+            def_text, span.start_line,
+            {n: b[0] for n, b in bindings.items()}, tuple(exclude))
+        entry = (weakref.ref(fn), len(snap_vals), occurrences, bindings)
+        memo[1][span.start_line] = entry
+    occurrences, bindings = entry[2], entry[3]
+    frame = Core.melty.frame_count
+    trails = draw_state.__dict__.setdefault("_lv_trail_views", {})
+    publish_seq = vars(fn).get("__live_pub_seq__") or {}
+    sub = {}          # (display line0, buffer boundary col) → gap cells
+    paints = []       # visible pills, paint after the stamp below
+    for line, col, name, _last in occurrences:
+        _ml = lmap(line) if lmap else line
+        if _ml is None:
+            continue          # inside the mid-edit region - skip a wash
+        binding_lines, binding_keys = bindings[name]
+        key = live_usage.governing_key(binding_lines, binding_keys, line,
+                                       publish_seq)
+        if key is None or key not in snap_vals:
+            continue
+        pill_text = _inline_value_text(snap_vals.get(key))
+        if pill_text is None:
+            continue
+        pill_text = "=" + pill_text     # reads as `seq_len=384`
+        # A publish to the governing key must repaint usage pills even when
+        # its binding marker sits off-viewport (culled, so its own full
+        # watch never registered). Idempotent WeakSet add.
+        watch(fn, key, draw_state)
+        cells = len(pill_text) + 1      # one breathing cell around the value
+        boundary_col = col + len(name) + col_shift
+        sub[(_ml - 1, boundary_col)] = cells
+        pill_y = origin_y + (_ml - 1) * line_px
+        if clip is not None and (pill_y + line_px < clip[1]
+                                 or pill_y > clip[3]):
+            continue
+        paints.append((_ml - 1, boundary_col, pill_text, len(name), pill_y))
+    previous = trails.get(span.start_line)
+    trails[span.start_line] = (frame, sub)
+    if previous is None or previous[1] != sub:
+        # New/changed gaps - relayout next frame (draw_text's _window clears
+        # its cache on the stamp).
+        draw_state._lv_trail_gen = getattr(draw_state, "_lv_trail_gen", 0) + 1
+        draw_state.invalidate()
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+    # Paint into the gaps the CURRENT layout reserved (stamped back by
+    # draw_text's _window). A gap not laid out yet - first frame after a
+    # value appeared - skips painting; it opens on the very next layout.
+    gap_cells = draw_state.__dict__.get("_lv_trail_cells") or {}
+    base_x = origin_x - col_shift * char_w      # buffer cell 0 in px
+    for line0, boundary_col, pill_text, name_len, pill_y in paints:
+        gap_cell = gap_cells.get((line0, boundary_col))
+        if gap_cell is None:
+            continue
+        gap_x = base_x + gap_cell * char_w
+        # Ring around the SYMBOL (which sits right before the gap, one cell
+        # per char), tying the inserted value to its name.
+        _paint_value_pill(pill_text, gap_x + 3.0, pill_y,
+                          outline_rect=(gap_x - name_len * char_w - 2.0,
+                                        pill_y, gap_x + 1.0,
+                                        pill_y + line_px - 1.0))
 
 
 def _scope_function(filename, def_line):
