@@ -2948,8 +2948,16 @@ def render_func(*args, **o_kwargs):
             last_bounding_hovered = draw_state._bounding_hovered
             new_bounding_hovered = draw_state.is_bounding_hovered()
 
-            # Suppress hover if a closable window with higher z-order covers this view
-            if new_bounding_hovered:
+            # Suppress hover if a closable window with higher z-order covers this view.
+            # Not while this view's imgui item is ACTIVE (a drag_float mid-drag): an
+            # active item follows the pointer wherever it goes - imgui semantics - but
+            # the press that initiated it in a BEHIND window leaves the window behind
+            # until the deferred raise (apply_move_to_front waits for imgui_active to
+            # clear). Suppressed here, the drag crossing the front window unhovered
+            # the item, its tile fell back to the blit pile, the item stopped being
+            # submitted, imgui dropped it, and the window's captured move handle
+            # took the rest of the gesture (Loras flew off-screen, 09-01).
+            if new_bounding_hovered and not draw_state._imgui_is_active:
                 mouse_x, mouse_y = imgui.get_mouse_pos()
                 hits = Melty.bvh_query(mouse_x, mouse_y)
                 my_depth = draw_state.shadow_depth
@@ -5246,6 +5254,16 @@ def render_func(*args, **o_kwargs):
                     except OSError:
                         pass
                 draw_state.scroll_offset = (current_x, _clamped_y)
+                # Change ledger: a wheel scroll that MOVED the view is an
+                # observable effect (the orchestrator's "scroll" precondition
+                # fix is discovered from a recorded one - see change_value).
+                if (scroll_y_changed is not None and _clamped_y != current_y
+                        and Melty.effect_hook is not None):
+                    try:
+                        Melty.effect_hook("scroll", str(draw_state.name).split("##")[0],
+                                          draw_state)
+                    except Exception:
+                        pass
 
             if scroll_y_changed is not None:
                 note=Note(name=f"scroll change {draw_state.name}", tint=(1, 0, 1))

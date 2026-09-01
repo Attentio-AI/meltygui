@@ -295,42 +295,57 @@ def _ensure_store(pane):
             tree=pane.file_code.ast_tree() if pane.file_code else None)
 
 
-# Defs up to this many lines parse INLINE at first visible draw (a few
-# ms); longer ones parse in the BACKGROUND (run_in_background) and the pane
-# renders without live-value anchors until the parse lands — a 6.5k-line
-# def's libcst parse is ~360 ms, the old tab-open stall.
+# Defs up to this many lines parse INLINE at their FIRST visible draw (a few
+# ms; the pane shows its live-value anchors on the frame it appears); longer
+# ones parse in the BACKGROUND and the pane renders without anchors until the
+# parse lands — a 6.5k-line def's parse was the old tab-open stall. Every
+# RE-parse (the span's text changed: a keystroke here, an editor typing in
+# the same file) is debounced + backgrounded regardless of size, exactly as
+# code_file_io's chain_in — a keystroke used to re-parse inline, per pane of
+# the file, per frame it landed on (09-01).
 # [tint=(0.9, 0.35, 0.28)]
 PARSE_INLINE_LINES = 300
 
 
 def _pane_parse(pane, span_text, index):
     """The pane's span cst dict, memoized on the span text's identity.
-    Small defs parse inline at first visible draw; giant ones go through
-    run_in_background — the runner idle-returns the finished result, so a
-    missed completion edge still serves it, and while it runs the pane
-    keeps its previous parse (stale anchors label-snap) or renders plain
-    code. Only panes with a value store parse at all."""
+
+    Parses run through run_in_background — the same runner and typing
+    debounce (`_chain_in_debounce_ms`, Toggles.TextEditor.parse_debounce_ms /
+    small_file_debounce_ms) as the code editor's chain_in, so a burst of
+    keystrokes coalesces into ONE parse when the input goes quiet. The first
+    parse of a small def is `inline_first` (runs synchronously, anchors on
+    the pane's first frame); a giant def's first parse and every re-parse go
+    to the worker. While a re-parse is pending the pane keeps its previous
+    parse (stale anchors label-snap) or renders plain code. Only panes with
+    a value store parse at all.
+
+    The runner idle-returns its LAST result — inside the debounce window
+    that is the previous text's parse — so a result is adopted only when it
+    is a NEW object (identity against the memo) or arrives on the report
+    edge; stamping the old parse against the new text would have memoized
+    it for good and the landed re-parse would never have been read."""
     if pane.store is None:
         return None
     memo = pane.parse_memo
     if memo is not None and memo[0] is span_text:
         return memo[1]
-    if span_text.count("\n") + 1 <= PARSE_INLINE_LINES:
-        parse = _span_parse(span_text)
-        pane.parse_memo = (span_text, parse)
-        return parse
     from src.lsd.gl_gui.view.core_conversion.new_converters import (
-        run_in_background)
+        run_in_background, _chain_in_debounce_ms)
     arm = pane.parse_armed is not span_text
     if arm:
         pane.parse_armed = span_text
-    _changed, result = run_in_background(
+    small = span_text.count("\n") + 1 <= PARSE_INLINE_LINES
+    landed, result = run_in_background(
         _span_parse, child_kwargs={"text": span_text},
-        name=f"stack span parse {pane.qualname}##{index}", start=arm)
-    if isinstance(result, dict):
-        pane.parse_memo = (span_text, result)
-        return result
-    return memo[1] if memo is not None else None
+        name=f"stack span parse {pane.qualname}##{index}", start=arm,
+        inline_first=small, debounce_ms=_chain_in_debounce_ms(span_text))
+    previous = memo[1] if memo is not None else None
+    if landed or (isinstance(result, dict) and result is not previous):
+        pane.parse_memo = (span_text, result if isinstance(result, dict)
+                           else None)
+        return pane.parse_memo[1]
+    return previous
 
 
 def _pane_view(pane, file_code):
@@ -380,29 +395,52 @@ def _crop_folds(span_rows, call_row, max_span_lines):
     return [(fold_start, fold_end)]
 
 
-def _shift_panes(panes, edited_pane, path, edit_line, delta):
+def _shift_panes(panes, edited_pane, path, edit_line, delta,
+                 edited_span=None, file_code=None):
     """After an edit in `edited_pane` changed its file's line count by
     `delta` at 1-based `edit_line`, move every OTHER pane of that file so
-    the spans keep addressing the same code."""
-    if not delta:
-        return
+    the spans keep addressing the same code.
+
+    With `edited_span` (the edited pane's PRE-edit (first, last)) and the
+    file's `file_code`, a sibling whose def the edit did not touch also
+    CARRIES its view memo onto the new file text: its dedented rows are the
+    same rows, so re-keying the memo (new text object, shifted bounds) keeps
+    its `span_text` identity and the parse memo behind it — nothing to
+    re-dedent, nothing to re-parse. Content-free: the edit's own span
+    decides; a sibling whose def overlaps it (recursion, a closure frame
+    inside the edited def) drops its view and rebuilds. Without this every
+    pane of the file re-parsed on every keystroke in any one of them."""
+    if delta or edited_span is not None:
+        new_whole = file_code.text() if file_code is not None else None
+        edit_first, edit_last = edited_span or (edit_line, edit_line)
     for pane in panes or ():
         if pane is None or pane is edited_pane or pane.path != path \
                 or not pane.resolved:
             continue
-        if pane.first is not None and pane.first > edit_line:
-            pane.first += delta
-        if pane.last is not None and pane.last >= edit_line:
-            pane.last += delta
-        if pane.def_last is not None and pane.def_last >= edit_line:
-            pane.def_last += delta
-        if pane.lineno >= edit_line:
-            pane.lineno += delta
-        store = pane.store
-        if store is not None:
-            def_line = getattr(store, "__def_line__", None)
-            if def_line is not None and def_line > edit_line:
-                store.__def_line__ = def_line + delta
+        untouched = (edited_span is not None and new_whole is not None
+                     and pane.first is not None and pane.def_last is not None
+                     and (pane.def_last < edit_first or pane.first > edit_last))
+        if delta:
+            if pane.first is not None and pane.first > edit_line:
+                pane.first += delta
+            if pane.last is not None and pane.last >= edit_line:
+                pane.last += delta
+            if pane.def_last is not None and pane.def_last >= edit_line:
+                pane.def_last += delta
+            if pane.lineno >= edit_line:
+                pane.lineno += delta
+            store = pane.store
+            if store is not None:
+                def_line = getattr(store, "__def_line__", None)
+                if def_line is not None and def_line > edit_line:
+                    store.__def_line__ = def_line + delta
+        if edited_span is None:
+            continue
+        view = pane.view
+        if untouched and view is not None:
+            pane.view = (new_whole, pane.bounds()) + view[2:]
+        else:
+            pane.view = None
 
 
 @render_func(is_default_for=(types.TracebackType, BaseException),
@@ -658,7 +696,10 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
             line_numbers=memo[2], freeze_resize=True,
             show_header=False, show_file_header=False, show_jump_bar=False,
             gutter_indent=True, shadow=False, bg_offset=-1,
-            use_cache=False, return_extras=True, **span_kwargs)
+            # Cached: all panes are siblings in one window tile, so with
+            # use_cache=False a selection drag in one pane re-ran every
+            # span on every frame (10 draw_text bodies, 15ms - 09-01).
+            use_cache=True, return_extras=True, **span_kwargs)
         # Measured layout advance (this item + its spacing) is what the
         # offscreen skip reproduces with a cursor move.
         pane.last_height = max(0.0,
@@ -684,6 +725,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
             else:
                 edit_row = min(len(old_rows), len(new_rows))
             span_range = file_code.get_lines(pane.first - 1, pane.last)
+            edited_span = (pane.first, pane.last)
             span_range["value"] = "\n".join(
                 _reindent_rows(new_rows, def_indent))
             delta = (span_range.end + 1) - (pane.last + 1)
@@ -694,7 +736,8 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
                 pane.def_last += delta
             pane.last = new_last
             _shift_panes(panes, pane, pane.path,
-                         pane.first + edit_row, delta)
+                         pane.first + edit_row, delta,
+                         edited_span=edited_span, file_code=file_code)
 
     # ── Open at the BOTTOM: the trace bottoms out at the view's, so
     # a new capture lands there. Write past the end and let the wrapper's

@@ -140,13 +140,62 @@ def _under_closed_window(ds):
     return False
 
 
+# Per-frame memo of the live universe and its name index:
+# (frame_count, cache size, nodes, index). The orchestrator's precondition
+# refresh resolves a few hundred paths per pass (minimal_path tries every
+# suffix of every candidate), and each used to build the universe (an
+# _under_closed_window walk per draw_state) and scan it once per segment
+# until it - ~5.6 M segment_matches, 480 ms every 20 frames on a session
+# with 5.5k draw_states (profiled 09-01). Now: one build per frame, and a
+# name segment is a dict lookup.
+_UNIVERSE_MEMO = None
+
+
+class _Index:
+    """Name lookups over one universe list: display name (the "##"-stripped
+    str(ds.name)) and full name → the nodes carrying it, in universe order.
+    Type / predicate segments still scan the nodes."""
+    __slots__ = ("nodes", "by_display", "by_full")
+
+    def __init__(self, nodes):
+        self.nodes = nodes
+        by_display, by_full = {}, {}
+        for ds in nodes:
+            name = getattr(ds, "name", None)
+            if name is None:
+                continue
+            full = str(name)
+            by_full.setdefault(full, []).append(ds)
+            by_display.setdefault(full.split("##")[0], []).append(ds)
+        self.by_display, self.by_full = by_display, by_full
+
+
 def default_universe():
+    global _UNIVERSE_MEMO
     from src.lsd.gl_gui.melty import Melty
     cache = getattr(Melty, "cache", None)
     if cache is None:
         return []
-    return [ds for ds in cache.key_to_draw_state.values()
-            if ds is not None and not _under_closed_window(ds)]
+    key = (Melty.frame_count, len(cache.key_to_draw_state))
+    memo = _UNIVERSE_MEMO
+    if memo is not None and memo[0] == key:
+        return memo[2]
+    nodes = [ds for ds in cache.key_to_draw_state.values()
+             if ds is not None and not _under_closed_window(ds)]
+    _UNIVERSE_MEMO = (key, None, nodes, None)
+    return nodes
+
+
+def _index_for(universe):
+    """The _Index over `universe` — memoized beside the per-frame default
+    universe (identity match), built per call for a caller-supplied list."""
+    global _UNIVERSE_MEMO
+    memo = _UNIVERSE_MEMO
+    if memo is not None and memo[2] is universe:
+        if memo[3] is None:
+            _UNIVERSE_MEMO = memo = (memo[0], None, universe, _Index(universe))
+        return memo[3]
+    return _Index(universe)
 
 
 def segment_matches(segment, ds):
@@ -172,23 +221,35 @@ def _visual_order(matches):
                                            getattr(ds, "abs_left", 0) or 0))
 
 
-def _matches_in_scope(segment, scope, universe):
+def _matches_in_scope(segment, scope, universe, index=None):
     """Every universe node matching `segment` with `scope` among its
     ancestors (scope None = anywhere). One hop of the path = descendant
     matching at any depth, which is what makes nesting the caller's
-    non-problem."""
+    non-problem. With an `index`, a name / Key segment reads its
+    candidates off the name tables instead of scanning the universe."""
     found = []
-    for ds in universe:
+    if index is not None and isinstance(segment, str):
+        candidates = index.by_display.get(segment, ())
+    elif index is not None and isinstance(segment, Key):
+        candidates = index.by_full.get(segment.key, ())
+    else:
+        candidates = universe
+    for ds in candidates:
         if not segment_matches(segment, ds):
             continue
-        if scope is not None and scope is not ds \
-                and not any(a is scope for a in ancestor_chain(ds)):
+        # STRICT descendants only: a scope never matches its own next
+        # segment. A path is a subsequence of the ANCESTOR chain (module
+        # docstring), so "name/name" names a child called name below a
+        # parent called name - draw_str's row "name" wrapping the editor
+        # "name##innder" - and must not also match the parent alone (it
+        # did, and the text field's chain resolved byously, 09-01).
+        if scope is not None and not any(a is scope for a in ancestor_chain(ds)):
             continue
         found.append(ds)
     return found
 
 
-def _resolve_set(segments, scopes, universe):
+def _resolve_set(segments, scopes, universe, index=None):
     """Segment-at-a-time descent (equivalent to subsequence matching for
     named segments). An int segment indexes the VISUALLY-ORDERED result of
     the remaining path within the current scopes and returns that single
@@ -197,22 +258,24 @@ def _resolve_set(segments, scopes, universe):
         return scopes
     head, rest = segments[0], segments[1:]
     if isinstance(head, int) and not isinstance(head, bool):
-        results = _visual_order(_resolve_set(rest, scopes, universe))
+        results = _visual_order(_resolve_set(rest, scopes, universe, index))
         return [results[head]] if 0 <= head < len(results) else []
     next_scopes, seen = [], set()
     for scope in scopes:
-        for ds in _matches_in_scope(head, scope, universe):
+        for ds in _matches_in_scope(head, scope, universe, index):
             if id(ds) not in seen:
                 seen.add(id(ds))
                 next_scopes.append(ds)
-    return _resolve_set(rest, next_scopes, universe)
+    return _resolve_set(rest, next_scopes, universe, index)
 
 
 def find_all(path, within=None, universe=None):
     segments = parse(path)
     if universe is None:
         universe = default_universe()
-    return _resolve_set(segments, [within], list(universe))
+    elif not isinstance(universe, list):
+        universe = list(universe)
+    return _resolve_set(segments, [within], universe, _index_for(universe))
 
 
 def resolve(path, within=None, universe=None):
@@ -245,13 +308,15 @@ def minimal_path(ds, universe=None):
     ambiguous (twins: caller needs an ordinal segment)."""
     if universe is None:
         universe = default_universe()
-    universe = list(universe)
+    elif not isinstance(universe, list):
+        universe = list(universe)
     chain = name_chain(ds)
     if not chain:
         return chain
+    index = _index_for(universe)     # same index for every suffix tried
     for length in range(1, len(chain) + 1):
         suffix = chain[-length:]
-        matches = find_all(suffix, universe=universe)
+        matches = _resolve_set(suffix, [None], universe, index)
         if len(matches) == 1:
             return suffix
     return chain

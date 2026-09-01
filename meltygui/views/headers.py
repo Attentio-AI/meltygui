@@ -599,7 +599,8 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         _aw_x, _aw_y = imgui.get_cursor_screen_pos()
         _aw_ch, _aw_val = draw_tuple_fast(
             _aw_tint, draw_state, view_id="aw_tint", x=_aw_x, y=_aw_y,
-            size=17, outline=True, info=_aw_source_info)
+            size=17, outline=True, info=_aw_source_info,
+            setter=lambda value, _ds=draw_state: setattr(_ds, "locate_tint", value))
         imgui.dummy(17, 17)
         if _aw_ch:
             draw_state.locate_tint = _aw_val

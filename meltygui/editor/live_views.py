@@ -28,6 +28,7 @@ to anchor and get no marker yet.
 """
 
 import bisect
+import collections
 import enum
 import inspect
 import re
@@ -236,6 +237,15 @@ def _inline_value_text(value, max_chars=48):
     if isinstance(value, float):
         return f"{value:.4g}"
     if isinstance(value, str):
+        # repr ONLY a max_chars prefix: a frame snapshot's locals include
+        # whole file texts (megabytes), and repr(value) on one is ~1 ms
+        # per call — 90 markers a frame put the stack-trace pane at 110 ms
+        # (cProfile 09-01: 2.13 s of 2.38 s in builtins.repr). Quotes and
+        # quotes only lengthen a repr, so the prefix's repr already runs
+        # past max_chars whenever the full one would, and the label cut
+        # from it is the same text.
+        if len(value) > max_chars:
+            return repr(value[:max_chars])[:max_chars] + "…"
         text = repr(value)
         if len(text) > max_chars:
             text = text[:max_chars] + "…"
@@ -437,7 +447,50 @@ def _padded_dim_names(user_dims, ndim):
     return names + [f"dim{i}" for i in range(len(names), ndim)]
 
 
-def _override_owner(scope_node, lookup_key):
+def _build_owner_index(scope_node):
+    """{surfaced key → owning dict} for a scope, the same breadth-first
+    walk _override_owner does, done ONCE: a marker's first render used to
+    BFS the whole scope per marker (5.5k markers × a 5.6k-line def = 15 s
+    on a diff expand, 09-01). First node in BFS order wins, as before."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        _is_block_key)
+    index = {}
+    queue = [scope_node]
+    for node in queue:
+        if not isinstance(node, dict):
+            continue
+        ovs = node.get("__overrides__")
+        for k in node.keys():
+            if isinstance(k, str) and k not in index:
+                index[k] = node
+        if isinstance(ovs, dict):
+            for ok in ovs.keys():
+                if (isinstance(ok, str) and len(ok) > 4 and ok.startswith("__")
+                        and ok.endswith("__") and ok[2:-2] not in index):
+                    index[ok[2:-2]] = node
+        for k, v in node.items():
+            if isinstance(v, dict) and _is_block_key(k):
+                queue.append(v)
+    return index
+
+
+def _owner_index(host_ds, scope_node, def_key, src):
+    """The owner index of a def scope, memoized on `host_ds` (the editor)
+    per source version: `src` is the parse's source string (identity = the
+    content-free change signal), `def_key` = (def name, def line)."""
+    d = host_ds.__dict__
+    memo = d.get("_lv_owner_indexes")
+    if memo is None or memo[0] is not src:
+        memo = (src, {})
+        object.__setattr__(host_ds, "_lv_owner_indexes", memo)
+    index = memo[1].get(def_key)
+    if index is None:
+        index = memo[1][def_key] = _build_owner_index(scope_node)
+    return index
+
+
+def _override_owner(scope_node, lookup_key, index_host=None, def_key=None,
+                    src=None):
     """The dict that OWNS statement `lookup_key` — the node whose
     __overrides__ carries the site's `# [...]` comment — searched
     breadth-first through surfaced BLOCK children (for/if/try branches, via
@@ -449,6 +502,9 @@ def _override_owner(scope_node, lookup_key):
     Returns scope_node itself when the key isn't surfaced anywhere (sites
     in with/while bodies — the conversion has no node to hang a comment
     on)."""
+    if index_host is not None and def_key is not None and src is not None:
+        return _owner_index(index_host, scope_node, def_key, src).get(
+            lookup_key, scope_node)
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
         _is_block_key)
     queue = [scope_node]
@@ -586,12 +642,27 @@ def current_live_root(ds):
     if (cache is not None and cache[0] is tree
             and (src is None or cache[1] is src)):
         return cache[2]
-    node = _find_def_node(tree, def_name, def_line)
+    # Def lookup + owner BFS memoized on the EDITOR ds per (tree, source):
+    # per marker ds they ran once each — 5.5k first renders on a diff
+    # expand walked the def 11k times (09-01).
+    if editor_ds is not None:
+        _dmemo = editor_ds.__dict__.get("_lv_def_nodes")
+        if _dmemo is None or _dmemo[0] is not tree or _dmemo[1] is not src:
+            _dmemo = (tree, src, {})
+            object.__setattr__(editor_ds, "_lv_def_nodes", _dmemo)
+        node = _dmemo[2].get((def_name, def_line), _NO_VALUE)
+        if node is _NO_VALUE:
+            node = _dmemo[2][(def_name, def_line)] = _find_def_node(
+                tree, def_name, def_line)
+    else:
+        node = _find_def_node(tree, def_name, def_line)
     scope = node.get("locals") if isinstance(node, dict) else None
     key = d.get("live_key")
     owner = stamped
     if isinstance(scope, dict) and isinstance(key, str):
-        owner = _override_owner(scope, key)
+        owner = _override_owner(scope, key, index_host=editor_ds,
+                                def_key=(def_name, def_line),
+                                src=src if editor_ds is not None else None)
         if owner is not stamped:
             # Keep the stamp fresh for anything still reading it raw.
             object.__setattr__(ds, "live_root", owner)
@@ -1060,7 +1131,6 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         lookup_key = (tail.split("#", 1)[1]
                       if tail.startswith("line:") and "#" in tail else tail)
     if isinstance(code_tree_node, dict) and lookup_key:
-        live_root = _override_owner(code_tree_node, lookup_key)
         # Locator for current_live_root (def name + start line, the editor
         # ds only as a fallback during readers), stamped BEFORE the comment
         # read so this render's own splat also resolves through the code
@@ -1071,6 +1141,20 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         if _dname:
             _dspan = getattr(def_node, "span", None)
             _locator = (editor_ds, _dname, getattr(_dspan, "start_line", 0) or 0)
+        # Owner through the editor's per-def index (one BFS per def per
+        # source version), not a BFS per marker; the raw walk stays the
+        # fallback when there's no editor / def to key on.
+        _osrc = None
+        if editor_ds is not None and _locator is not None:
+            _ecd = editor_ds.__dict__.get("code_dict")
+            if not isinstance(_ecd, dict):
+                _ecd = editor_ds.__dict__.get("code_tree")
+            _osrc = getattr(_ecd, "source", None) if isinstance(_ecd, dict) else None
+        live_root = _override_owner(
+            code_tree_node, lookup_key,
+            index_host=editor_ds if _osrc is not None else None,
+            def_key=(_locator[1], _locator[2]) if _locator else None,
+            src=_osrc)
         object.__setattr__(ds, "live_root", live_root)
         object.__setattr__(ds, "live_key", lookup_key)
         object.__setattr__(ds, "_lv_locator", _locator)
@@ -1114,25 +1198,6 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if _pad:
         comment_args = dict(comment_args)
         comment_args["dim_names"] = _pad
-    if _merge_auto:
-        _dlog = ("merge", tuple(_merge_auto), tuple(comment_args["dim_names"]))
-    else:
-        _dlog = ("skip", _auto_dims, _vkind,
-                 tuple(comment_args.get("dim_names") or ()))
-    if getattr(ds, "_lv_dims_log", None) != _dlog:
-        ds._lv_dims_log = _dlog
-        _shape = (tuple(getattr(value, "shape", ()))
-                  if _vkind in ("Tensor", "ndarray") else ())
-        if _dlog[0] == "merge":
-            print(f"live_view dims: marker {key_path} shape={_shape} "
-                  f"auto={_auto_dims} comment={_user_dims} "
-                  f"-> window dim_names={comment_args['dim_names']}",
-                  file=sys.stderr)
-        else:
-            print(f"live_view dims: marker {key_path} shape={_shape} "
-                  f"kind={_vkind} auto={_auto_dims} -> MERGE SKIPPED "
-                  f"(window gets dim_names={comment_args.get('dim_names')})",
-                  file=sys.stderr)
 
     # Input-tab lookup: the context menu resolves this site's inputs off the
     # draw_state graph (draw_input_tab's live_root branch), so attach the same
@@ -1785,8 +1850,11 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # BOUNDED span whose tile bakes once and then blitted while the
         # PARENT scrolls - its own body doesn't re-run per scroll frame,
         # so a clip cull here baked only the then-visible band's markers
-        # and they popped in/out as the scroll revealed rows (08-31).
-        # Render EVERY marker; the pane's span is already cropped small.
+        # and they popped in/out as the scroll crossed rows (08-31;
+        # re-confirmed 09-01: with the cull, draw_text's 5.6k-line pane
+        # showed gutter markers only for the first ~180 lines). Render
+        # every marker - so the per-key scan below must stay cheap: for
+        # that pane it runs 5k+ regex scans every selection frame.
         _clip = None
     # Snap memo: the label/content relocation scans are O(def lines) per
     # STALE stamp - with frame snapshots holding a key per occurrence that's
@@ -1905,13 +1973,18 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # the index never pins a replaced run's function (id() of a dead object
     # could recycle).
     if (_ie is None or _ie[0] is not _src or _ie[1] != _ik
-            or len(_ie) < 7 or _ie[4]() is not fn):
+            or len(_ie) < 8 or _ie[4]() is not fn):
         # Append + ONE sort (C-speed): the first version insort-ed each key
         # (list.insert, O(n) memmove → O(n²) per rebuild), and a publish
         # storm - a stack-trace snapshot landing thousands of keys with
         # renders interleaved - meant a rebuild per render. That froze
         # the editor the moment a stack was published.
         _pairs = []
+        _ilabels = getattr(fn, "__live_labels__", None) or {}
+        _cols_memo = draw_state.__dict__.get("_lv_cols_memo")
+        if _cols_memo is None or len(_cols_memo) > 200000:
+            _cols_memo = {}
+            object.__setattr__(draw_state, "_lv_cols_memo", _cols_memo)
         for key_path in _snap_vals:
             if not key_path or not isinstance(key_path[-1], str):
                 continue
@@ -1945,7 +2018,11 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                         span.start_line, span.end_line, lidx=_lidx)
                     _snap_memo[_mk] = _snapped
                 _rl = _snapped
-            _pairs.append((_rl, key_path, _a))
+            _cols = _symbol_cols(_a, _rl, key_path, source_lines, _ilabels,
+                                 memo=_cols_memo)
+            if _cols is None:
+                continue
+            _pairs.append((_rl, key_path, (_rl, _cols[0], _cols[1])))
         _pairs.sort(key=lambda p: p[0])
         # Stable hash-free cache for the whole snapshot, built WITH the index
         # (same invalidation) - per-key naming was O(store) hash → O(store²)
@@ -1954,7 +2031,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # locals-walk per key, and re-running it per line per frame
         # was O(visible band) of dict descents for every repaint.
         _ie = (_src, _ik, [p[0] for p in _pairs], [p[1] for p in _pairs],
-               weakref.ref(fn), None, [p[2] for p in _pairs])
+               weakref.ref(fn), None, [p[2] for p in _pairs],
+               {p[1]: i for i, p in enumerate(_pairs)})
         object.__setattr__(draw_state, "_lv_key_index", _ie)
     _ilines, _ikeys, _ianchors = _ie[2], _ie[3], _ie[6]
     # Names from the SHARED generation-keyed store map - never the anchor
@@ -1982,21 +2060,114 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # Binding-value pills, built by the marker loop and painted by the
     # trailing-gap pass: (display 0, boundary buffer col, "=value",
     # symbol length) - usage-label pairs, one per captured target.
+    #
+    # IDLE-PASS MEMO (the no-clip pane below: every key, every frame). An
+    # idle key's whole per-frame outcome is its gutter registration and
+    # its pill, and both only change with the index, a publish, the
+    # geometry or the focus - all in `_pk`. On a memo hit only the ACTIVE
+    # keys run the per-key logic: keys non-idle last pass (hovered, open,
+    # caret-inside - they must observe their state), keys on the mouse's
+    # line (for hover could begin), keys on an exact single-line selection
+    # (`_token_in_selection`); everything else replays. draw_text's
+    # context-menu pane: 5,145 keys → 70 ms a selection frame before.
+    _sel_lo, _sel_hi = kwargs.get("sel_lo"), kwargs.get("sel_hi")
+    _col_shift = kwargs.get("col_shift", 0)
+    _fc = Core.melty.frame_count
+    _full_pass = getattr(draw_state, "_lv_full_overlay_until", 0) > _fc
+    try:
+        _pub_gen = vars(fn).get("__live_pub_gen__", 0)
+    except TypeError:
+        _pub_gen = 0
+    # The line map is either None, the fold projection (a fresh lambda per
+    # frame carrying the layout list in `_d2b` - see draw_text's
+    # _get_fold_lm; the list only changes on a fold toggle, so it is the
+    # identity the memo keys on) or an edit bridge (a change in flight - no
+    # memo, every frame is a potential change).
+    _layout = getattr(_lmap, "_d2b", None) if _lmap is not None else None
+    _lm_key = getattr(_lmap, "_lv_key", None) if _lmap is not None else None
+    _pk = (id(_ie), _pub_gen, origin_x, origin_y, line_px, char_w,
+           _col_shift, Core.melty.text_focused_ds is draw_state,
+           _lm_key)
+    _record = (_clip is None and not _full_pass
+               and (_lmap is None or _lm_key is not None))
+    _pm = draw_state.__dict__.get("_lv_pass_memo")
+    _replay = (_record and _pm is not None and len(_pm) >= 7
+               and _pm[0] == _pk)
     _bind_pills = []
-    for key_path, anchor in zip(_cand, _cand_anchors):
+    if _replay:
+        _idle_gutter, _pills, _nonidle = _pm[1], _pm[2], _pm[3]
+        _static_gutter, _static_pills = _pm[5], _pm[6]
+        _active = set(_nonidle)
+
+        def _mark_display_line(dl):
+            # display line (1-based) → parse line: identity without folds,
+            # else through the fold layout (0-based parse line per
+            # display line); hidden / out-of-range lines have no keys.
+            if _layout is None:
+                rel = dl
+            elif 0 <= dl - 1 < len(_layout):
+                rel = _layout[dl - 1] + 1
+            else:
+                return
+            _active.update(_ikeys[bisect.bisect_left(_ilines, rel):
+                                  bisect.bisect_right(_ilines, rel)])
+        if line_px:
+            _mdl = int((imgui.get_io().mouse_pos.y - origin_y) / line_px) + 1
+            for _dl in (_mdl - 1, _mdl, _mdl + 1):
+                _mark_display_line(_dl)
+        if (_sel_lo is not None and _sel_hi is not None
+                and _sel_lo[0] == _sel_hi[0]):
+            _mark_display_line(_sel_lo[0])
+        # Replay the idle keys' gutter registration (same per-frame reset
+        # the loop body / idle skip do) and their pills - from the memo's
+        # STATIC structures, not a rebuild (5k entries a frame): the
+        # gutter map is a ChainMap over a fresh front dict (the active
+        # keys' markers get a filtered copy there so their own registration
+        # can't duplicate the static entry); the pill list is the memo's
+        # own object (copied only when an active key changes it - its
+        # identity keys _stamp_and_paint's merge memo).
+        _pos = _ie[7]
+        if getattr(draw_state, "_lv_gutter_frame", None) != _fc:
+            draw_state._lv_gutter_frame = _fc
+            _front = {}
+            for _k in _active:
+                _ig = _idle_gutter.get(_k)
+                if _ig is not None and _ig[0] not in _front:
+                    _front[_ig[0]] = [m for m in _static_gutter.get(_ig[0], ())
+                                      if m is not _ig[1]]
+            draw_state._lv_gutter_markers = collections.ChainMap(
+                _front, _static_gutter)
+        else:
+            _gm = draw_state._lv_gutter_markers   # another frame for first
+            for _k, (_gl, _gmds) in _idle_gutter.items():
+                if _k not in _active:
+                    _gm.setdefault(_gl, []).append(_gmds)
+        _bind_pills = _static_pills
+        for _k in _active:
+            _p = _pills.get(_k)
+            # A key non-idle when the memo was taken has no static pill
+            # (it re-adds its own below); an idle one's is pulled so its
+            # re-add can't duplicate it.
+            if _p is not None and _k not in _nonidle:
+                if _bind_pills is _static_pills:
+                    _bind_pills = list(_static_pills)
+                try:
+                    _bind_pills.remove(_p)
+                except ValueError:
+                    pass
+        _loop = [(k, _ianchors[_pos[k]]) for k in _active if k in _pos]
+        _soc[2] = len(_ikeys) - len(_loop)
+    else:
+        _idle_gutter, _pills = {}, {}
+        _static_pills = None
+        _loop = zip(_cand, _cand_anchors)
+    _new_nonidle = set()
+    _mutated = not _replay
+    _created = 0
+    _budget = int(Toggles.TextEditor.live_marker_create_budget)
+    for key_path, anchor in _loop:
         value = _snap_vals.get(key_path)
         rel_line, start_col, end_col = anchor
-        if end_col is None:
-            # line:N keys carry a RUN-TIME line stamp - edits since the run
-            # shift the code out from under line. The labeled SYMBOL is the
-            # real anchor - if the stamped line no longer shows the label,
-            # snap to the nearest line in this def that does (memoized above
-            # during the index build, so this costs a dict hit).
-            tail = key_path[-1]
-            _mk = ("label", tail)
-            _snapped = _snap_memo.get(_mk)
-            if _snapped is not None:
-                rel_line = _snapped
         _ml = _lmap(rel_line) if _lmap else rel_line
         if _ml is None:
             continue        # anchor inside the mid-edit region - skip a frame
@@ -2036,54 +2207,18 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 _soc[1] += 1
                 continue    # off-viewport - don't draw a marker for it
             _frozen_pos = (_fmds.abs_left, _fmds.abs_top)
-        if end_col is None:
-            # No span (line:N keys) — box the LABELED SYMBOL on the line when
-            # the store's label names one (frame-snapshot params and twin
-            # with-body keys both carry the local's name; attribute keys
-            # box just the FINAL segment - see _label_box_span), falling
-            # back to the whole line's text. Full-line boxes stack into an
-            # unreadable double-wide strip when several line-keyed values
-            # land on adjacent lines (a captured signature), and their click
-            # latches swallow the lines.
-            if 1 <= rel_line <= len(source_lines):
-                text = source_lines[rel_line - 1]
-                if not text.strip():
-                    continue
-                label = (getattr(fn, "__live_labels__", None) or {}).get(key_path)
-                span_cols = _label_box_span(label, text)
-                if span_cols is not None:
-                    start_col, end_col = span_cols
-                else:
-                    start_col = len(text) - len(text.lstrip())
-                    end_col = len(text.rstrip())
-            else:
-                continue
-        else:
-            # The leaf span covers the assignment (or sometimes just its
-            # RHS, depending on the parse) - box the SYMBOL itself so the
-            # highlight (and its click latch) doesn't swallow the line: the
-            # first word-boundary occurrence of the target name on the line
-            # (the assignment target precedes any RHS use of the name).
-            name = key_path[-1].split("#", 1)[0]
-            text = (source_lines[rel_line - 1]
-                    if 1 <= rel_line <= len(source_lines) else "")
-            m = re.search(rf"\b{re.escape(name)}\b", text)
-            if m is not None:
-                start_col, end_col = m.start(), m.end()
-            else:
-                end_col = start_col + max(1, len(name))
         pad = 2.0
         # Selection containment: _ml is in buffer-space, cols are the
         # boxed symbol span - same test the call-token overlay does.
         cursor_inside = _token_in_selection(
-            _ml, start_col, end_col, kwargs.get("sel_lo"), kwargs.get("sel_hi"))
+            _ml, start_col, end_col, _sel_lo, _sel_hi)
         _snm = (f"lvs::{fn.__qualname__}"
                 f"::{_skey_names.get(key_path) or _stable_key_name(key_path, _snap_vals)}")
         _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
                 and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
         # An inline-labeled marker (simple builtin value) paints NOTHING
-        # itself: its pill is collected below (_bind_pills) and painted raw
+        # itself: its pill is tracked here (_bind_pills) and painted raw
         # by _stamp_and_paint after the gap draw_text laid out. So an idle
         # one skips its @render_wrapper call like any other marker - once the
         # body has run at least once with the inline flag (the gutter glyph
@@ -2093,6 +2228,9 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # a frame snapshot paid a full wrapper call per line: a big def
         # could draw_text (one binding on most lines) froze the editor.
         _btext = _inline_value_text(value)
+        _pill = ((_ml - 1, end_col + _col_shift, "=" + _btext,
+                  max(1, end_col - start_col))
+                 if _btext is not None else None)
         _mreg0 = draw_state.__dict__.get("_lv_marker_ds")
         _mds0 = _mreg0.get(_snm) if _mreg0 else None
         if (_frozen_pos is None
@@ -2105,15 +2243,48 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                     max(1, end_col - start_col) * char_w + 2 * pad,
                     line_px + 2 * pad, True, cursor_inside,
                     fn, key_path, _ml - 1, _sao)):
-            if _btext is not None:
+            if _pill is not None:
                 watch(fn, key_path, _mds0)
-                _bind_pills.append((_ml - 1,
-                                    end_col + kwargs.get("col_shift", 0),
-                                    "=" + _btext,
-                                    max(1, end_col - start_col)))
+                if _bind_pills is _static_pills:
+                    _bind_pills = list(_static_pills)
+                _bind_pills.append(_pill)
+            if _record:
+                if (_idle_gutter.get(key_path) != (_ml - 1, _mds0)
+                        or _pills.get(key_path, _NO_VALUE) != _pill):
+                    _mutated = True
+                _idle_gutter[key_path] = (_ml - 1, _mds0)
+                _pills[key_path] = _pill
             _soc[2] += 1
             continue
+        if _mds0 is None and _frozen_pos is None and _budget > 0:
+            # FIRST render of this marker (no draw_state yet) - a wrapper
+            # call + DrawState + comment resolve each. A diff expand can
+            # reveal thousands at once (15 s in one case, 09-01), so at
+            # most `_budget` are created per pass; the rest stay pending
+            # (nonidle state → active next pass) and the pills show now.
+            if _created >= _budget:
+                _new_nonidle.add(key_path)
+                if _pill is not None:
+                    if _bind_pills is _static_pills:
+                        _bind_pills = list(_static_pills)
+                    _bind_pills.append(_pill)
+                if _record:
+                    _mutated = True
+                    _pills[key_path] = _pill
+                if _created == _budget:
+                    _created += 1
+                    from src.lsd.gl_gui.utils.glfw_utils import request_render
+                    draw_state.invalidate()
+                    request_render()
+                continue
+            _created += 1
         _soc[3] += 1
+        _new_nonidle.add(key_path)
+        if _record:
+            if key_path in _idle_gutter or _pills.get(key_path, _NO_VALUE) != _pill:
+                _mutated = True
+            _idle_gutter.pop(key_path, None)
+            _pills[key_path] = _pill
         # Frozen-anchor path: the marker draws at its previous position so
         # its pinned window doesn't chase the true off-screen coords.
         # Auto-open the VOLUMES (3-D tensors → orbiting voxel windows) only
@@ -2133,10 +2304,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # `edited=False, new_text='...' = get_text(...)` - code repositions,
         # nothing is covered. Collected here, stamped + painted by
         # _draw_usage_labels below (sym_len drives the gap-derived ring).
-        if _btext is not None:
-            _bshift = kwargs.get("col_shift", 0)
-            _bind_pills.append((_ml - 1, end_col + _bshift, "=" + _btext,
-                                max(1, end_col - start_col)))
+        if _pill is not None:
+            if _bind_pills is _static_pills:
+                _bind_pills = list(_static_pills)
+            _bind_pills.append(_pill)
         _draw_marker_at(
             draw_state,
             _frozen_pos if _frozen_pos is not None
@@ -2149,9 +2320,21 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
             buffer_line=_ml - 1, name=_snm, auto_open=_sao,
             inline_values=True,
-            in_selection=_line_in_selection(_ml, kwargs.get("sel_lo"),
-                                            kwargs.get("sel_hi")),
+            in_selection=_line_in_selection(_ml, _sel_lo, _sel_hi),
             caret_line=kwargs.get("caret_line"), def_node=node)
+    if _record:
+        if _mutated or _replay and _new_nonidle != _nonidle:
+            # Rebuild the static replay structures (a key changed state).
+            _static_gutter = {}
+            for _k, (_gl, _gmds) in _idle_gutter.items():
+                _static_gutter.setdefault(_gl, []).append(_gmds)
+            _static_pills = [p for _k, p in _pills.items()
+                             if p is not None and _k not in _new_nonidle]
+        # `_lmap` (and what it was built from) rides along so the ids in
+        # _pk stay pinned.
+        object.__setattr__(draw_state, "_lv_pass_memo",
+                           (_pk, _idle_gutter, _pills, _new_nonidle, _lmap,
+                            _static_gutter, _static_pills))
     # Inline USAGE labels: `seq_len=384` inserted after every later
     # occurrence of a captured symbol - the code text is SHIFTED to make
     # room (display-time only - see live_usage + the positional-trail
@@ -2291,8 +2474,32 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
         _gov_memo = (bindings, _pub_gen, {})
         object.__setattr__(draw_state, "_lv_gov_memo", _gov_memo)
     _gov = _gov_memo[2]
-    sub = {}          # (display line0, buffer boundary col) → gap cells
-    paints = []       # visible pills, paint after the stamp below
+    # Occurrence loop memo (a no-clip pane case hands EVERY occurrence of
+    # the def here, ~5k in draw_text, every frame): its two outputs only
+    # change with the occurrence index, a publish, the fold layout (the
+    # fresh per-frame index keys its layout as `_d2b`, see draw_text's
+    # _tv_fold_lm) or the geometry. An empty layout (no `_d2b`) means a
+    # merge in flight - no memo. Watches were registered on the pass that
+    # built the entry; they persist.
+    _lm_key = getattr(lmap, "_lv_key", None) if lmap is not None else None
+    _ok_key = (clip is None and (lmap is None or _lm_key is not None)
+               and id(occurrences)) or None
+    # The binding-pill LIST rides in the key by identity: the snapshot
+    # overlay's full-pass memo hands the SAME list object frame after
+    # frame while no key changes state (and pins it in its memo), so a
+    # hit here covers the pills merge below as well.
+    _ok = (_ok_key, _pub_gen, _lm_key, origin_y, line_px, col_shift,
+           id(binding_pills) if binding_pills else 0)
+    _om = draw_state.__dict__.get("_lv_stamp_memo")
+    _hit = bool(_ok_key) and _om is not None and _om[0] == _ok
+    if _hit:
+        sub = _om[1]            # shared: never mutated past this point
+        paints = _om[2]         # line-sorted, pills merged
+        occurrences = ()
+        binding_pills = None
+    else:
+        sub = {}          # (display line0, buffer boundary col) → gap cells
+        paints = []       # visible pills, painted after the stamp below
     for line, col, name, _last in occurrences:
         _ml = lmap(line) if lmap else line
         if _ml is None:
@@ -2336,6 +2543,15 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
                                      or pill_y > clip[3]):
                 continue
             paints.append((line0, bcol, pill_text, sym_len, pill_y))
+    if _ok_key and not _hit:
+        # `_layout`, `occurrences` and the pill list ride along so the ids
+        # in the key stay pinned. Paints are stored line-sorted so a hit
+        # can bisect the laid-out window instead of walking every
+        # occurrence.
+        paints.sort()
+        object.__setattr__(draw_state, "_lv_stamp_memo",
+                           (_ok, sub, paints, lmap, occurrences,
+                            binding_pills))
     previous = trails.get(span.start_line)
     trails[span.start_line] = (frame, sub)
     if previous is None or previous[1] != sub:
@@ -2350,6 +2566,15 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
     # value appeared - skips painting; it opens on the very next layout.
     gap_cells = draw_state.__dict__.get("_lv_trail_cells") or {}
     base_x = origin_x - col_shift * char_w      # buffer cell 0 in px
+    if not gap_cells:
+        paints = ()
+    elif _hit and len(paints) > 256:
+        # Memo hit: `paints` is line-sorted - only the lines draw_text has
+        # gaps open for (the tokenized window) can paint, so bisect to them.
+        _glo = min(k[0] for k in gap_cells)
+        _ghi = max(k[0] for k in gap_cells)
+        paints = paints[bisect.bisect_left(paints, (_glo,)):
+                        bisect.bisect_right(paints, (_ghi + 1,))]
     for line0, boundary_col, pill_text, name_len, pill_y in paints:
         gap_cell = gap_cells.get((line0, boundary_col))
         if gap_cell is None:
@@ -2362,6 +2587,59 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
                           outline_rect=(gap_x - name_len * char_w - 2.0,
                                         pill_y, gap_x + 1.0,
                                         pill_y + line_px - 1.0))
+
+
+def _symbol_cols(anchor, rel_line, key_path, source_lines, labels, memo=None):
+    """(start_col, end_col) of the symbol a snapshot key boxes, or None to
+    drop the key (a line-keyed anchor on a blank / out-of-range line).
+    Resolved ONCE per source version into the anchor index: this is a
+    regex per key, and running it per key per FRAME was 45 of the 70 ms a
+    5k-key def (draw_text in the context menu's Code pane) cost per
+    selection frame (09-01)."""
+    _rl, start_col, end_col = anchor
+    if memo is not None:
+        # Anchor index rebuilds (every reparse while typing): the answer
+        # depends only on the line's text + the key, and nearly every line
+        # is unchanged, so the regex runs once per (line text, key).
+        text = (source_lines[rel_line - 1]
+                if 1 <= rel_line <= len(source_lines) else None)
+        _mk = (text, key_path[-1], end_col is None, start_col)
+        _hit = memo.get(_mk, _NO_VALUE)
+        if _hit is not _NO_VALUE:
+            return _hit
+        _res = _symbol_cols(anchor, rel_line, key_path, source_lines, labels)
+        memo[_mk] = _res
+        return _res
+    if end_col is None:
+        # No span (line-only keys) - box the LABELED SYMBOL on the line when
+        # the store's key names one (frame-snapshot params and twin
+        # while-body keys always carry their a's name; attribute keys
+        # box just their FINAL segment - see _label_box_span), falling
+        # back to the whole line's text. Full-line boxes stack into an
+        # unreadable double-washed region when several line-keyed values
+        # land on adjacent lines (a captured signature), and their click
+        # latches swallow the lines.
+        if not (1 <= rel_line <= len(source_lines)):
+            return None
+        text = source_lines[rel_line - 1]
+        if not text.strip():
+            return None
+        span_cols = _label_box_span(labels.get(key_path), text)
+        if span_cols is not None:
+            return span_cols
+        return len(text) - len(text.lstrip()), len(text.rstrip())
+    # The leaf span covers the assignment (or maybe just its target,
+    # depending on the key) - box the target itself so the highlight
+    # (and its click latch) doesn't swallow the line: the first
+    # word-boundary occurrence of the target name on the line (the
+    # assignment target precedes any RHS use of the name).
+    name = key_path[-1].split("#", 1)[0]
+    text = (source_lines[rel_line - 1]
+            if 1 <= rel_line <= len(source_lines) else "")
+    m = re.search(rf"\b{re.escape(name)}\b", text)
+    if m is not None:
+        return m.start(), m.end()
+    return start_col, start_col + max(1, len(name))
 
 
 def _scope_function(filename, def_line):

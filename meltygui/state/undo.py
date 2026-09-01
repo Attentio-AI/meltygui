@@ -68,6 +68,37 @@ class Change:
     #     name = getattr(self.draw_state, "name", "?")
     #     return f"Change({name}: {self.old!r} -> {self.new!r})"
 
+class SetterChange(Change):
+    """A value change whose owner has no wrapper of its own to land an undo
+    through — draw_tuple_fast's colour chips (an immediate-mode chip in a
+    host body: several share the host's draw_state, told apart by `key`,
+    the chip's view_id). Replay calls `setter(value)`, the write the caller
+    would have made, instead of routing through Melty.undo_requests."""
+
+    def __init__(self, draw_state, old, new, setter, key=None, label=None, **kw):
+        super().__init__(draw_state, old, new, **kw)
+        self.setter = setter
+        self.key = key
+        self.label = label
+
+    @property
+    def display_name(self):
+        if self.label:
+            return self.label
+        base = getattr(self.draw_state, "name", None) or "?"
+        return f"{base}/{self.key}" if self.key else base
+
+    def apply(self, undo):
+        try:
+            self.setter(self.old if undo else self.new)
+        finally:
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            cache = getattr(Core.melty, "cache", None)
+            if cache is not None and getattr(self.draw_state, "_tile_id", None) is not None:
+                cache.invalidate_up(self.draw_state._tile_id, force=True)
+            request_render()
+
+
 class UndoStack:
     """One independent undo/redo timeline. The edit stack (UndoManager.stack)
     and the navigation stack (NavUndo.stack) are instances; adding another
@@ -444,7 +475,7 @@ class UndoManager:
         # undo step. The reliable "one gesture" signal is the widget being
         # actively dragged; discrete clicks/taps aren't held, so they
         # stay discrete undo steps.
-        return bool(getattr(draw_state, "_imgui_is_active", False))
+        return _gesture_live(draw_state)
 
     @classmethod
     def _typing_continues(cls, last, old, edit):
@@ -477,7 +508,11 @@ class UndoManager:
         return pos
 
     @classmethod
-    def record(cls, draw_state, old, new):
+    def record(cls, draw_state, old, new, setter=None, key=None, label=None):
+        """Log one edit. `setter` (with `key`, `label`) makes it a
+        SetterChange — an editor with no wrapper of its own (draw_tuple_fast)
+        supplies the write undo/redo must make; `key` tells the chips that
+        share one draw_state apart for coalescing."""
         if Core.melty.frame_count < cls.settle_for:
             return
         # Collection mutations (drag-drop reorders, see drag_drop.py) are
@@ -529,7 +564,7 @@ class UndoManager:
         for c in reversed(cls.history):
             if c.group_id != top_gid:
                 break
-            if c.draw_state is draw_state:
+            if c.draw_state is draw_state and getattr(c, "key", None) == key:
                 target = c
                 break
         if target is not None and cls._can_coalesce(target, draw_state, old, new, now, edit):
@@ -553,7 +588,7 @@ class UndoManager:
             for c in reversed(cls.history):
                 if c.group_id != gid:
                     break
-                if c.draw_state is draw_state:
+                if c.draw_state is draw_state and getattr(c, "key", None) == key:
                     gid = None                           # ds already in this group -> new group
                     break
         if gid is None:
@@ -573,10 +608,14 @@ class UndoManager:
             edit_end, edge_char = _run_edge(edit, pos, None)
         else:
             edit_end, edge_char = None, ""
-        change = Change(draw_state, old, new, ui=getattr(draw_state, "_undo_pre", None),
-                        t=now, direction=direction, ui_after=ui_after, group_id=gid, frame=frame,
-                        edit_end=edit_end, edge_char=edge_char,
-                        sealed=is_text and edit is None)   # paste / delete / replace: own step
+        if setter is not None:
+            change = SetterChange(draw_state, old, new, setter, key=key, label=label,
+                                  t=now, group_id=gid, frame=frame)
+        else:
+            change = Change(draw_state, old, new, ui=getattr(draw_state, "_undo_pre", None),
+                            t=now, direction=direction, ui_after=ui_after, group_id=gid, frame=frame,
+                            edit_end=edit_end, edge_char=edge_char,
+                            sealed=is_text and edit is None)   # paste / Enter / replace: own group
         cls.history.append(change)
 
         # while len(cls.history) > cls.MAX_HISTORY:
@@ -1047,16 +1086,47 @@ def _word_starts(run):
     return False
 
 
+def _gesture_live(draw_state):
+    """Whether `draw_state`'s value is mid-gesture: its own imgui item is
+    active (a held drag_float), or it OWNS the open popover in which an
+    imgui item is active — draw_tuple's colour picker, draw_tuple_fast's:
+    the picker window is parented under the editor (Melty.popover_focused_ds
+    names the editor, or the picker whose parent chain reaches it), and a
+    hue/SV drag there is one gesture on the editor's value."""
+    if getattr(draw_state, "_imgui_is_active", False):
+        return True
+    if not getattr(Core.melty, "imgui_any_item_active", False):
+        return False
+    node, steps = getattr(Core.melty, "popover_focused_ds", None), 0
+    while node is not None and steps < 64:
+        if node is draw_state:
+            return True
+        parent = getattr(node, "parent_window", None)
+        if parent is None or parent is node:
+            return False
+        node, steps = parent, steps + 1
+    return False
+
+
 # The primitive value editors - the genuine leaves of the render tree. Their
 # changes originate from direct user interaction (not bubbled up from a child),
 # so they're always valid undo origins. Needed because imgui status flags aren't
 # reliable across widget types: drag_float sets is_item_edited but checkbox does
 # not, so a flag-only origin check silently dropped every boolean toggle.
-LEAF_EDITOR_FUNCS = frozenset({"draw_bool", "draw_str", "draw_float", "draw_int", "draw_text"})
+LEAF_EDITOR_FUNCS = frozenset({"draw_bool", "draw_str", "draw_float", "draw_int", "draw_text",
+                               "draw_tuple"})
+# Sub-widgets a leaf editor owns: their draw_state reports the same change
+# a frame earlier (the colour picker popover under draw_tuple) and must never
+# be the origin - the owning leaf records first, so undo lands on the leaf.
+NEVER_ORIGIN_FUNCS = frozenset({"draw_color_picker"})
 
 
 def _is_leaf_editor(draw_state):
     return getattr(getattr(draw_state, "_view_func", None), "__name__", None) in LEAF_EDITOR_FUNCS
+
+
+def _never_origin(draw_state):
+    return getattr(getattr(draw_state, "_view_func", None), "__name__", None) in NEVER_ORIGIN_FUNCS
 
 
 def handle_undo(changed, old_value, new_value, draw_state):
@@ -1073,7 +1143,7 @@ def handle_undo(changed, old_value, new_value, draw_state):
     is_origin = (_is_leaf_editor(draw_state)
                  or draw_state is Core.melty.text_focused_ds
                  or getattr(draw_state, "_imgui_is_edited", False))
-    if not is_origin:
+    if not is_origin or _never_origin(draw_state):
         return
     UndoManager.record(draw_state, old_value, new_value)
 

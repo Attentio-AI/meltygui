@@ -1132,9 +1132,6 @@ def _stamp_auto_dims(store_obj, key_path, dims, nested):
     names = tuple(dims) if (nested or len(dims) == 1) else (" × ".join(dims),)
     try:
         stamped = vars(store_obj).setdefault("__live_dim_names__", {})
-        if stamped.get(key_path) != names:
-            print(f"live_view dims: stamp {key_path} auto={names} "
-                  f"(loops={tuple(dims)}, nested={nested})", file=sys.stderr)
         stamped[key_path] = names
     except (AttributeError, TypeError):
         pass

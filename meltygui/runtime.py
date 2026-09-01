@@ -2082,13 +2082,15 @@ class Melty:
 
         cls.backend.pump()
 
-        # Orchestrator record/replay: inject the next slice of a replayed
-        # orchestration into the SAME handler the real backend feeds - after
-        # the backend's pump and before process_frame, so injected events are
-        # dispatched this frame (real input is muted by the handler funnel
-        # while a replay drives).
-        from src.lsd.gl_gui.view.playground.orchestrator import Orchestrator
-        Orchestrator.pump()
+        # Orchestrated record/replay injection does NOT run here: it runs
+        # from SplitOverlayRenderer.process_inputs, BEFORE imgui.new_frame,
+        # so an injected press reaches the handler AND imgui's io in the
+        # SAME frame - the order a real GLFW callback + process_inputs give
+        # a real press. Injecting from here (inside the imgui frame) the
+        # handler saw a press one frame before imgui did: the handler-only
+        # frame raised a behind window and latched its move handle while
+        # the widget under the press was not active yet, and the gesture
+        # then dragged the window instead of the widget (09-01).
 
         cls.last_draw_state = [(None, None)] * cls.max_layer
 

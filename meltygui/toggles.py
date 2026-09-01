@@ -477,6 +477,17 @@ class Toggles:
         # is the badge alpha at rest (hover lifts it). Read live.
         # [tint=(0.36, 0.62, 0.85)]
         diff_fold_tint = (0.36, 0.62, 0.85, 0.55)
+        # Diff-gap PREVIEW: a collapsed gap keeps this many of its hidden
+        # lines visible (faded) under the context lines, the fold badge on
+        # the last of them, so a collapsed diff still hints at what the
+        # gap holds. 0 = the bare fold. Built into the gap spans
+        # (open_files._diff_gap_folds) — takes effect on the next re-derive.
+        # [tint=(0.36, 0.62, 0.85)]
+        diff_preview_lines = 10
+        # Glyph alpha factor on those preview rows (1.0 = not faded). Read
+        # live.
+        # [tint=(0.36, 0.62, 0.85)]
+        diff_preview_alpha = 0.45
         # Enter inside a single-quoted string literal closes it and reopens
         # it on the next line (implicit concatenation, parenthesised when
         # not already inside parentheses) instead of leaving an unterminated
@@ -509,6 +520,12 @@ class Toggles:
         # the binding's single store entry - no extra runs and nothing
         # is captured in the instrumented function. Read live per repaint.
         live_inline_usages = True
+        # First-render budget for live markers per overlay pass: a diff
+        # expand / a fresh snapshot can reveal thousands of markers at once,
+        # each costing a render_func call + draw_state; the rest are
+        # created over the following frames (their pills show at once).
+        # [tint=(0.36, 0.62, 0.66)]
+        live_marker_create_budget = 300
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
@@ -1461,10 +1478,95 @@ class Toggles:
         servo_max_step_px = 400.0
         # [tint=(0.939, 0.453, 0.245)]
         servo_max_steps = 60
-        # How many collapsed/closed gates change_value will open on the way
-        # to a target before giving up (the shallow achieve loop).
+        # How many times change_value re-tries the SAME collapsed/closed gate
+        # (it re-closed, or the fix missed) before giving up. Distinct gates
+        # on the way in are passes, not attempts — a deep nest never counts
+        # against this.
         # [tint=(0.939, 0.453, 0.245)]
-        gate_attempts = 3
+        gate_attempts = 100
+        # Precondition fixes, ranked by ONE number — how much of the user's
+        # state each disturbs: the cheapest applicable fix runs first, the
+        # predicate is re-checked, the next runs only when it did not help.
+        # A command may cap what it is allowed to disturb (max_disturbance).
+        # [tint=(0.62, 0.55, 0.85)]
+        fix_costs = {"re_pick": 0, "raise": 1, "scroll": 2, "expand": 2,
+                     "move": 3, "open": 4, "anchor_window_penalty": 1}
+        # [tint=(0.62, 0.55, 0.85)]
+        max_disturbance = 10
+        # A fix's own press point can need fixing (an obscurer's header is
+        # itself covered): sub-goals nest at most this deep. Expanding a
+        # covered gate is already three levels (expand → raise its window →
+        # the header's own re-pick / move), so 2 gave up on the common case.
+        # [tint=(0.62, 0.55, 0.85)]
+        fix_depth = 4
+        # The orchestrator window re-lists each visible command's unmet
+        # preconditions (closed / collapsed / covered …) this often, in
+        # frames — a live view of what the solver would do next.
+        # [tint=(0.62, 0.55, 0.85)]
+        precondition_refresh_frames = 20
+        # A window raise only records as a "raise" cue when the press that
+        # caused it was an EXPLICIT one: on a window's header band, or
+        # outside the raised window altogether (a fast-dock row, another
+        # window's button). A click inside a window's body raises it too,
+        # and those press-raises were landing in takes as stray raise
+        # commands (Lukas 09-01). Off = every actual restack records.
+        # [tint=(0.62, 0.55, 0.85)]
+        raise_cue_needs_explicit_press = True
+        # A gate's control (the expand chevron) is small: a re-pick for a
+        # covered gate press stays within this many px of the demonstrated
+        # offset, else the cover is answered by a raise / move.
+        # [tint=(0.62, 0.55, 0.85)]
+        gate_hit_radius_px = 6.0
+        # A synthesized header press (raise / move) lands at the MIDDLE of
+        # the header strip between these two margins: the left one clears
+        # the collapse chevron, the right one the close / pin buttons.
+        # [tint=(0.62, 0.55, 0.85)]
+        header_safe_left_px = 40.0
+        # [tint=(0.62, 0.55, 0.85)]
+        header_safe_right_px = 80.0
+        # Height of the strip a header press may land in.
+        # [tint=(0.62, 0.55, 0.85)]
+        header_height_px = 24.0
+        # How far past the press point a moved window is pushed.
+        # [tint=(0.62, 0.55, 0.85)]
+        uncover_margin_px = 12.0
+        # A replayed window move verifies by geometry: the window's corner
+        # must land within this many px of the recorded delta.
+        # [tint=(0.62, 0.55, 0.85)]
+        move_tolerance_px = 4.0
+        # Wheel steps a scroll fix may send before giving up.
+        # [tint=(0.62, 0.55, 0.85)]
+        scroll_attempts = 40
+        # change_value presses only once the target's tile reports hover
+        # (its wrapper ran live, so the imgui widget is submitted — a press
+        # on a blit-cached tile reaches only the window's move handle). This
+        # many pumps is the cap for a view that never reports hover.
+        # [tint=(0.939, 0.453, 0.245)]
+        settle_hover_pumps = 30
+        # After a fix reflowed the UI (expand / scroll / move): how many pumps
+        # to wait for the target to be laid out again and hold still before
+        # its press point is read.
+        # [tint=(0.939, 0.453, 0.245)]
+        layout_settle_pumps = 30
+        # The virtual cursor's travel speed for synthesized moves (an
+        # approach to a target, a gate click, the continuous-mouse glide):
+        # WALL-CLOCK paced — a per-frame step (60 px/pump) was ~7,000 px/s
+        # at 120 fps, i.e. invisible. A glide lasts distance /
+        # glide_px_per_second, clamped to [glide_min_s, glide_max_s].
+        # [tint=(0.939, 0.453, 0.245)]
+        glide_px_per_second = 1400.0
+        # [tint=(0.939, 0.453, 0.245)]
+        glide_min_s = 0.18
+        # [tint=(0.939, 0.453, 0.245)]
+        glide_max_s = 0.9
+        # Continuous mouse for EVERY injection (not just change_value's own
+        # approach): a move/press far from the virtual cursor glides there
+        # first (glide_px_per_second / glide_min_s / glide_max_s), so reused takes —
+        # gate fragments, offset clicks, a replay resuming after a remap —
+        # travel instead of snapping. Off = the raw recorded/synthesized
+        # positions.
+        # [tint=(0.939, 0.453, 0.245)]
+        continuous_mouse = True
 
     @defaults(tint=(0.103, 0.341, 0.617))
     class FastDock:

@@ -152,11 +152,24 @@ class SplitOverlayRenderer(GlfwRenderer):
             for button in masked:
                 if 0 <= button < 3:
                     io.mouse_down[button] = False
-        # Orchestrator replay: while a replay drives, its VCR cursor /
-        # buttons / modifiers / chars replace the OS ones for imgui (the
-        # handler side is muted at the input remap funnel). No-op otherwise.
+        # Orchestrator record/replay: inject the next slice of a replaying
+        # orchestration into the SAME handler the stock backend feeds - HERE,
+        # before imgui.new_frame, where stock input enters too (GLFW
+        # callbacks → handler, this poll → io). An injected event therefore
+        # lands in the handler and, through stamp_io right below, in imgui's
+        # io in the same frame, and process_frame dispatches it this frame at
+        # exactly a real press's moment. (It used to pump from
+        # Melty.begin_frame, inside the imgui frame: the handler saw a whole
+        # empty frame before imgui did, and on a behind press that
+        # handler-only frame raised the window and started the drag on a
+        # move handle before the widget under the press was active - the
+        # window dragged instead of the value, 09-01.) Then, while a replay
+        # or directed task drives, the VIRTUAL cursor / buttons / buttons /
+        # chars override the real ones for imgui (the handler side is handled
+        # through the input_tap funnel). No-ops otherwise.
+        from src.lsd.gl_gui.view.playground.orchestrator import Orchestrator
+        Orchestrator.pump()          # engine errors surface if never swallowed here
         try:
-            from src.lsd.gl_gui.view.playground.orchestrator import Orchestrator
             Orchestrator.stamp_io(imgui.get_io())
         except Exception:
             pass

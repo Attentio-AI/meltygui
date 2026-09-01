@@ -38,6 +38,7 @@ def _hex(h):
     # ImGui uses ABGR packing for color u32
     return (a << 24) | (b << 16) | (g << 8) | r
 
+
 COLORS = {
     'default': _hex('#a9b7c6'),  # Token (from Darcula)
     # Off-screen stretch of a long line, never drawn (see _window_tokens band)
@@ -3882,9 +3883,13 @@ def _lv_line_map(parse_source, buffer_text):
     return _map
 
 
+_TV_RENDERER_ERRORS = set()   # (renderer name, str(exc)) already reported
+
+
 def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, char_w, ds,
                           line_offset=0, jump_to=None, buffer_text=None,
                           sel_lo=None, sel_hi=None, fold_line_map=None,
+                          display_shift=None,
                           sel_caret=None, fold_d2b=None, caret_line=None,
                           live_store=None, col_shift=0):
     """Overlay pass for the TYPE-keyed entries of `token_views`: walk the code_tree
@@ -3936,6 +3941,34 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
             def line_map(line, _b=_bridge, _f=fold_line_map):
                 bl = _b(line)
                 return None if bl is None else _f(bl)
+    if display_shift is not None:
+        # THIS frame's edit (frame-start display text → edited text): the
+        # bridge above diffs the parse against the frame-start buffer and
+        # the fold layout is the frame-start layout, so without this every
+        # overlay stamp below an inserted / deleted line sat one line off
+        # for the next frame - the live pills after the cursor flashed away
+        # (09-01). Composed last: display line → shifted display line.
+        _pre_shift = line_map
+
+        def line_map(line, _i=_pre_shift, _s=display_shift):
+            ln = _i(line) if _i is not None else line
+            return None if ln is None else _s(ln)
+    if line_map is not None:
+        # Identity of what the (possibly per-frame) composed map is built
+        # from - the overlays' idle-pass memos key on it (a fresh closure
+        # per frame would otherwise force a full pass on EVERY frame of the
+        # idle widget, i.e. for the whole reparse debounce after every
+        # keystroke: the typing lag, 09-01). `_d2b` rides along for the
+        # replay's display→parse inverse.
+        _fd2b = getattr(fold_line_map, "_d2b", None) if fold_line_map is not None else None
+        try:
+            line_map._lv_key = (id(_bridge) if _bridge is not None else 0,
+                                id(_fd2b) if _fd2b is not None else 0,
+                                getattr(display_shift, "_sp", None))
+            line_map._d2b = _fd2b
+            line_map._lv_pins = (_bridge, _fd2b)
+        except AttributeError:
+            pass
     seen = set()
 
     # Viewport prune bounds in buffer-line space (+±1 line slack): a node's
@@ -4034,8 +4067,20 @@ def _draw_cst_token_views(code_tree, token_views, origin_x, origin_y, line_px, c
                              line_map=line_map, sel_lo=sel_lo,
                              sel_hi=sel_hi, caret_line=caret_line,
                              live_store=live_store, col_shift=col_shift)
-        except Exception:
-            pass
+        except Exception as _tv_exc:
+            # Swallowed so one bad overlay can't take the editor down - but
+            # NOT silently: a renderer that raises every frame never stamps
+            # its trailing gaps, the stale-stamp prune below closes them,
+            # and the labels flicker with no trace of why (09-01). Once per
+            # (renderer, error).
+            _tv_key = (getattr(spec["renderer"], "__name__", "?"), repr(_tv_exc))
+            if _tv_key not in _TV_RENDERER_ERRORS:
+                _TV_RENDERER_ERRORS.add(_tv_key)
+                import sys as _tv_sys
+                import traceback
+                print(f"token view renderer {_tv_key[0]} raised (further "
+                      f"repeats suppressed):", file=_tv_sys.stderr)
+                traceback.print_exc()
     _tvms = (time.perf_counter() - _tvt0) * 1000.0
     # TEMP perf: one dump per slow overlay pass - who costs most the walk itself
     # or the renderer calls (see the snapshot overlay's own line and its keys).
@@ -5432,6 +5477,21 @@ def _comment_tint_color(rgb):
 # (packed_abgr, rgb_tuple, k_milli) -> packed. Syntax colors × tint colors ×
 # a handful of k values - tiny, bounded; cleared if it ever balloons.
 _GLYPH_MIX_CACHE = {}
+
+
+def _fade_packed(packed, alpha_factor):
+    """Scale a packed-ABGR glyph color's ALPHA by `alpha_factor` (0..1),
+    rgb untouched — the diff-preview rows' fade (see draw_text's
+    _preview_lines): fading alpha rather than mixing toward black keeps
+    the row readable over any background depth."""
+    key = (packed, int(alpha_factor * 1000))
+    got = _GLYPH_MIX_CACHE.get(key)
+    if got is not None:
+        return got
+    a = int(((packed >> 24) & 0xFF) * max(0.0, min(1.0, alpha_factor)))
+    got = (packed & 0x00FFFFFF) | (a << 24)
+    _GLYPH_MIX_CACHE[key] = got
+    return got
 
 
 def _mix_packed(packed, rgb, k):
@@ -9073,6 +9133,46 @@ def _fold_rekey(old_text, old_scan, new_text, new_scan, keys):
     return out
 
 
+def _split_gaps_at_collapsed(gaps, forest, collapsed):
+    """Diff gaps split so none STRADDLES a collapsed scope range. The union
+    layout (_fold_build) chains hidden runs through collapsed ranges that
+    start inside one another — a gap piece, a hand-collapsed block that
+    starts inside it and ends past it, the next gap piece — and the
+    chained run can swallow a string delimiter each piece kept visible on
+    its own (_string_neutral_ranges judges one range at a time): the
+    attention walkthrough's closing docstring quote vanished and the whole
+    file painted as a string (09-01). A gap whose header sits inside (or
+    on) a collapsed scope resumes after it; a gap a collapsed scope
+    starts inside and outruns ends before the scope's header and resumes
+    after the scope. Collapsed scopes NESTED in a gap and every EXPANDED
+    scope are left alone (overlap is fine — that is what keeps their
+    chevrons). Runs before the string clamp so every piece is clamped as
+    it will actually hide. `gaps`, `forest` normalized; returns a sorted
+    list."""
+    straddlers = sorted(r for r in forest if r in collapsed)
+    if not straddlers:
+        return list(gaps)
+    out = []
+    for gap_start, gap_end in gaps:
+        cur = gap_start
+        for scope_start, scope_end in straddlers:
+            if scope_end < cur:
+                continue
+            if scope_start > gap_end:
+                break
+            if scope_start <= cur:              # header inside / on the scope
+                cur = scope_end + 1
+                continue
+            if scope_end > gap_end:             # starts inside, ends past
+                if scope_start - 1 > cur:
+                    out.append((cur, scope_start - 1))
+                cur = scope_end + 1
+                break
+        if gap_end > cur:
+            out.append((cur, gap_end))
+    return out
+
+
 def _string_neutral_ranges(ds, text, ranges):
     """Diff-gap fold ranges arrive lexer-blind (open_files._diff_gap_folds):
     a range can hide one delimiter of a multiline string without the other,
@@ -9115,63 +9215,6 @@ def _string_neutral_ranges(ds, text, ranges):
                 s = j                # revealed line heads the next
             else:
                 s += 1
-    return out
-
-
-def _nest_diff_ranges(gaps, forest):
-    """Split diff gap ranges against the SCOPE fold forest so every piece
-    nests — _fold_normalize_ranges DROPS ranges that partially overlap an
-    already-open range, and a diff gap routinely starts or ends mid-scope
-    (mid-def, mid-comment-run), which silently killed the whole gap when
-    the two sets were combined. Each piece keeps its own header line
-    visible (the fold model's invariant), so a gap crossing a def boundary
-    folds up to the boundary, shows the def header, and re-folds inside it
-    — a couple of extra context lines, never a lost fold. A piece also
-    never STARTS on a scope range's start line (equal starts collide in
-    the normalize — whichever sorts second is dropped, which could kill
-    the scope fold). `gaps` and `forest` are normalized (sorted, clipped);
-    returns sorted disjoint pieces."""
-    if not forest:
-        return list(gaps)
-    starts = [r[0] for r in forest]
-    starts_set = set(starts)
-    out = []
-    for gap_start, gap_end in gaps:
-        # Scopes overlapping this gap, in start order.
-        relevant = [r for r in forest[:bisect.bisect_right(starts, gap_end)]
-                    if r[1] >= gap_start]
-        cur = gap_start
-        while cur < gap_end:
-            if cur in starts_set:       # never share a start with a scope
-                cur += 1
-                continue
-            # The innermost scope containing `cur` caps the piece - running
-            # past its end would be a partial overlap.
-            limit = gap_end
-            for scope_start, scope_end in relevant:
-                if scope_start > cur:
-                    break
-                if scope_end >= cur:
-                    limit = min(limit, scope_end)
-            piece_end = limit
-            # A scope starting inside the piece but ending past it forces an
-            # earlier stop (the scope's header stays visible; the loop then
-            # descends into it). Repeat until stable - shrinking the piece
-            # can expose an earlier scope as a crossing.
-            while True:
-                crossing = None
-                for scope_start, scope_end in relevant:
-                    if scope_start > piece_end:
-                        break
-                    if scope_start > cur and scope_end > piece_end:
-                        crossing = scope_start
-                        break
-                if crossing is None:
-                    break
-                piece_end = crossing - 1
-            if piece_end > cur:
-                out.append((cur, piece_end))
-            cur = max(piece_end, cur) + 1
     return out
 
 
@@ -9223,6 +9266,23 @@ def _fold_normalize_ranges(n_lines, ranges):
     return out
 
 
+def _fold_normalize_union(n_lines, ranges):
+    """_fold_normalize_ranges for the UNION layout (scope folds + diff
+    gaps): partial overlaps are KEPT — a diff gap routinely starts or ends
+    mid-scope, and _fold_build hides the union of what every collapsed
+    range hides (see its walk), so nothing has to nest. Sorted, clipped,
+    de-duplicated; of two ranges sharing a start the shorter (first sorted)
+    stays."""
+    out, last_start = [], None
+    for s, e in sorted({(int(s), int(e)) for s, e in ranges}):
+        e = min(e, n_lines - 1)
+        if e <= s or s >= n_lines - 1 or s == last_start:
+            continue
+        out.append((s, e))
+        last_start = s
+    return out
+
+
 def _fold_build(text, ranges, collapsed):
     """Fold layout for draw_text's collapsible line ranges.
 
@@ -9239,7 +9299,7 @@ def _fold_build(text, ranges, collapsed):
       disp_to_buf — buffer line per display line; None when identity.
     """
     lines = text.split('\n')
-    rngs = _fold_normalize_ranges(len(lines), ranges)
+    rngs = _fold_normalize_union(len(lines), ranges)
     # Full, line offsets (needed for hidden extraction + expanded anchors).
     foffs, off = [], 0
     for l in lines:
@@ -9268,24 +9328,45 @@ def _fold_build(text, ranges, collapsed):
             s, e = rngs[ri]
             ri += 1
             is_col = (s, e) in collapsed
-            pend.append(((s, e), len(disp) - 1, is_col))
             if is_col:
-                buf = e + 1
+                # The hidden run is the UNION: a collapsed range starting
+                # inside it (a diff gap straddling this scope, a scope
+                # run straddling a collapsed gap) extends the run to its
+                # own end - ranges don't nest (partial overlaps are
+                # what the union layout is made of). The swallowed range
+                # keeps its own collapsed state for when this one opens.
+                hidden_end = e
+                rj = ri
+                while rj < len(rngs) and rngs[rj][0] <= hidden_end:
+                    if rngs[rj] in collapsed and rngs[rj][1] > hidden_end:
+                        hidden_end = rngs[rj][1]
+                    rj += 1
+                pend.append(((s, e), len(disp) - 1, True, hidden_end))
+                buf = hidden_end + 1
                 continue
+            pend.append(((s, e), len(disp) - 1, False, e))
         buf += 1
     display_text = '\n'.join(disp)
     doffs, off = [], 0
     for l in disp:
         doffs.append(off)
         off += len(l) + 1
-    for rng, dl, is_col in pend:
+    for rng, dl, is_col, hidden_end in pend:
         s, e = rng
         anchor = doffs[dl] + len(disp[dl])
-        hidden = text[foffs[s] + len(lines[s]):foffs[e] + len(lines[e])]
-        folds.append((rng, dl, is_col, e - s, len(disp[dl]),
-                      anchor, len(hidden)))
         if is_col:
+            hidden = text[foffs[s] + len(lines[s]):
+                          foffs[hidden_end] + len(lines[hidden_end])]
+            folds.append((rng, dl, True, hidden_end - s, len(disp[dl]),
+                          anchor, len(hidden)))
             segments.append((anchor, hidden, rng))
+        else:
+            # hidden_len = the DISPLAY chars this fold would remove if it
+            # collapsed now (a collapsed range inside its span is already
+            # gone) - what the caller's caret adjust needs.
+            j = bisect.bisect_right(disp_to_buf, e) - 1
+            folds.append((rng, dl, False, e - s, len(disp[dl]),
+                          anchor, doffs[j] + len(disp[j]) - anchor))
     return display_text, segments, folds, disp_to_buf
 
 
@@ -9504,8 +9585,6 @@ def draw_text(input_value: str, height=None,
     through that world's tables / its own detached table, never the
     studio's hold for the file; either also lets the file path come from
     `file_key` when there is no `jump_to`."""
-
-
     ds = draw_state
     # ── Instant restore (input_value==LOADING) ─────────────────────────────
     # A caller whose real buffer is still loading (draw_code_editor's
@@ -9543,6 +9622,7 @@ def draw_text(input_value: str, height=None,
                            + "\n" * _after)
         else:
             input_value = ""
+
 
     cursor_pos = imgui.get_cursor_screen_pos()  # ← cursor_pos = (13.5, 13.5)
 
@@ -9663,25 +9743,47 @@ def draw_text(input_value: str, height=None,
     _diff_rngs, _diff_rng_set = [], frozenset()
     if (diff_fold_ranges and not restore_active and not single_line
             and not is_search_box):
-        # Caller gaps → the body's working ranges: normalize, SPLIT against
-        # the scope forest (_nest_diff_ranges - a gap crossing a fold
-        # boundary would otherwise be dropped whole by the combined
-        # normalize), make string-neutral (multiline string delimiters must
-        # never be hidden one-sided). Memoized: the gaps re-derive every
-        # frame but rarely change, and the split/string scan are O(gap
-        # count).
+        # Caller gaps → the layer's working ranges: normalize, then
+        # string-neutral (multiline string delimiters must never be within
+        # one line). A gap stays one range - one header row, one badge,
+        # one separator band per unchanged stretch (Lukas 09-01: "a single
+        # line between each change"). Gaps and scope folds share the union
+        # layout WITHOUT nesting: _fold_build hides the union of what every
+        # collapsed range hides, so a gap straddling a def and the def's own
+        # fold coexist, each with its chevron (the earlier prune of
+        # straddling scopes lost their chevrons, the nest-split before it
+        # fragmented every gap). A gap EQUAL to a scope range loses to the
+        # scope (same lines, the scope's chevron does the job). Memoized:
+        # the gaps re-derive every frame on buffer change.
         _n_lines = len(_line_starts(input_value))
         _gaps_norm = _fold_normalize_ranges(_n_lines, diff_fold_ranges)
+        # COLLAPSED scope folds (last frame's projection of the durable
+        # state) affect the gaps - _split_gaps_at_collapsed - so they join
+        # the memo key (set equality: a few hundred lines at most).
+        _scope_col_now = getattr(ds, '_fold_collapsed', None) or set()
         _dsm = getattr(ds, '_diff_split_memo', None)
         if (_dsm is not None and _dsm[0] == _gaps_norm
-                and _dsm[1] is fold_ranges and _dsm[2] is input_value):
+                and _dsm[1] is fold_ranges and _dsm[2] is input_value
+                and _dsm[5] == _scope_col_now):
             _diff_rngs = _dsm[3]
             ds._diff_gap_index = _dsm[4]
         else:
             _forest = _fold_normalize_ranges(_n_lines, fold_ranges or ())
-            _pieces = _nest_diff_ranges(_gaps_norm, _forest)
-            if syntax_highlight:
-                _pieces = _string_neutral_ranges(ds, input_value, _pieces)
+            # Split around collapsed straddlers and clamp for string
+            # safety to a FIXED POINT: the clamp's cut can turn a scope
+            # nested in the raw gap into a straddler of a piece (and a
+            # split piece can trigger a new clamp) - 2 or 3 rounds in
+            # practice, 6 as a guard.
+            _pieces = list(_gaps_norm)
+            for _round in range(6):
+                _next = _split_gaps_at_collapsed(_pieces, _forest, _scope_col_now)
+                if syntax_highlight:
+                    _next = _string_neutral_ranges(ds, input_value, _next)
+                if _next == _pieces:
+                    break
+                _pieces = _next
+            _forest = set(_forest)
+            _pieces = [g for g in _pieces if g not in _forest]
             _diff_rngs = _fold_normalize_ranges(_n_lines, _pieces)
             # Piece -> owning-gap ordinal, for the two-level owner (pane
             # sync / switch inference in open_files): the panes' gaps
@@ -9695,7 +9797,7 @@ def draw_text(input_value: str, height=None,
                     _gap_of[_p] = _gi
             ds._diff_gap_index = _gap_of
             ds._diff_split_memo = (_gaps_norm, fold_ranges, input_value,
-                                   _diff_rngs, _gap_of)
+                                   _diff_rngs, _gap_of, set(_scope_col_now))
         _diff_rng_set = frozenset(_diff_rngs)
         _diff_col = getattr(ds, '_diff_fold_collapsed', None)
         _diff_sx = getattr(ds, '_diff_search_exp', None)
@@ -9776,6 +9878,7 @@ def draw_text(input_value: str, height=None,
                 ds.invalidate()
                 request_render()
             _diff_col = _new_col
+
         elif _diff_col is None:
             _diff_col = set()      # Fresh seed: expanded
         elif getattr(ds, '_diff_prev_ranges', None) != _diff_rngs:
@@ -9810,6 +9913,13 @@ def draw_text(input_value: str, height=None,
     # in this set wears the diff tint (Toggles.TextEditor.diff_fold_tint)
     # and its badge toggles the DIFF collapse set.
     ds._diff_rng_set = _diff_rng_set
+    # Expand-all (the owner's toggle True): the diff spans are all open and
+    # stay open, so their chevrons / badges are noise - the gutter and badge
+    # passes draw nothing for them (Lukas 09-01: "hide the diff spans
+    # altogether"). The painter still carries the ranges, so a flip back to
+    # collapse-all keeps its viewport anchor. Neutral mode keeps the
+    # chevrons: an expanded span there is one the hand can re-collapse.
+    _hide_expanded_diff = expand_diff is True and bool(_diff_rng_set)
     if ((fold_ranges or _diff_rngs) and not restore_active
             and not single_line and not is_search_box):
         if _fold_key_of is not None:
@@ -10537,7 +10647,7 @@ def draw_text(input_value: str, height=None,
     # Suppression (clearing _err_markers and _err_msg while keyboard editing) is
     # applied AFTER the keyboard recompute below, so it can read this frame's
     # popup state and the freshly-stamped edit time - see _ERR_SUPPRESS_SEC.
-
+    
     # Jump-to-source button drawn inline at the top (before the monospace font
     # push, so it uses the normal UI font), above the text body. The first error
     # message (if any) is no longer shown inline here - it floats in a small
@@ -10746,10 +10856,42 @@ def draw_text(input_value: str, height=None,
             _tv_subs = getattr(ds, '_lv_trail_views', None)
             if _tv_subs:
                 _offs_t = _line_offsets_cached(text)
+                # The stamps are LAST frame's - coordinates of the frame-start
+                # text. On an edit frame this window executes before the overlay
+                # re-stamps, so without a remap every gap below an inserted /
+                # deleted line sat one line off for that frame (the math
+                # found no gap, the code jittered) - the same one-frame lag
+                # _display_splice_shift fixes for the washes. Shift each stamp
+                # across the frame's edit splice (frame-start → edited text);
+                # stamps inside the edited region drop for the frame.
+                _tr_sp = _offs_prev = None
+                if text is not original_input and isinstance(original_input, str):
+                    _trm = getattr(ds, '_lv_trail_splice', None)
+                    if (_trm is None or _trm[0] is not original_input
+                            or _trm[1] is not text):
+                        _trm = (original_input, text,
+                                _display_edit_splice(original_input, text),
+                                _line_offsets_cached(original_input))
+                        ds._lv_trail_splice = _trm
+                    _tr_sp, _offs_prev = _trm[2], _trm[3]
                 pos_trails = {}
                 _tc_src = []
                 for _f, _sub in _tv_subs.values():
                     for (_tl, _tc), _cells in _sub.items():
+                        if _tr_sp is not None:
+                            if _tl >= len(_offs_prev):
+                                continue
+                            _i_old = _offs_prev[_tl] + _tc
+                            if _i_old >= _tr_sp[1]:
+                                _i_new = _i_old + _tr_sp[2]
+                            elif _i_old < _tr_sp[0]:
+                                _i_new = _i_old
+                            else:
+                                continue        # inside the edit: re-stamped next frame
+                            _tl = bisect.bisect_right(_offs_t, _i_new) - 1
+                            if _tl < 0:
+                                continue
+                            _tc = _i_new - _offs_t[_tl]
                         if v0 <= _tl <= v1 and _tl < len(_offs_t):
                             _wi = _offs_t[_tl] + _tc - start_off
                             pos_trails[_wi] = _cells
@@ -10814,8 +10956,8 @@ def draw_text(input_value: str, height=None,
 
     def _get_vcols():
         return _window()[3]
-
-
+        
+        
     left = imgui.get_cursor_screen_pos()[0]
     top = imgui.get_cursor_screen_pos()[1]
 
@@ -13988,6 +14130,49 @@ def draw_text(input_value: str, height=None,
         _pres_k = 1.0 - Toggles.TextEditor.presentation_text_brightness
         if _pres_k > 0.0:
             _pres_lines = {l[0] for l in _dt_lines}
+    # Diff-gap PREVIEW rows: a collapsed diff piece's header sits
+    # Toggles.TextEditor.diff_preview_lines below the gap's last context
+    # line (open_files._diff_gap_folds slides it down), so the lines from
+    # there up to and including the header are hidden-gap content kept
+    # visible as a peek - painted with their alpha scaled by
+    # diff_preview_alpha. Display line set, like _pres_lines; buffer lines
+    # a scope fold hides are skipped (exact mapping, never a covering
+    # fold). O(collapsed pieces × preview) per body run.
+    # Memoized on the fold LAYOUT's identity: ds._fold_cache is rebuilt
+    # exactly when the union ranges or a collapse set change (its key
+    # carries both), and _diff_rngs is the memoized gap list - so an idle
+    # repaint / scroll / live-edit tick requires one tuple compare, not a
+    # walk of every gap (0.55 ms a frame at 322 gaps, measured 09-01).
+    _preview_lines = None
+    _preview_alpha = Toggles.TextEditor.diff_preview_alpha
+    _preview_n = Toggles.TextEditor.diff_preview_lines
+    _diff_col_prev = getattr(ds, '_diff_fold_collapsed', None)
+    if (_diff_rng_set and _diff_col_prev and _preview_n > 0
+            and _preview_alpha < 1.0):
+        _pv_layout = ds.__dict__.get('_fold_cache')
+        _pv_layout = _pv_layout[2] if _pv_layout is not None else None
+        _pv_memo = ds.__dict__.get('_diff_preview_memo')
+        if (_pv_memo is not None and _pv_memo[0] is _diff_rngs
+                and _pv_memo[1] is _pv_layout and _pv_memo[2] == _preview_n):
+            _preview_lines = _pv_memo[3]
+        else:
+            _preview_lines = set()
+            for _prng in _diff_rngs:
+                if _prng not in _diff_col_prev:
+                    continue
+                for _pb in range(max(_prng[0] - _preview_n + 1, 0), _prng[0] + 1):
+                    if _fold_d2b is None:
+                        _preview_lines.add(_pb)
+                    else:
+                        _pi = bisect.bisect_right(_fold_d2b, _pb) - 1
+                        if _pi >= 0 and _fold_d2b[_pi] == _pb:
+                            _preview_lines.add(_pi)
+            if not _preview_lines:
+                _preview_lines = None
+            ds._diff_preview_memo = (_diff_rngs, _pv_layout, _preview_n,
+                                     _preview_lines)
+    ds._diff_preview_lines = _preview_lines     # display coords; tests / overlays
+    _pf("body:preview_rows")
 
     x = origin_x
     y = origin_y + win_line * line_px   # window's first line (lookback above the clip)
@@ -14072,6 +14257,8 @@ def draw_text(input_value: str, height=None,
                     _seg_col = (_rcol if _pres_lines is None
                                 or _cur_ln in _pres_lines
                                 else _mix_packed(_rcol, (0.0, 0.0, 0.0), _pres_k))
+                    if _preview_lines is not None and _cur_ln in _preview_lines:
+                        _seg_col = _fade_packed(_seg_col, _preview_alpha)
                     draw_list.add_text(x, y, _seg_col, _rtext)
                 x += _rchars * char_w
                 src_i += _rchars
@@ -14156,6 +14343,8 @@ def draw_text(input_value: str, height=None,
             # with lead text) - safe to overwrite as this branch continues.
             if _pres_lines is not None and _cur_ln not in _pres_lines:
                 color = _mix_packed(color, (0.0, 0.0, 0.0), _pres_k)
+            if _preview_lines is not None and _cur_ln in _preview_lines:
+                color = _fade_packed(color, _preview_alpha)
             # GUTTER (`gutter`): the token is plain text only; the widget is
             # recorded for the gutter pass (drawn on this line in place of
             # the line number) - no lead / trail cells, no caret hiding.
@@ -14389,6 +14578,8 @@ def draw_text(input_value: str, height=None,
                 _seg_col = (color if _pres_lines is None
                             or _cur_ln in _pres_lines
                             else _mix_packed(color, (0.0, 0.0, 0.0), _pres_k))
+                if _preview_lines is not None and _cur_ln in _preview_lines:
+                    _seg_col = _fade_packed(_seg_col, _preview_alpha)
                 _mergeable = token.isascii() and '\t' not in token
                 if (_run_parts is not None and _mergeable and _run_y == y
                         and _run_col == _seg_col and _run_end == x):
@@ -14419,6 +14610,8 @@ def draw_text(input_value: str, height=None,
                 _seg_col = (color if _pres_lines is None
                             or _cur_ln in _pres_lines
                             else _mix_packed(color, (0.0, 0.0, 0.0), _pres_k))
+                if _preview_lines is not None and _cur_ln in _preview_lines:
+                    _seg_col = _fade_packed(_seg_col, _preview_alpha)
                 if _inline:
                     # Inline view: a render_func drawn char-by-source-char, each in
                     # a char_width cell (source stays one char per glyph, matching
@@ -14596,6 +14789,45 @@ def draw_text(input_value: str, height=None,
     # so prefer code_dict when both are present; it's the node tree with spans.
     _tv_tree = code_dict if code_dict is not None else code_tree
     if token_views and _tv_tree is not None:
+        # Same-frame edit delta for the overlays (see display_shift in
+        # _draw_cst_token_views): built from the display edit _window
+        # memoized for this frame's trail remap (`_lv_trail_splice`), or
+        # computed here when that path didn't run.
+        _tv_disp_shift = None
+        if text is not original_input and isinstance(original_input, str):
+            _tvm = getattr(ds, '_lv_trail_splice', None)
+            if (_tvm is None or _tvm[0] is not original_input
+                    or _tvm[1] is not text):
+                _tvm = (original_input, text,
+                        _display_edit_splice(original_input, text),
+                        _line_offsets_cached(original_input))
+                ds._lv_trail_splice = _tvm
+            _tv_sp, _tv_offs_prev = _tvm[2], _tvm[3]
+            if _tv_sp is not None:
+                def _tv_disp_shift(ln, _sp=_tv_sp, _offs=_tv_offs_prev):
+                    # 1-based display line of the frame-start text → this
+                    # frame's line. Lines past the edit shift by its line
+                    # delta; the edited line keeps its number when the
+                    # deletion happened at its start or end (Enter at a line
+                    # end is an insertion at the NEXT line's start, so
+                    # that line shifts whole); a mid-line split re-anchors
+                    # the line (None).
+                    _p, _oe, _d, _dl, _el, _oel = _sp
+                    i0 = ln - 1
+                    if i0 > _oel:
+                        return ln + _dl
+                    if i0 < _el:
+                        return ln
+                    if _el == _oel and i0 < len(_offs):
+                        _ls = _offs[i0]
+                        _le = (_offs[i0 + 1] - 1 if i0 + 1 < len(_offs)
+                               else None)
+                        if _p <= _ls:
+                            return ln + _dl
+                        if _le is not None and _p >= _le and _oe >= _le:
+                            return ln
+                    return None
+                _tv_disp_shift._sp = _tv_sp
         # Span cols are in the PARSE's coords (dedented on the code-host
         # route); shift the origin by the indent delta so node overlays land
         # on the glyphs, which use the buffer's file-indented chars.
@@ -14644,6 +14876,11 @@ def draw_text(input_value: str, height=None,
                 if i < 0 or _d2b[i] != b:
                     return None
                 return i + 1
+            # The layout the closure projects through, for the snapshot
+            # view's idle-pass memo (live_view_views): the closure is
+            # fresh every frame, the layout list only changes with a fold
+            # toggle - so the memo keys are frame and the display lines match.
+            _tv_fold_lm._d2b = _fold_d2b
         _draw_cst_token_views(_tv_tree, token_views, origin_x + _tv_shift * char_w,
                               origin_y, line_px, char_w, ds,
                               line_offset=_usage_off, jump_to=jump_to,
@@ -14651,7 +14888,7 @@ def draw_text(input_value: str, height=None,
                               sel_hi=_sel_hi, fold_line_map=_tv_fold_lm,
                               sel_caret=_sel_caret, fold_d2b=_fold_d2b,
                               caret_line=_tv_caret_line, live_store=live_store,
-                              col_shift=_tv_shift)
+                              col_shift=_tv_shift, display_shift=_tv_disp_shift)
 
     # Live-usage trailing gaps: drop labels from defs whose overlay didn't
     # re-stamp THIS frame (scrolled out, store cleared, live view toggled
@@ -14971,6 +15208,9 @@ def draw_text(input_value: str, height=None,
                                clip=_gut_clip, draw_state=ds)
                 draw_list.add_rect_filled(_hx0, _hy0, _hx1, _hy1, _hb, 3.0)
             _fh = _fold_hdr.get(line_idx)
+            if (_fh is not None and _hide_expanded_diff and not _fh[1]
+                    and _fh[0] in _diff_rng_set):
+                _fh = None      # expanded diff span after expand-all: no chevron
             if _fh is not None:
                 # Fold header line: chevron in place of the number; the
                 # toggle handler at the top of the body reads these on
@@ -15031,7 +15271,11 @@ def draw_text(input_value: str, height=None,
             else:
                 # Plain line: the number (a gutter widget takes its cell -
                 # def lines are fold headers, so they mostly land above).
-                draw_list.add_text(nx, ly, cur_color if line_idx == cur_line else num_color, num_str)
+                # A diff-preview row fades its number with its glyphs.
+                _num_col = cur_color if line_idx == cur_line else num_color
+                if _preview_lines is not None and line_idx in _preview_lines:
+                    _num_col = _fade_packed(_num_col, _preview_alpha)
+                draw_list.add_text(nx, ly, _num_col, num_str)
             _mlist = _lv_marks.get(line_idx)
             if _mlist:
                 _open = any(getattr(m, "_lv_open", False) for m in _mlist)
@@ -15149,6 +15393,8 @@ def draw_text(input_value: str, height=None,
             _fy = origin_y + _dl * line_px
             if _fy > rect_max_y or _fy + 2 * line_px < rect_min_y:
                 continue
+            if _hide_expanded_diff and not _fcol and _rng in _diff_rng_set:
+                continue    # expanded diff span under expand-all: no badge
             _bx = origin_x + _hlen * char_w + char_w
             if _trail_px:
                 # Header line text = the _hlen chars ending at the anchor.

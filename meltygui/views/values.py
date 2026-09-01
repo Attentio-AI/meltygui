@@ -7563,7 +7563,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
 
 
 def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
-                    outline=False, info=None, priority_delta=4):
+                    outline=False, info=None, priority_delta=4, setter=None):
     """draw_tuple's colour chip for immediate-mode bodies (the code editor's
     tab bar) — the fast_dock idea: no render_func / imgui widget per chip,
     the swatch goes straight to the draw list and the click is a plain
@@ -7573,7 +7573,11 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     draw_state, so the open one is `draw_state._tint_edit_key == view_id`
     (beside Melty.popover_focused_ds, which names the draw_state). `x`/`y`
     default to the current cursor screen position; the chip claims no
-    layout. Returns (changed, value) like draw_tuple."""
+    layout. Returns (changed, value) like draw_tuple. `setter(value)` is the
+    write the caller makes with a changed value — given, every change is
+    recorded on the undo stack (a SetterChange on the host's draw_state,
+    keyed by view_id) and undo/redo re-apply it through the setter, since
+    a chip has no wrapper of its own for Melty.undo_requests to land in."""
     # [tint=(0.85, 0.75, 0.05)]
     corner_radius = 4.0
     # [tint=(0.85, 0.75, 0.05)]
@@ -7685,6 +7689,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         window_pos=(0, _pop_y), info=_info, parent_window=draw_state,
         width=216, height=picker_h, mode=Modes.POPOVER)
     
+    imgui.same_line(spacing=0)
     if is_open and Melty.popover_focused_ds is draw_state:
         # Hand the slot from the host to the picker window now that it is
         # registered (same frame, under the opening grace).
@@ -7698,8 +7703,13 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         request_render()
         return False, input_value
     if color_changed:
+        previous = input_value
         input_value = tuple(new_color) if new_color is not None else None
         changed = True
+        if setter is not None:
+            from src.lsd.gl_gui.view.core_views.core_undo import UndoManager
+            UndoManager.record(draw_state, previous, input_value, setter=setter,
+                               key=view_id, label=str(view_id))
         request_render()
     if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
         Melty.popover_focused_ds = None

@@ -670,27 +670,63 @@ def table_for(path, live_text=None, line_offset=0):
     st = _state()
     p = _norm(path)
     if live_text is not None:
+        # Several live buffers of ONE file can be open at once - the whole
+        # file in the editor plus a def→call span per stack-trace pane, or
+        # four panes of melty fragments in one trace. Each is a PART
+        # (st["live_parts"][p]: part key → part) and the file's live table
+        # is their MERGE; the table used to be the single last-keyed
+        # buffer, so panes of one file replaced each other's spans every
+        # frame and bumped the generation each time (`_tables_differ`:
+        # different spans, different entries) - every editor's def-tint
+        # key missed every frame (2–4 ms each, 09-01).
         lk = ("live", id(live_text), line_offset)
         held = st["live"].get(p)
-        if held is not None and held[0].key == lk:
+        parts = st.setdefault("live_parts", {}).setdefault(p, {})
+        if (held is not None and lk in parts
+                and held[0].key == ("live", frozenset(parts))):
             return held[0]
         if line_offset == 0:
-            tbl = extract_table(p, live_text, lk)
-            pkey = held[1] if held is not None else _file_key(p)
+            whole = extract_table(p, live_text, lk)
+            part = (0, whole.nlines, whole, live_text)
+            # One whole whole buffer at a time (a single editor buffer).
+            for k in [k for k in parts if k[2] == 0]:
+                parts.pop(k, None)
         else:
-            base = _pending_table(st, p)
             n = live_text.count("\n") + 1
             lo, hi = line_offset + 1, line_offset + n
             span_tbl = extract_table(p, live_text, ("span", id(live_text)))
-            merged = [e for e in base.entries if not (lo <= e.line <= hi)]
             for e in span_tbl.entries:
                 e.line += line_offset
                 e.end += line_offset
-                merged.append(e)
-            merged.sort(key=lambda e: e.line)
-            tbl = FileTable(p, lk, merged, dict(base.imports, **span_tbl.imports),
-                            base.star_imports, max(base.nlines, hi))
+            part = (lo, hi, span_tbl, live_text)   # the text pins the id
+            # A re-keyed buffer at the same offset is the same pane after
+            # an edit: its previous buffer is stale.
+            for k in [k for k in parts if k[2] == line_offset]:
+                parts.pop(k, None)
+        parts[lk] = part
+        whole_part = next((pt for pt in parts.values() if pt[0] == 0), None)
+        if whole_part is not None:
+            base = whole_part[2]
+            pkey = held[1] if held is not None else _file_key(p)
+        else:
+            base = _pending_table(st, p)
             pkey = base.key
+        spans = [pt for pt in parts.values() if pt[0] != 0]
+        if spans:
+            merged = [e for e in base.entries
+                      if not any(lo <= e.line <= hi for lo, hi, _t, _x in spans)]
+            imports = dict(base.imports)
+            nlines = base.nlines
+            for lo, hi, span_tbl, _x in spans:
+                merged.extend(span_tbl.entries)
+                imports.update(span_tbl.imports)
+                nlines = max(nlines, hi)
+            merged.sort(key=lambda e: e.line)
+            tbl = FileTable(p, ("live", frozenset(parts)), merged, imports,
+                            base.star_imports, nlines)
+        else:
+            tbl = FileTable(p, ("live", frozenset(parts)), base.entries,
+                            base.imports, base.star_imports, base.nlines)
         prev = held[0] if held is not None else st["tables"].get(p)
         with st["lock"]:
             st["live"][p] = (tbl, pkey)
@@ -705,6 +741,7 @@ def table_for(path, live_text=None, line_offset=0):
             return held[0]          # live still ahead of (or equal to) pending
         with st["lock"]:
             st["live"].pop(p, None)  # pending moved on: the live hold is stale
+            st.get("live_parts", {}).pop(p, None)
     return ent
 
 
@@ -786,6 +823,7 @@ def sweep(force=False):
             if held is not None and held[1] != st["tables"][p].key:
                 with st["lock"]:
                     st["live"].pop(p, None)
+                    st.get("live_parts", {}).pop(p, None)
 
 
 def _tables_differ(a, b):
