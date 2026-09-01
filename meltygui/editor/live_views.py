@@ -114,7 +114,14 @@ def _stable_key_name(key_path, all_keys=None):
     distinct via their ordinal among same-label keys in `all_keys` (the
     store's key set), ranked by stamped line — the ORDER survives the line
     shifts the raw numbers don't. Bare `line:N` keys rank under the empty
-    label the same way."""
+    label the same way.
+
+    A plain STATEMENT key with the same name at the same position —
+    `('x',)` beside `('line:N#x',)`, a dict-visible assignment plus a
+    line-keyed with/while-body site of the same local — claims ordinal 0
+    and shifts every line-keyed ordinal up: the two used to collapse to
+    ONE name, and colliding view names shared their marker/window
+    draw_states (the draw_text garbled-overlay bug)."""
     parts = []
     for i, seg in enumerate(key_path):
         label, line = _split_line_key(seg)
@@ -124,13 +131,18 @@ def _stable_key_name(key_path, all_keys=None):
         ordinal = 0
         if all_keys is not None:
             lines = []
+            statement_twin = False
             for k in all_keys:
                 if len(k) > i:
                     lb, ln = _split_line_key(k[i])
                     if lb == label and ln is not None:
                         lines.append(ln)
+                    elif lb is None and str(k[i]) == label:
+                        statement_twin = True
             if line in lines:
                 ordinal = sorted(lines).index(line)
+            if statement_twin:
+                ordinal += 1
         parts.append(label if ordinal == 0 else f"{label}~{ordinal}")
     return "/".join(parts)
 
@@ -144,15 +156,22 @@ def _stable_key_names(all_keys):
     existing invalidation signals (the anchor index / a per-store memo), so
     steady-state naming is a dict hit."""
     groups = {}
+    statement_twins = set()      # (position, literal name) of non-line segs
     for k in all_keys:
         for i, seg in enumerate(k):
             label, line = _split_line_key(seg)
             if label is not None:
                 groups.setdefault((i, label), []).append(line)
+            else:
+                statement_twins.add((i, str(seg)))
     ranks = {}
     for (i, label), lines in groups.items():
+        # A statement key with this literal name at this position claims
+        # ordinal 0 (see _stable_key_name's docstring) - every line-keyed
+        # sibling shifts up so no two key paths share a name.
+        base = 1 if (i, label) in statement_twins else 0
         for o, ln in enumerate(sorted(lines)):
-            ranks.setdefault((i, label, ln), o)   # dup lines keep same rank
+            ranks.setdefault((i, label, ln), o + base)  # dups keep first rank
     out = {}
     for k in all_keys:
         parts = []
@@ -165,6 +184,34 @@ def _stable_key_names(all_keys):
                 parts.append(label if o == 0 else f"{label}~{o}")
         out[k] = "/".join(parts)
     return out
+
+
+# One name map per store - see _store_key_names.
+_NAME_MAPS = weakref.WeakKeyDictionary()
+
+
+def _store_key_names(store_obj):
+    """The store's {key_path: view name} map, memoized per KEY-SET
+    generation (`__live_keys_gen__`, bumped by live_view on first publish /
+    re-key / prune, with len as a backstop). Ordinal names depend on the
+    WHOLE key set, so every consumer — snapshot overlay, call-token
+    overlay, idle paths — must read the SAME map: consumers holding
+    differently-stale private memos minted one name for two different keys
+    (duplicate marker/window IDs, the draw_text garbled overlays)."""
+    try:
+        d = vars(store_obj)
+    except TypeError:
+        return {}
+    store = d.get("__live_values__") or {}
+    gen = d.get("__live_keys_gen__", 0)
+    try:
+        ent = _NAME_MAPS.get(store_obj)
+        if ent is None or ent[0] != gen or ent[1] != len(store):
+            ent = (gen, len(store), _stable_key_names(list(store.keys())))
+            _NAME_MAPS[store_obj] = ent
+        return ent[2]
+    except TypeError:
+        return _stable_key_names(list(store.keys()))
 
 
 def _inline_value_text(value, max_chars=48):
@@ -222,7 +269,7 @@ def _paint_value_pill(inline_text, span_x, text_y, span_width=None,
 
     `outline_rect` (x0, y0, x1, y1) rings the ASSOCIATED TOKEN — the symbol
     the value belongs to — in the label's own green, tying the two together
-    visually (the pill can sit at the RHS end, far from its symbol).
+    visually (the pill can sit at the line's end, far from its symbol).
 
     Fixed design colours, dark FOREST green on purpose — a live value must
     read as data the run produced, not as more source code."""
@@ -264,10 +311,15 @@ def _paint_value_pill(inline_text, span_x, text_y, span_width=None,
                        imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.95),
                        inline_text)
     if outline_rect is not None:
-        draw_list.add_rect(outline_rect[0], outline_rect[1],
-                           outline_rect[2], outline_rect[3],
-                           imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.6),
-                           rounding=corner_radius)
+        _paint_token_ring(draw_list, *outline_rect)
+
+
+def _paint_token_ring(draw_list, x0, y0, x1, y1):
+    """The associated-token ring in the value pill's green (shared by the
+    pill painter and the binding-pill pass, so they always match)."""
+    draw_list.add_rect(x0, y0, x1, y1,
+                       imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.6),
+                       rounding=4.0)
 
 
 # Assignment operators the inline binding pill replaces the right side of:
@@ -790,20 +842,13 @@ def draw_live_view_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     cursor_inside = _token_in_selection(
         _sl, span.start_col, span.start_col + token_cells, sel_lo, sel_hi)
     snap = live_values_for(store_obj)
-    # Per-store name-map memo: the snapshot scan is O(store), and this runs
-    # per visible call token per frame - a frame-snapshot store made that
-    # O(store²) per pass. Keyed by store identity (weakref-validated; a store
-    # id could recycle) + key count; the map only shifts when the KEY set
-    # does, and this is the same tolerance the anchor caches use.
-    _memos = draw_state.__dict__.setdefault("_lvm_name_memos", {})
-    _me = _memos.get(id(store_obj))
-    if _me is None or _me[0]() is not store_obj or _me[1] != len(snap):
-        if len(_memos) > 64:
-            _memos.clear()
-        _me = (weakref.ref(store_obj), len(snap), _stable_key_names(snap))
-        _memos[id(store_obj)] = _me
+    # The SHARED per-store name map (generation-keyed) - never a private
+    # copy: a stale private map minted names another consumer's fresh map
+    # gave to different keys (duplicate view IDs). The fallback name the
+    # key_path too, so a not-yet-mapped key still ranks against its twins.
+    _me = _store_key_names(store_obj)
     _mname = (f"lvm::{_store_name(store_obj)}"
-              f"::{_me[2].get(key_path) or _stable_key_name(key_path)}")
+              f"::{_me.get(key_path) or _stable_key_name(key_path, snap)}")
     _frozen_pos = None
     if _off_view:
         # Forward pass for a culled marker: only proceed when its window is
@@ -1274,20 +1319,21 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         # The label must repaint on every publish - the first_only watch
         # above fires once; this full watch invalidates per value.
         watch(store_obj, key_path, ds)
+        # Only the FILL pill (a live_viewed call token - instrumentation
+        # worth painting whole) paints here; comment/snapshot binding
+        # markers paint through the trailing-gap pass instead (see
+        # _draw_usage_labels - the code is repositioned, never covered).
         # Caret on this line, or the line inside the text selection: show
         # the real code, nothing painted - typing or deleting under a pill
         # would be blind. The pill comes back when the caret/selection
         # leave (the kwarg change re-renders this).
-        if ((caret_line is None or caret_line != buffer_line)
+        if (inline_fill
+                and (caret_line is None or caret_line != buffer_line)
                 and not in_selection):
             # Drawn IN PLACE in the editor's code font (the current font -
-            # no push). For an assignment site the overlay hands inline_dx
-            # + inline_span_w: the span is the RHS expression and the value
-            # RIGHT-ALIGNS on it (`seq_len = input_ids.sha…[301]`, first
-            # RHS characters to fall through). Without them (live_view()
-            # call tokens, no `=` on the line) it sits on the boxed token
-            # itself. The marker rect wraps the token with a 2 px pad, so
-            # the token's text starts at x + 2.
+            # no push), covering the instrumentation call token. The marker rect
+            # wraps the token with a 2 px pad, so the token's text starts
+            # at x + 2.
             text_x = x + 2.0 + inline_dx
             text_y = y + 2.0
             # The editor clipped this body to the token's own rect; the
@@ -1734,6 +1780,14 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # via root_draw_states without a marker, same as when the whole editor
     # scrolls away.
     _clip = getattr(draw_state, "abs_clip_rect", None)
+    if live_store is not None:
+        # PASSED-IN store (the stack trace view's panes): the pane is a
+        # BOUNDED span whose tile bakes once and then blitted while the
+        # PARENT scrolls - its own body doesn't re-run per scroll frame,
+        # so a clip cull here baked only the then-visible band's markers
+        # and they popped in/out as the scroll revealed rows (08-31).
+        # Render EVERY marker; the pane's span is already cropped small.
+        _clip = None
     # Snap memo: the label/content relocation scans are O(def lines) per
     # STALE stamp - with frame snapshots holding a key per occurrence that's
     # hundreds of the scans per repaint if run hot. Snap results only
@@ -1897,9 +1951,13 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # (same invalidation) - per-key naming was O(store) hash → O(store²)
         # per pass on frame-snapshot stores.
         _ie = (_src, _ik, [p[0] for p in _pairs], [p[1] for p in _pairs],
-               weakref.ref(fn), _stable_key_names(_snap_vals))
+               weakref.ref(fn), None)
         object.__setattr__(draw_state, "_lv_key_index", _ie)
-    _ilines, _ikeys, _skey_names = _ie[2], _ie[3], _ie[5]
+    _ilines, _ikeys = _ie[2], _ie[3]
+    # Names from the SHARED generation-keyed store map - never the anchor
+    # index's own cache; differently-stale name maps across consumers
+    # minted duplicate value IDs (see _stable_key_names).
+    _skey_names = _store_key_names(fn)
     if (_clip is not None
             and getattr(draw_state, "_lv_full_overlay_until", 0)
             <= Core.melty.frame_count):
@@ -1916,6 +1974,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # actual value into the window's draw_any).
         _cand = _ikeys
 
+    # Binding-value pills, built by the marker loop and painted by the
+    # trailing-gap pass: (display 0, boundary buffer col, "=value",
+    # symbol length) - usage-label pairs, one per captured target.
+    _bind_pills = []
     for key_path in _cand:
         value = _snap_vals.get(key_path)
         anchor = _key_anchor(node, key_path, line_offset)
@@ -1950,7 +2012,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 _mreg = getattr(draw_state, "_lv_marker_ds", None)
                 _fmds = _mreg.get(
                     f"lvs::{fn.__qualname__}"
-                    f"::{_skey_names.get(key_path) or _stable_key_name(key_path)}"
+                    f"::{_skey_names.get(key_path) or _stable_key_name(key_path, _snap_vals)}"
                 ) if _mreg else None
                 _fw = getattr(_fmds, "_lv_window_ds", None) if _fmds else None
                 if _fw is None or _fw.closed:
@@ -1965,7 +2027,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                     from src.lsd.gl_gui.perf_trace import trace as _ptr
                     _mreg2 = getattr(draw_state, "_lv_marker_ds", None) or {}
                     _mk2 = (f"lvs::{fn.__qualname__}::"
-                            f"{_skey_names.get(key_path) or _stable_key_name(key_path)}")
+                            f"{_skey_names.get(key_path) or _stable_key_name(key_path, _snap_vals)}")
                     _ptr("lv full-pass skip", key=_mk2,
                          have_marker=_mk2 in _mreg2,
                          reg_keys=len(_mreg2))
@@ -2014,7 +2076,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         cursor_inside = _token_in_selection(
             _ml, start_col, end_col, kwargs.get("sel_lo"), kwargs.get("sel_hi"))
         _snm = (f"lvs::{fn.__qualname__}"
-                f"::{_skey_names.get(key_path) or _stable_key_name(key_path)}")
+                f"::{_skey_names.get(key_path) or _stable_key_name(key_path, _snap_vals)}")
         _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
                 and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
@@ -2042,24 +2104,19 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # __frame_snapshot_keys__) never auto-open: opening a menu on a
         # widget must not spawn a window per captured tensor.
         # code_tree_node carries the scope dict: the marker reads the site's
-        # comment source from it and splats it 1:1 onto the popup window's
-        # draw_state (not onto the marker's own wrapper - show_bg=True with a
-        # dark tint would draw an opaque bg over the very symbol it boxes).
-        # Assignment sites pill on the RHS - the symbol stays visible and
-        # the value RIGHT-ALIGNS on the RHS span (which runs to the line's
-        # code end by construction), so the line reads
-        # `seq_len = input_ids.sha…[301]` with the RHS's first characters
-        # peeking through. The pill offset is a pixel delta from the boxed
-        # symbol's start. A non-assignment site's pill right-aligns on its
-        # token span the same way; either kind grows past its span only
-        # when the marker ends the line's code.
-        _rhs = _rhs_span(text, end_col)
-        if _rhs is not None:
-            _span_w = max(1, _rhs[1] - _rhs[0]) * char_w
-            _overflow = True
-        else:
-            _span_w = max(1, end_col - start_col) * char_w
-            _overflow = end_col >= _code_end_col(text)
+        # comment dict from it and splats it 1:1 onto the value window's
+        # draw_any (never onto the marker's own wrapper — show_bg=True with a
+        # dark tint would paint an opaque bg over the very symbol it boxes).
+        # The simple captured value renders EXACTLY like a usage label: the
+        # gap opens right after the boxed target symbol and the line reads
+        # `edited=False, new_text='...' = get_text(...)` - code repositions,
+        # nothing is covered. Collected here, stamped + painted by
+        # _draw_usage_labels below (sym_len drives the gap-derived ring).
+        _btext = _inline_value_text(value)
+        if _btext is not None:
+            _bshift = kwargs.get("col_shift", 0)
+            _bind_pills.append((_ml - 1, end_col + _bshift, "=" + _btext,
+                                max(1, end_col - start_col)))
         _draw_marker_at(
             draw_state,
             _frozen_pos if _frozen_pos is not None
@@ -2072,8 +2129,6 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
             code_tree_node=node.get("locals") if isinstance(node, dict) else None,
             buffer_line=_ml - 1, name=_snm, auto_open=_sao,
             inline_values=True,
-            inline_dx=((_rhs[0] - start_col) * char_w if _rhs else 0.0),
-            inline_span_w=_span_w, inline_overflow=_overflow,
             in_selection=_line_in_selection(_ml, kwargs.get("sel_lo"),
                                             kwargs.get("sel_hi")),
             caret_line=kwargs.get("caret_line"), def_node=node)
@@ -2085,7 +2140,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _draw_usage_labels(draw_state, fn, node, span, source_lines,
                            _snap_vals, _ilines, _ikeys, origin_x, origin_y,
                            char_w, line_px, _lmap, _clip,
-                           kwargs.get("col_shift", 0))
+                           kwargs.get("col_shift", 0),
+                           binding_pills=_bind_pills)
     except Exception as e:
         print(f"live_view: usage labels failed: {e!r}", file=sys.stderr)
     # TEMP perf: one line per slow enough pass (keys=store size for this
@@ -2100,7 +2156,8 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
 
 def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
                        anchor_lines, anchor_keys, origin_x, origin_y,
-                       char_w, line_px, lmap, clip, col_shift=0):
+                       char_w, line_px, lmap, clip, col_shift=0,
+                       binding_pills=None):
     """Every later USAGE of a captured symbol reads `seq_len=384` — the
     value is INSERTED right after the symbol and the rest of the line
     shifts to make room, so name and value show together (the same
@@ -2122,14 +2179,28 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
     stays fully visible and closing the gap under an active caret would
     shift the line mid-edit."""
     from src.lsd.gl_gui.toggles import Toggles
-    if not Toggles.TextEditor.live_inline_usages or not snap_vals:
+    usages_on = bool(Toggles.TextEditor.live_inline_usages)
+    if not snap_vals or (not usages_on and not binding_pills):
         return
+    frame = Core.melty.frame_count
+    if not usages_on:
+        # Binding pills only - no occurrence index needed.
+        return _stamp_and_paint(draw_state, fn, span, (), {}, snap_vals,
+                                origin_x, origin_y, char_w, line_px, lmap,
+                                clip, col_shift, frame, binding_pills)
     memo = draw_state.__dict__.get("_lv_usage_memo")
     if memo is None or memo[0] is not source_lines:
         memo = (source_lines, {})
         object.__setattr__(draw_state, "_lv_usage_memo", memo)
     entry = memo[1].get(span.start_line)
-    if entry is None or entry[0]() is not fn or entry[1] != len(snap_vals):
+    _fresh_owner = (entry is not None and len(entry) >= 6
+                    and entry[0]() is fn)
+    # Key-count changes DEBOUNCE (30 frames): a run adds hundreds of
+    # keys over frames, and rebuilding (a whole-def tokenize) per repaint
+    # during the burst is O(def) per frame. New bindings' pills appear afte
+    # the burst settles; a source/def change rebuilds ASAP.
+    if not _fresh_owner or (entry[1] != len(snap_vals)
+                            and frame - entry[5] > 30):
         labels = vars(fn).get("__live_labels__") or {}
         # Binding sites extracted from the store's reverse index: name →
         # (all binding lines, their store keys). The store IS the
@@ -2158,10 +2229,33 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
         occurrences = live_usage.build_usage_index(
             def_text, span.start_line,
             {n: b[0] for n, b in bindings.items()}, tuple(exclude))
-        entry = (weakref.ref(fn), len(snap_vals), occurrences, bindings)
+        entry = (weakref.ref(fn), len(snap_vals), occurrences, bindings,
+                 [o[0] for o in occurrences], frame)
         memo[1][span.start_line] = entry
     occurrences, bindings = entry[2], entry[3]
-    frame = Core.melty.frame_count
+    # VISIBLE BAND ONLY: draw_text renders 20k+ line files and a ne
+    # snapshot binds every local, so the full occurrence list is huge;
+    # per-frame work must stay O(visible). Same approach as the anchor
+    # index: occurrences are line-sorted, bisect the band (display band
+    # ±64 lines of slack for in-flight edit shifts, matching _build_key_index)
+    # and only those need the _lmap / resolve / stamp loop.
+    if clip is not None and line_px:
+        occ_lines = entry[4]
+        band_lo = int((clip[1] - origin_y) / line_px) - 64
+        band_hi = int((clip[3] - origin_y) / line_px) + 65
+        i0 = bisect.bisect_left(occ_lines, band_lo)
+        i1 = bisect.bisect_right(occ_lines, band_hi)
+        occurrences = occurrences[i0:i1]
+    return _stamp_and_paint(draw_state, fn, span, occurrences, bindings,
+                            snap_vals, origin_x, origin_y, char_w, line_px,
+                            lmap, clip, col_shift, frame, binding_pills)
+
+
+def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
+                     origin_x, origin_y, char_w, line_px, lmap, clip,
+                     col_shift, frame, binding_pills):
+    """The trailing-gap stamp + paint shared by usage labels and binding
+    pills (see _draw_usage_labels)."""
     trails = draw_state.__dict__.setdefault("_lv_trail_views", {})
     publish_seq = vars(fn).get("__live_pub_seq__") or {}
     sub = {}          # (display line0, buffer boundary col) → gap cells
@@ -2191,6 +2285,20 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
                                  or pill_y > clip[3]):
             continue
         paints.append((_ml - 1, boundary_col, pill_text, len(name), pill_y))
+    # Binding pills: the captured value of an assignment/param target,
+    # inserted right after ITS symbol exactly like a usage label -
+    # `edited=False, new_text='...' = draw_text(...)`. A usage gap already at
+    # the same boundary wins (same captured value).
+    if binding_pills:
+        for line0, bcol, pill_text, sym_len in binding_pills:
+            if (line0, bcol) in sub:
+                continue
+            sub[(line0, bcol)] = len(pill_text) + 1
+            pill_y = origin_y + line0 * line_px
+            if clip is not None and (pill_y + line_px < clip[1]
+                                     or pill_y > clip[3]):
+                continue
+            paints.append((line0, bcol, pill_text, sym_len, pill_y))
     previous = trails.get(span.start_line)
     trails[span.start_line] = (frame, sub)
     if previous is None or previous[1] != sub:
@@ -2210,8 +2318,9 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
         if gap_cell is None:
             continue
         gap_x = base_x + gap_cell * char_w
-        # Ring around the SYMBOL (which sits right before the gap, one cell
-        # per char), tying the inserted value to its name.
+        # Ring around the SYMBOL right before the gap (one px per char) -
+        # derived from the gap CELL, so it stays aligned when earlier gaps
+        # on the same line have already shifted the text.
         _paint_value_pill(pill_text, gap_x + 3.0, pill_y,
                           outline_rect=(gap_x - name_len * char_w - 2.0,
                                         pill_y, gap_x + 1.0,

@@ -1252,6 +1252,62 @@ def render_func(*args, **o_kwargs):
                 frames = get_live_frames(skip_count=0)
                 draw_state._call_stack = call_stack_frames(frames)
                 draw_state._call_site = caller_site(frames)
+                # The stack stash for the context menu's Code tab (the stack
+                # trace view): (path, lineno, func_name, locals) outermost
+                # first, holding f_locals only for project frames - library
+                # frames render as code without values, and their kwargs
+                # would otherwise stay pinned on this draw_state. Entirely
+                # separate from the publish below: the Code tab renders from
+                # this list alone (frame_value_store), touching no global
+                # store.
+                from src.lsd.gl_gui.view.core_conversion.address import (
+                    is_editable_source)
+                draw_state._call_stack_frames = [
+                    (e[0], e[1], e[2],
+                     e[4] if is_editable_source(e[0]) else None)
+                    for e in frames]
+                # The trace ends in this wrapper - the TARGET's body hasn't
+                # run yet, so its frame isn't on the stack. Append it as a
+                # terminal entry: lineno = def def region (co_firstlineno -
+                # the stack view renders the whole function when the lineno
+                # IS the def), scope = the resolved kwargs with the aliases
+                # a user sees (the same scope the publish path serializes).
+                # next_kwargs is the self-cyclic plumbing dict; not a
+                # value worth showing, and holding it would pin the whole
+                # kwargs chain on this draw_state.
+                try:
+                    _target_fn = inspect.unwrap(draw_state._view_func)
+                    _target_code = getattr(_target_fn, "__code__", None)
+                    if (_target_code is not None
+                            and is_editable_source(_target_code.co_filename)):
+                        _target_scope = dict(kwargs)
+                        _target_scope.pop("next_kwargs", None)
+                        _target_scope.update({
+                            "input_value": input_value, "value": input_value,
+                            "draw_state": draw_state, "ds": draw_state})
+                        draw_state._call_stack_frames.append(
+                            (_target_code.co_filename,
+                             _target_code.co_firstlineno,
+                             getattr(_target_fn, "__qualname__",
+                                     _target_fn.__name__),
+                             _target_scope))
+                        # One-shot: this invocation's body runs under
+                        # call_with_body_capture (sys.monitoring, local
+                        # events on the target code only), and its FULL
+                        # locals replace the terminal entry's signature
+                        # scope at return (see the call site). Armed
+                        # regardless of the live-view toggle - the Code
+                        # tab's adoption is local; the capture's GLOBAL
+                        # publish half stays toggle-gated inside _finish.
+                        # The capture only fires when the body actually
+                        # RUNS - a blit-cache hit skips it and the tab
+                        # must sit on signature values - so force this
+                        # view's next frame past the cache.
+                        draw_state._lv_capture_body = True
+                        draw_state.invalidate()
+                        request_render()
+                except Exception:
+                    pass
                 # Scope-snapshot publish: the frames still hold each frame's
                 # f_locals; the TARGET's own locals is not among them (we're in
                 # its wrapper - its body hasn't run), so its scope is rebuilt
@@ -1271,15 +1327,11 @@ def render_func(*args, **o_kwargs):
                             "draw_state": draw_state, "ds": draw_state})
                         publish_stack_locals(frames, extra_snapshots=[
                             (draw_state._view_func, _target_scope, None)])
-                        # Entry kwargs only cover the SIGNATURE; the target's
-                        # mid-body locals and its exit line (the green return-line
-                        # wash) need its frame. NOT a one-shot: this invocation's
-                        # target(**clean_args) goes through call_with_body_capture,
-                        # which watches just the target's code object via
-                        # sys.monitor_all local events (two callbacks per call -
-                        # better than a whole-subtree profiler) and publishes the
-                        # body locals + return line upon return.
-                        draw_state._lv_capture_body = True
+                        # (The body-locals one-shot - _lv_capture_body - is
+                        # armed in the except block above, outside this
+                        # toggle: the Code tab's local adoption always runs;
+                        # only the capture's PUBLISH half is toggle-gated,
+                        # inside call_with_body_capture._finish.)
                     except Exception:
                         pass
 
@@ -2412,6 +2464,10 @@ def render_func(*args, **o_kwargs):
                         if on_drag is None and corner_drag is None:
                             draw_state._initial_window_pos = (draw_state.window_pos[0],
                                                               draw_state.window_pos[1])
+                            # Nav-undo origin for this move gesture: unlike the
+                            # baseline it is NEVER rebased mid-drag, so the
+                            # recorded step covers the whole hand move.
+                            draw_state._move_undo_origin = draw_state._initial_window_pos
                         else:
                             # Press with a drag already delivering this frame -
                             # low-fps combination of release+press+drag, or a
@@ -2447,6 +2503,12 @@ def render_func(*args, **o_kwargs):
                             # total_d≈0 so it's a no-op.
                             draw_state._initial_window_pos = (draw_state.window_pos[0] - move_drag.total_dx,
                                                               draw_state.window_pos[1] - move_drag.total_dy)
+                            if getattr(draw_state, "_move_undo_origin", None) is None:
+                                # Move (re)activating mid-drag with no press
+                                # latch (imgui interruption / stall): the
+                                # current position is the best gesture origin.
+                                draw_state._move_undo_origin = (draw_state.window_pos[0],
+                                                                draw_state.window_pos[1])
 
                         pos_x = draw_state._initial_window_pos[0] + move_drag.total_dx
                         pos_y = draw_state._initial_window_pos[1] + move_drag.total_dy
@@ -2469,6 +2531,19 @@ def render_func(*args, **o_kwargs):
                         # up, the press never entered this window, or imgui
                         # owns the gesture (resuming after an imgui
                         # interruption must rebase for continuity, as before).
+                        # End of the move gesture: a window that actually
+                        # moved since its origin latched gets one nav-undo
+                        # step (Ctrl+Shift+Left walks it back and the
+                        # Orchestrator cues and restores offscreen). A plain
+                        # click leaves origin == pos and records nothing.
+                        _move_origin = getattr(draw_state, "_move_undo_origin", None)
+                        if _move_origin is not None:
+                            if (_move_origin[0], _move_origin[1]) != (draw_state.window_pos[0],
+                                                                      draw_state.window_pos[1]):
+                                from src.lsd.gl_gui.view.core_views.core_undo import NavUndo
+                                NavUndo.record_window_move(draw_state, _move_origin,
+                                                           draw_state.window_pos)
+                            draw_state._move_undo_origin = None
                         draw_state._initial_window_pos = None
 
                 # Anchor / pin stamping applies to explicitly-positioned windows
@@ -5040,6 +5115,7 @@ def render_func(*args, **o_kwargs):
         # (The scrollbar reserve is subtracted from content_width unconditionally
         # for scroll-capable views in the renderer - scroll_visible only
         # controls whether the bar is drawn, never the width.)
+   
         _max_h = kwargs.get("max_height", None)
         _height_bounded = (not draw_state.auto_resize
                            or (_max_h is not None and draw_state.abs_content_height > _max_h))
@@ -5323,11 +5399,45 @@ def render_func(*args, **o_kwargs):
                         # One-shot from a menu-open capture: monitor this func
                         # call's entry/exit (sys.monitoring, local events on
                         # the target code only) and its locals + source line
-                        # publish as frame-snapshot markers at return.
+                        # show as frame-snapshot markers at return - then
+                        # the LOCAL stack copy (the context menu's Code tab)
+                        # swaps its terminal entry's signature scope for the
+                        # body's full locals.
                         draw_state._lv_capture_body = False
                         from src.lsd.gl_gui.view.core_conversion.live_view import (
                             call_with_body_capture)
-                        return_value = call_with_body_capture(func, clean_args)
+                        _bc_code = getattr(inspect.unwrap(func), "__code__",
+                                           None)
+
+                        def _adopt_body_locals(scope, _ds=draw_state,
+                                               _code=_bc_code):
+                            # Replace IN A NEW list - the Code tab keys its
+                            # pane rebuild on the stack list's identity, so
+                            # mutating in place would never re-resolve. Only
+                            # when the tail really is this function (the
+                            # terminal append is skipped on non-project
+                            # source).
+                            stack = getattr(_ds, "_call_stack_frames", None)
+                            if not stack or _code is None:
+                                return
+                            tail = stack[-1]
+                            if (tail[0] != _code.co_filename
+                                    or tail[1] != _code.co_firstlineno):
+                                return
+                            _ds._call_stack_frames = stack[:-1] + [
+                                (tail[0], tail[1], tail[2], scope)]
+                            # The Code tab retains the OLD list object -
+                            # find its tiles by that object and re-render
+                            # them so the fresh locals show without waiting
+                            # for an unrelated repaint.
+                            try:
+                                Melty.cache.invalidate_by_obj(stack)
+                                request_render()
+                            except Exception:
+                                pass
+
+                        return_value = call_with_body_capture(
+                            func, clean_args, on_captured=_adopt_body_locals)
                     else:
                         draw_state._wt_body0 = time.perf_counter()   # TEMP perf
                         return_value = func(**clean_args)

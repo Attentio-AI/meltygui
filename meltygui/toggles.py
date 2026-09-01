@@ -1451,6 +1451,20 @@ class Toggles:
         # value reprs drift for coalesced drags, the change type + target
         # name is the reliable part of the anchor.
         cue_match_values = False
+        # change_value's drag servo: the first nudge (px) that measures the
+        # live gain, the per-step travel cap (a wild residual/gain estimate
+        # can't fling the cursor across the screen), and the step budget
+        # before "didn't converge".
+        # [tint=(0.939, 0.453, 0.245)]
+        servo_probe_px = 8.0
+        # [tint=(0.939, 0.453, 0.245)]
+        servo_max_step_px = 400.0
+        # [tint=(0.939, 0.453, 0.245)]
+        servo_max_steps = 60
+        # How many collapsed/closed gates change_value will open on the way
+        # to a target before giving up (the shallow achieve loop).
+        # [tint=(0.939, 0.453, 0.245)]
+        gate_attempts = 3
 
     @defaults(tint=(0.103, 0.341, 0.617))
     class FastDock:
@@ -1477,6 +1491,12 @@ class Toggles:
         # Which tab a newly opened context menu selects, as an index into its
         # tab bar: 0 Info, 1 Config, 2 view type, 3 Eval, 4 Input, 5 Tint.
         default_tab = 0
+
+        # Code tab: hide render-dispatch stack frames (the render_func
+        # dispatch / draw_inner_main, draw_any re-dispatch - the same
+        # _is_dispatch_frame filter the func-stack stacks use) so the trace
+        # reads caller → caller → view function.
+        code_tab_hide_dispatch = True
 
         # ── Info tab source dropdown styling ────────────────────────────────
         # Row wash + trigger tint marking the source actively driving a param.

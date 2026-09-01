@@ -1406,6 +1406,86 @@ class Melty:
             note.clip = clip
 
     @classmethod
+    def emphasize_click(cls, key, center, tint=(1.0, 0.85, 0.3), radius=None,
+                        fade_frames=24, thickness=2.5):
+        """Circular click emphasis: an expanding, fading ring pair centered
+        on `center` (absolute screen coords). Fire-and-forget — one call per
+        click, unique keys let overlapping ripples coexist. Rides the
+        emphasis_notes pipeline (kind="ripple"), so fade pacing and cleanup
+        are the same as the rect flashes. The Orchestrator stamps one per
+        INJECTED press so replayed clicks are visible."""
+        cls.emphasis_notes[key] = types.SimpleNamespace(
+            rect=None, kind="ripple", center=center, tint=tint,
+            radius=radius if radius is not None else cls.px(24.0),
+            frame=cls.frame_count, auto_fade=True, rounding=0.0,
+            fade_frames=fade_frames, thickness=thickness,
+            last_touch=cls.frame_count, clip=None)
+        request_render()
+
+    @classmethod
+    def emphasize_cursor(cls, key, center, tint=(0.97, 0.97, 0.97), hold=True):
+        """Virtual pointer arrow at `center` (a (x, y) or a zero-arg callable
+        — the Orchestrator passes a callable reading its virtual cursor).
+        hold=True is the emphasize lease: re-assert every frame the driver
+        runs; the overlay pass force-releases a lease that goes
+        emphasis_hold_grace frames untouched, and an explicit hold=False
+        call releases it into a short fade (replay finished)."""
+        note = cls.emphasis_notes.get(key)
+        if note is not None and getattr(note, "kind", None) == "cursor":
+            note.center, note.tint = center, tint
+            note.last_touch = cls.frame_count
+            if not hold and not note.auto_fade:
+                note.auto_fade = True
+                note.frame = cls.frame_count
+            return
+        cls.emphasis_notes[key] = types.SimpleNamespace(
+            rect=None, kind="cursor", center=center, tint=tint,
+            frame=cls.frame_count, auto_fade=not hold, rounding=0.0,
+            fade_frames=14, thickness=1.5, last_touch=cls.frame_count,
+            clip=None)
+        request_render()
+
+    @classmethod
+    def _draw_emphasis_shape(cls, overlay, kind, note, center, alpha):
+        """The non-rect emphasis kinds (overlay pass). ripple: two expanding
+        rings; cursor: a classic pointer arrow with a soft drop shadow (no
+        polyline outline — fills only, so it needs no draw-list flags)."""
+        x, y = center
+        r, g, b = note.tint[:3]
+        if kind == "ripple":
+            progress = min(1.0, (cls.frame_count - note.frame)
+                           / max(1, note.fade_frames))
+            ring = note.radius * (0.30 + 0.70 * progress)
+            overlay.add_circle(x, y, ring,
+                               imgui.get_color_u32_rgba(r, g, b, 0.85 * alpha),
+                               32, note.thickness)
+            overlay.add_circle(x, y, ring * 0.55,
+                               imgui.get_color_u32_rgba(r, g, b, 0.40 * alpha),
+                               32, max(1.0, note.thickness * 0.6))
+            return
+        if kind == "cursor":
+            scale = cls.px(1.15)
+            # classic pointer polygon, split into convex pieces (the tail
+            # notch makes the whole concave): two head triangles + tail quad
+            def _pieces(ox, oy, color):
+                overlay.add_triangle_filled(x + ox, y + oy,
+                                            x + ox, y + oy + 16.5 * scale,
+                                            x + ox + 4.4 * scale, y + oy + 12.8 * scale,
+                                            color)
+                overlay.add_triangle_filled(x + ox, y + oy,
+                                            x + ox + 4.4 * scale, y + oy + 12.8 * scale,
+                                            x + ox + 12.1 * scale, y + oy + 11.9 * scale,
+                                            color)
+                overlay.add_quad_filled(x + ox + 4.4 * scale, y + oy + 12.8 * scale,
+                                        x + ox + 6.6 * scale, y + oy + 11.9 * scale,
+                                        x + ox + 9.4 * scale, y + oy + 17.9 * scale,
+                                        x + ox + 7.2 * scale, y + oy + 18.9 * scale,
+                                        color)
+            shadow = 1.4 * scale
+            _pieces(shadow, shadow, imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.45 * alpha))
+            _pieces(0.0, 0.0, imgui.get_color_u32_rgba(r, g, b, 0.95 * alpha))
+
+    @classmethod
     def overlay_channel_for(cls, ds) -> int:
         """Overlay channel for a draw_state, from the paint-order per-window
         map. A non-window view resolves to its nearest enclosing window's
@@ -3844,6 +3924,18 @@ class Melty:
                 request_render()
             else:
                 alpha = 1.0
+            # Non-rect kinds (click ripple, virtual cursor) skip the fade /
+            # hold bookkeeping above but draw their own shapes.
+            kind = getattr(note, "kind", "rect")
+            if kind != "rect":
+                try:
+                    center = note.center() if callable(note.center) else note.center
+                except Exception:
+                    del cls.emphasis_notes[key]
+                    continue
+                if center is not None:
+                    cls._draw_emphasis_shape(overlay, kind, note, center, alpha)
+                continue
             try:
                 rect = note.rect() if callable(note.rect) else note.rect
             except Exception:

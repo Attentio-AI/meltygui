@@ -296,7 +296,7 @@ def stamp_run_marker(fn, attr, value):
         pass
 
 
-def call_with_body_capture(func, kwargs):
+def call_with_body_capture(func, kwargs, on_captured=None):
     """Call ``func(**kwargs)`` and capture its body frame's locals at return,
     handing them to the async frame-snapshot publisher.
 
@@ -319,11 +319,24 @@ def call_with_body_capture(func, kwargs):
 
     def _finish():
         if captured:
-            if exit_line[0] is not None:
-                stamp_run_marker(inner, "__live_return_line__",
-                                 (exit_line[0],
-                                  _line_text_at(inner, exit_line[0])))
-            publish_stack_locals((), extra_snapshots=[(inner, captured, None)])
+            # The GLOBAL half (return-line wash + frame-snapshot publish)
+            # stays behind the live-view toggle, exactly as before. The
+            # LOCAL half - `on_captured` (the context menu's CodeEditor
+            # adopting the body locals into its own stack copy) - always
+            # fires; it touches nothing global.
+            from src.lsd.gl_gui.toggles import Toggles
+            if Toggles.TextEditor.enable_live_view:
+                if exit_line[0] is not None:
+                    stamp_run_marker(inner, "__live_return_line__",
+                                     (exit_line[0],
+                                      _line_text_at(inner, exit_line[0])))
+                publish_stack_locals((), extra_snapshots=[(inner, captured,
+                                                           None)])
+            if on_captured is not None:
+                try:
+                    on_captured(dict(captured))
+                except Exception:
+                    pass
 
     # sys.monitoring with LOCAL events on just the target code object: the
     # old sys.setprofile hook fired a Python callback for EVERY call/return
@@ -556,6 +569,20 @@ def publish_gen(value):
 REKEY_MAX_SHIFT = 12
 
 
+def bump_keys_gen(store_obj):
+    """Advance the store's KEY-SET generation (`__live_keys_gen__`) — called
+    wherever the set of store keys changes (first publish, re-key, prune).
+    The editor's view-name map is derived from the WHOLE key set (ordinal
+    disambiguation), so every consumer memoizes it on this generation and
+    they all agree within a frame — differently-stale maps minted the same
+    name for different keys (duplicate view IDs)."""
+    try:
+        d = vars(store_obj)
+        d["__live_keys_gen__"] = d.get("__live_keys_gen__", 0) + 1
+    except (AttributeError, TypeError):
+        pass
+
+
 def _adopt_rekeyed(store_obj, key_path, store):
     """If `key_path` is new to the store while an UNTOUCHED (this run)
     same-label `line:N#name` key sits within REKEY_MAX_SHIFT lines, that
@@ -613,6 +640,7 @@ def _adopt_rekeyed(store_obj, key_path, store):
     if snaps and old in snaps:
         snaps.discard(old)
         snaps.add(key_path)
+    bump_keys_gen(store_obj)
 
 
 def _key_line(key_path):
@@ -915,6 +943,8 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     # GIL, so the rendering thread always reads either the old or new value.
     _stamp_publish_gen(display)
     store[site.key_path] = display
+    if first:
+        bump_keys_gen(site.store_obj)   # key set grew - view names re-rank
     # Publish ORDER, one int per key: the inline USAGE labels resolve a
     # usage to the binding above it that actually published LAST (the
     # branch-not-taken rule - see live_usage.governing_key). Monotonic
@@ -1519,6 +1549,7 @@ def _prune_keys(store_obj, removed):
                         release_live_value(win)
                 except Exception:
                     pass
+    bump_keys_gen(store_obj)        # key set shrank - view names re-rank
     try:
         store_targets = tuple(
             getattr(store_obj, "__live_store_watchers__", None) or ())
@@ -1660,7 +1691,7 @@ def publish_frame_snapshot(fn, scope, upto_lineno=None):
     Accepts a render_func WRAPPER too — unwrapped here, since anchors and
     the store must live on the real body function (the wrapper's __code__
     points at core_render)."""
-    fn, items = _frame_snapshot_items(fn, scope)
+    fn, items, _def_line = _frame_snapshot_items(fn, scope)
     if fn is None:
         return
     new_keys = set()
@@ -1676,28 +1707,39 @@ def publish_frame_snapshot(fn, scope, upto_lineno=None):
         pass
 
 
-def _frame_snapshot_items(fn, scope):
-    """(unwrapped_fn, [(disk_lineno, name, value), ...]) anchoring a
-    ``{name: value}`` scope onto every occurrence of each captured name in
+def _frame_snapshot_items(fn, scope, tree=None):
+    """(unwrapped_fn, [(disk_lineno, name, value), ...], def_line) anchoring
+    a ``{name: value}`` scope onto every occurrence of each captured name in
     ``fn``'s def (see _occurrence_lines) — the pure computation shared by
     publish_frame_snapshot (global store) and frame_value_store (local
-    store). (None, []) when the function/scope can't be resolved."""
+    store). `def_line` is the DISK line of the `def` STATEMENT itself (the
+    ast node's lineno — NOT co_firstlineno, which points at the first
+    decorator for a decorated function). (None, [], None) when the
+    function/scope can't be resolved.
+
+    A caller that already parsed the file passes `tree` — the stack view
+    hands its project_code ast: no second whole-file parse (the tab-open
+    cost), and the anchor lines come out in THAT text's own coordinates
+    (no pending delta — the caller renders the very same text)."""
     try:
         fn = inspect.unwrap(fn)
     except Exception:
         pass
     code = getattr(fn, "__code__", None)
     if code is None or not isinstance(fn, types.FunctionType) or not scope:
-        return None, []
-    path = Path(code.co_filename).resolve()
-    try:
-        tree, _text, _sig = _ast_for(path, path.stat().st_mtime)
-    except (OSError, SyntaxError, ValueError):
-        return None, []
-    delta = _stamp_delta(path, code.co_firstlineno)   # pending = disk + delta
+        return None, [], None
+    if tree is not None:
+        delta = 0
+    else:
+        path = Path(code.co_filename).resolve()
+        try:
+            tree, _text, _sig = _ast_for(path, path.stat().st_mtime)
+        except (OSError, SyntaxError, ValueError):
+            return None, [], None
+        delta = _stamp_delta(path, code.co_firstlineno)  # pending = disk + Δ
     fdef = _def_node_for(tree, fn, code.co_firstlineno + delta)
     if fdef is None:
-        return None, []
+        return None, [], None
     anchors = _occurrence_lines(fdef)
     items = []
     for n, lns in anchors.items():
@@ -1716,7 +1758,7 @@ def _frame_snapshot_items(fn, scope):
             continue
         for ln in lns:
             items.append((ln - delta, n, val))
-    return fn, items
+    return fn, items, fdef.lineno - delta
 
 
 class LocalValueStore:
@@ -1738,19 +1780,24 @@ class LocalValueStore:
         self.__live_labels__ = {}
 
 
-def frame_value_store(fn, scope):
+def frame_value_store(fn, scope, tree=None):
     """A LocalValueStore of ``scope`` anchored on ``fn``'s def — the same
     anchor computation publish_frame_snapshot uses, with NOTHING written to
     ``fn`` and nothing registered globally. For callers that own their
     capture (the stack trace view): build once, hand to draw_text as
-    ``live_store=``, drop when done. Returns None when unresolvable."""
-    fn, items = _frame_snapshot_items(fn, scope)
+    ``live_store=``, drop when done. Pass `tree` (an already-parsed ast of
+    the text being rendered) to skip the whole-file parse and anchor in
+    that text's coordinates. Returns None when unresolvable."""
+    fn, items, def_line = _frame_snapshot_items(fn, scope, tree=tree)
     if fn is None or not items:
         return None
-    code = fn.__code__
-    delta = _stamp_delta(Path(code.co_filename).resolve(), code.co_firstlineno)
+    # def_line is the ast def statement's line - co_firstlineno points at
+    # the first DECORATOR for a decorated function (every _render_func
+    # view), and the overlay's def-match gate compares against the span
+    # parse tree which starts at the def itself: stamping the decorator line
+    # made the gate reject the store and no marker ever drew (08-31).
     store = LocalValueStore(qualname=getattr(fn, "__qualname__", fn.__name__),
-                            def_line=code.co_firstlineno - delta)
+                            def_line=def_line)
     for disk, n, val in items:
         key_path = (f"line:{disk}#{n}",)
         store.__live_values__[key_path] = val

@@ -7684,6 +7684,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         input_value, name=picker_name, closed=not is_open,
         window_pos=(0, _pop_y), info=_info, parent_window=draw_state,
         width=216, height=picker_h, mode=Modes.POPOVER)
+    
     if is_open and Melty.popover_focused_ds is draw_state:
         # Hand the slot from the host to the picker window now that it is
         # registered (same frame, under the opening grace).
@@ -10254,6 +10255,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # Lightning bolt
     live_icon = f"\uf0e7"
     live_tab = f"{live_icon} Live"
+    code_stack_icon = f"\uf121"
+    code_stack_tab = f"{code_stack_icon} Code"
 
     # Resolve which class's source to show in the class tab.
     # For a non-primitive value that's just the value's own class. For a
@@ -10324,6 +10327,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
     tab_names.append(live_tab)
     tab_tints.append((0.7, 0.0, 0.0))
+    tab_names.append(code_stack_tab)
+    tab_tints.append((0.9, 0.35, 0.28))  # the code trace view's own tint
 
     indices = list(range(len(tab_names)))
 
@@ -10420,6 +10425,30 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
         elif this_tab == live_tab:
             draw_live_tab(input_value, name=f"live_tab_{t_idx}##{unique}", **size_kw)
+
+        elif this_tab == code_stack_tab:
+            # The stack captured at menu open (core_render's one-shot grab -
+            # `_call_stack_frames`: (path, lineno, func_name, locals) tuples,
+            # outermost first), rendered as the stack trace view. Values come
+            # from the frames' own locals through pane-LOCAL stores - nothing
+            # published, nothing global. The debug (bug) button above
+            # recaptures a fresh stack.
+            from src.lsd.gl_gui.view.core_views.stack_trace_view import (
+                draw_stack_trace)
+            captured_stack = getattr(input_value, "_call_stack_frames", None)
+            if captured_stack:
+                # indent_views=False: the tab is narrow - panes slide left
+                # instead of the inlined call-chain slide.
+                draw_stack_trace(
+                    captured_stack, indent_views=False,
+                    hide_dispatch=Toggles.ContextMenu.code_tab_hide_dispatch,
+                    name=f"code_tab_{t_idx}##{unique}", **size_kw)
+            else:
+                RenderFuncs.draw_text(
+                    "No captured stack for this view yet — press the bug "
+                    "button above to recapture the trace.",
+                    name=f"code_tab_empty_{t_idx}##{unique}", show_bg=False,
+                    editable=False, tint=Tint.subtle_text())
     imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] - 1, imgui.get_cursor_screen_pos()[1] - 18))
     imgui.text(f"{input_value._raw_input_value.__class__.__name__}")
 

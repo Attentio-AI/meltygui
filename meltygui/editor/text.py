@@ -7565,6 +7565,12 @@ def _build_vcols(text, tokens, token_views, pos_trails=None):
         if ck == 'clipped':
             # Off-screen stretch of a wrapped line: identity columns, assigned
             # at C speed (a 200k-char run would still cost ~10ms here).
+            # A positional gap can start a clipped token (tokens are split
+            # at every gap boundary), so honor it here too.
+            if pos_trails is not None:
+                _pt = pos_trails.get(i)
+                if _pt:
+                    col += _pt
             L = min(len(tok), n - i)
             ic = int(col)
             vcols[i:i + L] = range(ic, ic + L) if ic == col else [col + k for k in range(L)]
@@ -7600,6 +7606,31 @@ def _build_vcols(text, tokens, token_views, pos_trails=None):
             col += _pt              # gap opens at the window's end
     vcols[n] = col
     return vcols
+
+
+def _split_tokens_at(toks, boundaries):
+    """Split (text, key) window tokens so every window-relative index in
+    `boundaries` (sorted) STARTS a token. The glyph pass inserts the
+    positional live-usage gaps by testing token STARTS only — splitting
+    here keeps that test out of the per-char hot paths and lets the
+    merged-run fast path stay intact (a gap token never joins a run)."""
+    out = []
+    i = 0
+    bi = 0
+    n = len(boundaries)
+    for tok, ck in toks:
+        end = i + len(tok)
+        while bi < n and boundaries[bi] <= i:
+            bi += 1
+        start = i
+        while bi < n and boundaries[bi] < end:
+            cut = boundaries[bi]
+            out.append((tok[start - i:cut - i], ck))
+            start = cut
+            bi += 1
+        out.append((tok[start - i:], ck))
+        i = end
+    return out
 
 
 class _WinVCols:
@@ -10714,6 +10745,16 @@ def draw_text(input_value: str, height=None,
                             pos_trails[_wi] = _cells
                             _tc_src.append(((_tl, _tc), _wi, _cells))
                 pos_trails = pos_trails or None
+            # The gaps must move the DRAWN glyphs too, not just the caret
+            # math: split the tokens so every gap boundary begins a token
+            # (the glyph pass shifts x at gap-starting tokens - see
+            # _lv_gaps there) and publish the absolute-index map.
+            _gap_map = {}
+            if pos_trails:
+                toks = _split_tokens_at(toks, sorted(pos_trails))
+                _gap_map = {start_off + _wi: _c
+                            for _wi, _c in pos_trails.items()}
+            ds._lv_gap_map = _gap_map
             arr = _build_vcols(text[start_off:start_off + win_len], toks, token_views,
                                pos_trails=pos_trails) \
                 if (token_views or pos_trails) else None
@@ -10754,6 +10795,7 @@ def draw_text(input_value: str, height=None,
                 toks = [(win_text, 'default')] if win_text else []
             vcols = None
             ds._lv_trail_cells = {}
+            ds._lv_gap_map = {}
         ds._win_key = key
         ds._win_data = (wl, start_off, toks, vcols)
         _pf_tok[0] += time.perf_counter() - _pf_miss_t
@@ -13993,6 +14035,12 @@ def draw_text(input_value: str, height=None,
     # of pushing ~900 tokens through the per-token path every frame.
     _runs = _tc_memo[2] if (_tok_colors is not None and len(_tc_memo) > 2) else None
     _plain_rec = [] if _tok_colors_new is not None else None
+    # Positional live-usage gaps (absolute source index → width): stamped by
+    # _window() beside the vcols trails. Tokens are pre-split so a gap
+    # always STARTS a token - one dict probe per token, all draw paths
+    # (runs, widgets, segments) use the shifted x.
+    _lv_gaps = ds.__dict__.get('_lv_gap_map') or None
+    _at_gap = False
     _skip_n = 0
     _ti = -1
     for token, color_key in tokens:
@@ -14000,6 +14048,12 @@ def draw_text(input_value: str, height=None,
         if _skip_n:
             _skip_n -= 1
             continue
+        _at_gap = False
+        if _lv_gaps is not None:
+            _gp = _lv_gaps.get(src_i)
+            if _gp:
+                x += _gp * char_w
+                _at_gap = True
         if _runs is not None:
             _run = _runs.get(_ti)
             if _run is not None:
@@ -14312,8 +14366,15 @@ def draw_text(input_value: str, height=None,
             continue
         if not _inline and color_key != 'icon' and '\n' not in token:
             # Plain single-line token (the common case): no segment loop.
+            # A gap-starting token never records as mergeable: the memoized
+            # run replay draws whole runs and skips members, so a gap
+            # swallowed into it would lose its x shift (the live merge below
+            # breaks this - the shifted x fails the _run_end == x
+            # join test).
             if _plain_rec is not None:
-                _plain_rec.append((_ti, color, token.isascii() and '\t' not in token, token))
+                _plain_rec.append((_ti, color,
+                                   token.isascii() and '\t' not in token
+                                   and not _at_gap, token))
             if token and y + line_px >= rect_min_y and y <= rect_max_y:
                 _seg_col = (color if _pres_lines is None
                             or _cur_ln in _pres_lines

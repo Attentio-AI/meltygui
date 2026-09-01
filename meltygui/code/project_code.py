@@ -116,8 +116,10 @@ class FileCode:
 
     def __init__(self, path):
         self.path = Path(path)
-        self._memo = None          # (gen, disk_text_obj, composed_text)
+        self._memo = None          # ((gen, disk_gen), composed_text)
         self._lines_memo = None    # (composed_text_obj, split lines)
+        self._ast_memo = None      # (composed_text_obj, ast tree | None)
+        self._span_index_memo = None   # (composed_text_obj, (defs, stmt_ends))
 
     def get_lines(self, start, end):
         """A LineRange over 0-based, end-exclusive line indices (the Address
@@ -126,18 +128,86 @@ class FileCode:
         return LineRange(self, start, end)
 
     def text(self):
-        """The whole file as the studio sees it: disk (code cache) with every
-        queued pending edit spliced in. None when unreadable."""
-        from src.lsd.gl_gui.melty import Melty
+        """The whole file as the STUDIO sees it — `studio_text_for`: the
+        SYNC-FRAME base (the last disk state the pending queue was rebased
+        to; an external write parks at the merge banner as the INCOMING
+        side, it never swaps in here) with every queued pending edit
+        spliced in. This is the same truth the code hosts / func tab serve
+        (codec.load's baseline overlay) — composing over the raw disk cache
+        instead swapped drifted text under coordinate-anchored consumers
+        the moment an external edit landed (08-31). Memoized on the pending
+        generation + the disk/sync generation (bumped by FileWatch events
+        and sync-frame advances). None when unreadable."""
+        from src.lsd.gl_gui.view.core_conversion.symbol_roster import (
+            disk_generation)
         from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-        gen = _pending_generation(self.path)
-        disk = Melty.read_code(self.path)
+        sig = (_pending_generation(self.path), disk_generation())
         memo = self._memo
-        if memo is not None and memo[0] == gen and memo[1] is disk:
-            return memo[2]
-        composed = PendingSave.current_file_text(self.path)
-        self._memo = (gen, disk, composed)
+        if memo is not None and memo[0] == sig:
+            return memo[1]
+        composed = PendingSave.studio_text_for(self.path)
+        self._memo = (sig, composed)
         return composed
+
+    def ast_tree(self):
+        """ast of EXACTLY the text this proxy serves (text()), memoized on
+        the text's identity — span consumers resolve line bounds against
+        the very text they will render, never a different cache's view.
+        None while the text doesn't parse."""
+        import ast
+        text = self.text()
+        if text is None:
+            return None
+        memo = self._ast_memo
+        if memo is not None and memo[0] is text:
+            return memo[1]
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            tree = None
+        self._ast_memo = (text, tree)
+        return tree
+
+    def span_index_ready(self):
+        """True when span_index() would serve its memo without parsing —
+        lets a consumer that backgrounds the build resolve synchronously
+        the moment the worker's memo lands."""
+        memo = self._span_index_memo
+        return memo is not None and memo[0] is self.text()
+
+    def span_index(self):
+        """(defs, stmt_ends) of the served text, ONE ast walk per text
+        version: defs = [(containment_start, def_line, end_line)] — the
+        containment start includes decorator lines — and stmt_ends =
+        {start_line: last line of the longest statement starting there}.
+        Consumers answer per-line span queries with a defs scan + dict hit
+        instead of walking the whole tree per query (an ast.walk per pane
+        was most of the Code tab's open lag). None while unparseable."""
+        import ast
+        tree = self.ast_tree()
+        if tree is None:
+            return None
+        text = self._ast_memo[0]
+        memo = self._span_index_memo
+        if memo is not None and memo[0] is text:
+            return memo[1]
+        defs, stmt_ends = [], {}
+        for node in ast.walk(tree):
+            start = getattr(node, "lineno", None)
+            end = getattr(node, "end_lineno", None)
+            if start is None or end is None:
+                continue
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                span_start = min((d.lineno for d in node.decorator_list),
+                                 default=start)
+                defs.append((span_start, start, end))
+            if isinstance(node, ast.stmt):
+                prev = stmt_ends.get(start)
+                if prev is None or end > prev:
+                    stmt_ends[start] = end
+        index = (defs, stmt_ends)
+        self._span_index_memo = (text, index)
+        return index
 
     def lines(self):
         """The composed text's line list, memoized on the text's identity —

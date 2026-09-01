@@ -283,6 +283,34 @@ class WindowChange(Change):
         request_render()
 
 
+class WindowMoveChange(Change):
+    """A window move step: `draw_state` is the WINDOW's draw_state, `old`/`new`
+    its window_pos before/after one hand drag (recorded at gesture END by
+    core_render's window_move block, so a whole drag is one step). Replay
+    writes the position back — window_pos is parent-relative for nested
+    windows, and the recorded value is in that same space. A window closed
+    since the move still takes the write (invisible until reopened); replay
+    never reopens or raises for a move alone."""
+
+    def __init__(self, window_ds, old_pos, new_pos, t=0.0, group_id=0,
+                 frame=0):
+        super().__init__(window_ds, (old_pos[0], old_pos[1]),
+                         (new_pos[0], new_pos[1]), t=t, group_id=group_id,
+                         frame=frame)
+
+    @property
+    def display_name(self):
+        base = str(getattr(self.draw_state, "name", "?")).split("##")[0]
+        return f"move {base}"
+
+    def apply(self, undo):
+        wds = self.draw_state
+        wds.window_pos = self.old if undo else self.new
+        if Core.melty.cache is not None and wds._tile_id is not None:
+            Core.melty.cache.invalidate_up(wds._tile_id, force=True, max_depth=4)
+        request_render()
+
+
 class CompareChange(Change):
     """A Compare-With selection step in a code-editor window. `old`/`new`
     are the PERSISTED compare tokens ('' none, 'HEAD', 'local', 'latest',
@@ -646,6 +674,21 @@ class NavUndo:
                                     t=time.time(),
                                     group_id=cls.stack.new_group_id(),
                                     frame=Core.melty.frame_count))
+
+    @classmethod
+    def record_window_move(cls, window_ds, old_pos, new_pos):
+        """Push a window-move step (the end of one hand drag). Consecutive
+        drags of the same window each get their own step — a drag is already
+        the natural gesture unit, no coalescing."""
+        cls.quiet_caret()
+        if not cls._recordable():
+            return
+        if (old_pos[0], old_pos[1]) == (new_pos[0], new_pos[1]):
+            return
+        cls.stack.push(WindowMoveChange(window_ds, old_pos, new_pos,
+                                        t=time.time(),
+                                        group_id=cls.stack.new_group_id(),
+                                        frame=Core.melty.frame_count))
 
     # ── Caret / text-focus detection ─────────────────────────────────────────
 
