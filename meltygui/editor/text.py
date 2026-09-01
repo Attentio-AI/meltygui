@@ -9266,17 +9266,26 @@ def _fold_normalize_ranges(n_lines, ranges):
     return out
 
 
-def _fold_normalize_union(n_lines, ranges):
+def _fold_normalize_union(n_lines, ranges, collapsed=()):
     """_fold_normalize_ranges for the UNION layout (scope folds + diff
     gaps): partial overlaps are KEPT — a diff gap routinely starts or ends
     mid-scope, and _fold_build hides the union of what every collapsed
     range hides (see its walk), so nothing has to nest. Sorted, clipped,
-    de-duplicated; of two ranges sharing a start the shorter (first sorted)
-    stays."""
+    de-duplicated; the walk handles ONE range per header line, so of
+    ranges sharing a start a COLLAPSED one stays (the longest, it hides
+    the most — the walk's union extension covers the rest anyway), else
+    the shortest. A diff gap whose header (slid down by the preview rows)
+    lands on a def / if / for header shares the line with that scope's
+    fold; keeping the expanded scope there dropped the collapsed gap from
+    the layout and the whole unchanged stretch showed (09-01)."""
     out, last_start = [], None
     for s, e in sorted({(int(s), int(e)) for s, e in ranges}):
         e = min(e, n_lines - 1)
-        if e <= s or s >= n_lines - 1 or s == last_start:
+        if e <= s or s >= n_lines - 1:
+            continue
+        if s == last_start:
+            if (s, e) in collapsed:
+                out[-1] = (s, e)       # collapsed beats expanded / shorter
             continue
         out.append((s, e))
         last_start = s
@@ -9299,7 +9308,7 @@ def _fold_build(text, ranges, collapsed):
       disp_to_buf — buffer line per display line; None when identity.
     """
     lines = text.split('\n')
-    rngs = _fold_normalize_union(len(lines), ranges)
+    rngs = _fold_normalize_union(len(lines), ranges, collapsed)
     # Full, line offsets (needed for hidden extraction + expanded anchors).
     foffs, off = [], 0
     for l in lines:
@@ -14131,23 +14140,39 @@ def draw_text(input_value: str, height=None,
         if _pres_k > 0.0:
             _pres_lines = {l[0] for l in _dt_lines}
     # Diff-gap PREVIEW rows: a collapsed diff piece's header sits
-    # Toggles.TextEditor.diff_preview_lines below the gap's last context
-    # line (open_files._diff_gap_folds slides it down), so the lines from
-    # there up to and including the header are hidden-gap content kept
-    # visible as a peek - painted with their alpha scaled by
-    # diff_preview_alpha. Display line set, like _pres_lines; buffer lines
-    # a scope fold hides are skipped (exact mapping, never a covering
-    # fold). O(collapsed pieces × preview) per body run.
+    # Toggles.TextEditor.diff_preview_lines_below below the change's last
+    # context line (open_files._diff_gap_folds slides it down), so the
+    # lines from there up to and including the header are hidden-gap
+    # content kept visible as a peek; likewise a piece's hidden range
+    # ends diff_preview_lines_above short of the next change's context,
+    # so the lines right after it are the peek from that side. Both are
+    # painted with their alpha set by diff_preview_alpha. Display line
+    # set, like _pres_lines; any lines a scope fold hides are skipped
+    # (exact mapping, never the covering header). O(collapsed pieces ×
+    # preview) per body run - never a walk of the buffer.
     # Memoized on the fold LAYOUT's identity: ds._fold_cache is rebuilt
     # exactly when the union ranges or a collapse set change (its key
     # carries both), and _diff_rngs is the memoized gap list - so an idle
     # repaint / scroll / live-edit tick requires one tuple compare, not a
     # walk of every gap (0.55 ms a frame at 322 gaps, measured 09-01).
     _preview_lines = None
+    # Height of the separator band under a collapsed diff gap's header
+    # row; the gap's chevron centers on it (gutter pass + badge pass).
+    # [tint=(0.36, 0.62, 0.85)]
+    _diff_band_h = 1.5
+    # Diff-gap styling color: the file's tint (the same FileMeta color the
+    # editor tab wears) for the band under the chevrons and the "N lines"
+    # labels. Toggles.TextEditor.diff_fold_tint only in a buffer with no
+    # file. Resolved once per body run - two dict reads.
+    _dsep_path = (getattr(jump_to, 'path', None) if jump_to is not None
+                  else getattr(ds, '_file_meta', None))
+    _dsep_rgb = (_uj_file_tint(_dsep_path) if _dsep_path is not None
+                 else None) or Toggles.TextEditor.diff_fold_tint
     _preview_alpha = Toggles.TextEditor.diff_preview_alpha
-    _preview_n = Toggles.TextEditor.diff_preview_lines
+    _preview_n = (Toggles.TextEditor.diff_preview_lines_below,
+                  Toggles.TextEditor.diff_preview_lines_above)
     _diff_col_prev = getattr(ds, '_diff_fold_collapsed', None)
-    if (_diff_rng_set and _diff_col_prev and _preview_n > 0
+    if (_diff_rng_set and _diff_col_prev and max(_preview_n) > 0
             and _preview_alpha < 1.0):
         _pv_layout = ds.__dict__.get('_fold_cache')
         _pv_layout = _pv_layout[2] if _pv_layout is not None else None
@@ -14160,13 +14185,21 @@ def draw_text(input_value: str, height=None,
             for _prng in _diff_rngs:
                 if _prng not in _diff_col_prev:
                     continue
-                for _pb in range(max(_prng[0] - _preview_n + 1, 0), _prng[0] + 1):
-                    if _fold_d2b is None:
-                        _preview_lines.add(_pb)
-                    else:
-                        _pi = bisect.bisect_right(_fold_d2b, _pb) - 1
-                        if _pi >= 0 and _fold_d2b[_pi] == _pb:
-                            _preview_lines.add(_pi)
+                # BELOW the change above the gap: the rows ending at the
+                # header; ABOVE the change below it: the rows right after
+                # the hidden range (_n_lines from the diff-range setup
+                # above - set whenever _diff_rng_set is). Buffer lines,
+                # mapped to display lines.
+                for _pv_lo, _pv_hi in (
+                        (max(_prng[0] - _preview_n[0] + 1, 0), _prng[0] + 1),
+                        (_prng[1] + 1, min(_prng[1] + _preview_n[1] + 1, _n_lines))):
+                    for _pb in range(_pv_lo, _pv_hi):
+                        if _fold_d2b is None:
+                            _preview_lines.add(_pb)
+                        else:
+                            _pi = bisect.bisect_right(_fold_d2b, _pb) - 1
+                            if _pi >= 0 and _fold_d2b[_pi] == _pb:
+                                _preview_lines.add(_pi)
             if not _preview_lines:
                 _preview_lines = None
             ds._diff_preview_memo = (_diff_rngs, _pv_layout, _preview_n,
@@ -15248,11 +15281,17 @@ def draw_text(input_value: str, height=None,
                         getattr(ds, '_diff_rng_set', None) or ()):
                     _dft = Toggles.TextEditor.diff_fold_tint
                     _gcc = imgui.get_color_u32_rgba(
-                        *_dft[:3], min(1.0, _dft[3] + (0.35 if _ghov else 0.0)))
+                        *_dsep_rgb[:3], min(1.0, _dft[3] + (0.35 if _ghov else 0.0)))
                 else:
                     _gcc = imgui.get_color_u32_rgba(
                         0.9, 0.9, 0.9, 0.55 if _ghov else 0.31)
                 _gcy = ly + line_px * 0.5
+                if _col_g and _rng_g is not None and _rng_g in (
+                        getattr(ds, '_diff_rng_set', None) or ()):
+                    # Collapsed diff gap: the chevron sits ON the separator
+                    # band under the header row (the badge pass below it at
+                    # the row's bottom edge), not at the row's middle.
+                    _gcy = ly + line_px - _diff_band_h * 0.5
                 if _col_g:
                     # right-pointing chevron: click to expand
                     draw_list.add_triangle_filled(_gcx - 2.5, _gcy - 4.0,
@@ -15373,6 +15412,9 @@ def draw_text(input_value: str, height=None,
                                  left + ds.content_width, rect_max_y, True)
         _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
         _need_chev = gutter_w <= 0.0    # no gutter: chevrons fall back here
+        # Collapsed diff gap separator band (color resolved beside
+        # _diff_band_h at the preview-rows block).
+        _dsep_col = imgui.get_color_u32_rgba(*_dsep_rgb[:3], 0.35)
         # A def fold header is widened by the run buttons trailing the def's
         # name (the def_name token view's trail_cells); the badge - placed
         # from the header's CHAR length - shifts with them.
@@ -15419,20 +15461,23 @@ def draw_text(input_value: str, height=None,
             if _is_diff_fold:
                 _dft = Toggles.TextEditor.diff_fold_tint
                 _fcc = imgui.get_color_u32_rgba(
-                    *_dft[:3], min(1.0, _dft[3] + (0.3 if _fhov else 0.0)))
+                    *_dsep_rgb[:3], min(1.0, _dft[3] + (0.3 if _fhov else 0.0)))
                 if _fcol:
                     # Collapsed diff gap: a thin separator line across the
                     # row under the header - hidden UNCHANGED code, visually
-                    # distinct from a folded scope.
-                    _dby = _fy + line_px - 1.5
+                    # distinct from a folded scope - in the file's tint.
+                    _dby = _fy + line_px - _diff_band_h
                     draw_list.add_rect_filled(
                         left + gutter_w, _dby, left + ds.content_width,
-                        _dby + 1.5,
-                        imgui.get_color_u32_rgba(*_dft[:3], 0.35))
+                        _dby + _diff_band_h, _dsep_col)
             else:
                 _fcc = imgui.get_color_u32_rgba(
                     0.9, 0.9, 0.9, 0.4 if _fhov else 0.31)
             _fcx, _fcy = _fr[0] + 8.0, (_fr[1] + _fr[3]) * 0.5
+            if _is_diff_fold and _fcol:
+                # The chevron sits ON the separator band (see the gutter
+                # pass for the same rule).
+                _fcy = _fy + line_px - _diff_band_h * 0.5
             if _need_chev:
                 if _fcol:
                     # right-pointing chevron: click to expand

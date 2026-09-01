@@ -19,7 +19,6 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
 # ── Module roots for user code detection ─────────────────
 _MODULE_ROOTS = ["src/lsd/"]
 
-
 # Sane bounds on the UI scale (Toggles.UIScale). The scale multiplies font
 # atlas sizes, so a stray number from a live edit is an expensive error - a
 # huge factor bakes a giant atlas, a tiny one rasterizes unreadable fonts.
@@ -87,7 +86,7 @@ def export_desktop_cursor_env():
     """
     exported = {}
     if not os.environ.get("WAYLAND_DISPLAY"):
-        return exported     # X11: GLFW asks Xcursor, which GNOME configures itself
+        return exported  # X11: GLFW asks Xcursor, which GNOME configures itself
     if not os.environ.get("XCURSOR_SIZE"):
         raw = _gsettings_get("cursor-size")
         try:
@@ -122,14 +121,14 @@ def apply_wayland_frame_hint():
     titlebar.backend_supported reads what the process actually got, not the
     live toggle. Returns True when the hint was applied by this call."""
     if getattr(sys, "_lsd_wayland_libdecor_disabled", None) is not None:
-        return False        # decided at the first init - later inits are no-ops
+        return False  # decided at the first init - later inits are no-ops
     applied = False
     if os.environ.get("WAYLAND_DISPLAY") and Toggles.Melty.wayland_native_frame:
         try:
             glfw.init_hint(glfw.WAYLAND_LIBDECOR, glfw.WAYLAND_DISABLE_LIBDECOR)
             applied = True
         except AttributeError:
-            pass            # pre-3.4 pyglfw: no hint, libdecor disabled
+            pass  # pre-3.4 pyglfw: no hint, libdecor stays
     sys._lsd_wayland_libdecor_disabled = applied
     return applied
 
@@ -156,6 +155,7 @@ try:
         Token, Keyword, Name, Comment, String, Number,
         Operator, Punctuation, Literal, Generic, Error
     )
+
 
     class DarculaIntelliJ(Style):
         background_color = "#2b2b2b"
@@ -197,6 +197,7 @@ try:
             Generic.Strong: "bold",
             Error: "#ff5555",
         }
+
 
     _pygments_available = True
     _python_lexer = PythonLexer()
@@ -367,7 +368,7 @@ def _color_kwargs(highlighted, original, bg=None):
     for match in re.finditer(r'(\b\w+)(?=\s*=[^=])', original):
         name = match.group(1)
         if name in ('if', 'else', 'elif', 'return', 'yield', 'not',
-                     'and', 'or', 'in', 'is', 'lambda', 'True', 'False', 'None'):
+                    'and', 'or', 'in', 'is', 'lambda', 'True', 'False', 'None'):
             continue
         highlighted = re.sub(
             rf'(?<!\033\[38;2;255;85;85m)(\033\[[\d;]*m)*({re.escape(name)})(\033\[[\d;]*m)*(?=\s*=[^=])',
@@ -384,6 +385,7 @@ try:
     from rich.table import Table as RichTable
     from rich.text import Text as RichText
     from rich.console import Console as RichConsole
+
     _rich_available = True
 except ImportError:
     _rich_available = False
@@ -598,6 +600,8 @@ def _resolve_watch(expr, filename, lineno, local_vars,
 
 stacks_printed_this_frame = 0
 this_frame_number = 0
+
+
 def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                       max_str_len=200, max_items=5, max_depth=2, max_output=200,
                       exception=None, e=None, section=None, group=None, file=None,
@@ -1032,7 +1036,7 @@ def _truncate(value, max_str_len=120, max_items=5, max_depth=3, _current_depth=0
         show = max_items or len(items)
         truncated = {
             _truncate(k, max_str_len, max_items, max_depth, next_depth):
-            _truncate(v, max_str_len, max_items, max_depth, next_depth)
+                _truncate(v, max_str_len, max_items, max_depth, next_depth)
             for k, v in items[:show]
         }
         remaining = len(items) - show
@@ -1095,8 +1099,10 @@ def _summarize(value):
 
 _needs_render = threading.Event()
 frames_left = 0
+
+
 # [tint=(0.191, 0.328, 0.191), show_tint=True]
-def request_render(for_frames:int | None=None):
+def request_render(for_frames: int | None = None):
     # Can be called from ANY thread - including worker threads (PTY readers, or
     # claude-session poller) that start at import, before glfw.init() and the main
     # window exist. The glfw.get_current_context() guard below itself calls INTO glfw,
@@ -1123,7 +1129,6 @@ def request_render(for_frames:int | None=None):
     if for_frames is not None:
         frames_left = for_frames
 
-
     # "request_render" notify function: every call toasts its caller's stack
     # (click → open the call site in the editor), gated like the invalidate
     # column on InvalidateTracker.enable (E hotkey). notify() collapses
@@ -1138,9 +1143,8 @@ def request_render(for_frames:int | None=None):
             notify(f"request_render  [{fn}]  {threading.current_thread().name}",
                    tint=(0.4, 0.8, 1.0), tag="request_render", stack=stack, urgent=False)
 
-
     _needs_render.set()
     try:
         glfw.post_empty_event()
     except Exception:
-        pass    # glfw torn down mid-call (shutdown/restart) - nothing to wake
+        pass  # glfw torn down mid-call (shutdown/restart) - nothing to wake

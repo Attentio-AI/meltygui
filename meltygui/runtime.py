@@ -1693,6 +1693,16 @@ class Melty:
             # the box's existing re-grab gated on `text_focused_ds is None`, so this
             # doesn't change text box behavior.
             ds.invalidate_up()
+            if ds is cls.popover_focused_ds:
+                # A popover is only HIDDEN on a frame its spawner draws it
+                # closed=True, and a nested window is dispatched from the
+                # layer loop, where the tile stack is empty - its tile has no
+                # parent key, so invalidate_up above reaches nowhere over it.
+                # Re-run the view whose body spawned it (draw_tuple_fast's host:
+                # the slot holds the PICKER window there, not the chip's ds).
+                spawner = getattr(ds, "_parent", None)
+                if spawner is not None and spawner is not ds:
+                    spawner.invalidate()
 
             if cls.focused_ds is ds:
                 cls.focused_ds = None

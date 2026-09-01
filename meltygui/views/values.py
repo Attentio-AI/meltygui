@@ -6554,6 +6554,17 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
                            imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
 
     if left_mouse_down:
+        # Effect ledger, exactly as flat_button: a fired button is an
+        # observable change with an undo record - the Orchestrator cues
+        # replays off it. The button's OWN draw_state and rect flow in, so
+        # the cue's chain, press_rect and press_rect all describe the
+        # button (a header-owned flat_button can only offer its position).
+        if Melty.effect_hook is not None:
+            try:
+                Melty.effect_hook("button", button_txt, draw_state,
+                                  rect=(bx0, by0, width, height))
+            except Exception:
+                pass
         request_render()
         return True, input_value
 
@@ -7562,6 +7573,16 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
     return changed, input_value
 
 
+def _popover_anchor(draw_state):
+    """The window a header-row popover (draw_tuple_fast's picker) is nested
+    under: the host itself when it IS a melty window, else the host's
+    enclosing window. A popover parented to a plain draw_state inherits its
+    `expanded` through abs_closed, so collapsing the host discarded it."""
+    if draw_state.closable or draw_state.parent_window is None:
+        return draw_state
+    return draw_state.parent_window
+
+
 def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
                     outline=False, info=None, priority_delta=4, setter=None):
     """draw_tuple's colour chip for immediate-mode bodies (the code editor's
@@ -7651,9 +7672,15 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     # host only for the opening frame (protected by the popover grace).
     owner = getattr(draw_state, "_tint_edit_key", None) == view_id
     picker_name = f"color_picker{view_id}"
+    # The picker hangs off the HEADER row, so its parent_window is the
+    # enclosing WINDOW (what draw_tuple's shared ds has), never the host
+    # itself: a collapsed host reads abs_closed, and end_frame discards
+    # any nested window under an abs_closed parent - the picker opened on
+    # a collapsed item's header closes on its first open.
+    anchor = _popover_anchor(draw_state)
     picker_ds = None
     if owner:
-        for nested in Melty.root_draw_states.get(draw_state.id, ()):
+        for nested in Melty.root_draw_states.get(anchor.id, ()):
             if getattr(nested, "name", None) == picker_name:
                 picker_ds = nested
                 break
@@ -7686,14 +7713,14 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     imgui.set_cursor_screen_pos((x, y + size))
     color_changed, new_color = draw_color_picker(
         input_value, name=picker_name, closed=not is_open,
-        window_pos=(0, _pop_y), info=_info, parent_window=draw_state,
+        window_pos=(0, _pop_y), info=_info, parent_window=anchor,
         width=216, height=picker_h, mode=Modes.POPOVER)
-    
+
     imgui.same_line(spacing=0)
     if is_open and Melty.popover_focused_ds is draw_state:
         # Hand the slot from the host to the picker window now that it is
         # registered (same frame, under the opening grace).
-        for nested in Melty.root_draw_states.get(draw_state.id, ()):
+        for nested in Melty.root_draw_states.get(anchor.id, ()):
             if getattr(nested, "name", None) == picker_name:
                 Melty.popover_focused_ds = nested
                 break

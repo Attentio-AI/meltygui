@@ -287,10 +287,28 @@ def resolve(path, within=None, universe=None):
         return matches[0]
     if not matches:
         raise NoMatch(parse(path))
+    exact = _exact_chain_matches(parse(path), matches)
+    if len(exact) == 1:
+        return exact[0]
     if universe is None:
         universe = default_universe()
     raise Ambiguous(parse(path),
                     [minimal_path(ds, universe=universe) for ds in matches])
+
+
+def _exact_chain_matches(segments, matches):
+    """The tie-break behind an ambiguous path: candidates whose name chain
+    ends with the path CONTIGUOUSLY (no skipped levels). A recorded chain
+    is a node's MAXIMAL capture, so a live node whose chain is exactly
+    that is the node it was captured from — while a same-named descendant
+    (a live-view window `scores` holding a voxel view `scores`: the
+    window's own chain also matches the child as a subsequence) is only a
+    loose match. Name segments only; a path with an ordinal / Key / type
+    segment has no chain to compare and gets no tie-break."""
+    if not segments or not all(isinstance(seg, str) for seg in segments):
+        return []
+    tail = tuple(segments)
+    return [ds for ds in matches if name_chain(ds)[-len(tail):] == tail]
 
 
 def name_chain(ds, cap=64):

@@ -476,14 +476,19 @@ class Toggles:
         # they read apart from the grey scope folds at a glance. 4th value
         # is the badge alpha at rest (hover lifts it). Read live.
         # [tint=(0.36, 0.62, 0.85)]
-        diff_fold_tint = (0.36, 0.62, 0.85, 0.55)
+        diff_fold_tint = (0.36, 0.62, 0.85, 0.55)   # rgb = fallback for a buffer with no file; alpha = chevron / label alpha
         # Diff-gap PREVIEW: a collapsed gap keeps this many of its hidden
-        # lines visible (faded) under the context lines, the fold badge on
-        # the last of them, so a collapsed diff still hints at what the
-        # gap holds. 0 = the bare fold. Built into the gap spans
-        # (open_files._diff_gap_folds) — takes effect on the next re-derive.
+        # lines visible (faded) on each side — `below` = under the context
+        # lines that follow the change ABOVE the gap (the fold badge sits on
+        # the last of them), `above` = over the context lines that lead
+        # into the change BELOW the gap — so a collapsed diff still hints
+        # at what the gap holds. 0 = the bare fold on that side. Built
+        # into the gap spans (open_files._diff_gap_folds) — takes effect on
+        # the next re-derive.
         # [tint=(0.36, 0.62, 0.85)]
-        diff_preview_lines = 10
+        diff_preview_lines_below = 5
+        # [tint=(0.36, 0.62, 0.85)]
+        diff_preview_lines_above = 5
         # Glyph alpha factor on those preview rows (1.0 = not faded). Read
         # live.
         # [tint=(0.36, 0.62, 0.85)]

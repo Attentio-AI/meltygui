@@ -115,33 +115,48 @@ def take_for(archetype):
     return None
 
 
-def effect_offset(kind):
+def effect_offset(kind, editor=None):
     """How a demonstration produced effect `kind` ("expand", "raise",
     "scroll", …): the press offset from the top-left of the view the
     effect happened on (the effect cue's press_offset). The control sits
     at the same offset on every subject of that kind — the expand arrow on
     every collection header, the title on every window header — so ONE
-    demonstration serves any subject. A take recorded before press_offset
-    existed still carries press_frac + leaf_rect (the press as a fraction
-    of the subject's rect, and that rect's size): frac × size IS the pixel
-    offset — without this, nested gates whose name no recorded take
-    matched aborted with "no expand demonstration" (09-01)."""
-    derived = None
+    demonstration serves any subject OF THAT KIND: with `editor` (the
+    subject's view function) a demonstration from the same editor wins
+    (a collapsed WINDOW's chevron is not where a collection's is — the
+    collection's offset read as "clipped" on a 32 px window header, 09-01),
+    any other demonstration of the effect is the fallback. A take recorded
+    before press_offset existed still carries press_frac + leaf_rect (the
+    press as a fraction of the subject's rect, and that rect's size):
+    frac × size IS the pixel offset — without this, nested gates whose name
+    no recorded take matched aborted with "no expand demonstration" (09-01)."""
+    matched = fallback = derived = None
     for take in orchestration_store().values():
         for cue in getattr(take, "cues", []) or []:
             if cue_get(cue, "kind") != kind:
                 continue
-            if cue_get(cue, "press_offset"):
-                return tuple(cue_get(cue, "press_offset"))
-            frac, rect = cue_get(cue, "press_frac"), cue_get(cue, "leaf_rect")
-            if derived is None and frac and rect and rect[2] > 0 and rect[3] > 0:
-                derived = (float(frac[0]) * float(rect[2]),
-                           float(frac[1]) * float(rect[3]))
+            offset = cue_get(cue, "press_offset")
+            if not offset:
+                frac, rect = cue_get(cue, "press_frac"), cue_get(cue, "leaf_rect")
+                if derived is None and frac and rect and rect[2] > 0 and rect[3] > 0:
+                    derived = (float(frac[0]) * float(rect[2]),
+                               float(frac[1]) * float(rect[3]))
+                continue
+            offset = (float(offset[0]), float(offset[1]))
+            if editor is not None and cue_get(cue, "editor") == editor:
+                if matched is None:
+                    matched = offset
+            elif fallback is None:
+                fallback = offset
+    if matched is not None:
+        return matched
+    if fallback is not None:
+        return fallback
     return derived
 
 
-def expand_offset():
-    return effect_offset("expand")
+def expand_offset(editor=None):
+    return effect_offset("expand", editor=editor)
 
 
 def move_offset():
@@ -536,7 +551,7 @@ def _fix_expand(task, node, ds):
     move of the obscurer BEFORE the click, exactly as an obscurer's own
     covered header is for a move), so a gate the user could not click
     either is opened the way the user would open it."""
-    offset = expand_offset()
+    offset = expand_offset(editor=_editor_of(node))
     if offset is not None:
         def live_point():
             left, top, _w, _h = _live_rect(node)
@@ -596,9 +611,29 @@ def _fix_move(task, mover_ds, ds, point, rect=None):
     dx, dy = _escape_rect_delta((left, top, left + width, top + height), target, margin)
     if mover_ds is not obscurer:
         dx, dy = -dx, -dy                               # the point rides with the window
-    x, y = yield from task._satisfy(mover_ds, lambda: _header_point(mover_ds, offset),
-                                    depth=task._depth + 1, rect=_header_rect(mover_ds))
-    yield from _drag_by(_tracking(x, y, lambda: _header_point(mover_ds, offset)), dx, dy, mover_ds)
+    # Move by GEOMETRY, like a replayed move - the mover's corner must
+    # travel by the delta. The re-check after a fix only sees the unmet
+    # CHANGE - and a header press RAISES its window, so a drag whose grab
+    # never took still reshuffled the pile ("obscured by A" became
+    # "obscured by B"), read as ok, and the solver moved A and B in circles
+    # for hundreds of rounds without a window moving an inch (Lukas 09-01).
+    # A grab that does not take gets ONE more try after re-settling.
+    tolerance = Toggles.Orchestrator.move_tolerance_px
+    for attempt in range(2):
+        x, y = yield from task._satisfy(mover_ds, lambda: _header_point(mover_ds, offset),
+                                        depth=task._depth + 1, rect=_header_rect(mover_ds))
+        before = _live_rect(mover_ds)[:2]
+        yield from _drag_by(_tracking(x, y, lambda: _header_point(mover_ds, offset)),
+                            dx, dy, mover_ds)
+        yield from _wait_layout(mover_ds)
+        after = _live_rect(mover_ds)[:2]
+        moved = (after[0] - before[0], after[1] - before[1])
+        if abs(moved[0] - dx) <= tolerance and abs(moved[1] - dy) <= tolerance:
+            return
+        if abs(moved[0]) + abs(moved[1]) > tolerance:
+            return                          # it moved, short of the delta: the re-check s
+    raise _Abort(f"'{display_name(mover_ds)}' did not move (header drag by "
+                 f"({dx:.0f}, {dy:.0f}) not taken)")
 
 
 def _fix_scroll(task, ds, point_fn):
@@ -901,6 +936,13 @@ class ValueTask:
         self._unmet = None
         self._depth = 0
         self._picked = None
+        # Fix labels running up the sub-goal chain. A fix's own sub-goal
+        # never re-offers the fix: raising W needs W's header hittable,
+        # and with the wrong tests the cheapest candidate for THAT was
+        # "raise W" again - seven levels of the same raise until max_depth
+        # stopped them, for every window in the tree, before the fix that
+        # actually helps was ever tried at depth 1 (Lukas 09-01).
+        self._active_fixes = []
         self.attempts = []               # "fix (result)" log - the abort message lists it
         self._last_fix_frame = None      # Melty.frame_count when the last fix finished (layout wait)
         # A precondition-only run (the orchestrator window's per-precondition
@@ -921,6 +963,17 @@ class ValueTask:
         # demonstrated it - the press point for an editor with no archetype
         # (any widget: the cue still knows where on the target it pressed).
         self.press_frac = None
+        # The press as an OFFSET from the target's live top-left (px) - a
+        # gates-only replay presses where the recording pressed on the
+        # target, wherever the target sits now (a reorder moved the target,
+        # a scroll fix shifted it). Overrides press_frac if set.
+        self.press_offset = None
+        # The CONTROL the cue pressed, as (width, height, frac_x, frac_y)
+        # around the press point: where a re-pick may land. A header
+        # button is a 30 px square on a 4000 px collection: a re-pick
+        # anywhere else on the collection is not the button. None = the
+        # target's visible rect.
+        self.control = None
 
     def __str__(self):
         if self.until is not None:
@@ -937,8 +990,19 @@ class ValueTask:
         else the header centre for a window gesture, else the demonstrated
         fraction of the leaf's rect."""
         if self.gesture == "header":
+            # NEVER the cue's press offset here (see _header_point): a raise
+            # recorded off a body click carries an offset deep in the
+            # window, and a collapsed window is 32 px tall — the point read
+            # as "clipped" on every round (Lukas 09-01, the stress test)
             return lambda: (self.press_point if self.press_point is not None
                             else _header_point(ds, move_offset()))
+        if self.press_offset is not None:
+            def from_offset():
+                if self.press_point is not None:
+                    return self.press_point
+                left, top, _width, _height = _live_rect(ds)
+                return (left + self.press_offset[0], top + self.press_offset[1])
+            return from_offset
         if self.press_frac is not None:
             def from_frac():
                 if self.press_point is not None:
@@ -953,6 +1017,15 @@ class ValueTask:
         gesture, the leaf's visible rect otherwise (None = default)."""
         if self.gesture == "header":
             return lambda: _header_rect(ds)
+        if self.control is not None:
+            point_fn = self._press_point_fn(ds)
+
+            def control_rect():
+                width, height, frac_x, frac_y = self.control
+                x, y = point_fn()
+                left, top = x - frac_x * width, y - frac_y * height
+                return (left, top, left + width, top + height)
+            return control_rect
         return None
 
     def fail(self, message):
@@ -999,7 +1072,7 @@ class ValueTask:
             # hittable at the RECORDED press point (collapsed parents opened
             # by _resolve_structural; here the geometric ones - scrolled
             # out, covered), then hand back to the tape
-            yield from self._satisfy(ds, lambda: self.press_point or _leaf_point(ds, None, self))
+            yield from self._satisfy(ds, self._press_point_fn(ds), rect=self._press_rect_fn(ds))
             self.result = ds
             return
         editor = _editor_of(ds)
@@ -1028,13 +1101,16 @@ class ValueTask:
         live corner moved by the delta (within move_tolerance_px — a hard
         display limit or a collision that stopped it short is an honest
         abort naming how far it got)."""
-        if move_offset() is None:
+        if move_offset() is None and not self.gates_only:
             raise _Abort("no window-move demonstration recorded — record one (drag "
                          "any window by its header)")
-        try:
-            dx, dy = float(self.to[0]), float(self.to[1])
-        except (TypeError, ValueError, IndexError):
-            raise _Abort(f"move needs a (dx, dy) delta, got {self.to!r}")
+        if self.gates_only:
+            dx = dy = 0.0                    # the tape does the moving; only the press matters here
+        else:
+            try:
+                dx, dy = float(self.to[0]), float(self.to[1])
+            except (TypeError, ValueError, IndexError):
+                raise _Abort(f"move needs a (dx, dy) delta, got {self.to!r}")
         point_fn = self._press_point_fn(window)
         yield from self._wait_pacing("before_press")
         x, y = yield from self._satisfy(window, point_fn, rect=self._press_rect_fn(window))
@@ -1123,35 +1199,46 @@ class ValueTask:
         if depth > Toggles.Orchestrator.fix_depth:
             raise _Abort("precondition fixes nested too deep")
         saved_depth, self._depth = self._depth, depth
+        since = len(self.attempts)            # this scope's own attempts (the message lists just these)
         try:
             for _round in range(max(1, Toggles.Orchestrator.gate_attempts) * 2):
                 unmet = _first_unmet(ds, point_fn())
                 if unmet is None:
                     break
-                point_fn = yield from self._apply_fixes(unmet, ds, point_fn, rect)
+                point_fn = yield from self._apply_fixes(unmet, ds, point_fn, rect, since=since)
                 yield
             point = point_fn()
             unmet = _first_unmet(ds, point)
             if unmet is not None:
-                raise _Abort(self._unmet_message(unmet, ds))
+                raise _Abort(self._unmet_message(unmet, ds, since=since))
             if depth == 0:
                 self.press_point = point
             return point
         finally:
             self._depth = saved_depth
 
-    def _apply_fixes(self, unmet, ds, point_fn, rect=None):
+    def _apply_fixes(self, unmet, ds, point_fn, rect=None, since=0):
         """Run the candidates for one unmet precondition until the
         precondition changes (fixed, or a different one surfaced). Returns
-        the press point callable (a re-pick replaces it)."""
+        the press point callable (a re-pick replaces it). `since` = where
+        this scope's attempts start in the flat log."""
         self._unmet = unmet
         for cost, label, make in _candidates(self, unmet, ds, point_fn, rect):
+            if label in self._active_fixes:
+                continue                      # this fix's own sub-goal: not a candidate
             self._picked = None
+            self._active_fixes.append(label)
             try:
                 yield from make()
             except _Abort as abort:
-                self.attempts.append(f"{label} ({abort})")
+                # a nested failure's own attempts are already in the flat
+                # log; keep its HEAD here, never its transcript (re-embedding
+                # it at every level blew the report past a megabyte, 09-01)
+                self.attempts.append(f"{label} ({_abort_head(abort)})")
                 continue
+            finally:
+                self._active_fixes.remove(label)
+                self._unmet = unmet           # a nested fix overwrote it
             self._last_fix_frame = Melty.frame_count
             if self._picked is not None:
                 point_fn = (lambda p=self._picked: p)
@@ -1164,7 +1251,7 @@ class ValueTask:
                     raise _PreconditionDone()
                 return point_fn
             self.attempts.append(f"{label} (still {unmet[0]})")
-        raise _Abort(self._unmet_message(unmet, ds))
+        raise _Abort(self._unmet_message(unmet, ds, since=since))
 
     def _re_pick(self, ds, rect=None):
         """The zero-cost fix: another press point inside the visible part
@@ -1185,14 +1272,15 @@ class ValueTask:
             yield
         raise _Abort("no uncovered point on the target")
 
-    def _unmet_message(self, unmet, ds):
+    def _unmet_message(self, unmet, ds, since=0):
         kind, node = unmet
         what = {"closed": f"window '{display_name(node)}' is closed",
                 "collapsed": f"'{display_name(node)}' is collapsed",
                 "outside": f"'{display_name(ds)}' is outside its scroll viewport",
                 "clipped": f"'{display_name(ds)}' is clipped at its press point",
                 "obscured": f"'{display_name(ds)}' is covered by '{display_name(node)}'"}[kind]
-        tried = "; ".join(self.attempts) if self.attempts else "nothing applicable"
+        attempts = self.attempts[since:]
+        tried = "; ".join(attempts) if attempts else "nothing applicable"
         return f"{what} — tried: {tried}"
 
     def _verify(self, ds):
@@ -1207,6 +1295,11 @@ class ValueTask:
             yield
         reached = change.new if change is not None else "unchanged"
         raise _Abort(f"value is {reached!r}, wanted {self.to!r}")
+
+
+def _abort_head(abort):
+    """A precondition failure's one-line cause, without its attempts."""
+    return str(abort).split(" — tried:")[0]
 
 
 def _value_matches(value, target, eps):

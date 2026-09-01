@@ -14,9 +14,13 @@ muted at the funnel while a replay drives (Esc aborts).
 Replay is not blind: while recording, every new GROUP on the undo stacks
 (UndoManager edits + NavUndo window/location steps) is stamped as a CUE at
 the current event index. Replay pauses at each cue until the live stack
-shows a matching change; a missing cue first re-aims the last click at the
-cue target's LIVE rect (the recorded window may have moved), then aborts
-with a notice. With an orchestration's restore checkbox on, finishing a
+shows a matching change; a missing cue first runs the cue target's
+PRECONDITIONS (the same list the window shows beside the command — closed
+/ collapsed / scrolled out / covered, satisfied by change_value's solver
+at the recorded press point) and replays the gesture, for ANY cue with a
+target regardless of kind or stack; a cue without a target gets the old
+tile re-aim (edits) or none (effects); a second miss aborts with a notice
+naming what was tried. With an orchestration's restore checkbox on, finishing a
 replay walks both undo stacks back to where they stood at replay start —
 the undo stack IS the restore mechanism.
 
@@ -220,6 +224,7 @@ def make_cue(change, stack_name, event_index, take, press_window=None, since=0):
     this take on a different field of the same widget kind)."""
     from src.lsd.gl_gui.view.playground.selectors import name_chain
     ds = getattr(change, "draw_state", None)
+    anchored = _cue_anchor_window(change, press_window=press_window)
     anchor = _cue_anchor(change, press_window=press_window)
     leaf_rect = None
     press_frac = None
@@ -229,6 +234,13 @@ def make_cue(change, stack_name, event_index, take, press_window=None, since=0):
         top = getattr(ds, "abs_top", None)
         width = getattr(ds, "width", 0) or 0
         height = getattr(ds, "height", 0) or 0
+        if anchored is not None and anchored[0] is ds:
+            # the target IS the anchor window: its rect is read where the
+            # window sat when the press landed (the anchor origin), not
+            # where the gesture left it - a colour cue's press is on the
+            # window, and measured against the anchor rect it read as the
+            # bottom edge / a corner (clamped fraction, 09-01)
+            left, top = anchored[1], anchored[2]
         if left is not None and top is not None and anchor is not None:
             leaf_rect = (float(left - anchor[2]), float(top - anchor[3]),
                          float(width), float(height))
@@ -407,7 +419,10 @@ def make_effect_cue(entry, take, press_window=None):
         "name": entry.name,
         "chain": list(name_chain(entry.draw_state)) if entry.draw_state is not None else [],
         "old": None, "new": None, "new_repr": "", "direction": None,
-        "editor": None, "value_type": None,
+        # the view the effect happened on: what makes a demonstration
+        # transferable to subjects of the SAME kind (flat_value.effectable)
+        "editor": getattr(getattr(entry.draw_state, "_view_func", None), "__name__", None),
+        "value_type": None,
         "anchor": anchor,
         "leaf_rect": leaf_rect,
         "press_frac": press_frac,
@@ -429,6 +444,20 @@ def _cue_anchor(change, press_window=None):
     - WindowMoveChange: the moved window itself, at its PRE-drag position —
       the drag really is on that window, and its events happened before the
       move landed."""
+    resolved = _cue_anchor_window(change, press_window=press_window)
+    if resolved is None:
+        return None
+    window_ds, left, top = resolved
+    return (repr(getattr(window_ds, "_tile_id", None))[:200],
+            str(getattr(window_ds, "name", "?")), float(left), float(top))
+
+
+def _cue_anchor_window(change, press_window=None):
+    """(window_ds, left, top) behind _cue_anchor: the anchor window and its
+    origin AT PRESS TIME — a moved window's is rewound by the change's
+    delta, since the cue is cut when the drag has landed but its events
+    (and the press's geometry) happened before. None when there is no
+    window to anchor on."""
     ds = getattr(change, "draw_state", None)
     if ds is None:
         return None
@@ -447,8 +476,7 @@ def _cue_anchor(change, press_window=None):
     if isinstance(change, WindowMoveChange):
         left -= change.new[0] - change.old[0]
         top -= change.new[1] - change.old[1]
-    return (repr(getattr(window_ds, "_tile_id", None))[:200],
-            str(getattr(window_ds, "name", "?")), float(left), float(top))
+    return window_ds, float(left), float(top)
 
 
 def _key_label(key, mods=0):
@@ -600,6 +628,35 @@ def cue_press_frac(cue):
     if offset and rect and rect[2] > 0 and rect[3] > 0:
         return (float(offset[0]) / float(rect[2]), float(offset[1]) / float(rect[3]))
     return None
+
+
+def cue_press_offset(cue):
+    """Where the recording pressed, as an OFFSET (px) from the cue TARGET's
+    top-left — the cue's own press_offset (an effect cue: the press
+    relative to the view the effect happened on), else the press fraction
+    of its leaf_rect (an edit cue: the leaf IS the target). None without
+    geometry (a legacy cue)."""
+    offset = cue_get(cue, "press_offset")
+    if offset:
+        return (float(offset[0]), float(offset[1]))
+    rect, frac = cue_get(cue, "leaf_rect"), cue_press_frac(cue)
+    if rect and frac is not None:
+        return (frac[0] * float(rect[2]), frac[1] * float(rect[3]))
+    return None
+
+
+def cue_control(cue):
+    """The CONTROL the cue pressed, as (width, height, frac_x, frac_y) —
+    its leaf_rect's size and the press's fraction of it. This bounds a
+    precondition re-pick: a header button is the button, not the view it
+    belongs to; a leaf editor is the leaf. None without geometry."""
+    rect, frac = cue_get(cue, "leaf_rect"), cue_press_frac(cue)
+    if not rect or frac is None:
+        return None
+    width, height = float(rect[2]), float(rect[3])
+    if width <= 0 or height <= 0:
+        return None
+    return (width, height, float(frac[0]), float(frac[1]))
 
 
 def cue_has_target(cue):
@@ -889,6 +946,10 @@ class Orchestrator:
     _cue_wait = 0
     _cue_corrected = False
     _matched_ids = set()        # id(change) of live changes already claimed by a cue
+    # Cue indices whose failed verification already ran the PRECONDITION
+    # correction (the window's own list, satisfied then the gesture
+    # replayed): a second miss of the same cue aborts instead of looping.
+    _precondition_corrected = {}   # cue_index -> the task's attempts log
     _anchor_cache = {}          # cue_index -> (left, top): resolved anchor origins this replay
     _replay_end = None          # exclusive event bound of a single replay run (None means full)
     _replay_partial = False     # partial run: restore_on_finish is skipped
@@ -1417,6 +1478,7 @@ class Orchestrator:
         cls._cue_wait = 0
         cls._cue_corrected = False
         cls._matched_ids = set()
+        cls._precondition_corrected = {}
         cls._last_click = None
         cls._replay_marks = {name: stack._next_group_id
                              for name, stack in _stacks().items()}
@@ -1509,11 +1571,15 @@ class Orchestrator:
                 task.press_frac = cue_press_frac(cue)
                 task.orchestration = orchestration
                 task.start_frame = Melty.frame_count
-                if task.press_frac is None:
-                    # a legacy cue with no press fraction: press exactly where
-                    # the tape left it (if unanchored). A cue that knows its
-                    # fraction presses THERE on the resolved target's live rect
-                    # instead - the item may have moved (a reorder)
+                # the press lands where the recording pressed ON THE TARGET -
+                # its offset from the target's live top-left, so the item
+                # may have moved (a glide, a scroll fix) and the click
+                # follows it; a re-pick stays on the CONTROL that was
+                # pressed. A legacy cue with no geometry presses right
+                # where the tape recorded it (re-anchored).
+                task.press_offset = cue_press_offset(cue)
+                task.control = cue_control(cue)
+                if task.press_offset is None and task.press_frac is None:
                     cls._injecting_index = cls._replay_index
                     task.press_point = cls._event_xy(events[cls._replay_index], 3)
                     cls._injecting_index = None
@@ -1621,8 +1687,12 @@ class Orchestrator:
 
     @classmethod
     def _gesture_remaps(cls, orchestration, generalize=False):
-        """For every leaf-edit cue, the gesture that produced it, with the
-        value that gesture must set — see `play` for the two modes. Keyed
+        """For every cue WITH A TARGET (an edit, an effect — a button, a
+        raise, a scroll — whatever its stack), the gesture that produced
+        it, with the value that gesture must set — see `play` for the two
+        modes. Its target's preconditions are checked and fixed BEFORE the
+        press ever lands; the tape never clicks into a covered / clipped /
+        collapsed target and reads the miss. Keyed
         by the press's event index; the value is (last event of the
         gesture, cue index, value). A DRAG's Change coalesces while the
         button is held, so its press is still in flight at the cue; a TEXT
@@ -1644,15 +1714,15 @@ class Orchestrator:
                     down_index, end_index = span
                     remaps[down_index] = (end_index, cue_index, delta if generalize else _KEEP)
                 continue
-            if cue_get(cue, "kind") not in _EDIT_KINDS:
-                continue
             at = min(cue_get(cue, "at", 0), len(events))
-            if cue_get(cue, "editor") not in _COMMAND_VERBS:
-                # no command drives this editor's value (a colour chip, an
-                # imgui widget without a servo): its gesture still gets the
-                # gates opened and the press uncovered, then the tape plays
-                # it verbatim - preconditions never depend on the widget.
-                # (A take cue without a chain has no target to resolve:
+            if cue_get(cue, "kind") not in _EDIT_KINDS or cue_get(cue, "editor") not in _COMMAND_VERBS:
+                # no archetype drives this cue's value (a colour chip, an
+                # imgui widget without a servo, an EFFECT cue: a button, a
+                # raise, a scroll): its gesture still gets its gates opened
+                # and the press uncovered BEFORE the tape plays it verbatim
+                # - preconditions still depend on the widget, and the press
+                # is never made into a covered / clipped target first.
+                # (A legacy cue without a chain has no target to resolve:
                 # verbatim tape, as before.)
                 if not cue_has_target(cue):
                     continue
@@ -1861,13 +1931,24 @@ class Orchestrator:
         cls._cue_wait += 1
         if cls._cue_wait <= Toggles.Orchestrator.cue_wait_frames:
             return False
+        cue_index = cls._cue_cursor - 1
+        # First correction, for ANY cue with a target - whatever its kind or
+        # stack: the window's preconditions for the target (the same
+        # list it shows beside the command) are satisfied at the RECORDED
+        # press point and the gesture replays. The effect the cue names is
+        # the verification; how the click failed is not the engine's
+        # business - the solver's is.
+        if (cue_index not in cls._precondition_corrected and cue_has_target(cue)
+                and cls._correct_via_preconditions(cue, cue_index)):
+            return False
         if not cls._cue_corrected:
             if cue_get(cue, "stack") == "effects":
-                # No re-aim for effect cues: there is nothing to resolve the
-                # click against (the whole point is the target has no
-                # structure) - the honest move is naming the missing effect.
+                # No re-aim for an effect cue: the click identifies itself by
+                # its effect, so there is no tile to aim at - report the
+                # missing effect (and what the solver tried, if it ran).
                 cls.abort(f"effect missing: {cue_get(cue, 'kind')} "
-                          f"'{cue_get(cue, 'name')}' after event {cue_get(cue, 'at')}")
+                          f"'{cue_get(cue, 'name')}' after event {cue_get(cue, 'at')}"
+                          + cls._precondition_note(cue_index))
                 return False
             cls._cue_corrected = True
             cls._cue_wait = 0
@@ -1875,8 +1956,64 @@ class Orchestrator:
             cls._correct(cue)
             return False
         cls.abort(f"cue failed: expected {cue_get(cue, 'kind')} on "
-                  f"'{cue_get(cue, 'name')}' after event {cue_get(cue, 'at')}")
+                  f"'{cue_get(cue, 'name')}' after event {cue_get(cue, 'at')}"
+                  + cls._precondition_note(cue_index))
         return False
+
+    @classmethod
+    def _precondition_note(cls, cue_index):
+        attempts = cls._precondition_corrected.get(cue_index)
+        if not attempts:
+            return ""
+        return " — preconditions tried: " + "; ".join(str(a) for a in attempts)
+
+    @classmethod
+    def _correct_via_preconditions(cls, cue, cue_index):
+        """The window's preconditions as the correction: a gates-only
+        ValueTask on the cue's target (path / gesture / press fraction
+        exactly as `refresh_preconditions` lists them, the press point the
+        RECORDED press re-anchored — where the tape is about to click),
+        then the tape rewound to the gesture's press so it replays and the
+        cue re-arms behind it. The task's own abort (no fix applied) lands
+        as the cue's failure. False when the cue's gesture cannot be found
+        (no press to replay)."""
+        from src.lsd.gl_gui.view.playground.change_value import ValueTask
+        orchestration = cls.replaying
+        events = orchestration.events
+        at = min(cue_get(cue, "at", 0), len(events))
+        span = cls._cue_gesture(events, cue, at)
+        if span is None:
+            return False
+        down_index, up_index = span
+        if events[down_index][1] != "down":
+            return False
+        path = tuple(cue_get(cue, "chain") or [cue_get(cue, "name") or "?"])
+        task = ValueTask(path, None, universe=cls._remap_universe)
+        task.gates_only = True
+        task.gesture = cue_gesture(cue)
+        task.press_frac = cue_press_frac(cue)
+        task.press_offset = cue_press_offset(cue)
+        task.control = cue_control(cue)
+        if task.press_offset is None and task.press_frac is None:
+            cls._injecting_index = down_index
+            task.press_point = cls._event_xy(events[down_index], 3)
+            cls._injecting_index = None
+        task.orchestration = orchestration
+        task.start_frame = Melty.frame_count
+        cls._precondition_corrected[cue_index] = task.attempts
+        # rewind: the gesture replays once the gates are open, the cue
+        # arms again after it (a second miss aborts)
+        cls._cue_pending = None
+        cls._cue_wait = 0
+        cls._cue_corrected = False
+        cls._cue_cursor = cue_index
+        cls._replay_index = down_index
+        cls._remap_shift = None
+        cls._remap = (task, task.run(), up_index, cue_index)
+        cls.status = (f"correcting: {cue_get(cue, 'kind')} {cue_get(cue, 'name')} · "
+                      f"preconditions")
+        request_render()
+        return True
 
     @classmethod
     def _cue_satisfied(cls, cue):
