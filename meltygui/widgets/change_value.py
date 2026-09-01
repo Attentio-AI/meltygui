@@ -102,15 +102,21 @@ def take_for(archetype):
 
 
 def fragment_for_gate():
-    """A take that opens a collapsed view: terminal effect is a bool
-    flipping True on a NON-leaf (the container's expanded flag, not a
-    draw_bool checkbox)."""
+    """A take that opens a collapsed view. Preferred: a take whose last
+    meaningful cue is an "expand" EFFECT (the header arrow's ledger entry).
+    Legacy: a bool flipping True on a NON-leaf (recordings from when
+    expansion was assumed to reach the undo stack)."""
     for take in orchestration_store().values():
-        cue = terminal_cue(take)
-        if (cue is not None and cue_get(cue, "value_type") == "bool"
-                and cue_get(cue, "new") in (True, "True")
-                and cue_get(cue, "editor") not in _ARCHETYPE_BY_EDITOR):
-            return take
+        for cue in reversed(getattr(take, "cues", []) or []):
+            kind = cue_get(cue, "kind")
+            if kind == "expand":
+                return take
+            if kind == "Change":
+                if (cue_get(cue, "value_type") == "bool"
+                        and cue_get(cue, "new") in (True, "True")
+                        and cue_get(cue, "editor") not in _ARCHETYPE_BY_EDITOR):
+                    return take
+                break                       # a leaf-edit take, not an expand take
     return None
 
 
@@ -352,6 +358,84 @@ class ValueTask:
             yield
         reached = change.new if change is not None else "unchanged"
         raise _Abort(f"value is {reached!r}, wanted {self.to!r}")
+
+
+def playable_commands(orchestration):
+    """The take's parameterized program: [(cue_index, path, value)] — one
+    entry per leaf-edit cue, in order, value = the user's override (keyed
+    str(cue_index) in orchestration.overrides) else the recorded one. Path
+    is the cue's FULL recorded chain (maximal capture — the most specific
+    address; resolve complains with candidates if it's ambiguous)."""
+    from src.lsd.gl_gui.view.playground.orchestrator import cue_get, _COMMAND_VERBS
+    overrides = getattr(orchestration, "overrides", None) or {}
+    commands = []
+    for index, cue in enumerate(getattr(orchestration, "cues", None) or []):
+        if cue_get(cue, "kind") != "Change" \
+                or cue_get(cue, "editor") not in _COMMAND_VERBS:
+            continue
+        chain = cue_get(cue, "chain") or []
+        path = tuple(chain) if chain else (cue_get(cue, "name") or "?",)
+        value = overrides.get(str(index), cue_get(cue, "new", cue_get(cue, "new_repr")))
+        commands.append((index, path, value))
+    return commands
+
+
+class CommandPlayTask:
+    """Generalized playback: run a take as its COMMAND list — one
+    change_value per leaf-edit cue, recorded value unless overridden — so
+    edited arguments replay through the real archetype executors (servo,
+    text, gates) instead of the raw event tape. `command_cursor` is the cue
+    index currently executing (the window's Commands tab highlights it).
+    Same task contract as ValueTask (Orchestrator.submit steps run())."""
+
+    def __init__(self, orchestration, universe=None, only=None):
+        self.orchestration = orchestration
+        self.universe = universe
+        self.only = only                 # cue index: run just this one command
+        self.error = None
+        self.result = None
+        self.start_frame = 0
+        self.command_cursor = None
+        self._generator = None
+        self._done = threading.Event()
+
+    def __str__(self):
+        return f"play '{getattr(self.orchestration, 'name', '?')}' (args)"
+
+    def fail(self, message):
+        self.error = self.error or str(message)
+        self._done.set()
+
+    def finish(self):
+        self._done.set()
+
+    def wait(self, timeout=None):
+        self._done.wait(timeout)
+        return self.error is None
+
+    def run(self):
+        try:
+            yield from self._run()
+        except _Abort as abort:
+            self.error = str(abort)
+
+    def _run(self):
+        commands = playable_commands(self.orchestration)
+        if self.only is not None:
+            commands = [c for c in commands if c[0] == self.only]
+        if not commands:
+            raise _Abort("no parameterized commands in this take")
+        done = 0
+        for cue_index, path, value in commands:
+            self.command_cursor = cue_index
+            inner = ValueTask(path, value, universe=self.universe)
+            inner.start_frame = Melty.frame_count
+            yield from inner.run()
+            if inner.error:
+                raise _Abort(f"{format_path(parse(path))}: {inner.error}")
+            done += 1
+        self.command_cursor = None
+        self.result = done
 
 
 def _value_matches(value, target, eps):

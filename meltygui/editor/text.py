@@ -9475,6 +9475,7 @@ def draw_text(input_value: str, height=None,
               syntax_highlight=True, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
+              default_collapsed_lines=None,
               diff_fold_ranges=None, expand_diff=None,
               gutter_indent=False,
               scroll_bar_width=8.0, scroll_bar_brightness=5.9,
@@ -9867,6 +9868,15 @@ def draw_text(input_value: str, height=None,
         # so a diff-mode edit can't swallow the one-shot union.
         if getattr(ds, '_fold_collapsed', None) is None:
             ds._fold_collapsed = set(_fold_default_col or ())
+            # Caller-declared default-collapsed folds: `default_collapsed_lines`
+            # (0-based buffer HEADER lines) marks the folds STARTING on those
+            # lines collapsed on this editor's first sight - the stack trace
+            # view seeds each pane with its root scope folded. First-sight only,
+            # like the built-in defaults: a badge toggle owns the state after.
+            if default_collapsed_lines and fold_ranges:
+                _dcl = set(default_collapsed_lines)
+                ds._fold_collapsed |= {r for r in fold_ranges
+                                       if r[0] in _dcl}
             ds._fold_seed_ver = _FOLD_SEED_VER
         elif (_fold_default_col is not None
               and getattr(ds, '_fold_seed_ver', 0) != _FOLD_SEED_VER):

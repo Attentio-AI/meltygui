@@ -909,6 +909,12 @@ class Melty:
     # note still sticks while nothing is happening.
     emphasis_hold_grace = 30
     emphasis_notes = {}
+    # Effect-ledger hook (the Orchestrator binds EffectLedger.note here):
+    # framework points publish observable, NOT-undoable effects through it -
+    # an actual window raise (apply_move_to_front), a fired show_button
+    # (headers.py) - the record/replay engine's third cue source beside the
+    # edit stacks. None until the orchestrator module loads.
+    effect_hook = None
 
     # File-text cache keyed by resolved path name. Populated by read_code,
     # invalidated by FileWatch on external change. Lets the symbol-usage index
@@ -4771,6 +4777,20 @@ class Melty:
                 cls.pending_move_to_front[1].layer = window_z_pos
                 draw_state = cls.pending_move_to_front[1]
                 draw_state.active_layer = window_z_pos
+                # Effect ledger: an ACTUAL raise (this window is not already
+                # front) is an observable, not-undoable effect - the
+                # Orchestrator cues off it, which is what makes a window-dock
+                # row click verifiable by its effect ("Voxels came to front")
+                # with no structure on the dock. Gated on the real change so
+                # in-window press-raises of the front window stay silent.
+                if cls.effect_hook is not None:
+                    try:
+                        cls.effect_hook(
+                            "raise",
+                            str(getattr(draw_state, "name", "?")).split("##")[0],
+                            draw_state)
+                    except Exception:
+                        pass
 
                 # Refresh the z_pos sort key for the raised window's WHOLE subtree
                 # now, not when it next renders. bvh_query sorts hits by the stored

@@ -374,10 +374,42 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     # the text body's I-beam rect). priority_delta=4 outranks the body's
     # own cursor registrations (draw_text's is at 3), and being an
     # on_action from the owner's body it is replayed on its cache hits.
-    return draw_state.on_action(event, view_id=view_id,
-                                rect=(x, y, x + w, y + h),
-                                priority_delta=4,
-                                cursor=mouse_cursor.ARROW) is not None
+    fired = draw_state.on_action(event, view_id=view_id,
+                                 rect=(x, y, x + w, y + h),
+                                 priority_delta=4,
+                                 cursor=mouse_cursor.ARROW) is not None
+    # Effect ledger: a fired flat button is an observable effect with no
+    # undo record — the Orchestrator cues replays off it (view_id names the
+    # button; the rect gives the cue press-fraction geometry, so button
+    # clicks generalize like leaf-editor presses).
+    if fired and Melty.effect_hook is not None:
+        try:
+            Melty.effect_hook("button", str(view_id).split("##")[0], draw_state,
+                              rect=(x, y, w, h))
+        except Exception:
+            pass
+    return fired
+
+
+def _jump_to_view_source(draw_state):
+    """Open the code editor on the def of the function that renders
+    `draw_state` — the raw function under the @render_func wrapper, resolved
+    the way the context menu's inputs tab does (`inspect.unwrap`). A view
+    with no source file (a lambda, a C function) does nothing."""
+    import inspect
+    from pathlib import Path
+    view_fn = getattr(draw_state, "_view_func", None)
+    if view_fn is None:
+        return
+    try:
+        view_fn = inspect.unwrap(view_fn)
+        fn_file = inspect.getsourcefile(view_fn)
+    except (TypeError, ValueError):
+        return
+    if not fn_file:
+        return
+    from src.lsd.gl_gui.view.core_views.new_core_view import _jump_to_symbol_def
+    _jump_to_symbol_def(view_fn, Path(fn_file))
 
 
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",
@@ -458,7 +490,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
 
     # ── Tree arrow ─────────────────────────────────────────────
     imgui.dummy(5, 0)
-    start_x = imgui.get_cursor_screen_pos()[0]
+    start_x, start_y = imgui.get_cursor_screen_pos()
 
     on_change = False
     return_val = on_action
@@ -481,6 +513,20 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
         if imgui.arrow_button("##tree", arrow_dir):
             draw_state.expanded = not draw_state.expanded
+            # Effect ledger: expand/collapse is draw_state UI state — no
+            # undo record — but it IS the gate the orchestration machinery
+            # keys on (the field-behind-a-collapsed-parent story). The
+            # direction rides in the kind so replay verification catches a
+            # wrong toggle (an "expand" replayed onto an already-expanded
+            # view collapses it — the cue then fails honestly).
+            if Melty.effect_hook is not None:
+                try:
+                    Melty.effect_hook(
+                        "expand" if draw_state.expanded else "collapse",
+                        str(getattr(draw_state, "name", "?")).split("##")[0],
+                        draw_state)
+                except Exception:
+                    pass
             draw_state.content_height = 0
             draw_state.invalid_content_height = True
             request_render()
@@ -690,6 +736,22 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         same_line(spacing=0)
 
     end_x = imgui.get_cursor_screen_pos()[0]
+
+    # ── Ctrl+B on the header → the view function's source ──────
+    # Same landing as a global-search Code hit (_jump_to_symbol_def): the
+    # editor opens on the `def` of whatever function renders this view.
+    # Hover-scoped to the header's own rect, so the editor's Ctrl+B (usage
+    # jump, hover-routed to the text body) is untouched.
+    header_rect = (start_x, start_y, end_x, start_y + imgui.get_frame_height())
+    if draw_state.on_action("ctrl_b_down", view_id=f"hdr_jump{unique}",
+                            rect=header_rect) is not None:
+        # Fire-and-forget flash on the header itself so the jump reads as
+        # "from here" while the editor comes to front (same flash as the
+        # editor's own jump landing / merge Apply).
+        Melty.emphasize(f"hdr_jump {draw_state.name}",
+                        (header_rect[0] - 3, header_rect[1] - 2,
+                         header_rect[2] + 3, header_rect[3] + 2))
+        _jump_to_view_source(draw_state)
 
     # ── Profiler ───────────────────────────────────────────────
     is_profiling = Toggles.profile_mode == ProfileMode.ON

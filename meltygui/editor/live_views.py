@@ -1905,7 +1905,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     # the index never pins a replaced run's function (id() of a dead object
     # could recycle).
     if (_ie is None or _ie[0] is not _src or _ie[1] != _ik
-            or len(_ie) < 6 or _ie[4]() is not fn):
+            or len(_ie) < 7 or _ie[4]() is not fn):
         # Append + ONE sort (C-speed): the first version insort-ed each key
         # (list.insert, O(n) memmove → O(n²) per rebuild), and a publish
         # storm - a stack-trace snapshot landing thousands of keys with
@@ -1945,15 +1945,18 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                         span.start_line, span.end_line, lidx=_lidx)
                     _snap_memo[_mk] = _snapped
                 _rl = _snapped
-            _pairs.append((_rl, key_path))
+            _pairs.append((_rl, key_path, _a))
         _pairs.sort(key=lambda p: p[0])
         # Stable hash-free cache for the whole snapshot, built WITH the index
         # (same invalidation) - per-key naming was O(store) hash → O(store²)
         # per pass on frame-snapshot stores.
+        # The resolved anchor rides with its key: _key_anchor is a
+        # locals-walk per key, and re-running it per line per frame
+        # was O(visible band) of dict descents for every repaint.
         _ie = (_src, _ik, [p[0] for p in _pairs], [p[1] for p in _pairs],
-               weakref.ref(fn), None)
+               weakref.ref(fn), None, [p[2] for p in _pairs])
         object.__setattr__(draw_state, "_lv_key_index", _ie)
-    _ilines, _ikeys = _ie[2], _ie[3]
+    _ilines, _ikeys, _ianchors = _ie[2], _ie[3], _ie[6]
     # Names from the SHARED generation-keyed store map - never the anchor
     # index's own cache; differently-stale name maps across consumers
     # minted duplicate value IDs (see _stable_key_names).
@@ -1966,6 +1969,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _i0 = bisect.bisect_left(_ilines, _blo)
         _i1 = bisect.bisect_right(_ilines, _bhi)
         _cand = _ikeys[_i0:_i1]
+        _cand_anchors = _ianchors[_i0:_i1]
         _soc[1] = len(_ikeys) - len(_cand)
     else:
         # Post-run forward pass renders EVERY key in the loop - the per-key
@@ -1973,16 +1977,14 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # an OPEN window (rendered at the frozen anchor, which forwards the
         # actual value into the window's draw_any).
         _cand = _ikeys
+        _cand_anchors = _ianchors
 
     # Binding-value pills, built by the marker loop and painted by the
     # trailing-gap pass: (display 0, boundary buffer col, "=value",
     # symbol length) - usage-label pairs, one per captured target.
     _bind_pills = []
-    for key_path in _cand:
+    for key_path, anchor in zip(_cand, _cand_anchors):
         value = _snap_vals.get(key_path)
-        anchor = _key_anchor(node, key_path, line_offset)
-        if anchor is None:
-            continue
         rel_line, start_col, end_col = anchor
         if end_col is None:
             # line:N keys carry a RUN-TIME line stamp - edits since the run
@@ -2080,16 +2082,35 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _sao = (bool(Toggles.TextEditor.live_auto_open_volumes)
                 and is_volume(value) and key_path not in
                 (getattr(fn, "__frame_snapshot_keys__", None) or ()))
-        # An inline-labeled marker (simple builtin value) draws every buffer
-        # repaint - the label bakes into the tile - so it never idle-skips.
+        # An inline-labeled marker (simple builtin value) paints NOTHING
+        # itself: its pill is collected below (_bind_pills) and painted raw
+        # by _stamp_and_paint after the gap draw_text laid out. So an idle
+        # one skips its @render_wrapper call like any other marker - once the
+        # body has run at least once with the inline flag (the gutter glyph
+        # and _lv_open button happen there; `_lv_inline` tracks it) - with
+        # the body's full per-key watch replicated so a publish still
+        # repaints the pill. Before this every visible captured binding of
+        # a frame snapshot paid a full wrapper call per line: a big def
+        # could draw_text (one binding on most lines) froze the editor.
+        _btext = _inline_value_text(value)
+        _mreg0 = draw_state.__dict__.get("_lv_marker_ds")
+        _mds0 = _mreg0.get(_snm) if _mreg0 else None
         if (_frozen_pos is None
-                and _inline_value_text(value) is None
+                and (_btext is None
+                     or (_mds0 is not None
+                         and getattr(_mds0, "_lv_inline", None) is True))
                 and _marker_idle_skip(
                     draw_state, _snm,
                     origin_x + start_col * char_w - pad, _my - pad,
                     max(1, end_col - start_col) * char_w + 2 * pad,
                     line_px + 2 * pad, True, cursor_inside,
                     fn, key_path, _ml - 1, _sao)):
+            if _btext is not None:
+                watch(fn, key_path, _mds0)
+                _bind_pills.append((_ml - 1,
+                                    end_col + kwargs.get("col_shift", 0),
+                                    "=" + _btext,
+                                    max(1, end_col - start_col)))
             _soc[2] += 1
             continue
         _soc[3] += 1
@@ -2112,7 +2133,6 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # `edited=False, new_text='...' = get_text(...)` - code repositions,
         # nothing is covered. Collected here, stamped + painted by
         # _draw_usage_labels below (sym_len drives the gap-derived ring).
-        _btext = _inline_value_text(value)
         if _btext is not None:
             _bshift = kwargs.get("col_shift", 0)
             _bind_pills.append((_ml - 1, end_col + _bshift, "=" + _btext,
@@ -2257,16 +2277,33 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
     """The trailing-gap stamp + paint shared by usage labels and binding
     pills (see _draw_usage_labels)."""
     trails = draw_state.__dict__.setdefault("_lv_trail_views", {})
-    publish_seq = vars(fn).get("__live_pub_seq__") or {}
+    _fvars = vars(fn)
+    publish_seq = _fvars.get("__live_pub_seq__") or {}
+    # governing_key is O(bindings above the line) - a name rebound dozens
+    # of times in a big def (`x`, `_ti`) with ~100 visible occurrences
+    # was a per-frame scan in the thousands. Its answer only changes when
+    # the bindings index rebuilds or a publish re-orders the sequence
+    # (`__live_pub_gen__` bumped by add_view beside __live_pub_seq__).
+    _pub_gen = _fvars.get("__live_pub_gen__", 0)
+    _gov_memo = draw_state.__dict__.get("_lv_gov_memo")
+    if (_gov_memo is None or _gov_memo[0] is not bindings
+            or _gov_memo[1] != _pub_gen):
+        _gov_memo = (bindings, _pub_gen, {})
+        object.__setattr__(draw_state, "_lv_gov_memo", _gov_memo)
+    _gov = _gov_memo[2]
     sub = {}          # (display line0, buffer boundary col) → gap cells
     paints = []       # visible pills, paint after the stamp below
     for line, col, name, _last in occurrences:
         _ml = lmap(line) if lmap else line
         if _ml is None:
             continue          # inside the mid-edit region - skip a wash
-        binding_lines, binding_keys = bindings[name]
-        key = live_usage.governing_key(binding_lines, binding_keys, line,
-                                       publish_seq)
+        _gk = (line, name)
+        key = _gov.get(_gk, _NO_VALUE)
+        if key is _NO_VALUE:
+            binding_lines, binding_keys = bindings[name]
+            key = live_usage.governing_key(binding_lines, binding_keys, line,
+                                           publish_seq)
+            _gov[_gk] = key
         if key is None or key not in snap_vals:
             continue
         pill_text = _inline_value_text(snap_vals.get(key))

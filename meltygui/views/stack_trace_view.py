@@ -623,6 +623,12 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
                 # Keep the slid view's right edge inside the client rect.
                 if available_width > slide_px + 200:
                     span_kwargs["width"] = available_width - slide_px
+        if pane.has_def:
+            # Panes open COMPACT: the root def (buffer row 0 - spans are
+            # dedented def→call slices) starts collapsed on the pane's first
+            # sight; expanding sets the badge, and the user's fold state owns
+            # it from then on. Module-frame panes have no def at row 0.
+            span_kwargs["default_collapsed_lines"] = (0,)
         if parse is not None:
             span_kwargs["code_dict"] = parse
             span_kwargs["live_store"] = pane.store

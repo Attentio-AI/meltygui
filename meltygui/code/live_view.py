@@ -950,8 +950,12 @@ def _publish(site, value, name, bare, dims=None, idx=None):
     # branch-not-taken rule - see live_usage.governing_key). Monotonic
     # across the process via the shared generation counter.
     try:
-        vars(site.store_obj).setdefault("__live_pub_seq__", {})[
+        _sv = vars(site.store_obj)
+        _sv.setdefault("__live_pub_seq__", {})[
             site.key_path] = next(_PUBLISH_GEN)
+        # Store-level publish generation: the usage marker memoizes each
+        # occurrence's governing key against it (live_view_views).
+        _sv["__live_pub_gen__"] = _sv.get("__live_pub_gen__", 0) + 1
     except (AttributeError, TypeError):
         pass
     # Run-scope liveness: while a run_capture is active for this store,
