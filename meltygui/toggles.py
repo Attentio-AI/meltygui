@@ -547,14 +547,14 @@ class Toggles:
 
         # [tint=(0.152, 0.143, 0.628), show_tint=True]
         freeze_cst_dict = False
+        
         # Fast-path syntax check: re-run a bare compile() over the buffer
         # INLINE on every edit and swap the red marker immediately, instead of
         # hiding it until the debounced background reparse lands (~300ms after
-        # typing goes idle). compile() is a C parser - no libcst - so a
-        # typical span buffer takes well under 1ms; buffers over
+        # typing goes quiet). compile() is the C parser — no libcst — so a
+        # typical span buffer costs well under 1ms; buffers over
         # fast_check_max_chars skip it and keep the debounced-only behavior.
         # No effect with check_syntax_errors off. Read live.
-
         # [tint=(0.72, 0.11, 0.11), show_tint=True]
         fast_syntax_check = True
 
@@ -575,7 +575,7 @@ class Toggles:
         # cost. Differential: the whole region must compile clean for a new
         # failure to be reported, so a region cut mid-string or mid-bracket
         # can never false-flag. Read live.
-        fast_check_changed_region = True
+        check_changed_region = True
 
         # Whole-buffer static lint cap: check_source (undefined names /
         # call-signature checks) and the relint's full import rescan are
@@ -596,7 +596,6 @@ class Toggles:
         # syntax-error markers and import suggestions are unaffected.
         # [tint=(0.256, 0.189, 0.244, 1.0), show_tint=True]
         enable_lint = True
-
         # Call-signature checks for SPAN buffers (a function/class edited on
         # its own): bare-name calls resolve through the enclosing module's
         # PENDING text (code_checks._signature_table), so a signature edited
@@ -604,7 +603,6 @@ class Toggles:
         # span buffers report missing imports only (the old behavior).
         # [tint=(0.256, 0.189, 0.244, 1.0), show_tint=True]
         lint_span_calls = True
-
         # Literal-argument TYPE checks in the call lint: a LITERAL argument
         # (False, 3, "x") against a DECLARED param type (a doc C type like
         # `float position`, or a float/int/str/bool annotation) — catches

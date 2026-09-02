@@ -5845,7 +5845,7 @@ def fold_focus_scope(ds, text, li):
         ds._fold_search_exp_keys = set()
     if getattr(ds, '_diff_search_exp', None):
         ds._diff_search_exp = set()
-    _hl = _fold_headless_set(kf, col)
+    _hl = _fold_headless_set(kf, ranges)
     built = _fold_build(text, ranges, col, _hl)
     ds._fold_cache = (text, (ranges, frozenset(col), _hl), built)
     ds.invalidate()
@@ -8706,7 +8706,9 @@ _FOLD_BLOCK_RE = re.compile(
 # v3: string scanner fixed (quoted triple-quotes no longer suppress
 #     comment-run detection below them), so re-union the recovered runs.
 # v4: multiline strings (docstrings / GLSL blocks) joined default_collapsed.
-_FOLD_SEED_VER = 4
+# v5: single-line `# [...]` metadata comments (a (s, s) range, laid out only
+#     as a header-less fold) joined default_collapsed.
+_FOLD_SEED_VER = 5
 
 
 _FOLD_OUT_RE = re.compile("[#'\"]")
@@ -8834,6 +8836,10 @@ def _scope_fold_ranges(text):
       comment runs — >=2 consecutive same-indent full-line '#' comments.
         All runs join default_collapsed: multiline comments start folded;
         collapse-all re-folds them but expand-all leaves them collapsed.
+        A SINGLE `# [...]` metadata line is a run of its own — a (s, s)
+        range that only ever lays out header-less (the line itself hides,
+        Toggles.TextEditor.hide_meta_comment_folds); _fold_build drops it
+        from the layout when it can't (toggle off, no line below).
       top import block — first module-level import down to the last import
         before other module-level code (blank lines, comments and paren /
         backslash continuations stay inside). Also returned in
@@ -8922,10 +8928,18 @@ def _scope_fold_ranges(text):
     run_start = run_ind = None   # current same-indent comment run
 
     def _close_run(end):
-        if run_start is not None and end > run_start:
+        if run_start is None:
+            return
+        if end > run_start:
             # A multiline comment run is folded and is skipped by
             # expand/collapse-all (same treatment as the top import block);
             # runs toggle via their own badge or the caret-scoped shortcuts.
+            _emit(run_start, end, ('comment', lines[run_start].strip()),
+                  default=True)
+        elif (end == run_start
+              and lines[run_start].lstrip().startswith(('# [', '#['))):
+            # A lone metadata comment: a single-line fold, folded away
+            # header-and-all when the meta toggle is on (see _fold_build).
             _emit(run_start, end, ('comment', lines[run_start].strip()),
                   default=True)
 
@@ -9301,7 +9315,9 @@ def _fold_normalize_union(n_lines, ranges, collapsed=()):
     out, last_start = [], None
     for s, e in sorted({(int(s), int(e)) for s, e in ranges}):
         e = min(e, n_lines - 1)
-        if e <= s or s >= n_lines - 1:
+        # e == s is the single-line metadata comment (header-less only -
+        # _fold_build drops it when it can't lay out that way).
+        if e < s or s >= n_lines - 1:
             continue
         if s == last_start:
             if (s, e) in collapsed:
@@ -9312,15 +9328,17 @@ def _fold_normalize_union(n_lines, ranges, collapsed=()):
     return out
 
 
-def _fold_headless_set(key_of, collapsed):
-    """The collapsed COMMENT runs `_fold_build` may fold header-and-all
+def _fold_headless_set(key_of, ranges):
+    """The COMMENT runs among `ranges` `_fold_build` may fold header-and-all
     (Toggles.TextEditor.hide_meta_comment_folds) — the build itself keeps
-    the ones without a `# [` metadata line. Part of the fold cache key, so
-    flipping the toggle relays out on the next frame."""
+    the ones without a `# [` metadata line. Over ALL ranges, not just the
+    collapsed ones: an EXPANDED single-line meta comment needs it to know
+    whether to offer a chevron. Part of the fold cache key, so flipping
+    the toggle relays out on the next frame."""
     from src.lsd.gl_gui.toggles import Toggles
     if not Toggles.TextEditor.hide_meta_comment_folds or not key_of:
         return frozenset()
-    return frozenset(r for r in collapsed
+    return frozenset(r for r in ranges
                      if key_of.get(r, ('',))[0] == 'comment')
 
 
@@ -9341,9 +9359,10 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
       display_text — `text` with every COLLAPSED range's hidden lines
         (start+1..end; start..end for a headless fold) spliced out; `text`
         itself when nothing is collapsed.
-      segments — [(anchor_offset_in_display, hidden_str, rng)] per collapsed
-        fold. hidden_str starts with the '\\n' that followed the header line,
-        so inserting it back at the anchor reproduces `text` exactly.
+      segments — [(anchor_offset_in_display, hidden_str, rng, headless)]
+        per collapsed fold. hidden_str starts with the '\\n' that followed
+        the header line (preceded it, for a headless fold), so inserting it
+        back at the anchor reproduces `text` exactly.
       folds — [(rng, display_line, is_collapsed, n_hidden, header_len,
         anchor_offset, hidden_len)] for EVERY normalized range (expanded
         folds still need badge geometry). anchor/hidden_len describe the
@@ -9358,8 +9377,13 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
         foffs.append(off)
         off += len(l) + 1
     folds, segments = [], []
-    if not any(r in collapsed for r in rngs):
+    if (not any(r in collapsed for r in rngs)
+            and not any(r[0] == r[1] and r in headless for r in rngs)):
+        # (an eligible single-line meta comment takes the walk below even
+        # with nothing collapsed - its chevron needs the walk's checks)
         for s, e in rngs:
+            if e == s:
+                continue     # single-line meta comment: header-less only
             anchor = foffs[s] + len(lines[s])
             hidden_len = foffs[e] + len(lines[e]) - anchor
             folds.append(((s, e), s, False, e - s, len(lines[s]),
@@ -9419,12 +9443,18 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
                     disp_to_buf.pop()
                     pend.append(((s, e), len(disp) - 1, True, hidden_end,
                                  True))
-                else:
+                elif e > s:
                     pend.append(((s, e), len(disp) - 1, True, hidden_end,
                                  False))
+                else:
+                    buf += 1     # a lone meta line that can't hide: just text
+                    continue
                 buf = hidden_end + 1
                 continue
-            pend.append(((s, e), len(disp) - 1, False, e, False))
+            if e > s or _headless_ok(s, e, e, ri):
+                # (an expanded single-line meta comment wears its chevron
+                # only where collapsing it would actually hide it)
+                pend.append(((s, e), len(disp) - 1, False, e, False))
         buf += 1
     display_text = '\n'.join(disp)
     doffs, off = [], 0
@@ -9445,7 +9475,7 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
             folds.append((rng, chev_dl, True,
                           hidden_end - s + (1 if is_headless else 0),
                           len(disp[chev_dl]), anchor, len(hidden)))
-            segments.append((anchor, hidden, rng))
+            segments.append((anchor, hidden, rng, is_headless))
         else:
             # hidden_len = the DISPLAY chars this fold would remove if it
             # collapsed now (a collapsed range inside its span is already
@@ -9453,6 +9483,10 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
             j = bisect.bisect_right(disp_to_buf, e) - 1
             folds.append((rng, dl, False, e - s, len(disp[dl]),
                           anchor, doffs[j] + len(disp[j]) - anchor))
+    if not segments:
+        # Nothing hid after all (the only collapsed ranges were meta lines
+        # that couldn't lay out header-less): the identity contract.
+        return text, segments, folds, None
     return display_text, segments, folds, disp_to_buf
 
 
@@ -9506,7 +9540,7 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     force_expanded = set()
     moved = {}      # old range tuple -> its dnl-shifted replacement
     parts, pos = [], 0
-    for a, hidden, rng in sorted(segments):
+    for a, hidden, rng, headless in sorted(segments):
         # A pure insertion exactly at the anchor whose text STARTS with a
         # newline (typing at the collapsed header's end, or at the start of
         # the line below the badge - the same display text either way) is a
@@ -9514,8 +9548,12 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
         # collapsed fold (the below-fold branch), never as the fold's first
         # visible line. Typed characters at the header's end (no leading
         # newline) still belong to the header via the first branch.
+        # A HEADLESS fold (a collapsed `# [` comment run) is the exception:
+        # the run belongs to the line BELOW it, so a new line at its seam
+        # goes ABOVE the hidden text - landing it below separated the
+        # comment from the line it annotates (screenshot, 09-02).
         nl_at_anchor = (delta > 0 and p == a and p == lo - suf
-                       and new_disp.startswith('\n', p))
+                       and new_disp.startswith('\n', p) and not headless)
         if a >= lo - suf and not nl_at_anchor:
             # Edit ends at or before the seam - includes a pure suffix AT
             # the anchor (typing at the collapsed header's end: lo-suf == a),
@@ -9608,7 +9646,7 @@ def fold_project_jump(ds, text, pos, li):
     _kf = getattr(ds, '_fold_key_of', None)
     if hiding and _kf and getattr(ds, '_fold_keys', None) is not None:
         ds._fold_keys -= {_kf[r] for r in hiding if r in _kf}
-    _hl = _fold_headless_set(_kf, col)
+    _hl = _fold_headless_set(_kf, ranges)
     built = _fold_build(text, ranges, col, _hl)
     if hiding:
         ds._fold_cache = (text, (ranges, frozenset(col), _hl), built)
@@ -10414,8 +10452,16 @@ def draw_text(input_value: str, height=None,
         _fold_union_col = ds._fold_collapsed
         if getattr(ds, '_diff_fold_collapsed', None):
             _fold_union_col = ds._fold_collapsed | ds._diff_fold_collapsed
+        # Headless candidates memoized on the range tuple and toggle (the
+        # scan hands the same list every frame; ~2.4k lookups otherwise).
+        _fhc = getattr(ds, '_fold_headless_cache', None)
+        _fh_tog = Toggles.TextEditor.hide_meta_comment_folds
+        if _fhc is None or _fhc[0] is not _frt[1] or _fhc[1] != _fh_tog:
+            _fhc = (_frt[1], _fh_tog,
+                    _fold_headless_set(_fold_key_of, _frt[1]))
+            ds._fold_headless_cache = _fhc
         _fk = (_frt[1] + tuple(_diff_rngs), frozenset(_fold_union_col),
-               _fold_headless_set(_fold_key_of, _fold_union_col))
+               _fhc[2])
         _fc = getattr(ds, '_fold_cache', None)
         if _fc is not None and _fc[0] is input_value and _fc[1] == _fk:
             _fold_built = _fc[2]
@@ -12307,7 +12353,7 @@ def draw_text(input_value: str, height=None,
             anchors would be stale)."""
             if not _fold_segments or text is not original_input:
                 return text, p
-            return _fold_full, p + sum(len(_h) for _a, _h, _r in _fold_segments
+            return _fold_full, p + sum(len(_h) for _a, _h, *_ in _fold_segments
                                        if _a < p)
 
         # --- Tab / Shift+Tab ---
