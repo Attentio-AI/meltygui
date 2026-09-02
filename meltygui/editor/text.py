@@ -9089,7 +9089,7 @@ def _fold_carry(old_text, new_text, scan_result, collapsed_keys):
             r = range_of.get(k)
             if r is None:
                 continue
-            if not (0 <= r[0] < len(nls) and r[0] < r[1]):
+            if not (0 <= r[0] < len(nls) and r[0] <= r[1]):
                 return None
             ls = nls[r[0]]
             le = nls[r[0] + 1] - 1 if r[0] + 1 < len(nls) else len(new_text)
@@ -9351,9 +9351,12 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
     above it (the splice seam) and its CHEVRON sits on the line BELOW it —
     the line the metadata annotates — so the fold entry's display_line is
     that line while anchor/hidden_len still describe the seam above.
-    Skipped for a run on line 0 or at the end of the file, when the line
-    below starts a fold of its own (one chevron per gutter row), or when
-    the line above heads a COLLAPSED fold (two segments on one seam).
+    Skipped for a run on line 0 or at the end of the file, or when the
+    line below heads a COLLAPSED fold (that row's chevron is taken —
+    `_fold_header_map`: collapsed beats expanded, so an expanded def /
+    diff gap starting there yields its chevron instead). Two folds on one
+    seam (a collapsed fold ending right above the run) are fine: segments
+    sort by buffer position, so they splice back in order.
 
     Returns (display_text, segments, folds, disp_to_buf):
       display_text — `text` with every COLLAPSED range's hidden lines
@@ -9394,18 +9397,18 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
     _META_PREFIXES = ('# [', '#[')
 
     def _headless_ok(s, e, hidden_end, rj):
-        # Header-and-all fold needs a display line above to anchor on that
-        # heads no COLLAPSED fold (two segments would share one seam), a
-        # line below to wear the chevron that starts no fold of its own
-        # (rngs[rj] is the next range past the hidden run), and a `# [`
-        # line somewhere in the run.
+        # Header-and-all: needs a display line above to anchor on, a line
+        # below to yield the chevron whose own fold (rngs[rj] is the first
+        # range past the hidden run) is not COLLAPSED - an expanded def or
+        # diff gap starting there yields the badge (a compare diff's
+        # unchanged gap begins right after an expanded comment run, 09-02) -
+        # and a `# [` line somewhere in the run.
         if (s, e) not in headless or len(disp) < 2:
-            return False
-        if pend and pend[-1][1] == len(disp) - 2 and pend[-1][2]:
             return False
         if hidden_end + 1 >= len(lines):
             return False
-        if rj < len(rngs) and rngs[rj][0] == hidden_end + 1:
+        if (rj < len(rngs) and rngs[rj][0] == hidden_end + 1
+                and rngs[rj] in collapsed):
             return False
         return any(lines[i].lstrip().startswith(_META_PREFIXES)
                    for i in range(s, e + 1))
@@ -9487,7 +9490,30 @@ def _fold_build(text, ranges, collapsed, headless=frozenset()):
         # Nothing hid after all (the only collapsed ranges were meta lines
         # that couldn't lay out header-less): the identity contract.
         return text, segments, folds, None
+    # Buffer order: two segments can share a seam (a collapsed fold ending
+    # right above a headless run) and must splice back in buffer order.
+    segments.sort(key=_fold_segment_order)
     return display_text, segments, folds, disp_to_buf
+
+
+def _fold_segment_order(segment):
+    """Sort key for fold segments: anchor, then buffer position."""
+    return segment[0], segment[2]
+
+
+def _fold_header_map(folds):
+    """display line -> (range, collapsed?) for the gutter chevrons. One
+    chevron per row: a COLLAPSED fold beats an expanded one on the same
+    row (a hidden `# [` run's chevron sits on the line below it, which may
+    head an expanded def / diff gap — the hidden text needs the chevron
+    more than the collapse shortcut does; the expanded fold gets its row
+    back once the run is open)."""
+    out = {}
+    for f in folds:
+        prev = out.get(f[1])
+        if prev is None or (f[2] and not prev[1]):
+            out[f[1]] = (f[0], f[2])
+    return out
 
 
 def _fold_reassemble(old_disp, new_disp, segments, collapsed):
@@ -9540,7 +9566,7 @@ def _fold_reassemble(old_disp, new_disp, segments, collapsed):
     force_expanded = set()
     moved = {}      # old range tuple -> its dnl-shifted replacement
     parts, pos = [], 0
-    for a, hidden, rng, headless in sorted(segments):
+    for a, hidden, rng, headless in sorted(segments, key=_fold_segment_order):
         # A pure insertion exactly at the anchor whose text STARTS with a
         # newline (typing at the collapsed header's end, or at the start of
         # the line below the badge - the same display text either way) is a
@@ -15187,8 +15213,7 @@ def draw_text(input_value: str, height=None,
     if _fold_folds and _fh_c is not None and _fh_c[0] is _fold_folds:
         _fold_hdr = _fh_c[1]     # same fold layout as last frame
     else:
-        _fold_hdr = ({f[1]: (f[0], f[2]) for f in _fold_folds}
-                     if _fold_folds else {})
+        _fold_hdr = _fold_header_map(_fold_folds) if _fold_folds else {}
         ds._fold_hdr_cache = (_fold_folds, _fold_hdr)
     if _restore_hdr:
         # Stand-in frames: chevrons replayed throughout the gutter (the fold
@@ -16247,7 +16272,7 @@ def draw_text(input_value: str, height=None,
             except Exception:
                 ds._fast_imports_state = None
         elif (_fast_ok and _prev_text is not None
-                and Toggles.TextEditor.fast_check_changed_region):
+                and Toggles.TextEditor.check_changed_region):
             # Over-cap buffer: compile only the changed top-level span, diffed
             # against the pre-edit text (_prev_text - still the OLD buffer
             # here; ds._err_prev_text was already advanced above). The

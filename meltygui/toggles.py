@@ -1996,15 +1996,11 @@ class Toggles:
         keep_for_frames = 100
         enable = False
         draw_rect = True
-
         # [tint=(0.85, 0.45, 0.05), show_tint=True]
         invalidate_stack_trace = False
-
         # [tint=(0.028, 0.561, 0.115), show_tint=True]
         invalidate_request_render = False
-
         attrib_change_stack_trace = False
-
         # [tint=(0.0, 0.56, 0.872), show_tint=True]
         draw_bvh = False
 

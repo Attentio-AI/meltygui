@@ -2213,8 +2213,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
     if (_clip is not None
             and getattr(draw_state, "_lv_full_overlay_until", 0)
             <= Core.melty.frame_count):
-        _blo = int((_clip[1] - origin_y) / line_px) - 64
-        _bhi = int((_clip[3] - origin_y) / line_px) + 65
+        _blo, _bhi = _parse_line_band(_lmap, _clip, origin_y, line_px)
         _i0 = bisect.bisect_left(_ilines, _blo)
         _i1 = bisect.bisect_right(_ilines, _bhi)
         _cand = _ikeys[_i0:_i1]
@@ -2619,14 +2618,39 @@ def _draw_usage_labels(draw_state, fn, node, span, source_lines, snap_vals,
     # and only those need the _lmap / resolve / stamp loop.
     if clip is not None and line_px:
         occ_lines = entry[4]
-        band_lo = int((clip[1] - origin_y) / line_px) - 64
-        band_hi = int((clip[3] - origin_y) / line_px) + 65
+        band_lo, band_hi = _parse_line_band(lmap, clip, origin_y, line_px)
         i0 = bisect.bisect_left(occ_lines, band_lo)
         i1 = bisect.bisect_right(occ_lines, band_hi)
         occurrences = occurrences[i0:i1]
     return _stamp_and_paint(draw_state, fn, span, occurrences, bindings,
                             snap_vals, origin_x, origin_y, char_w, line_px,
                             lmap, clip, col_shift, frame, binding_pills)
+
+
+def _parse_line_band(lmap, clip, origin_y, line_px, slack=64):
+    """The visible band as PARSE lines (1-based, `_lv_key_index` /
+    occurrence-list space): the clip's rows are DISPLAY lines, and with
+    folds collapsed a display line sits at a larger buffer line — a band
+    taken straight from the rows bisected the buffer-sorted anchor lists
+    short of every marker past ~64 folded lines (the live views vanished
+    towards the end of a file with its `# [` comments hidden, 09-02). The
+    line map carries the fold layout (`_d2b`: buffer line per display
+    line); rows past its end extend at the same rate. `slack` rows either
+    side cover in-flight edit shifts (the bridge)."""
+    lo = int((clip[1] - origin_y) / line_px)
+    hi = int((clip[3] - origin_y) / line_px)
+    d2b = getattr(lmap, "_d2b", None) if lmap is not None else None
+    if d2b:
+        n = len(d2b)
+
+        def _to_buf(dl):
+            if dl < 0:
+                return dl
+            if dl < n:
+                return d2b[dl]
+            return d2b[-1] + (dl - n + 1)
+        lo, hi = _to_buf(lo), _to_buf(hi)
+    return lo - slack, hi + slack + 1
 
 
 def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
