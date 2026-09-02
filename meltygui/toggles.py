@@ -438,7 +438,7 @@ class Toggles:
     @defaults(tint=(0.811, 0.59, 0.29))
     class TextEditor:
 
-        some_list = [63,-70,276]
+        some_list = [122,-21,311]
 
         some_new_dict= {
             "key": ""
@@ -1883,6 +1883,12 @@ class Toggles:
         # rest of the gap folds away, so collapse-all skims the changes
         # without scrolling.
         diff_fold_context = 2
+        # Debug trace of the compare split's resolve, printed on every
+        # CHANGE of its state (file, reference, loading, served/warm,
+        # blocks, diff folds, switch, per-pane cursor offset + display
+        # lines) - for pinning down a boot that shows the wrong fold
+        # state. Read live; off = silent.
+        trace_compare_boot = False
         # Tab tint for a file whose FileMeta carries none — the tab bar, the
         # compare files column, and the editor toolbar buttons all key off it.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
@@ -1964,6 +1970,18 @@ class Toggles:
         # Minimum logical terminal size, in pixels - independent of the window size.
         min_height = 605.7
         min_width = 94.154
+
+    @defaults(tint=(0.239, 0.435, 0.408))
+    class Thermostat:
+        # The thermostat web server (Desktop/thermostat/server.py). The proxy in
+        # playground/thermostat_data.py pulls the chart histories from HERE,
+        # not the raw jsonl files.
+        server_url = "http://127.0.0.1:8765"
+        # The charts' window query: hours back from now, or "all" for the whole
+        # log (the server stride-samples each answer to ~2000 points either way).
+        history_hours = "all"
+        # How often the poller re-pulls the data (seconds).
+        poll_s = 60.0
 
     @defaults(tint=(0.478, 0.265, 0.265))
     class InvalidateTracker:

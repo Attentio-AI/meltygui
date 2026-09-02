@@ -122,7 +122,8 @@ class ContextMenuWindowState(DictConversion):
 
 @exclude("restore_first_line", "restore_total_lines", "restore_text",
          "restore_gutter_digits", "restore_line_offset", "restore_fold_keys",
-         "restore_gutter_rows")
+         "restore_gutter_rows", "restore_diff_collapsed", "restore_diff_rows",
+         "restore_preview_rows")
 class TextEditorState(DictConversion):
     """Per-editor persisted UI state for draw_text (injected via
     `text_editor_state: TextEditorState = None` — the TabState pattern:
@@ -176,6 +177,30 @@ class TextEditorState(DictConversion):
         # instead. None = never captured (let defaults seed); [] = captured
         # with everything expanded (defaults must NOT re-collapse).
         self.restore_fold_keys = None
+        # The compare split's hand-toggled DIFF gap state (ds
+        # ._diff_fold_collapsed - (header, last hidden line) buffer-line
+        # tuples; no line-independent keys exist for gaps; they re-derive
+        # from the live diff). Written by the snapshot block whenever the
+        # diff layer is active; a fresh draw_state in NEUTRAL mode
+        # (expand_diff None - the active switch is its own truth) maps
+        # them onto the current pieces by overlap, exactly like an edit's
+        # drift. None = never captured.
+        self.restore_diff_collapsed = None
+        # The band's diff-gap header rows, as painted: {band row offset:
+        # hidden line count} - 0 for an expanded gap's header, N for a
+        # collapsed one (its "N lines" label). The diff layer sits stand-in
+        # frames out (it needs the real buffer), so without this the
+        # stand-in painted a collapsed compare split as CONTINUOUS code -
+        # grey mid-row chevrons, no separator bands, no counts, no preview
+        # fade - and the collapsed look only arrived with the real text,
+        # seconds after boot (Lukas 09-01: "loads uncollapsed then 2
+        # seconds later makes the switch"). The stand-in paints its bands
+        # and labels from these rows instead. None = never captured.
+        self.restore_diff_rows = None
+        # The row offsets that were preview-faded (the rows around a
+        # collapsed diff gap, Toggles.TextEditor.diff_preview_lines_*), so
+        # the stand-in fades the same rows. None = never captured.
+        self.restore_preview_rows = None
 
 
 @no_save_exclude("selected", "open_path", "cursor_path", "search_query", "search", "_focus_search",)

@@ -194,8 +194,10 @@ def parse_to_dict(text, *, file_path=None, line_offset=0, frontend=None) -> Gene
         else:
             gp, origin = materialize_parse(result[1], result[2])
     if gp is None:
-        if frontend == "scan":
-            ast.parse(text)                         # validation only; the scanner does the work
+        # No ast.parse fallback pass here (Lukas 09-01): a second full parse
+        # of a buffer per chain? - the scanner's ScanError covers what the
+        # tokenizer / syntax parser doesn't take, the rest is on the reverse
+        # path's converter (general_parse_to_str) and the hotswap compile.
         gp, origin = _extract(text, frontend=frontend, types=REAL_TYPES,
                               file_path=file_path, line_offset=line_offset)
     origin.file_path = file_path
@@ -390,7 +392,7 @@ from src.lsd.gl_gui.view.core_conversion import melty_scan as _ms
 import gc as _gc
 _gc.disable()                    # ~20% of the scan was gen-2 collections over the fresh tree
 try:
-    _res = _ms.scan_extract(TEXT)
+    _res = _ms.scan_extract(TEXT, validate=False)   # no ast validation pass (09-01)
 except Exception as _e:          # never raise across the boundary: report as data
     _res = ("error", f"{type(_e).__name__}: {_e}", 0, 0)
 _blob = pickle.dumps(_res, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1067,7 +1069,6 @@ def reparse_incremental(gp, new_text) -> GeneralParse:
     frontend = "scan" if Toggles.TextEditor.melty_scanner else "ast"
     first_line = origin.src.linecol(rs)[0]
     try:
-        ast.parse(region_new)
         rgp, rorigin = _extract(region_new, frontend=frontend, types=REAL_TYPES, module_header=(rs == 0))
     except SyntaxError as e:
         raise SyntaxError(e.msg, (str(getattr(gp, "file_path", None) or "<text>"),

@@ -9173,6 +9173,25 @@ def _split_gaps_at_collapsed(gaps, forest, collapsed):
     return out
 
 
+def _carry_diff_collapse(prev_ranges, prev_col, ranges):
+    """Diff-layer collapse state carried across DRIFT: each collapsed
+    range of the previous layout (`prev_col`, drawn from the sorted
+    `prev_ranges`) marks every new range overlapping it; a new range
+    overlapping nothing collapsed starts expanded. Both lists sorted by
+    start; one merged sweep."""
+    new_col, pi = set(), 0
+    for r in ranges:
+        while pi < len(prev_ranges) and prev_ranges[pi][1] < r[0]:
+            pi += 1
+        pj = pi
+        while pj < len(prev_ranges) and prev_ranges[pj][0] <= r[1]:
+            if prev_ranges[pj] in prev_col:
+                new_col.add(r)
+                break
+            pj += 1
+    return new_col
+
+
 def _string_neutral_ranges(ds, text, ranges):
     """Diff-gap fold ranges arrive lexer-blind (open_files._diff_gap_folds):
     a range can hide one delimiter of a multiline string without the other,
@@ -9632,7 +9651,6 @@ def draw_text(input_value: str, height=None,
         else:
             input_value = ""
 
-
     cursor_pos = imgui.get_cursor_screen_pos()  # ← cursor_pos = (13.5, 13.5)
 
     # --- Perf instrumentation (typing latency) --------------------------------
@@ -9889,23 +9907,27 @@ def draw_text(input_value: str, height=None,
             _diff_col = _new_col
 
         elif _diff_col is None:
-            _diff_col = set()      # Fresh seed: expanded
+            # Neutral seed: a fresh draw_state adopts the diff pieces the
+            # last session left collapsed (TextEditorState
+            # .restore_diff_collapsed - the snapshot block at the tail
+            # writes it; the tuples are buffer lines, so they land on
+            # today's pieces by overlap across any drift). None captured
+            # = expanded.
+            _saved = (text_editor_state.restore_diff_collapsed
+                      if text_editor_state is not None else None)
+            if _saved:
+                _saved = sorted(tuple(_r) for _r in _saved)
+                _diff_col = _carry_diff_collapse(_saved, set(_saved),
+                                                 _diff_rngs)
+            else:
+                _diff_col = set()
         elif getattr(ds, '_diff_prev_ranges', None) != _diff_rngs:
             # Neutral drift (an edit moved the span around): carry each
             # span's state onto the new span(s) overlapping it; a gap
             # overlapping nothing from last frame starts expanded.
-            _prev = getattr(ds, '_diff_prev_ranges', None) or []
-            _new_col, _pi = set(), 0
-            for _r in _diff_rngs:
-                while _pi < len(_prev) and _prev[_pi][1] < _r[0]:
-                    _pi += 1
-                _pj = _pi
-                while _pj < len(_prev) and _prev[_pj][0] <= _r[1]:
-                    if _prev[_pj] in _diff_col:
-                        _new_col.add(_r)
-                        break
-                    _pj += 1
-            _diff_col = _new_col
+            _diff_col = _carry_diff_collapse(
+                getattr(ds, '_diff_prev_ranges', None) or [], _diff_col,
+                _diff_rngs)
         ds._diff_fold_collapsed = _diff_col
         if getattr(ds, '_diff_prev_ranges', None) != _diff_rngs:
             ds._diff_prev_ranges = list(_diff_rngs)
@@ -11022,6 +11044,23 @@ def draw_text(input_value: str, height=None,
     # collapsed fold and carry no fold arrows, so the gutter visibly
     # snapped (213 → 304) the frame the real buffer landed.
     _restore_hdr = None
+    # Stand-in DIFF chrome: {display line: hidden count} for the band's
+    # diff-gap headers (0 = expanded) and the preview band hidden display lines,
+    # both replayed from the snapshot - the diff paint needs the real
+    # buffer, so on stand-in frames these are what makes a collapsed
+    # diff split look collapsed (bands, "N lines", tinted chevrons,
+    # the fade) instead of continuous code until the text lands.
+    _restore_diff = None
+    _restore_preview = None
+    if restore_active and text_editor_state is not None:
+        _rb = max(0, int(text_editor_state.restore_first_line))
+        _rdr = text_editor_state.restore_diff_rows
+        if _rdr:
+            _restore_diff = {_rb + _ro: int(_rn) for _ro, _rn in _rdr.items()}
+        _rpr = text_editor_state.restore_preview_rows
+        if _rpr:
+            _restore_preview = {_rb + _ro for _ro in _rpr}
+    ds._diff_restore_rows = _restore_diff      # tests / overlays
     if (restore_active and text_editor_state is not None
             and text_editor_state.restore_gutter_digits > 0):
         show_gutter = True
@@ -12367,7 +12406,7 @@ def draw_text(input_value: str, height=None,
                 ds.text_selection_start = ds.text_cursor_pos
                 ds.text_selection_end = ds.text_cursor_pos
                 changed = True
-
+        
         # --- Delete ---
         if pressed(glfw.KEY_DELETE):
             ds.text_cursor_blink_time = time.time()
@@ -14155,7 +14194,10 @@ def draw_text(input_value: str, height=None,
     # carries both), and _diff_rngs is the memoized gap list - so an idle
     # repaint / scroll / live-edit tick requires one tuple compare, not a
     # walk of every gap (0.55 ms a frame at 322 gaps, measured 09-01).
-    _preview_lines = None
+    # Stand-in frames replay a snapshot's faded previews (_restore_preview,
+    # gutter replay below); the diff layer is off, so the gate below
+    # never overwrites them.
+    _preview_lines = _restore_preview
     # Height of the separator band under a collapsed diff gap's header
     # row; the gap's chevron centers on it (gutter pass + badge pass).
     # [tint=(0.36, 0.62, 0.85)]
@@ -15277,8 +15319,12 @@ def draw_text(input_value: str, height=None,
                          and _gr[1] <= io.mouse_pos.y < _gr[3])
                 # Diff folds wear their own tint so the two fold kinds read
                 # apart in the strip (scope folds stay the neutral grey).
-                if _rng_g is not None and _rng_g in (
-                        getattr(ds, '_diff_rng_set', None) or ()):
+                # A snapshot-replayed row (range=None) is a diff header when
+                # the stand-in's diff rows say so.
+                _is_diff_g = (_rng_g in _diff_rng_set if _rng_g is not None
+                              else (_restore_diff is not None
+                                    and line_idx in _restore_diff))
+                if _is_diff_g:
                     _dft = Toggles.TextEditor.diff_fold_tint
                     _gcc = imgui.get_color_u32_rgba(
                         *_dsep_rgb[:3], min(1.0, _dft[3] + (0.35 if _ghov else 0.0)))
@@ -15286,8 +15332,7 @@ def draw_text(input_value: str, height=None,
                     _gcc = imgui.get_color_u32_rgba(
                         0.9, 0.9, 0.9, 0.55 if _ghov else 0.31)
                 _gcy = ly + line_px * 0.5
-                if _col_g and _rng_g is not None and _rng_g in (
-                        getattr(ds, '_diff_rng_set', None) or ()):
+                if _col_g and _is_diff_g:
                     # Collapsed diff gap: the chevron sits ON the separator
                     # band under the header row (the badge pass below it at
                     # the row's bottom edge), not at the row's middle.
@@ -15499,6 +15544,47 @@ def draw_text(input_value: str, height=None,
                 draw_list.add_text(_fr[0] + (16.0 if _need_chev else 4.0),
                                    _fy + _fm_y, _fcc, _lbl)
             ds._fold_badge_rects.append((_fr, _rng))
+        draw_list.pop_clip_rect()
+    elif _restore_diff:
+        # Stand-in frames: the fold layer is off, so replay the snapshot of
+        # diff-gap chrome - the separator band + "N lines" - for every
+        # COLLAPSED gap header in the visible band (same geometry and order
+        # as the live pass above; the gutter pass painted the chevron on
+        # the band). Paint-only: no badge rects, nothing to toggle. The
+        # header's length comes from the stand-in's own line (the band text
+        # IS the display text), so the label lands where the live pass will.
+        draw_list.push_clip_rect(left + gutter_w, rect_min_y,
+                                 left + ds.content_width, rect_max_y, True)
+        _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
+        _need_chev = gutter_w <= 0.0
+        _dsep_col = imgui.get_color_u32_rgba(*_dsep_rgb[:3], 0.35)
+        _fcc = imgui.get_color_u32_rgba(
+            *_dsep_rgb[:3], Toggles.TextEditor.diff_fold_tint[3])
+        _rd_offs = _line_starts(text)
+        _fv0 = int((rect_min_y - origin_y) // line_px) - 2
+        _fv1 = int((rect_max_y - origin_y) // line_px) + 1
+        for _rd_line in sorted(_restore_diff):
+            if _rd_line < _fv0 or _rd_line > _fv1 or _rd_line >= len(_rd_offs):
+                continue
+            _rd_n = _restore_diff[_rd_line]
+            if not _rd_n:
+                continue    # expanded gap: gutter chevron only
+            _fy = origin_y + _rd_line * line_px
+            _dby = _fy + line_px - _diff_band_h
+            draw_list.add_rect_filled(
+                left + gutter_w, _dby, left + ds.content_width,
+                _dby + _diff_band_h, _dsep_col)
+            _rd_end = (_rd_offs[_rd_line + 1] - 1
+                       if _rd_line + 1 < len(_rd_offs) else len(text))
+            _hlen = _rd_end - _rd_offs[_rd_line]
+            _bx = origin_x + _hlen * char_w + char_w
+            if _need_chev:
+                _fcy = _fy + line_px - _diff_band_h * 0.5
+                draw_list.add_triangle_filled(_bx + 5.5, _fcy - 4.0,
+                                              _bx + 5.5, _fcy + 4.0,
+                                              _bx + 11.5, _fcy, _fcc)
+            draw_list.add_text(_bx + (16.0 if _need_chev else 4.0),
+                               _fy + _fm_y, _fcc, f"{_rd_n} lines")
         draw_list.pop_clip_rect()
 
     if changed:
@@ -16139,6 +16225,9 @@ def draw_text(input_value: str, height=None,
                 _sgr = []
                 for _ri in range(_sv0, _sv1 + 1):
                     _sfh = _fold_hdr.get(_ri)
+                    if (_sfh is not None and _hide_expanded_diff
+                            and not _sfh[1] and _sfh[0] in _diff_rng_set):
+                        _sfh = None   # expand-all: the gutter painted its number
                     if _sfh is not None:
                         _sgr.append(-2 if _sfh[1] else -1)
                     elif line_numbers is not None:
@@ -16150,9 +16239,40 @@ def draw_text(input_value: str, height=None,
                 text_editor_state.restore_gutter_rows = _sgr
             else:
                 text_editor_state.restore_gutter_rows = None
+            # The band's DIFF-gap headers ({band row: hidden count}, 0 =
+            # expanded) and its preview-fade rows, so the stand-in wears
+            # the collapsed compare split's look - separator color, "N
+            # lines" labels, tinted chevrons, the fade - from frame 1
+            # (the diff layer itself needs the real buffer). Bisect over the
+            # fold list (display-line sorted, the badge pass's cache) and
+            # one membership test per band row: O(band), never a walk.
+            _sdr = {}
+            _fdl_s = getattr(ds, '_fold_dl_cache', None)
+            if (_diff_rng_set and _fold_folds and _fdl_s is not None
+                    and _fdl_s[0] is _fold_folds):
+                for _sf in _fold_folds[bisect.bisect_left(_fdl_s[1], _sv0):
+                                       bisect.bisect_right(_fdl_s[1], _sv1)]:
+                    if _sf[0] not in _diff_rng_set:
+                        continue
+                    if _hide_expanded_diff and not _sf[2]:
+                        continue   # expand-all: no chevron, no badge
+                    _sdr[_sf[1] - _sv0] = int(_sf[3]) if _sf[2] else 0
+            text_editor_state.restore_diff_rows = _sdr
+            text_editor_state.restore_preview_rows = (
+                [_ri - _sv0 for _ri in range(_sv0, _sv1 + 1)
+                 if _ri in _preview_lines]
+                if _preview_lines else None)
             _sfk = getattr(ds, '_fold_keys', None)
             text_editor_state.restore_fold_keys = (
                 None if _sfk is None else list(_sfk))
+            # The diff layer's collapse history, while the layer is active
+            # (turn off leaves the last capture in place - the file may
+            # come back into a compare next session). Change-edge test via
+            # a ds-side copy: the set is a few hundred tuples at most.
+            _sdc = getattr(ds, '_diff_fold_collapsed', None)
+            if _sdc is not None and getattr(ds, '_diff_persist_memo', None) != _sdc:
+                ds._diff_persist_memo = set(_sdc)
+                text_editor_state.restore_diff_collapsed = sorted(_sdc)
         except Exception:
             pass   # a snapshot failure cannot take down the editor
     if restore_active:

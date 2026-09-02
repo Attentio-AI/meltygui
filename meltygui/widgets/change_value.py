@@ -327,8 +327,8 @@ def _front_window_at(x, y):
     for window in reversed(ordered):
         if _window_hidden(window):
             continue
-        left, top, width, height = _live_rect(window)
-        if left <= x <= left + width and top <= y <= top + height:
+        left, top, right, bottom = _visible_rect(window)     # what is DRAWN, not the raw width
+        if left <= x <= right and top <= y <= bottom:
             return window
     hits = _hits_at(x, y)
     return _window_of(hits[0]) if hits else None
@@ -370,17 +370,22 @@ def _window_chain(ds):
     return chain or [ds]
 
 
-def _first_unmet(ds, press_point):
+def _first_unmet(ds, press_point, header=False):
     """The outermost unmet precondition on the way to `ds` at `press_point`:
     (kind, node) — the node is what the fix acts on (the closed window, the
     folded collection, the target for "outside", the OBSCURING window) —
-    or None when the target is hittable there."""
+    or None when the target is hittable there. `header`: the press is a
+    header gesture on `ds` itself (raise / move) — a collapsed window with
+    no grabbable header is then its OWN collapsed gate (never for an
+    expand click, whose control is that very header)."""
     nodes = [ds] + ancestor_chain(ds)
     for node in reversed(nodes):                     # outermost first
         if getattr(node, "closed", False):
             return ("closed", node)
         if node is not ds and getattr(node, "expanded", True) is False:
             return ("collapsed", node)
+    if header and getattr(ds, "expanded", True) is False and not _header_grabbable(ds):
+        return ("collapsed", ds)
     left, top, right, bottom = _visible_rect(ds)
     if right - left <= 0 or bottom - top <= 0:
         return ("outside", ds)
@@ -442,12 +447,28 @@ def _fix_cost(name, subject_ds, ds):
 def _header_rect(window_ds):
     """The strip a header press may land in (re-picks for a window subject
     stay inside it — pressing the body would not raise-by-header / move):
-    the header between the chevron margin and the buttons margin."""
-    left, top, width, _height = _live_rect(window_ds)
+    the header between the chevron margin and the buttons margin. Read
+    off the window's VISIBLE rect (rect ∩ clip), never its raw width: a
+    collapsed window's `width` read 224 while 100 px of header were drawn
+    and hittable, so the "safe" centre landed in empty space right of it
+    (Lukas 09-01)."""
+    left, top, right, _bottom = _visible_rect(window_ds)
+    width = max(0.0, right - left)
     safe_left = min(Toggles.Orchestrator.header_safe_left_px, max(4.0, width / 2.0))
     safe_right = max(safe_left + 1.0, width - Toggles.Orchestrator.header_safe_right_px)
     return (left + safe_left, top + 2.0, left + safe_right,
             top + Toggles.Orchestrator.header_height_px)
+
+
+def _header_grabbable(window_ds):
+    """Whether the window's visible header has ROOM for a press between
+    the chevron margin and the buttons margin. A collapsed window shrunk
+    to its buttons has none — a header press there hits a button or
+    nothing, so for a header gesture it counts as a collapsed gate: expand
+    it first (Lukas 09-01, the move on a collapsed Loras)."""
+    left, _top, right, _bottom = _visible_rect(window_ds)
+    return (right - left) >= (Toggles.Orchestrator.header_safe_left_px
+                              + Toggles.Orchestrator.header_safe_right_px)
 
 
 def _header_point(window_ds, offset):
@@ -556,9 +577,17 @@ def _fix_expand(task, node, ds):
         def live_point():
             left, top, _w, _h = _live_rect(node)
             return left + offset[0], top + offset[1]
-        x, y = yield from task._satisfy(node, live_point, depth=task._depth + 1,
-                                        rect=lambda: _gate_press_rect(live_point()))
-        yield from _click_at(_tracking(x, y, live_point), node)
+        # a click that did not open the gate gets ONE more go after the
+        # control's press is re-satisfied (a cover that slid back, a
+        # tile that missed the press frame)
+        for attempt in range(2):
+            x, y = yield from task._satisfy(node, live_point, depth=task._depth + 1,
+                                            rect=lambda: _gate_press_rect(live_point()))
+            yield from _click_at(_tracking(x, y, live_point), node)
+            for _ in range(Toggles.Orchestrator.cue_wait_frames):
+                if getattr(node, "expanded", True) is not False:
+                    return
+                yield
     else:
         fragment = fragment_for_gate(display_name(node))
         if fragment is None:
@@ -587,8 +616,21 @@ def _fix_raise(task, window_ds, ds):
                      "window's header)")
     # sub-goal: the header row must be hittable (re-picked inside the strip)
     x, y = yield from task._satisfy(window_ds, lambda: _header_point(window_ds, offset),
-                                    depth=task._depth + 1, rect=_header_rect(window_ds))
-    yield from _click_at(_tracking(x, y, lambda: _header_point(window_ds, offset)), window_ds)
+                                    depth=task._depth + 1,
+                                    rect=lambda: _header_rect(window_ds), header=True)
+    point = _tracking(x, y, lambda: _header_point(window_ds, offset))
+    yield from _click_at(point, window_ds)
+    # Verified by STATE: the window is in front at its header. The
+    # re-check after a fix only sees the unmet change, and a click that
+    # raised some OTHER window got it ok - "raise 'Loras' (ok)" with
+    # no raise effect anywhere, and the expand click that followed landed
+    # on the window still covering the chevron (Lukas 09-01).
+    for _ in range(Toggles.Orchestrator.layout_settle_pumps):
+        px, py = _point_of(point)
+        if _front_window_at(px, py) is window_ds:
+            return
+        yield
+    raise _Abort(f"'{display_name(window_ds)}' did not come to front")
 
 
 def _fix_move(task, mover_ds, ds, point, rect=None):
@@ -603,9 +645,17 @@ def _fix_move(task, mover_ds, ds, point, rect=None):
     obscurer = task._unmet[1]
     left, top, width, height = _live_rect(obscurer)
     margin = Toggles.Orchestrator.uncover_margin_px
-    target = rect() if callable(rect) else rect
-    if target is None:
-        target = _visible_rect(ds)
+    # What the move must clear: the subject's WHOLE visible rect, plus any
+    # re-pick rect and the point. Clearing only the re-pick box (a gate's
+    # ±6 px chevron zone) parked the obscurer a hair outside it, and the
+    # next re-pick / layout slop put the chevron back over its edge -
+    # "it didn't drag it far enough" (Lukas 09-01). A person drags the
+    # window off the thing, not off the pixel.
+    target = _visible_rect(ds)
+    extra = rect() if callable(rect) else rect
+    if extra is not None:
+        target = (min(target[0], extra[0]), min(target[1], extra[1]),
+                  max(target[2], extra[2]), max(target[3], extra[3]))
     x, y = point
     target = (min(target[0], x), min(target[1], y), max(target[2], x), max(target[3], y))
     dx, dy = _escape_rect_delta((left, top, left + width, top + height), target, margin)
@@ -621,7 +671,8 @@ def _fix_move(task, mover_ds, ds, point, rect=None):
     tolerance = Toggles.Orchestrator.move_tolerance_px
     for attempt in range(2):
         x, y = yield from task._satisfy(mover_ds, lambda: _header_point(mover_ds, offset),
-                                        depth=task._depth + 1, rect=_header_rect(mover_ds))
+                                        depth=task._depth + 1,
+                                        rect=lambda: _header_rect(mover_ds), header=True)
         before = _live_rect(mover_ds)[:2]
         yield from _drag_by(_tracking(x, y, lambda: _header_point(mover_ds, offset)),
                             dx, dy, mover_ds)
@@ -1060,7 +1111,8 @@ class ValueTask:
             # the moment the chosen one is satisfied
             take = take_for(_ARCHETYPE_BY_EDITOR.get(_editor_of(ds)))
             yield from self._satisfy(ds, self._press_point_fn(ds, take),
-                                     rect=self._press_rect_fn(ds))
+                                     rect=self._press_rect_fn(ds),
+                                     header=self.gesture == "header")
             self.result = "satisfied"
             self._skip_verify = True
             return
@@ -1113,7 +1165,8 @@ class ValueTask:
                 raise _Abort(f"move needs a (dx, dy) delta, got {self.to!r}")
         point_fn = self._press_point_fn(window)
         yield from self._wait_pacing("before_press")
-        x, y = yield from self._satisfy(window, point_fn, rect=self._press_rect_fn(window))
+        x, y = yield from self._satisfy(window, point_fn, rect=self._press_rect_fn(window),
+                                        header=True)
         header = lambda: _header_point(window, move_offset())
         before = _live_rect(window)[:2]
         if self.gates_only:
@@ -1186,7 +1239,7 @@ class ValueTask:
         raise _Abort("gates kept closing — gave up after "
                      f"{max(64, Toggles.Orchestrator.gate_attempts * 4)} passes")
 
-    def _satisfy(self, ds, point_fn, depth=0, rect=None):
+    def _satisfy(self, ds, point_fn, depth=0, rect=None, header=False):
         """Make `ds` hittable at the press point `point_fn()` returns — a
         CALLABLE, re-evaluated after every fix, because fixes move things
         (a scroll shifts the target, a move shifts a header); a re-pick
@@ -1202,13 +1255,14 @@ class ValueTask:
         since = len(self.attempts)            # this scope's own attempts (the message lists just these)
         try:
             for _round in range(max(1, Toggles.Orchestrator.gate_attempts) * 2):
-                unmet = _first_unmet(ds, point_fn())
+                unmet = _first_unmet(ds, point_fn(), header=header)
                 if unmet is None:
                     break
-                point_fn = yield from self._apply_fixes(unmet, ds, point_fn, rect, since=since)
+                point_fn = yield from self._apply_fixes(unmet, ds, point_fn, rect,
+                                                        since=since, header=header)
                 yield
             point = point_fn()
-            unmet = _first_unmet(ds, point)
+            unmet = _first_unmet(ds, point, header=header)
             if unmet is not None:
                 raise _Abort(self._unmet_message(unmet, ds, since=since))
             if depth == 0:
@@ -1217,7 +1271,7 @@ class ValueTask:
         finally:
             self._depth = saved_depth
 
-    def _apply_fixes(self, unmet, ds, point_fn, rect=None, since=0):
+    def _apply_fixes(self, unmet, ds, point_fn, rect=None, since=0, header=False):
         """Run the candidates for one unmet precondition until the
         precondition changes (fixed, or a different one surfaced). Returns
         the press point callable (a re-pick replaces it). `since` = where
@@ -1244,7 +1298,7 @@ class ValueTask:
                 point_fn = (lambda p=self._picked: p)
             else:
                 yield from _wait_layout(ds)          # the fix moved things: re-checking geometry
-            after = _first_unmet(ds, point_fn())
+            after = _first_unmet(ds, point_fn(), header=header)
             if after is None or after != unmet:
                 self.attempts.append(f"{label} (ok, cost {cost})")
                 if self.until is not None and precondition_key(unmet) == self.until:
@@ -1358,7 +1412,7 @@ def list_preconditions(path, within=None, universe=None, gesture="leaf", press_f
     if ds is not None and not rows and _reachable(ds):
         take = take_for(_ARCHETYPE_BY_EDITOR.get(_editor_of(ds)))
         point = task._press_point_fn(ds, take)()
-        unmet = _first_unmet(ds, point)
+        unmet = _first_unmet(ds, point, header=gesture == "header")
         if unmet is not None:
             rows.append(unmet)
     elif ds is None and not rows:
@@ -1420,7 +1474,7 @@ def describe_target(path, within=None, universe=None, gesture="leaf", press_frac
     out["point"] = (round(point[0], 1), round(point[1], 1))
     front = _front_window_at(point[0], point[1])
     out["front"] = display_name(front) if front is not None else None
-    unmet = _first_unmet(ds, point)
+    unmet = _first_unmet(ds, point, header=gesture == "header")
     out["unmet"] = (unmet[0], display_name(unmet[1])) if unmet is not None else None
     return out
 

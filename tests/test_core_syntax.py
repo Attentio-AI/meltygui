@@ -923,16 +923,22 @@ class TestIncremental(unittest.TestCase):
                 continue
             gp = parse_to_dict(text)          # the base parse consumed by each incremental step
             with self.subTest(file=label, edit=name):
+                # No ast check needed any more (09-01): what `ast` rejects
+                # may still scan (the scanner / block structure took it) -
+                # then the incremental result must agree with a full parse
+                # exactly as for valid text; when the scanner rejects it,
+                # the incremental path must too.
                 try:
-                    ast.parse(new_text)
+                    full = parse_to_dict(new_text)
                 except SyntaxError:
                     with self.assertRaises(SyntaxError):
                         reparse_incremental(gp, new_text)
                     continue
                 inc = reparse_incremental(gp, new_text)
-                full = parse_to_dict(new_text)
                 self.assertEqual(snapshot(inc), snapshot(full))
-                self.assertEqual(general_parse_to_str(inc), new_text)
+                # The reverse path keeps its integrity check (it guards a WRITE);
+                # here only the byte-exact reconstruction is under test.
+                self.assertEqual(general_parse_to_str(inc, check=False), new_text)
                 self.assertIsNot(inc, gp)
 
     def test_sample(self):

@@ -2456,7 +2456,7 @@ def extract(text, *, frontend, types, file_path=None, line_offset=0, module_head
     return gp, origin
 
 
-def scan_extract(text, *, validate=True):
+def scan_extract(text, *, validate=False):
     """The worker's job: scanner front end, neutral types, validated by
     ast.parse (whose SyntaxError is reported as data — nothing raises across
     the interpreter boundary). Returns ("ok", gp, origin) or
