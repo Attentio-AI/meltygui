@@ -13246,6 +13246,9 @@ def draw_text(input_value: str, height=None,
     # of a symbol whose definition (here or in another file) carries a tint,
     # in that definition's color. Ties usages to their definitions at a glance.
     _dt_blocks = _dt_spans = _dt_lines = _dt_comments = ()
+    # Tints off (or in search box): no block tint under any pill.
+    if ds.__dict__.get("_lv_tint_blocks"):
+        object.__setattr__(ds, "_lv_tint_blocks", ())
     # Open this body run's glow group: live cache lets glows from the last
     # run drop unless re-emitted below (so toggling tints off or scrolling the
     # bands away really clears them), while cache-skipped frames never reach
@@ -13340,6 +13343,10 @@ def draw_text(input_value: str, height=None,
                                     tuple(_rb), tuple(_rl))
                 _dt_blocks, _dt_lines = ds._fold_dt_memo[3], ds._fold_dt_memo[4]
             _dt_spans = _fold_remap_spans(_dt_spans, 'dt')
+        # The DISPLAY-coordinate block list for the live-value pills
+        # (see live_views._pill_tint: a pill wears the tint of the block
+        # under its cursor). A tuple ref - the pill memo keys on its identity.
+        object.__setattr__(ds, "_lv_tint_blocks", _dt_blocks)
         # Comment-text tints come from a direct scan of the buffer text - no
         # code_tree, no debounce, so a tint comment colors as it's typed
         # instead of waiting on the cst-dict round trip. Scans over the

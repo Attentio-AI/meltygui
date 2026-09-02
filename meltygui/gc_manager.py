@@ -19,17 +19,20 @@ Melty.end_frame):
     objects allocated since, so it is small — and it lands when nobody is
     typing.
 
-Every pass reports through the "lag" notify column (lag_span), so the cost
-stays visible. Toggles.memory_profile turns every managed collect into a
-profiled one (_collect): a by-type histogram of the cyclic garbage reclaimed
-— and, for the boot pass, of the whole live graph about to be frozen — is
-appended to /tmp/lsd_gc_profile.log. State survives hotswap via the globals().get pattern; the
+Every pass reports through the "lag" notify column: its duration, how many
+objects (and roughly how many bytes) went, and the top types — and the toast
+is clickable: it opens that collect's REPORT (one file per collect under
+Toggles.GC.report_dir: type / module / dict-key-signature / function / frame
+histograms of the reclaimed cycles, sample reprs, and the scheduler's reason)
+in the code editor. Toggles.memory_profile additionally histograms, for the
+boot pass, the whole live graph about to be frozen, appended to
+/tmp/lsd_gc_profile.log. State survives hotswap via the globals().get pattern; the
 end_frame hook line in melty.py is restart-bound (melty never hotswaps).
 """
 import gc
 import time
 
-from src.lsd.gl_gui.notifications import lag_span, notify, capture_stack
+from src.lsd.gl_gui.notifications import notify, capture_stack
 from src.lsd.gl_gui.toggles import Toggles
 
 _state = globals().get("_state") or {
@@ -40,9 +43,11 @@ _state = globals().get("_state") or {
     "last_tick": 0.0,       # frame gap detection (frames park in wait_events)
     "focused": True,        # glfw FOCUSED as of the last tick
     "resumed_t": 0.0,       # last focus-gain / frame-gap moment
+    "unfocus_armed_t": 0.0, # focus-LOSS edge seen; not once it is confirmed
 }
 # Hotswap reuses the live _state dict - backfill fields added since.
-for _k, _v in (("last_tick", 0.0), ("focused", True), ("resumed_t", 0.0)):
+for _k, _v in (("last_tick", 0.0), ("focused", True), ("resumed_t", 0.0),
+               ("unfocus_armed_t", 0.0)):
     _state.setdefault(_k, _v)
 
 PROFILE_LOG = "/tmp/lsd_gc_profile.log"
@@ -83,6 +88,9 @@ def _samples(objs, wanted, per_type=3, width=160):
                 r = "dict keys=" + repr(list(o.keys())[:8])
             elif type(o) in (list, tuple, set):
                 r = f"{tn}[{len(o)}] " + repr(o[:4] if type(o) is not set else list(o)[:4])
+            elif hasattr(o, "shape") and hasattr(o, "dtype"):
+                # A tensor / ndarray repr materializes (and allocs) the data.
+                r = f"{tn} shape={tuple(o.shape)} dtype={o.dtype}"
             else:
                 r = repr(o)
                 if " object at 0x" in r and hasattr(o, "__dict__"):
@@ -99,6 +107,128 @@ def _write(lines):
             f.write("\n".join(lines) + "\n")
     except Exception:
         pass
+
+
+def _report_dir():
+    """Where per-collect reports go — `Toggles.GC.report_dir` (expanded),
+    falling back to the in-repo `.melty/gc_reports` (the screenshot
+    convention). Created on demand; None if neither is writable."""
+    import os
+    from pathlib import Path
+    from src.lsd.gl_gui.toggles import Toggles
+    candidates = []
+    configured = Toggles.GC.report_dir
+    if configured:
+        candidates.append(Path(configured).expanduser())
+    candidates.append(Path(__file__).resolve().parents[3] / ".melty" / "gc_reports")
+    for d in candidates:
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            if os.access(d, os.W_OK):
+                return d
+        except Exception:
+            continue
+    return None
+
+
+def _write_report(label, lines):
+    """One file per collect (`gc_<HHMMSS>_<label>.txt`), oldest pruned past
+    `Toggles.GC.report_keep`. Returns the path, or None."""
+    import re
+    from src.lsd.gl_gui.toggles import Toggles
+    d = _report_dir()
+    if d is None:
+        return None
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", label).strip("_") or "collect"
+    path = d / f"gc_{time.strftime('%Y%m%d_%H%M%S')}_{slug}.txt"
+    try:
+        path.write_text("\n".join(lines) + "\n")
+        keep = int(Toggles.GC.report_keep or 0)
+        if keep > 0:
+            old = sorted(d.glob("gc_*.txt"))[:-keep]
+            for f in old:
+                f.unlink(missing_ok=True)
+    except Exception:
+        return None
+    return path
+
+
+def _detail_rows(objs, top=15):
+    """WHAT the reclaimed objects were, one level below the type histogram:
+    dicts grouped by their key signature (which dicts), functions by
+    qualname, frames / code / cells by the code they belong to, methods by
+    their function. The type histogram says "6,000 dicts"; these rows say
+    "4,100 of them are draw_state kwargs dicts"."""
+    import types
+    from collections import Counter
+    dicts, funcs, frames, cells, methods, code_objs = (Counter() for _ in range(6))
+    for o in objs:
+        t = type(o)
+        try:
+            if t is dict:
+                keys = list(o.keys())
+                sig = ", ".join(str(k)[:24] for k in keys[:5])
+                if len(keys) > 5:
+                    sig += f", … (+{len(keys) - 5})"
+                dicts[f"{{{sig}}}"] += 1
+            elif t is types.FunctionType:
+                funcs[f"{o.__module__}.{o.__qualname__}"] += 1
+            elif t is types.FrameType:
+                c = o.f_code
+                frames[f"{c.co_name}  {c.co_filename.rsplit('/', 1)[-1]}:{o.f_lineno}"] += 1
+            elif t is types.CellType:
+                cells[_type_name(o.cell_contents) if o.cell_contents is not None else "None"] += 1
+            elif t is types.MethodType:
+                f = o.__func__
+                methods[f"{getattr(f, '__module__', '?')}.{getattr(f, '__qualname__', '?')}"] += 1
+            elif t is types.CodeType:
+                code_objs[f"{o.co_name}  {o.co_filename.rsplit('/', 1)[-1]}:{o.co_firstlineno}"] += 1
+        except Exception:
+            continue
+    lines = []
+    for title, counter in (("dicts by key signature", dicts),
+                           ("functions by qualname", funcs),
+                           ("bound methods by function", methods),
+                           ("frames by code site", frames),
+                           ("code objects", code_objs),
+                           ("cells by content type", cells)):
+        if not counter:
+            continue
+        lines.append(f"--- {title} (top {top} of {len(counter)} distinct):")
+        for name, n in counter.most_common(top):
+            lines.append(f"  {n:>10}  {name}")
+    return lines
+
+
+def _module_histogram(objs, top=15):
+    """The reclaimed objects by the MODULE their type was defined in — the
+    quickest "whose garbage is this" read (src.lsd… vs libcst vs torch)."""
+    from collections import Counter
+    c = Counter()
+    for o in objs:
+        c[getattr(type(o), "__module__", "") or "builtins"] += 1
+    return [f"--- by type's module (top {top}):"] + [
+        f"  {n:>10}  {m}" for m, n in c.most_common(top)]
+
+
+def _approx_bytes(objs):
+    """sys.getsizeof over the reclaimed objects — shallow (no referents
+    that survive elsewhere), so a lower bound on what the collect freed."""
+    import sys
+    total = 0
+    for o in objs:
+        try:
+            total += sys.getsizeof(o)
+        except Exception:
+            pass
+    return total
+
+
+def _fmt_bytes(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
 
 
 def _thread_report():
@@ -390,20 +520,42 @@ def _stale_world_report(live):
     return lines
 
 
-def _collect(label, live_graph=False):
-    """gc.collect() wrapped in the memory_profile instrumentation.
-    Off: identical to a bare gc.collect(). On: DEBUG_SAVEALL parks every
-    reclaimed cyclic object in gc.garbage so we can histogram it by type
-    (plus a few reprs per top type), then releases them; with live_graph=True
-    (the boot pass) also histograms EVERYTHING gc tracks — that is the graph
-    about to be frozen, and its size is the boot collect's price."""
+def _collect(label, live_graph=False, reason=""):
+    """gc.collect() plus a REPORT of what it reclaimed — written to one
+    file per collect (`_write_report`, under Toggles.GC.report_dir) and
+    summarized in a "lag"-column toast whose click opens that file in the
+    code editor (the screenshot toast's convention). DEBUG_SAVEALL parks
+    every reclaimed cyclic object in gc.garbage so it can be histogrammed by
+    type (with a few reprs per top type), grouped one level finer
+    (`_detail_rows`: which dicts, which functions, which frames) and by
+    module, then released. `reason` is the scheduler's one-line "why now".
+
+    Toggles.GC.reports off → identical to a bare gc.collect() (no toast).
+    Toggles.memory_profile additionally walks the LIVE graph on the boot
+    pass (live_graph=True — the graph about to be frozen, and the boot
+    collect's price) and appends everything to PROFILE_LOG."""
     import threading
-    if not _profile_enabled():
-        return gc.collect()
+    from src.lsd.gl_gui.toggles import Toggles
+    profile = _profile_enabled()
+    if not profile and (not Toggles.GC.reports or live_graph):
+        # The boot pass (live_graph) walks EVERYTHING tracked; SAVEALL
+        # would need a SECOND full walk to report what it reclaimed (observed:
+        # 5.4 s doubled to 10 s). Bare collect, timed, toast only.
+        t0 = time.perf_counter()
+        n = gc.collect()
+        ms = 1000 * (time.perf_counter() - t0)
+        tint = (1.0, 0.25, 0.2) if ms >= 300 else (1.0, 0.65, 0.2)
+        notify(f"gc: {label}  {ms:.0f}ms  [{threading.current_thread().name}]  "
+               f"{n:,} unreachable — {reason or ''}",
+               tint=tint, tag="lag", stack=capture_stack())
+        return n
     stamp = time.strftime("%H:%M:%S")
     thread = threading.current_thread().name
-    lines = [f"===== {stamp}  gc: {label}  [{thread}]  gen counts={gc.get_count()}"]
-    if live_graph:
+    lines = [f"===== {stamp}  gc: {label}  [{thread}]",
+             f"reason: {reason or '-'}",
+             f"gen counts={gc.get_count()}  thresholds={gc.get_threshold()}  "
+             f"frozen={gc.get_freeze_count()}"]
+    if live_graph and profile:
         t0 = time.perf_counter()
         live = gc.get_objects()
         hist, total = _histogram(live, top=40)
@@ -432,27 +584,38 @@ def _collect(label, live_graph=False):
     garbage = gc.garbage
     hist, total = _histogram(garbage, top=40)
     samples = _samples(garbage, {tn for tn, _ in hist[:8]})
-    lines.append(f"--- CYCLIC garbage reclaimed: collect()={n}  gc.garbage={total}  ({ms:.0f}ms)")
+    nbytes = _approx_bytes(garbage)
+    lines.append(f"--- CYCLIC garbage reclaimed: collect()={n}  gc.garbage={total}  "
+                 f"~{_fmt_bytes(nbytes)} shallow  ({ms:.0f}ms)")
+    lines.append(f"--- by type (top 40):")
     for tn, cnt in hist:
         lines.append(f"  {cnt:>10}  {tn}")
     for tn, reprs in samples.items():
         for r in reprs:
             lines.append(f"      e.g. {tn}: {r}")
     del samples
+    lines.extend(_module_histogram(garbage))
+    lines.extend(_detail_rows(garbage))
     # Release: SAVEALL kept the cycles alive via gc.garbage; dropping the
     # reference leaves them unreachable again, and the follow-up (un-instrumented)
     # collect actually frees them.
     del garbage
     gc.garbage.clear()
     gc.collect()
-    _write(lines)
-    notify(f"gc profile: {label} → {total} cyclic objs, top {hist[0][1] if hist else 0} "
-           f"{hist[0][0] if hist else '-'}  (see {PROFILE_LOG})",
-           tint=(0.9, 0.7, 0.3), tag="lag", stack=capture_stack())
+    if profile:
+        _write(lines)
+    report = _write_report(label, lines) if Toggles.GC.reports else None
+    # Toast: duration first (it is a lag entry), then what went - the top
+    # three types by short name. Click → the report file in the editor.
+    tops = " · ".join(f"{tn.rsplit('.', 1)[-1]} {cnt:,}" for tn, cnt in hist[:3]) or "nothing"
+    tint = (1.0, 0.25, 0.2) if ms >= 300 else (1.0, 0.65, 0.2)
+    notify(f"gc: {label}  {ms:.0f}ms  [{thread}]  {total:,} objs ~{_fmt_bytes(nbytes)}: {tops}",
+           tint=tint, tag="lag", stack=capture_stack(),
+           jump=(str(report), 1) if report else None)
     return n
 
 
-def _boot_collect_and_freeze(label):
+def _boot_collect_and_freeze(label, trigger=""):
     """The once-per-session full pass: unfreeze → collect → freeze.
 
     A studio "restart" is IN-PROCESS (model_server purges src.* from
@@ -472,7 +635,9 @@ def _boot_collect_and_freeze(label):
     right there instead of paying it again per run until idle."""
     prev_frozen = gc.get_freeze_count()
     gc.unfreeze()
-    _collect(label, live_graph=True)
+    _collect(f"{label} collect+freeze", live_graph=True,
+             reason=f"boot pass ({trigger or label}): unfreeze → full collect over the "
+                    f"WHOLE tracked graph → freeze; cost = live graph size, not garbage")
     gc.freeze()
     _state["frozen"] = True
     _state["last_collect"] = time.monotonic()
@@ -501,11 +666,21 @@ def tick():
 
     # Frames only run on events (the main loop parks in glfw.poll_events), so
     # while the user is away this tick never fires; the last frame BACK saw
-    # "idle for ages" and collected right in the user's face. Two signals fix
-    # the problem: the focus-LOST edge (its event wakes exactly one frame -
-    # the best possible moment to ask for a collect, nobody is looking), and
-    # a focus-GAIN / long frame gap, which restarts the idle clock so a
-    # collect requires idle_seconds of quiet measured from focus return.
+    # "idle for ages" and collected right in the user's face. The solution:
+    # the focus-LOST edge (nobody is looking - the best possible moment to
+    # pay for a collect), a focus-GAIN / long frame gap, which restarts the
+    # idle clock so the collect needs idle_seconds of sleep measured from the
+    # return, and POINTER PRESENCE (motion inside the window, stamped in the
+    # input backend's cursor callback) - a return always starts with the
+    # pointer crossing the window, before any click or focus change.
+    #
+    # The focus edge is POLLED, so it is only trustworthy while frames flow.
+    # With frames parked, the first frame back can be the one that reads
+    # "unfocused" (pointer over the window, focus not regained yet) against the
+    # stale was_focused=True - a loss like that IS the return. So a loss only
+    # ARMS the collect; it fires on a later frame (a wake is scheduled) once
+    # the window has stayed unfocused, with no presence, for
+    # Toggles.GC.unfocus_confirm_s. Any presence or focus meanwhile disarms.
     focused = _window_focused(Melty)
     was_focused = _state["focused"]
     _state["focused"] = focused
@@ -514,26 +689,70 @@ def tick():
     if (focused and not was_focused) or frame_gap >= Toggles.GC.idle_seconds:
         _state["resumed_t"] = now
     lost_focus = was_focused and not focused
-    last_input = max(getattr(Melty, "_last_input_time", 0.0), _state["resumed_t"])
+    last_input = max(getattr(Melty, "_last_input_time", 0.0),
+                     getattr(Melty, "_last_presence_time", 0.0),
+                     _state["resumed_t"])
 
-    if lost_focus:
-        if not _state["frozen"]:
-            with lag_span("gc: boot collect+freeze (unfocused)", 0.0):
-                _boot_collect_and_freeze("boot")
-        elif now - _state["last_collect"] >= Toggles.GC.unfocus_collect_s:
-            with lag_span("gc: unfocus collect", 0.0):
-                _collect("unfocus")
-            _state["last_collect"] = now
+    pointer_inside = bool(getattr(Melty, "_pointer_inside", True))
+    if focused:
+        _state["unfocus_armed_t"] = 0.0
+    else:
+        if lost_focus:
+            _state["unfocus_armed_t"] = now
+            _wake_in(Toggles.GC.unfocus_confirm_s + 0.05)
+        armed_t = _state["unfocus_armed_t"]
+        if armed_t and now - armed_t >= Toggles.GC.unfocus_confirm_s:
+            _state["unfocus_armed_t"] = 0.0
+            # "Nobody is looking" = no presence was input since the arm
+            # (the pointer motion that WOKE the arming frame is stamped just
+            # before it, hence the margin) AND the pointer is off the window
+            # - unfocused with the pointer inside it is a return in progress
+            # or someone reading; the pass would land in their face.
+            quiet = last_input < armed_t - Toggles.GC.unfocus_confirm_s
+            if quiet and not pointer_inside:
+                if not _state["frozen"]:
+                    _boot_collect_and_freeze(
+                        "boot", trigger=f"window unfocused for {now - armed_t:.1f}s")
+                elif now - _state["last_collect"] >= Toggles.GC.unfocus_collect_s:
+                    _collect("unfocus collect",
+                             reason=f"window unfocused for {now - armed_t:.1f}s, "
+                                    f"last presence {now - last_input:.0f}s ago, "
+                                    f"last collect {now - _state['last_collect']:.0f}s ago")
+                    _state["last_collect"] = now
         return
-    if not focused or now - last_input < Toggles.GC.idle_seconds:
+    if now - last_input < Toggles.GC.idle_seconds:
         return
     if not _state["frozen"]:
-        with lag_span("gc: boot collect+freeze", 0.0):
-            _boot_collect_and_freeze("boot")
+        # The boot pass walks the WHOLE heap (seconds) and a 15 s pause in
+        # typing is not a real pause; the unfocused branch above is the
+        # best moment, and idle must be a long one.
+        if now - last_input < Toggles.GC.boot_idle_seconds:
+            return
+        _boot_collect_and_freeze(
+            "boot", trigger=f"no input / presence for {now - last_input:.0f}s")
     elif now - _state["last_collect"] >= Toggles.GC.idle_collect_s:
-        with lag_span("gc: idle collect", 0.0):
-            _collect("idle")
+        _collect("idle collect",
+                 reason=f"no input / presence for {now - last_input:.0f}s "
+                        f"(idle_seconds={Toggles.GC.idle_seconds:g}), "
+                        f"last collect {now - _state['last_collect']:.0f}s ago")
         _state["last_collect"] = now
+
+
+def _wake_in(delay_s):
+    """Produce a frame `delay_s` from now (the loop parks in wait_events, so
+    the confirm tick above needs a wake to happen at all)."""
+    import threading
+
+    def _fire():
+        try:
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
+            request_render()
+        except Exception:
+            pass
+
+    t = threading.Timer(max(0.0, float(delay_s)), _fire)
+    t.daemon = True
+    t.start()
 
 
 def _window_focused(Melty) -> bool:
@@ -604,13 +823,11 @@ def collect_after_run(label="run"):
     if not _state["frozen"] and now - _state["boot_t"] >= Toggles.GC.boot_delay_s:
         # Not frozen yet - this collect walks everything anyway; make it THE
         # boot pass so future runs (and idle) get the cheap post-freeze walk.
-        with lag_span(f"gc: post-{label} collect+freeze", 0.0):
-            _boot_collect_and_freeze(f"post-{label}")
-            _release_cuda_cache()
-        return
-    with lag_span(f"gc: post-{label} collect", 0.0):
-        _collect(f"post-{label}")
+        _boot_collect_and_freeze(f"post-{label}", trigger=f"run '{label}' before the idle boot pass")
         _release_cuda_cache()
+        return
+    _collect(f"post-{label} collect", reason=f"run '{label}' retired its previous generation")
+    _release_cuda_cache()
     _state["last_collect"] = time.monotonic()
 
 

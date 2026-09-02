@@ -613,6 +613,35 @@ class Opaque(_Node):
         self.body = body or []
 
 
+class alias(_Node):
+    """`name [as asname]` of an import statement (ast.alias shape)."""
+    __slots__ = ("name", "asname")
+
+    def __init__(self, name, asname=None):
+        self.name = name
+        self.asname = asname
+
+
+class Import(_Node):
+    """`import a.b [as c], d` — ast.Import shape. Surfaced for the file
+    import graph (view/playground/file_graph.py); the dict ignores it."""
+    __slots__ = ("names",)
+
+    def __init__(self, names):
+        self.names = names
+
+
+class ImportFrom(_Node):
+    """`from [..]mod import x [as y], (…)` / `import *` — ast.ImportFrom
+    shape: `module` None for a bare relative import, `level` = leading dots."""
+    __slots__ = ("module", "names", "level")
+
+    def __init__(self, module, names, level):
+        self.module = module
+        self.names = names
+        self.level = level
+
+
 class ClassDef(_Node):
     __slots__ = ("name", "bases", "keywords", "body", "decorator_list")
 
@@ -1214,6 +1243,10 @@ class _Parser:
 
     def simple(self, toks):
         t0 = toks[0]
+        if t0.type == _NAME and t0.string in ("import", "from"):
+            node = self.import_stmt(toks)
+            if node is not None:
+                return node
         if t0.type == _NAME and t0.string in _STMT_KEYWORDS:
             return Opaque()._pos(t0, toks[-1])
         eq = _has_depth0(toks, "=")
@@ -1238,6 +1271,68 @@ class _Parser:
             return node._pos(t0, toks[-1])
         node = Assign([self.target(lhs)], self.expr(rhs, toks[eq]))
         return node._pos(t0, toks[-1])
+
+    # ── imports ──────────────────────────────────────────────────────────────
+
+    def import_stmt(self, toks):
+        """`import …` / `from … import …` → Import / ImportFrom, or None when
+        the tokens don't read as one (the caller falls back to Opaque)."""
+        t0 = toks[0]
+        if t0.string == "import":
+            names = self._import_aliases(toks[1:])
+            return Import(names)._pos(t0, toks[-1]) if names else None
+        # from [dots] [module] import names
+        level, i = 0, 1
+        while i < len(toks) and toks[i].type == _OP and toks[i].string in (".", "..."):
+            level += len(toks[i].string)
+            i += 1
+        module_parts = []
+        while i < len(toks) and not (toks[i].type == _NAME and toks[i].string == "import"):
+            t = toks[i]
+            if t.type == _NAME or (t.type == _OP and t.string == "."):
+                module_parts.append(t.string)
+            else:
+                return None
+            i += 1
+        if i >= len(toks) or (not module_parts and level == 0):
+            return None
+        rest = toks[i + 1:]
+        if rest and rest[0].type == _OP and rest[0].string == "(":
+            close = _match(rest, 0)
+            rest = rest[1:close] if close is not None else rest[1:]
+        if len(rest) == 1 and rest[0].type == _OP and rest[0].string == "*":
+            names = [alias("*")._pos(rest[0], rest[0])]
+        else:
+            names = self._import_aliases(rest)
+        if not names:
+            return None
+        module = "".join(module_parts) or None
+        return ImportFrom(module, names, level)._pos(t0, toks[-1])
+
+    @staticmethod
+    def _import_aliases(toks):
+        """`a.b [as c], d [as e]` → [alias]; None on anything unexpected."""
+        out = []
+        for part in _split_depth0(toks, ","):
+            if not part:
+                continue
+            parts, asname, j = [], None, 0
+            while j < len(part):
+                t = part[j]
+                if t.type == _NAME and t.string == "as":
+                    if j + 1 != len(part) - 1 or part[j + 1].type != _NAME:
+                        return None
+                    asname = part[j + 1].string
+                    break
+                if t.type == _NAME or (t.type == _OP and t.string == "."):
+                    parts.append(t.string)
+                else:
+                    return None
+                j += 1
+            if not parts:
+                return None
+            out.append(alias("".join(parts), asname)._pos(part[0], part[-1]))
+        return out
 
     def target(self, toks):
         if len(toks) == 1 and toks[0].type == _NAME:
@@ -1465,6 +1560,28 @@ class _EndTok:
         self.line = ""
         self.type = -1
         self.string = ""
+
+
+_BODY_FIELDS = ("body", "orelse", "handlers", "finalbody")
+
+
+def iter_imports(node):
+    """Every Import / ImportFrom node under `node` (a scan() Module or any
+    scanner node), in source order, at any nesting — function bodies,
+    if/try blocks and opaque compounds included."""
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        k = _k(n)
+        if k in ("Import", "ImportFrom"):
+            yield n
+            continue
+        children = []
+        for field in _BODY_FIELDS:
+            body = getattr(n, field, None)
+            if isinstance(body, list):
+                children.extend(body)
+        stack.extend(reversed(children))
 
 
 def scan(text):

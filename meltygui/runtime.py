@@ -950,6 +950,18 @@ class Melty:
     # the cst→dict index's cooperative loop yield to back off when the user interacts.
     _last_input_time = 0.0
 
+    # time.monotonic() of the last pointer movement over the window (set in the
+    # input backend's cursor callback). A hover deliberately does NOT
+    # stamp _last_input_time (it would stall the cooperative parse yield);
+    # this one is the "somebody is here" signal for gc_manager.tick, so a
+    # return - the pointer crossing the window before any click - restarts
+    # the idle clock instead of landing a collect in the user's face.
+    _last_presence_time = 0.0
+    # Pointer currently over the window (GLFW cursor_enter callback in the
+    # input backend). gc_manager's unfocused tick requires it False:
+    # unfocused + pointer inside = the user is in the studio.
+    _pointer_inside = True
+
     # time.monotonic() of the last key event only (PRESS/REPEAT/RELEASE, set in
     # event_backends). Narrower than _last_input_time (which mouse activity also
     # stamps) - drives RenderHost.typing_hold's skip-hosts-while-typing debounce.

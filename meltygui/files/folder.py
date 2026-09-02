@@ -205,7 +205,10 @@ def _apply_meta(tree, folder, meta):
         if not isinstance(entry, dict):
             continue
         params = {k: v for k, v in entry.items()
-                  if k != "order" and not (isinstance(k, str) and k.startswith("__"))}
+                  if k != "order" and not (isinstance(k, str) and k.startswith("__"))
+                  # unpainted (alpha-0) tint: no override, the row keeps its own
+                  and not (k == "tint" and isinstance(v, (tuple, list))
+                           and len(v) >= 4 and not v[3])}
         if params:
             desired[f"__{n}__"] = params
         if isinstance(entry.get("order"), (int, float)):
@@ -282,14 +285,27 @@ _META_SKIP_SUFFIXES = {".pyc"}
 @Melty.on_load
 def _init_file_meta(vis, root):
     from src.lsd.gl_gui.model.app_model import FileMeta
+    from src.lsd.gl_gui.toggles import Toggles
     meta = _file_meta(root)
     if meta is None:
         return
     # Upgrade entries deserialized as plain dicts (older saves / from_dict)
     # to FileMeta, keeping their stored values.
+    # Retroactive (09-02): stored tints that were never a user's pick - the
+    # old bluish-grey class default, the tab tint's fallback colour (which got
+    # written back onto 184 files), or an alpha-0 default — are dropped, so
+    # those files read as unpainted (FileMeta.tint, black background).
+    unpainted = {tuple(round(c, 3) for c in FileMeta._LEGACY_DEFAULT_TINT[:3]),
+                 tuple(round(c, 3) for c in Toggles.CodeEditor.tab_tint_fallback[:3])}
     for key, entry in list(meta.items()):
         if isinstance(entry, dict) and not isinstance(entry, FileMeta):
             meta[key] = FileMeta(entry)
+        stored = dict.get(meta[key], "tint") if isinstance(meta[key], dict) else None
+        if stored is None:
+            continue
+        if (FileMeta.painted_tint({"tint": stored}) is None
+                or tuple(round(c, 3) for c in stored[:3]) in unpainted):
+            dict.pop(meta[key], "tint", None)
     module_root = Path(__file__).resolve().parents[4]   # .../src
     for p in module_root.rglob("*"):
         rel = p.relative_to(module_root).parts

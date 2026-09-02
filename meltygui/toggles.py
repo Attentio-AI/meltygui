@@ -2146,6 +2146,18 @@ class Toggles:
         # LOSES focus (alt-tab / minimize): the one frame nobody is watching.
         # Focus-gain restarts the idle clock, so returning never collects.
         unfocus_collect_s = 200.0
+        # The focus-loss collect fires only after the window has stayed
+        # unfocused, with no mouse presence, this long: the polled focus
+        # edge is also what the first frame BACK reads (pointer over the
+        # window, focus not regained yet), and collecting there froze the
+        # return. Raise it if a loss still lands in your face; it costs
+        # nothing while away.
+        unfocus_confirm_s = 1.0
+        # The BOOT pass (full-graph walk, seconds) needs a real absence when
+        # it goes by idle rather than by focus loss: this long input quiet
+        # with the window focused. Ordinary auto-freeze collects use
+        # idle_seconds.
+        boot_idle_seconds = 120.0
         # Minimum spacing between post-run collects (collect_after_run -
         # the live lab's per-run VRAM retirement). Auto Execute runs the
         # previewed function per mouse-drag tick; collecting after every
@@ -2171,6 +2183,15 @@ class Toggles:
         # references them (store key / draw / attr / frame / module).
         # A few seconds of gc walk, OOM-time only.
         oom_holder_report = True
+        # Every scheduled collect writes a report of WHAT it reclaimed
+        # (class / module / dict-signature / function, with sample
+        # reprs) - one file per collect under report_dir - and its "lag"
+        # toast names the top types; clicking the toast opens the report in
+        # the code editor. Off = bare gc.collect(), no toast.
+        reports = True
+        report_dir = "~/melty/gc_reports"
+        # Oldest reports pruned past this many.
+        report_keep = 50
     cam_zoom = 1.5585
 
     # Presentation mode: dim the text editor's glyphs everywhere EXCEPT on

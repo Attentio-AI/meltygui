@@ -1445,10 +1445,10 @@ def _jump_to_text_hit(path, line):
 def _file_meta_tint(path):
     """The tint the user painted on this file (FileMeta — same store the
     editor tabs and folder tree read), or None."""
+    from src.lsd.gl_gui.model.app_model import FileMeta
     col = getattr(getattr(Melty.vis, "root", None), "file_meta_collection", None)
     meta = getattr(col, "file_meta", None) or {}
-    entry = meta.get(str(path))
-    tint = entry.get("tint") if isinstance(entry, dict) else None
+    tint = FileMeta.painted_tint(meta.get(str(path)))
     return tuple(tint[:3]) if tint else None
 
 

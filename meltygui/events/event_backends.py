@@ -409,6 +409,10 @@ class GlfwQueueBackend:
         # Mouse motion (for hover/drag) - only used to defer the background parse
         # while the mouse is busy; chains to whatever imgui registered (if any).
         self._prev_cursor = glfw.set_cursor_pos_callback(window, self._on_move)
+        # Pointer inside / outside our window - the GC backend's "is anybody
+        # reading?" bit (an unfocused window with the pointer over it is being
+        # read, not left).
+        self._prev_enter = glfw.set_cursor_enter_callback(window, self._on_enter)
         # The handler asks this before emitting HELD/DRAGGED each frame.
         from src.lsd.gl_gui.events.input_handler import set_button_probe
         set_button_probe(self.button_really_down)
@@ -572,7 +576,24 @@ class GlfwQueueBackend:
         # indefinitely, the slow initial load). A DRAG still defers via its held
         # mouse button (pump()'s _any_input_held), so no stamp is needed here.
         # Fires often, so keep it minimal and chain imgui's own cursor callback.
+        # It DOES stamp presence for the GC watchdog (gc_manager.tick): a
+        # return to the studio starts with the pointer crossing the window.
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            Melty._last_presence_time = time.monotonic()
+        except Exception:
+            pass
         self._chain(getattr(self, "_prev_cursor", None), window, x, y)
+
+    def _on_enter(self, window, entered):
+        try:
+            from src.lsd.gl_gui.melty import Melty
+            Melty._pointer_inside = bool(entered)
+            if entered:
+                Melty._last_presence_time = time.monotonic()
+        except Exception:
+            pass
+        self._chain(getattr(self, "_prev_enter", None), window, entered)
 
     def pump(self):
         """Per-frame: feed the latest cursor position (level state), refresh

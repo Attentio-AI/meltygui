@@ -1723,8 +1723,13 @@ def render_func(*args, **o_kwargs):
             if _active_codec is not None:
                 _fm = _active_codec.file_meta_entry(draw_state)
                 if _fm:
+                    # An alpha-0 tint (FileMeta's unpainted default) is
+                    # dropped here for the same reason as below: it must not
+                    # shadow the draw_state fallback.
                     _fm = {k: v for k, v in _fm.items()
-                           if k != "order" and not (isinstance(k, str) and k.startswith("__"))}
+                           if k != "order" and not (isinstance(k, str) and k.startswith("__"))
+                           and not (k == "tint" and isinstance(v, (tuple, list))
+                                    and len(v) >= 4 and not v[3])}
                     if _fm:
                         kwargs = _fm | kwargs
             if _codec is not None:

@@ -29,6 +29,7 @@ to anchor and get no marker yet.
 
 import bisect
 import collections
+import colorsys
 import enum
 import inspect
 import re
@@ -40,6 +41,7 @@ import imgui
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
+from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_conversion.live_view import (
@@ -215,12 +217,13 @@ def _store_key_names(store_obj):
         return _stable_key_names(list(store.keys()))
 
 
-def _inline_value_text(value, max_chars=48):
+def _inline_value_text(value, max_chars=20):
     """Format a simple builtin value for the marker's INLINE label, or None
     when the value isn't simple enough (those keep the popover window).
     Simple: bool, int, float, str, enum members, and tuples of up to 4 such
     scalars. `max_chars` caps a string's printed length (ellipsis past it) —
-    the label floats over code, so it must stay short."""
+    the label floats over code, so it must stay short. Colors (see
+    _inline_swatch_rgba) keep their text; the pill adds the swatch."""
     if value is None:
         return None     # None is NOT on the supported list - no label
     if isinstance(value, RerunHint):
@@ -263,8 +266,47 @@ def _inline_value_text(value, max_chars=48):
     return None
 
 
+_HEX_COLOR_RE = re.compile(r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
+# Two blank cells the pill text reserves for the swatch - the width math and
+# the left-gap cells below need no special case for it.
+_SWATCH_HOLE = "  "
+
+
+def _inline_swatch_rgba(value):
+    """(r, g, b, a) in 0..1 when a captured value READS as a color — a 3/4
+    tuple of numbers all within 0..1 (or all ints within 0..255 with one
+    past 1, scaled down), or a hex color string (`'#8888c6'`, `'#fff'`,
+    RGBA `'#8888c680'`) — else None. Same shapes the editor's color3 /
+    colorhex token widgets swatch."""
+    if isinstance(value, str):
+        if len(value) > 9 or not _HEX_COLOR_RE.match(value):
+            return None
+        hex_digits = value[1:]
+        if len(hex_digits) == 3:
+            hex_digits = "".join(c + c for c in hex_digits)
+        channels = [int(hex_digits[i:i + 2], 16) / 255.0
+                    for i in range(0, len(hex_digits), 2)]
+        return (channels[0], channels[1], channels[2],
+                channels[3] if len(channels) == 4 else 1.0)
+    if not isinstance(value, tuple) or len(value) not in (3, 4):
+        return None
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        if not 0 <= item <= 255:
+            return None
+    if all(item <= 1 for item in value):
+        channels = tuple(float(c) for c in value)
+    elif all(isinstance(item, int) for item in value):
+        channels = tuple(c / 255.0 for c in value)
+    else:
+        return None
+    return channels if len(channels) == 4 else channels + (1.0,)
+
+
 def _paint_value_pill(inline_text, span_x, text_y, span_width=None,
-                      allow_overflow=False, fill=False, outline_rect=None):
+                      allow_overflow=False, fill=False, tint=None,
+                      swatch=None):
     """The shared inline-value pill on the window draw list, in the CURRENT
     (editor) font, over the code span [span_x, span_x + span_width).
 
@@ -277,18 +319,72 @@ def _paint_value_pill(inline_text, span_x, text_y, span_width=None,
     instrumentation, not code worth peeking at). span_width=None is the
     simple left-anchored unlimited pill (no span geometry known).
 
-    `outline_rect` (x0, y0, x1, y1) rings the ASSOCIATED TOKEN — the symbol
-    the value belongs to — in the label's own green, tying the two together
-    visually (the pill can sit at the line's end, far from its symbol).
+    `tint` is the rgb the pill wears — the background tint under the token
+    (see _pill_tint: token → enclosing def/class block → file), so the
+    value reads as part of the scope it was captured in; None keeps the
+    default forest green. Fill and text derive from it with the SAME
+    factors as the green, so an untinted pill looks exactly as before.
 
-    Fixed design colours, dark FOREST green on purpose — a live value must
-    read as data the run produced, not as more source code."""
+    `swatch` = ((r, g, b, a), hole_index): a color chip painted into the
+    _SWATCH_HOLE the text carries at character `hole_index` — the pill's
+    layout treats the hole as text, so nothing else changes. The chip is
+    split like the editor's color widgets: left half opaque, right half at
+    the real alpha over the card."""
     # [tint=(0.36, 0.85, 0.46)] pad_x = 3.0
     pad_x = 3.0
+    # [tint=(0.30, 0.52, 0.20)] default_tint = (0.30, 0.52, 0.20)
+    default_tint = (0.30, 0.52, 0.20)
+    # Card and text are the tint re-saturated at fixed brightness (value),
+    # so every pill reads as the same kind of thing whatever hue it wears:
+    # a deep, vivid card with equally vivid text - deliberately contrasting the
+    # muted code text around it. Raise *_value to lighten, *_saturation
+    # toward 1.0 to make the hue purer.
+    fill_saturation = 0.92
+    fill_value = 0.14
+    text_saturation = 0.78
+    text_value = 0.88
+    # The label's own face: a step below the editor's (JetBrains Mono 18.5)
+    # so the value never passes for code. None while the face is still
+    # baking (first get() queues it) - the current font stands in.
+    label_font = Font.JETBRAINS_MONO_16
     pad_y = 1.0
     shadow_offset = 2.0
     corner_radius = 4.0
+    line_text_height = imgui.get_text_line_height()      # in editor face
+    _font_mgr = Core.melty.font_mgr
+    _font_handle = _font_mgr.get(label_font) if _font_mgr is not None else None
+    if _font_handle is not None:
+        imgui.push_font(_font_handle)
+    try:
+        _paint_value_pill_body(inline_text, span_x, text_y, span_width,
+                               allow_overflow, fill, tint, swatch, pad_x,
+                               pad_y, shadow_offset, corner_radius,
+                               default_tint, fill_saturation, fill_value,
+                               text_saturation, text_value, line_text_height)
+    finally:
+        if _font_handle is not None:
+            imgui.pop_font()
+
+
+def _pill_rgb(base, saturation, value):
+    """`base` re-saturated at a fixed brightness — the pill's card / text
+    colour for a tint. Hue is all that survives of the base."""
+    hue, sat, _val = colorsys.rgb_to_hsv(base[0], base[1], base[2])
+    # A grey base has no hue to keep - let it stay grey at the target value.
+    return colorsys.hsv_to_rgb(hue, saturation if sat > 0.05 else sat, value)
+
+
+def _paint_value_pill_body(inline_text, span_x, text_y, span_width,
+                           allow_overflow, fill, tint, swatch, pad_x, pad_y,
+                           shadow_offset, corner_radius, default_tint,
+                           fill_saturation, fill_value, text_saturation,
+                           text_value, line_text_height):
+    """_paint_value_pill's layout + paint, run with the label font pushed
+    (every measurement here is in that face). The pill's vertical centre
+    stays on the code line: text_y is the LINE's text top, and the smaller
+    face is centred within the line's glyph height."""
     text_size = imgui.calc_text_size(inline_text)
+    text_y += max(0.0, (line_text_height - text_size.y) * 0.5)
     if (span_width is not None and text_size.x > span_width
             and not allow_overflow):
         while inline_text and imgui.calc_text_size(
@@ -312,24 +408,90 @@ def _paint_value_pill(inline_text, span_x, text_y, span_width=None,
     box_height = text_size.y + 2 * pad_y
     add_shadow((box_x, box_y, box_width, box_height),
                offset=shadow_offset, corner_radius=corner_radius)
+    base = tint if tint is not None else default_tint
+    fill_rgb = _pill_rgb(base, fill_saturation, fill_value)
+    text_rgb = _pill_rgb(base, text_saturation, text_value)
     draw_list: _DrawList = imgui.get_window_draw_list()
     draw_list.add_rect_filled(
         box_x, box_y, box_x + box_width, box_y + box_height,
-        imgui.get_color_u32_rgba(0.085, 0.145, 0.055, 0.96),
+        imgui.get_color_u32_rgba(fill_rgb[0], fill_rgb[1], fill_rgb[2], 0.97),
         rounding=corner_radius)
     draw_list.add_text(text_x, text_y,
-                       imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.95),
+                       imgui.get_color_u32_rgba(text_rgb[0], text_rgb[1],
+                                                text_rgb[2], 0.97),
                        inline_text)
-    if outline_rect is not None:
-        _paint_token_ring(draw_list, *outline_rect)
+    if swatch is not None and len(inline_text) >= swatch[1] + len(_SWATCH_HOLE):
+        rgba, hole_index = swatch
+        hole_x = text_x + imgui.calc_text_size(inline_text[:hole_index]).x
+        hole_width = imgui.calc_text_size(_SWATCH_HOLE).x
+        side = max(4.0, min(hole_width - 2.0, text_size.y - 2.0))
+        chip_x = hole_x + (hole_width - side) * 0.5
+        chip_y = text_y + (text_size.y - side) * 0.5
+        chip_mid = chip_x + side * 0.5
+        draw_list.add_rect_filled(
+            chip_x, chip_y, chip_mid, chip_y + side,
+            imgui.get_color_u32_rgba(rgba[0], rgba[1], rgba[2], 1.0),
+            rounding=2.0, flags=imgui.DRAW_ROUND_CORNERS_LEFT)
+        draw_list.add_rect_filled(
+            chip_mid, chip_y, chip_x + side, chip_y + side,
+            imgui.get_color_u32_rgba(rgba[0], rgba[1], rgba[2], rgba[3]),
+            rounding=2.0, flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
 
 
-def _paint_token_ring(draw_list, x0, y0, x1, y1):
-    """The associated-token ring in the value pill's green (shared by the
-    pill painter and the binding-pill pass, so they always match)."""
-    draw_list.add_rect(x0, y0, x1, y1,
-                       imgui.get_color_u32_rgba(0.58, 0.78, 0.44, 0.6),
-                       rounding=4.0)
+_FILE_TINT_FN = None
+
+
+def _pill_tint(editor_ds, line0, symbol=None, token_tint=None):
+    """RGB a value pill at DISPLAY line `line0` wears: the background tint
+    under its token. Highest first: the token's own tint (its `# [tint=…]`
+    comment → `token_tint`; else a tinted definition named `symbol`, one
+    dict read off the editor's cached def-tint name map), the innermost
+    tinted class/def block containing the line (draw_text stamps its
+    fold-remapped block list as `_lv_tint_blocks`), the file's FileMeta
+    tint, else None (the pill's default green). Cheap by construction: the
+    block scan is memoized per line against the block tuple's identity
+    (rebuilt only when the def-tint pass rebuilds), everything else is a
+    handful of dict reads — this runs once per visible pill per repaint."""
+    global _FILE_TINT_FN
+    if token_tint is not None:
+        return tuple(token_tint[:3])
+    if editor_ds is None:
+        return None
+    _d = editor_ds.__dict__
+    if symbol is not None:
+        _dt = _d.get("_def_tints")
+        if _dt is not None and len(_dt) == 4:
+            _t = _dt[3].get(symbol)
+            if _t is not None:
+                return _t
+    blocks = _d.get("_lv_tint_blocks") or ()
+    memo = _d.get("_lv_pill_tint_memo")
+    if memo is None or memo[0] is not blocks:
+        memo = (blocks, {})
+        object.__setattr__(editor_ds, "_lv_pill_tint_memo", memo)
+    cache = memo[1]
+    got = cache.get(line0, _NO_VALUE)
+    if got is _NO_VALUE:
+        got, best = None, -1
+        for _l0, _i0, _e0, _t0 in blocks:
+            # Innermost = the containing block that starts LAST.
+            if _l0 <= line0 <= _e0 and _l0 > best:
+                best, got = _l0, tuple(_t0[:3])
+        cache[line0] = got
+    if got is not None:
+        return got
+    # File tint: the same FileMeta color the editor tab wears. The path
+    # comes from the editor's jump_to Address, else the editor's file_key.
+    _jt = _d.get("jump_to")
+    path = getattr(_jt, "path", None) if _jt is not None else None
+    if path is None:
+        path = _d.get("_file_meta")
+        if not isinstance(path, str):
+            return None
+    if _FILE_TINT_FN is None:
+        from src.lsd.gl_gui.view.core_views.text_editor import _uj_file_tint
+        _FILE_TINT_FN = _uj_file_tint
+    return _FILE_TINT_FN(path)
 
 
 # Assignment operators the inline binding pill replaces the right side of:
@@ -1227,6 +1389,12 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     # every boxed symbol with a simple value shows up in place.
     inline_text = (_inline_value_text(value)
                    if captured and inline_values else None)
+    inline_swatch = None
+    if inline_text is not None:
+        _rgba = _inline_swatch_rgba(value)
+        if _rgba is not None:
+            inline_text = _SWATCH_HOLE + inline_text
+            inline_swatch = (_rgba, 0)
     # An inline value has NO value window at all - no auto-open, no
     # preview, no double-click toggle. A window still open (persisted state,
     # or the value just turned simple) closes through the ordinary closing
@@ -1370,9 +1538,9 @@ def draw_live_view_marker(input_value=None, draw_state=None,
         base = tuple(min(1.0, c + 0.18) for c in base)
     # Outline only under the mouse — the boxes read as clutter when every
     # instrumented symbol is permanently framed; hover reveals the
-    # affordance. An inline marker skips it: its token wears the pill's
-    # green ring instead (painted with the pill below), and there's no
-    # window gesture for hover to advertise.
+    # affordance. An inline marker skips it: its pill wears the token's
+    # background tint (painted below), and there's no window gesture for
+    # hover to advertise.
     if hovered and inline_text is None:
         dl: _DrawList = imgui.get_window_draw_list()
         dl.add_rect(x, y + 2, x + w, y + h - 3,
@@ -1412,14 +1580,17 @@ def draw_live_view_marker(input_value=None, draw_state=None,
                           if Core.melty.clip_stack else None)
             if saved_clip is not None:
                 Core.melty.pop_clip()
-            # The ring goes around the marker's entire TOKEN (the symbol) -
-            # same rect the hover outline uses - so an inline pill far down
-            # the RHS still points back at its symbol.
+            # The pill wears the token's background tint (the comment
+            # tint, else the enclosing def/class, else the file) so an RHS
+            # pill far down the line is colored as this scope's value.
             _paint_value_pill(inline_text, text_x, text_y,
                               span_width=inline_span_w,
                               allow_overflow=inline_overflow,
                               fill=inline_fill,
-                              outline_rect=(x, y + 2, x + w, y + h - 3))
+                              tint=_pill_tint(editor_ds, buffer_line,
+                                              str(key_path[-1]) if key_path
+                                              else None, tint),
+                              swatch=inline_swatch)
             if saved_clip is not None:
                 Core.melty.push_clip(saved_clip)
 
@@ -2228,9 +2399,13 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         # a frame snapshot paid a full wrapper call per line: a big def
         # could draw_text (one binding on most lines) froze the editor.
         _btext = _inline_value_text(value)
-        _pill = ((_ml - 1, end_col + _col_shift, "=" + _btext,
-                  max(1, end_col - start_col))
-                 if _btext is not None else None)
+        _pill = None
+        if _btext is not None:
+            _brgba = _inline_swatch_rgba(value)
+            _pill = (_ml - 1, end_col + _col_shift,
+                     "=" + (_SWATCH_HOLE if _brgba is not None else "") + _btext,
+                     max(1, end_col - start_col),
+                     (_brgba, 1) if _brgba is not None else None)
         _mreg0 = draw_state.__dict__.get("_lv_marker_ds")
         _mds0 = _mreg0.get(_snm) if _mreg0 else None
         if (_frozen_pos is None
@@ -2513,10 +2688,15 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
             _gov[_gk] = key
         if key is None or key not in snap_vals:
             continue
-        pill_text = _inline_value_text(snap_vals.get(key))
+        _uval = snap_vals.get(key)
+        pill_text = _inline_value_text(_uval)
         if pill_text is None:
             continue
-        pill_text = "=" + pill_text     # reads as `seq_len=384`
+        # Reads as `seq_len=384`; a color value carries the swatch hole
+        # right after the `=`.
+        _urgba = _inline_swatch_rgba(_uval)
+        swatch = (_urgba, 1) if _urgba is not None else None
+        pill_text = "=" + (_SWATCH_HOLE if _urgba is not None else "") + pill_text
         # A publish to the governing key must repaint usage pills even when
         # its binding marker sits off-viewport (culled, so its own full
         # watch never registered). Idempotent WeakSet add.
@@ -2528,13 +2708,14 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
         if clip is not None and (pill_y + line_px < clip[1]
                                  or pill_y > clip[3]):
             continue
-        paints.append((_ml - 1, boundary_col, pill_text, len(name), pill_y))
+        paints.append((_ml - 1, boundary_col, pill_text, len(name), pill_y,
+                       name, swatch or ()))
     # Binding pills: the captured value of an assignment/param target,
     # inserted right after ITS symbol exactly like a usage label -
     # `edited=False, new_text='...' = draw_text(...)`. A usage gap already at
     # the same boundary wins (same captured value).
     if binding_pills:
-        for line0, bcol, pill_text, sym_len in binding_pills:
+        for line0, bcol, pill_text, sym_len, swatch in binding_pills:
             if (line0, bcol) in sub:
                 continue
             sub[(line0, bcol)] = len(pill_text) + 1
@@ -2542,7 +2723,8 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
             if clip is not None and (pill_y + line_px < clip[1]
                                      or pill_y > clip[3]):
                 continue
-            paints.append((line0, bcol, pill_text, sym_len, pill_y))
+            paints.append((line0, bcol, pill_text, sym_len, pill_y, "",
+                           swatch or ()))
     if _ok_key and not _hit:
         # `_layout`, `occurrences` and the pill list ride along so the ids
         # in the key stay pinned. Paints are stored line-sorted so a hit
@@ -2575,18 +2757,17 @@ def _stamp_and_paint(draw_state, fn, span, occurrences, bindings, snap_vals,
         _ghi = max(k[0] for k in gap_cells)
         paints = paints[bisect.bisect_left(paints, (_glo,)):
                         bisect.bisect_right(paints, (_ghi + 1,))]
-    for line0, boundary_col, pill_text, name_len, pill_y in paints:
+    for line0, boundary_col, pill_text, name_len, pill_y, name, swatch in paints:
         gap_cell = gap_cells.get((line0, boundary_col))
         if gap_cell is None:
             continue
         gap_x = base_x + gap_cell * char_w
-        # Ring around the SYMBOL right before the gap (one px per char) -
-        # derived from the gap CELL, so it stays aligned when earlier gaps
-        # on the same line have already shifted the text.
+        # The pill wears the marker tint under its symbol (a tinted
+        # definition of the name, else the enclosing function, else the
+        # file) - one memoized lookup per pill.
         _paint_value_pill(pill_text, gap_x + 3.0, pill_y,
-                          outline_rect=(gap_x - name_len * char_w - 2.0,
-                                        pill_y, gap_x + 1.0,
-                                        pill_y + line_px - 1.0))
+                          tint=_pill_tint(draw_state, line0, name or None),
+                          swatch=swatch or None)
 
 
 def _symbol_cols(anchor, rel_line, key_path, source_lines, labels, memo=None):
