@@ -470,6 +470,16 @@ class Toggles:
         # finally/with/match/case) alongside the def/class scopes. Read on
         # the next fold rescan (text edit), not per frame.
         block_fold_ranges = True
+        # Collapsed comment runs that carry a melty `# [...]` metadata line
+        # hide their HEADER line too: the whole run drops the display and
+        # only the fold chevron remains, on the gutter of the line BELOW the
+        # run (the line the metadata annotates; edits splice around the
+        # seam at the end of the hidden run). Off = a collapsed run keeps
+        # its first comment line visible like every other line. A run at
+        # the top / end of the file, or one whose metadata below heads a fold
+        # of its own (the gutter has one chevron per row), keeps its header
+        # either way. Read live.
+        hide_meta_comment_folds = True
         # Diff fold spans (draw_text's diff_fold_ranges — the compare
         # splits' unchanged gaps) wear THIS tint on their chevrons/badges
         # and, while collapsed, a thin separator band across the row — so

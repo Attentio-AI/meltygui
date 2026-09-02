@@ -12,6 +12,7 @@ Frame-to-frame state (which folders are expanded, selection) lives in
 FileTreeState, injected by annotation the same way GLState/CodeState are.
 """
 
+import colorsys
 from pathlib import Path
 
 import imgui
@@ -21,6 +22,7 @@ from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.headers import draw_header, flat_button, _brightness_clamp_fn
+from src.lsd.gl_gui.view.playground import file_graph
 from src.lsd.gl_gui.view.playground.file_graph import start_build
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.playground.folder_files import folder_proxy, watch_folder, _file_meta
@@ -163,7 +165,7 @@ def reorder_siblings(meta, siblings, dragged, insert_index):
 def render_file_tree(input_value=None, draw_state=None,
                      file_tree_state: FileTreeState = None, root=ROOT,
                      left_mouse_down=False, left_mouse_double_clicked=False,
-                     **kwargs):
+                     escape_key_pressed=False, **kwargs):
     # Geometry authored at ui_scale 1.0 — scaled through Melty.px per frame.
     # [tint=(0.55, 0.72, 0.95)]
     row_height = 20.0
@@ -177,17 +179,39 @@ def render_file_tree(input_value=None, draw_state=None,
     # brightness clamp), so every row bg stays dark enough for light text.
     # [tint=(0.55, 0.72, 0.95)]
     bg_theme_factor = 0.1
-    # Painted rows sit slightly proud of the tree and cast a drop shadow
-    # (add_shadow depth lift, same mechanism as the editor's active tab).
+    # With an import graph built every file rises with its USAGE — importer
+    # count on the graph's log scale (ImportGraph.usage, 0..1) — through a
+    # drop shadow (add_shadow depth lift, the editor's active-tab mechanism)
+    # AND its name's font size, so the files everything depends on pop out
+    # of the tree. While a file is SELECTED only it and its highlighted files
+    # cast: the selection and its IMPORTERS are RAISED by highlight_lift, its
+    # IMPORTS are RECESSED by the same amount (a negative add_shadow offset
+    # carves the row in, the surroundings cast into it), every other file
+    # drops flat; the font keeps following usage throughout. A file that is
+    # both reads as an importer.
     # [tint=(0.55, 0.72, 0.95)]
-    painted_row_lift = 1.0
-    # Import-graph highlights for the selected file: what it imports, what
-    # imports it (both = the two blended). A folder holding hidden hits
-    # gets the same mark at reduced alpha.
-    # [tint=(0.35, 0.85, 0.55)]
-    imports_tint = (0.35, 0.85, 0.55)
-    # [tint=(0.95, 0.65, 0.30)]
-    importers_tint = (0.95, 0.65, 0.30)
+    usage_lift = 6.0
+    # [tint=(0.55, 0.72, 0.95)]
+    highlight_lift = 3.0
+    # Font scale range over usage (clamped so the biggest still fits the
+    # row); a file NOBODY imports is greyed out.
+    # [tint=(0.55, 0.72, 0.95)]
+    usage_font_scale_min = 0.9
+    # [tint=(0.55, 0.72, 0.95)]
+    usage_font_scale_max = 1.3
+    # [tint=(0.55, 0.72, 0.95)]
+    unused_text = (0.55, 0.57, 0.6, 0.6)
+    # Import-graph highlights wear the SELECTED file's own tint: what it
+    # imports in the tint itself, what imports it in a lighter, washed-out
+    # variant (importer_value_boost / importer_saturation), both blended
+    # for a file in both directions. A folder holding hidden hits gets the
+    # same mark at reduced alpha. An unpainted selection uses the fallback.
+    # [tint=(0.55, 0.72, 0.95)]
+    highlight_fallback_tint = (0.55, 0.72, 0.95)
+    # [tint=(0.55, 0.72, 0.95)]
+    importer_value_boost = 0.35
+    # [tint=(0.55, 0.72, 0.95)]
+    importer_saturation = 0.45
     # [tint=(0.55, 0.72, 0.95)]
     highlight_bar_width = 3.0
     # [tint=(0.55, 0.72, 0.95)]
@@ -206,6 +230,9 @@ def render_file_tree(input_value=None, draw_state=None,
         if build.result is not None:
             state._graph = build.result
         state._build = None
+        draw_state.invalidate()
+    if state._graph is None and file_graph.current() is not None:
+        state._graph = file_graph.current()      # built by the graph graph
         draw_state.invalidate()
     if flat_button("Build import graph##file_tree", draw_state,
                    view_id="file_tree_build_graph", height=px(toolbar_height) - px(4),
@@ -229,6 +256,12 @@ def render_file_tree(input_value=None, draw_state=None,
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + px(4))
     x0, y0 = imgui.get_cursor_screen_pos()
 
+    # Esc (while the tree is open) clears the selection - and with it the
+    # highlights and the fixed-lift shadows.
+    if escape_key_pressed and state.selected is not None:
+        state.select(None)
+        request_render()
+
     # Highlight sets for the selected file (files only - folders are marked
     # when they hold a hit that isn't visible).
     imports, importers = set(), set()
@@ -244,7 +277,17 @@ def render_file_tree(input_value=None, draw_state=None,
     position = ({k: i for i, k in enumerate(meta)} if meta is not None else {})
     rows = _flatten_ordered(Path(root), state.expanded, meta, position)
     # One dummy reports the total height so the container scrolls normally.
-    imgui.dummy(cw, max(1.0, len(rows) * row_h))
+    # The scroll clamp is content_height - clipped_height, but clipped_height
+    # spans the WHOLE window (header included) while the rows start below the
+    # header + toolbar - pad the reported height by that top inset (the
+    # fast_dock rule) or the last row can never scroll fully into view.
+    top_inset = (y0 + draw_state.scroll_offset[1]) - draw_state.abs_top
+    imgui.dummy(cw, max(1.0, len(rows) * row_h + max(0.0, top_inset)))
+    selected_tint = _tint_of(meta, selected_path) if selected_path is not None else None
+    imports_tint = selected_tint or highlight_fallback_tint
+    hue, saturation, value = colorsys.rgb_to_hsv(*imports_tint)
+    importers_tint = colorsys.hsv_to_rgb(hue, saturation * importer_saturation,
+                                         min(1.0, value + importer_value_boost))
 
     mx, my = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
@@ -255,6 +298,10 @@ def render_file_tree(input_value=None, draw_state=None,
     clip = getattr(draw_state, "abs_clip_rect", None)
 
     text_col = imgui.get_color_u32_rgba(0.92, 0.92, 0.92, 1.0)
+    unused_col = imgui.get_color_u32_rgba(*unused_text)
+    font_size = imgui.get_font_size()
+    # The scaled name must still fit the row.
+    font_scale_max = min(usage_font_scale_max, row_h / max(font_size, 1.0))
     style_manager = Melty.style_manager
     brightness_clamp = _brightness_clamp_fn()
     bg_memo = {}
@@ -312,10 +359,22 @@ def render_file_tree(input_value=None, draw_state=None,
         # The bg is indented with the text: it starts in the row's chevron
         # column and runs to the right edge, so nesting appears as a stair.
         x = rx + pad + depth * indent
+        usage = None                      # None if no graph / a folder
+        if graph is not None and not p.is_dir():
+            usage = graph.usage(p)
+        if shadow and usage is not None:
+            if selected_path is not None:
+                if p == selected_path or p in importers:
+                    lift = highlight_lift
+                elif p in imports:
+                    lift = -highlight_lift
+                else:
+                    lift = 0.0
+            else:
+                lift = usage_lift * usage
+            if lift != 0.0:
+                add_shadow((x, ry, rx + cw - x, row_h), offset=lift, corner_radius=0.0)
         if tint is not None:
-            if shadow:
-                add_shadow((x, ry, rx + cw - x, row_h), offset=painted_row_lift,
-                           corner_radius=0.0)
             draw_list.add_rect_filled(x, ry, rx + cw, ry + row_h, row_bg(tint))
         if selected:
             draw_list.add_rect_filled(x, ry, rx + cw, ry + row_h, select_col)
@@ -336,7 +395,17 @@ def render_file_tree(input_value=None, draw_state=None,
                    if not state.is_expanded(p)
                    else [(cx - radius, cy - radius + 1), (cx + radius, cy - radius + 1), (cx, cy + radius - 1)])
             draw_list.add_triangle_filled(*tri[0], *tri[1], *tri[2], text_col)
-        draw_list.add_text(x + glyph_w, ry + px(2.0), text_col, p.name)
+        name_col = unused_col if usage == 0.0 else text_col
+        if usage is not None:
+            # set_window_font_scale retargets the draw list's font size at
+            # once (imgui's AddText uses g.Fonts), so the name scales
+            # without a second font face; reset right after.
+            scale = usage_font_scale_min + (font_scale_max - usage_font_scale_min) * usage
+            imgui.set_window_font_scale(scale)
+            draw_list.add_text(x + glyph_w, ry + (row_h - font_size * scale) * 0.5, name_col, p.name)
+            imgui.set_window_font_scale(1.0)
+        else:
+            draw_list.add_text(x + glyph_w, ry + px(2.0), name_col, p.name)
 
     # on_drag call order == index into `visible` (DropEvent indices count
     # on_drag calls, so only rows that were used as handles are indexed).

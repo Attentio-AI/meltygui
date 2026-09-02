@@ -1275,64 +1275,12 @@ class _Parser:
     # ── imports ──────────────────────────────────────────────────────────────
 
     def import_stmt(self, toks):
-        """`import …` / `from … import …` → Import / ImportFrom, or None when
-        the tokens don't read as one (the caller falls back to Opaque)."""
-        t0 = toks[0]
-        if t0.string == "import":
-            names = self._import_aliases(toks[1:])
-            return Import(names)._pos(t0, toks[-1]) if names else None
-        # from [dots] [module] import names
-        level, i = 0, 1
-        while i < len(toks) and toks[i].type == _OP and toks[i].string in (".", "..."):
-            level += len(toks[i].string)
-            i += 1
-        module_parts = []
-        while i < len(toks) and not (toks[i].type == _NAME and toks[i].string == "import"):
-            t = toks[i]
-            if t.type == _NAME or (t.type == _OP and t.string == "."):
-                module_parts.append(t.string)
-            else:
-                return None
-            i += 1
-        if i >= len(toks) or (not module_parts and level == 0):
-            return None
-        rest = toks[i + 1:]
-        if rest and rest[0].type == _OP and rest[0].string == "(":
-            close = _match(rest, 0)
-            rest = rest[1:close] if close is not None else rest[1:]
-        if len(rest) == 1 and rest[0].type == _OP and rest[0].string == "*":
-            names = [alias("*")._pos(rest[0], rest[0])]
-        else:
-            names = self._import_aliases(rest)
-        if not names:
-            return None
-        module = "".join(module_parts) or None
-        return ImportFrom(module, names, level)._pos(t0, toks[-1])
+        return parse_import(toks)
 
     @staticmethod
     def _import_aliases(toks):
-        """`a.b [as c], d [as e]` → [alias]; None on anything unexpected."""
-        out = []
-        for part in _split_depth0(toks, ","):
-            if not part:
-                continue
-            parts, asname, j = [], None, 0
-            while j < len(part):
-                t = part[j]
-                if t.type == _NAME and t.string == "as":
-                    if j + 1 != len(part) - 1 or part[j + 1].type != _NAME:
-                        return None
-                    asname = part[j + 1].string
-                    break
-                if t.type == _NAME or (t.type == _OP and t.string == "."):
-                    parts.append(t.string)
-                else:
-                    return None
-                j += 1
-            if not parts:
-                return None
-            out.append(alias("".join(parts), asname)._pos(part[0], part[-1]))
-        return out
+        return _import_aliases(toks)
+
 
     def target(self, toks):
         if len(toks) == 1 and toks[0].type == _NAME:
@@ -1562,7 +1510,117 @@ class _EndTok:
         self.string = ""
 
 
+def parse_import(toks):
+    """`import …` / `from … import …` → Import / ImportFrom, or None when
+    the tokens don't read as one (the caller falls back to Opaque). A
+    module-level function so scan_imports can run it straight off the
+    token stream without building a tree."""
+    t0 = toks[0]
+    if t0.string == "import":
+        names = _import_aliases(toks[1:])
+        return Import(names)._pos(t0, toks[-1]) if names else None
+    # from [dots] [module] import names
+    level, i = 0, 1
+    while i < len(toks) and toks[i].type == _OP and toks[i].string in (".", "..."):
+        level += len(toks[i].string)
+        i += 1
+    module_parts = []
+    while i < len(toks) and not (toks[i].type == _NAME and toks[i].string == "import"):
+        t = toks[i]
+        if t.type == _NAME or (t.type == _OP and t.string == "."):
+            module_parts.append(t.string)
+        else:
+            return None
+        i += 1
+    if i >= len(toks) or (not module_parts and level == 0):
+        return None
+    rest = toks[i + 1:]
+    if rest and rest[0].type == _OP and rest[0].string == "(":
+        close = _match(rest, 0)
+        rest = rest[1:close] if close is not None else rest[1:]
+    if len(rest) == 1 and rest[0].type == _OP and rest[0].string == "*":
+        names = [alias("*")._pos(rest[0], rest[0])]
+    else:
+        names = _import_aliases(rest)
+    if not names:
+        return None
+    module = "".join(module_parts) or None
+    return ImportFrom(module, names, level)._pos(t0, toks[-1])
+
+
+def _import_aliases(toks):
+    """`a.b [as c], d [as e]` → [alias]; None on anything unexpected."""
+    out = []
+    for part in _split_depth0(toks, ","):
+        if not part:
+            continue
+        parts, asname, j = [], None, 0
+        while j < len(part):
+            t = part[j]
+            if t.type == _NAME and t.string == "as":
+                if j + 1 != len(part) - 1 or part[j + 1].type != _NAME:
+                    return None
+                asname = part[j + 1].string
+                break
+            if t.type == _NAME or (t.type == _OP and t.string == "."):
+                parts.append(t.string)
+            else:
+                return None
+            j += 1
+        if not parts:
+            return None
+        out.append(alias("".join(parts), asname)._pos(part[0], part[-1]))
+    return out
+
+
 _BODY_FIELDS = ("body", "orelse", "handlers", "finalbody")
+
+
+def scan_imports(text):
+    """Every Import / ImportFrom of `text`, in source order, WITHOUT building
+    the tree — the file import graph's path (file_graph.py). The token
+    stream alone decides what is a statement start (after NEWLINE / INDENT
+    / DEDENT / a depth-0 `;`), so imports inside strings and comments are
+    never seen, exactly like scan(); each `import` / `from` statement's
+    tokens go through the same parse_import. ~6× cheaper than scan() on
+    the src tree (tokenize is the whole cost). Raises ScanError like scan()."""
+    out = []
+    stmt = None                       # tokens of the import statement being collected
+    at_start = True
+    try:
+        for t in tokenize.generate_tokens(io.StringIO(text).readline):
+            tt = t.type
+            if tt in (tokenize.COMMENT, tokenize.NL, tokenize.ENCODING):
+                continue
+            if stmt is not None:
+                if tt == _NEWLINE or tt == _ENDMARKER or (tt == _OP and t.string == ";"):
+                    node = parse_import(stmt)
+                    if node is not None:
+                        out.append(node)
+                    stmt = None
+                    at_start = True
+                else:
+                    stmt.append(t)
+                continue
+            if tt in (_NEWLINE, _INDENT, _DEDENT):
+                at_start = True
+                continue
+            if tt == _OP and t.string == ";":
+                at_start = True
+                continue
+            if at_start and tt == _NAME and t.string in ("import", "from"):
+                stmt = [t]
+            at_start = False
+    except tokenize.TokenError as e:
+        msg, (line, col) = e.args[0], e.args[1] if len(e.args) > 1 else (0, 0)
+        raise ScanError(msg, ("<text>", line, col + 1, "")) from None
+    except (IndentationError, SyntaxError) as e:
+        raise ScanError(str(e), ("<text>", getattr(e, "lineno", 0) or 0, getattr(e, "offset", 0) or 0, "")) from None
+    if stmt is not None:
+        node = parse_import(stmt)
+        if node is not None:
+            out.append(node)
+    return out
 
 
 def iter_imports(node):

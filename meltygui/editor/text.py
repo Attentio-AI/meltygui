@@ -5845,8 +5845,9 @@ def fold_focus_scope(ds, text, li):
         ds._fold_search_exp_keys = set()
     if getattr(ds, '_diff_search_exp', None):
         ds._diff_search_exp = set()
-    built = _fold_build(text, ranges, col)
-    ds._fold_cache = (text, (ranges, frozenset(col)), built)
+    _hl = _fold_headless_set(kf, col)
+    built = _fold_build(text, ranges, col, _hl)
+    ds._fold_cache = (text, (ranges, frozenset(col), _hl), built)
     ds.invalidate()
     return True
 
@@ -9311,12 +9312,35 @@ def _fold_normalize_union(n_lines, ranges, collapsed=()):
     return out
 
 
-def _fold_build(text, ranges, collapsed):
+def _fold_headless_set(key_of, collapsed):
+    """The collapsed COMMENT runs `_fold_build` may fold header-and-all
+    (Toggles.TextEditor.hide_meta_comment_folds) — the build itself keeps
+    the ones without a `# [` metadata line. Part of the fold cache key, so
+    flipping the toggle relays out on the next frame."""
+    from src.lsd.gl_gui.toggles import Toggles
+    if not Toggles.TextEditor.hide_meta_comment_folds or not key_of:
+        return frozenset()
+    return frozenset(r for r in collapsed
+                     if key_of.get(r, ('',))[0] == 'comment')
+
+
+def _fold_build(text, ranges, collapsed, headless=frozenset()):
     """Fold layout for draw_text's collapsible line ranges.
+
+    `headless` — collapsed ranges (comment runs) that may hide their HEADER
+    line too, when the run carries a melty `# [...]` line: the whole run
+    leaves the display, the fold ANCHORS at the end of the display line
+    above it (the splice seam) and its CHEVRON sits on the line BELOW it —
+    the line the metadata annotates — so the fold entry's display_line is
+    that line while anchor/hidden_len still describe the seam above.
+    Skipped for a run on line 0 or at the end of the file, when the line
+    below starts a fold of its own (one chevron per gutter row), or when
+    the line above heads a COLLAPSED fold (two segments on one seam).
 
     Returns (display_text, segments, folds, disp_to_buf):
       display_text — `text` with every COLLAPSED range's hidden lines
-        (start+1..end) spliced out; `text` itself when nothing is collapsed.
+        (start+1..end; start..end for a headless fold) spliced out; `text`
+        itself when nothing is collapsed.
       segments — [(anchor_offset_in_display, hidden_str, rng)] per collapsed
         fold. hidden_str starts with the '\\n' that followed the header line,
         so inserting it back at the anchor reproduces `text` exactly.
@@ -9343,6 +9367,24 @@ def _fold_build(text, ranges, collapsed):
         return text, segments, folds, None
     disp, disp_to_buf, pend = [], [], []
     ri, buf = 0, 0
+    _META_PREFIXES = ('# [', '#[')
+
+    def _headless_ok(s, e, hidden_end, rj):
+        # Header-and-all fold needs a display line above to anchor on that
+        # heads no COLLAPSED fold (two segments would share one seam), a
+        # line below to wear the chevron that starts no fold of its own
+        # (rngs[rj] is the next range past the hidden run), and a `# [`
+        # line somewhere in the run.
+        if (s, e) not in headless or len(disp) < 2:
+            return False
+        if pend and pend[-1][1] == len(disp) - 2 and pend[-1][2]:
+            return False
+        if hidden_end + 1 >= len(lines):
+            return False
+        if rj < len(rngs) and rngs[rj][0] == hidden_end + 1:
+            return False
+        return any(lines[i].lstrip().startswith(_META_PREFIXES)
+                   for i in range(s, e + 1))
     while buf < len(lines):
         disp_to_buf.append(buf)
         disp.append(lines[buf])
@@ -9369,24 +9411,40 @@ def _fold_build(text, ranges, collapsed):
                     if rngs[rj] in collapsed and rngs[rj][1] > hidden_end:
                         hidden_end = rngs[rj][1]
                     rj += 1
-                pend.append(((s, e), len(disp) - 1, True, hidden_end))
+                if _headless_ok(s, e, hidden_end, rj):
+                    # The header line goes too: the fold hangs off the
+                    # line above (dropped from the display just like the
+                    # body is).
+                    disp.pop()
+                    disp_to_buf.pop()
+                    pend.append(((s, e), len(disp) - 1, True, hidden_end,
+                                 True))
+                else:
+                    pend.append(((s, e), len(disp) - 1, True, hidden_end,
+                                 False))
                 buf = hidden_end + 1
                 continue
-            pend.append(((s, e), len(disp) - 1, False, e))
+            pend.append(((s, e), len(disp) - 1, False, e, False))
         buf += 1
     display_text = '\n'.join(disp)
     doffs, off = [], 0
     for l in disp:
         doffs.append(off)
         off += len(l) + 1
-    for rng, dl, is_col, hidden_end in pend:
+    for rng, dl, is_col, hidden_end, is_headless in pend:
         s, e = rng
         anchor = doffs[dl] + len(disp[dl])
         if is_col:
-            hidden = text[foffs[s] + len(lines[s]):
-                          foffs[hidden_end] + len(lines[hidden_end])]
-            folds.append((rng, dl, True, hidden_end - s, len(disp[dl]),
-                          anchor, len(hidden)))
+            # A headless fold's hidden run opens with the '\n' that
+            # precedes its header (foffs[s] - 1), so splicing it back at
+            # the anchor reproduces `s` exactly like a regular fold's;
+            # its chevron and badge sit on the line BELOW the seam.
+            hid_start = foffs[s] - 1 if is_headless else foffs[s] + len(lines[s])
+            hidden = text[hid_start:foffs[hidden_end] + len(lines[hidden_end])]
+            chev_dl = dl + 1 if is_headless else dl
+            folds.append((rng, chev_dl, True,
+                          hidden_end - s + (1 if is_headless else 0),
+                          len(disp[chev_dl]), anchor, len(hidden)))
             segments.append((anchor, hidden, rng))
         else:
             # hidden_len = the DISPLAY chars this fold would remove if it
@@ -9550,9 +9608,10 @@ def fold_project_jump(ds, text, pos, li):
     _kf = getattr(ds, '_fold_key_of', None)
     if hiding and _kf and getattr(ds, '_fold_keys', None) is not None:
         ds._fold_keys -= {_kf[r] for r in hiding if r in _kf}
-    built = _fold_build(text, ranges, col)
+    _hl = _fold_headless_set(_kf, col)
+    built = _fold_build(text, ranges, col, _hl)
     if hiding:
-        ds._fold_cache = (text, (ranges, frozenset(col)), built)
+        ds._fold_cache = (text, (ranges, frozenset(col), _hl), built)
         ds.invalidate()
     disp, segments, _folds, d2b = built
     if not segments:
@@ -10355,12 +10414,14 @@ def draw_text(input_value: str, height=None,
         _fold_union_col = ds._fold_collapsed
         if getattr(ds, '_diff_fold_collapsed', None):
             _fold_union_col = ds._fold_collapsed | ds._diff_fold_collapsed
-        _fk = (_frt[1] + tuple(_diff_rngs), frozenset(_fold_union_col))
+        _fk = (_frt[1] + tuple(_diff_rngs), frozenset(_fold_union_col),
+               _fold_headless_set(_fold_key_of, _fold_union_col))
         _fc = getattr(ds, '_fold_cache', None)
         if _fc is not None and _fc[0] is input_value and _fc[1] == _fk:
             _fold_built = _fc[2]
         else:
-            _fold_built = _fold_build(input_value, _fk[0], _fold_union_col)
+            _fold_built = _fold_build(input_value, _fk[0], _fold_union_col,
+                                      _fk[2])
             ds._fold_cache = (input_value, _fk, _fold_built)
         _disp, _fold_segments, _fold_folds, _fold_d2b = _fold_built
         # Caret keeps its glyph across a toggle: offsets up to the toggled
@@ -10374,8 +10435,19 @@ def draw_text(input_value: str, height=None,
                 if _fi[2]:                       # now collapsed
                     ds.text_cursor_pos = (_cp - _hl if _cp > _a + _hl
                                           else min(_cp, _a))
-                elif _cp > _a:                   # now expanded
-                    ds.text_cursor_pos = _cp + _hl
+                else:                            # now expanded
+                    # The OLD layout's collapsed fold knows what was
+                    # hidden where - a headless comment fold anchored on
+                    # the line above and hid the header too, which the
+                    # expanded version (header-anchored) can't tell.
+                    _fo = None
+                    if _fc is not None and _fc[0] is input_value:
+                        _fo = next((f for f in _fc[2][2]
+                                    if f[0] == _fold_toggled and f[2]), None)
+                    if _fo is not None:
+                        _a, _hl = _fo[5], _fo[6]
+                    if _cp > _a:
+                        ds.text_cursor_pos = _cp + _hl
             ds.text_selection_start = ds.text_selection_end = ds.text_cursor_pos
         elif _fold_kb_all and ds.text_cursor_pos is not None:
             # Collapse/expand-all can move MANY folds at once, so the single-
@@ -15496,6 +15568,13 @@ def draw_text(input_value: str, height=None,
                 if _hl_s.startswith('def ') or _hl_s.startswith('async def '):
                     _bx += _trail_px
 
+            _is_diff_fold = _rng in (getattr(ds, '_diff_rng_set', None) or ())
+            if _fcol and not _need_chev and not _is_diff_fold:
+                # Gutter owns the chevron and the "N lines" label is not
+                # drawn (see below): no badge rect here - an INVISIBLE
+                # badge after the header text meant that placing the caret
+                # at the end of the line toggled the fold.
+                continue
             if _fcol:
                 # [tint=(0.656, 0.044, 0.615), show_tint=True]
                 _lbl = f"{_nh} lines"
@@ -15509,7 +15588,6 @@ def draw_text(input_value: str, height=None,
             _fhov = (_fr[0] <= io.mouse_pos.x < _fr[2]
                      and _fr[1] <= io.mouse_pos.y < _fr[3])
 
-            _is_diff_fold = _rng in (getattr(ds, '_diff_rng_set', None) or ())
             if _is_diff_fold:
                 _dft = Toggles.TextEditor.diff_fold_tint
                 _fcc = imgui.get_color_u32_rgba(

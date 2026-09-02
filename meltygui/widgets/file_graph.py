@@ -23,13 +23,18 @@ a module) is dropped. The result is an
 
 from __future__ import annotations
 
+import math
+import os
+import pickle
 import threading
 import time
 from pathlib import Path
 
+
 from src.lsd.gl_gui.text_index import _SKIP_DIRS
 from src.lsd.gl_gui.utils.glfw_utils import request_render
-from src.lsd.gl_gui.view.core_conversion.melty_scan import ScanError, iter_imports, scan, _k
+from src.lsd.gl_gui.view.core_conversion.melty_scan import (
+    Import, ImportFrom, ScanError, alias, scan_imports, _k)
 
 
 class ImportGraph:
@@ -44,6 +49,9 @@ class ImportGraph:
         self.errors: dict[Path, str] = {}
         self.built_at = 0.0
         self.seconds = 0.0
+        self.layout: dict[Path, tuple[float, float]] = {}   # node → (x, y) in [-1, 1]
+        self.columns = 0        # layered layout depth (layout_graph)
+        self.layers: list[list[Path]] = []   # column → nodes in vertical order
 
     def add(self, importer, imported):
         if importer == imported:
@@ -58,6 +66,24 @@ class ImportGraph:
     @property
     def edge_count(self):
         return sum(len(v) for v in self.imports.values())
+
+    @property
+    def max_importers(self):
+        """The largest importer count of any file (0 for an empty graph) —
+        the normalizer for usage-driven visuals."""
+        if not self.imported_by:
+            return 0
+        return max(len(v) for v in self.imported_by.values())
+
+    def usage(self, path):
+        """Importer count of `path` on a 0..1 log scale against the graph's
+        most-used file — a few importers already lift a file noticeably,
+        the long tail of heavily used ones spreads over the top half."""
+        top = self.max_importers
+        if top <= 0:
+            return 0.0
+        n = len(self.importers_of(path))
+        return math.log1p(n) / math.log1p(top) if n else 0.0
 
     def imports_of(self, path):
         return self.imports.get(Path(path), set())
@@ -119,18 +145,29 @@ def _module_file_under(base, parts):
     return None
 
 
-def _module_file(root, parts, roots=None):
+def _module_file(root, parts, roots=None, memo=None):
     """`parts` resolved against the import roots in order (first hit wins,
-    like sys.path); only a file inside the tree `root` counts."""
+    like sys.path); only a file inside the tree `root` counts. `memo`
+    (one dict per build) caches the answer per (search bases, parts): the
+    same module is imported from dozens of files, and every probe is a
+    stat — a warm build was 290 ms of stats without it."""
     root = Path(root)
-    for base in (roots or import_roots(root)):
+    search = tuple(roots or import_roots(root))
+    key = (search, tuple(parts))
+    if memo is not None and key in memo:
+        return memo[key]
+    found = None
+    for base in search:
         f = _module_file_under(base, parts)
         if f is not None:
-            return f if (f == root or root in f.parents) else None
-    return None
+            found = f if (f == root or root in f.parents) else None
+            break
+    if memo is not None:
+        memo[key] = found
+    return found
 
 
-def resolve_import(root, importer, node, roots=None):
+def resolve_import(root, importer, node, roots=None, memo=None):
     """The project files one Import / ImportFrom node of `importer` refers
     to (a list; empty when nothing under `root` matches)."""
     root = Path(root).resolve()
@@ -138,7 +175,7 @@ def resolve_import(root, importer, node, roots=None):
     found = []
     if _k(node) == "Import":
         for a in node.names:
-            f = _module_file(root, a.name.split("."), roots)
+            f = _module_file(root, a.name.split("."), roots, memo)
             if f is not None:
                 found.append(f)
         return found
@@ -154,48 +191,247 @@ def resolve_import(root, importer, node, roots=None):
     else:
         module_parts = node.module.split(".")
         search = roots
-    module_file = _module_file(root, module_parts, search) if module_parts else None
+    module_file = _module_file(root, module_parts, search, memo) if module_parts else None
     if module_file is not None:
         found.append(module_file)
     for a in node.names:
         if a.name == "*":
             continue
-        f = _module_file(root, module_parts + [a.name], search)
+        f = _module_file(root, module_parts + [a.name], search, memo)
         if f is not None:
             found.append(f)
     return found
 
 
-def build_import_graph(root, files=None, read_text=None):
+# ── per-file import cache: (mtime, size) + the file's import records ─────────
+# Invalidation is content-free (stat only - never a digest); a hit costs one
+# stat, a miss one tokenize pass (scan_imports). Persisted in ~/.lsd so the
+# first build of a session is as fast as a rebuild. Records are plain tuples:
+#   ("Import", None, 0, ((name, asname), ...)) / ("ImportFrom", module, level, names)
+
+CACHE_VERSION = 1
+
+
+def cache_path():
+    return Path.home() / ".lsd" / "import_graph_cache.pkl"
+
+
+def load_cache(path=None):
+    path = path or cache_path()
+    try:
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        if isinstance(data, dict) and data.get("version") == CACHE_VERSION:
+            return data["files"]
+    except (OSError, pickle.PickleError, EOFError, KeyError, TypeError, ValueError):
+        pass
+    return {}
+
+
+def save_cache(files, path=None):
+    path = path or cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump({"version": CACHE_VERSION, "files": files}, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _records(nodes):
+    return tuple((_k(n), getattr(n, "module", None), getattr(n, "level", 0),
+                  tuple((a.name, a.asname) for a in n.names)) for n in nodes)
+
+
+def _nodes(records):
+    out = []
+    for kind, module, level, names in records:
+        aliases = [alias(name, asname) for name, asname in names]
+        out.append(Import(aliases) if kind == "Import" else ImportFrom(module, aliases, level))
+    return out
+
+
+def build_import_graph(root, files=None, read_text=None, cache=None, persist=True):
     """Scan every project file (or `files`) and resolve its imports. Pure:
     no Melty state, safe on a background thread. `read_text(path)` lets the
-    caller serve pending (unsaved) text; default reads the disk."""
+    caller serve pending (unsaved) text (a file so served bypasses the
+    cache); `cache` = a files dict (load_cache) — None loads the persisted
+    one; `persist` writes it back when anything was rescanned."""
     root = Path(root).resolve()
     started = time.monotonic()
     graph = ImportGraph(root)
     roots = import_roots(root)
     if files is None:
         files = project_python_files(root)
-    if read_text is None:
-        def read_text(path):
-            return path.read_text(encoding="utf-8", errors="replace")
+    if cache is None:
+        cache = load_cache() if persist else {}
+    dirty = False
+    memo = {}
     for path in files:
         path = Path(path)
         graph.imports.setdefault(path, set())
+        key = str(path)
         try:
-            module, _standalone, _trailing = scan(read_text(path))
+            if read_text is None:
+                stat = path.stat()
+                stamp = (stat.st_mtime_ns, stat.st_size)
+                hit = cache.get(key)
+                if hit is not None and hit[0] == stamp:
+                    records = hit[1]
+                else:
+                    # A scan failure is cached too (with its message), else an
+                    # unparsable file would be rescanned on every build.
+                    try:
+                        records = _records(scan_imports(path.read_text(encoding="utf-8", errors="replace")))
+                    except ScanError as e:
+                        records = str(e)
+                    cache[key] = (stamp, records)
+                    dirty = True
+            else:
+                records = _records(scan_imports(read_text(path)))
         except ScanError as e:
             graph.errors[path] = str(e)
             continue
         except OSError as e:
             graph.errors[path] = str(e)
             continue
-        for node in iter_imports(module):
-            for target in resolve_import(root, path, node, roots):
+        if isinstance(records, str):
+            graph.errors[path] = records
+            continue
+        for node in _nodes(records):
+            for target in resolve_import(root, path, node, roots, memo):
                 graph.add(path, target)
+    if dirty and persist:
+        save_cache(cache)
     graph.seconds = time.monotonic() - started
     graph.built_at = time.time()
     return graph
+
+
+# ── layout: layered, left to right ───────────────────────────────────────────
+
+def layout_graph(graph, sweeps=8, seed=0):
+    """Stamp `graph.layout` — one (x, y) in [-1, 1] per file — as a LAYERED
+    left-to-right drawing (the Sugiyama idea, kept simple):
+
+      column 0  = the roots: files nothing imports (isolated files too)
+      column c  = one past the deepest column among the file's importers,
+                  so `toggles.py` — imported from everywhere — lands at the
+                  far right and every import line runs left → right.
+
+    Cycles (the repo has them) are broken by usage rank — an edge from a
+    more-used file to a less-used one is ignored for the column assignment
+    only — so a hub can never be pulled left by a cycle. Within a column, nodes are ordered
+    by `sweeps` barycenter passes over their neighbours' rows (down then up),
+    which keeps lines short and mostly uncrossed; rows share one pitch, so a
+    tall column fills the height and a short one sits centred. Deterministic."""
+    nodes = sorted(set(graph.imports) | set(graph.imported_by))
+    n = len(nodes)
+    if n == 0:
+        graph.layout = {}
+        return graph.layout
+    index = {p: i for i, p in enumerate(nodes)}
+    # edges importer → imported (order grows along an import)
+    out = [[] for _ in range(n)]
+    for a, targets in graph.imports.items():
+        for b in targets:
+            if a in index and b in index and a != b:
+                out[index[a]].append(index[b])
+    for lst in out:
+        lst.sort()
+
+    # ── cycle breaking: rank files by USAGE (importer count, ties → the file
+    # with more imports first) and keep, for the column assignment only,
+    # the edges that run from a less-used file to a more-used one. That is a
+    # DAG by construction, and it decides the cycles the way the picture
+    # should read: the hubs everything imports can only ever move RIGHT.
+    rank = sorted(range(n), key=lambda v: (len(graph.importers_of(nodes[v])),
+                                           -len(graph.imports_of(nodes[v])), nodes[v].name))
+    position = {v: i for i, v in enumerate(rank)}
+    dag_out = [[w for w in out[v] if position[w] > position[v]] for v in range(n)]
+    indeg = [0] * n
+    for v in range(n):
+        for w in dag_out[v]:
+            indeg[w] += 1
+
+    # ── columns: longest path from the roots (Kahn order) ──
+    column = [0] * n
+    ready = [v for v in range(n) if indeg[v] == 0]
+    order = []
+    while ready:
+        v = ready.pop(0)
+        order.append(v)
+        for w in dag_out[v]:
+            column[w] = max(column[w], column[v] + 1)
+            indeg[w] -= 1
+            if indeg[w] == 0:
+                ready.append(w)
+    columns = max(column) + 1
+    layers = [[] for _ in range(columns)]
+    for v in range(n):
+        layers[column[v]].append(v)
+
+    # ── rows: barycenter sweeps over ALL neighbours (both edge directions) ──
+    neighbours = [set() for _ in range(n)]
+    for v in range(n):
+        for w in out[v]:
+            neighbours[v].add(w)
+            neighbours[w].add(v)
+    row = [0.0] * n
+    for layer in layers:
+        for i, v in enumerate(layer):
+            row[v] = float(i)
+
+    def sweep(layer_indices):
+        for c in layer_indices:
+            layer = layers[c]
+            keyed = []
+            for v in layer:
+                adjacent = [row[w] for w in neighbours[v] if column[w] != c]
+                bary = sum(adjacent) / len(adjacent) if adjacent else row[v]
+                keyed.append((bary, nodes[v].name, v))
+            keyed.sort()
+            layers[c] = [v for _b, _name, v in keyed]
+            for i, v in enumerate(layers[c]):
+                row[v] = float(i)
+
+    for _ in range(sweeps):
+        sweep(range(1, columns))
+        sweep(range(columns - 2, -1, -1))
+
+    # ── normalize: x by column, y by row with one shared pitch ──
+    tallest = max(len(layer) for layer in layers)
+    pitch = 2.0 / max(1, tallest)
+    graph.layout = {}
+    for c, layer in enumerate(layers):
+        x = -1.0 + 2.0 * c / max(1, columns - 1) if columns > 1 else 0.0
+        offset = (len(layer) - 1) * 0.5
+        for i, v in enumerate(layer):
+            graph.layout[nodes[v]] = (float(x), float((i - offset) * pitch))
+    graph.columns = columns
+    # The column/row ORDER itself, for views that draw draw in pixels
+    # (import_graph_view lays labelled boxes out from it, rather of the
+    # normalized coordinates above).
+    graph.layers = [[nodes[v] for v in layer] for layer in layers]
+    return graph.layout
+
+
+# ── the shared current graph: built by either window, read by both ─────────────
+# Hotswap-guarded module state (the file re-execs on hotswap; the graph
+# survives). Data, not UI state - each window's own injected state keeps
+# its selection / camera.
+_CURRENT = globals().get("_CURRENT", {"graph": None})
+
+
+def current():
+    """The last graph built in this session (any window), or None."""
+    return _CURRENT["graph"]
+
+
+def set_current(graph):
+    _CURRENT["graph"] = graph
 
 
 class ImportGraphBuild:
@@ -213,7 +449,10 @@ class ImportGraphBuild:
 
     def _run(self):
         try:
-            self.result = build_import_graph(self.root)
+            graph = build_import_graph(self.root)
+            layout_graph(graph)
+            set_current(graph)
+            self.result = graph
         except Exception as e:      # surfaced on the UI's status line
             self.error = f"{type(e).__name__}: {e}"
         finally:
