@@ -37,6 +37,7 @@ from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
 from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent, EventAction
 from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
+from src.lsd.gl_gui.events import space_mouse
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
 from src.lsd.gl_gui.utils.glfw_utils import request_render, print_stack_trace, clamp_ui_scale
 from src.lsd.gl_gui.perf_trace import trace as _ptrace
@@ -612,6 +613,10 @@ class Melty:
 
     window_drag = False
     on_drag = False
+    # A 3D-mouse flight is in progress (events/space_mouse.py, set per frame
+    # right after its pump). Folded into on_drag below; the gates that poll
+    # the mouse buttons directly read this beside them.
+    space_mouse_drag = False
     on_scroll = False
 
     # Frame guard: some view rendered a VALUE-PENDING placeholder this frame (a
@@ -2103,6 +2108,8 @@ class Melty:
         #         Melty.cache.invalidate(last_hovered, do_store=False, force=True)
 
         cls.backend.pump()
+        space_mouse.pump(cls.event_handler)
+        cls.space_mouse_drag = space_mouse.active()
 
         # Orchestrated record/replay injection does NOT run here: it runs
         # from SplitOverlayRenderer.process_inputs, BEFORE imgui.new_frame,
@@ -2164,7 +2171,12 @@ class Melty:
         else:
             is_window_drag = False
 
-        cls.on_drag = (is_window_drag or ("left_mouse_down" in cls.events_by_type)) and (not cls.imgui_active)
+        # A 3D-mouse flight counts as a drag: every invalidation gate keyed
+        # on on_drag (hover changes, clip reveals, glow kills, content-height
+        # commits, scroll clamps, freeze-resize) stays quiet until the cap
+        # settles, exactly like for a held mouse button.
+        cls.on_drag = (((is_window_drag or ("left_mouse_down" in cls.events_by_type))
+                        and (not cls.imgui_active)) or cls.space_mouse_drag)
 
         cls.event_handler.begin_frame()
 
@@ -2177,6 +2189,16 @@ class Melty:
             right_mouse_drag_events = cls.events_by_type["middle_mouse_drag"]
             for event in right_mouse_drag_events:
                 note = Note(name=event, reason="middle_mouse_drag", tint=(0, 1, 1))
+                Melty.cache.invalidate(event, note=note)
+
+        # A 3D-mouse flight is the middle-drag's twin: the receiving view
+        # (draw_voxels) is force-refreshed each frame by the SAME per-target
+        # blit bypass, and nothing else; on_drag (folded from
+        # space_mouse_drag) keeps the general purpose invalidate_up below and
+        # every other churn gate quiet for the rest of the app.
+        if ("space_mouse_changed" in cls.events_by_type):
+            for event in cls.events_by_type["space_mouse_changed"]:
+                note = Note(name=event, reason="space_mouse", tint=(0, 1, 1))
                 Melty.cache.invalidate(event, note=note)
 
         # Double-drags (the 2nd press of a double-click, held + dragged) are
@@ -2229,7 +2251,8 @@ class Melty:
             first_event = list(evts.values())[0]
             if first_event.tile_id != "hovered":
                 if (first_event.tile_id is not None and not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
-                        and not imgui.is_mouse_down(2) and not cls.on_scroll):
+                        and not imgui.is_mouse_down(2) and not cls.on_scroll
+                        and not cls.space_mouse_drag):
                         print(first_event)
                         Melty.cache.invalidate_up(first_event.tile_id, max_depth=10, force=True)
 
@@ -3199,6 +3222,14 @@ class Melty:
             cls.backend = GlfwQueueBackend(cls.event_handler, window)
         except Exception as e:
             print(f"GlfwQueueBackend unavailable, keeping ImGuiBackend: {e}")
+        # 3D mouse: the spacenavd socket reader (events/space_mouse.py), a
+        # process-lifetime thread; its per-frame pump runs beside the
+        # backend's below. A view subscribes with `space_mouse_changed=None`.
+        try:
+            from src.lsd.gl_gui.events.space_mouse import start as start_space_mouse
+            start_space_mouse()
+        except Exception as e:
+            print(f"Space mouse unavailable: {e}")
         # OS-level 3-finger click/drag (events/touchpad_backend.py) - DISABLED.
         # The TM3414's contact sensing proved unreliable for 3-finger detection
         # (reports 1-2 flickering contacts for 3 pressed fingers in most

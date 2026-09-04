@@ -411,7 +411,7 @@ extern "C" __global__ void march(
     float nlo, float nhi, int norm_mode,
     const float* __restrict__ lut, int lut_n,
     unsigned char* __restrict__ out, int W, int H,
-    float tilt, float spin, float zoom, float pan_x, float pan_y, float pan_z,
+    float tilt, float spin, float roll, float zoom, float pan_x, float pan_y, float pan_z,
     int ortho, float aspect, float vsx, float vsy, float vsz,
     float step_size, int max_steps, float density, float threshold,
     float brightness, float contrast, float gamma, int centered,
@@ -441,7 +441,14 @@ extern "C" __global__ void march(
     float u = ((float)px + 0.5f) / (float)W, w = ((float)py + 0.5f) / (float)H;
     float ct = cosf(tilt), st = sinf(tilt), cs = cosf(spin), ss = sinf(spin);
     float3 fwd = f3(-cs * ct, -ss * ct, -st);
-    float3 right = f3(-ss, cs, 0.0f);
+    float3 right0 = f3(-ss, cs, 0.0f);
+    float3 up0 = f3(right0.y * fwd.z - right0.z * fwd.y,
+                    right0.z * fwd.x - right0.x * fwd.z,
+                    right0.x * fwd.y - right0.y * fwd.x);
+    // roll turns right toward up about the view axis (voxel_camera.basis)
+    float cr = cosf(roll), sr = sinf(roll);
+    float3 right = f3(right0.x * cr + up0.x * sr, right0.y * cr + up0.y * sr,
+                      right0.z * cr + up0.z * sr);
     float3 up = f3(right.y * fwd.z - right.z * fwd.y,
                    right.z * fwd.x - right.x * fwd.z,
                    right.x * fwd.y - right.y * fwd.x);
@@ -716,13 +723,14 @@ def _kernel_for(dev_index, name="march"):
     """Compile (once per device, nvcc-cached on disk by pycuda) and return
     the named kernel. Must be called with that device's context pushed."""
     fns = _KERNELS.get(dev_index)
-    if not isinstance(fns, dict):
+    if not isinstance(fns, dict) or fns.get("__source__") != hash(KERNEL):
         import pycuda.driver as cuda
         from pycuda.compiler import SourceModule
         cc = cuda.Device(int(dev_index)).compute_capability()
         mod = SourceModule(KERNEL, no_extern_c=True, arch="sm_%d%d" % cc,
                            options=["-O3"] + _host_compiler_flags())
         fns = {n: mod.get_function(n) for n in ("march", "bake_mip", "bake_floor")}
+        fns["__source__"] = hash(KERNEL)
         _KERNELS[dev_index] = fns
     return fns[name]
 
@@ -754,7 +762,7 @@ def shade_params(draw_plane=False, shadow_opacity=1.0, shadow_softness=0.15,
 
 
 def march(view, out, lut, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
-          tilt=0.0, spin=0.0, zoom=3.4, pan=(0.0, 0.0, 0.0), ortho=False,
+          tilt=0.0, spin=0.0, roll=0.0, zoom=3.4, pan=(0.0, 0.0, 0.0), ortho=False,
           aspect=1.0, volume_scale=(1.0, 1.0, 1.0), step_size=0.005,
           max_steps=512, density=0.7, threshold=0.3, brightness=1.0,
           contrast=1.0, gamma=1.6, centered=False, shade=None, mip=None,
@@ -797,7 +805,7 @@ def march(view, out, lut, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
            f32(norm[0]), f32(norm[1]), i32(norm[2]),
            np.uintp(lut.data_ptr()), i32(lut.shape[0]),
            np.uintp(out.data_ptr()), i32(W), i32(H),
-           f32(tilt), f32(spin), f32(zoom), f32(pan[0]), f32(pan[1]), f32(pan[2]),
+           f32(tilt), f32(spin), f32(roll), f32(zoom), f32(pan[0]), f32(pan[1]), f32(pan[2]),
            i32(1 if ortho else 0), f32(aspect), f32(vsx), f32(vsy), f32(vsz),
            f32(step_size), i32(max_steps), f32(density), f32(threshold),
            f32(brightness), f32(contrast), f32(gamma), i32(1 if centered else 0),

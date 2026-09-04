@@ -1224,6 +1224,14 @@ class Toggles:
         # 0 disables. Read live per render.
         auto_flow_extent = 8192
 
+        # Navigation model of the MOUSE orbit (middle-drag) - the 3D mouse has
+        # its own below (SpaceMouse.navigation), so each device can keep the
+        # feel that suits it. "turntable": drag x spins about the world UP
+        # axis, drag y tilts, the horizon never rolls. "trackball": the drag
+        # is a rotation in VIEW space about the orbit center, roll included.
+        # Read live per frame.
+        mouse_navigation = "turntable"
+
     @defaults(tint=(0.545, 0.451, 0.248))
     class UIScale:
         # Auto-pick the UI scale each frame from the resolution of the monitor
@@ -1972,6 +1980,120 @@ class Toggles:
     @defaults(tint=(0.181, 0.119, 0.294))
     class InputHandlerToggles:
         show_debug = False
+
+    # 3D mouse (3Dconnexion SpaceMouse). The device side is read by
+    # events/space_mouse.py - the spacenavd socket client and the per-frame
+    # pump that feeds the InputHandler a "space_mouse" axes event, each axis
+    # the deflection integrated over the frame in full-deflection-seconds -
+    # and the navigation knobs below are how draw_voxels turns those axes
+    # into tilt / spin / roll / cam_zoom / pan (voxel_camera.apply_space_mouse),
+    # so every sensitivity reads "per second at full push". All read live.
+    @defaults(tint=(0.181, 0.119, 0.294))
+    class SpaceMouse:
+        # ── navigation (draw_voxels) ──
+
+        # Rotation model, independent of the mouse's
+        # (Toggles.Voxels.mouse_navigation). "trackball": the puck's full
+        # rotation vector rotates the view freely about the orbit center in
+        # VIEW space, roll included (Blender's "Free" default) - the
+        # camera's roll param carries the third degree of freedom.
+        # "turntable": the puck's yaw (ry) spins about the world UP, and
+        # its pitch (rx) tilts; the horizon never rolls, roll (rz) is ignored.
+        navigation = "trackball"
+
+        # What a rotation turns about. "camera": the eye stays where it is
+        # and the VIEW turns - looking around, the scene sweeps across the
+        # screen (the orbit center rides along the new view direction).
+        # "target": the camera orbits the volume's orbit target like the
+        # mouse does - the volume turns in place on screen.
+        pivot = "camera"
+
+        # Orbit sensitivity: radians per second at full deflection of a
+        # rotation axis. Higher = faster orbit.
+        # [tint=(0.181, 0.119, 0.294)]
+        orbit_sensitivity = 1.5
+
+        # Translation sensitivity. pivot "camera": WORLD units per second
+        # at full deflection on all three axes (right / up / forward — a
+        # rigid flight, the volume is ~2 units across; nothing scales with
+        # the camera distance). pivot "target": camera distances (cam_zoom)
+        # per second in the screen plane, the mouse pan's rule. Higher =
+        # faster.
+        # [tint=(0.181, 0.119, 0.294)]
+        pan_sensitivity = 1.0
+
+        # Zoom sensitivity, pivot "target" only: e-folds of cam_zoom per
+        # second at full push / pull (tz). With pivot "camera" push / pull
+        # is flight along the view at pan_sensitivity. Higher = faster.
+        # [tint=(0.181, 0.119, 0.294)]
+        zoom_sensitivity = 1.0
+
+        # Per-axis sensitivity, one float per degree of freedom, applied to
+        # the normalized reading in space_mouse.normalize (so every view
+        # sees it, on top of the orbit / pan / zoom sensitivities above).
+        # 1.0 = as the device reports; 0 disables that axis. Translation:
+        # tx right, ty up, tz push / pull. Rotation: rx pitch, ry yaw,
+        # rz roll.
+        # [tint=(0.181, 0.119, 0.294)]
+        tx_sensitivity = 1.0
+        # [tint=(0.181, 0.119, 0.294)]
+        ty_sensitivity = 1.0
+        # [tint=(0.181, 0.119, 0.294)]
+        tz_sensitivity = 1.0
+        # [tint=(0.181, 0.119, 0.294)]
+        rx_sensitivity = 1.0
+        # [tint=(0.181, 0.119, 0.294)]
+        ry_sensitivity = 1.0
+        # [tint=(0.181, 0.119, 0.294)]
+        rz_sensitivity = 1.0
+
+        # ── device (events/space_mouse.py) ──
+
+        # Master switch: off = the reader parks (socket closed) and no view
+        # receives space_mouse events. Read live.
+        enabled = True
+
+        # spacenavd's listen socket (protocol 0 stream). Debian/Ubuntu's
+        # package installs here; /var/run/spnav.sock is the same path.
+        socket_path = "/run/spnav.sock"
+
+        # The units spacenavd reports at full push / twist. 3Dconnexion
+        # devices saturate at ±350 through spacenavd's default sensitivity;
+        # raise your /etc/spnavrc sensitivity and this stays the ceiling
+        # (readings clamp to ±1.0).
+        full_deflection = 350
+
+        # Dead zone as a percentage of full deflection: readings below it are
+        # zero (a resting cap never drifts the camera), the live range is
+        # re-scaled so motion starts smoothly at the edge. spacenavd has its
+        # own dead zone (spnavrc), this one stacks on top.
+        dead_zone = 0.03
+
+        # Axis convention. The reader assumes spacenavd's graphics-style
+        # frame: tx right, ty UP, tz toward the viewer (pull = +), rx pitch
+        # about right, ry yaw about up, rz roll about the view axis. If the
+        # daemon is configured for the device's original Z-up frame, flip
+        # this so y / z (and ry / rz) swap into the frame above.
+        swap_yz = False
+
+        # Flip the sign of individual axes: any of "tx", "ty", "tz", "rx",
+        # "ry", "rz". The defaults match Blender (space_mouse.BLENDER_SIGNS,
+        # measured); this is for a view that wants it otherwise. Applied
+        # after swap_yz.
+        invert_axes = ()
+
+        # A deflection older than this (no motion frame since) reads as
+        # zero - spacenavd dying mid-push or a lost release frame must never
+        # keep the camera moving. Devices report at 60–100 Hz while held.
+        stale_s = 0.25
+
+        # Cap on the frame interval the pump integrates over: a stalled
+        # frame (a load, a hotswap) hands the view at most this much motion
+        # instead of a jump.
+        max_frame_dt = 0.1
+
+        # Seconds between connection attempts while spacenavd is away.
+        retry_s = 3.0
 
     @defaults(tint=(0.652, 0.672, 0.733))
     class TerminalSettings:

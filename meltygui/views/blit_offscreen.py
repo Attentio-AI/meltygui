@@ -1849,7 +1849,8 @@ class TileCacheMasked:
             self._prev_occluders = {}
             return
 
-        if imgui.is_mouse_down(0) or imgui.is_mouse_down(2) or imgui.is_mouse_down(1):
+        if (imgui.is_mouse_down(0) or imgui.is_mouse_down(2) or imgui.is_mouse_down(1)
+                or Melty.space_mouse_drag):
             return
 
         # Scroll frames translate their root windows every frame; diffing
@@ -4198,7 +4199,8 @@ class TileCacheMasked:
 
             if (((t is None) or ((int(t.size[0]), int(t.size[1])) != (
             int(ctx.size[0]), int(ctx.size[1])))) and not imgui.is_mouse_down(0)
-                    and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)):
+                    and not imgui.is_mouse_down(1) and not imgui.is_mouse_down(2)
+                    and not Melty.space_mouse_drag):
                 old_t = t
                 t = _ensure_tile(t, ctx.size[0], ctx.size[1], frame_id=self._frame_id, draw_state=ctx.draw_state)
 

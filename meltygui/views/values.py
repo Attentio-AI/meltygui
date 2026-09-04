@@ -3402,7 +3402,8 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
     # old steady-state conditions (no buttons held).
     measured_fully = not rows_skipped and not premature_break
     if measured_fully or (not imgui.is_mouse_down(0) and not imgui.is_mouse_down(1)
-                          and not imgui.is_mouse_down(2) and not premature_break):
+                          and not imgui.is_mouse_down(2) and not Melty.space_mouse_drag
+                          and not premature_break):
         draw_state.content_height = snap_int(content_height)
         draw_state.invalid_content_height = False
 
@@ -5217,7 +5218,7 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # into drag/scroll/typing frames; they catch up after.
     from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
     any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
-                      or imgui.is_mouse_down(2))
+                      or imgui.is_mouse_down(2) or Melty.space_mouse_drag)
     # The typing hold defers only HIDDEN CACHE hosts (the-named evictable
     # pairs - their reconverts/saves are the GIL-heavy work that eats typing
     # frames). VISIBLE hosts keep drawing through it: the live-lab loop types

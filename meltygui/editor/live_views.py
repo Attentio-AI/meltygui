@@ -1987,6 +1987,16 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         fn = _scope_function(str(filename), span.start_line + line_offset)
         if fn is None:
             return
+        # A NESTED def resolves to its ENCLOSING function (closures attach
+        # their captures to the outer store and are no module var, so the
+        # nearest module-level def at or above the line wins). Its keys are
+        # line-keyed and _key_anchor reads the line alone, so this node's
+        # overlay would repaint every visible key of the outer store with
+        # the SAME view as the outer node's overlay already used - the
+        # red "ID ..." duplicate label over the outer body (09-02). Only the
+        # node that IS the resolved function's own def draws it.
+        if not _node_owns_function(node, fn, span, line_offset):
+            return
         # Store-level registration before any markers exist: the first
         # instrumented run's brand-new keys invalidate this editor, the
         # overlay re-runs, and the markers materialize (closed - these
@@ -2845,6 +2855,29 @@ def _symbol_cols(anchor, rel_line, key_path, source_lines, labels, memo=None):
     if m is not None:
         return m.start(), m.end()
     return start_col, start_col + max(1, len(name))
+
+
+def _node_owns_function(node, fn, span, line_offset=0):
+    """True when the def node at `span` IS the definition of `fn` — the name
+    matches and fn's first line (its top decorator, so it may sit a few
+    lines ABOVE the span's def line) lies inside the span's line range. A
+    closure's node fails this for the enclosing function it resolved to."""
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
+        parse_def_name)
+    try:
+        inner = inspect.unwrap(fn)
+    except Exception:
+        inner = fn
+    if parse_def_name(node) != getattr(inner, "__name__", None):
+        return False
+    code = getattr(inner, "__code__", None)
+    first = getattr(code, "co_firstlineno", None)
+    if first is None:
+        return True
+    decorator_slack = 16
+    start = span.start_line + line_offset
+    end = getattr(span, "end_line", span.start_line) + line_offset
+    return start - decorator_slack <= first <= end
 
 
 def _scope_function(filename, def_line):

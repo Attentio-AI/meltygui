@@ -28,7 +28,9 @@ The pipeline — draw_voxels owns everything, no state objects:
   as a world-space quad in the voxel FBO — baseline along its edge, up-axis
   perpendicular, flipped per frame so it always reads upright.
 
-Middle-drag = orbit (shift: pan, ctrl: dolly), scroll = zoom, and Blender-style
+Middle-drag = orbit (shift: pan, ctrl: dolly), scroll = zoom, a 3D mouse
+(space_mouse_changed → voxel_camera.apply_space_mouse) orbits / pans /
+dollies with the cap (Toggles.SpaceMouse), and Blender-style
 numpad views while hovered: 7/1/3 = top/front/right (ctrl = opposite side),
 5 = perspective/ortho toggle, / (or numpad .) = recenter the pan on the origin.
 Four hosts/windows ship as playgrounds:
@@ -60,6 +62,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.view.core_views.headers import draw_header, flat_button
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_any, draw_bg, draw_dropdown
+from src.lsd.gl_gui.view.playground.voxel_camera import basis as _cam_basis, apply_space_mouse
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.toggles import Swoosh
@@ -183,14 +186,17 @@ vec4 volumeNormal(vec3 p) {
 }
 
 void main() {
-    // Z-up orbit camera built straight from injected uniforms — tilt, spin,
+    // Z-up orbit camera built straight from injected uniforms — tilt, spin, roll,
     // zoom, pan and ortho arrive as plain Python kwargs, no matrices anywhere.
     // The basis is analytic in spin/tilt (not cross(fwd, world-up)) so the
     // numpad top/bottom presets (tilt = ±π/2) stay well-defined; it matches
     // the old construction everywhere else.
     float ct = cos(tilt);
     vec3 fwd = -vec3(cos(spin) * ct, sin(spin) * ct, sin(tilt));
-    vec3 right = vec3(-sin(spin), cos(spin), 0.0);
+    vec3 right0 = vec3(-sin(spin), cos(spin), 0.0);
+    // roll turns right toward up about the view axis (0 = level horizon,
+    // the turntable); the 3D mouse's trackball mode is what writes it.
+    vec3 right = right0 * cos(roll) + cross(right0, fwd) * sin(roll);
     vec3 up = cross(right, fwd);
     vec3 eye = vec3(pan_x, pan_y, pan_z) - fwd * zoom;
     vec2 ndc = (uv * 2.0 - 1.0) * vec2(aspect, 1.0);
@@ -361,7 +367,7 @@ void main() {
 
 
 @shader_func(fragment=VOXEL_FRAG)
-def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, zoom=3.4,
+def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, roll=0.0, zoom=3.4,
                pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                aspect=1.0, brightness=1.0, contrast=1.0, density=1.0, gamma=1.6,
                threshold=0.1, step_size=0.0015, max_steps=4096, centered=False,
@@ -564,7 +570,7 @@ def _scalar_int(v):
 
 LABEL_VERT = """
 #version 330 core
-uniform float tilt, spin, zoom, aspect;
+uniform float tilt, spin, roll, zoom, aspect;
 uniform bool ortho;
 uniform vec3 pan;
 layout(location = 0) in vec3 a_anchor;   // world point ON the edge
@@ -585,7 +591,10 @@ void main() {
     v_alpha = a_metrics.w;
     float ct = cos(tilt);
     vec3 fwd = -vec3(cos(spin) * ct, sin(spin) * ct, sin(tilt));
-    vec3 right = vec3(-sin(spin), cos(spin), 0.0);
+    vec3 right0 = vec3(-sin(spin), cos(spin), 0.0);
+    // roll turns right toward up about the view axis (0 = level horizon,
+    // the turntable); the 3D mouse's trackball mode is what writes it.
+    vec3 right = right0 * cos(roll) + cross(right0, fwd) * sin(roll);
     vec3 up = cross(right, fwd);
     vec3 eye = pan - fwd * zoom;
     // Screen-constant sizing: metrics arrive in NDC units. The world length
@@ -620,7 +629,7 @@ void main() {
 }
 """
 
-_LABEL_UNIFORMS = ("tilt", "spin", "zoom", "aspect", "ortho", "pan", "label")
+_LABEL_UNIFORMS = ("tilt", "spin", "roll", "zoom", "aspect", "ortho", "pan", "label")
 _LABEL_FLOATS = 20  # 4×vec3 + 2×vec4 per instance
 
 
@@ -1535,7 +1544,7 @@ _AXIS_NEAR = 0.05
 
 
 def _axis_edges(tilt, spin, zoom, aspect, width, height,
-                scale=(1.0, 1.0, 1.0), pan=(0.0, 0.0, 0.0), ortho=False):
+                scale=(1.0, 1.0, 1.0), pan=(0.0, 0.0, 0.0), ortho=False, roll=0.0):
     """The volume box's silhouette edges, each clipped to its VISIBLE span —
     the Python mirror of the shader's orbit camera (extents = `scale`, the
     voxel-count-proportional volume_scale), so lines and labels land exactly
@@ -1566,10 +1575,8 @@ def _axis_edges(tilt, spin, zoom, aspect, width, height,
     (exactly 0.0 / 1.0 when that end is the true corner), and the camera
     depths at the visible ends (equal under ortho) for perspective-correct
     tick placement downstream."""
-    ct = math.cos(tilt)
-    fwd = -np.array([math.cos(spin) * ct, math.sin(spin) * ct, math.sin(tilt)])
-    right = np.array([-math.sin(spin), math.cos(spin), 0.0])
-    up = np.cross(right, fwd)
+    # The shader camera's basis (voxel_camera.basis), in numpy.
+    fwd, right, up = (np.array(v, np.float64) for v in _cam_basis(tilt, spin, roll))
     eye = np.asarray(pan, np.float64) - fwd * zoom
     sc = np.asarray(scale, np.float64)
     # Inverse of the shader's ray gen (rd ∝ fwd*1.7 + right*ndc.x + up*ndc.y,
@@ -1893,6 +1900,7 @@ def _render_label_billboards(gl_state, specs, cam, height):
     gl.glUseProgram(prog)
     gl.glUniform1f(loc["tilt"], cam["tilt"])
     gl.glUniform1f(loc["spin"], cam["spin"])
+    gl.glUniform1f(loc["roll"], cam["roll"])
     gl.glUniform1f(loc["zoom"], cam["zoom"])
     gl.glUniform1f(loc["aspect"], cam["aspect"])
     gl.glUniform1i(loc["ortho"], 1 if cam["ortho"] else 0)
@@ -2109,7 +2117,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 # zoom/brightness/contrast fields (name-colliding params are
                 # excluded from auto-state). Gestures/panel write
                 # draw_state.<name>; diverged values persist. ──
-                tilt=0.283, spin=0.724, cam_zoom=3.4,
+                tilt=0.283, spin=0.724, roll=0.0, cam_zoom=3.4,
                 # [tint=(0.084, 0.472, 0.148, 1.0)]
                 pan_x=0.0, pan_y=0.0, pan_z=0.0, ortho=False,
                 cam_brightness=1.332, cam_contrast=1.0,
@@ -2157,7 +2165,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 num_size=17.1, num_padding=5.5, num_opacity=0.8,
                 num_spacing=1.0, num_angle=0.0, z_offset=1,
                 middle_mouse_drag=None, double_right_mouse_drag=None,
-                scroll_y_changed=None, left_mouse_double_clicked=None,
+                scroll_y_changed=None, space_mouse_changed=None,
+                left_mouse_double_clicked=None,
                 kp_7_pressed=None, kp_1_pressed=None, kp_3_pressed=None,
                 kp_5_pressed=None, slash_pressed=None, kp_divide_pressed=None,
                 kp_decimal_pressed=None, **kwargs):
@@ -2212,7 +2221,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 try:
                     edges = _axis_edges(tilt, spin, cam_zoom, width / height, width, height,
                                         scale=_volume_scale(shape),
-                                        pan=(pan_x, pan_y, pan_z), ortho=ortho)
+                                        pan=(pan_x, pan_y, pan_z), ortho=ortho, roll=roll)
                     if edges:
                         _draw_axis_lines(imgui.get_window_draw_list(), img_pos, edges)
                 except Exception:
@@ -2441,6 +2450,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             v = getattr(draw_state, "locate_" + n)
             return cur if v is None else v
         tilt, spin, cam_zoom = _fly("tilt", tilt), _fly("spin", spin), _fly("cam_zoom", cam_zoom)
+        roll = _fly("roll", roll)
         pan_x, pan_y, pan_z = _fly("pan_x", pan_x), _fly("pan_y", pan_y), _fly("pan_z", pan_z)
         cam_brightness = _fly("cam_brightness", cam_brightness)
         cam_contrast = _fly("cam_contrast", cam_contrast)
@@ -2505,6 +2515,19 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             spin -= middle_mouse_drag.dx * 0.008 * spin_sign
             draw_state.locate_cam_zoom = cam_zoom
             draw_state.locate_spin = spin
+        elif Toggles.Voxels.mouse_navigation == "trackball":
+            # Mouse drag as a rotation vector in VIEW space (dy pitches about
+            # screen-right, dx yaws about screen-up), through the same geometry
+            # as the 3D mouse's trackball - roll is the third angle.
+            tilt, spin, roll, _, _ = apply_space_mouse(
+                (0.0, 0.0, 0.0, middle_mouse_drag.dy * 0.008,
+                 middle_mouse_drag.dx * 0.008, 0.0),
+                tilt, spin, roll, cam_zoom, (pan_x, pan_y, pan_z),
+                navigation="trackball", orbit_sensitivity=1.0,
+                pan_sensitivity=0.0, zoom_sensitivity=0.0)
+            draw_state.locate_spin = spin
+            draw_state.locate_tilt = tilt
+            draw_state.locate_roll = roll
         else:
             spin -= middle_mouse_drag.dx * 0.008 * spin_sign
             # Tilt is UNRESTRICTED - orbit straight over the poles and keep
@@ -2527,6 +2550,30 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     if scroll_y_changed is not None:
         cam_zoom = min(135.5, max(0.0, cam_zoom * math.exp(-0.23 * scroll_y_changed.value)))
         draw_state.locate_cam_zoom = cam_zoom
+    if space_mouse_changed is not None and space_mouse_changed.axes:
+        # 3D mouse (events/space_mouse.py → InputHandler.feed()): the six
+        # axes integrated over the frame. The mapping is voxel_camera's -
+        # turntable writes tilt / spin straight from the puck's pitch / yaw,
+        # trackball rotates the basis in view space and decomposes it back
+        # (roll is the third angle); pan tracks the screen plane scaled by
+        # the camera distance, push / pull is an e-fold dolly. Sensitivities
+        # and the mode are Toggles.SpaceMouse. Axes arrive in OBJECT terms
+        # (Blender's handiness folded in by space_mouse.normalize()) so this
+        # is the same math as the mouse.
+        tilt, spin, roll, cam_zoom, (pan_x, pan_y, pan_z) = apply_space_mouse(
+            space_mouse_changed.axes, tilt, spin, roll, cam_zoom, (pan_x, pan_y, pan_z),
+            navigation=Toggles.SpaceMouse.navigation,
+            orbit_sensitivity=float(Toggles.SpaceMouse.orbit_sensitivity),
+            pan_sensitivity=float(Toggles.SpaceMouse.pan_sensitivity),
+            zoom_sensitivity=float(Toggles.SpaceMouse.zoom_sensitivity),
+            pivot=Toggles.SpaceMouse.pivot)
+        draw_state.locate_tilt = tilt
+        draw_state.locate_spin = spin
+        draw_state.locate_roll = roll
+        draw_state.locate_cam_zoom = cam_zoom
+        draw_state.locate_pan_x = pan_x
+        draw_state.locate_pan_y = pan_y
+        draw_state.locate_pan_z = pan_z
 
     # ── Blender-style numpad views (hover-routed key events): 7/1/3 = top/
     # front/right, ctrl = the opposite side, 5 = ortho toggle, / (either
@@ -2556,6 +2603,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             draw_state.locate_pan_x = 0.0
             draw_state.locate_pan_y = 0.0
             draw_state.locate_pan_z = 0.0
+            # ...and level the horizon (a trackball session's habit).
+            roll = 0.0
+            draw_state.locate_roll = 0.0
 
     # ── plane side latch: when the view is upside-down the target plane
     # belongs on the box's OTHER face (the floor light stays fixed in world
@@ -2595,7 +2645,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                  width / height, width, height,
                                  scale=volume_scale,
                                  pan=(pan_x, pan_y, pan_z),
-                                 ortho=ortho)
+                                 ortho=ortho, roll=roll)
 
     # ── GL pass: every resource tracked + lifecycle-managed by gl_state ──
     fb = gl_state.fbo("target", width, height)
@@ -2617,7 +2667,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                          volume_scale, name_size, name_padding,
                                          name_opacity, num_size, num_padding,
                                          num_opacity, num_spacing, num_angle)
-                cam = {"tilt": tilt, "spin": spin, "zoom": cam_zoom,
+                cam = {"tilt": tilt, "spin": spin, "roll": roll, "zoom": cam_zoom,
                        "pan_x": pan_x, "pan_y": pan_y, "pan_z": pan_z,
                        "ortho": ortho, "aspect": width / height}
                 _render_label_billboards(gl_state, specs, cam, height)
@@ -2646,7 +2696,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             from src.lsd.gl_gui import cuda_march as _cm
             img_tex = _cuda_render(
                 gl_state, tex, width, height, lut=lut, tilt=tilt, spin=spin,
-                zoom=cam_zoom, pan=(pan_x, pan_y, pan_z), ortho=bool(ortho),
+                roll=roll, zoom=cam_zoom, pan=(pan_x, pan_y, pan_z), ortho=bool(ortho),
                 volume_scale=volume_scale, step_size=float(step_size),
                 max_steps=int(max_steps), density=float(density),
                 threshold=float(threshold), brightness=float(cam_brightness),
@@ -2670,7 +2720,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                        aspect=width / height,
                        volume_scale=volume_scale, step_size=step_size,
                        max_steps=int(max_steps), density=density,
-                       threshold=threshold, tilt=tilt, spin=spin, zoom=cam_zoom,
+                       threshold=threshold, tilt=tilt, spin=spin, roll=roll, zoom=cam_zoom,
                        pan_x=pan_x, pan_y=pan_y, pan_z=pan_z, ortho=ortho,
                        brightness=cam_brightness, contrast=cam_contrast,
                        gamma=float(Toggles.Voxels.gamma), centered=centered,
@@ -2745,7 +2795,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
     # the group measure (views popped in with a huge height, then the -30
     # self-reference shrank them back 29px a frame).
     panel_kwargs = {"closed": not panel_open} if (init or toggled) else {}
-    if not middle_mouse_drag and not double_right_mouse_drag and scroll_y_changed is None:
+    if (not middle_mouse_drag and not double_right_mouse_drag and scroll_y_changed is None
+            and space_mouse_changed is None):
         _flow_cursor = imgui.get_cursor_screen_pos()
         # Anchor y: the enclosing window's top for a window voxel, this ROW's
         # top for a nested one. The panel call emits an inline item at the
@@ -2777,7 +2828,8 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
             # catches up ONCE at the gesture edge.
             if not panel_ds.closed:
                 if (not imgui.is_mouse_down(2) and not imgui.is_mouse_down(1) and not
-                imgui.is_mouse_down(0) and scroll_y_changed is None) and changed:
+                imgui.is_mouse_down(0) and scroll_y_changed is None
+                        and space_mouse_changed is None) and changed:
                     panel_ds.invalidate_up()
 
         # ── status bar error surfacing only ────────────────────────────────────

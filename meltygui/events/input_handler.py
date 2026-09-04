@@ -100,6 +100,11 @@ class InputEvent:
     modifiers: int = 0
     total_dx: float = 0.0
     total_dy: float = 0.0
+    # Multi-axis payload (feed_axes): the 6-DOF reading of a 3D mouse as
+    # (tx, ty, tz, rx, ry, rz), each axis the deflection INTEGRATED over the
+    # frame in full-deflection-terms (see events/space_mouse.py). None for
+    # every single-value event; `value` stays 0 for an axes event.
+    axes: tuple = None
 
     @property
     def shift(self) -> bool: return bool(self.modifiers & 1)
@@ -603,6 +608,26 @@ class InputHandler:
                     e.timestamp = t
                 return
         self._emit(input_id, EventAction.CHANGED, self._cursor_x, self._cursor_y, value=value, t=t)
+
+    def feed_axes(self, input_id: str, axes, t: float = None):
+        """A multi-axis CHANGED event — the 3D mouse's six axes in one
+        InputEvent (`event.axes`), dispatched like any CHANGED input: to the
+        topmost hovered view subscribed to "<input_id>_changed" (draw_voxels
+        declares `space_mouse_changed=None`). Coalesced per frame by summing
+        each component, the scroll rule: the reader feeds deflection × dt,
+        so a slow frame that gathers several samples hands the view their
+        integral, and nothing is dropped."""
+        axes = tuple(float(a) for a in axes)
+        if input_tap("axes", input_id, axes):
+            return
+        for e in self._pending:
+            if e.input_id == input_id and e.action == EventAction.CHANGED:
+                e.axes = tuple(a + b for a, b in zip(e.axes or (0.0,) * len(axes), axes))
+                if t is not None:
+                    e.timestamp = t
+                return
+        self._emit(input_id, EventAction.CHANGED, self._cursor_x, self._cursor_y, t=t)
+        self._pending[-1].axes = axes
 
     @staticmethod
     def _resolve_subscribers(
