@@ -169,8 +169,10 @@ def render_file_tree(input_value=None, draw_state=None,
     # Geometry authored at ui_scale 1.0 — scaled through Melty.px per frame.
     # [tint=(0.55, 0.72, 0.95)]
     row_height = 20.0
+    # Per nesting level, in px at ui_scale 1.0 — kept tiny so a deep tree
+    # doesn't march off to the right (Lukas 09-04: 2 px, no stair).
     # [tint=(0.55, 0.72, 0.95)]
-    indent_per_level = 16.0
+    indent_per_level = 2.0
     left_pad = 6.0
     glyph_width = 12.0
     # Row backgrounds are the files' own tints (FileMeta) run through the
@@ -356,8 +358,8 @@ def render_file_tree(input_value=None, draw_state=None,
         """One row's visuals at (rx, ry): tint bg, hover/select wash, folder
         chevron, name. Shared by the inline rows and the drag ghost (which
         rides the overlay list outside the shadow marks' clip: shadow=False)."""
-        # The bg is indented with the text: it starts in the row's chevron
-        # column and runs to the right edge, so nesting appears as a stair.
+        # The bg is indented with the text: it starts at the row's chevron
+        # column and runs to the right edge.
         x = rx + pad + depth * indent
         usage = None                      # None if no graph / a folder
         if graph is not None and not p.is_dir():

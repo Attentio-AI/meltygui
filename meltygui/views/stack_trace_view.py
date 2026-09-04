@@ -22,6 +22,7 @@ once per capture from the pending-text ast (live_view._ast_for — mtime +
 pending-generation cached).
 """
 
+import colorsys
 import types
 from pathlib import Path
 
@@ -47,11 +48,16 @@ class SavedTrace:
     default view for it, so `draw_any(SavedTrace(...))` works. Keep ONE
     object per trace: the view rebuilds its panes whenever the input's
     identity changes."""
-    __slots__ = ("frames", "error")
+    __slots__ = ("frames", "error", "seen_height")
 
     def __init__(self, frames, error=""):
         self.frames = list(frames or ())
         self.error = error or ""
+        # The view's height last measured while IN VIEW (a scrolling host
+        # stamps it - see crash_reports): the honest height to lay out even
+        # while the view sits off-screen, where the wrapper's group measure
+        # runs to the clip edge.
+        self.seen_height = None
 
     def __repr__(self):
         return f"SavedTrace({len(self.frames)} frames, {self.error!r})"
@@ -129,7 +135,8 @@ class _Pane:
                  "def_last", "store", "resolved", "expand_diff",
                  "fold_gen_seen", "view", "address", "file_code",
                  "render_memo", "last_height", "ds", "has_def",
-                 "store_tried", "parse_memo", "parse_armed", "error_marker")
+                 "store_tried", "parse_memo", "parse_armed", "error_marker",
+                 "error_opened", "seen_height")
 
     def __init__(self, path, lineno, qualname, scope):
         self.path = path
@@ -166,6 +173,8 @@ class _Pane:
         self.parse_memo = None     # (span_text_obj, cst dict | None)
         self.parse_armed = None    # span_text the background parse ran for
         self.error_marker = None   # the raising pane's _RaisingMarker (stable identity)
+        self.error_opened = False  # its context box opened once on first sight
+        self.seen_height = None    # advance measured while the pane was in view
 
     def bounds(self):
         return (self.first, self.last, self.def_last)
@@ -478,33 +487,95 @@ def _shift_panes(panes, edited_pane, path, edit_line, delta,
             pane.view = None
 
 
-def _draw_file_header(pane, x, y):
+def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, index=0):
     """One printed-trace line above a pane: `File "<path>", line N, in
-    <func>`, the path relative to the project root in the file's painted
-    FileMeta tint (None → subtle text), drawn straight to the draw list.
-    Returns the width drawn."""
+    <func>`, on a card that WRAPS the pane — a rect from the header's top
+    down past the pane's bottom, painted through the pane's OWN background
+    recipe (`BlitCache.draw_freeze_bg(pane.ds, …, live=False)` replays the
+    depth / bg-stack / style-tint the pane's wrapper captured), so card and
+    pane are the same colour by construction; the pane then draws over it.
+    Nothing is painted until the pane has a draw_state (its first frame).
+    Text: the editor tabs' colour — the file's painted FileMeta tint (the
+    tabs' default tint when unpainted) scaled by the active-tab knobs, so
+    it is tinted toward the card, never grey."""
     from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.model.app_model import FileMeta
+    from src.lsd.gl_gui.toggles import Toggles
     from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
+    from src.lsd.gl_gui.view.playground.open_files import _tab_text_color
+    text_pad_x = Melty.px(8)
+    text_pad_y = Melty.px(3)
+    # The card's colour is the pane's own bg (below) pushed darker and more
+    # saturated — change the header/pane contrast here.
+    # [tint=(0.9, 0.35, 0.28)]
+    card_saturation = 1.6
+    card_value = 0.75
     draw_list = imgui.get_window_draw_list()
-    subtle = Tint.subtle_text()
-    subtle_u32 = imgui.get_color_u32_rgba(subtle[0], subtle[1], subtle[2], 1.0)
-    file_tint = _file_meta_tint(pane.path)
-    path_u32 = (imgui.get_color_u32_rgba(file_tint[0], file_tint[1], file_tint[2], 1.0)
-                if file_tint else subtle_u32)
+    # The card: a plain draw-list rect from the pane's OWN background
+    # colour — `bg_color`, stamped on its draw_state by the wrapper
+    # (compute_bg_color with the file tint pushed) — so card and pane share
+    # a hue by construction. Square, straight to the list.
+    # Painted two channels BELOW the body's: the panes' tint washes and
+    # live-value pills sit a channel under their text, and a card on the
+    # body's own channel fought them.
+    # [tint=(0.9, 0.35, 0.28)]
+    card_channel_drop = 2
+    bg_color = getattr(pane.ds, "bg_color", None) if pane.ds is not None else None
+    if bg_color is not None:
+        hue, sat, val = colorsys.rgb_to_hsv(*bg_color[:3])
+        card = colorsys.hsv_to_rgb(hue, min(1.0, sat * card_saturation), val * card_value)
+        if Melty.channels_split:
+            draw_list.channels_set_current(max(0, Melty.get_channel() - card_channel_drop))
+        draw_list.add_rect_filled(x, y, x + width, y + height,
+                                  imgui.get_color_u32_rgba(card[0], card[1], card[2], 1.0))
+        if Melty.channels_split:
+            draw_list.channels_set_current(Melty.get_channel())
+    tint = _file_meta_tint(pane.path) or FileMeta.tint
+    rgb = _tab_text_color(tint, Toggles.CodeEditor.tab_active_text_brightness,
+                          Toggles.CodeEditor.tab_active_text_saturation,
+                          Toggles.CodeEditor.tab_active_text_min_brightness)
+    name_u32 = imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2], 1.0)
+    rest_u32 = imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2], 0.7)
     try:
         shown = str(Path(pane.path).resolve().relative_to(_PROJECT_ROOT))
     except (OSError, ValueError):
         shown = pane.path
-    pen = x
-    for text, color in (('File "', subtle_u32), (shown, path_u32),
-                        (f'", line {pane.lineno}, in {pane.qualname}', subtle_u32)):
-        draw_list.add_text(pen, y, color, text)
-        pen += imgui.calc_text_size(text)[0]
-    return pen - x
+    pen = (text_x if text_x is not None else x) + text_pad_x
+    text_y = y + text_pad_y
+    line_height = imgui.get_text_line_height()
+    jump_rects = {}
+    for key, text, color in (("", 'File "', rest_u32), ("file", shown, name_u32),
+                             ("", f'", line {pane.lineno}, in ', rest_u32),
+                             ("func", pane.qualname, name_u32)):
+        draw_list.add_text(pen, text_y, color, text)
+        text_w = imgui.calc_text_size(text)[0]
+        if key:
+            jump_rects[key] = (pen, text_y, pen + text_w, text_y + line_height)
+        pen += text_w
+    # Ctrl+B anywhere on the header line jumps to the code editor at that
+    # frame's line; on the FUNCTION name it also lands the caret on the
+    # def (its rect registers one level above the name's). on_action
+    # rects on the trace's draw_state, replayed on cache hits like every
+    # body action. The whole line, not the name's glyph box: the 18 px
+    # target a few px above a pane's def row was too easy to miss.
+    if draw_state is not None:
+        from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+        # At least the text's extent - a view whose width is not measured
+        # yet (first frames, the render harness) would give a zero rect.
+        line_rect = (x, y, max(x + width, pen), y + text_pad_y + line_height + text_pad_y)
+        fired = None
+        if draw_state.on_action("ctrl_b_down", view_id=f"trace_jump_func_{index}",
+                                rect=jump_rects["func"], priority_delta=5) is not None:
+            fired = "func"
+        elif draw_state.on_action("ctrl_b_down", view_id=f"trace_jump_file_{index}",
+                                  rect=line_rect, priority_delta=4) is not None:
+            fired = "file"
+        if fired:
+            token = pane.qualname.rsplit(".", 1)[-1] if fired == "func" else None
+            open_in_editor(pane.path, pane.lineno, token=token)
 
 
-@render_func(is_default_for=(types.TracebackType, BaseException, SavedTrace),
-             show_bg=True, use_cache=True, tint=(0.9, 0.35, 0.28))
+@render_func(is_default_for=(types.TracebackType, BaseException, SavedTrace),use_cache=True, tint=(0.9, 0.35, 0.28))
 def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTrace,
                      draw_state=None, trace_state: StackTraceState = None,
                      max_span_lines=80, context_lines=8, freeze_resize=True,
@@ -553,8 +624,9 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     project_prefix = str(_PROJECT_ROOT)
     # File header line: `File "path", line N, in func` - the path in the
     # file's painted tint, the rest in the subtle-text colour.
-    header_height = imgui.get_text_line_height() + Melty.px(4) if file_headers else 0.0
+    header_height = imgui.get_text_line_height() + Melty.px(6) if file_headers else 0.0
     header_indent = Melty.px(file_header_indent) if file_headers else 0.0
+    card_pad_bottom = Melty.px(6) if file_headers else 0.0    # the card drops this far past the pane
     # The raising line's message - the marker's text; "" = no marker.
     if isinstance(input_value, SavedTrace):
         error_message = input_value.error
@@ -616,7 +688,16 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
     view_clip = draw_state.abs_clip_rect
 
     parent_call_col = None
-    index_polled = set()   # one span-index runner poll per file per frame
+    index_polled = set()   # one span-index runner poll per FILE per frame
+    # file_headers: every header (and its pane) sits this far in from the
+    # card's left edge, and every pane stops this far short of the card's
+    # right edge — the card is the full width, the text views narrower.
+    # [tint=(0.9, 0.35, 0.28)]
+    file_inset = Melty.px(2) if file_headers else 0.0
+    # The cards span the view's FULL rect (abs_left / width - not the
+    # relative content rect the cursor starts in), edge to edge.
+    trace_left = draw_state.abs_left if file_headers else imgui.get_cursor_screen_pos()[0]
+    card_width = draw_state.width or available_width
     error_pane = next((p for p in reversed(panes) if p is not None), None) \
         if error_message else None
     for index, pane in enumerate(panes):
@@ -756,13 +837,27 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
         parse = _pane_parse(pane, span_text, index)
 
         span_kwargs = {}
+        # This pane's header start: the card's left edge plus file_inset -
+        # the same for every pane; the pane's own indent never carries over.
+        base_x = trace_left + file_inset if file_headers else cursor_x
+        cursor_x = base_x
         if file_headers:
-            _draw_file_header(pane, cursor_x, cursor_y + Melty.px(2))
+            # The card (full trace width, from the card's left edge) is
+            # header + the pane's last measured advance tall (a fresh pane
+            # has no draw_state yet and paints no card).
+            pane_advance = pane.seen_height if pane.seen_height is not None else \
+                (pane.last_height - header_height if pane.last_height else 0.0)
+            _draw_file_header(pane, trace_left, cursor_y, card_width,
+                              header_height + pane_advance + card_pad_bottom,
+                              text_x=base_x, draw_state=draw_state, index=index)
             cursor_y += header_height
             cursor_x += header_indent
             imgui.set_cursor_screen_pos((cursor_x, cursor_y))
-            if available_width > header_indent + 200:
-                span_kwargs["width"] = available_width - header_indent
+            # Even: the pane stops as far short of the card's right edge as
+            # it starts in from the card's left.
+            pane_width = card_width - 2 * (cursor_x - trace_left)
+            if pane_width > 200:
+                span_kwargs["width"] = pane_width
         if indent_views:
             shift_columns, parent_call_col = chain_shift(
                 def_indent, _indent_of(file_lines[pane.lineno - 1])
@@ -774,20 +869,26 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
                 # Keep the slid view's right edge inside the client rect.
                 if available_width > slide_px + 200:
                     span_kwargs["width"] = available_width - slide_px
-        if pane.has_def:
+        marks_error = pane is error_pane and not (call_row <= 0 and pane.has_def)
+        if pane.has_def and not marks_error:
             # Panes open COMPACT: the root def (buffer row 0 - spans are
             # dedented def→call slices) starts collapsed on the pane's first
             # sight; expanding sets the badge, and the user's fold state owns
-            # it from then on. Module-frame panes have no def at row 0.
+            # it from then on. Module-frame panes have no def at row 0. The
+            # RAISING pane opens expanded: collapsed, the raising line and
+            # its marker sat hidden inside the fold.
             span_kwargs["default_collapsed_lines"] = (0,)
+        # jump_to (the buffer's file-line offset) rides on every draw, not
+        # only once the span parse lands: the editor's floating error box
+        # - the raising line's message - is gated on it, and a pane with
+        # no value store never parses at all.
+        bounds = pane.bounds()
+        if pane.address is None or pane.address[0] != bounds:
+            pane.address = (bounds, Address(pane.path, pane.first - 1, pane.last))
+        span_kwargs["jump_to"] = pane.address[1]
         if parse is not None:
             span_kwargs["code_dict"] = parse
             span_kwargs["live_store"] = pane.store
-            bounds = pane.bounds()
-            if pane.address is None or pane.address[0] != bounds:
-                pane.address = (bounds,
-                                Address(pane.path, pane.first - 1, pane.last))
-            span_kwargs["jump_to"] = pane.address[1]
         # Stable-identity render kwargs, rebuilt only when the span moves
         # (see the render_memo comment on _Pane).
         memo = pane.render_memo
@@ -805,7 +906,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
         # The raising line's marker (a terminal whole-function pane -
         # call_row 0 with a def - has no raising line). Memoized beside the
         # render kwargs: draw_text compares its kwargs by identity.
-        if pane is error_pane and not (call_row <= 0 and pane.has_def):
+        if marks_error:
             marker = pane.error_marker
             if marker is None or marker.lineno != call_row + 1 \
                     or marker.msg != error_message:
@@ -822,10 +923,43 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTra
             # use_cache=False a selection drag in one pane re-ran every
             # span on every frame (10 draw_text bodies, 15ms - 09-01).
             use_cache=True, return_extras=True, **span_kwargs)
-        # Measured layout advance (this item + its spacing) is what the
-        # offscreen skip reproduces with a cursor move.
-        pane.last_height = max(0.0,
-                               imgui.get_cursor_screen_pos()[1] - cursor_y) + header_height
+        # Measured layout advance (this item + its spacing) — what the
+        # off-screen skip reproduces with a cursor move. The wrapper sizes
+        # the pane by its whole imgui GROUP, and a pane lying entirely
+        # in the fold has an item in draw_text's tail land at the clip
+        # edge, so the group (and the cursor the wrapper advances) runs
+        # from the pane's top down to the clip bottom - thousands of px
+        # for a collapsed def, and different on every scroll. The
+        # wrapper's `observed_content_height` is the honest cursor advance
+        # of the body itself; when the advance overshoots it by more than
+        # a line, lay out by the honest height and put the cursor there.
+        advance = max(0.0, imgui.get_cursor_screen_pos()[1] - cursor_y)
+        honest = getattr(pane_ds, "observed_content_height", 0) if pane_ds is not None else 0
+        if honest > 0 and advance > honest + estimated_line_px:
+            # Off-screen: the in-view measurement if there was one (the
+            # off-screen honest delta itself wobbles by a px), else the
+            # honest delta.
+            advance = pane.seen_height if pane.seen_height is not None else float(honest)
+            imgui.set_cursor_screen_pos((base_x, cursor_y + advance))
+        else:
+            pane.seen_height = advance
+        pane.last_height = advance + header_height + card_pad_bottom
+        if file_headers:
+            imgui.set_cursor_screen_pos((base_x, cursor_y + advance + card_pad_bottom))
+        # The raising pane shows its message box from the start - the
+        # marker's open state (`_err_open_line`, the 0-based buffer row)
+        # is stamped once on first sight; the user can close it from there.
+        if marks_error and not pane.error_opened and pane_ds is not None:
+            from src.lsd.gl_gui.view.playground.open_files import _diff_disp_span
+            pane.error_opened = True
+            # Markers live in DISPLAY rows (fold-mapped by draw_text); the
+            # pane's fold map is stamped by the body that just ran.
+            pane_ds._err_open_line = _diff_disp_span(pane_ds, call_row, call_row + 1)[0]
+            pane_ds.invalidate()
+        if file_headers and pane.ds is None and pane_ds is not None:
+            # First sight: the card (drawn from pane.ds's captured bg
+            # recipe) could not paint this frame - repaint next frame.
+            draw_state.invalidate()
         pane.ds = pane_ds
         # A manual fold-badge toggle hands this pane's middle back to
         # automatic tracking (expand_diff=False would re-collapse it).

@@ -856,7 +856,12 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
     # A grouped trace is one section of the group's own output and the group
     # flushes as a whole, so only standalone traces become report files.
     if not group:
-        save_crash_report(buf.getvalue(), exception=exception, frames=report_frames)
+        # A plain trace (no exception) is titled by the function it was
+        # printed from, its innermost frame - not just "stack trace".
+        plain_label = (f"stack trace from {report_frames[-1][2]}()"
+                       if exception is None and report_frames else None)
+        save_crash_report(buf.getvalue(), exception=exception, frames=report_frames,
+                          error=plain_label)
 
     if stacks_printed_this_frame > 2:
         RED_BOLD = "\033[1m\033[31m"
@@ -962,7 +967,7 @@ def git_head_commit(root=None):
     return None, None
 
 
-def save_crash_report(text, exception=None, thread_name=None, frames=None):
+def save_crash_report(text, exception=None, thread_name=None, frames=None, error=None):
     """Write one printed trace as an ANSI-stripped text file under
     crash_reports_dir() and return its path (None when saving is off or
     the write failed — a crash report must never raise into the trace
@@ -981,8 +986,9 @@ def save_crash_report(text, exception=None, thread_name=None, frames=None):
         directory = crash_reports_dir()
         directory.mkdir(parents=True, exist_ok=True)
         thread_name = thread_name or threading.current_thread().name
-        error = (f"{type(exception).__name__}: {exception}" if exception is not None
-                 else "stack trace")
+        if error is None:
+            error = (f"{type(exception).__name__}: {exception}" if exception is not None
+                     else "stack trace")
         header = (f"time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                   f"thread: {thread_name}\n"
                   f"error: {error.splitlines()[0] if error else ''}\n")

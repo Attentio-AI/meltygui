@@ -4773,14 +4773,6 @@ def _uj_log(msg):
         pass
 
 
-def _shorten_dotted(s):
-    """Cap a dotted name at 2 dots: deep paths (`Toggles.A.B.attr`) collapse
-    to their last three parts with a leading dot (`.A.B.attr`) so picker rows
-    stay scannable."""
-    parts = s.split('.')
-    return s if len(parts) <= 3 else '.' + '.'.join(parts[-3:])
-
-
 # --- Ctrl+B usage-graph consistency check ------------------------------------
 # The fresh single-line recheck (usage_recompute) recomputes exactly what the
 # background graph should already hold for the caret's line. Any disagreement
@@ -4922,59 +4914,6 @@ def _uj_file_tint(p):
     entry = meta.get(str(p)) if p is not None else None
     t = entry.get('tint') if isinstance(entry, dict) else None
     return tuple(t) if t else None
-
-
-def _usage_ref_items(targets, prefix=""):
-    """({label: UsageRef}, {UsageRef: tag}, {UsageRef: (path, line, code)})
-    rows for the usage-jump picker: the label is the user's enclosing scope
-    (optionally prefixed with the symbol name for merged multi-symbol lists),
-    the dim right-aligned tag its file (GlobalSearch layout: the line number
-    renders in the code row's own gutter, so the tag drops the :line — it
-    keeps it only for rows with no code preview). The third map feeds
-    draw_dd_menu's `row_code` — the ACTUAL code line at each site, rendered
-    GlobalSearch-style through the real editor. Line text comes from
-    PendingSave.current_file_text (pending truth — the same coordinates the
-    refs and the jump use), read once per FILE per picker-open, never per
-    frame. Duplicate scope labels get a numeric suffix (dict keys feed
-    draw_dd_menu, so they must be unique)."""
-    from pathlib import Path as _P
-    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
-    items, tags, code = {}, {}, {}
-    file_lines = {}   # str(p) -> splitlines() of the pending text
-    for ref in targets:
-        scope = (getattr(ref, 'scope', '') or getattr(ref, 'module_name', '')
-                 or '<module>')
-        scope = _shorten_dotted(scope)
-        base = f"{prefix}{scope}"
-        # Dedup by INVISIBLEING spaces, not a visible " (n)" counter -
-        # dict keys feed draw_dd_menu so they must be unique, but the counter
-        # read as noise next to the code previews. The row renderer rstrips
-        # for display; trailing spaces render as nothing either way.
-        label = base
-        while label in items:
-            label += " "
-        items[label] = ref
-        p = getattr(ref, 'path', None)
-        ln = getattr(ref, 'line', None)
-        line_text = None
-        if p is not None and ln:
-            key = str(p)
-            lines = file_lines.get(key)
-            if lines is None:
-                try:
-                    t = PendingSave.current_file_text(_P(key))
-                except Exception:
-                    t = None
-                lines = t.split('\n') if isinstance(t, str) else []
-                file_lines[key] = lines
-            if 0 < ln <= len(lines):
-                line_text = lines[ln - 1].strip()
-        if line_text:
-            code[ref] = (str(p), ln, line_text)
-            tags[ref] = p.name
-        else:
-            tags[ref] = f"{p.name}:{ref.line}" if p is not None else f":{ref.line}"
-    return items, tags, code
 
 
 # --- Definition tints: block wash behind tinted class/def bodies + a matching
@@ -10716,9 +10655,10 @@ def draw_text(input_value: str, height=None,
     ac_state = ds._ac_state
 
     # Same deal for the usage-jump popup (multi-user symbol Ctrl+B).
-    if getattr(ds, '_uj_state', None) is None:
-        ds._uj_state = DropDownState()
-    uj_state = ds._uj_state
+    if getattr(ds, '_uj_model', None) is None:
+        from src.lsd.gl_gui.view.core_views.usage_picker import UsagePickerModel
+        ds._uj_model = UsagePickerModel()
+    uj_model = ds._uj_model
     # Similarly for the import quick-fix chooser (Alt+Enter on a missing-import line).
     if getattr(ds, '_qf_state', None) is None:
         ds._qf_state = DropDownState()
@@ -10754,7 +10694,10 @@ def draw_text(input_value: str, height=None,
         # fold is collapsed): the fast check at the bottom always checks the
         # full text, never the fold-spliced display text.
         if _fs is not None and _fs[0] is _fold_full and _fs[1] is not None:
-            _err_markers = _exception_errors(_fs[1])
+            # The CALLER's `error=` marker describes THIS very buffer (the
+            # stack trace view's raising line) - it rides along; only the
+            # background code_tree markers survive the stale and replaced here.
+            _err_markers = _exception_errors(_fs[1]) + _exception_errors(error)
             # Errors past the first (see _compile_check_more), THIS buffer.
             _fx = getattr(ds, '_fast_err_extra', None)
             if _fx is not None and _fx[0] is _fold_full:
@@ -10811,8 +10754,13 @@ def draw_text(input_value: str, height=None,
     # project them onto the display. A marker on a hidden line clamps to its
     # containing fold's line (the shadowed header shows something went wrong
     # inside), and same-header quick-fix rows merge.
+    # The caller's `error=` marker (the stack trace view's raising line)
+    # describes THIS buffer - it survives the stale-hide and is fold-mapped
+    # like every other marker.
+    _caller_markers = _exception_errors(error)
     if _fold_bl is not None:
         _err_markers = [(_fold_bl(l - 1) + 1, m) for l, m in _err_markers]
+        _caller_markers = [(_fold_bl(l - 1) + 1, m) for l, m in _caller_markers]
         _rqf, _rqn = {}, {}
         for _ln, _row in _qf_fixes.items():
             _dl = _fold_bl(_ln - 1) + 1
@@ -10834,8 +10782,12 @@ def draw_text(input_value: str, height=None,
     # use a bare offset shim that isn't a full Address, so the bar (which
     # reads .source/.file for its label) must not draw for them.
     show_jump_bar = False # Pin to false
-    if jump_to is not None and show_jump_bar:
+    # _err_msg feeds the floating error box after the body (its gate) -
+    # set whenever the buffer knows its file offset, jump bar or not: the
+    # bar was pinned it, and gated to it the box never drew (09-04).
+    if jump_to is not None:
         _err_msg = _err_markers[0][1] if _err_markers else None
+    if jump_to is not None and show_jump_bar:
         if not show_file_header:
             # No floating bar: _err_msg still feeds the floating error box
             # after the body, but nothing is drawn inline here. Clear the stashed
@@ -11505,43 +11457,71 @@ def draw_text(input_value: str, height=None,
             _pop.closed = True
             if _pop._tile_id is not None:
                 Melty.cache.invalidate_up(_pop._tile_id, force=True, bypass_clip=True)
-        from src.lsd.gl_gui.view.core_views.new_core_view import _dd_close
-        _dd_close(uj_state)
         request_render()
         _uj_log(f"goto EXTERNAL {getattr(ref.path, 'name', ref.path)}:"
                 f"{getattr(ref, 'line', None)} token={token!r}")
         _open_usage_ref(ref, token=token,
                         editor_window=_enclosing_editor_window(ds))
 
+    def _open_usage_rows(_targets, _names, anchor, gutter_line=None):
+        """Build the Code-tab-style picker rows for `_targets` (best first)
+        and open the picker: file → scope chain → usage line, the keyboard
+        cursor on the BEST match (the first target's row). `anchor` is the
+        buffer index the picker hangs under; `gutter_line` docks it beside
+        a gutter heat box instead."""
+        from src.lsd.gl_gui.view.core_views.usage_picker import (
+            build_usage_rows, scroll_row_into_view)
+        _rows, _best = build_usage_rows(_targets, _names)
+        if not _rows:
+            return False
+        uj_model.set_rows(_rows, _best,
+                          max_rows=Toggles.TextEditor.SymbolUsages.picker_max_rows)
+        ds._uj_names = _names
+        ds._uj_anchor = anchor
+        ds._uj_anchor_gutter = gutter_line
+        ds._uj_open = True
+        ds._uj_open_frame = Melty.frame_count
+        # The picker window is LATCHED - its scroll_offset survives a
+        # close, so a reopen would come up mid-list with the cursor row
+        # scrolled offscreen. Bring the best row into view.
+        scroll_row_into_view(
+            Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), _best)
+        request_render()
+        return True
+
+    def _pick_usage_row(_row):
+        """Land a picker row: the file row opens the file, every other row
+        jumps to its line with the caret on its token (a scope row's def
+        name, a site's symbol)."""
+        if _row.kind == "more":
+            uj_model.expand()      # list them all, picker stays open
+            from src.lsd.gl_gui.view.core_views.usage_picker import scroll_row_into_view
+            scroll_row_into_view(
+                Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
+                uj_model.index)
+            request_render()
+            return
+        ds._uj_open = False
+        if _row.kind == "file" or _row.ref is None:
+            from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+            _uj_log(f"pick FILE {_row.path}")
+            open_in_editor(str(_row.path),
+                           editor_window=_enclosing_editor_window(ds))
+            return
+        _uj_log(f"pick {_row.kind} {getattr(getattr(_row.ref, 'path', None), 'name', None)}:"
+                f"{getattr(_row.ref, 'line', None)} token={_row.token!r}")
+        _goto_usage_ref(_row.ref, token=_row.token)
+
     def _present_usage_targets(_us, _su, _targets, force_picker):
         """Land a resolved usage jump: one counterpart opens straight in
         IntelliJ style; several (or `force_picker`) open the usage-jump
         picker under the symbol at buffer index `_us`. Always True."""
         if len(_targets) > 1 or force_picker:
-            _items, _tags, _code = _usage_ref_items(_targets)
-            ds._uj_items = _items
-            ds._uj_tags = _tags
-            ds._uj_code = _code
             # ref -> symbol spelling, so a picker lands the caret ON the
             # symbol (see _goto_usage_ref).
-            ds._uj_names = {t: getattr(_su, 'name', None)
-                            for t in _targets}
-            ds._uj_anchor = _us   # picker hangs under the symbol
-            ds._uj_anchor_gutter = None
-            ds._uj_index = 0
-            ds._uj_open = True
-            ds._uj_open_frame = Melty.frame_count
-            uj_state._kbd_mode = True
-            uj_state.cursor_path = (next(iter(_items)),)
-            uj_state.open_path = ()
-            # The picker window is LATCHED - its scroll_offset survives
-            # a close, so a reopen would pop up mid-list with the row-0
-            # cursor scrolled offscreen. Snap it down to the top.
-            from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
-            _dd_scroll_cursor_into_view(
-                Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
-            request_render()
-            return True
+            _names = {t: getattr(_su, 'name', None) for t in _targets}
+            if _open_usage_rows(_targets, _names, _us):
+                return True
         _goto_usage_ref(_targets[0],
                         token=getattr(_su, 'name', None))
         return True
@@ -11790,34 +11770,12 @@ def draw_text(input_value: str, height=None,
                     _names[_t] = getattr(_su, 'name', None) or _sym
         if not _groups:
             return False
-        # ONE flat level - nested {symbol: {scope: ref}} submenus were fudly
-        # (extra click, submenu-window latching) - each row is
-        # "symbol  scope" with the symbol capped at 2 dots.
-        _items, _tags, _code = {}, {}, {}
-        for _sym, _refs in _groups.items():
-            _pref = (f"{_shorten_dotted(_sym)}   "
-                     if len(_groups) > 1 else "")
-            _sub, _sub_tags, _sub_code = _usage_ref_items(_refs, prefix=_pref)
-            _items.update(_sub)
-            _tags.update(_sub_tags)
-            _code.update(_sub_code)
-        ds._uj_items = _items
-        ds._uj_tags = _tags
-        ds._uj_code = _code
-        ds._uj_names = _names
-        ds._uj_anchor = _anchor           # fallback if the gutter hides
-        ds._uj_anchor_gutter = line       # picker docks beside the heat box
-        ds._uj_index = 0
-        ds._uj_open = True
-        ds._uj_open_frame = Melty.frame_count
-        uj_state._kbd_mode = True
-        uj_state.open_path = ()
-        uj_state.cursor_path = (next(iter(_items)),)
-        _uj_log(f"gutter OPEN line={line} rows={len(_items)}")
-        # Same latched-scroll snap as _try_usage_jump.
-        from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
-        _dd_scroll_cursor_into_view(
-            Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)), 0)
+        # Every symbol's targets in ONE tree (file → scope → line): the
+        # usage line already names the symbol, so no per-symbol prefix.
+        _targets = [_t for _refs in _groups.values() for _t in _refs]
+        if not _open_usage_rows(_targets, _names, _anchor, gutter_line=line):
+            return False
+        _uj_log(f"gutter OPEN line={line} rows={len(uj_model.rows)}")
         # The picker only shows while its editor owns text focus. The gutter
         # press never reaches the caret/focus path (the event is claimed), so
         # grant it here, same as _goto_usage_ref's local jump.
@@ -12192,64 +12150,25 @@ def draw_text(input_value: str, height=None,
         # suggestion popup above: while open, Esc/arrows/Enter drive the picker
         # and are consumed before the caret handlers see them.
         if getattr(ds, '_uj_open', False):
-            # Level-aware nav: the gutter-opened picker nests {symbol:
-            # {scope: ref}}; the cursor's level is its path minus the last
-            # key. Ctrl+B's flat picker resolves to prefix () and behaves
-            # exactly as before.
-            def _uj_resolve(_path):
-                _v = getattr(ds, '_uj_items', None)
-                for _pk in (_path or ()):
-                    if not isinstance(_v, dict):
-                        return None
-                    _v = _v.get(_pk)
-                return _v
-            _uj_cp = (uj_state.cursor_path
-                      if isinstance(uj_state.cursor_path, tuple) else ())
-            _uj_prefix = _uj_cp[:-1]
-            _uj_lvl = _uj_resolve(_uj_prefix)
-            if not isinstance(_uj_lvl, dict) or not _uj_lvl:
-                _uj_prefix, _uj_lvl = (), (getattr(ds, '_uj_items', None) or {})
-            _uj_keys = list(_uj_lvl)
-            _uj_idx = getattr(ds, '_uj_index', 0)
-            if _uj_cp and _uj_cp[-1] in _uj_lvl:
-                _uj_idx = _uj_keys.index(_uj_cp[-1])
+            _uj_rows = uj_model.rows
             if pressed(glfw.KEY_ESCAPE):
                 ds._uj_open = False
                 _fired.discard(glfw.KEY_ESCAPE)
-            elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _uj_keys:
+            elif (pressed(glfw.KEY_UP) or pressed(glfw.KEY_DOWN)) and _uj_rows:
                 step = 1 if pressed(glfw.KEY_DOWN) else -1
-                _uj_idx = (_uj_idx + step) % len(_uj_keys)
-                ds._uj_index = _uj_idx
-                uj_state._kbd_mode = True
-                uj_state.cursor_path = _uj_prefix + (_uj_keys[_uj_idx],)
-                # Same scroll-into-view as the suggestion popup's arrow keys
-                # - root level only; submenu tiles are their own windows and
-                # their lists are short.
-                if not _uj_prefix:
-                    from src.lsd.gl_gui.view.core_views.new_core_view import _dd_scroll_cursor_into_view
-                    _dd_scroll_cursor_into_view(
-                        Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
-                        _uj_idx)
+                uj_model.index = (uj_model.index + step) % len(_uj_rows)
+                uj_model.kbd_mode = True
+                from src.lsd.gl_gui.view.core_views.usage_picker import scroll_row_into_view
+                scroll_row_into_view(
+                    Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None)),
+                    uj_model.index)
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
-            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _uj_keys and not ctrl:
-                _pick = _uj_resolve(
-                    _uj_prefix + (_uj_keys[min(_uj_idx, len(_uj_keys) - 1)],))
-                if isinstance(_pick, dict):
-                    # Branch row (a symbol group): descend - expand it and
-                    # put the cursor on its first ref.
-                    uj_state.open_path = _uj_prefix + (_uj_keys[_uj_idx],)
-                    if _pick:
-                        uj_state.cursor_path = uj_state.open_path + (next(iter(_pick)),)
-                        ds._uj_index = 0
-                    request_render()
-                elif _pick is not None:
-                    _uj_log(f"pick ENTER ref={getattr(getattr(_pick, 'path', None), 'name', None)}:"
-                            f"{getattr(_pick, 'line', None)}")
-                    _goto_usage_ref(_pick, token=(getattr(ds, '_uj_names', None)
-                                                  or {}).get(_pick))
-                    ds._uj_open = False
+            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _uj_rows and not ctrl:
+                _row = uj_model.current()
+                if _row is not None:
+                    _pick_usage_row(_row)
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
 
@@ -13043,10 +12962,12 @@ def draw_text(input_value: str, height=None,
     # A fresh fast-path marker (see the block up top) is exempt from the stale
     # hide - it was computed against this very text - but still yields to the
     # popup suppression like every other marker.
-    if ((getattr(ds, '_err_stale', False) and not _fast_fresh_err)
-            or (is_focused and (getattr(ds, '_ac_open', False)
-                                or getattr(ds, '_ac_sig_show', False)))):
+    if is_focused and (getattr(ds, '_ac_open', False)
+                       or getattr(ds, '_ac_sig_show', False)):
         _err_markers = []
+        _err_msg = None
+    elif getattr(ds, '_err_stale', False) and not _fast_fresh_err:
+        _err_markers = list(_caller_markers)      # the caller's marker is never stale
         _err_msg = None
 
     _pf("keyboard")
@@ -15960,15 +15881,16 @@ def draw_text(input_value: str, height=None,
         changed = True
 
     _pf("ac_popup")
-    # --- Usage-jump picker (multi-use symbols) ---
-    # Same latched window contract as the suggestion popup above: draw_dd_menu
-    # is called EVERY frame with closed= toggled. Rows are the symbol's users
-    # ({scope_id: UsageRef}, with the text as the dim row tag); a pick - mouse
-    # or Enter (handled in the key block) - opens that site in IntelliJ.
+    # --- Usage-jump picker (multi-user symbols) ---
+    # Same latched-window contract as the suggestion popup above: the picker
+    # window (usage_picker.draw_usage_picker, GlobalSearch's Usage tab as a
+    # popover) is called every frame with closed= toggled. Rows are file →
+    # scope chain → usage line; a pick - mouse (model.picked) or Enter
+    # (handled in the key_event) - lands through _pick_usage_row.
     _uj_show = ((Melty.text_focused_ds is draw_state
                  or _focus_in_context_menu_over(draw_state))
                 and getattr(ds, '_uj_open', False)
-                and bool(getattr(ds, '_uj_items', None)))
+                and bool(uj_model.rows))
     # Edge-log the "flagged open but not shown" state - an invisible-but-open
     # picker still gates Ctrl+B off (its `not _uj_open` check), which looks
     # exactly like "the shortcut is broken".
@@ -15978,78 +15900,66 @@ def draw_text(input_value: str, height=None,
         if _uj_hidden:
             _uj_log(f"picker OPEN-BUT-HIDDEN {ds.name!r} "
                     f"focus_owner={getattr(Melty.text_focused_ds, 'name', None)!r} "
-                    f"items={len(getattr(ds, '_uj_items', None) or {})}")
-    _uj_items = ds._uj_items if _uj_show else {}
+                    f"rows={len(uj_model.rows)}")
     _uj_anchor = getattr(ds, '_uj_anchor', ds.text_cursor_pos)
     _uj_gut = getattr(ds, '_uj_anchor_gutter', None)
     if _uj_gut is not None and show_gutter and gutter_w > 0:
         # Gutter-opened picker docks beside the clicked heat box: right of
-        # the gutter bar, top aligned to the line. Downside both the
-        # window_pos and the first-open hover fallback add line_px to
-        # _uj_y (the under-the-symbol convention), so subtract one line high.
+        # the gutter column, top aligned to the line. Downstream the
+        # window_pos adds line_px to _uj_y (the under-the-symbol
+        # convention), so aim one line above.
         _uj_x = left + gutter_w + 4.0
         _uj_y = origin_y + (_uj_gut - 1) * line_px
     else:
         _uj_x, _uj_y = _char_pos_to_xy(text, _uj_anchor, origin_x, origin_y, line_px, vcols=vcols)
-    if _uj_show:
-        # Keyboard-vs-hover highlight: same dance as the suggestion popup -
-        # keyboard selection shows unless the mouse actively MOVES over the
-        # popup; a resting pointer never steals the highlight.
-        _mp = imgui.get_mouse_pos()
-        _lm = getattr(uj_state, '_last_mouse', None)
-        _pop_x0, _pop_y0 = _uj_x, _uj_y + line_px
-        _pop_ds = Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None))
-        if _pop_ds is not None and _pop_ds.width and _pop_ds.height:
-            # REAL window rect - the picker is auto-resize (and its 500px
-            # min-width already exceeded the fallback 400px estimate, leaving a
-            # hover-dead right strip). See the AC popup note above.
-            _px0, _py0 = _pop_ds._abs_left(), _pop_ds._abs_top()
-            _over = (_px0 - 4 <= _mp[0] <= _px0 + _pop_ds.width + 4
-                     and _py0 - 2 <= _mp[1] <= _py0 + _pop_ds.height)
-        else:
-            # First-open-frame fallback before the picker's tile id is known.
-            _pop_h = min(len(_uj_items) * 24 + 10, 312)
-            _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 680
-                     and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
-        _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
-        if not _over:
-            uj_state._kbd_mode = True
-        elif _moved:
-            uj_state._kbd_mode = False
-        uj_state._last_mouse = (_mp[0], _mp[1])
-
-    # Per-user file tints (the ref's FileMeta color, same as the editor tabs).
-    _uj_row_tints = ({v: _uj_file_tint(getattr(v, 'path', None))
-                      for v in _uj_items.values()} if _uj_show else None)
+    from src.lsd.gl_gui.view.core_views.usage_picker import draw_usage_picker, picker_fit
+    # ── Popover size: height FITS the content, width is the user's ── the
+    # suggestion popup's feel with the dropdown's plumbing: auto_resize=False
+    # hands the popup its resize handle; every open frame the height is
+    # stamped from the content fit (picker_fit - the rows, capped at the
+    # max height for display, scrolling past it) while the width is the
+    # previous drag width (text_editor_state.usage_picker_width,
+    # persisted; adopted when the handle moved it) or the fit's until then.
+    _uj_width = (getattr(text_editor_state, 'usage_picker_width', None)
+                 if text_editor_state is not None else None)
+    _uj_pop = Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None))
+    if _uj_show and _uj_pop is not None:
+        if getattr(ds, '_uj_open_frame', -1) == Melty.frame_count and _uj_width:
+            _uj_pop.width = _uj_width
+        if _uj_pop.width is None or _uj_pop.width < 5:
+            _uj_pop.width = 680
     # [tint=(0.071, 0.354, 0.511), show_tint=True]
-    uj_changed, uj_pick, _uj_menu_ds = draw_dd_menu(
-        _uj_items, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
-        temp=True, show_search=False, swoosh=False, closed=not _uj_show, bg_offset=0, min_width=680,
-        window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px), text_align="left",
-        row_tags=(getattr(ds, '_uj_tags', None) if _uj_show else None), mode=None,
-        row_tints=_uj_row_tints,
-        row_code=(getattr(ds, '_uj_code', None) if _uj_show else None),
-        parent_window=draw_state, root_state=uj_state, path_prefix=(), tint=(0.06, 0.08277813, 0.13),
+    _uj_res = draw_usage_picker(
+        uj_model, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
+        temp=True, swoosh=False, closed=not _uj_show, bg_offset=0,
+        window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px),
+        parent_window=draw_state, tint=(0.06, 0.08277813, 0.13),
         return_extras=True)
-
-
+    _uj_menu_ds = _uj_res[2] if len(_uj_res) > 2 else None
     # Exact tile id from the call above - the old name-prefix scan mis-landed
     # across same-named editors (see the AC popup note above).
     if _uj_menu_ds is not None:
         ds._uj_menu_tile = _uj_menu_ds._tile_id
-
-    # Mirror a hover-moved cursor back into the keyboard index so Enter/arrows
-    # continue from the hovered row.
-    if _uj_show and not uj_state._kbd_mode:
-        _cp = uj_state.cursor_path
-        if isinstance(_cp, tuple) and len(_cp) == 1 and _cp[0] in _uj_items:
-            ds._uj_index = list(_uj_items).index(_cp[0])
-    # Change-gated repaint - one invalidate per real change edge (row swap,
-    # arrow nav, keyboard-mode flip), zero on parked idle frames. Same
-    # design as the AC popup block above.
+    if _uj_show and _uj_menu_ds is not None:
+        _cur_w = _uj_menu_ds.width
+        _last_w = getattr(ds, '_uj_menu_fit_w', None)
+        if _last_w is not None and _cur_w and _cur_w != _last_w:
+            # The handle moved it: the width is the user's from now on.
+            _uj_width = _cur_w
+            if text_editor_state is not None:
+                text_editor_state.usage_picker_width = _cur_w
+        _fit = picker_fit(_uj_menu_ds)
+        if _fit is not None:
+            _target = (_uj_width or _fit[0], _fit[1])
+            if _target != (_uj_menu_ds.width, _uj_menu_ds.height):
+                _uj_menu_ds.width, _uj_menu_ds.height = _target
+                request_render()
+        ds._uj_menu_fit_w = _uj_menu_ds.width
+    # Change-gated repaint - one invalidate per real change edge (rows swap,
+    # arrow nav, highlight row flip, hover row), zero on parked-pointer
+    # frames. Same design as the AC popup block above.
     if _uj_show:
-        _sig = (ds._uj_items, getattr(ds, '_uj_index', 0),
-                bool(getattr(uj_state, '_kbd_mode', True)))
+        _sig = uj_model.signature()
         if _sig != getattr(ds, '_uj_menu_sig', None):
             ds._uj_menu_sig = _sig
             _mt = getattr(ds, '_uj_menu_tile', None)
@@ -16063,16 +15973,14 @@ def draw_text(input_value: str, height=None,
     # previous position/contents - a click there replayed the LAST session's
     # row (seen as "gutter click instantly jumps to the previously-jumped
     # file"). Real picks always come ≥2 frames after the open.
-    if uj_changed:
-        _uj_log(f"pick changed={uj_changed} "
-                f"ref={getattr(getattr(uj_pick, 'path', None), 'name', None)}:"
-                f"{getattr(uj_pick, 'line', None)} "
+    _uj_pick = uj_model.picked
+    if _uj_pick is not None:
+        uj_model.picked = None
+        _uj_log(f"pick mouse {_uj_pick.kind} {getattr(_uj_pick, 'path', None)}:"
+                f"{getattr(_uj_pick, 'line', None)} "
                 f"open_age={Melty.frame_count - getattr(ds, '_uj_open_frame', -99)}")
-    if (uj_changed and getattr(uj_pick, 'path', None) is not None
-            and Melty.frame_count - getattr(ds, '_uj_open_frame', -99) > 1):
-        _goto_usage_ref(uj_pick, token=(getattr(ds, '_uj_names', None)
-                                        or {}).get(uj_pick))
-        ds._uj_open = False
+        if _uj_show and Melty.frame_count - getattr(ds, '_uj_open_frame', -99) > 1:
+            _pick_usage_row(_uj_pick)
 
     # --- Import quick-fix chooser --- same latched-window contract as the two
     # popups above: draw_dd_menu called EVERY frame with closed= toggled. Rows

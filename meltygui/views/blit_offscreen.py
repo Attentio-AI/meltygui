@@ -3523,7 +3523,9 @@ class TileCacheMasked:
         use_image = t and has_area and (t.size == (size[0], size[1])) and (not self._is_dirty(t))
 
         if has_area and not draw_state.closed and use_image:
-            corner_radius = getattr(draw_state, "corner_radius", 6) or 5.0
+            corner_radius = getattr(draw_state, "corner_radius", None)
+            if corner_radius is None:
+                corner_radius = 5.0                   # (`or 5.0` turned an explicit 0 back into 5)
             x, y = draw_state.abs_left, draw_state.abs_top
             w, h = draw_state.width, draw_state.height
             # LIVE clip, never clipped_by_rect/abs_clip_rect: those are only
@@ -3600,7 +3602,8 @@ class TileCacheMasked:
         imgui.pop_id()
         draw_state.last_seen = Melty.frame_count
 
-    def draw_freeze_bg(self, draw_state, left, top, width, height, live: bool):
+    def draw_freeze_bg(self, draw_state, left, top, width, height, live: bool,
+                       rounding=None):
         """Single owner of background rendering for freeze_resize views — the
         wrapper's show_bg block delegates here instead of calling draw_bg
         itself, so live and frozen frames share one code path and can never
@@ -3618,7 +3621,10 @@ class TileCacheMasked:
         bg drawn on live frames is still baked into the tile like any other
         pixel. Ownership buys a single code path, not a transparent tile.
         Returns draw_bg's (changed, bg_color) or None when there is no bg to
-        draw — the wrapper uses bg_color for Melty.bg_color_stack."""
+        draw — the wrapper uses bg_color for Melty.bg_color_stack.
+        `rounding` overrides the view's corner radius (a caller replaying
+        the recipe onto its own rect — the stack trace view's file card —
+        wants square corners)."""
         fb = getattr(draw_state, "_frozen_bg_kwargs", None)
         if (not fb or not fb.get("show_bg")
                 or width is None or height is None or width <= 5 or height <= 5):
@@ -3647,7 +3653,8 @@ class TileCacheMasked:
             # arcs). No outline drawn -> none captured -> nothing to clip.
             return draw_bg(bypass=True, left=left, top=top,
                            width=width, height=height, outline=False,
-                           rounding=getattr(draw_state, "corner_radius", 6),
+                           rounding=(rounding if rounding is not None
+                                     else getattr(draw_state, "corner_radius", 6)),
                            bg_offset=fb.get("bg_offset", 0),
                            max_bg_depth=fb.get("max_bg_depth", None),
                            max_bg_value=fb.get("max_bg_value", None),
@@ -4122,7 +4129,12 @@ class TileCacheMasked:
                                                        reason=f"insets {baked_insets} -> {live_insets}",
                                                        tint=(1, 0.5, 1)))
 
-        corner_radius = getattr(ctx.draw_state, "corner_radius", 6) or 5.0
+        # The view's silhouette in the depth mask (the shadow compositor's
+        # notion of its shape) - an explicit 0 means square (`or 5.0`
+        # rounded it, and the corners composited as in the view).
+        corner_radius = getattr(ctx.draw_state, "corner_radius", None)
+        if corner_radius is None:
+            corner_radius = 5.0
         if ctx.size:
             if clipped:
                 cx, cy, cw, ch = clipped

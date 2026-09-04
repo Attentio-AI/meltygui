@@ -36,7 +36,10 @@ from src.lsd.gl_gui.utils.glfw_utils import crash_reports_dir, request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.headers import flat_button
+from src.lsd.gl_gui.view.core_views.headers import _brightness_clamp_fn, flat_button
+from src.lsd.gl_gui.view.playground.open_files import _tab_text_color
+from src.lsd.gl_gui.view.core_views.text_editor import COLORS
+from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
 from src.lsd.gl_gui.view.core_views.stack_trace_view import SavedTrace, draw_stack_trace
 
 # Bumped by reports_changed(); the store refreshes when it sees a new value.
@@ -299,11 +302,11 @@ def _ellipsize(text, max_width):
 
 # disable_scroll=False: the @window draw path defaults it to True (most
 # windows lay out their own scrolling); this one is a scrolling list.
-@window(input_value=reports, tint=(0.23, 0.20, 0.20), icon=f"",
+@window(input_value=reports, tint=(0.19, 0.12, 0.14), icon=f"",
         display_name="Crash Reports", initial={"width": 720, "height": 480},
         disable_scroll=False)
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
-             is_tree=False, show_name=True, shadow=True,
+             is_tree=False, show_name=True, shadow=True, bg_offset=-2,
              is_default_for="CrashReportStore", tint=(0.86, 0.24, 0.2))
 def draw_crash_reports(
         # [tint=(0.85, 0.75, 0.05)]
@@ -315,10 +318,10 @@ def draw_crash_reports(
     open_rows = panel_state.open if panel_state is not None else {}
 
     # ---- styling (fast_dock colours) ----
-    row_bg_value, row_text_value = 0.06, 0.95         # a collapsed row
-    open_bg_value, open_text_value = 0.14, 1.25       # an expanded row
-    factor, saturation = 0.90, 1.0
-    hover_bg_boost, hover_text_boost = 0.05, 0.5
+    # Rows take the editor tabs' colour knobs (toggles/EditorColor_*);
+    # these mix the section headers and the toolbar text.
+    factor = 0.90
+    hover_bg_boost = 0.05
     text_saturation = 0.8
     section_text_value = 0.75                          # the Today / Yesterday / date headers
     # Fixed design colours (rule 18): the error text, the dim time/thread/commit
@@ -346,10 +349,16 @@ def draw_crash_reports(
     button_height = px(24.0)
     button_pad_x = px(10.0)
     trace_gap = px(4.0)                               # gap between a row and its stack trace view
+    card_pad_bottom = px(6.0)                         # the row's card runs this far past its trace
+    footer_height = px(22.0)                          # thread · commit line under an expanded trace
     # [tint=(0.35, 0.85, 0.94)]
     chevron_inset = px(10.0)                          # chevron x inside the row
     text_inset = px(28.0)                             # error text x inset (after the chevron)
-    meta_width = px(260.0)                            # the right-aligned "14:03 · thread · commit" column
+    # The right-aligned "5:02PM + 20s · thread · commit" column takes what it
+    # needs (a thread name is never clipped for a fixed width); the ERROR
+    # text is what gives way, down to this much room.
+    error_min_width = px(90.0)
+    func_pad_x = px(6.0)                             # the function pill's inset
     text_nudge_y = px(-1.0)
 
     if style_manager is None:
@@ -379,26 +388,24 @@ def draw_crash_reports(
     def clicked(left, top, right, bottom):
         return click is not None and left <= click[0] <= right and top <= click[1] <= bottom
 
-    def draw_button(label, view_id, right, top):
-        """A right-aligned flat_button ending at `right`; returns (left,
-        pressed). Placed (pos=, layout=False): the row flow is manual here.
-        The click is claimed through this view's on_action rect, so it
-        works on blit-cache hits too."""
-        width = imgui.calc_text_size(label)[0] + 2 * button_pad_x
-        left = right - width
-        pressed = flat_button(label, draw_state, view_id, width=width, height=button_height,
-                              pos=(left, top), layout=False, color=delete_color,
-                              tint_value=0.45, max_bg_brightness=0.6,
-                              text_color=(1.0, 0.80, 0.78, 1.0), corner_radius=corner)
-        return left, bool(pressed)
-
     # ---- toolbar: count + directory, Clear all ----
     toolbar_top = origin_y
     entries = list(store.items())
+    # flat_button, placed by the imgui cursor with layout=True so the click
+    # is claimed through this view's on_action rect (layout=False is
+    # draw-only - no subscription at all). event="left_mouse_down": the
+    # body's own view-wide left_mouse_down param would otherwise take the
+    # click; the button's registration sits 4 above it.
     clear_left, clear_pressed = row_right, False
     if entries:
-        clear_left, clear_pressed = draw_button(f"{trash_icon} Clear all", "crash_clear_all", row_right,
-                                                toolbar_top + (toolbar_height - button_height) / 2.0)
+        clear_label = f"{trash_icon} Clear all"
+        clear_width = imgui.calc_text_size(clear_label)[0] + 2 * button_pad_x
+        clear_left = row_right - clear_width
+        imgui.set_cursor_screen_pos((clear_left, toolbar_top + (toolbar_height - button_height) / 2.0))
+        clear_pressed = bool(flat_button(
+            clear_label, draw_state, "crash_clear_all", width=clear_width, height=button_height,
+            event="left_mouse_down", color=delete_color, tint_value=0.45, max_bg_brightness=0.6,
+            text_color=(1.0, 0.80, 0.78, 1.0), corner_radius=corner))
     if clear_pressed:
         store.remove_all()
         entries = []
@@ -429,46 +436,133 @@ def draw_crash_reports(
         row_bottom = row_top + row_height
         is_open = bool(open_rows.get(entry["name"]))
         row_hovered = hovered(row_left, row_top, row_right, row_bottom)
-        # The button: on the row's right while the pointer's on the
-        # row (the cached tile re-renders when at hover edges, like the
-        # fast dock's summon button).
+        # Trash button lives on the row's right while the pointer is on the
+        # row (the cached tile re-renders while hovered, like the fast
+        # toggle's summon button). Its LEFT edge is reserved here so the meta
+        # text stops short of it; the button itself paints on the row's
+        # background below - drawn first, the row rect masks it.
         trash_left = row_right
         trash_pressed = False
+        trash_width = imgui.calc_text_size(trash_icon)[0] + 2 * button_pad_x
         if row_hovered:
-            trash_left, trash_pressed = draw_button(trash_icon, f"crash_delete_{entry['name']}",
-                                                    row_right - px(4),
-                                                    row_top + (row_height - button_height) / 2.0)
-            trash_left -= px(6)
+            trash_left = row_right - px(4) - trash_width - px(6)
 
+        # The row wears the colour of the file that RAISED (the trace's last
+        # frame; a painted FileMeta tint - the editor tabs' source), and
+        # names that file after the error. An unpainted file keeps the
+        # window's tint.
+        saved_trace = store.trace(path)
+        raising_frame = saved_trace.frames[-1] if saved_trace.frames else None
+        file_tint = _file_meta_tint(raising_frame[0]) if raising_frame else None
+        row_tint = file_tint or tint
+        file_label = ""
+        if raising_frame:
+            file_label = f"{os.path.basename(raising_frame[0])}:{raising_frame[1]}"
+
+        # An expanded row's card WRAPS its whole trace: the rect runs from
+        # the row's top past the trace's bottom (the trace's height as last
+        # measured - its first frame draws a row-sized card and the
+        # re-measure repaints). The trace draws over it. The card is
+        # visibility-tested on ITS OWN rect, not the row's: with the row
+        # scrolled off the top the card must still paint behind the trace.
+        card_bottom = row_bottom
+        if is_open and saved_trace.seen_height is not None:
+            card_bottom = (row_bottom + trace_gap + saved_trace.seen_height
+                           + footer_height + card_pad_bottom)
+        if visible(row_top, card_bottom):
+            # The editor tabs' colour pipeline (open_files' tab flat_button):
+            # make_color_rgb at factor 0.1 - the raw file tint with a sliver
+            # of theme - at the tab_*_bg knobs, brightness-clamped, and the
+            # tabs' text colour. Expanded = active tab, collapsed = inactive.
+            # tabs' text colour (below). Collapsed or expanded, the same styling.
+            bg = style_manager.make_color_rgb(
+                row_tint[0], row_tint[1], row_tint[2],
+                value=Toggles.CodeEditor.tab_active_bg_brightness
+                + (hover_bg_boost if row_hovered else 0.0),
+                factor=0.1, saturation_scale=Toggles.CodeEditor.tab_active_bg_saturation, alpha=1.0)
+            bg = _brightness_clamp_fn()(bg[0], bg[1], bg[2], 0.0,
+                                        Toggles.CodeEditor.tab_active_bg_max_brightness)
+            add_shadow((row_left, row_top, row_right - row_left, card_bottom - row_top),
+                       offset=11, corner_radius=corner, clip=clip)
+            # One channel DOWN for the card: the trace's panes render on this
+            # body's channel, so a card on this paints over their text
+            # (columns.py's cell-bg pattern).
+            if Melty.channels_split:
+                draw_list.channels_set_current(max(0, Melty.get_channel() - 1))
+            # Expanded, only the top corners round - the file cards inside
+            # are square and flush, when poked out of a rounded bottom.
+            draw_list.add_rect_filled(row_left, row_top, row_right, card_bottom,
+                                      _color_u32(bg), rounding=corner,
+                                      flags=(imgui.DRAW_ROUND_CORNERS_TOP if is_open
+                                             else imgui.DRAW_ROUND_CORNERS_ALL))
+            if Melty.channels_split:
+                draw_list.channels_set_current(Melty.get_channel())
         if visible(row_top, row_bottom):
-            bg_value, text_value = (open_bg_value, open_text_value) if is_open \
-                else (row_bg_value, row_text_value)
-            bg = _mix(style_manager, tint, bg_value + (hover_bg_boost if row_hovered else 0.0),
-                      factor, saturation)
-            fg = _mix(style_manager, tint, text_value + (hover_text_boost if row_hovered else 0.0),
-                      factor, text_saturation)
-            if is_open:
-                add_shadow((row_left, row_top, row_right - row_left, row_height),
-                           offset=11, corner_radius=corner, clip=clip)
-            draw_list.add_rect_filled(row_left, row_top, row_right, row_bottom,
-                                      _color_u32(bg), rounding=corner)
+            fg = _tab_text_color(row_tint, Toggles.CodeEditor.tab_active_text_brightness,
+                                 Toggles.CodeEditor.tab_active_text_saturation,
+                                 Toggles.CodeEditor.tab_active_text_min_brightness)
             text_y = row_top + (row_height - line_height) / 2.0 + text_nudge_y
             draw_list.add_text(row_left + chevron_inset, text_y, _color_u32(fg),
                                open_icon if is_open else closed_icon)
-            # Time of day only - the section header carries the date.
-            meta = time.strftime("%H:%M:%S", time.localtime(entry["mtime"]))
-            if entry["thread"] and entry["thread"] != "MainThread":
-                meta += f"  ·  {entry['thread']}"
-            if entry["commit"]:
-                sha, _, branch = entry["commit"].partition(" ")
-                meta += f"  ·  {sha[:8]}{(' ' + branch) if branch else ''}"
+            # ── right: time of day (the section header carries the date),
+            # thread, commit - right-aligned, never clipped by the thread ──
+            when = time.localtime(entry["mtime"])
+            meta = (f"{when.tm_hour % 12 or 12}:{when.tm_min:02d}"
+                    f"{'AM' if when.tm_hour < 12 else 'PM'} + {when.tm_sec}s")
             meta_right = trash_left - px(6)
-            meta_fit = _ellipsize(meta, min(meta_width, meta_right - (row_left + text_inset)))
+            # ── left: the raising FILE first, then its FUNCTION on a pill in
+            # the function's own definition tint (or roster's, where the def
+            # carries one), then the error ──
+            x = row_left + text_inset
+            func_rect = None
+            if file_label:
+                draw_list.add_text(x, text_y, _color_u32(fg), file_label)
+                x += imgui.calc_text_size(file_label)[0] + px(10)
+            func_name = (raising_frame[2] or "") if raising_frame else ""
+            if func_name and func_name != "<module>":
+                def_w = imgui.calc_text_size("def ")[0]
+                pill_w = def_w + imgui.calc_text_size(func_name)[0] + 2 * func_pad_x
+                # The editor's own syntax colours: `def` in the keyword
+                # orange, the name in the def-name blue (code_editor.COLORS).
+                draw_list.add_text(x + func_pad_x, text_y, COLORS["def"], "def ")
+                draw_list.add_text(x + func_pad_x + def_w, text_y, COLORS["def_name"], func_name)
+                func_rect = (x, row_top, x + pill_w, row_bottom)
+                x += pill_w + px(10)
+            # Ctrl+B on the row jumps to the code editor at the raising
+            # file's line; on the function name it also lands the caret on
+            # the name (its rect registers one level above the row's) -
+            # the same targets as the trace's file headers.
+            if raising_frame:
+                fired = None
+                if func_rect is not None and draw_state.on_action(
+                        "ctrl_b_down", view_id=f"crash_jump_func_{entry['name']}",
+                        rect=func_rect, priority_delta=5) is not None:
+                    fired = "func"
+                elif draw_state.on_action("ctrl_b_down", view_id=f"crash_jump_file_{entry['name']}",
+                                          rect=(row_left, row_top, row_right, row_bottom),
+                                          priority_delta=4) is not None:
+                    fired = "file"
+                if fired:
+                    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+                    open_in_editor(raising_frame[0], raising_frame[1],
+                                   token=(func_name.rsplit(".", 1)[-1] if fired == "func" else None))
+            # the meta takes what it needs, the error gets the rest (floored)
+            meta_room = max(px(40), meta_right - x - error_min_width - px(12))
+            meta_fit = _ellipsize(meta, meta_room)
             meta_size = imgui.calc_text_size(meta_fit)
             draw_list.add_text(meta_right - meta_size[0], text_y, _color_u32(meta_color, 0.9), meta_fit)
-            error_fit = _ellipsize(entry["error"] or entry["name"],
-                                   meta_right - meta_size[0] - px(12) - (row_left + text_inset))
-            draw_list.add_text(row_left + text_inset, text_y, _color_u32(error_color), error_fit)
+            error_fit = _ellipsize(entry["error"] or entry["name"], meta_right - meta_size[0] - px(12) - x)
+            if error_fit:
+                draw_list.add_text(x, text_y, _color_u32(error_color), error_fit)
+
+        if row_hovered:
+            imgui.set_cursor_screen_pos((row_right - px(4) - trash_width,
+                                         row_top + (row_height - button_height) / 2.0))
+            trash_pressed = bool(flat_button(
+                trash_icon, draw_state, f"crash_delete_{entry['name']}",
+                width=trash_width, height=button_height, event="left_mouse_down",
+                color=delete_color, tint_value=0.45, max_bg_brightness=0.6,
+                text_color=(1.0, 0.80, 0.78, 1.0), corner_radius=corner))
 
         # ---- clicks ----
         if trash_pressed:
@@ -503,7 +597,12 @@ def draw_crash_reports(
         # height must not change under the scroll.
         _changed, _trace, trace_ds = draw_stack_trace(
             store.trace(path), name=f"crash_report_{entry['name']}",
-            indent_views=False, file_headers=True, cull_offscreen=False, return_extras=True)
+            indent_views=False, file_headers=True, cull_offscreen=False, return_extras=True,
+            width=row_right - row_left, corner_radius=0,
+            # The row's card is the background and the shadow caster; the
+            # trace's own bg / shadow mark are rounded (radius 5) and showed
+            # as a corner rect where its square file headers poked over them.
+            show_bg=False, shadow=False)
         # MANUAL height: the nested view's draw_state.height, not the cursor
         # it left behind - the wrapper advances the cursor by the live
         # layout on the first run and by the tile on a cache hit, and the two
@@ -512,7 +611,34 @@ def draw_crash_reports(
         # measured content and only moves when the content really does.
         trace_height = (trace_ds.height if trace_ds is not None and trace_ds.height
                         else imgui.get_cursor_screen_pos()[1] - trace_top)
-        row_top = trace_top + trace_height + row_gap
+        # ... and the wrapper's `height` is the whole imgui GROUP in which a
+        # pane lying above the viewport stretches to the clip edge (see
+        # draw_stack_trace's advance fix); `observed_content_height` is
+        # the honest cursor delta of the trace body. Prefer it whenever
+        # the group overshoots it by more than a row.
+        honest = getattr(trace_ds, "observed_content_height", 0) if trace_ds is not None else 0
+        if honest > 0 and trace_height > honest + line_height:
+            trace_height = (saved_trace.seen_height if saved_trace.seen_height is not None
+                            else float(honest))
+        else:
+            if saved_trace.seen_height != trace_height:
+                request_render()                       # the card bg was sized off the old value
+                changed = True
+            saved_trace.seen_height = trace_height
+        # ---- footer: thread - commit, right-aligned inside the card ----
+        footer_top = trace_top + trace_height
+        footer = entry["thread"] or ""
+        if entry["commit"]:
+            sha, _, branch = entry["commit"].partition(" ")
+            footer += f"{'  ·  ' if footer else ''}{sha[:8]}{(' ' + branch) if branch else ''}"
+        if footer and visible(footer_top, footer_top + footer_height):
+            footer_fit = _ellipsize(footer, row_right - row_left - 2 * px(8))
+            footer_size = imgui.calc_text_size(footer_fit)
+            draw_list.add_text(row_right - px(8) - footer_size[0],
+                               footer_top + (footer_height - line_height) / 2.0 + text_nudge_y,
+                               _color_u32(meta_color, 0.9), footer_fit)
+        # The card runs card_pad_bottom past the footer; the next row follows it.
+        row_top = footer_top + footer_height + card_pad_bottom + row_gap
         imgui.set_cursor_screen_pos((origin_x, row_top))
 
     if not entries and visible(row_top, row_top + row_height):

@@ -35,6 +35,11 @@ from src.lsd.gl_gui.view.core_views.monitor import Monitor
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 from src.shader_library.shader_manager.texture_manager import TextureManager
 from src.shader_library.shader_manager.filter import Filter
+# Importing shaders.py is what registers every built-in @register_shader class
+# (brightness_contrast, normalize_remap, ...) on the registry Filter reads. Nothing
+# else in src/ imports it - our launcher force-executed it as a main module - so a
+# vanilla `python latent_descent.py` came up with an EMPTY registry (09-04).
+import src.shader_library.shader_manager.shaders  # noqa: F401
 from src.lsd.gl_gui.events.input_handler import InputHandler, InputEvent, EventAction
 from src.lsd.gl_gui.events.event_backends import ImGuiBackend, GlfwQueueBackend
 from src.lsd.gl_gui.events import space_mouse

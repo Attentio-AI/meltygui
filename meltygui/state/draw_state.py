@@ -141,6 +141,10 @@ class TextEditorState(DictConversion):
         # Auto Execute checkbox reads/writes this directly (the
         # params_windows_open pattern); persisted with the editor state.
         self.params_auto_execute = {}
+        # Width the Ctrl+B usage picker was drag-resized to, or None while
+        # it still fits its content; its height always fits the rows
+        # (usage_picker.py).
+        self.usage_picker_width = None
         # Viewability snapshot for the instant-restore placeholder: what this
         # editor SHOWED last frame - the visible band's first (display)
         # line, its text, and the buffer's total line count. draw_text

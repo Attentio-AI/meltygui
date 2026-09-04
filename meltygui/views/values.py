@@ -11202,7 +11202,7 @@ def _dd_invalidate_rows(root_state, menu_ds=None):
     request_render()
 
 
-def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0):
+def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0, pitch=None):
     """Nudge a menu window's scroll_offset the minimal amount so keyboard-cursor
     row `row_index` is fully visible. Rows are a fixed _DD_ROW_H pitch drawn
     flush from the content origin in the manual-loop path; `row0_offset` covers
@@ -11211,10 +11211,11 @@ def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0):
     writer never fights core_render's own clamp."""
     if menu_ds is None or row_index is None or row_index < 0:
         return
+    pitch = _DD_ROW_H if pitch is None else pitch   # the usage picker's rows are taller
     view_h = menu_ds.abs_clipped_height - menu_ds.header_height - menu_ds.footer_height
     sx, sy = menu_ds.scroll_offset
-    row_top = row0_offset + row_index * _DD_ROW_H
-    row_bot = row_top + _DD_ROW_H
+    row_top = row0_offset + row_index * pitch
+    row_bot = row_top + pitch
     new_sy = sy
     if view_h > 0 and row_bot > new_sy + view_h:  # below the viewport: minimal scroll down
         new_sy = row_bot - view_h
@@ -11598,8 +11599,8 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         # use_cache=False (the layer-band masking note there).
         _cp, _cl, _ccode = code_row
         _ty = y + (h - line_h) * 0.5
-        # rstrip: dedup keys carry invisible trailing spaces (see
-        # _usage_ref_key) - never a visible counter. Ellipsize past the
+        # rstrip: dedup keys may carry invisible trailing whitespace - never a
+        # visible counter. Elipsize past the
         # label cap so a deep scope name can't eat the code column.
         _lbl = str(label).rstrip()
         if imgui.calc_text_size(_lbl)[0] > _DD_CODE_LBL_MAX_W:

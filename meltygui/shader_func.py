@@ -221,6 +221,7 @@ _SAMPLER_TARGETS = {
     int(gl.GL_SAMPLER_3D): gl.GL_TEXTURE_3D,
     int(gl.GL_SAMPLER_CUBE): gl.GL_TEXTURE_CUBE_MAP,
     int(gl.GL_SAMPLER_2D_ARRAY): gl.GL_TEXTURE_2D_ARRAY,
+    int(gl.GL_SAMPLER_2D_SHADOW): gl.GL_TEXTURE_2D,   # depth texture (pbr shadow maps)
 }
 
 

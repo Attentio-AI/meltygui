@@ -786,6 +786,11 @@ class Toggles:
             # when the roster can't resolve the caret's symbol.
             ctrl_b_roster = True
 
+            # Ctrl+B picker: rows listed before a selectable "+ N more" row
+            # (Enter / click on it shows them all). The best-match row is
+            # always kept above the cut.
+            picker_max_rows = 24
+
 
         # --- Code-suggestion snippets ---------------------------------
         # trigger -> snippet rows offered when the text just typed ends
@@ -2068,9 +2073,23 @@ class Toggles:
         # [tint=(0.181, 0.119, 0.294)]
         rz_sensitivity = 0.253
 
-        # Environment box map, as render in draw_space_mouse
-        # (pbr.ENVIRONMENTS: "studio" or "outdoor"). Read live.
+        # Environment lighting the puck in draw_space_mouse: an HDR photo
+        # from pbr.HDRIS ("studio", resources/hdri) or a cube map from
+        # pbr.ENVIRONMENTS ("room", "outdoor"). Read live.
         environment = "studio"
+
+        # A real model of the device (OBJ / STL / GLB, absolute or relative
+        # to the src tree) drawn instead of the procedural one. Parts whose
+        # name contains "cap", "knob" or "puck" ride the reading (the
+        # the cap); everything else is the base. Empty = procedural.
+        # Model UP axis: "y" or "z" (CAD exports are usually Z-up).
+        model_path = ""
+        model_up = "z"
+
+        # How much of the WINDOW's tint colours the environment light on the
+        # puck (0 = white light, 1 = fully the tint's hue). Read live.
+        # [tint=(0.181, 0.119, 0.294)]
+        environment_tint_strength = 0.6
 
         # ── device (events/space_mouse.py) ──
 

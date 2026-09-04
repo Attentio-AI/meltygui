@@ -1642,7 +1642,17 @@ def _enclosing_function(filename, lineno):
             best["line"] = code.co_firstlineno
             best["fn"] = inner
 
+    seen = set()
+
     def walk(scope):
+        # Descend only into classes DEFINED in the file's modules: an imported
+        # class can be self-referential (ctypes.c_ubyte.__ctype_be__ → c_ubyte -
+        # `from OpenGL.GL import *` puts it in filter.py's namespace) and recursed
+        # to the stack limit (09-04). `seen` is the backstop for cycles between
+        # own classes; foreign classes hold no def from this file anyway.
+        if id(scope) in seen:
+            return
+        seen.add(id(scope))
         for val in list(vars(scope).values()):
             if isinstance(val, types.FunctionType):
                 consider(val)
@@ -1650,8 +1660,10 @@ def _enclosing_function(filename, lineno):
                 f = getattr(val, "__func__", None)
                 if isinstance(f, types.FunctionType):
                     consider(f)
-            elif isinstance(val, type):
+            elif isinstance(val, type) and getattr(val, "__module__", None) in module_names:
                 walk(val)
+
+    module_names = {getattr(m, "__name__", None) for m in modules}
 
     for module in modules:
         walk(module)

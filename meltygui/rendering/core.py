@@ -2449,7 +2449,14 @@ def render_func(*args, **o_kwargs):
                 Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
 
             raise_press_right = draw_state.on_action("right_mouse_down", "window_raise")
-            if raise_press_right:
+            # An explicitly PLACED closable window (an anchored popover - the
+            # usage picker, dropdown menus) is never raised on a press: the
+            # left press skips the raise handler for the same reason, and
+            # raising it cleared the editor's text focus (apply_move_to_front:
+            # the popover is a CHILD of the focused editor, not on the parent
+            # chain), which hid the picker on the very right press that was
+            # meant to start its resize drag (09-04).
+            if raise_press_right and not (closable and kwargs.get("window_pos", None) is not None):
                 Melty.move_window_to_front(draw_state)
 
             # Universal drag-and-drop: any view rendered as an item of a
@@ -2658,6 +2665,11 @@ def render_func(*args, **o_kwargs):
             # stale cache is blitted instead of live re-rendering every frame.
             # Read by mark_start_offscreen via getattr (corner_radius pattern).
             draw_state.freeze_resize = kwargs.get("freeze_resize", False)
+            # The effective corner radius, stamped for EVERY view (the blit
+            # rounds a cached tile by it) - not only in the show_bg path
+            # below, so a bg-less view's corner_radius=0 never reached the
+            # blit and its square content got clipped round.
+            draw_state.corner_radius = kwargs.get("corner_radius", 5.0)
             if draw_state.freeze_resize:
                 # Blit owns all bg rendering for freeze_resize views
                 # (Melty.cache.draw_freeze_bg, called from the show_bg block
