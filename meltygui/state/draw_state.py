@@ -473,6 +473,11 @@ class DrawState(DictConversion):
         # _is_deferred_layer marks a queued view; _deferred_stack_requested is the
         # lazy capture gate, set by a descendant's open menu and consumed next frame.
         self._deferred_call_stack = []
+        # The same queue-time stack with LOCALS - (path, lineno, func_name,
+        # locals) outermost first, the debug tab's format (_call_stack_frames)
+        # - so a descendant's stack trace can be spliced onto the chain that
+        # queued this layer and rendered as one logical call. None until captured.
+        self._deferred_call_stack_frames = None
         self._is_deferred_layer = False
         self._deferred_stack_requested = False
         self._call_site_captured = False

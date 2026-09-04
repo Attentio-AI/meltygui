@@ -1607,6 +1607,27 @@ class Toggles:
         # closed rows stop reading as different states. 0 disables. Read live.
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
         inactive_text_min_brightness = 0.45
+        # How many of the most recently first-seen windows
+        # (AppModel.render_windows) the Important tab lists under its
+        # "Recently added" heading, newest first. 0 hides the section.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        recently_added_count = 3
+
+    @defaults(tint=(0.478, 0.053, 0.053))
+    class CrashReports:
+        # Every trace print_stack_trace prints is also written, ANSI-stripped,
+        # as a text file under `directory` (glfw_utils.save_crash_report);
+        # the Crash Reports window (view/playground/crash_reports.py) lists
+        # them. Off = print only.
+        # [tint=(0.13, 0.55, 0.13), show_tint=True]
+        auto_save = True
+        # Where the reports go — one file per trace, named by time + error.
+        # [tint=(0.35, 0.85, 0.94), show_tint=True]
+        directory = "~/.lsd/crash_reports"
+        # The oldest reports are deleted once more than this many exist, so
+        # a crash loop can't fill the disk. 0 = keep everything.
+        # [tint=(0.994, 0.872, 0.0), show_tint=True]
+        max_reports = 300
 
     # [icon=""]
     @defaults(tint=(0.427, 0.541, 0.616))
@@ -2011,7 +2032,7 @@ class Toggles:
         # Orbit sensitivity: radians per second at full deflection of a
         # rotation axis. Higher = faster orbit.
         # [tint=(0.181, 0.119, 0.294)]
-        orbit_sensitivity = 1.5
+        orbit_sensitivity = 1.50
 
         # Translation sensitivity. pivot "camera": WORLD units per second
         # at full deflection on all three axes (right / up / forward — a
@@ -2043,9 +2064,13 @@ class Toggles:
         # [tint=(0.181, 0.119, 0.294)]
         rx_sensitivity = 1.0
         # [tint=(0.181, 0.119, 0.294)]
-        ry_sensitivity = 1.0
+        ry_sensitivity = 2.239
         # [tint=(0.181, 0.119, 0.294)]
-        rz_sensitivity = 1.0
+        rz_sensitivity = 0.253
+
+        # Environment box map, as render in draw_space_mouse
+        # (pbr.ENVIRONMENTS: "studio" or "outdoor"). Read live.
+        environment = "studio"
 
         # ── device (events/space_mouse.py) ──
 
@@ -2090,7 +2115,7 @@ class Toggles:
         # Cap on the frame interval the pump integrates over: a stalled
         # frame (a load, a hotswap) hands the view at most this much motion
         # instead of a jump.
-        max_frame_dt = 0.1
+        max_frame_dt = 0.10
 
         # Seconds between connection attempts while spacenavd is away.
         retry_s = 3.0

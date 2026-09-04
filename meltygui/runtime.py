@@ -4711,6 +4711,40 @@ class Melty:
         # Melty.cache.invalidate_up(tile_id)
 
     @classmethod
+    def _render_windows_store(cls):
+        """AppModel.render_windows — the first-seen window-name list — or
+        None before the app model exists (boot, headless tests)."""
+        root = getattr(cls.vis, "root", None)
+        store = getattr(root, "render_windows", None)
+        return store if isinstance(store, list) else None
+
+    @classmethod
+    def note_window_seen(cls, name):
+        """A closable root registered under `name` this frame: append it to
+        AppModel.render_windows if the list has never held it. Called from the
+        wrapper's registration site for every managed window every frame, so
+        the miss path is one list scan; the dock's signature already repaints
+        on a new name. Returns True when the name was new."""
+        if not name:
+            return False
+        store = cls._render_windows_store()
+        if store is None:
+            return False
+        name = str(name)
+        if name in store:
+            return False
+        store.append(name)
+        return True
+
+    @classmethod
+    def recent_windows(cls, count):
+        """The last `count` first-seen window names, most recent first."""
+        store = cls._render_windows_store()
+        if not store or count <= 0:
+            return []
+        return list(reversed(store[-count:]))
+
+    @classmethod
     def adopt_registered_windows(cls, app_model):
         """Point Melty.registered_windows at the APP MODEL's dict so window
         z-order persists between runs: the dict's insertion order IS the

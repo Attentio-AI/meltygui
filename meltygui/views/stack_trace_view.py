@@ -23,6 +23,7 @@ pending-generation cached).
 """
 
 import types
+from pathlib import Path
 
 import imgui
 
@@ -36,6 +37,37 @@ from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save
 
 
+class SavedTrace:
+    """EXTERNAL frames for draw_stack_trace — a trace captured or saved
+    elsewhere (a crash report file, a queued capture) rather than a live
+    exception: `frames` = [(path, lineno, function_name[, scope]), ...]
+    outermost first, `scope` a {name: value} dict the view shows as the
+    frame's live values (None = none), `error` the raising line's message
+    for draw_text's error marker ("" = no marker). draw_stack_trace is the
+    default view for it, so `draw_any(SavedTrace(...))` works. Keep ONE
+    object per trace: the view rebuilds its panes whenever the input's
+    identity changes."""
+    __slots__ = ("frames", "error")
+
+    def __init__(self, frames, error=""):
+        self.frames = list(frames or ())
+        self.error = error or ""
+
+    def __repr__(self):
+        return f"SavedTrace({len(self.frames)} frames, {self.error!r})"
+
+
+class _RaisingLine(Exception):
+    """The raising line as draw_text's `error=` marker (see
+    `_exception_errors`: `.lineno` = 1-based BUFFER line, `.msg` = the
+    message) — the editor's own red gutter chip, click for the wash."""
+
+    def __init__(self, lineno, msg):
+        super().__init__(msg)
+        self.lineno = lineno
+        self.msg = msg
+
+
 def stack_frames(value):
     """Normalize `value` into [(path, lineno, function_name, scope), ...]
     with the OUTERMOST frame (main) first and the raising frame last. `scope`
@@ -47,7 +79,9 @@ def stack_frames(value):
     tuples. A traceback only starts at the frame that RAISED under the catch
     site, so the frames above it (catch site up to main) are recovered from
     the outermost traceback frame's f_back chain."""
-    if isinstance(value, BaseException):
+    if isinstance(value, SavedTrace):
+        value = value.frames
+    elif isinstance(value, BaseException):
         value = value.__traceback__
     frames = []
     if isinstance(value, types.TracebackType):
@@ -95,7 +129,7 @@ class _Pane:
                  "def_last", "store", "resolved", "expand_diff",
                  "fold_gen_seen", "view", "address", "file_code",
                  "render_memo", "last_height", "ds", "has_def",
-                 "store_tried", "parse_memo", "parse_armed")
+                 "store_tried", "parse_memo", "parse_armed", "error_marker")
 
     def __init__(self, path, lineno, qualname, scope):
         self.path = path
@@ -131,6 +165,7 @@ class _Pane:
         self.store_tried = False   # lazy store: one build attempt per capture
         self.parse_memo = None     # (span_text_obj, cst dict | None)
         self.parse_armed = None    # span_text the background parse ran for
+        self.error_marker = None   # the raising pane's _RaisingMarker (stable identity)
 
     def bounds(self):
         return (self.first, self.last, self.def_last)
@@ -443,13 +478,39 @@ def _shift_panes(panes, edited_pane, path, edit_line, delta,
             pane.view = None
 
 
-@render_func(is_default_for=(types.TracebackType, BaseException),
+def _draw_file_header(pane, x, y):
+    """One printed-trace line above a pane: `File "<path>", line N, in
+    <func>`, the path relative to the project root in the file's painted
+    FileMeta tint (None → subtle text), drawn straight to the draw list.
+    Returns the width drawn."""
+    from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
+    draw_list = imgui.get_window_draw_list()
+    subtle = Tint.subtle_text()
+    subtle_u32 = imgui.get_color_u32_rgba(subtle[0], subtle[1], subtle[2], 1.0)
+    file_tint = _file_meta_tint(pane.path)
+    path_u32 = (imgui.get_color_u32_rgba(file_tint[0], file_tint[1], file_tint[2], 1.0)
+                if file_tint else subtle_u32)
+    try:
+        shown = str(Path(pane.path).resolve().relative_to(_PROJECT_ROOT))
+    except (OSError, ValueError):
+        shown = pane.path
+    pen = x
+    for text, color in (('File "', subtle_u32), (shown, path_u32),
+                        (f'", line {pane.lineno}, in {pane.qualname}', subtle_u32)):
+        draw_list.add_text(pen, y, color, text)
+        pen += imgui.calc_text_size(text)[0]
+    return pen - x
+
+
+@render_func(is_default_for=(types.TracebackType, BaseException, SavedTrace),
              show_bg=True, use_cache=True, tint=(0.9, 0.35, 0.28))
-def draw_stack_trace(input_value: types.TracebackType | BaseException,
+def draw_stack_trace(input_value: types.TracebackType | BaseException | SavedTrace,
                      draw_state=None, trace_state: StackTraceState = None,
                      max_span_lines=80, context_lines=8, freeze_resize=True,
                      project_only=True, max_frames=40, indent_views=True,
-                     hide_dispatch=False):
+                     hide_dispatch=False, placeholder_lines=None, file_headers=False,
+                     file_header_indent=18, cull_offscreen=True):
     """One draw_text per frame, outermost (main) first — each pane is a
     LineRange over the frame's file (project_code — pending truth, editable)
     from the def line to the call into the next frame, with the frame's
@@ -460,7 +521,29 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
     keeping the ends and eliding the middle; `indent_views=False` (the
     context menu's Code tab) keeps every pane flush left — buffers are
     dedented, so panes read like stacked defs — instead of the inlined
-    call-chain slide.
+    call-chain slide. An exception input, or a SavedTrace with an `error`
+    message, marks the RAISING line — the last frame's line — with
+    draw_text's own error marker (`error=`: the red gutter chip, click for
+    the line wash and message); a bare captured call stack (the context
+    menu's Code tab, whose last frame is the view being drawn) marks
+    nothing. `file_headers=True` reads like a printed trace: each pane sits
+    under a `File "path", line N, in func` line (the path in the file's
+    painted FileMeta tint — the editor tabs' colour) and is indented by
+    `file_header_indent` px. `cull_offscreen=False` turns the viewport
+    culling OFF: every pane resolves its bounds synchronously (the file's
+    span index inline — the one-time parse the background path defers)
+    and lays out at its real height whether or not it is in view, so the
+    view's height is right from its first frame and never moves as the
+    user scrolls. For a trace nested in a scrolling LIST (the Crash
+    Reports window): a parent that scrolls by the child's height can't
+    have that height change with the scroll — placeholders that resolved
+    to different heights as panes scrolled in made the list jitter.
+    `placeholder_lines` is the height, in lines, an UNRESOLVED pane
+    below the viewport holds before its bounds are known (default
+    max_span_lines + 2, sized for a self-scrolling view); a view nested in
+    a scrolling LIST (the Crash Reports window) passes a small number, or
+    every collapsed-away trace inflates the list by ~1900 px of empty
+    scroll that snaps shorter as panes resolve.
 
     Panes fully outside the view's clip skip their draw_text call entirely:
     the cursor advances by the pane's last measured height, so the scroll
@@ -468,6 +551,17 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
     from src.lsd.gl_gui.melty import Melty
     # [tint=(0.9, 0.35, 0.28)]
     project_prefix = str(_PROJECT_ROOT)
+    # File header line: `File "path", line N, in func` - the path in the
+    # file's painted tint, the rest in the subtle-text colour.
+    header_height = imgui.get_text_line_height() + Melty.px(4) if file_headers else 0.0
+    header_indent = Melty.px(file_header_indent) if file_headers else 0.0
+    # The raising line's message - the marker's text; "" = no marker.
+    if isinstance(input_value, SavedTrace):
+        error_message = input_value.error
+    elif isinstance(input_value, BaseException):
+        error_message = f"{type(input_value).__name__}: {input_value}"
+    else:
+        error_message = ""
 
     # (Re)build the render plan only when the INPUT changes — steady-state
     # frames never re-walk the trace or re-copy files. The knobs join the
@@ -523,6 +617,8 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
 
     parent_call_col = None
     index_polled = set()   # one span-index runner poll per file per frame
+    error_pane = next((p for p in reversed(panes) if p is not None), None) \
+        if error_message else None
     for index, pane in enumerate(panes):
         if pane is None:
             RenderFuncs.draw_text("… frames elided …",
@@ -535,10 +631,18 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
         offscreen_margin = 300.0
         estimated_line_px = 23.0
         cursor_x, cursor_y = imgui.get_cursor_screen_pos()
+        if not pane.resolved and not cull_offscreen:
+            # No culling: bounds resolve, inline (span_index parses the file
+            # synchronously when its memo holds it) - the height is real
+            # from this frame on.
+            if pane.file_code is None:
+                pane.file_code = project_code[pane.path]
+            _resolve_pane(pane, context_lines)
         if not pane.resolved:
             placeholder_height = pane.last_height \
                 if pane.last_height is not None \
-                else (max_span_lines + 2) * estimated_line_px
+                else ((placeholder_lines if placeholder_lines is not None
+                       else max_span_lines + 2) * estimated_line_px)
             # Below-viewport pre-skip, BEFORE resolving: bounds need the
             # FILE's ast (span_index - ~100 ms for the biggest files), so a
             # frame-1 pane far below the clip holds its place with a FIXED
@@ -549,7 +653,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
             if (view_clip is not None
                     and cursor_y > view_clip[3] + offscreen_margin):
                 imgui.set_cursor_screen_pos(
-                    (cursor_x, cursor_y + placeholder_height))
+                    (cursor_x, cursor_y + header_height + placeholder_height))
                 imgui.dummy(0, 0)
                 continue
             # VISIBLE but unresolved: build the file's span index in the
@@ -580,7 +684,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
                         name=f"stack span index {pane.path}", start=arm)
                 if result is LOADING or result is UNSET:
                     imgui.set_cursor_screen_pos(
-                        (cursor_x, cursor_y + placeholder_height))
+                        (cursor_x, cursor_y + header_height + placeholder_height))
                     imgui.dummy(0, 0)
                     continue
                 _resolve_pane(pane, context_lines)
@@ -610,10 +714,12 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
         span_rows = pane.last - pane.first + 1
         skip_height = pane.last_height
         if skip_height is None:
-            visible_rows = min(span_rows, max_span_lines + 2)
+            visible_rows = min(span_rows, placeholder_lines if placeholder_lines is not None
+                               else max_span_lines + 2)
             skip_height = visible_rows * estimated_line_px + 12.0
+        skip_height += header_height
         cursor_x, cursor_y = imgui.get_cursor_screen_pos()
-        if (view_clip is not None
+        if (cull_offscreen and view_clip is not None
                 and (cursor_y > view_clip[3] + offscreen_margin
                      or cursor_y + skip_height
                      < view_clip[1] - offscreen_margin)):
@@ -650,6 +756,13 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
         parse = _pane_parse(pane, span_text, index)
 
         span_kwargs = {}
+        if file_headers:
+            _draw_file_header(pane, cursor_x, cursor_y + Melty.px(2))
+            cursor_y += header_height
+            cursor_x += header_indent
+            imgui.set_cursor_screen_pos((cursor_x, cursor_y))
+            if available_width > header_indent + 200:
+                span_kwargs["width"] = available_width - header_indent
         if indent_views:
             shift_columns, parent_call_col = chain_shift(
                 def_indent, _indent_of(file_lines[pane.lineno - 1])
@@ -689,6 +802,15 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
         if folds is not None:
             span_kwargs["diff_fold_ranges"] = folds
             span_kwargs["expand_diff"] = pane.expand_diff
+        # The raising line's marker (a terminal whole-function pane -
+        # call_row 0 with a def - has no raising line). Memoized beside the
+        # render kwargs: draw_text compares its kwargs by identity.
+        if pane is error_pane and not (call_row <= 0 and pane.has_def):
+            marker = pane.error_marker
+            if marker is None or marker.lineno != call_row + 1 \
+                    or marker.msg != error_message:
+                marker = pane.error_marker = _RaisingLine(call_row + 1, error_message)
+            span_kwargs["error"] = marker
 
         edited, new_text, pane_ds = RenderFuncs.draw_text(
             buffer, name=f"stack frame {pane.qualname}##{index}",
@@ -703,7 +825,7 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
         # Measured layout advance (this item + its spacing) is what the
         # offscreen skip reproduces with a cursor move.
         pane.last_height = max(0.0,
-                               imgui.get_cursor_screen_pos()[1] - cursor_y)
+                               imgui.get_cursor_screen_pos()[1] - cursor_y) + header_height
         pane.ds = pane_ds
         # A manual fold-badge toggle hands this pane's middle back to
         # automatic tracking (expand_diff=False would re-collapse it).
@@ -745,6 +867,10 @@ def draw_stack_trace(input_value: types.TracebackType | BaseException,
     # while the async resolves are still reshaping the content height, and
     # hand the scroll back to the user once the bottom pane has actually
     # rendered and been measured.
+    # An auto-resizing view (nested in a scrolling parent) has no scroll of
+    # its own to clamp - writing 10**9 there just leaves a junk offset.
+    if trace_state.scroll_bottom_pending and draw_state.auto_resize:
+        trace_state.scroll_bottom_pending = False
     if trace_state.scroll_bottom_pending:
         draw_state.scroll_offset = (draw_state.scroll_offset[0], 10 ** 9)
         bottom_pane = next((p for p in reversed(panes) if p is not None), None)

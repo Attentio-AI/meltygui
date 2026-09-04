@@ -38,6 +38,8 @@ import struct
 import sys
 import threading
 import time
+import weakref
+from collections import deque
 
 from src.lsd.gl_gui.toggles import Toggles
 
@@ -224,7 +226,32 @@ def start():
 
 # Per-frame sampling state: the last pump time and the axes last fed, so a
 # release still delivers one final zero event (the view sees a gesture end).
-_PUMP = globals().get("_PUMP") or {"last": 0.0, "active": False, "buttons_down": set()}
+_PUMP = globals().get("_PUMP") or {"last": 0.0, "active": False, "buttons_down": set(),
+                                   "status": None, "frame_ms": 0.0}
+# (pump time, reader.frames) samples for the report-rate estimate in stats().
+# Counted on the PUMP side, not in the reader thread: the reader is a
+# process-lifetime object bound to whatever class it was born with, so a
+# reload swap of this file never changes the code its thread runs: a stamp field
+# filled by _feed caused 0 Hz after a swap (Lukas 09-04). The frames counter is
+# the one thing every reader version has always kept.
+_RATE = globals().get("_RATE") or deque(maxlen=128)
+# Views that show the reading location (draw_space_mouse) without being the
+# hovered event target: their draw_states, invalidated in the pump on every
+# active frame, once more on release, and when the connection status flips.
+_WATCHERS: "weakref.WeakSet" = globals().get("_WATCHERS") or weakref.WeakSet()
+
+
+def watch(draw_state):
+    """Register a draw_state to be invalidated whenever the reading moves."""
+    _WATCHERS.add(draw_state)
+
+
+def _invalidate_watchers():
+    for draw_state in list(_WATCHERS):
+        try:
+            draw_state.invalidate()
+        except Exception:
+            pass
 
 
 def pump(handler, now: float = None):
@@ -236,6 +263,8 @@ def pump(handler, now: float = None):
     now = time.perf_counter() if now is None else now
     dt = now - _PUMP["last"]
     _PUMP["last"] = now
+    _PUMP["frame_ms"] = dt * 1000.0
+    _RATE.append((now, int(getattr(r, "frames", 0))))
     dt = max(0.0, min(dt, float(Toggles.SpaceMouse.max_frame_dt)))
     with r.lock:
         raw, stamp = r.raw, r.stamp
@@ -248,7 +277,12 @@ def pump(handler, now: float = None):
     active = any(a != 0.0 for a in axes)
     if active or _PUMP["active"]:
         handler.feed_axes(INPUT_ID, tuple(a * dt for a in axes), now)
+        _invalidate_watchers()
     _PUMP["active"] = active
+    current_status = (r.connected, r.error)
+    if current_status != _PUMP["status"]:
+        _PUMP["status"] = current_status
+        _invalidate_watchers()
     if active:
         _wake()   # keep frames coming while the puck is pressed
     for index, pressed in buttons:
@@ -267,6 +301,28 @@ def active() -> bool:
     mouse drag gets (hover invalidation, occluder diffs, content-height
     commits, RenderHost draws) holds for a 3D-mouse flight too."""
     return bool(_PUMP["active"])
+
+
+def stats(now: float = None) -> dict:
+    """Latency diagnostics: `rate_hz` = the device's motion-report rate over
+    the last reports, `age_ms` = how old the newest report is at this call,
+    `frame_ms` = the interval between the last two pumps (the studio's frame
+    time while the cap is held). Latency = age + the frame + presentation."""
+    r = getattr(sys, "_lsd_space_mouse", None)
+    now = time.perf_counter() if now is None else now
+    if r is None:
+        return {"rate_hz": 0.0, "age_ms": 0.0, "frame_ms": _PUMP["frame_ms"]}
+    with r.lock:
+        stamp = r.stamp
+    # Reports per second in the pump samples of the last second: the
+    # counter delta over the time delta, so reports between the frames all
+    # count (a per-frame stamp compare would fold them into one).
+    rate = 0.0
+    recent = [(t, n) for t, n in _RATE if now - t <= 1.0]
+    if len(recent) >= 2 and recent[-1][0] > recent[0][0]:
+        rate = (recent[-1][1] - recent[0][1]) / (recent[-1][0] - recent[0][0])
+    age = (now - stamp) * 1000.0 if stamp else 0.0
+    return {"rate_hz": rate, "age_ms": age, "frame_ms": _PUMP["frame_ms"]}
 
 
 def status() -> str:

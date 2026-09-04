@@ -1036,12 +1036,16 @@ def render_func(*args, **o_kwargs):
 
         if closable:
             if draw_state.parent_window is None and not kwargs.get("unmanaged", False):
+                # Read before the defaultdict inserts the entry below.
+                newly_registered = tile_id not in Melty.registered_windows
                 Melty.registered_windows[tile_id].input_value = input_value
                 Melty.registered_windows[tile_id].draw_state = draw_state
                 Melty.registered_windows[tile_id].window_args = kwargs
                 Melty.registered_windows[tile_id].name = name
+                # First-seen windows feed the dock's "Recently added" section.
+                Melty.note_window_seen(name)
 
-                if tile_id not in Melty.registered_windows and Melty.frame_count > 2:
+                if newly_registered and Melty.frame_count > 2:
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
 
             if draw_state.closed and not id(input_value) == id(Melty.registered_windows):
@@ -1462,6 +1466,17 @@ def render_func(*args, **o_kwargs):
                         call_stack_frames)
                     deferred_frames = get_live_frames(skip_count=0)
                     draw_state._deferred_call_stack = call_stack_frames(deferred_frames)
+                    # The Code-tab copy (same shape as _call_stack_frames:
+                    # locals kept for project frames only). A descendant's
+                    # menu splices its own dispatch-bottomed frames onto this
+                    # (_merged_call_stack_frames in new_core_view), so the
+                    # trace reads as if the layer had been drawn inline.
+                    from src.lsd.gl_gui.view.core_conversion.address import (
+                        is_editable_source)
+                    draw_state._deferred_call_stack_frames = [
+                        (e[0], e[1], e[2],
+                         e[4] if is_editable_source(e[0]) else None)
+                        for e in deferred_frames]
                     # Same tap as the inline capture: the async live_view
                     # batch records the queue-time callers' local types AND
                     # publishes their values as frame metadata.

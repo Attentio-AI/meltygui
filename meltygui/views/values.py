@@ -24,6 +24,7 @@ from imgui.core import _DrawList
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
+from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.shaped import Shaped
 from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, \
     ExpandMode, ContextMenuWindowState
@@ -2941,6 +2942,18 @@ def draw_collection(input_value, draw_state, depth, style_manager, meta, icon=No
 
     if child_kwargs is None:
         child_kwargs = {}
+
+    # A RenderHost rendered DIRECTLY (draw_collection(host) - the settings
+    # column of draw_space_mouse, the modifies playground) is this view's
+    # delegate, so pulse it: notify_on_change is the per-frame liveness
+    # stamp that idle sweep (RenderHost.sweep) reads, so it re-registers a
+    # swept host. Without the pulse an evictable code host was deregistered
+    # after idle_frames, the wrapper never drew again, and an edit eve
+    # dirtied the dict but the outbound chain (dict -> cst -> source -> save)
+    # never ran - the code never updated (Lukas 09-04). Idle frames skip
+    # the body, so a swept host revives on the next frame an edit re-runs it.
+    if isinstance(input_value, RenderHost):
+        input_value.notify_on_change(draw_state)
 
     changed = False
 
@@ -10116,6 +10129,108 @@ def _ancestor_call_line(target_ds, ancestor_ds):
     return None
 
 
+def _deferred_ancestors(target_ds):
+    """The draw_states on `target_ds`'s parent chain (itself included,
+    nearest first) that were queued to a deferred layer at some point
+    (_is_deferred_layer) — the ones whose queue-time stack a descendant's
+    trace needs."""
+    found = []
+    node = target_ds
+    for _ in range(64):
+        if getattr(node, "_is_deferred_layer", False):
+            found.append(node)
+        parent = getattr(node, "_parent", None)
+        if parent is None or parent is node:
+            break
+        node = parent
+    return found
+
+
+def _request_deferred_stacks(target_ds):
+    """Ask every deferred ancestor of `target_ds` that has no queue-time
+    stack yet to capture one on its next inline (queue) pass — lazy and
+    one-shot, the same shape as the up-arrow's _call_site_requested. The
+    ancestor's PARENT has to re-run its body for the queue branch to fire,
+    hence the invalidate_up."""
+    for node in _deferred_ancestors(target_ds):
+        if (node._deferred_call_stack_frames is None
+                and not node._deferred_stack_requested):
+            node._deferred_stack_requested = True
+            if Core.melty.cache is not None:
+                Core.melty.cache.invalidate_up(node._tile_id, max_depth=5)
+            request_render()
+
+
+def _splice_deferred_stack(inline_frames, queued_frames, view_func):
+    """Join a dispatch-bottomed stack onto the chain that queued its layer.
+
+    `inline_frames` (outermost first) were captured while the deferred
+    layer was being drawn from Melty.end_frame's layer loop, so their head
+    is the frame loop → Melty.draw → wrapper; `queued_frames` were captured
+    at queue time inside that same wrapper, so their tail is the caller
+    chain → wrapper. The result keeps the queued head up to the wrapper and
+    the inline tail from the wrapper on: the trace of a direct call.
+    Returns `inline_frames` unchanged when the layer loop isn't in it (the
+    view rendered inline this time) or when the first view body after the
+    dispatch isn't `view_func` (a stale deferred mark on another ancestor)."""
+    from src.lsd.gl_gui.view.core_conversion.chain_converters import (
+        _is_dispatch_frame)
+    def _base(path):
+        return path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    loop = None
+    for index, frame in enumerate(inline_frames):
+        if _base(frame[0]) == "melty.py" and frame[2] == "end_frame":
+            loop = index
+    if loop is None:
+        return inline_frames
+    wrapper = None
+    for index in range(loop + 1, len(inline_frames)):
+        if _base(inline_frames[index][0]) == "core_render.py":
+            wrapper = index
+            break
+    if wrapper is None:
+        return inline_frames
+    code = getattr(inspect.unwrap(view_func), "__code__", None) \
+        if view_func is not None else None
+    if code is not None:
+        body = next((f for f in inline_frames[wrapper:]
+                     if not _is_dispatch_frame(f[0], f[2])), None)
+        if body is None or body[0] != code.co_filename \
+                or body[2] != code.co_name:
+            return inline_frames
+    head = list(queued_frames)
+    while head and _base(head[-1][0]) == "core_render.py":
+        head.pop()
+    return head + list(inline_frames[wrapper:])
+
+
+def _merged_call_stack_frames(target_ds, menu_state):
+    """The Code tab's stack: the target's menu-open capture with every
+    deferred ancestor's queue-time stack spliced in, nearest layer first,
+    so nested deferred windows chain outward to the real caller. Stops at
+    the first ancestor whose queue-time stack hasn't landed yet (a partial
+    splice past it would join the wrong layer). Memoized on the identities
+    of the parts — draw_stack_trace rebuilds on the list's identity."""
+    inline = getattr(target_ds, "_call_stack_frames", None)
+    if not inline:
+        return None
+    ancestors = _deferred_ancestors(target_ds)
+    key = (id(inline),) + tuple(
+        id(node._deferred_call_stack_frames) for node in ancestors)
+    if getattr(menu_state, "_merged_stack_key", None) == key:
+        return menu_state._merged_stack
+    merged = inline
+    for node in ancestors:
+        queued = node._deferred_call_stack_frames
+        if not queued:
+            break
+        merged = _splice_deferred_stack(
+            merged, queued, getattr(node, "_view_func", None))
+    menu_state._merged_stack_key = key
+    menu_state._merged_stack = merged
+    return merged
+
+
 @render_func(use_cache=True, disable_scroll=True, show_header=False,
              header_same_line=False, show_tint=False, show_name=False, is_tree=False)
 def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, unique=None, search_text='',
@@ -10238,8 +10353,12 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
             _rc_target = _rc_target._parent
         _rc_target._call_site_captured = False
         _rc_target._call_site_requested = True
-        if _rc_target._is_deferred_layer:
-            _rc_target._deferred_stack_requested = True
+        # Every deferred layer on the chain recaptures its queue-time stack
+        # too, so the Code tab's splice is built from fresh parts.
+        for _deferred in _deferred_ancestors(_rc_target):
+            _deferred._deferred_call_stack_frames = None
+            _deferred._deferred_stack_requested = True
+            Core.melty.cache.invalidate_up(_deferred._tile_id, max_depth=5)
         Core.melty.cache.invalidate_up(_rc_target._tile_id, max_depth=5)
         request_render()
 
@@ -10262,6 +10381,9 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         if Core.melty.cache is not None:
             Core.melty.cache.invalidate_up(offset_ds._tile_id, max_depth=5)
         request_render()
+    # Same lazy one-shot for the queue-time stacks of every deferred layers
+    # above the target: the Code tab splices them onto the target's stack.
+    _request_deferred_stacks(input_value)
 
     # Scope-up auto-select: when the menu is walked up to an ancestor, resolve
     # the line inside the ancestor's view function that drew the ORIGINAL
@@ -10467,13 +10589,14 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
         elif this_tab == code_stack_tab:
             # The stack captured at menu open (core_render's one-shot grab -
             # `_call_stack_frames`: (path, lineno, func_name, locals) tuples,
-            # outermost first), rendered as the stack trace view. Values come
-            # from the frames' own locals through pane-LOCAL stores - nothing
-            # published, nothing global. The debug (bug) button above
-            # recaptures a fresh stack.
+            # outermost first) with its deferred ancestor's queue-time
+            # stack spliced in (_merged_call_stack_frames), rendered as a
+            # stack trace view. Values come from the frames' captured locals
+            # through pane-LOCAL stores - nothing published, nothing global.
+            # The debug (bug) button above recaptures a fresh stack.
             from src.lsd.gl_gui.view.core_views.stack_trace_view import (
                 draw_stack_trace)
-            captured_stack = getattr(input_value, "_call_stack_frames", None)
+            captured_stack = _merged_call_stack_frames(input_value, menu_state)
             if captured_stack:
                 # indent_views=False: the tab is narrow - panes slide left
                 # instead of the inlined call-chain slide.

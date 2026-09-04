@@ -117,6 +117,8 @@ def infer_glsl_type(value):
             return "sampler3D"
         if value.target == int(gl.GL_TEXTURE_1D):
             return "sampler1D"
+        if value.target == int(gl.GL_TEXTURE_CUBE_MAP):
+            return "samplerCube"
         return "sampler2D"
     tname = type(value).__name__
     if type(value).__module__ == "glm":

@@ -222,18 +222,28 @@ class FBO:
     def texture_id(self):
         return self.color.texture_id
 
-    def __enter__(self):
+    def bind(self):
+        """Bind + set the viewport, remembering what was bound (unbind
+        restores it). The explicit pair behind the context manager, for
+        callers that bracket a pass with plain calls (pbr.begin_scene)."""
         self._prev_fbo = _scalar(gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING))
         self._prev_viewport = gl.glGetIntegerv(gl.GL_VIEWPORT)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.fbo)
         gl.glViewport(0, 0, self.width, self.height)
         return self
 
-    def __exit__(self, *exc):
+    def unbind(self):
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._prev_fbo)
         pv = self._prev_viewport
         if pv is not None:
             gl.glViewport(int(pv[0]), int(pv[1]), int(pv[2]), int(pv[3]))
+        return self
+
+    def __enter__(self):
+        return self.bind()
+
+    def __exit__(self, *exc):
+        self.unbind()
         return False
 
     def __repr__(self):

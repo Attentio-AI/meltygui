@@ -286,6 +286,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # ---- icons (glyph literals so the editor renders them as a picker) ----
     target_icon = f""                                    # summon button
     live_icon = f""                                      # live-row bolt
+    recent_fallback_icon = f""                           # Recently added tile of a window with no icon
 
     # ---- geometry, authored at ui_scale 1.0 and scaled once per frame ----
     # The dock draws straight to the draw list, so nothing here follows the
@@ -322,6 +323,11 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     name_pad_x = px(10)                                 # left inset for icon/name text
     icon_gap = px(6)                                    # gap between icon and name
     manager_row_text_x, manager_row_text_y = px(8.0), px(7.0)  # "Window Manager" label offsets
+    # Important tab's section headings ("Recently added" / "Important"):
+    # a small muted label on its own line above the section's tiles.
+    heading_height = px(18.0)
+    heading_gap = px(8.0)                               # space between a section's last tile and the next heading
+    heading_value, heading_saturation = 0.62, 0.4       # theme mix of the heading text
     if style_manager is None:
         style_manager = Melty.style_manager
     draw_list = imgui.get_window_draw_list()
@@ -338,6 +344,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # ---- collect + sort rows (same grouping as WINDOW_MANAGER_SORTED) ----
     # [tint=(0.989, 0.17, 0.497)]
     rows = []
+    candidates = []                                       # every dock-visible row before the icon filter
     for key, managed_window in list(input_value.items()):
         window_draw_state = managed_window.draw_state
         if window_draw_state is None:
@@ -354,10 +361,43 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
             continue
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
         icon = _row_icon(name, managed_window, window_draw_state)
+        candidates.append((name, managed_window, window_draw_state, icon))
         if dock_tab == "important" and not icon:
             continue
         rows.append((name, managed_window, window_draw_state, icon))
     rows.sort(key=lambda row: row[0].lower())
+
+    # ---- Important tab: "Recently added" = the newest first-seen names
+    # (AppModel.render_windows via melty.recent_windows), newest first, icon
+    # or not - a window with no icon wears recent_fallback_icon on its tile.
+    # Rows are placed as (row_top, row) so a heading can inter between the
+    # sections; the regular tiles follow under their own "Important" label.
+    # Names that no longer resolve to a registered window are skipped.
+    sections = [(None, rows)]
+    if important:
+        by_name = {row[0]: row for row in candidates}
+        recent_rows = []
+        for recent_name in Melty.recent_windows(Toggles.FastDock.recently_added_count):
+            row = by_name.get(recent_name)
+            if row is not None:
+                name, managed_window, window_draw_state, icon = row
+                recent_rows.append((name, managed_window, window_draw_state,
+                                    icon or recent_fallback_icon))
+        if recent_rows:
+            sections = [("Recently added", recent_rows), ("Important", rows)]
+    # [tint=(0.989, 0.17, 0.497)]
+    placed = []                                           # (row_top, row) in draw order
+    headings = []                                         # (heading_top, label)
+    cursor_y = origin_y
+    for section_label, section_rows in sections:
+        if section_label is not None:
+            if placed:
+                cursor_y += heading_gap
+            headings.append((cursor_y, section_label))
+            cursor_y += heading_height
+        for row in section_rows:
+            placed.append((cursor_y, row))
+            cursor_y += row_stride
 
     # Dummy rows set the full content height so the window scrolls normally.
     # Keep the trailing row_gap as bottom padding so the last row isn't clipped.
@@ -366,7 +406,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # header - boost the content height by that top inset or the last row can
     # never scroll fully into view.
     top_inset = (origin_y + draw_state.scroll_offset[1]) - draw_state.abs_top
-    imgui.dummy(content_width, max(1.0, len(rows) * row_stride + max(0.0, top_inset)))
+    imgui.dummy(content_width, max(1.0, (cursor_y - origin_y) + max(0.0, top_inset)))
 
     mouse_x, mouse_y = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
@@ -405,7 +445,7 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     from src.lsd.gl_gui.view.core_views.new_core_view import _fuzzy_key_match
     from src.lsd.gl_gui.view.core_views.text_editor import _scroll_into_view
 
-    names_lower = tuple(row[0].split("##")[0].lower() for row in rows)
+    names_lower = tuple(row[0].split("##")[0].lower() for _, row in placed)
 
     def _search_matcher(term, session, names=names_lower):
         query = str(term).lower()
@@ -437,8 +477,18 @@ def draw_fast_dock(input_value, draw_state, style_manager=None, hide_internal=Fa
     # clips its own font out of the glow, so drawing it on top stays legible.
     highlight_rects = []
 
-    for row_index, (name, managed_window, window_draw_state, icon) in enumerate(rows):
-        row_top = origin_y + row_index * row_stride
+    # ---- section headings (Important tab with a Recently added section) ----
+    heading_color = _color_u32(style_manager.make_color_rgb(
+        0.0, 0.0, 0.0, value=heading_value, factor=1.0, saturation_scale=heading_saturation))
+    for heading_top, heading_label in headings:
+        if clip is not None and (heading_top + heading_height < clip[1] or heading_top > clip[3]):
+            continue
+        heading_size = imgui.calc_text_size(heading_label)
+        draw_list.add_text(name_left + text_nudge_x,
+                           heading_top + (heading_height - heading_size[1]) / 2.0 + text_nudge_y,
+                           heading_color, heading_label)
+
+    for row_top, (name, managed_window, window_draw_state, icon) in placed:
         row_bottom = row_top + row_height
 
         # Match bookkeeping runs for EVERY row - clipped ones too - so the

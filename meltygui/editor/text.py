@@ -3590,14 +3590,14 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     if _params_node is not None and (
             _pp_want or (_pw is not None and not _pw.closed)):
         from src.lsd.gl_gui.view.mode import Mode
-        imgui.set_cursor_screen_pos((x, y))
+        # imgui.set_cursor_screen_pos((x, y))
         # window_pos only on FIRST spawn - passing it every call re-pins the
         # panel under the button and eats the user's drags (the live-value
         # windows follow the same set-once rule). No width: the window
         # wraps/resizes normally. swoosh=False - no connector ribbon.
         _pp_kwargs = {}
-        if _pw is None:
-            _pp_kwargs["window_pos"] = (0, height + 6)
+        # if _pw is None:
+        #     _pp_kwargs["window_pos"] = (0, height + 6)
         # DISPLAYED node latch: the background reparse (small-file average
         # ~119ms) rebuilds the tree MID-TYPING, so restamping the fresh
         # `_params_node` per run showed half-typed defaults in the panel
@@ -3632,7 +3632,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
             editor_ds=editor_ds,
             auto_execute=bool(editor_state.params_auto_execute.get(def_name))
             if editor_state is not None else False,
-            editor_state=editor_state, **_pp_kwargs)
+            editor_state=editor_state)
         _pp_wins[skey] = _pw
         if _pw.closed and _pp_want and not params_clicked:
             _pp_vis[def_name] = False   # X-closed inline (same-frame close)

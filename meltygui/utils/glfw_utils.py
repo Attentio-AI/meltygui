@@ -8,8 +8,11 @@ import pprint
 import inspect
 import threading
 import traceback
+import json
 import linecache
+import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import glfw
 
@@ -712,6 +715,21 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
                 error_frame_idx = j
                 break
 
+    # The full frame list (before the plumbing filter) goes into the saved
+    # report, so the Crash Reports window can open it as a stack trace view
+    # and with each user-code frame's locals as display strings, the values
+    # the view's live-value markers show (the same truncation as the watch
+    # table; live objects can't be saved).
+    # Gated like the Context menu's Code-tab capture: locals of any PROJECT
+    # frame (tests included), never library code.
+    from src.lsd.gl_gui.view.core_conversion.address import is_editable_source
+    report_frames = []
+    for frame in frames or ():
+        scope = None
+        if frame[4] is not None and is_editable_source(frame[0]):
+            scope = _snapshot_locals(frame[4], max_str_len, max_items, max_depth, max_output)
+        report_frames.append((frame[0], frame[1], frame[2], scope))
+
     # Drop repetitive plumbing frames, but never the error frame itself.
     if ignore_functions:
         error_frame = frames[error_frame_idx] if error_frame_idx is not None else None
@@ -835,10 +853,173 @@ def print_stack_trace(size=None, skip=0, stack=None, frames=None, watch=None,
 
     _dispatch(buf, group, file)
 
+    # A grouped trace is one section of the group's own output and the group
+    # flushes as a whole, so only standalone traces become report files.
+    if not group:
+        save_crash_report(buf.getvalue(), exception=exception, frames=report_frames)
+
     if stacks_printed_this_frame > 2:
         RED_BOLD = "\033[1m\033[31m"
         print(f"{RED_BOLD} Not printing [{stacks_printed_this_frame}] stacks {_RESET}")
         return
+
+
+# ── Crash report files ───────────────────────────────────
+
+# A saved frame keeps at most this many locals (the first bound win).
+# [tint=(0.994, 0.872, 0.0)]
+REPORT_LOCALS_PER_FRAME = 80
+
+
+def _snapshot_locals(local_vars, max_str_len, max_items, max_depth, max_output):
+    """`{name: display string}` of a frame's locals for the saved report —
+    dunder names and modules dropped, every value rendered through the
+    watch table's `_truncate` + pformat, one bad value costing only its
+    entry (repr can raise on anything)."""
+    import types as _types
+    snapshot = {}
+    for name, value in list(local_vars.items())[:REPORT_LOCALS_PER_FRAME]:
+        if name.startswith("__") or isinstance(value, _types.ModuleType):
+            continue
+        try:
+            text = pprint.pformat(_truncate(value, max_str_len, max_items, max_depth), width=60)
+        except Exception as exc:
+            text = f"<unprintable {type(exc).__name__}>"
+        if max_output and len(text) > max_output:
+            text = text[:max_output] + f"\u2026({len(text)}ch)"
+        snapshot[name] = text
+    return snapshot
+
+def crash_reports_dir():
+    """Where print_stack_trace writes its reports (Toggles.CrashReports.directory)."""
+    return Path(os.path.expanduser(Toggles.CrashReports.directory))
+
+
+# The last millisecond stamp handed out and how many reports shared it -
+# every name carries a 3-digit sequence within its millisecond so names stay
+# unique AND sort in write order whatever the error label (probing the disk
+# instead let a pruned base name be reused and sort as the oldest report).
+_last_report_stamp = [None, 0]
+
+
+def _report_stem(exception):
+    """`2026-09-04_14-03-22-517-000_ZeroDivisionError` — sorts by time as
+    text, and the error name makes the file list readable on its own."""
+    now = time.time()
+    stamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(now))
+    stamp = f"{stamp}-{int((now - int(now)) * 1000):03d}"
+    label = type(exception).__name__ if exception is not None else "trace"
+    label = re.sub(r"[^A-Za-z0-9_]+", "_", label)[:60]
+    with _print_lock:
+        if _last_report_stamp[0] == stamp:
+            _last_report_stamp[1] += 1
+        else:
+            _last_report_stamp[0], _last_report_stamp[1] = stamp, 0
+        sequence = _last_report_stamp[1]
+    return f"{stamp}-{sequence:03d}_{label}"
+
+
+def git_head_commit(root=None):
+    """`(sha, branch)` of the checkout at `root` (the project root), read
+    straight off `.git` — HEAD → its ref → loose ref file or packed-refs —
+    with no subprocess (a git call per crash would be a posix_spawn on the
+    render thread for a value that changes once per commit). (None, None)
+    when there is no git checkout; memoized on HEAD's and the ref file's
+    mtimes so a commit or checkout is seen on the next report."""
+    root = Path(root) if root is not None else Path(__file__).resolve().parents[4]
+    try:
+        git_dir = root / ".git"
+        if git_dir.is_file():                     # a worktree: `gitdir: <path>`
+            pointer = git_dir.read_text().strip()
+            if pointer.startswith("gitdir:"):
+                git_dir = Path(pointer.split(":", 1)[1].strip())
+                if not git_dir.is_absolute():
+                    git_dir = root / git_dir
+        head_path = git_dir / "HEAD"
+        head = head_path.read_text().strip()
+        if not head.startswith("ref:"):
+            return head[:40], None                # detached HEAD
+        ref = head.split(":", 1)[1].strip()
+        branch = ref.rsplit("/", 1)[-1]
+        ref_path = git_dir / ref
+        if ref_path.is_file():
+            return ref_path.read_text().strip()[:40], branch
+        # common dir for worktrees: refs live in the main repo's .git
+        common = git_dir / "commondir"
+        if common.is_file():
+            main_dir = (git_dir / common.read_text().strip()).resolve()
+            candidate = main_dir / ref
+            if candidate.is_file():
+                return candidate.read_text().strip()[:40], branch
+            git_dir = main_dir
+        packed = git_dir / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text().splitlines():
+                if line.endswith(" " + ref):
+                    return line.split(" ", 1)[0][:40], branch
+    except OSError:
+        pass
+    return None, None
+
+
+def save_crash_report(text, exception=None, thread_name=None, frames=None):
+    """Write one printed trace as an ANSI-stripped text file under
+    crash_reports_dir() and return its path (None when saving is off or
+    the write failed — a crash report must never raise into the trace
+    that produced it). The first lines are a `key: value` header the
+    Crash Reports window reads without loading the whole file — `commit`
+    the checkout's HEAD sha and branch (git_head_commit), `frames`
+    is the trace's (path, lineno, function) list as JSON, outermost first,
+    which the window hands to draw_stack_trace, and `locals` the matching
+    list of per-frame {name: display string} snapshots (null for frames
+    without one) the view shows as values; the printed trace follows after
+    a blank line. `frames` entries may carry the snapshot as a 4th item.
+    Oldest files past Toggles.CrashReports.max_reports are deleted."""
+    if not Toggles.CrashReports.auto_save:
+        return None
+    try:
+        directory = crash_reports_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        thread_name = thread_name or threading.current_thread().name
+        error = (f"{type(exception).__name__}: {exception}" if exception is not None
+                 else "stack trace")
+        header = (f"time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                  f"thread: {thread_name}\n"
+                  f"error: {error.splitlines()[0] if error else ''}\n")
+        commit, branch = git_head_commit()
+        if commit:
+            header += f"commit: {commit}{(' ' + branch) if branch else ''}\n"
+        if frames:
+            frame_rows = [[str(frame[0]), int(frame[1]), str(frame[2])] for frame in frames]
+            header += f"frames: {json.dumps(frame_rows)}\n"
+            scopes = [frame[3] if len(frame) > 3 and isinstance(frame[3], dict) else None
+                      for frame in frames]
+            if any(scope for scope in scopes):
+                header += f"locals: {json.dumps(scopes, ensure_ascii=False)}\n"
+        header += "\n"
+        path = directory / f"{_report_stem(exception)}.txt"
+        path.write_text(header + _ANSI_RE.sub("", text), encoding="utf-8")
+        _prune_crash_reports(directory)
+        try:
+            from src.lsd.gl_gui.view.playground.crash_reports import reports_changed
+            reports_changed()
+        except Exception:
+            pass                                  # window's not loaded yet: nothing to repaint
+        return path
+    except Exception:
+        return None
+
+
+def _prune_crash_reports(directory):
+    limit = Toggles.CrashReports.max_reports
+    if not limit or limit <= 0:
+        return
+    files = sorted(directory.glob("*.txt"))       # names sort by time
+    for stale in files[:max(0, len(files) - limit)]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
 
 # ── Path helpers ─────────────────────────────────────────
