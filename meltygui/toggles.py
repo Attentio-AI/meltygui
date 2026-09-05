@@ -239,9 +239,10 @@ class Tint:
 
     @staticmethod
     @defaults(tint=(0.45, 0.45, 0.45))
-    def line_number_tint():
+    def line_number_tint(requested_tint=None):
         style_manager: ImGuiStyleManager = Core.melty.style_manager
-        active_hsv = style_manager.hsv
+        active_hsv = (rgb_to_hsv(*requested_tint[:3]) if requested_tint is not None
+                      else style_manager.hsv)
 
         hue_delta = 0.00
         saturation_factor = 0.75
@@ -1983,6 +1984,18 @@ class Toggles:
         # reframe math (open_files._cmp_layout_reframe) keys on the SAME
         # value - change them together by changing only this.
         compare_padding = 14.0
+        # Compact file-column rows; shared by layout, paint and keyboard scroll.
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_row_height = 20.0
+        # Nearest baked JetBrains Mono size, in pixels before UI scaling.
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_font_size = 16
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_file_max_width = 650.0
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_file_bg_value = 0.020
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_row_gap = 1.0
 
     @defaults(tint=(0.72, 0.35, 0.3))
     class FileSafety:

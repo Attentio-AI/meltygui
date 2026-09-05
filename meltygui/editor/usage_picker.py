@@ -22,7 +22,8 @@ from pathlib import Path
 import imgui
 
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui.toggles import Toggles
+from src.lsd.gl_gui.toggles import Tint, Toggles
+from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.view.core_conversion.libcst_conversion import UsageRef
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
 from src.lsd.gl_gui.view.core_views.code_line_fast import (
@@ -42,11 +43,12 @@ class UsageRow:
     line (stripped), `block_tint` / `spans` its washes in display columns;
     `tint` the ROW's own tint (file: FileMeta, scope: the definition's)."""
     __slots__ = ("kind", "depth", "path", "line", "text", "tint", "ref", "token",
-                 "block_tint", "spans", "label", "emphasis")
+                 "block_tint", "spans", "label", "emphasis", "indent")
 
     def __init__(self, kind, depth, path, line, text, tint=None, ref=None,
                  token=None, block_tint=None, spans=(), label="", emphasis=None):
         self.kind = kind
+        self.indent = 0.0
         self.depth = depth
         self.path = path
         self.line = line
@@ -156,11 +158,12 @@ def _symbol_columns(disp, token, column=None):
     return [(m.start(), m.end()) for m in pat.finditer(disp)]
 
 
-def build_usage_rows(targets, names, tints=None):
+def build_usage_rows(targets, names, tints=None, *, texts=None):
     """Rows for `targets` (UsageRefs, best first) grouped file → scope chain
     → usage line, in first-appearance order. `names` maps ref → the symbol
     spelling for the caret. Returns (rows, best_index) — best_index is the
-    row of targets[0]."""
+    row of targets[0]. Optional `texts` supplies exact buffer snapshots,
+    keyed by path, so other code lists can share this tree and painter."""
     from src.lsd.gl_gui.view.core_conversion import symbol_roster as roster
     from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
     from src.lsd.gl_gui.view.core_views.text_editor import _uj_file_tint
@@ -174,12 +177,14 @@ def build_usage_rows(targets, names, tints=None):
         ent = files.get(key)
         if ent is None:
             try:
-                text = PendingSave.current_file_text(Path(str(p)))
+                text = (texts[str(p)] if texts is not None
+                        else PendingSave.current_file_text(Path(str(p))))
             except Exception:
                 text = None
             text = text if isinstance(text, str) else ""
             try:
-                table = roster.table_for(key)
+                table = (roster.detached_table(key, text) if texts is not None
+                         else roster.table_for(key))
             except Exception:
                 table = None
             ent = files[key] = (str(p), text, text.split("\n"), table, _Node(None))
@@ -321,18 +326,40 @@ def scroll_row_into_view(menu_ds, row_index):
              min_width=PICKER_MIN_W, swoosh=False, min_height=PICKER_MIN_H,
              enforce_max_height=True,   # the content height cap holds mid-drag
              is_default_for=UsagePickerModel, tint=(0.071, 0.354, 0.511))
-def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
+def draw_usage_picker(input_value: UsagePickerModel, draw_state,
+                      row_height=ROW_H, row_gap=ROW_GAP, tree_indent=16.0,
+                      code_font=Font.FONTAWESOME_MONO_19, collapsible=False,
+                      group_tint=None, change_kinds=None, **kwargs):
     """Paint the picker rows Code-tab style. Hover moves the highlight only
     while the pointer MOVES over the window (a resting pointer never steals
     the keyboard cursor); a click on a row sets `model.picked` for draw_text
     to consume. Returns (True, model) on a pick."""
+    return paint_usage_rows(
+        input_value, draw_state, row_height=row_height, row_gap=row_gap,
+        tree_indent=tree_indent, code_font=code_font, collapsible=collapsible,
+        group_tint=group_tint, change_kinds=change_kinds)
+
+
+def paint_usage_rows(input_value, draw_state, *, width=None,
+                     row_height=ROW_H, row_gap=ROW_GAP, tree_indent=16.0,
+                     code_font=Font.FONTAWESOME_MONO_19, collapsible=False,
+                     group_tint=None, change_kinds=None, event_prefix="uj",
+                     line_numbers_left=False):
+    """Paint into the caller's draw list and tile, like the usage search tree.
+
+    Background groups and code glyphs must share a capture owner. An
+    embedded list uses its column's draw_state for events and clipping;
+    the standalone picker supplies its own draw_state above.
+    """
     from src.lsd.gl_gui.view.core_views.new_core_view import _dd_row_width
     # [tint=(0.9, 0.6, 0.2)] layout knobs — the Code tab's numbers
     ICON_COL = 22.0
     ICON_X = 4.0
-    TREE_INDENT = 16.0
+    TREE_INDENT = tree_indent
     GROUP_INSET = ICON_COL - 4.0
     file_icon = f""
+    collapsed_icon, expanded_icon = "", ""
+    row_pitch = row_height + row_gap
     icon_alpha = 0.55
     suffix_alpha = 0.55
     row_bg_value, row_bg_hot = 0.045, 0.10
@@ -359,13 +386,13 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
     draw_list = imgui.get_window_draw_list()
     origin = imgui.get_cursor_screen_pos()
     x0, y0 = origin[0], origin[1]
-    width = _dd_row_width(draw_state)
+    width = _dd_row_width(draw_state) if width is None else width
     n = len(rows)
-    total_h = n * ROW_PITCH
+    total_h = n * row_pitch
     if model is not None:
-        model.measured = (Melty.frame_count, total_h if n else ROW_H)
+        model.measured = (Melty.frame_count, total_h if n else row_height)
     if n == 0:
-        imgui.dummy(width, ROW_H)
+        imgui.dummy(width, row_height)
         return False, model
 
     # Visible band of the (scrolling) window - rows outside it keep their
@@ -383,10 +410,17 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
     model._last_mouse = (mouse[0], mouse[1])
     hover = None
     if over:
-        hi = int((mouse[1] - y0) // ROW_PITCH)
-        if 0 <= hi < n and (mouse[1] - y0) - hi * ROW_PITCH < ROW_H:
+        hi = int((mouse[1] - y0) // row_pitch)
+        if 0 <= hi < n and (mouse[1] - y0) - hi * row_pitch < row_height:
             hover = hi
-    if not over:
+    if line_numbers_left:
+        # Embedded lists share a column: its bbox may still be hovered
+        # while the pointer has moved into a new file's usage list.
+        if hover is None and not model.kbd_mode:
+            model.index = -1
+        if moved:
+            model.kbd_mode = False
+    elif not over:
         model.kbd_mode = True
     elif moved and hover is not None:
         model.kbd_mode = False
@@ -394,10 +428,26 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
     if not model.kbd_mode and hover is not None:
         model.index = hover   # Enter switches from the hovered row
 
-    pushed, char_w, line_h = push_code_font()
+    pushed, char_w, line_h = push_code_font(code_font)
     try:
-        row_y = [y0 + i * ROW_PITCH for i in range(n)]
+        gutter_width = (max(len(str(row.line)) for row in rows) * char_w + 8.0
+                        if line_numbers_left else 0.0)
+        content_left = x0 + gutter_width
+        row_y = [y0 + i * row_pitch for i in range(n)]
         depths = [r.depth for r in rows]
+        row_tints = []
+        tint_stack = []
+        for row in rows:
+            while tint_stack and tint_stack[-1][0] >= row.depth:
+                tint_stack.pop()
+            parent_tint = tint_stack[-1][1] if tint_stack else group_tint
+            scope = collapsible and row.line in model.scope_keys
+            tint = row.tint or ((row.block_tint or parent_tint) if scope else None)
+            row_tints.append(tint)
+            tint_stack.append((row.depth, tint or parent_tint))
+        if group_tint is not None:
+            draw_list.add_rect_filled(x0, y0, x0 + width, y0 + total_h,
+                                      _mix(group_tint, Toggles.CodeEditor.compare_file_bg_value), rounding=4.0)
 
         # ── group background: a tinted scope's rows float in its wash ──
         for i, row in enumerate(rows):
@@ -405,19 +455,20 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
             j = i + 1
             while j < n and depths[j] > d:
                 j += 1
-            if j == i + 1 or row.tint is None:
+            if j == i + 1 or row_tints[i] is None:
                 continue
-            gy0, gy1 = row_y[i], row_y[j - 1] + ROW_H
+            gy0, gy1 = row_y[i], row_y[j - 1] + row_height
             if gy1 < band_top or gy0 > band_bot:
                 continue
-            gx0 = x0 + d * TREE_INDENT + GROUP_INSET
+            gx0 = content_left + d * TREE_INDENT + GROUP_INSET
             add_shadow((gx0, gy0, x0 + width - gx0, gy1 - gy0),
                        offset=2.0 + 2.0 * d, corner_radius=4.0)
             draw_list.add_rect_filled(gx0, gy0, x0 + width, gy1,
-                                      _mix(row.tint, group_bg_value + d * group_bg_step),
+                                      _mix(row_tints[i], group_bg_value + d * group_bg_step),
                                       rounding=4.0)
 
         picked = None
+        folded = False
         # The tint a row's background ALREADY wears: its own, else the
         # nearest tinted ancestor's (its group block or under the row).
         # A code line's block wash and symbol washes in that same colour
@@ -427,33 +478,72 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
             ry = row_y[i]
             while painted_stack and painted_stack[-1][0] >= depths[i]:
                 painted_stack.pop()
-            painted = row.tint if row.tint is not None else (
-                painted_stack[-1][1] if painted_stack else None)
+            row_tint = row_tints[i]
+            painted = row_tint if row_tint is not None else (
+                painted_stack[-1][1] if painted_stack else group_tint)
             painted_stack.append((depths[i], painted))
-            if ry + ROW_H < band_top or ry > band_bot:
+            if ry + row_height < band_top or ry > band_bot:
                 continue
             ind = depths[i] * TREE_INDENT
             hot = (i == model.index) if model.kbd_mode else (i == hover)
-            own = row.tint is not None
+            own = row_tint is not None
             is_file = row.kind == "file"
-            rx = x0 + ind + (ICON_COL if is_file else GROUP_INSET)
+            rx = content_left + ind + (ICON_COL if is_file else GROUP_INSET)
             # Offset the row's shadow by depth depth so nested rows stack.
             if hot and not own:
-                draw_list.add_rect_filled(rx, ry, x0 + width, ry + ROW_H,
+                draw_list.add_rect_filled(rx, ry, x0 + width, ry + row_height,
                                           hot_bg_untinted, rounding=4.0)
             elif hot or own:
                 if own and not is_file:
-                    add_shadow((rx, ry, x0 + width - rx, ROW_H),
+                    add_shadow((rx, ry, x0 + width - rx, row_height),
                                offset=2.0 + 2.0 * depths[i], corner_radius=4.0)
-                draw_list.add_rect_filled(rx, ry, x0 + width, ry + ROW_H,
-                                          _mix(row.tint, row_bg_hot if hot else row_bg_value),
+                draw_list.add_rect_filled(rx, ry, x0 + width, ry + row_height,
+                                          _mix(row_tint, row_bg_hot if hot else row_bg_value),
                                           rounding=4.0)
-            text_y = ry + (ROW_H - line_h) * 0.5
-            text_x = rx + 8.0
+            text_y = ry + (row_height - line_h) * 0.5
+            text_x = rx + (4.0 if collapsible else 8.0)
+            foldable = collapsible and row.line in model.scope_keys
+            if foldable:
+                if not line_numbers_left or (over and hover == i):
+                    draw_list.add_text(content_left + ind + 3.0, text_y, suffix_color,
+                                       collapsed_icon if model.is_collapsed(row) else expanded_icon)
+                if draw_state.on_action(
+                        "left_mouse_down", view_id=f"{event_prefix}_fold_{row.line}",
+                        rect=(content_left + ind, ry, rx, ry + row_height),
+                        priority_delta=5) is not None:
+                    model.toggle(row)
+                    folded = True
+            marker_width = 0.0
+            change_kind = (change_kinds or {}).get(row.line)
+            scope_counts = model.scope_counts.get(row.line) if collapsible else None
+            if line_numbers_left and scope_counts is not None:
+                added_label, removed_label = f"+{scope_counts[0]}", f"−{scope_counts[1]}"
+                marker_width = imgui.calc_text_size(added_label + " " + removed_label).x
+                marker_left = x0 + width - 2.0 - marker_width
+                draw_list.add_text(marker_left, text_y,
+                    imgui.get_color_u32_rgba(*Tint.change_count(added=True), 0.95), added_label)
+                draw_list.add_text(marker_left + imgui.calc_text_size(added_label + " ").x,
+                    text_y, imgui.get_color_u32_rgba(*Tint.change_count(added=False), 0.95), removed_label)
+            elif change_kind:
+                if change_kind == "add":
+                    marker, color = "+", Tint.change_count(added=True)
+                elif change_kind == "delete":
+                    marker, color = "−", Tint.change_count(added=False)
+                else:
+                    marker, color = "~", Tint.dd_text((0.06, 0.24, 0.45))
+                packed = imgui.get_color_u32_rgba(*color, 0.95)
+                if line_numbers_left:
+                    marker = row.label.partition(" @ ")[0] if row.label else marker
+                    marker_width = imgui.calc_text_size(marker).x
+                    draw_list.add_text(x0 + width - 2.0 - marker_width, text_y, packed, marker)
+                else:
+                    draw_list.add_rect_filled(rx, ry + 2, rx + 2, ry + row_height - 2, packed)
+                    draw_list.add_text(text_x, text_y, packed, marker)
+                    text_x += char_w + 3.0
             if row.kind == "more":
                 # The "+ N more" row: Code-tab style, selectable like any row.
                 if hot:
-                    draw_list.add_rect_filled(rx, ry, x0 + width, ry + ROW_H,
+                    draw_list.add_rect_filled(rx, ry, x0 + width, ry + row_height,
                                               hot_bg_untinted, rounding=4.0)
                 draw_list.add_text(x0 + ICON_COL + 8.0, text_y,
                                    _mix(more_tint, more_text_hot if hot else more_text_value),
@@ -466,9 +556,21 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
                 draw_list.add_text(text_x, text_y, _mix(row.tint, tv, sat=text_saturation),
                                    row.text)
             else:
-                suffix = str(row.line)
+                suffix = row.label or str(row.line)
                 suffix_w = imgui.calc_text_size(suffix)[0]
-                code_w = max(60.0, x0 + width - 8.0 - suffix_w - 12.0 - text_x)
+                if line_numbers_left:
+                    number = str(row.line)
+                    number_x = content_left - 5.0 - imgui.calc_text_size(number).x
+                    number_color = Tint.line_number_tint(group_tint)
+                    draw_list.add_text(number_x, text_y,
+                                       imgui.get_color_u32_rgba(*number_color[:3], 1.0), number)
+                    code_w = max(0.0, x0 + width - 8.0 - marker_width - text_x)
+                else:
+                    code_w = max(0.0, x0 + width - 8.0 - suffix_w - 12.0 - text_x)
+                if line_numbers_left:
+                    indent_width = getattr(row, "indent", 0.0) * tree_indent
+                    text_x += indent_width
+                    code_w = max(0.0, code_w - indent_width)
                 block = None if _same_tint(row.block_tint, painted) else row.block_tint
                 spans = [sp for sp in row.spans
                          if not (_same_tint(sp[2], painted) or _same_tint(sp[2], block))]
@@ -478,20 +580,23 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
                 draw_code_line_fast(draw_list, text_x, text_y, row.text, char_w, line_h,
                                     max_width=code_w, block_tint=block, spans=spans,
                                     emphasis=None if hot else row.emphasis)
-                draw_list.add_text(x0 + width - 8.0 - suffix_w, text_y, suffix_color, suffix)
-            if i == model.index:
-                draw_list.add_rect(rx, ry, x0 + width, ry + ROW_H, sel_color,
+                if not line_numbers_left:
+                    draw_list.add_text(x0 + width - 8.0 - suffix_w, text_y, suffix_color, suffix)
+            if i == model.index and (not line_numbers_left or model.kbd_mode):
+                draw_list.add_rect(rx, ry, x0 + width, ry + row_height, sel_color,
                                    rounding=4.0, thickness=sel_thickness)
             # Click to pick: on_action keeps the honest z-order (a window in
             # front blocks clicks) and replays on multiple hits.
-            if draw_state.on_action("left_mouse_down", view_id=f"uj_row_{i}",
-                                    rect=(x0, ry, x0 + width, ry + ROW_H),
+            if draw_state.on_action("left_mouse_down", view_id=f"{event_prefix}_row_{i}",
+                                    rect=(rx if foldable else x0, ry, x0 + width, ry + row_height),
                                     priority_delta=4) is not None:
                 picked = row
     finally:
         pop_code_font(pushed)
     imgui.set_cursor_screen_pos((x0, y0))
     imgui.dummy(width, total_h)
+    if folded:
+        return True, model
     if picked is not None:
         model.picked = picked
         model.index = rows.index(picked)

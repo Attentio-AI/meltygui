@@ -340,13 +340,21 @@ def _capture_points(window, left, top, w, h, name):
     import OpenGL.GL as gl
     from PIL import Image
 
+    from src.lsd.gl_gui.melty import Melty
+
     fb_w, fb_h = glfw.get_framebuffer_size(window)
     win_w, win_h = glfw.get_window_size(window)
     scale = (fb_w / win_w) if win_w else 1.0
+    # Window points are CONTENT coordinates: in the transparent frameless
+    # window the content sits inset by the shadow margin inside the
+    # framebuffer (Melty.frame_origin, framebuffer px - the same offset the
+    # masks / tile captures apply), so a box at the top of the screen read
+    # the transparent margin above the content without this.
+    origin_x, origin_y = (int(v) for v in (Melty.frame_origin or (0, 0)))
 
     # Rect in framebuffer pixels, clamped to the framebuffer.
-    x0 = max(0, min(int(round(left * scale)), fb_w))
-    y_top = max(0, min(int(round(top * scale)), fb_h))
+    x0 = max(0, min(int(round(left * scale)) + origin_x, fb_w))
+    y_top = max(0, min(int(round(top * scale)) + origin_y, fb_h))
     pw = max(1, min(int(round(w * scale)), fb_w - x0))
     ph = max(1, min(int(round(h * scale)), fb_h - y_top))
     y_bottom = fb_h - (y_top + ph)  # GL origin is bottom-left

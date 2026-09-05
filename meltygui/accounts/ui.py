@@ -292,6 +292,28 @@ def account_kind(cls):
 
 
 class AccountKind:
+    chat_label = None
+    chat_available = False
+
+    def chat_proxy(self, account, metadata=None, wake=None):
+        return None
+
+    def chats(self, account, wake=None):
+        proxy = account.get("_chat_proxy")
+        if proxy is not None and getattr(proxy, "session_version", None) != 3:
+            self.close_chat(account)
+            proxy = None
+        if proxy is None or proxy.closed:
+            proxy = self.chat_proxy(account, wake=wake)
+            if proxy is not None:
+                account["_chat_proxy"] = proxy
+        return proxy
+
+    def close_chat(self, account):
+        proxy = account.pop("_chat_proxy", None)
+        if proxy is not None:
+            proxy.close()
+
     name = "base"
     label = "Account"
     icon = ""
@@ -300,7 +322,7 @@ class AccountKind:
 
     def close(self, account):
         """Release account-owned background work on removal / cleanup."""
-        pass
+        self.close_chat(account)
 
     def default_label(self, account_id):
         return self.label if account_id == self.name else f"{self.label} ({account_id})"
@@ -332,6 +354,7 @@ class AccountKind:
 
 @account_kind
 class AnthropicKind(AccountKind):
+    chat_label = "Claude Code"
     name = "anthropic"
     label = "Anthropic"
     icon = f""
@@ -912,6 +935,15 @@ class AnthropicKind(AccountKind):
 
 @account_kind
 class CodexKind(AccountKind):
+    chat_label = "Codex"
+    chat_available = True
+
+    def chat_proxy(self, account, metadata=None, wake=None):
+        if account.get("_codex_signing_in") or account.get("_busy"):
+            return None
+        from src.lsd.gl_gui.chat.codex_proxy import CodexChats
+        return CodexChats(account["id"], metadata, wake)
+
     name = "codex"
     label = "Codex"
     icon = f""
@@ -968,6 +1000,7 @@ class CodexKind(AccountKind):
         # A separate login flag keeps Cancel / Open browser usable while waiting.
         if account.get("_codex_signing_in") or account.get("_probing") or account.get("_usage_loading"):
             return
+        self.close_chat(account)
         account["_codex_signing_in"] = True
         account["_codex_cancel"] = threading.Event()
         account["_status"] = ("busy", "starting sign-in…")
@@ -999,11 +1032,13 @@ class CodexKind(AccountKind):
         threading.Thread(target=run, daemon=True, name="codex-sign-in").start()
 
     def close(self, account):
+        self.close_chat(account)
         cancel = account.get("_codex_cancel")
         if cancel is not None:
             cancel.set()
 
     def sign_out(self, account):
+        self.close_chat(account)
         with self._server(account) as server:
             server.request("account/logout")
             account["_status"] = self._read_account(account, server)
@@ -1084,7 +1119,8 @@ class CodexKind(AccountKind):
                 if account.get("_usage_loading"):
                     stamp += " · refreshing…"
                 out.append(("stamp", stamp))
-        out.append(("note", "Melty sign-in · separate from Codex desktop / CLI"))
+        out.append(("note", "Shared with Codex desktop / CLI" if account["id"] == "codex"
+                    else "Separate Codex account"))
         return out
 
 
@@ -1167,6 +1203,7 @@ class CopilotKind(AccountKind):
 
 @account_kind
 class OllamaKind(AccountKind):
+    chat_label = "Ollama"
     name = "ollama"
     label = "Ollama"
     icon = f""
@@ -1935,3 +1972,7 @@ def _draw_field(account, field, left, top, width, height):
         accounts.set_field(account["id"], field.name, new_value.strip())
         return True
     return False
+
+# Register the companion window on initial import and on an Accounts hotswap.
+# The import is last so its provider registry is already available.
+import src.lsd.gl_gui.view.playground.chat_interface  # noqa: E402,F401

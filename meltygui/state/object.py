@@ -85,9 +85,8 @@ class DictConversion(metaclass=FieldMeta):
 
         # We read root without mutating the huge input dict
         root_id = object_dict.get("root", None)
-        if root_id is None:
-            print("Warning: no root id found in object_dict")
-            return None
+        if root_id is None or root_id not in object_dict:
+            raise ValueError("Saved object graph has no valid root; refusing to discard session data")
 
         instantiated_objects = {}
 
@@ -98,7 +97,14 @@ class DictConversion(metaclass=FieldMeta):
                 continue
             class_path = ovalue["type"]
 
-            instance = DictConv.instantiate_from_class_path(class_path)
+            try:
+                instance = DictConv.instantiate_from_class_path(class_path)
+            except Exception as error:
+                print(f"Cannot resolve saved class {class_path}: {error}; preserving its state")
+                instance = None
+            if instance is None:
+                from src.lsd.gl_gui.model.missing_saved_class import missing_saved_class
+                instance = missing_saved_class(class_path)()
             instantiated_objects[okey] = instance
 
         end_time = time.time()
@@ -186,15 +192,20 @@ class DictConversion(metaclass=FieldMeta):
                 continue
 
             instance = instantiated_objects[okey]
+            missing_class = getattr(type(instance), "__missing_saved_path__", None)
             for key, new_value in ovalue.items():
+                if missing_class and key in {"type", "is_root"}:
+                    continue
                 if key == "subviews":
                     pass
                 if key in excluded_set:
                     continue
                 unset_value = getattr(instance, key, None)
+                if missing_class and unset_value is None:
+                    unset_value = {} if isinstance(new_value, dict) else [] if isinstance(new_value, list) else None
                 try:
                     parsed = update_instance(unset_value, new_value, excluded_set)
-                    if self.has_valid_attr(instance, key):
+                    if missing_class or self.has_valid_attr(instance, key):
                         setattr(instance, key, parsed)
                 except (KeyError, AttributeError):
                     # Keep the original behavior and message
@@ -291,7 +302,9 @@ class DictConversion(metaclass=FieldMeta):
         else:
             default_instance = self.__class__()
         # Get all attributes that don't start with '_'
-        for key in default_instance.__dict__.keys():
+        saved_keys = (self.__dict__.keys() if getattr(type(self), "__missing_saved_path__", None)
+                      else default_instance.__dict__.keys())
+        for key in saved_keys:
             value = getattr(self, key, None)
             key = str(key)
             if key.startswith('_') or (excluded and key in excluded):
@@ -1411,6 +1424,8 @@ class DictConversion(metaclass=FieldMeta):
     @staticmethod
     def get_full_class_path(obj):
         cls = obj.__class__
+        if getattr(cls, "__missing_saved_path__", None):
+            return cls.__missing_saved_path__
         module = cls.__module__
         qualname = cls.__qualname__  # This already contains the full nested path
 

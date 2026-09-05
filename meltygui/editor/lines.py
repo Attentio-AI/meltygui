@@ -31,13 +31,13 @@ from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Toggles
 
 
-def push_code_font():
+def push_code_font(font=Font.FONTAWESOME_MONO_19):
     """Push the editor's font (JetBrains Mono + Font Awesome) and measure it.
     Returns (pushed, char_w, line_h): pass `pushed` to `pop_code_font`,
     `char_w` / `line_h` to every `draw_code_line_fast` call in the batch."""
     pushed = False
     if Melty.font_mgr is not None:
-        handle = Melty.font_mgr.get(Font.FONTAWESOME_MONO_19)
+        handle = Melty.font_mgr.get(font)
         if handle is not None:
             imgui.push_font(handle)
             pushed = True

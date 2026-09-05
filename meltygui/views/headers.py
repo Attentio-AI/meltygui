@@ -412,6 +412,26 @@ def _jump_to_view_source(draw_state):
     _jump_to_symbol_def(view_fn, Path(fn_file))
 
 
+def draw_header_arrow(expanded, color=None, alpha=0.071):
+    """The header's transparent tree control, also usable by flat views."""
+    if color is None:
+        depth = max(0.0, Melty.bg_depth)
+        color = Melty.style_manager.make_color_style_value(input={
+            "value": 7.788 + (depth - 30.0) * 0.05 * 0.332,
+            "saturation": 1.559 + (depth - 1.773) * -0.004,
+            "alpha": alpha, "max_value": 1.601})
+    imgui.push_style_color(imgui.COLOR_TEXT, *color[:3], 1.0)
+    imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
+    imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
+    imgui.push_style_var(imgui.STYLE_ALPHA, alpha)
+    try:
+        imgui.set_item_allow_overlap()
+        return imgui.arrow_button("##tree", imgui.DIRECTION_DOWN if expanded else imgui.DIRECTION_RIGHT)
+    finally:
+        imgui.pop_style_var()
+        imgui.pop_style_color(3)
+
+
 def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add_delete=False, width=7, suffix="",
                 collection=None, icon=None, display_name=None, meta=None, unique=None, is_tree=True,
                 show_name=True, name_func=None, show_type=False, show_unique=False, name_color=None,
@@ -500,18 +520,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     imgui.align_text_to_frame_padding()
 
     if is_tree:
-        push_style_color(imgui.COLOR_TEXT, *arrow_color[:3])
         imgui.set_cursor_screen_pos(imgui.get_cursor_screen_pos())
         imgui.dummy(0, 0)
         imgui.same_line(spacing=0)
 
-        imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
-        imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)
-        imgui.push_style_var(imgui.STYLE_ALPHA, arrow_style['alpha'])
-        imgui.set_item_allow_overlap()
-
-        arrow_dir = imgui.DIRECTION_DOWN if draw_state.expanded else imgui.DIRECTION_RIGHT
-        if imgui.arrow_button("##tree", arrow_dir):
+        if draw_header_arrow(draw_state.expanded, arrow_color, arrow_style['alpha']):
             draw_state.expanded = not draw_state.expanded
             # Effect ledger: expand/collapse is draw_state UI state — no
             # undo record — but it IS the gate the orchestration machinery
@@ -530,9 +543,6 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
             draw_state.content_height = 0
             draw_state.invalid_content_height = True
             request_render()
-        imgui.pop_style_var(1)
-        imgui.pop_style_color(2)
-        pop_style_color(1)
         same_line()
     else:
         imgui.same_line(spacing=0)

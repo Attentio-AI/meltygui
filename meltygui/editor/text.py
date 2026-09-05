@@ -9640,7 +9640,7 @@ def draw_text(input_value: str, height=None,
               code_tree=None, code_dict=None, error=None, token_views=None,
               live_store=None,
               import_fixes=None,
-              syntax_highlight=True, is_diff=False, line_numbers=None,
+              syntax_highlight=True, syntax_language="python", text_tint=None, is_diff=False, line_numbers=None,
               completion_source=None, show_jump_bar=True, show_file_header=True,
               manual_search=False, fold_ranges=None, scope_collapse=True,
               default_collapsed_lines=None,
@@ -10955,20 +10955,24 @@ def draw_text(input_value: str, height=None,
                 _bc0 = max(0, (_bc0 // _step - 1) * _step)
                 _bc1 = (_bc1 // _step + 2) * _step
                 band = (_bc0, _bc1, _long_cols)
-        key = (text, v0, v1, syntax_highlight, id(token_views) if token_views else 0, band,
+        key = (text, v0, v1, syntax_highlight, syntax_language, id(token_views) if token_views else 0, band,
                getattr(ds, '_lv_trail_gen', 0))
         if getattr(ds, '_win_key', None) == key:
             return ds._win_data
 
         _pf_miss_t = time.perf_counter()
         if syntax_highlight:
-            if getattr(ds, '_lo_text', None) != text:
-                ds._lo_offs, ds._lo_open = _update_line_open(
-                    getattr(ds, '_lo_text', None), getattr(ds, '_lo_offs', None),
-                    getattr(ds, '_lo_open', None), text)
-                ds._lo_text = text
-            wl, start_off, toks = _window_tokens(text, ds._lo_offs, ds._lo_open, v0, v1,
-                                                 band=band)
+            if syntax_language == "bash":
+                from src.lsd.gl_gui.view.core_views.bash_syntax import window_tokens as bash_window_tokens
+                wl, start_off, toks = bash_window_tokens(ds, text, _line_offsets_cached(text), v0, v1)
+            else:
+                if getattr(ds, '_lo_text', None) != text:
+                    ds._lo_offs, ds._lo_open = _update_line_open(
+                        getattr(ds, '_lo_text', None), getattr(ds, '_lo_offs', None),
+                        getattr(ds, '_lo_open', None), text)
+                    ds._lo_text = text
+                wl, start_off, toks = _window_tokens(text, ds._lo_offs, ds._lo_open, v0, v1,
+                                                     band=band)
             win_len = sum(len(t) for t, _ in toks)
             # Positional trailing gaps (variable- and value labels): the usage
             # overlay stamps {def_start: (frame, {(line0, col): cells})} on
@@ -14359,7 +14363,10 @@ def draw_text(input_value: str, height=None,
     # depends only on the cached token window and the cached tint tables,
     # which are the same objects frame after frame during a drag / hover
     # session - so a hit replaces all of it with a packed value per token.
-    _tc_key = (tokens, win_off, _dt_spans, _dt_comments, _dt_mix, _ct_factors, _tx_f)
+    # Optional tint for plain embedded text; syntax palettes stay unchanged.
+    _plain_color = (imgui.get_color_u32_rgba(*text_tint[:3], 1.0)
+                    if text_tint is not None and not syntax_highlight else None)
+    _tc_key = (tokens, win_off, _dt_spans, _dt_comments, _dt_mix, _ct_factors, _tx_f, _plain_color)
     _tc_memo = getattr(ds, '_tok_color_memo', None)
     _tok_colors = None
     if (_tc_memo is not None and _tc_memo[0][0] is tokens and _tc_memo[0][1] == win_off
@@ -14422,7 +14429,7 @@ def draw_text(input_value: str, height=None,
         if _tok_colors is not None:
             color = _tok_colors[_ti]
         else:
-            color = COLORS[color_key]
+            color = _plain_color if _plain_color is not None else COLORS[color_key]
             # Inside a color-carrying override comment, the comment text AND the
             # merged color-tuple token (color3 - the token's `(r, g, b)` text)
             # wear the comment's adjusted color; other value types (numbers,

@@ -40,6 +40,7 @@ from enum import Enum
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
 from src.lsd.gl_gui.model.core_model.core_enums import generate_id
+from src.lsd.gl_gui.model.missing_saved_class import missing_saved_class, restore_saved_class
 
 log = logging.getLogger("load_save_v2")
 
@@ -325,6 +326,11 @@ def _save_state(obj, excluded=()):
       * iterate the DEFAULT instance's public keys (like to_dict), so attributes
         that exist on `obj` but not on a fresh default (runtime-injected) are NOT
         serialized and can't accumulate across save/load cycles."""
+    if getattr(type(obj), "__missing_saved_path__", None):
+        # There is no schema/default to compare against. Every recovered field
+        # belongs to the saved payload; delta filtering would erase it again.
+        return {key: value for key, value in vars(obj).items()
+                if not key.startswith("_") and key not in excluded}
     sup = _suppressed(obj, excluded)
     cls = type(obj)
     default = getattr(cls, "default_instance", None)
@@ -565,6 +571,11 @@ def _enum_ref(e):
 
 
 def _resolve_enum(cls, name, value):
+    if getattr(cls, "__missing_saved_path__", None):
+        obj = _reconstruct(cls)
+        obj.name, obj.value = name, value
+        obj.__missing_enum__ = True
+        return obj
     try:
         return cls[name]                      # name-first, cls identity preserved
     except KeyError:
@@ -648,6 +659,8 @@ class _PicklerOverrides:
         if _is_external(obj):
             return "DROP"
         if isinstance(obj, type):
+            if getattr(obj, "__missing_saved_path__", None):
+                return None
             return "DROP" if _is_unpicklable_class(obj) else None
         # Real functions/methods FIRST - kept (reducer_override / save_global by ref).
         # MUST precede the unpicklable-class check: type(a_function) is the C type
@@ -663,6 +676,8 @@ class _PicklerOverrides:
         # their class is dynamic: without this check'd reach pickle's default NEWOBJ
         # reduction, whose class arg then drops to None -> "NEWOBJ class argument
         # must be a type, not NoneType" on load.
+        if getattr(type(obj), "__missing_saved_path__", None):
+            return None
         if _is_unpicklable_class(type(obj)):
             return "DROP"
         # Other callables whose class IS referenceable (e.g. _LazyRenderFunc) -> keep.
@@ -686,6 +701,11 @@ class _PicklerOverrides:
         return "DROP"                           # any other type -> stub to None (to_dict parity)
 
     def reducer_override(self, obj):
+        if isinstance(obj, type) and getattr(obj, "__missing_saved_path__", None):
+            return (restore_saved_class, (obj.__missing_saved_path__,))
+        if (getattr(type(obj), "__missing_saved_path__", None)
+                and getattr(obj, "__missing_enum__", False)):
+            return (_resolve_enum, (type(obj), obj.name, obj.value))
         # enums BY NAME
         if isinstance(obj, Enum):
             return _enum_ref(obj)
@@ -784,11 +804,18 @@ class _UnpicklerOverrides:
             ClassUtility().initialize_class_names("src")
         except Exception:
             pass
-        obj = DictConversion.instantiate_from_class_path(f"{module}.{name}")
+        try:
+            obj = DictConversion.instantiate_from_class_path(f"{module}.{name}")
+        except Exception as error:
+            # Importing the current source can fail (including SyntaxErrors) even
+            # though the saved graph is intact. The fuzzy retry is optional too.
+            log.warning("Cannot resolve saved class %s.%s: %s", module, name, error)
+            obj = None
         if obj is not None:
             return type(obj)
-        # last resort: re-raise the strict error for visibility
-        return super().find_class(module, name)
+        # A deleted class must not make the entire session unreadable. Preserve
+        # its fields and graph identity, including when this session is re-saved.
+        return missing_saved_class(f"{module}.{name}")
 
 
 class LSDUnpickler(_UnpicklerOverrides, pickle.Unpickler):

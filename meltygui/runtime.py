@@ -4676,18 +4676,39 @@ class Melty:
         """
         if cls.imgui_popup_open:
             return
-        hits = cls.bvh_query(event.x, event.y)
-        node = hits[0] if hits else None
-        while node is not None:
-            if node.closable:
+        # Cached BVH z stamps can rank a covered descendant above the window
+        # actually painted over it. The renderer already maintains that order;
+        # scan WINDOWS only, and only on a press. Never fall back to stale hits
+        # when no painted window holds the point.
+        for window in reversed(cls.paint_ordered_ds):
+            node = window
+            hidden = False
+            for _ in range(64):
+                if ((node.closed and node.closable)
+                        or getattr(node, "_hidden_offscreen", False)):
+                    hidden = True
+                    break
+                parent = node.parent_window
+                if parent is None or parent is node:
+                    break
+                if not parent.expanded:
+                    hidden = True
+                    break
+                node = parent
+            if hidden:
+                continue
+            left, top = window.abs_left, window.abs_top
+            width, height = window.width, window.height
+            if width is None or height is None or width <= 0 or height <= 0:
+                continue
+            clip_left, clip_top, clip_right, clip_bottom = window.abs_clip_rect
+            if (max(left, clip_left) <= event.x < min(left + width, clip_right)
+                    and max(top, clip_top) <= event.y < min(top + height, clip_bottom)):
                 # Placed popovers retain their owner's text focus and stacking.
-                if node._kwargs.get("window_pos") is None:
-                    cls.move_window_to_front(node)
+                # They still OCCLUDE their owner; don't search through them.
+                if window.closable and window._kwargs.get("window_pos") is None:
+                    cls.move_window_to_front(window)
                 return
-            parent = node.parent_window
-            if parent is node:
-                return
-            node = parent
 
     @classmethod
     def move_window_to_front(cls, draw_state):

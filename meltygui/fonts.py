@@ -115,7 +115,9 @@ class Font(RelaxedEnum):
     JETBRAINS_MONO_13 = FontSpec(_JETBRAINS_MONO, 13.0)
     JETBRAINS_MONO_14 = FontSpec(_JETBRAINS_MONO, 14.0)
     JETBRAINS_MONO_15 = FontSpec(_JETBRAINS_MONO, 15.0)
+    FONTAWESOME_MONO_15 = _fa_merge(12.0)
     JETBRAINS_MONO_16 = FontSpec(_JETBRAINS_MONO, 16.0, glyph_ranges=_MONO_TUI_RANGE)
+    FONTAWESOME_MONO_16 = _fa_merge(12.5)
     JETBRAINS_MONO_18 = FontSpec(_JETBRAINS_MONO, 18.0)
     JETBRAINS_MONO_19 = FontSpec(_JETBRAINS_MONO, 18.5, glyph_ranges=_MONO_TUI_RANGE,
                                  eager=True)
@@ -123,6 +125,8 @@ class Font(RelaxedEnum):
 
     JETBRAINS_MONO_20 = FontSpec(_JETBRAINS_MONO, 20.0)
     JETBRAINS_MONO_22 = FontSpec(_JETBRAINS_MONO, 22.0)
+    # The chat transcript's user prose: the editor face one step up.
+    FONTAWESOME_MONO_22 = _fa_merge(19.0)
     JETBRAINS_MONO_40 = FontSpec(_JETBRAINS_MONO, 40.0)
     FONTAWESOME_MONO_40 = _fa_merge(31.0)
     JETBRAINS_MONO_50 = FontSpec(_JETBRAINS_MONO, 50.0)

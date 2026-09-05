@@ -1,7 +1,7 @@
 """Codex account RPC over stdio. No model requests and no GUI dependencies.
 
-Each Melty row owns a private CODEX_HOME. Codex manages OAuth and token
-refresh; accounts.json never receives tokens. Calls belong on workers.
+The default row shares the native Codex home; additional rows are isolated.
+Codex manages OAuth and token refresh; accounts.json never receives tokens.
 """
 from collections import deque
 import json
@@ -32,8 +32,11 @@ class AppServer:
         self.messages = queue.Queue()
         self.notifications = deque(maxlen=64)
         self.sequence = 0
+        command = [os.path.abspath(executable), "app-server"]
+        if home != native_home():
+            command += ["-c", 'cli_auth_credentials_store="file"']
         self.process = subprocess.Popen(
-            [os.path.abspath(executable), "app-server", "-c", 'cli_auth_credentials_store="file"'],
+            command,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1, env=environment, close_fds=False)
         self.reader = threading.Thread(target=self._read, daemon=True, name="codex-account-rpc")
@@ -129,7 +132,13 @@ class AppServer:
         self.close()
 
 
+def native_home():
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser().resolve()
+
+
 def account_home(account_id):
+    if account_id == "codex":
+        return native_home()
     return Path.home() / ".lsd" / "codex" / ("account-" + quote(account_id, safe=""))
 
 
