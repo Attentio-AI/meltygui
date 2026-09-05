@@ -568,6 +568,13 @@ def _solve_collisions(window, axis="x", os_ctx=None):
             elif id(edge) in frame_ids:
                 walls |= frame_ids - {id(edge)}
         walls = frozenset(walls)
+        if cursor_driven and id(edge) in frame_ids:
+            # The cap is a STOP, not a slide: clamp the cursor's target at
+            # max_height BEFORE the solve. Solved at the raw target and
+            # pulled back by _hold_frame_max after, the residual flipped
+            # onto the opposite edge (the min hold's slide) - the window
+            # kept moving while its height stayed capped (Lukas 09-04).
+            target = _cap_frame_target(window, edge, target, axis)
         if _solve_graph(graph, edge, target, walls=walls, axis=axis) and not is_os:
             moved = True
         if is_os and not cursor_driven:
@@ -583,6 +590,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
             continue
         if id(edge) in frame_ids:
             _hold_frame_min(window, edge, axis)
+            _hold_frame_max(window, edge, axis)
         residual = target - edge[axis]
         if abs(residual) <= 1e-6:
             continue
@@ -621,6 +629,49 @@ def _hold_frame_min(window, dragged, axis="x"):
         near[axis] = far[axis] - floor
     else:
         far[axis] = near[axis] + floor
+
+
+def _cap_frame_target(window, dragged, target, axis="x"):
+    """`target` for a cursor-driven FRAME edge, held within the window's
+    max_height (row axis only): the far edge no farther than near + cap,
+    the near edge no nearer than far − cap. Other axes / no cap: as is."""
+    if axis != "y":
+        return target
+    cap = getattr(window, "max_height", None)
+    if not cap:
+        return target
+    fe = _frame(window, axis)
+    if not fe:
+        return target
+    near, far = fe
+    if dragged is far:
+        return min(target, near[axis] + float(cap))
+    if dragged is near:
+        return max(target, far[axis] - float(cap))
+    return target
+
+
+def _hold_frame_max(window, dragged, axis="x"):
+    """The mirror of _hold_frame_min for the window's max_height (the row
+    axis only — there is no max_width): a cursor-driven FRAME edge dragged
+    past the cap STOPS at it — the dragged edge is pulled back to
+    cap-distance from the other, which never moves (the usage picker's
+    content-height ceiling, enforced mid-drag, Lukas 09-04)."""
+    if axis != "y":
+        return
+    cap = getattr(window, "max_height", None)   # test stand-ins lack the slot
+    if not cap:
+        return
+    fe = _frame(window, axis)
+    if not fe:
+        return
+    near, far = fe
+    if far[axis] - near[axis] <= cap:
+        return
+    if dragged is far:
+        far[axis] = near[axis] + float(cap)
+    else:
+        near[axis] = far[axis] - float(cap)
 
 
 def _drag_live():

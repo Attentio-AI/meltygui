@@ -2200,6 +2200,8 @@ def render_func(*args, **o_kwargs):
                                 queued_rows = False
                         if not queued_rows:
                             new_h = snap_int(max(size_h, draw_state.min_height))
+                            if draw_state.max_height:
+                                new_h = min(new_h, snap_int(draw_state.max_height))
                             draw_state.height = new_h
                             draw_state._source["height"] = "initial window size"
                             if from_top_left:
@@ -2909,6 +2911,13 @@ def render_func(*args, **o_kwargs):
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
                 draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
+                # `max_height` alone bounds only what the wrapper SIZES (the
+                # auto-resize measure, a closable window's first-render
+                # content adopt - Mode.LIVE_WINDOW relies on the handle being
+                # free under it); `enforce_max_height=True` makes it a hard
+                # cap the resize paths hold in realtime (draw_state.max_height).
+                draw_state.max_height = (kwargs.get("max_height", None)
+                                         if kwargs.get("enforce_max_height", False) else None)
 
                 if draw_state.width is not None and draw_state.min_width is not None:
                     draw_state.width = max(draw_state.width, draw_state.min_width)
@@ -2919,6 +2928,14 @@ def render_func(*args, **o_kwargs):
                         draw_state._source["height"] = "initial window size"
 
                     draw_state.height = max(draw_state.height, draw_state.min_height)
+                # A closable (user-resized) window never exceeds its
+                # max_height - the cap the resize paths enforce mid-drag,
+                # re-applied here so a size inherited from elsewhere (a
+                # default size, a shrunk window) lands under it too.
+                if closable and draw_state.max_height and draw_state.height:
+                    if draw_state.height > draw_state.max_height:
+                        draw_state.height = snap_int(draw_state.max_height)
+                        draw_state._source["height"] = "max_height cap"
 
             ################# Columns
             if column is not None and column_parent is not None and draw_state.parent_window is not None:
@@ -4768,6 +4785,13 @@ def render_func(*args, **o_kwargs):
             if draw_state.expanded:
                 draw_state.min_width = kwargs.get("min_width", draw_state.min_width)
                 draw_state.min_height = kwargs.get("min_height", draw_state.min_height)
+                # `max_height` alone bounds only what the wrapper SIZES (the
+                # auto-resize measure, a closable window's first-render
+                # content adopt - Mode.LIVE_WINDOW relies on the handle being
+                # free of it). `enforce_max_height=True` makes it a hard
+                # cap the resize paths hold in realtime (draw_state.max_height).
+                draw_state.max_height = (kwargs.get("max_height", None)
+                                         if kwargs.get("enforce_max_height", False) else None)
 
                 if draw_state.width is not None and draw_state.min_width is not None:
                     draw_state.width = max(draw_state.width, draw_state.min_width)
@@ -4778,6 +4802,14 @@ def render_func(*args, **o_kwargs):
                         draw_state._source["height"] = "initial window size"
 
                     draw_state.height = max(draw_state.height, draw_state.min_height)
+                # A closable (user-resized) window never exceeds its
+                # max_height - the cap the resize paths enforce mid-drag,
+                # re-applied here so a size written from elsewhere (a
+                # persisted size, a shrunk content) lands under it too.
+                if closable and draw_state.max_height and draw_state.height:
+                    if draw_state.height > draw_state.max_height:
+                        draw_state.height = snap_int(draw_state.max_height)
+                        draw_state._source["height"] = "max_height cap"
 
 
             column = kwargs.get("column", None)

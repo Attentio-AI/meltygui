@@ -69,7 +69,7 @@ class UsagePickerModel:
     click picked (`picked`, consumed by draw_text). Plain object — draw_text
     change-gates the popover's repaint on (rows, index, kbd_mode)."""
     __slots__ = ("rows", "all_rows", "index", "kbd_mode", "picked", "_last_mouse",
-                 "hover")
+                 "hover", "measured", "chrome_h")
 
     def __init__(self):
         self.rows = []
@@ -79,6 +79,12 @@ class UsagePickerModel:
         self.picked = None
         self._last_mouse = None
         self.hover = None
+        # (frame, row height) the body laid out) - the sizing reads the
+        # wrapper's content rect only when it was measured this frame.
+        self.measured = None
+        # Window chrome above + below the rows (content rect - rows height),
+        # learned from a window measure; sizes the rows without one.
+        self.chrome_h = 8.0
 
     def set_rows(self, rows, best_index=0, max_rows=None):
         """Install `rows`; past `max_rows` the list is cut (never above the
@@ -254,25 +260,52 @@ def _same_tint(a, b):
     return all(abs(float(x) - float(y)) < 0.005 for x, y in zip(a[:3], b[:3]))
 
 
-# Popover size: the height always fits the rows (capped but scrolling past it);
-# the width is content-fit until the user drag-resizes it, which persists in
-# TextEditorState.usage_picker_width - see draw_text's call.
+# Popover size: fitted to the rows ONCE, on open (width = the remembered
+# drag width, TextEditorState.usage_picker_width, when there is one); after
+# that the handle resizes it freely, constrained only by the content height
+# (every row + the "+ N more" row) measured in draw_text's call.
 PICKER_MIN_W = 680
-PICKER_MAX_H = 420
 PICKER_MIN_H = 33
 
 
-def picker_fit(menu_ds):
-    """The popover size that fits its rows: the wrapper's measured unclipped
-    content rect under the min-width / max-height / display clamps. None
-    until the body has measured."""
-    from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+def _fresh_rect(menu_ds, model):
+    """The wrapper's content rect, only when the body measured it THIS frame
+    — a latched popover keeps the rect of its last open (a longer list
+    sized a 4-row picker to 500 px, 09-04). A fresh rect also teaches the
+    model its chrome height."""
+    if menu_ds is None or model is None or model.measured is None:
+        return None
+    frame, rows_h = model.measured
+    if frame != Melty.frame_count:
+        return None
     rect = getattr(menu_ds, "_content_rect", None)
     if not rect or rect[0] <= 0 or rect[1] <= 0:
         return None
+    if rect[1] >= rows_h:
+        model.chrome_h = rect[1] - rows_h
+    return rect
+
+
+def picker_content_height(menu_ds, model):
+    """The popover's whole content: every row (the "+ N more" row included)
+    plus the window chrome — the ceiling of its height."""
+    rect = _fresh_rect(menu_ds, model)
+    if rect is not None:
+        return max(PICKER_MIN_H, rect[1])
+    n = len(model.rows) if model is not None else 0
+    chrome = model.chrome_h if model is not None else 8.0
+    return max(PICKER_MIN_H, n * ROW_PITCH + chrome)
+
+
+def picker_fit(menu_ds, model):
+    """The popover size that fits its rows, display-clamped: the fresh
+    content rect's width (else the minimum) and the content height."""
+    from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
     display_w, display_h = imgui.get_io().display_size
-    fit_w = snap_int(max(min(rect[0], display_w), PICKER_MIN_W))
-    fit_h = snap_int(max(min(rect[1], display_h, PICKER_MAX_H), PICKER_MIN_H))
+    rect = _fresh_rect(menu_ds, model)
+    fit_w = snap_int(max(min(rect[0] if rect else PICKER_MIN_W, display_w), PICKER_MIN_W))
+    fit_h = snap_int(max(min(picker_content_height(menu_ds, model), display_h),
+                         PICKER_MIN_H))
     return (fit_w, fit_h)
 
 
@@ -285,8 +318,8 @@ def scroll_row_into_view(menu_ds, row_index):
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=False, with_header=None,
-             max_height=PICKER_MAX_H, min_width=PICKER_MIN_W, swoosh=False,
-             min_height=PICKER_MIN_H,
+             min_width=PICKER_MIN_W, swoosh=False, min_height=PICKER_MIN_H,
+             enforce_max_height=True,   # the content height cap holds mid-drag
              is_default_for=UsagePickerModel, tint=(0.071, 0.354, 0.511))
 def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
     """Paint the picker rows Code-tab style. Hover moves the highlight only
@@ -329,6 +362,8 @@ def draw_usage_picker(input_value: UsagePickerModel, draw_state, **kwargs):
     width = _dd_row_width(draw_state)
     n = len(rows)
     total_h = n * ROW_PITCH
+    if model is not None:
+        model.measured = (Melty.frame_count, total_h if n else ROW_H)
     if n == 0:
         imgui.dummy(width, ROW_H)
         return False, model

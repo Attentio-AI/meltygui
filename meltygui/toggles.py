@@ -1897,6 +1897,12 @@ class Toggles:
         tab_active_shadow_offset = 2.0
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
         tab_inactive_shadow_offset = 0.21
+        # Closing a tab HOLDS the bar's layout (Safari-style: the next tab
+        # slides into the closed slot at the closed tab's width) until the
+        # mouse travels this many pixels, so repeated close × / middle
+        # clicks on one spot close tab after tab. 0 = no hold.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tab_close_hold_move_px = 8.0
         # The text pairs are FULL-RANGE hsv multipliers applied directly to
         # each tab's tint (open_files._tab_text_color → flat_button
         # text_color): brightness scales hsv value (0 = black, 1 = the
@@ -2071,7 +2077,7 @@ class Toggles:
         # [tint=(0.181, 0.119, 0.294)]
         ry_sensitivity = 2.239
         # [tint=(0.181, 0.119, 0.294)]
-        rz_sensitivity = 0.253
+        rz_sensitivity = 0.875
 
         # Environment lighting the puck in draw_space_mouse: an HDR photo
         # from pbr.HDRIS ("studio", resources/hdri) or a cube map from

@@ -101,6 +101,24 @@ class TabState(DictConversion):
         self.tab_icons = {}
 
 
+@no_save("close_hold")
+class TabBarState(DictConversion):
+    """Per-editor state for draw_code_editor's tab bar (injected via
+    `tab_bar_state: TabBarState = None` — the TabState pattern)."""
+
+    def __init__(self):
+        super().__init__()
+        # Safari-style close hold: after a tab closes, the survivors keep
+        # the PRE-close layout (row membership, widths) and the next tab
+        # slides into the closed slot with the closed tab's width, so the
+        # close × on a middle-click lands on the same spot again. Released
+        # once the mouse travels Toggles.CodeEditor.tab_close_hold_move_px
+        # or the tab set changes for another reason. Session-only:
+        # {"tabs": {path: (x, row, width)}, "mouse": (x, y), "height": bar_h}
+        # or None.
+        self.close_hold = None
+
+
 @no_save("fit_phase")
 class ContextMenuWindowState(DictConversion):
     """Per-menu persisted state for the context menu WINDOW, draw_context_menu
@@ -348,7 +366,7 @@ class TileMode(Enum):
          "overhead_time", "scroll_visible", "imgui_is_toggled_open", "top", "left",
          "hotkey_receiver", "use_child", "cst", "bg_color", "depth", "return_item",
          "is_active", "clip_rect", "wrapped_top", "current_tint", "wrapped_left", "multi_line", "relative_pos", "footer_width", "footer_height",
-         "min_width", "min_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
+         "min_width", "min_height", "max_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
          "imgui_is_item_activated", "frame_count", "text_search_count")
@@ -604,6 +622,12 @@ class DrawState(DictConversion):
         self.width = 0
         self.min_width = 0
         self.min_height = 0
+        # The wrapper's max_height kwarg when the caller passes
+        # enforce_max_height=True, mirrored like min_height so the resize
+        # handlers (corner drag, the frame-edge solve) cap a closable window's
+        # height in realtime; None = uncapped (a bare max_height only bounds
+        # what the wrapper sizes - the resize handle stays free from it).
+        self.max_height = None
         self.drag_window = False
         self._left_rel = None
         self._top_rel = None

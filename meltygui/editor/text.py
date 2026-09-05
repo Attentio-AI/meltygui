@@ -15913,25 +15913,37 @@ def draw_text(input_value: str, height=None,
     else:
         _uj_x, _uj_y = _char_pos_to_xy(text, _uj_anchor, origin_x, origin_y, line_px, vcols=vcols)
     from src.lsd.gl_gui.view.core_views.usage_picker import draw_usage_picker, picker_fit
-    # ── Popover size: height FITS the content, width is the user's ── the
-    # suggestion popup's feel with the dropdown's plumbing: auto_resize=False
-    # hands the popup its resize handle; every open frame the height is
-    # stamped from the content fit (picker_fit - the rows, capped at the
-    # max height for display, scrolling past it) while the width is the
-    # previous drag width (text_editor_state.usage_picker_width,
-    # persisted; adopted when the handle moved it) or the fit's until then.
+    # ── Popover size: fitted to the rows ONCE on open, then free ─ use the
+    # dropdown's plumbing (auto_resize=False hands the window its resize
+    # handle) without its every-frame stamp: on the opening frames the size
+    # is the content fit (picker_fit - every row, height-stamped), the
+    # width the remembered drag width (text_editor_state.usage_picker_width,
+    # below) when there is one; afterwards the handle resizes freely,
+    # bounded only by the content height (picker_content_height, passed as the
+    # wrapper's max_height - the wrapper enforces it mid-drag: the corner
+    # resize and the frame-edge solve cap at draw_state.max_height), and only
+    # only the handle width is remembered. Re-stamping every frame fought
+    # the drag (Lukas 09-04).
+    from src.lsd.gl_gui.view.core_views.usage_picker import picker_content_height
     _uj_width = (getattr(text_editor_state, 'usage_picker_width', None)
                  if text_editor_state is not None else None)
     _uj_pop = Melty.cache.key_to_draw_state.get(getattr(ds, '_uj_menu_tile', None))
+    _uj_fitting = Melty.frame_count - getattr(ds, '_uj_open_frame', -99) <= 1
     if _uj_show and _uj_pop is not None:
-        if getattr(ds, '_uj_open_frame', -1) == Melty.frame_count and _uj_width:
-            _uj_pop.width = _uj_width
+        if _uj_fitting:
+            if _uj_width:
+                _uj_pop.width = _uj_width
+            # The latched window's tile may be clean from its last open -
+            # force the body to run so the fit measures THESE rows.
+            if _uj_pop._tile_id is not None:
+                Melty.cache.invalidate_up(_uj_pop._tile_id, force=True, bypass_clip=True)
         if _uj_pop.width is None or _uj_pop.width < 5:
             _uj_pop.width = 680
+    _uj_max_h = picker_content_height(_uj_pop, uj_model)
     # [tint=(0.071, 0.354, 0.511), show_tint=True]
     _uj_res = draw_usage_picker(
         uj_model, name=f"{ds.name}_uj_menu", view_offset=False, show_bg=True,
-        temp=True, swoosh=False, closed=not _uj_show, bg_offset=0,
+        temp=True, swoosh=False, closed=not _uj_show, bg_offset=0, max_height=_uj_max_h,
         window_pos=(_uj_x - draw_state.abs_left, _uj_y - draw_state.abs_top + line_px),
         parent_window=draw_state, tint=(0.06, 0.08277813, 0.13),
         return_extras=True)
@@ -15943,17 +15955,17 @@ def draw_text(input_value: str, height=None,
     if _uj_show and _uj_menu_ds is not None:
         _cur_w = _uj_menu_ds.width
         _last_w = getattr(ds, '_uj_menu_fit_w', None)
-        if _last_w is not None and _cur_w and _cur_w != _last_w:
-            # The handle moved it: the width is the user's from now on.
-            _uj_width = _cur_w
-            if text_editor_state is not None:
-                text_editor_state.usage_picker_width = _cur_w
-        _fit = picker_fit(_uj_menu_ds)
-        if _fit is not None:
+        if _uj_fitting:
+            _fit = picker_fit(_uj_menu_ds, uj_model)
             _target = (_uj_width or _fit[0], _fit[1])
             if _target != (_uj_menu_ds.width, _uj_menu_ds.height):
                 _uj_menu_ds.width, _uj_menu_ds.height = _target
                 request_render()
+        else:
+            if _last_w is not None and _cur_w and _cur_w != _last_w:
+                # The handle moved it: the width is the user's from now on.
+                if text_editor_state is not None:
+                    text_editor_state.usage_picker_width = _cur_w
         ds._uj_menu_fit_w = _uj_menu_ds.width
     # Change-gated repaint - one invalidate per real change edge (rows swap,
     # arrow nav, highlight row flip, hover row), zero on parked-pointer
