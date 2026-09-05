@@ -213,6 +213,16 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
+    @defaults(tint=(0.15, 0.95, 0.30))
+    def change_count(added=True):
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        hue = 0.36 if added else 0.0
+        saturation = 0.70
+        value_factor = 2.161
+        brightness = min(1.0, max(0.85, style_manager.hsv[2] * value_factor))
+        return hsv_to_rgb(hue, saturation, brightness)
+
+    @staticmethod
     @defaults(tint=(0.54, 0.54, 0.54))
     def cursor_tint():
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -2247,6 +2257,10 @@ class Toggles:
 
     @defaults(tint=(0.85, 0.55, 0.35))
     class InternetAccounts:
+        # Codex app-server CLI integration; empty executable searches PATH.
+        codex_bin = ""
+        codex_request_timeout_s = 30.0
+        codex_login_timeout_s = 300.0
         # The Anthropic "Sign in" button (Internet Accounts.py →
         # fim_providers/anthropic_oauth.py): the same OAuth login that
         # `ant auth login` performs, written as an SDK profile the

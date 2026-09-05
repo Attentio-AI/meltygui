@@ -28,8 +28,8 @@ would be left less than min_text_width, or the strip is wider than the row,
 the buttons wrap onto as many right-aligned lines as they need under the
 text (`pack_buttons`; the row grows — card and model sub-rows do the same),
 otherwise status text is ellipsized to what's left. Kind headers, notes and
-field labels ellipsize; a usage row drops its bar, then its reset text,
-then narrows its label — so nothing overlaps at any window width.
+field labels ellipsize; usage names stay complete and wrap above their
+bars in narrow windows — so nothing overlaps at any window width.
 """
 from __future__ import annotations
 
@@ -83,6 +83,10 @@ class AccountStore(dict):
             except Exception as error:
                 self.error = f"accounts.json: {error}"
             self.loaded = True
+        self.ensure_kinds()
+        return self
+
+    def ensure_kinds(self):
         # default accounts so every kind has a row to act on: the id is the
         # kind name ("anthropic", "copilot", "ollama"); sessions asking for
         # account="default" resolve to it (see `account`).
@@ -92,7 +96,6 @@ class AccountStore(dict):
             for entry in self.of_kind(kind.name):
                 for field in kind.fields:
                     entry.setdefault(field.name, field.default)
-        return self
 
     def save(self):
         with self._lock:
@@ -135,6 +138,7 @@ class AccountStore(dict):
         entry = self.get(account_id)
         if entry is None:
             return
+        KINDS[entry["kind"]].close(entry)
         _drop_sessions_for(entry)
         self.pop(account_id, None)
         self.save()
@@ -293,6 +297,10 @@ class AccountKind:
     icon = ""
     tint = (0.5, 0.5, 0.55)
     fields = ()
+
+    def close(self, account):
+        """Release account-owned background work on removal / cleanup."""
+        pass
 
     def default_label(self, account_id):
         return self.label if account_id == self.name else f"{self.label} ({account_id})"
@@ -903,6 +911,184 @@ class AnthropicKind(AccountKind):
 
 
 @account_kind
+class CodexKind(AccountKind):
+    name = "codex"
+    label = "Codex"
+    icon = f""
+    tint = (0.35, 0.8, 0.65)
+    fields = ()
+
+    def _server(self, account):
+        from src.lsd.gl_gui.fim_providers.codex_accounts import AppServer, account_home
+        from src.lsd.gl_gui.toggles import Toggles
+        return AppServer(account_home(account["id"]),
+                         executable=Toggles.InternetAccounts.codex_bin,
+                         timeout=Toggles.InternetAccounts.codex_request_timeout_s)
+
+    def _read_account(self, account, server):
+        identity = server.request("account/read", {"refreshToken": False}).get("account")
+        if identity != account.get("_codex_account"):
+            account.pop("_usage_rows", None)
+            account.pop("_usage_fetched_wall", None)
+            account.pop("_usage_error", None)
+        account["_codex_account"] = identity
+        cached = account.pop("_codex_cached_usage", None)
+        if cached and identity and cached.get("identity") == identity:
+            account["_usage_rows"] = cached.get("rows") or []
+            account["_usage_fetched_wall"] = cached.get("fetched_wall")
+        if not identity:
+            return ("needs_login", "not signed in")
+        if identity.get("type") != "chatgpt":
+            return ("warning", "ChatGPT sign-in required for plan usage")
+        return ("ready", " · ".join(filter(None, (
+            identity.get("email") or "ChatGPT", identity.get("planType")))))
+
+    def probe(self, account):
+        with self._server(account) as server:
+            status = self._read_account(account, server)
+            if account.get("_usage_open"):
+                self._read_usage(account, server)
+            return status
+
+    def usage_cache_entry(self, account):
+        if account.get("_usage_fetched_wall") and account.get("_codex_account"):
+            return {"identity": account["_codex_account"],
+                    "rows": account.get("_usage_rows") or [],
+                    "fetched_wall": account["_usage_fetched_wall"]}
+        return account.get("_codex_cached_usage")
+
+    def restore_usage(self, account, cached):
+        if not account.get("_usage_restored"):
+            account["_usage_restored"] = True
+            # Display only after account/read confirms whose cached limits these are.
+            if cached and "_codex_account" not in account:
+                account["_codex_cached_usage"] = cached
+
+    def sign_in(self, account):
+        # A separate login flag keeps Cancel / Open browser usable while waiting.
+        if account.get("_codex_signing_in") or account.get("_probing") or account.get("_usage_loading"):
+            return
+        account["_codex_signing_in"] = True
+        account["_codex_cancel"] = threading.Event()
+        account["_status"] = ("busy", "starting sign-in…")
+        accounts_changed()
+
+        def run():
+            from src.lsd.gl_gui.toggles import Toggles
+            try:
+                with self._server(account) as server:
+                    server.cancelled = account["_codex_cancel"]
+                    login = server.request("account/login/start", {"type": "chatgpt"})
+                    account["_codex_login"] = login
+                    account["_status"] = ("busy", "finish sign-in in your browser")
+                    accounts_changed()
+                    if not server.cancelled.is_set():
+                        _open_url(login["authUrl"])
+                    completed = server.wait_login(login["loginId"],
+                                                  Toggles.InternetAccounts.codex_login_timeout_s)
+                    account["_status"] = self._read_account(account, server)
+                    if completed and account.get("_usage_open"):
+                        self._read_usage(account, server)
+            except Exception as error:
+                account["_status"] = ("error", str(error)[:160])
+            finally:
+                account.pop("_codex_login", None)
+                account["_codex_signing_in"] = False
+                accounts_changed()
+
+        threading.Thread(target=run, daemon=True, name="codex-sign-in").start()
+
+    def close(self, account):
+        cancel = account.get("_codex_cancel")
+        if cancel is not None:
+            cancel.set()
+
+    def sign_out(self, account):
+        with self._server(account) as server:
+            server.request("account/logout")
+            account["_status"] = self._read_account(account, server)
+
+    def _read_usage(self, account, server):
+        from src.lsd.gl_gui.fim_providers.codex_accounts import usage_rows
+        try:
+            account["_status"] = self._read_account(account, server)
+            if (account.get("_codex_account") or {}).get("type") != "chatgpt":
+                account["_usage_error"] = "Sign in with ChatGPT to view usage"
+                return
+            payload = server.request("account/rateLimits/read")
+            account["_usage_rows"] = usage_rows(payload)
+            account["_usage_fetched_wall"] = time.time()
+            account.pop("_usage_error", None)
+        except Exception as error:
+            account["_usage_error"] = "Usage unavailable: " + str(error)[:120]
+
+    def fetch_usage(self, account):
+        if account.get("_usage_loading") or account.get("_codex_signing_in") or account.get("_busy") or account.get("_probing"):
+            return
+        account["_usage_loading"] = True
+        accounts_changed()
+
+        def run():
+            try:
+                with self._server(account) as server:
+                    self._read_usage(account, server)
+            except Exception as error:
+                account["_usage_error"] = "Usage unavailable: " + str(error)[:120]
+            finally:
+                account["_usage_loading"] = False
+                accounts_changed()
+
+        threading.Thread(target=run, daemon=True, name="codex-usage").start()
+
+    def toggle_usage(self, account):
+        _toggle(account, "_usage_open")
+        if account.get("_usage_open"):
+            self.fetch_usage(account)
+
+    def actions(self, account):
+        if account.get("_codex_signing_in"):
+            return [Button("Cancel", self.close)]
+        idle = not account.get("_usage_loading") and not account.get("_probing")
+        out = [Button(None, self.toggle_usage,
+                      icon=f"" if account.get("_usage_open") else f"",
+                      tip="Codex plan usage limits")]
+        if account.get("_codex_account"):
+            out.append(Button("Sign out", lambda account: _run_in_background(
+                account, lambda: self.sign_out(account), reprobe=False), enabled=idle))
+        else:
+            out.append(Button("Sign in", self.sign_in, primary=True, enabled=idle))
+        out.append(Button(None, lambda account: self.fetch_usage(account)
+                          if account.get("_usage_open") else refresh(account), enabled=idle,
+                          icon=f"", tip="Refresh account and usage"))
+        return out
+
+    def sub_rows(self, account):
+        out = []
+        login = account.get("_codex_login")
+        if login:
+            out.append(("card", ("Finish signing in with ChatGPT", [
+                Button("Open browser", lambda account: _open_url(login["authUrl"])),
+                Button("Cancel", self.close)])))
+        if account.get("_usage_open"):
+            rows = account.get("_usage_rows") or []
+            out.extend(("usage", row) for row in rows)
+            error = account.get("_usage_error")
+            if error:
+                out.append(("note", error))
+            elif not rows:
+                out.append(("note", "loading usage…" if account.get("_usage_loading")
+                            else "Usage unavailable — Refresh to check"))
+            fetched = account.get("_usage_fetched_wall")
+            if fetched:
+                stamp = "as of " + time.strftime("%m-%d %H:%M:%S", time.localtime(fetched))
+                if account.get("_usage_loading"):
+                    stamp += " · refreshing…"
+                out.append(("stamp", stamp))
+        out.append(("note", "Melty sign-in · separate from Codex desktop / CLI"))
+        return out
+
+
+@account_kind
 class CopilotKind(AccountKind):
     name = "copilot"
     label = "GitHub Copilot"
@@ -1180,6 +1366,28 @@ def _color_u32(color, alpha=1.0):
     return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
 
 
+def _wrap_usage_label(text, max_width):
+    """Keep the complete name; wrap at spaces, or within a long model name."""
+    lines = []
+    while text:
+        if imgui.calc_text_size(text)[0] <= max_width:
+            lines.append(text)
+            break
+        low, high = 1, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if imgui.calc_text_size(text[:middle])[0] <= max_width:
+                low = middle
+            else:
+                high = middle - 1
+        end = text.rfind(" ", 0, low + 1)
+        if end <= 0:
+            end = low
+        lines.append(text[:end])
+        text = text[end:].lstrip()
+    return lines
+
+
 def _ellipsize(text, max_width):
     """`text` ellipsized to `max_width` pixels in the current font."""
     if max_width <= 0:
@@ -1220,9 +1428,15 @@ class AccountsPanelState(DictConversion):
         self.usage = {}
 
 
+def _cleanup_accounts(draw_state):
+    for entry in list(accounts.values()):
+        KINDS[entry["kind"]].close(entry)
+
+
 @window(input_value=accounts, tint=(0.84, 0.84, 0.77), icon=f"",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
+             on_cleanup=_cleanup_accounts,
              is_tree=False, show_name=True, shadow=True,
              is_default_for="AccountStore", tint=(0.62, 0.47, 0.88))
 def draw_internet_accounts(
@@ -1235,6 +1449,7 @@ def draw_internet_accounts(
     store = input_value
     if not store.loaded:
         store.load()
+    store.ensure_kinds()  # adopt newly registered kinds after a hotswap
     if panel_state is not None:
         if "usage" not in panel_state.__dict__:
             panel_state.usage = {}      # a legacy instance from before the field existed (hotswap)
@@ -1246,7 +1461,7 @@ def draw_internet_accounts(
                 if key not in account_entry:
                     account_entry[key] = bool(panel_state.open.get(f"{account_entry['id']}{key}"))
             kind = KINDS.get(account_entry.get("kind"))
-            if isinstance(kind, AnthropicKind):
+            if isinstance(kind, (AnthropicKind, CodexKind)):
                 kind.restore_usage(account_entry, panel_state.usage.get(account_entry["id"]))
 
     # ---- styling (fast_dock recipe) ----
@@ -1432,10 +1647,21 @@ def draw_internet_accounts(
             # (sub, height, button lines, wrap) - the painter reads them.
             sub_strip_max = (row_right - px(12)) - (row_left + text_inset + px(6))
             sub_items = []
+            # Align bars to the longest full name in this account's usage rows.
+            usage_label_width = max([px(150)] + [imgui.calc_text_size(sub[1]["label"])[0]
+                                                 for sub in subs if sub[0] == "usage"])
+            usage_available = row_right - row_left - text_inset - px(20)
             for sub in subs:
                 sub_height, sub_lines, sub_wrap = sub_row_height, None, False
                 if sub[0] == "stamp":
                     sub_height = stamp_row_height
+                elif sub[0] == "usage":
+                    percent_width = imgui.calc_text_size(f"{sub[1]['percent']:.0f}%")[0]
+                    sub_wrap = usage_label_width + percent_width + px(70) > usage_available
+                    sub_lines = (_wrap_usage_label(sub[1]["label"], usage_available)
+                                 if sub_wrap else usage_label_width)
+                    if sub_wrap:
+                        sub_height += len(sub_lines) * line_height + px(4)
                 elif sub[0] in ("card", "model"):
                     sub_buttons = (sub[1][1] if sub[0] == "card"
                                    else kind.model_actions(account_entry, sub[1]))
@@ -1567,10 +1793,10 @@ def draw_internet_accounts(
                                        sub_top + (sub_row_height - line_height) / 2.0 + text_nudge_y,
                                        _color_u32((1.0, 0.95, 0.85)), message_fit)
             elif sub[0] == "usage":
-                # One rate-limit window: label - bar (fill = severity tint,
-                # width = percent) - percent - reset countdown / spend amount.
-                # As the row narrows the bar disappears first, then the reset /
-                # spend text, then the label column shrinks - nothing overlaps.
+                # One rate-limit window: label · bar (fill = severity tint,
+                # width = percent) · percent · reset countdown / spend detail.
+                # Label may sit beside the bar, or wrap above it in a narrow
+                # row. Layout uses the same label height used by this painter.
                 row = sub[1]
                 if visible(sub_top, sub_bottom):
                     from src.lsd.gl_gui.fim_providers.claude_usage import reset_text
@@ -1586,16 +1812,23 @@ def draw_internet_accounts(
                     right_text = row["detail"] or reset_text(row["resets_at"])
                     right_width = imgui.calc_text_size(right_text)[0] if right_text else 0.0
                     # [tint=(0.75, 0.55, 0.9)]
-                    label_width = min(px(150), max(px(60), available - percent_width - px(18)))
-                    rest = available - label_width - px(10) - percent_width - px(8)
+                    label_width = 0 if sub_wrap else sub_lines
+                    label_gap = 0 if sub_wrap else px(10)
+                    label_height = len(sub_lines) * line_height + px(4) if sub_wrap else 0
+                    if sub_wrap:
+                        for index, label_line in enumerate(sub_lines):
+                            draw_list.add_text(label_x, sub_top + index * line_height + px(2),
+                                               _color_u32(label_color), label_line)
+                        text_y += label_height
+                    else:
+                        draw_list.add_text(label_x, text_y, _color_u32(label_color), row["label"])
+                    rest = available - label_width - label_gap - percent_width - px(8)
                     if right_text and rest < right_width + px(12):
                         right_text, right_width = "", 0.0
-                    draw_list.add_text(label_x, text_y, _color_u32(label_color),
-                                       _ellipsize(row["label"], label_width))
-                    bar_left = label_x + label_width + px(10)
+                    bar_left = label_x + label_width + label_gap
                     bar_right = (sub_right - px(8) - right_width - (px(12) if right_text else 0.0)
                                  - percent_width - px(8))
-                    bar_top = sub_top + (sub_row_height - bar_height) / 2.0
+                    bar_top = sub_top + label_height + (sub_row_height - bar_height) / 2.0
                     if bar_right - bar_left >= px(40):
                         track_color = _mix(style_manager, tint, 0.02, factor, saturation)
                         add_shadow((bar_left, bar_top, bar_right - bar_left, bar_height),
@@ -1675,7 +1908,7 @@ def draw_internet_accounts(
         usage_cache = {}
         for account_entry in store.values():
             kind = KINDS.get(account_entry.get("kind"))
-            if isinstance(kind, AnthropicKind):
+            if isinstance(kind, (AnthropicKind, CodexKind)):
                 entry = kind.usage_cache_entry(account_entry)
                 if entry is not None:
                     usage_cache[account_entry["id"]] = entry

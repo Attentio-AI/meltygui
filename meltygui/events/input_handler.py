@@ -687,8 +687,12 @@ class InputHandler:
                 break
         return result
 
-    def process_frame(self):
-        """Returns {view_id: {event_name: event}} for all matched subscriptions."""
+    def process_frame(self, on_pointer_down=None):
+        """Returns {view_id: {event_name: event}} for all matched subscriptions.
+
+        on_pointer_down observes each left/right press before dispatch, even
+        without subscribers. It must not consume events or change registrations.
+        """
         self._hovered.sort(key=lambda x: x[1])
 
         # --- Blocker: drop views below the topmost blocker ---
@@ -855,6 +859,10 @@ class InputHandler:
             # The captured action is stored so the activation + release passes
             # emit the matching DRAGGED/DOUBLE_DRAGGED variant.
             if action == EventAction.DOWN:
+                # Window activation observes the press once, independently of
+                # which control consumes it and captures the subsequent drag.
+                if on_pointer_down is not None and event.input_id in ("left_mouse", "right_mouse"):
+                    on_pointer_down(event)
                 st = states.get(event.input_id)
                 drag_action = EventAction.DRAGGED
                 capture_views = None

@@ -2135,7 +2135,7 @@ class Melty:
         cls.imgui_blockers = cls.pending_blockers
         cls.pending_blockers = [None] * cls.max_layer
 
-        cls.events, cls.events_by_type = cls.event_handler.process_frame()
+        cls.events, cls.events_by_type = cls.event_handler.process_frame(on_pointer_down=cls.raise_pressed_window)
 
         # Pointer shape: the frame about to draw, pushed NOW against the
         # freshest pointer position rather than after the (possibly slow)
@@ -4667,6 +4667,29 @@ class Melty:
         request_render()
 
     @classmethod
+    def raise_pressed_window(cls, event):
+        """Activate the hit window before controls run, without taking their press.
+
+        Use the captured press point, not the cursor (which may already have
+        moved). Only the frontmost hit owns activation; non-blocking handlers
+        on covered windows must never raise those windows through the front one.
+        """
+        if cls.imgui_popup_open:
+            return
+        hits = cls.bvh_query(event.x, event.y)
+        node = hits[0] if hits else None
+        while node is not None:
+            if node.closable:
+                # Placed popovers retain their owner's text focus and stacking.
+                if node._kwargs.get("window_pos") is None:
+                    cls.move_window_to_front(node)
+                return
+            parent = node.parent_window
+            if parent is node:
+                return
+            node = parent
+
+    @classmethod
     def move_window_to_front(cls, draw_state):
             if draw_state is None:
                 return
@@ -4844,12 +4867,14 @@ class Melty:
             # of the root reorder below; clicking a back sub-window while its
             # parent is already the front top-level window must still restack it
             # among its siblings, the case the window_z_pos == layer gate misses.
+            reordered = False
             for nested in cls.pending_move_to_front[2]:
                 parent = nested.parent_window
                 siblings = Melty.root_draw_states.get(parent.id) if parent is not None else None
-                if siblings is not None and nested in siblings:
+                if siblings and siblings[-1] is not nested and nested in siblings:
                     siblings.remove(nested)
                     siblings.append(nested)
+                    reordered = True
 
             window_z_pos = len(Melty.registered_windows) + Melty.top_layer_boost
             if cls.pending_move_to_front[1]._kwargs.get("always_on_top", False):
@@ -4867,6 +4892,7 @@ class Melty:
             # is actually the top (last) registry entry.
             already_front = next(reversed(Melty.registered_windows), None) == window_key
             if window_z_pos != cls.pending_move_to_front[1].layer or not already_front:
+                reordered = True
                 old_layer = cls.pending_move_to_front[1].layer
                 cls.pending_move_to_front[1].layer = window_z_pos
                 draw_state = cls.pending_move_to_front[1]
@@ -4932,7 +4958,8 @@ class Melty:
             # the per-(x,y) bvh_query memo - otherwise a result cached for this
             # frame would match the pre-raise ordering and click-to-raise (which
             # reads bvh_query) could still pick the old front window for a frame.
-            cls._bvh_gen += 1
+            if reordered:
+                cls._bvh_gen += 1
 
             # Clear once handled (inside the not-imgui_active gate so the move
             # still works through across frames where imgui owns the interaction). The

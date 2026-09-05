@@ -2436,11 +2436,8 @@ def render_func(*args, **o_kwargs):
             # children. Protect the press hit-stack's ancestor closure (bvh_query
             # at the press point) so a click inside a popover / find box keeps
             # its owner focused, while any outside click dismisses popovers and
-            # releases all focus. This is the clear_focus half of the old
-            # raise-on-press handler (removed with the move-to-front redesign,
-            # which also silently removed the only click-driven clear_focus -
-            # popovers stopped dismissing on outside click); the raise half
-            # now lives in the blocking left_mouse_down "window_move" handler.
+            # releases text focus. Window activation runs once at input time
+            # (Melty.raise_pressed_window), independently of these subscriptions.
             clear_press = draw_state.on_action("non_blocking_left_mouse_down", "clear_focus", priority_delta=512)
             if clear_press:
                 # Resolve against the press position the event captured, not the
@@ -2449,17 +2446,6 @@ def render_func(*args, **o_kwargs):
                 # press point and protect/clear the wrong views.
                 ds_under_mouse = Melty.bvh_query(clear_press.x, clear_press.y)
                 Melty.clear_focus(not_this=(*ds_under_mouse, draw_state))
-
-            raise_press_right = draw_state.on_action("right_mouse_down", "window_raise")
-            # An explicitly PLACED closable window (an anchored popover - the
-            # usage picker, dropdown menus) is never raised on a press: the
-            # left press skips the raise handler for the same reason, and
-            # raising it cleared the editor's text focus (apply_move_to_front:
-            # the popover is a CHILD of the focused editor, not on the parent
-            # chain), which hid the picker on the very right press that was
-            # meant to start its resize drag (09-04).
-            if raise_press_right and not (closable and kwargs.get("window_pos", None) is not None):
-                Melty.move_window_to_front(draw_state)
 
             # Universal drag-and-drop: any view rendered as an item of a
             # dict/list collection offers its window as a drag handle. The
@@ -2474,12 +2460,6 @@ def render_func(*args, **o_kwargs):
                     left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
                     if left_mouse_down:
-                        # draw_state is the window that actually won the click
-                        # (left_mouse_down is its own on_action result). Pass it
-                        # directly rather than reading melty_window_stack[-1] - for
-                        # a child window move_window_to_front walks up to the
-                        # true root, for a root window it's a no-op resolve.
-                        Melty.move_window_to_front(draw_state)
                         # Press-anchored move baseline. The first-drag-frame
                         # rebase below aligns the cursor - right for mid-drag
                         # (re)adoption, but it permanently discards any delta
@@ -2505,13 +2485,6 @@ def render_func(*args, **o_kwargs):
                             # branch's rebase re-latches for the CURRENT
                             # gesture instead of leaping from the old one's.
                             draw_state._initial_window_pos = None
-
-                    # Bring-to-front on a left press is owned by the non_blocking
-                    # raise_press handler above (so a press consumed by an
-                    # interactive child still raises the window). The blocking
-                    # left_mouse_down "window_move" subscription that used to raise
-                    # here lost the press to any child that subscribed to it, which
-                    # is exactly the inconsistency this replaces.
 
                     # Window moves are left-drag only (the right-drags, single
                     # and double, are the resize block above). A left press
