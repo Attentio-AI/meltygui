@@ -3138,6 +3138,52 @@ def _fnrun_resolve_splices(text, queued):
     return out
 
 
+def _fnrun_panel_sync_entry(editor_ds, skey):
+    """[last text, deadline, unacknowledged writes], shared by both paths."""
+    memo = editor_ds.__dict__.setdefault('_fnrun_sig_sync', {})
+    entry = memo.setdefault(skey, [None, None, {}])
+    if len(entry) == 2:                 # adopt an already-open dict on hotswap
+        entry.append({})
+    return entry
+
+
+def _fnrun_sync_panel_params(shown, seen, pending, params_node, text, line):
+    """Merge signature text into the stable panel dict after the quiet window.
+
+    The parse can lag the buffer. Read defaults from text, and keep local
+    edits until that text acknowledges the latest queued splice. Deferred
+    window draws and hold callbacks must all keep editing the SAME dict.
+    """
+    import libcst
+    from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _cst_to_python_or_raw
+
+    changed = False
+    for key in dict.fromkeys((*shown, *params_node)):
+        if not isinstance(key, str) or key.startswith('__'):
+            continue
+        span = _fnrun_sig_default_span(text, line, key)
+        if span is None:
+            continue
+        source = text[span[0]:span[1]]
+        current = _fnrun_param_src(shown[key]) if key in shown else None
+        if key in pending:
+            if source != pending[key]:
+                continue              # an older echo of a panel edit
+            del pending[key]
+        if key in shown and current != seen.get(key):
+            continue                  # a newer edit still inside the hold timer
+        if source == current:
+            continue
+        try:
+            value = _cst_to_python_or_raw(libcst.parse_expression(source))
+        except Exception:
+            continue                  # broken expression while typing
+        dict.__setitem__(shown, key, value)
+        seen[key] = _fnrun_param_src(value)
+        changed = True
+    return changed
+
+
 def _fnrun_queue_panel_splices(editor_ds, skey, def_name, hint, values=None):
     """Write the params panel's edits back into the code — from ANYWHERE
     (the def widget, or the Auto-Execute hold timer via post_to_render),
@@ -3177,6 +3223,7 @@ def _fnrun_queue_panel_splices(editor_ds, skey, def_name, hint, values=None):
             continue
         queue.append((def_name, hint or 0, pk, new_src))
         seen[pk] = new_src
+        _fnrun_panel_sync_entry(editor_ds, skey)[2][pk] = new_src
         queued = True
         if isinstance(params_node, dict):
             dict.__setitem__(params_node, pk, pv)
@@ -3573,7 +3620,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                         if isinstance(_def_node, dict) else None)
     # DISPLAYED-node latch (also read further down): the background reparse
     # rebuilds the tree mid-typing, so the node handed to the panel is held
-    # across frames and only advanced quieting.
+    # across frames and updated in place panel-side.
     _shown_map = getattr(editor_ds, '_fnrun_shown_nodes', None)
     if _shown_map is None:
         _shown_map = editor_ds._fnrun_shown_nodes = {}
@@ -3603,8 +3650,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         # `_params_node` per run showed half-typed defaults in the panel
         # instead of the panel-sync debounce below - the reparse was a
         # second, undebounced channel into the panel. Hold the last shown
-        # node and hand THAT to the panel; the swap to the current node
-        # happens only in the debounce-expiry branch below.
+        # node and hand THAT to the panel; fresh signature values are
+        # merged in place in the debounce-expiry branch below.
         _shown = _shown_map.get(skey)
         if _shown is None:
             _shown = _shown_map[skey] = _fnrun_detach(_params_node)
@@ -3645,34 +3692,15 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         # The panel writes its own edits to the code (draw_fnrun_params_panel
         # → _fnrun_queue_panel_splices); this widget only syncs TEXT → PANEL.
         if isinstance(_params_node, dict) and tv_text is not None:
-            # TEXT → PANEL sync (the reverse of the splice above): a
-            # signature edit done in the editor shows in the open panel
-            # immediately instead of waiting out the debounced background
-            # reparse. Same diff primitive again - each param's text
-            # slice vs the node's rendered source - with the changed
-            # expression parsed through the central converter. RAW writes
-            # (dict.__setitem__, no bubbling): this is a deferred sync of a
-            # tree the reparse will overwrite anyway, and a bubbled write
-            # would run the code host → chain_out per keystroke (the echo
-            # storm). Gated on text identity so it runs once per buffer
-            # change, not per frame; a mid-typing unparseable expression
-            # just skips until it parses. Guarded by `and not _pch`: on
-            # panel-edit frame the splice above is the truth flowing the
-            # other way.
-            _sync_memo = getattr(editor_ds, '_fnrun_sig_sync', None)
-            if _sync_memo is None:
-                _sync_memo = editor_ds._fnrun_sig_sync = {}
-            # TRAILING DEBOUNCE, re-armed per keystroke: entry is
-            # [tv_text_seen, deadline]; deadline None = already synced. A
-            # fresh buffer arms the window (a one-shot timer wakes the
-            # event-driven render loop at expiry — the widget itself only
-            # runs on frames), and the sync below fires once, quiet-side.
+            # The window renders later than this widget. Keep its input node
+            # stable, and merge it only after the trailing debounce.
             from src.lsd.gl_gui.toggles import Toggles
             _dbc = Toggles.TextEditor.fnrun_text_sync_debounce_ms / 1000.0
-            _ent = _sync_memo.get(skey)
+            _ent = _fnrun_panel_sync_entry(editor_ds, skey)
             _due = False
-            if _ent is None or _ent[0] is not tv_text:
-                _sync_memo[skey] = [tv_text, time.monotonic() + _dbc]
+            if _ent[0] is not tv_text:
+                _ent[0] = tv_text
+                _ent[1] = time.monotonic() + _dbc
                 if _dbc <= 0:
                     _due = True
                 else:
@@ -3694,45 +3722,14 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
                     # the widget actually re-runs on it.
                     editor_ds.invalidate()
             if _due:
-                _synced = False
-                for _pk in list(_params_node.keys()):
-                    if not isinstance(_pk, str) or _pk.startswith('__'):
-                        continue
-                    _sp = _fnrun_sig_default_span(tv_text,
-                                                  def_disp_line or 0, _pk)
-                    if _sp is None:
-                        continue
-                    _txt = tv_text[_sp[0]:_sp[1]]
-                    if _txt == _fnrun_param_src(_params_node[_pk]):
-                        continue
-                    try:
-                        import libcst as _cst_mod
-                        from src.lsd.gl_gui.view.core_conversion.\
-                            libcst_conversion import _cst_to_python_or_raw
-                        _val = _cst_to_python_or_raw(
-                            _cst_mod.parse_expression(_txt))
-                    except Exception:
-                        continue        # mid-typing fragment - try later
-                    dict.__setitem__(_params_node, _pk, _val)
-                    dict.__setitem__(_shown, _pk, _val)   # the displayed copy
-                    _seen[_pk] = _txt
-                    _synced = True
-                # Expiry is ALSO the only place the displayed-node cach
-                # advances to the current (usually post-reparse) node - the
-                # panel shows new values exactly once, quiet-side.
-                if ((_synced or _shown is not _params_node)
-                        and _pw is not None and _pw._tile_id is not None):
+                _synced = _fnrun_sync_panel_params(
+                    _shown, _seen, _ent[2], _params_node, tv_text,
+                    def_disp_line or 0)
+                if (_synced and _pw is not None
+                        and _pw._tile_id is not None):
                     Melty.cache.invalidate_up(_pw._tile_id, force=True,
                                               max_depth=8)
                     request_render()
-                # The latch advances to the current parse: its values come
-                # from the editor, so they are all "seen". Detached copy -
-                # see _fnrun_detach.
-                _seen.update({
-                    _pk: _fnrun_param_src(_pv)
-                    for _pk, _pv in _params_node.items()
-                    if isinstance(_pk, str) and not _pk.startswith('__')})
-                _shown_map[skey] = _fnrun_detach(_params_node)
     _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
                              def_line, def_name, code_root, def_buf_line,
                              tv_text, def_disp_line, status)
