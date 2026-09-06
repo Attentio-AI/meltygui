@@ -159,9 +159,10 @@ def _observe():
     from src.lsd.gl_gui import titlebar
     if titlebar._on_wayland():
         from src.lsd.gl_gui import geometry_feed
-        if geometry_feed._STATE["thread"] is None:      # a hotswap, not a restart: start it here
-            geometry_feed.start()
-        rect, area = geometry_feed.frame_rect(), geometry_feed.workarea()
+        geometry_feed.ensure_started()      # a hotswap, not a restart (or a backend switch): start it here
+        # the Hyprland backend reports the SURFACE: shrink by the shadow
+        # inset to the content (a no-op on the GNOME feed's geometry rect)
+        rect, area = geometry_feed.frame_rect(inset=titlebar.window_inset()), geometry_feed.workarea()
         if rect is None or area is None:
             return None
         frame = geometry_feed._STATE.get("frame") or {}

@@ -880,16 +880,31 @@ _geometry_applied = globals().get("_geometry_applied")
 _self_resize = False
 
 
+def _box_is_surface():
+    """Hyprland: the compositor's window box IS the surface — it renders
+    the whole surface at `at`, ignores the xdg geometry for placement, and
+    never adopts a size the client commits by itself (geometry_feed's
+    module docstring). Every place that reads a configure as a GEOMETRY
+    size, or resizes by committing a buffer, branches on this."""
+    from src.lsd.gl_gui import geometry_feed
+    return geometry_feed.backend() == "hyprland"
+
+
 def set_surface_size(window, width, height):
     """The one way this module resizes the OS surface: flags the resulting
     framebuffer-size callback as ours, so on_surface_resized leaves it
-    alone (a compositor configure would be grown by the margin)."""
+    alone (a compositor configure would be grown by the margin). On
+    Hyprland the box is ALSO resized through its dispatcher — the buffer
+    alone leaves the box where it was (geometry_feed.hypr_resize_window)."""
     global _self_resize
     _self_resize = True
     try:
         glfw.set_window_size(window, int(width), int(height))
     finally:
         _self_resize = False
+    if _box_is_surface():
+        from src.lsd.gl_gui import geometry_feed
+        geometry_feed.hypr_resize_window(width, height)
 
 
 # An app-side resize requested mid-frame, applied at the next frame's start.
@@ -949,7 +964,13 @@ def apply_pending_surface_size(window):
     # the swap.
     _frame_surface_offset = None
     if offset and (offset[0] or offset[1]):
-        wayland_move.set_surface_offset(offset[0], offset[1])
+        from src.lsd.gl_gui import geometry_feed
+        if geometry_feed.backend() == "hyprland":
+            # Hyprland ignores a toplevel's buffer offset (its surface
+            # stays anchored at `at`): ask it to move the window instead.
+            geometry_feed.hypr_move_window(offset[0], offset[1])
+        else:
+            wayland_move.set_surface_offset(offset[0], offset[1])
     return size
 
 
@@ -978,7 +999,8 @@ def on_surface_resized(window, width, height):
     # surface is regrown outside it by the margin on every side. The OS
     # edge model (os_frame.begin_frame) reads the new content size next
     # frame and folds it into the roots' passes as the near edge's motion.
-    if inset <= 0:
+    # Hyprland's configure names the SURFACE (the box): never regrow.
+    if inset <= 0 or _box_is_surface():
         sync_window_geometry(window, (int(width), int(height)))
         return None
     grown = (int(width) + 2 * inset, int(height) + 2 * inset)
@@ -997,6 +1019,11 @@ def sync_window_geometry(window, size=None):
         return False
     fb_w, fb_h = size if size is not None else glfw.get_framebuffer_size(window)
     inset = int(window_inset())
+    if _box_is_surface():
+        # Hyprland renders the surface at the box and ADDS the surface
+        # origin to pointer coordinates (ViewHitTester.cpp) so an inset
+        # geometry shifts every click by the margin. The whole surface.
+        inset = 0
     rect = (inset, inset, max(1, int(fb_w) - 2 * inset), max(1, int(fb_h) - 2 * inset))
     if rect == _geometry_applied:
         return False
@@ -1046,8 +1073,8 @@ def composite_window_frame(fb_w, fb_h):
     instead: rgb·cov, alpha = cov. Wayland composites premultiplied alpha,
     so alpha 0 alone is not invisible — a view drawn over a cut corner, or
     the brightness pass lifting the cleared black, would be ADDED onto the
-    desktop. No-op unless the window was created transparent and there is
-    a corner radius or a margin to cut."""
+    desktop. No-op unless the window was created transparent; it runs
+    maximized too (radius and inset 0), where it is purely the alpha lift."""
     global _corner_gl
     from src.lsd.gl_gui.toggles import Toggles
     radius = frame_corner_radius()
@@ -1055,10 +1082,12 @@ def composite_window_frame(fb_w, fb_h):
     origin = content_origin()
     if fb_w <= 0 or fb_h <= 0 or not is_gl_thread():
         return False
-    if radius <= 0 and inset <= 0 and origin == (0.0, 0.0):
-        return False
     if not _frame_transparent(_studio_window()):
         return False
+    # No early-out on radius/inset/origin all zero (maximized): the window
+    # was created with an alpha channel, so the content's alpha must still
+    # be lifted to 1 - the compositor blends the desktop through anything
+    # below 1 whatever the corners look like.
     content_size = (float(fb_w) - origin[0] - inset, float(fb_h) - origin[1] - inset)
     if _corner_gl is None:
         _corner_gl = GLState()

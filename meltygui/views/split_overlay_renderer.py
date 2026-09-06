@@ -242,12 +242,21 @@ class SplitOverlayRenderer(GlfwRenderer):
         """Blend func + per-frame LCD uniforms for the bound program. Returns
         the font texture id the per-command Atlas uniform compares against,
         or -1 when running the stock shader."""
+        # Alpha channel: ONE / ONE_MINUS_SRC_ALPHA (coverage union), never
+        # SRC_ALPHA / ONE_MINUS_SRC_ALPHA - that gave dst_a = a² + dst_a-(1-a),
+        # so every translucent draw (a texture with alpha, an AA edge, glyph
+        # coverage) punched alpha OUT of an opaque framebuffer and, on an
+        # ARGB buffer (the frame's Wayland surface, an X11 compositor
+        # handing out an ARGB buffer), the desktop showed through. Tiles
+        # rendered offscreen start from alpha 0, but with the union rule
+        # their alpha is the true coverage, so a blitted alpha lands solid.
         if not self._lcd_ok:
-            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+            gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
+                                   gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
             return -1
         from src.lsd.gl_gui.toggles import Toggles
         gl.glBlendFuncSeparate(gl.GL_SRC1_COLOR, gl.GL_ONE_MINUS_SRC1_COLOR,
-                               gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+                               gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glUniform2f(self._loc_texel, *self._atlas_texel)
         gl.glUniform1i(self._loc_lcd, 1 if Toggles.Fonts.lcd_subpixel else 0)
         gl.glUniform1i(self._loc_bgr, 1 if Toggles.Fonts.lcd_bgr else 0)

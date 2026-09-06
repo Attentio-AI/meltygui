@@ -558,7 +558,7 @@ class Toggles:
 
         # [tint=(0.152, 0.143, 0.628), show_tint=True]
         freeze_cst_dict = False
-        
+
         # Fast-path syntax check: re-run a bare compile() over the buffer
         # INLINE on every edit and swap the red marker immediately, instead of
         # hiding it until the debounced background reparse lands (~300ms after
@@ -1397,6 +1397,12 @@ class Toggles:
         # OS edges pushed and the surface request per frame). Off: it prints
         # per push and per frame, a real cost at 120 fps.
         push_os_window_edges_trace = False
+        # Hyprland has no window-geometry event, so the position feed
+        # (geometry_feed's hyprland backend) POLLS its request intervals
+        # this often on its own thread - a `j/clients` round trip is
+        # ~0.03 ms, so 120 Hz is reasonable; lower it temporarily to reduce
+        # the OS edge physics' reaction time on purpose.
+        hyprland_feed_poll_hz = 120
 
         # Tint of the OS-window chrome: the minimize / maximize / close
         # controls titlebar.py draws top-right. Each is painted exactly like
@@ -2413,7 +2419,7 @@ class Toggles:
     # screen for demos and screenshots; notify()/display() keep recording, so
     # flipping it back shows the history. The GPU readout is unaffected.
     # also live.
-    developer_mode = True
+    developer_mode = False
     show_fps = True
 
     # The notification overlay (notifications.draw_notifications, gated by
