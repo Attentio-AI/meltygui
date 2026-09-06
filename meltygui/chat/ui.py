@@ -58,7 +58,10 @@ def _button(draw_state, key, label, x, y, width, tint, enabled=True, height=None
             pos=(x, y), width=width, height=height or Melty.px(25),
             color=tint, alpha=(1 if enabled else 0.4) if background else 0,
             tint_value=0.23 if selected else 0.16,
-            shadow_offset=11 if selected else 6, hovered=None if enabled else False)
+            # A backgroundless button casts no shadow: the shadow pass would
+            # paint its lit plate over whatever block the label sits in.
+            shadow_offset=(Toggles.Chat.selected_shadow_offset if selected else Toggles.Chat.shadow_offset)
+                          if background else 0, hovered=None if enabled else False)
     finally:
         imgui.set_cursor_screen_pos(cursor)
 
@@ -134,7 +137,9 @@ def _text_layout(state, key, text, prefix="", font=Font.FONTAWESOME_MONO_19, wra
         if display.endswith(("\n", "\r")) or display is not text:
             trimmed = display.rstrip("\r\n")
             display = type(text)(trimmed, text.language) if isinstance(text, CodeString) else type(text)(trimmed)
-        text_width = max((imgui.calc_text_size(line).x for line in display.split("\n")), default=0)
+        # str(): an EMPTY string subclass splits to [itself], and imgui's typed
+        # `text` argument refuses subclasses (MarkdownString) — the 07:49 crash.
+        text_width = max((imgui.calc_text_size(line).x for line in str(display).split("\n")), default=0)
         memo = (signature, display, (display.count("\n") + 1) * line_px, text_width)
         state.text_layouts[key] = memo
         return memo[1], memo[2]
@@ -195,7 +200,7 @@ def _viewport(draw_state, state, key, width, height, content_height, follow=Fals
         if maximum > 0 and travel > 0:
             thumb_y = y + travel * offset / maximum
             add_shadow((x + width - bar_width, thumb_y, bar_width, thumb_height),
-                       offset=0, corner_radius=3)
+                       offset=Toggles.Chat.shadow_offset, corner_radius=3)
             imgui.get_window_draw_list().add_rect_filled(
                 x + width - bar_width, thumb_y, x + width, thumb_y + thumb_height,
                 _color((0.55, 0.65, 0.65)), rounding=3)
@@ -226,22 +231,22 @@ def _text_tint(tint):
     return tuple(a * 0.8 + b * 0.2 for a, b in zip(neutral, hue))
 
 
-def _card(x, y, width, height, tint, selected=False):
+def _card(x, y, width, height, tint, selected=False, max_bg_value=None):
+    # Fills paint on the BODY channel (as flat_button does): a fill one channel
+    # below sits under the compositor's mask for this rank and its lit rim /
+    # specular is masked out - the card showed with no highlight at all.
     draw_list = imgui.get_window_draw_list()
-    body_channel = Melty.get_channel()
     if Melty.channels_split:
-        draw_list.channels_set_current(body_channel - 1)
-    try:
-        add_shadow((x, y, width, height), offset=2 if selected else 1,
-                   corner_radius=Melty.px(6))
-        _, color = draw_bg(left=x, top=y, width=width, height=height,
-                style_manager=_tint_style(tuple(tint)), opacity=1, outline=False,
-                rounding=Melty.px(6), max_bg_depth=1 if selected else 0,
-                max_bg_value=0.23 if selected else 0.18, selected=selected)
-        return color
-    finally:
-        if Melty.channels_split:
-            draw_list.channels_set_current(body_channel)
+        draw_list.channels_set_current(Melty.get_channel())
+    add_shadow((x, y, width, height),
+               offset=Toggles.Chat.selected_shadow_offset if selected else Toggles.Chat.shadow_offset,
+               corner_radius=Melty.px(6))
+    _, color = draw_bg(left=x, top=y, width=width, height=height,
+            style_manager=_tint_style(tuple(tint)), opacity=1, outline=False,
+            rounding=Melty.px(6), max_bg_depth=1 if selected else 0,
+            max_bg_value=(0.23 if selected else 0.18) if max_bg_value is None else max_bg_value,
+            selected=selected)
+    return color
 
 
 def _label_width(text):
@@ -278,24 +283,64 @@ def _draw_prose(text, x, y, width, height, tint, clip=None):
             imgui.pop_font()
 
 
-def _icon_chip(icon, x, y, height, color):
-    """A small flat rounded background hugging one header glyph; returns its width."""
-    width = _label_width(icon) + Melty.px(8)
+def _icon_chip(icon, x, y, width, height, color):
+    """One fixed-size flat rounded chip per header row, the glyph centred in it.
+
+    Every row's chip is the same box whatever glyph it carries, so a column of
+    rows reads as a column of tiles. Returns the x the glyph should be drawn at.
+    """
     draw_list = imgui.get_window_draw_list()
-    channel = Melty.get_channel()
     if Melty.channels_split:
-        draw_list.channels_set_current(channel - 1)
-    try:
-        draw_list.add_rect_filled(x - Melty.px(4), y + Melty.px(2), x - Melty.px(4) + width, y + height - Melty.px(2),
-                                  _color(color), rounding=Melty.px(4))
-    finally:
-        if Melty.channels_split:
-            draw_list.channels_set_current(channel)
-    return width
+        draw_list.channels_set_current(Melty.get_channel())  # body channel, see _card
+    draw_list.add_rect_filled(x, y + Melty.px(1), x + width, y + height - Melty.px(1),
+                              _color(color), rounding=Melty.px(4))
+    return x + max(0, (width - _label_width(icon)) / 2)
 
 
-def _title(text, x, y, width, height, tint):
-    """Navigation labels have no render wrapper or child tile."""
+def _caret(draw_state, key, x, y, width, height, expanded, tint, brightness=1.0):
+    """A draw-list expand chevron with its own click subscription.
+
+    Not an imgui button: the transcript is a cached tile, and an imgui item
+    only exists on the frames its body runs, so clicks on it were lost. An
+    on_action click is replayed on cache-served frames like every body action.
+    """
+    open_icon = f"\uf078"
+    closed_icon = f"\uf054"
+    icon = open_icon if expanded else closed_icon
+    _title(icon, x + max(0, (width - _label_width(icon)) / 2), y, width, height, tint, brightness)
+    return draw_state.on_action("left_mouse_clicked", view_id=key, priority_delta=3,
+                                rect=(x, y, x + width, y + height)) is not None
+
+
+_ELLIPSIS_MEMO = {}
+
+
+def _ellipsize(text, max_width):
+    """`text` cut to `max_width` px with a trailing ellipsis, measured in the
+    font pushed by the caller; memoized per (text, width, scale, font)."""
+    key = (text, max_width, Melty.ui_scale)
+    hit = _ELLIPSIS_MEMO.get(key)
+    if hit is not None:
+        return hit
+    result = text
+    if max_width > 0 and imgui.calc_text_size(text).x > max_width:
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if imgui.calc_text_size(text[:mid] + "…").x <= max_width:
+                low = mid
+            else:
+                high = mid - 1
+        result = text[:low].rstrip() + "…"
+    if len(_ELLIPSIS_MEMO) > 4096:
+        _ELLIPSIS_MEMO.clear()
+    _ELLIPSIS_MEMO[key] = result
+    return result
+
+
+def _title(text, x, y, width, height, tint, brightness=1.0, ellipsis=False):
+    """Navigation labels have no render wrapper or child tile; `brightness` dims
+    the text, `ellipsis` trims it with a … instead of clipping."""
     draw_list = imgui.get_window_draw_list()
     if Melty.channels_split:
         draw_list.channels_set_current(Melty.get_channel())
@@ -304,8 +349,10 @@ def _title(text, x, y, width, height, tint):
         imgui.push_font(font)
     Melty.push_clip((x, y, x + width, y + height))
     try:
+        if ellipsis:
+            text = _ellipsize(text, width)
         draw_list.add_text(x, y + max(0, (height - imgui.get_text_line_height()) / 2),
-                           _color(_text_tint(tuple(tint))), text)
+                           _color(tuple(c * brightness for c in _text_tint(tuple(tint)))), text)
     finally:
         Melty.pop_clip()
         if font is not None:
@@ -374,7 +421,7 @@ def draw_chat_sidebar(chats, draw_state, state, width, height):
                 changed |= _tint_chip(meta, draw_state, "project:" + project + ":tint",
                                       x + Melty.px(23), heading_y + max(0, (heading_height - Melty.px(17)) / 2))
                 _title(label, x + Melty.px(46), heading_y,
-                       row_width - Melty.px(46), heading_height, meta["tint"])
+                       row_width - Melty.px(46), heading_height, meta["tint"], ellipsis=True)
             child_y = heading_y + heading_height + gap
             for key, child_meta, text, row_height in children:
                 registered.append(key)
@@ -421,7 +468,7 @@ def draw_chat_sidebar(chats, draw_state, state, width, height):
                                           x + Melty.px(23), child_y + max(0, (row_height - Melty.px(17)) / 2))
                     if not editing:
                         _title(text, x + Melty.px(46), child_y,
-                               row_width - Melty.px(46) - trash_width, row_height, tint)
+                               row_width - Melty.px(46) - trash_width, row_height, tint, ellipsis=True)
                     else:
                         imgui.set_cursor_screen_pos((x + Melty.px(46), child_y))
                         request_focus = editing and renaming["focus"]
@@ -460,7 +507,7 @@ def draw_chat_sidebar(chats, draw_state, state, width, height):
         if getattr(state, "rename", None) is not None and state.rename["key"] == archive_key:
             state.rename = None
         changed = True
-    return changed
+    return changed, min(total, height)  # the height the list actually uses
 
 
 def _message_leaves(value, path=(), depth=0):
@@ -477,18 +524,14 @@ def _message_leaves(value, path=(), depth=0):
         yield path, value, depth
 
 
-def _code_background(x, y, width, height, color, shadow=1):
+def _code_background(x, y, width, height, color, shadow=None):
     draw_list = imgui.get_window_draw_list()
-    channel = Melty.get_channel()
     if Melty.channels_split:
-        draw_list.channels_set_current(channel - 1)
-    try:
-        if shadow:
-            add_shadow((x, y, width, height), offset=shadow, corner_radius=Melty.px(6))
-        draw_list.add_rect_filled(x, y, x + width, y + height, _color(color), rounding=Melty.px(6))
-    finally:
-        if Melty.channels_split:
-            draw_list.channels_set_current(channel)
+        draw_list.channels_set_current(Melty.get_channel())  # body channel, see _chat
+    shadow = Toggles.Chat.shadow_offset if shadow is None else shadow
+    if shadow:
+        add_shadow((x, y, width, height), offset=shadow, corner_radius=Melty.px(6))
+    draw_list.add_rect_filled(x, y, x + width, y + height, _color(color), rounding=Melty.px(6))
 
 
 def _terminal_layout(state, key, message, width):
@@ -565,13 +608,7 @@ def draw_chat_terminal(input_value, draw_state=None):
                     foreground, background = background, foreground
                 left = x + column * char_width
                 if cell.bg != "default" or cell.reverse:
-                    if Melty.channels_split:
-                        draw_list.channels_set_current(Melty.get_channel() - 1)
-                    try:
-                        draw_list.add_rect_filled(left, top, x + end * char_width, top + line_height, _color(background))
-                    finally:
-                        if Melty.channels_split:
-                            draw_list.channels_set_current(Melty.get_channel())
+                    draw_list.add_rect_filled(left, top, x + end * char_width, top + line_height, _color(background))
                 draw_list.add_text(left, top, _color(foreground), "".join(char.data for char in row[column:end]))
                 column = end
         imgui.dummy(draw_state.width, len(grid) * line_height + Melty.px(8))
@@ -597,19 +634,35 @@ def _message_preview(message):
     return ""
 
 
-def _message_label(message, expanded):
+def _message_icon(message):
+    """The glyph that leads a row: pencil for writes, terminal for bash, brain for thinking."""
     bash_icon = f""
-    write_icon = f""
+    write_icon = f""  # pencil-alt: the shipped face is FontAwesome 5, no f040 pencil
+    thinking_icon = f""
+    if isinstance(message, ReasoningMessage):
+        return thinking_icon
+    if not isinstance(message, ToolCall):
+        return ""
+    files = message.get("summary", {})
+    if any(entry.get("access", "write") == "write" for entry in files.values()):
+        return write_icon
+    if isinstance(message["content"].get("command"), BashString):
+        return bash_icon
+    return ""
+
+
+def _message_label(message, expanded):
     label = message.label
     if isinstance(message, ReasoningMessage):
         return "" if expanded else _message_preview(message)
     if isinstance(message, ToolCall):
-        files = message.get("summary", {})
-        if any(entry.get("access", "write") == "write" for entry in files.values()):
-            label = write_icon
-        elif isinstance(message["content"].get("command"), BashString):
-            label = bash_icon
-            preview = "" if expanded else _message_preview(message)
+        icon = _message_icon(message)
+        if icon:
+            label = icon
+            # Read-only file references still leave a summary dict behind; only a
+            # WRITE row (tags shown) drops the first-line preview.
+            writes = any(entry.get("access", "write") == "write" for entry in message.get("summary", {}).values())
+            preview = "" if expanded or writes else _message_preview(message)
             if preview:
                 label += "  " + preview
         else:
@@ -631,16 +684,17 @@ def _failure_badge(x, y, width, height):
     cursor = imgui.get_cursor_screen_pos()
     draw_list = imgui.get_window_draw_list()
     if Melty.channels_split:
-        draw_list.channels_set_current(Melty.get_channel() - 1)
-    try:
-        draw_list.add_rect_filled(x, y, x + width, y + height, _color((0.30, 0.055, 0.075)), rounding=Melty.px(4))
-    finally:
-        if Melty.channels_split:
-            draw_list.channels_set_current(Melty.get_channel())
+        draw_list.channels_set_current(Melty.get_channel())  # body channel, see _card
+    # Fixed design colours are scaled by Toggles.Chat.failed_badge_brightness so the
+    # badge reads as a status indicator rather than an alarm.
+    dim = Toggles.Chat.failed_badge_brightness
+    draw_list.add_rect_filled(x, y, x + width, y + height,
+                              _color(tuple(c * dim for c in (0.30, 0.055, 0.075))), rounding=Melty.px(4))
     try:
         imgui.set_cursor_screen_pos((x, y))
         flat_button(icon + " Failed", None, "chat-failed", width=width, height=height,
-                    color=(0.9, 0.16, 0.22), text_color=(1.0, 0.76, 0.77),
+                    color=tuple(c * dim for c in (0.9, 0.16, 0.22)),
+                    text_color=tuple(c * dim for c in (1.0, 0.76, 0.77)),
                     alpha=0, hovered=False, layout=False)
     finally:
         imgui.set_cursor_screen_pos(cursor)
@@ -701,18 +755,26 @@ def draw_messages(messages, draw_state, state, key, width, height,
     # by the same margin: 50 px in a narrow transcript, 100 px once it is wide.
     # [tint=(0.95, 0.6, 0.25)]
     chat_indent = min(Melty.px(100), max(Melty.px(50), row_width - Melty.px(600)))
-    # Code blocks darken the window's PAINTED fill — `Melty.bg_color_stack`
+    # Code blocks darken the window's PAINTED fill: `Melty.bg_color_stack`
     # top, what the wrapper's draw_bg actually returned (`bg_stack` holds the
-    # tint, `draw_state.bg_color` the nested recipe; both are the wrong shade).
-    # Bash a small step under the window, flat; python darker, shadowed.
+    # recipe, `draw_state.bg_color` the nested recipe; both hold the wrong shade).
+    # The factors and shadow offsets live in Toggles.Chat.
+    bash_darken = Toggles.Chat.bash_darken
+    python_darken = Toggles.Chat.python_darken
+    bash_shadow = Toggles.Chat.bash_shadow_offset
+    # Rows: [icon chip][content]. Every non-user row's content — command
+    # previews, file tags and their wrapped rows, terminals, thinking text,
+    # assistant prose — sits in ONE column at icon_column; the chips hang in
+    # the gutter to its left. Hovering an icon row swaps its glyph for the
+    # expand caret (no caret column of its own); an expanded row's icon and
+    # Failed badge share its first content line. Previews are dimmed to recede.
     # [tint=(0.95, 0.6, 0.25)]
-    bash_darken = 0.74
-    # [tint=(0.95, 0.6, 0.25)]
-    python_darken = 0.65
-    bash_shadow = 0
+    icon_column = Melty.px(26)
+    icon_brightness = Toggles.Chat.icon_brightness
+    command_text_brightness = Toggles.Chat.command_text_brightness
     # A terminal block never grows wider than this; long lines clip at its edge.
     # [tint=(0.95, 0.6, 0.25)]
-    terminal_max_width = Melty.px(500)
+    terminal_max_width = Melty.px(Toggles.Chat.terminal_max_width)
     window_color = tuple(Melty.bg_color_stack[-1] if Melty.bg_color_stack else Melty.get_bg_color(-1))[:3]
     header_height = max(Melty.px(23), imgui.get_text_line_height() + Melty.px(4))
     for message_id, message in messages.items():
@@ -744,7 +806,7 @@ def draw_messages(messages, draw_state, state, key, width, height,
                 if isinstance(message, ReasoningMessage) and isinstance(value, str) and not value.strip():
                     continue
                 indent = min(depth - 1, 4) * Melty.px(10) if isinstance(message, ToolCall) else 0
-                indent = Melty.px(20) if isinstance(message, ReasoningMessage) else max(0, indent)
+                indent = 0 if isinstance(message, ReasoningMessage) else max(0, indent)  # its icon column indents it
                 prose = isinstance(message, (UserMessage, AssistantMessage))
                 # Assistant prose starts at the row edge so it lines up with the tool rows'
                 # arrow; user prose keeps its inset in the card.
@@ -754,7 +816,8 @@ def draw_messages(messages, draw_state, state, key, width, height,
                     wraps = prose and not isinstance(value, CodeString)
                     off_screen = layout_y > viewport_top + height or layout_y + Melty.px(2000) < viewport_top
                     display, leaf_height = _text_layout(state, (row_key, path), value,
-                        wrap_width=row_width - chat_indent - (2 * user_inset if isinstance(message, UserMessage) else 0) if wraps else None,
+                        wrap_width=(row_width - chat_indent - 2 * user_inset if isinstance(message, UserMessage)
+                                    else min(row_width - chat_indent, terminal_max_width)) if wraps else None,
                         keep=width_moving and off_screen)
                 else:
                     display, leaf_height = value, header_height
@@ -769,28 +832,25 @@ def draw_messages(messages, draw_state, state, key, width, height,
                 content_width = max(content_width, indent + measured + Melty.px(8),
                                     indent + _label_width(caption) + Melty.px(8))
         tags = []
-        tag_x, tag_y = Melty.px(20), 0
+        icon = _message_icon(message)
+        content_x = 0 if isinstance(message, UserMessage) else icon_column
+        tags_x = content_x
+        tag_x, tag_y = tags_x, 0
         available_width = (min(row_width, terminal_max_width) if terminal else row_width) - (Melty.px(100) if _message_failed(message) else 0)
         if files:
-            section_label = f""
-            label_width = _label_width(section_label) + Melty.px(12)
-            if tag_x > Melty.px(20) and tag_x + label_width + Melty.px(70) > available_width:
-                tag_x = Melty.px(20)
-                tag_y += header_height + Melty.px(2)
-            tags.append((None, section_label, tag_x, tag_y, label_width))
-            tag_x += label_width
             for filename, counts in files.items():
                 count_label = (f"  +{counts['added']} -{counts['removed']}"
                                if counts.get("added") is not None else "")
                 tag_width = min(max(Melty.px(30), available_width - Melty.px(20)),
                                 imgui.calc_text_size(Path(filename).name + count_label).x + Melty.px(16))
-                if tag_x + tag_width > available_width:
-                    tag_x = Melty.px(20)
+                if tag_x > tags_x and tag_x + tag_width > available_width:
+                    tag_x = tags_x  # wrapped rows line up after the icon and arrow
                     tag_y += header_height + Melty.px(2)
                 tags.append((filename, counts, tag_x, tag_y, tag_width))
                 tag_x += tag_width + Melty.px(3)
         summary_height = (tag_y + header_height if tags else
                           0 if isinstance(message, ReasoningMessage) and expanded else
+                          0 if icon and expanded and leaves else
                           header_height if has_header else
                           user_pad if isinstance(message, UserMessage) else 0)
         gap = 0 if isinstance(message, UserMessage) else Melty.px(4)
@@ -800,18 +860,25 @@ def draw_messages(messages, draw_state, state, key, width, height,
         fitted_width = row_width
         if isinstance(message, ToolCall):
             header_width = (max(tag[2] + tag[4] for tag in tags) if tags else
-                            Melty.px(20) + _label_width(_message_label(message, expanded)))
+                            tags_x + _label_width(_message_label(message, expanded)))
             header_width += Melty.px(104) if _message_failed(message) else Melty.px(8)
             fitted_width = min(row_width, max(content_width, header_width, Melty.px(110) if show_more else 0))
             if terminal:
                 fitted_width = min(fitted_width, terminal_max_width)  # collapsed labels clip at this cap too
-        rows.append((row_key, message, leaves, full_height, collapsible, expanded, tags, summary_height, fitted_width, show_more, has_header))
+        rows.append((row_key, message, leaves, full_height, collapsible, expanded, tags, summary_height, fitted_width, show_more, has_header, icon))
         layout_y += full_height
     total = sum(row[3] for row in rows)
-    _hold_scroll_anchor(view, rows, height, width_moving or settling)
+    # A row the reader just expanded / collapsed / showed more of re-laid out
+    # this frame: hold their row, and drop follow so a tall block opening near
+    # the bottom doesn't fling the viewport off its end.
+    relayout = view.pop("relayout", False)
+    if relayout:
+        view["follow"] = False
+    _hold_scroll_anchor(view, rows, height, width_moving or settling or relayout)
     changed = False
     with _viewport(draw_state, state, key, width, height, total, follow=True) as (x, y, clip):
-        for row_key, message, leaves, full_height, collapsible, expanded, tags, summary_height, fitted_width, show_more, has_header in rows:
+        for row_key, message, leaves, full_height, collapsible, expanded, tags, summary_height, fitted_width, show_more, has_header, icon in rows:
+            content_x = 0 if isinstance(message, UserMessage) else icon_column
             tint = conversation_tint
             # User messages carry the chat tint; assistant prose stays unboxed.
             underlying = window_color
@@ -819,15 +886,17 @@ def draw_messages(messages, draw_state, state, key, width, height,
             side = chat_indent if isinstance(message, UserMessage) else 0
             row_span = row_width - chat_indent if prose else row_width
             if isinstance(message, UserMessage) and _visible(y, full_height, clip):
-                underlying = _card(x + side, y, row_span, full_height, tint) or underlying
+                underlying = _card(x + side, y, row_span, full_height, tint,
+                                   max_bg_value=Toggles.Chat.user_message_bg_value) or underlying
             if isinstance(message, ToolCall):
                 underlying = tuple(c * (bash_darken if isinstance(message, CommandExecution) else python_darken)
                                    for c in underlying[:3])
                 # The header row carries only its icon chip; the block background
                 # starts under it, covering the expanded content.
                 if expanded and full_height > summary_height + Melty.px(4) and _visible(y, full_height, clip):
-                    _code_background(x, y + summary_height, fitted_width, full_height - summary_height - Melty.px(4),
-                                     underlying, shadow=bash_shadow if isinstance(message, CommandExecution) else 1)
+                    _code_background(x + content_x, y + summary_height, fitted_width - content_x,
+                                     full_height - summary_height - Melty.px(4),
+                                     underlying, shadow=bash_shadow if isinstance(message, CommandExecution) else None)
             if tags:
                 from src.lsd.gl_gui.model.app_model import FileMeta
                 from src.lsd.gl_gui.view.playground.open_files import draw_changed_file_header
@@ -835,11 +904,6 @@ def draw_messages(messages, draw_state, state, key, width, height,
                 metadata = getattr(getattr(root, "file_meta_collection", None), "file_meta", {})
                 for filename, counts, tag_x, tag_y, tag_width in tags:
                     file_y = y + tag_y
-                    if filename is None:
-                        if _visible(file_y, header_height, clip):
-                            _icon_chip(counts, x + tag_x, file_y, header_height, underlying)
-                            _title(counts, x + tag_x, file_y, tag_width, header_height, underlying)
-                        continue
                     if _visible(file_y, header_height, clip):
                         file_path = str(Path(message["details"].get("cwd") or "") / filename)
                         file_tint = FileMeta.painted_tint(metadata.get(file_path)) or underlying
@@ -847,49 +911,66 @@ def draw_messages(messages, draw_state, state, key, width, height,
                         if draw_changed_file_header(filename, file_tint, draw_state,
                                 view_id=row_key + ":file:" + filename, width=tag_width, height=header_height,
                                 added=counts["added"], removed=counts["removed"], active=True,
-                                prefix=""):
+                                prefix="", shadow_offset=Toggles.Chat.file_tag_shadow_offset):
                             state.message_expanded[row_key] = not expanded
+                            view["relayout"] = True
                             changed = True
             if (summary_height and has_header or collapsible) and _visible(y, header_height, clip):
-                header_x = x
-                if collapsible:
-                    imgui.set_cursor_screen_pos((x, y))
-                    imgui.push_id(row_key + ":expand")
-                    try:
-                        if draw_header_arrow(expanded):
-                            state.message_expanded[row_key] = not expanded
-                            changed = True
-                    finally:
-                        imgui.pop_id()
-                    header_x += Melty.px(20)
+                header_x = x + content_x
+                # An icon row shows its caret IN the icon while the pointer is over
+                # the row. priority_delta 3 = the wrapper level: a lower delta is
+                # pruned by the enclosing wrapper's own blocker and never delivers.
+                row_hovered = not icon or draw_state.on_action(
+                    "cursor_hover", view_id=row_key + ":hover", priority_delta=3,
+                    rect=(x, y, x + fitted_width, y + full_height)) is not None
+                if icon:
+                    chip_color = (underlying if isinstance(message, ToolCall)
+                                  else tuple(c * bash_darken for c in window_color))
+                    glyph_x = _icon_chip(icon, x, y, icon_column - Melty.px(2), header_height, chip_color)
+                    if not (collapsible and row_hovered):
+                        _title(icon, glyph_x, y, icon_column, header_height, chip_color, icon_brightness)
+                if collapsible and row_hovered:
+                    if _caret(draw_state, row_key + ":expand", x, y, icon_column - Melty.px(2), header_height,
+                              expanded, chip_color if icon else tint, icon_brightness if icon else 1.0):
+                        state.message_expanded[row_key] = not expanded
+                        view["relayout"] = True
+                        changed = True
                 failed = _message_failed(message)
                 if not tags and not (isinstance(message, ReasoningMessage) and expanded):
                     label = _message_label(message, expanded)
-                    if isinstance(message, ToolCall) and label and 0xF000 <= ord(label[0]) <= 0xF8FF:
-                        _icon_chip(label[0], header_x, y, header_height, underlying)
-                    _title(label, header_x, y, fitted_width - (header_x - x) - (Melty.px(100) if failed else 0),
-                           header_height, underlying if isinstance(message, ToolCall) else tint)
+                    if icon and label.startswith(icon):
+                        label = label[len(icon):].lstrip()  # the icon is already on the row
+                    if label:
+                        # +4 for the same inner inset prose, tag text and terminal output sit at.
+                        _title(label, header_x + Melty.px(4), y, fitted_width - (header_x - x) - Melty.px(4) - (Melty.px(100) if failed else 0),
+                               header_height, underlying if isinstance(message, ToolCall) else tint,
+                               command_text_brightness if icon else 1.0)
                 if failed:
-                    _failure_badge(x + fitted_width - Melty.px(96), y, Melty.px(92), header_height)
+                    # Collapsed: the header line reserved room at its end. Expanded:
+                    # the block's bottom-right corner, on the Show more / less line.
+                    badge_y = y if summary_height else y + full_height - Melty.px(4) - header_height
+                    _failure_badge(x + fitted_width - Melty.px(96), badge_y, Melty.px(92), header_height)
             leaf_y = y + summary_height
             for path, value, leaf_height, indent, caption in leaves:
                 if _visible(leaf_y, leaf_height, clip):
                     text_y = leaf_y
-                    left = x + side + indent
-                    leaf_width = row_span - indent - (user_inset if isinstance(message, UserMessage) else 0)
+                    left = x + side + indent + content_x
+                    leaf_width = row_span - indent - content_x - (user_inset if isinstance(message, UserMessage) else 0)
+                    if isinstance(message, AssistantMessage):
+                        leaf_width = min(leaf_width, terminal_max_width)  # assistant prose caps like a terminal
                     if not isinstance(message, ToolCall) and isinstance(value, (PythonString, BashString, ToolOutput)):
                         is_bash = isinstance(value, (BashString, ToolOutput))
                         _code_background(left, leaf_y, leaf_width, leaf_height,
                                          tuple(c * (bash_darken if is_bash else python_darken) for c in underlying[:3]),
-                                         shadow=bash_shadow if is_bash else 6)
+                                         shadow=bash_shadow if is_bash else None)
                     if isinstance(value, BashString):
                         caption = "$ bash"
                     if caption:
                         _title(caption, left, text_y, leaf_width, header_height, tint)
                         text_y += header_height
                     if path == ("terminal",):
-                        imgui.set_cursor_screen_pos((x, text_y))
-                        draw_chat_terminal(value, name=row_key + ":terminal", width=fitted_width, height=leaf_height)
+                        imgui.set_cursor_screen_pos((x + content_x, text_y))
+                        draw_chat_terminal(value, name=row_key + ":terminal", width=fitted_width - content_x, height=leaf_height)
                     elif isinstance(value, Reference):
                         # Never paint data URLs / encoded image data as text.
                         name = value.get("name") or value.get("path") or ""
@@ -930,10 +1011,10 @@ def _cleanup_chat(draw_state):
             proxy.close()
 
 
-@window(tint=(0.07, 0.09, 0.10), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
+@window(tint=(0.1661, 0.20, 0.22), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
 @render_func(auto_resize=False, min_width=700, min_height=500,
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
-def draw_chat_interface(input_value=None, draw_state=None, state: ChatInterfaceState = None,
+def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,
                         column_edges=None, **kwargs):
     # Ephemeral layout state also adopts already-open windows on hotswap.
     if not hasattr(state, "viewports"):
@@ -951,7 +1032,8 @@ def draw_chat_interface(input_value=None, draw_state=None, state: ChatInterfaceS
                                if internet_accounts.KINDS[key].chat_available),
                               next(iter(providers.values())))
     changed, provider = draw_dropdown(internet_accounts.KINDS[state.provider].chat_label,
-        collection=providers, name="Chat provider", width=210, show_header=False, is_tree=False)
+        collection=providers, name="Chat provider", width=210, show_header=False, is_tree=False,
+        trigger_height=Toggles.Chat.dropdown_height)
     if changed:
         state.provider = provider
         state.account = ""
@@ -961,7 +1043,9 @@ def draw_chat_interface(input_value=None, draw_state=None, state: ChatInterfaceS
     imgui.same_line()
     edited, account_id = draw_dropdown(accounts[state.account]["label"],
         collection={entry["label"] + " · " + entry["id"]: entry["id"] for entry in entries},
-        name="Chat account", width=260, show_header=False, is_tree=False)
+        name="Chat account", width=260, show_header=False, is_tree=False,
+        trigger_height=Toggles.Chat.dropdown_height)
+    imgui.dummy(1, Melty.px(Toggles.Chat.header_margin))  # breathing room under the dropdowns
     if edited:
         state.account = account_id
     changed |= edited
@@ -1010,12 +1094,16 @@ def draw_chat_interface(input_value=None, draw_state=None, state: ChatInterfaceS
     body_bottom = draw_state.abs_top + (draw_state.height or Melty.px(760)) - Melty.px(16)
     body_height = max(Melty.px(180), body_bottom - body_top)
     columns = ColumnLayout(draw_state, 2, column_edges=column_edges,
-                           column_widths=[260, None], column_mins=[180, 400], padding=Melty.px(5), padding_y=0, border_color=None)
+                           column_widths=[260, None], column_mins=[180, 400],
+                           padding=Melty.px(Toggles.Chat.column_gap), padding_y=0, border_color=None)
     with columns.cell(0, height=body_height) as width:
         x, y = imgui.get_cursor_screen_pos()
         footer_height = Melty.px(30)
-        changed |= draw_chat_sidebar(proxy, draw_state, state, width, body_height - footer_height)
-        y += body_height - Melty.px(25)
+        edited, used_height = draw_chat_sidebar(proxy, draw_state, state, width, body_height - footer_height)
+        changed |= edited
+        # The New conversation button follows the list directly; a list taller
+        # than the column scrolls and the button stays at the column's foot.
+        y += used_height + Melty.px(Toggles.Chat.new_conversation_margin)
         imgui.set_cursor_screen_pos((x, y))
         if _button(draw_state, "new-chat", "+ New conversation", x, y, min(width, Melty.px(190)), tint, not proxy.loading and not proxy.error):
             key = str(uuid.uuid4())

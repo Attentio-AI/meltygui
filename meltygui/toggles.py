@@ -2427,6 +2427,56 @@ class Toggles:
         # [tint=(0.85, 0.64, 0.13), show_tint=True]
         category_height = 300
 
+    class Chat:
+        # Drop-shadow offsets in the Chat window (cards, code blocks, buttons,
+        # the transcript scrollbar thumb). 0 disables a shadow.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        shadow_offset = 1.5
+        # A selected conversation card / pressed button lifts a little higher.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        selected_shadow_offset = 2.0
+        # Bash / terminal blocks paint flat.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        bash_shadow_offset = 0.0
+        # The file tags on write-file rows (the compare column's tab look), flat.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        file_tag_shadow_offset = 0.0
+        # Code blocks darken the window's painted fill by these factors:
+        # bash a small step under the window, python darker.
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        bash_darken = 0.74
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        python_darken = 0.65
+        # The dimmed first line of a collapsed command row (1 = full text tint).
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        command_text_brightness = 0.6
+        # The row icons (terminal / pencil / brain) in their chips (1 = full text tint).
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        icon_brightness = 0.7
+        # The Failed badge's plate / icon / text, scaled down from their design colours.
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        failed_badge_brightness = 0.7
+        # Layout: the provider / account dropdowns' trigger height, the margin
+        # under them before the sidebar and transcript, the gap between the
+        # sidebar column and the transcript column, and the gap between the
+        # conversation list and the New conversation button (all px).
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        dropdown_height = 30
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        header_margin = 8
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        column_gap = 14
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        new_conversation_margin = 8
+        # Brightness cap (HSV value) of a user message's card; the sidebar's
+        # conversation cards stay at draw_bg's 0.18.
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        user_message_bg_value = 0.3
+        # Widest a command row (terminal block, file tags) or assistant prose
+        # gets, in px; long lines clip / wrap at it.
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        terminal_max_width = 748
+
     show_filled_tiles = False
     gl_check_error = False
 

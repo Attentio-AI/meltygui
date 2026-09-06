@@ -10809,7 +10809,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     else:
         drop_down_display_str = _dd_fit_label(f"{caret} {str(current)}", _label_px)
 
-    trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else 25
+    # A caller's trigger_height taller than the 25 px slot also moves the popover anchor down.
+    trigger_h = (getattr(draw_state, "content_height", 0) or 25) if compact else max(25, kwargs.get("trigger_height", 25))
     # Colour the trigger by the selected item's embedded tint (input_value is the
     # current selection passed by the caller), falling back to the view's tint.
     trigger_tint = _dd_obj_tint(input_value, draw_state.tint)
