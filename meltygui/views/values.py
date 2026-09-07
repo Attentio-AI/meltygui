@@ -26,13 +26,14 @@ from src.lsd.gl_gui.global_style import GlobalStyle
 from src.lsd.gl_gui.melty import Melty, CollectionAction, ManagedWindow, SearchTerm
 from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
 from src.lsd.gl_gui.shaped import Shaped
-from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, \
+from src.lsd.gl_gui.model.core_model.draw_state import ZoomState, TileMode, DrawState, TabState, DropDownState, ColorPickerState, \
     ExpandMode, ContextMenuWindowState
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.notifications import display
 from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.toggles import Toggles, Tint, mix
+from src.lsd.gl_gui.gl_state import GLState
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     pop_style_var, end, begin
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, request_render
@@ -7276,9 +7277,231 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 
 
 
+# Picker layout shared by the popover callers (draw_tuple, draw_tuple_fast,
+# the editor's swatches) — they size the fixed popover window from it.
+# [tint=(0.85, 0.75, 0.05)]
+PICKER_SQUARE = 180
+# [tint=(0.85, 0.75, 0.05)]
+PICKER_TABS_HEIGHT = 30
+
+
+def color_picker_height(n_channels: int, has_info: bool = False) -> int:
+    """Height of draw_color_picker's popover: tab row + square + the
+    channel rows + the readout line (+ the info caption)."""
+    return PICKER_TABS_HEIGHT + PICKER_SQUARE + 14 + n_channels * 26 + 26 + (22 if has_info else 0)
+
+
 @render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
-def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwargs):
-    """Large immediate-mode HSV colour picker: a saturation/value square plus a
+def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
+                      picker_state: ColorPickerState = None, gl_state: GLState = None, **kwargs):
+    """The colour picker popover, two tabs: **Wide** (default) — a Display-P3
+    hue/saturation/value square whose value axis runs on above white
+    (`Toggles.HDR.picker_max_stops`), rendered as an fp16 texture so every
+    texel is the real HDR/P3 colour, with the sRGB-reachable region outlined
+    — and **sRGB**, the classic square. Both take and return extended-sRGB
+    tuples (hdr_color.py), so a colour picked on one tab reads back on the
+    other (an out-of-sRGB value shows clipped on the sRGB tab)."""
+    # [tint=(0.85, 0.75, 0.05)]
+    tab_tint = (0.62, 0.36, 0.52)
+    imgui.dummy(0, 2)
+    for label, key in (("Wide", "wide"), ("sRGB", "srgb")):
+        selected = picker_state.tab == key
+        if button(label, tint=tab_tint, tint_value=0.32 if selected else 0.12, height=21, shadow=selected,
+                  use_cache=True, corner_radius=4, name=f"cp_tab_{key}")[0]:
+            picker_state.tab = key
+            request_render()
+        imgui.same_line(spacing=4)
+    imgui.new_line()
+    if picker_state.tab == "srgb":
+        return _draw_srgb_picker(input_value, draw_state, info)
+    return _draw_wide_picker(input_value, draw_state, gl_state, info)
+
+
+def _draw_wide_picker(input_value, draw_state, gl_state, info):
+    """The Wide tab: P3 HSV + exposure (hdr_color.p3_hsv_from_extended). The
+    square's X is P3 saturation, its top `picker_top_fraction` is exposure
+    (2^max_stops at the top, white at the seam), the rest the classic value
+    axis. The sRGB outline is the gamut edge for the current hue
+    (hdr_color.srgb_region_outline). `draw_state._cpw_precise` echoes our own
+    edits back like the sRGB tab's `_cp_precise`."""
+    from src.lsd.gl_gui import hdr_color
+    # [tint=(0.85, 0.75, 0.05)]
+    outline_color = (1.0, 1.0, 1.0, 0.8)
+    # [tint=(0.85, 0.75, 0.05)]
+    outline_shadow = (0.0, 0.0, 0.0, 0.6)
+    SQ, BAR_W, GAP = PICKER_SQUARE, 18, 8
+    max_stops = float(Toggles.HDR.picker_max_stops)
+    top_fraction = float(Toggles.HDR.picker_top_fraction)
+    imgui.dummy(0, 3)
+    vals = list(input_value)
+    has_alpha = len(vals) >= 4
+    r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
+    a = float(vals[3]) if has_alpha else 1.0
+    in_r, in_g, in_b, in_a = r, g, b, a
+
+    ECHO_TOL = 0.002
+    _prec = getattr(draw_state, '_cpw_precise', None)
+    is_echo = _prec is not None and all(abs(pc - c) <= ECHO_TOL for pc, c in zip(_prec[0], (r, g, b, a)))
+    if is_echo:
+        r, g, b, a = _prec[0]
+        h, s, v, exposure = _prec[1]
+    else:
+        h, s, v, exposure = hdr_color.p3_hsv_from_extended(r, g, b)
+        if _prec is not None:
+            if s <= 0.0 or v <= 0.0:
+                h = _prec[1][0]
+            if v <= 0.0:
+                s = _prec[1][1]
+
+    dl = imgui.get_window_draw_list()
+    white = pack_color(1, 1, 1, 1)
+    black = pack_color(0, 0, 0, 1)
+    changed = False
+    hsv_changed = False
+
+    # --- the square: an fp16 texture of the hue's slice (re-baked per hue) ---
+    sx0, sy0 = imgui.get_cursor_screen_pos()
+    tex = _wide_square_texture(gl_state, h, SQ, top_fraction, max_stops)
+    if tex is not None:
+        dl.add_image(tex.texture_id, (sx0, sy0), (sx0 + SQ, sy0 + SQ))
+    imgui.invisible_button("##wsv", SQ, SQ)
+    if imgui.is_item_active():
+        mx, my = imgui.get_mouse_pos()
+        s, v, exposure = _wide_pick((mx - sx0) / SQ, (my - sy0) / SQ, top_fraction, max_stops)
+        hsv_changed = True
+
+    # --- hue bar: P3 hues at full saturation ---
+    imgui.same_line(spacing=GAP)
+    hx0, hy0 = imgui.get_cursor_screen_pos()
+    for i in range(12):
+        t0, t1 = i / 12.0, (i + 1) / 12.0
+        c0 = pack_color(*hdr_color.p3(*imgui.color_convert_hsv_to_rgb(t0, 1, 1)), 1)
+        c1 = pack_color(*hdr_color.p3(*imgui.color_convert_hsv_to_rgb(t1, 1, 1)), 1)
+        dl.add_rect_filled_multicolor(hx0, hy0 + SQ * t0, hx0 + BAR_W, hy0 + SQ * t1, c0, c0, c1, c1)
+    imgui.invisible_button("##whue", BAR_W, SQ)
+    if imgui.is_item_active():
+        h = min(max((imgui.get_mouse_pos()[1] - hy0) / SQ, 0.0), 1.0)
+        hsv_changed = True
+
+    # --- sRGB region outline + the white seam ---
+    pts = [(sx0 + px * SQ, sy0 + py * SQ) for px, py in hdr_color.srgb_region_outline(h, top_fraction)]
+    dl.add_polyline(pts, pack_color(*outline_shadow), False, 3.0)
+    dl.add_polyline(pts, pack_color(*outline_color), False, 1.0)
+    seam_y = sy0 + top_fraction * SQ
+    dl.add_line(sx0, seam_y, sx0 + SQ, seam_y, pack_color(1, 1, 1, 0.25), 1.0)
+
+    # --- markers ---
+    mx_, my_ = _wide_marker(s, v, exposure, top_fraction, max_stops)
+    cx, cy = sx0 + mx_ * SQ, sy0 + my_ * SQ
+    dl.add_circle(cx, cy, 6, black, thickness=1.0)
+    dl.add_circle(cx, cy, 5, white, thickness=1.5)
+    hmy = hy0 + h * SQ
+    dl.add_rect(hx0 - 1, hmy - 2, hx0 + BAR_W + 1, hmy + 2, white, thickness=1.5)
+
+    if hsv_changed:
+        r, g, b = hdr_color.extended_from_p3_hsv(h, s, v, exposure)
+        changed = True
+
+    # --- channel rows: extended sRGB, so they read past 1 and below 0 ---
+    imgui.dummy(0, 4)
+    imgui.push_item_width(SQ + GAP + BAR_W)
+    out, edited = [], []
+    lo, hi = -1.0, hdr_color.linear_to_srgb(2.0 ** max_stops)
+    for lbl, cur in ([("R", r), ("G", g), ("B", b)] + ([("A", a)] if has_alpha else [])):
+        imgui.set_next_item_width(draw_state.content_width - 30)
+        if lbl == "A":
+            ch, nv = imgui.drag_float(f"{lbl}##cpw_{lbl}", cur, 0.004, 0.0, 1.0, "%.3f")
+        else:
+            ch, nv = imgui.drag_float(f"{lbl}##cpw_{lbl}", cur, 0.006, lo, hi, "%.3f")
+        if ch:
+            changed = True
+        edited.append(ch)
+        out.append(nv if ch else cur)
+        imgui.dummy(0, 1)
+    imgui.pop_item_width()
+    r, g, b = out[0], out[1], out[2]
+    if has_alpha:
+        a = out[3]
+
+    # --- readout: exposure + gamut ---
+    if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+        request_render()
+        return True, None
+    imgui.same_line()
+    gamut = "sRGB" if all(0.0 <= c <= 1.0 for c in (r, g, b)) else ("P3" if exposure <= 1.0 else "P3 HDR")
+    imgui.text_colored(f"{exposure:.2f}× white · {gamut}", *Tint.subtle_text())
+    if info:
+        imgui.dummy(0, 2)
+        imgui.text_colored(str(info), 1.0, 1.0, 1.0, 0.45)
+    if changed:
+        if has_alpha and not edited[3]:
+            a = in_a
+        if not hsv_changed:
+            if not edited[0]:
+                r = in_r
+            if not edited[1]:
+                g = in_g
+            if not edited[2]:
+                b = in_b
+            nh, ns, nv, ne = hdr_color.p3_hsv_from_extended(r, g, b)
+            if ns <= 0.0 or nv <= 0.0:
+                nh = h
+            if nv <= 0.0:
+                ns = s
+            h, s, v, exposure = nh, ns, nv, ne
+        draw_state._cpw_precise = ((r, g, b, a), (h, s, v, exposure))
+        request_render()
+        return True, ((r, g, b, a) if has_alpha else (r, g, b))
+    return False, input_value
+
+
+def _wide_pick(fx, fy, top_fraction, max_stops):
+    """Square fractions (x right, y down) → (s, v, exposure)."""
+    fx = min(max(fx, 0.0), 1.0)
+    fy = min(max(fy, 0.0), 1.0)
+    if fy < top_fraction:
+        return fx, 1.0, 2.0 ** (max_stops * (1.0 - fy / top_fraction))
+    v = 1.0 - (fy - top_fraction) / max(1e-6, 1.0 - top_fraction)
+    return fx, min(max(v, 0.0), 1.0), 1.0
+
+
+def _wide_marker(s, v, exposure, top_fraction, max_stops):
+    """(s, v, exposure) → square fractions; the inverse of _wide_pick."""
+    import math
+    if exposure > 1.0:
+        fy = top_fraction * (1.0 - min(1.0, math.log2(exposure) / max_stops))
+    else:
+        fy = top_fraction + (1.0 - v) * (1.0 - top_fraction)
+    return min(max(s, 0.0), 1.0), min(max(fy, 0.0), 1.0)
+
+
+def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
+    """The hue slice as an RGBA16F GLTexture, cached on the picker's GLState
+    and re-baked when the hue (or the layout toggles) change."""
+    if gl_state is None:
+        return None
+    from src.lsd.gl_gui import hdr_color
+    import OpenGL.GL as gl
+    from src.lsd.gl_gui.gl_state import GLTexture, _scalar
+
+    def create():
+        data = hdr_color.wide_square_linear(hue, size, top_fraction, max_stops)
+        tex_id = _scalar(gl.glGenTextures(1))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, size, size, 0, gl.GL_RGBA, gl.GL_FLOAT, data)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        return GLTexture(tex_id, gl.GL_TEXTURE_2D, (size, size), gl.GL_RGBA16F)
+
+    return gl_state.get("wide_square", create, lambda t: gl.glDeleteTextures([t.texture_id]),
+                        deps=(round(float(hue), 4), int(size), round(top_fraction, 4), round(max_stops, 4)))
+
+
+def _draw_srgb_picker(input_value, draw_state, info):
+    """The sRGB tab: the classic HSV picker (a saturation/value square plus a
     hue bar. `input_value` is a 3- or 4-float RGB(A) tuple in 0..1; returns
     (changed, new_tuple). HSV is derived from the value each frame and the edit
     written straight back (imgui's own is_item_active tracks the drag), so it
@@ -7529,7 +7752,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
     _info = None
     if is_open and info is not None:
         _info = info() if callable(info) else info
-    picker_h = 180 + 14 + 4 * 26 + 26 + (22 if _info else 0)
+    picker_h = color_picker_height(4, bool(_info))
     # parent_window=draw_state anchors the popover under the swatch and makes
     # the tuple the picker's ancestor, so clear_focus (which protects the
     # clicked swatch window closure) leaves the popover open when you click
@@ -7718,7 +7941,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
 
     # ---- the picker popover: drawn while owned, closed once not open ----
     _info = (info() if callable(info) else info) if is_open else None
-    picker_h = 180 + 14 + 4 * 26 + 26 + (22 if _info else 0)
+    picker_h = color_picker_height(4, bool(_info))
     # Anchor under the chip; flip up past the display bottom (draw_tuple).
     _pop_y = 10
     _disp_h = imgui.get_io().display_size[1]

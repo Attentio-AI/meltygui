@@ -109,7 +109,11 @@ void main() {
         // Linear scRGB -> BT.2020 -> PQ. reference_nits is what 1.0 shows
         // as (the desktop's SDR reference), so SDR content matches an
         // untagged window and white(4) lands at 4x that.
-        vec3 nits = MELTY_SRGB_TO_BT2020 * max(c.rgb, 0.0) * reference_nits;
+        // Convert primaries FIRST, clamp after: a P3 / wide colour is
+        // scRGB with NEGATIVE components (p3(1,0,0) = (1.22, -0.04, -0.02)
+        // linear) and clamping them before the matrix collapses it back to
+        // the sRGB gamut. BT.2020 contains P3, so the result is non-negative.
+        vec3 nits = max(MELTY_SRGB_TO_BT2020 * c.rgb, 0.0) * reference_nits;
         FragColor = vec4(melty_pq_encode(nits), c.a);
     } else {
         FragColor = vec4(melty_linear_to_srgb(c.rgb), c.a);
@@ -143,7 +147,7 @@ def present(width: int, height: int) -> bool:
     # PQ only once the surface actually carries the tag (wayland_color.sync):
     # an untagged app is sRGB to the compositor, whatever the toggle says.
     from src.lsd.gl_gui import wayland_color
-    pq = Toggles.HDR.output == "pq" and (wayland_color.applied() == "pq" or not wayland_color.available())
+    pq = wayland_color.resolved_output() == "pq" and (wayland_color.applied() == "pq" or not wayland_color.available())
     reference = wayland_color.reference_nits() or float(Toggles.HDR.pq_reference_nits)
     _present_pass(_STATE["gl"], scene=_STATE["tex"], pq_output=1 if pq else 0,
                   reference_nits=float(reference))

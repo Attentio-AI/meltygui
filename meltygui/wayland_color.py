@@ -15,7 +15,8 @@ connection binds `wp_color_manager_v1`. A compositor without the global
 (GNOME, an SDR Hyprland session) leaves `available()` False and the studio
 stays an untagged sRGB window.
 
-Flow (`sync(window)` once per frame from Melty.post_frame):
+Flow (`sync(window)` once per frame from Melty.post_frame; "auto", the
+default, resolves to "pq" whenever the manager is bound — resolved_output):
     Toggles.HDR.output "pq"   → create_parametric_creator → set_primaries_named
                                  (bt2020) + set_tf_named (st2084_pq) +
                                  set_luminances (0, 10000, reference) → create →
@@ -365,11 +366,13 @@ def applied():
 def sync(window=None) -> str | None:
     """Once per frame: make the surface tag follow Toggles.HDR.output.
     Cheap when nothing changed. Returns the applied mode."""
-    from src.lsd.gl_gui.toggles import Toggles
-    wanted = "pq" if Toggles.HDR.output == "pq" else "srgb"
-    if wanted == _STATE["wanted"] or not available():
+    if not available():
+        return _STATE["applied"]
+    wanted = resolved_output()
+    if wanted == _STATE["wanted"]:
         return _STATE["applied"]
     _STATE["wanted"] = wanted
+    from src.lsd.gl_gui.toggles import Toggles
     try:
         if wanted == "pq":
             if create_description(PRIMARIES_BT2020, TF_ST2084_PQ,
@@ -386,6 +389,16 @@ def sync(window=None) -> str | None:
         _STATE["error"] = f"{type(e).__name__}: {e}"
         print(f"wayland_color: {e}")
     return _STATE["applied"]
+
+
+def resolved_output() -> str:
+    """Toggles.HDR.output with "auto" resolved: PQ when the compositor offers
+    colour management, sRGB otherwise."""
+    from src.lsd.gl_gui.toggles import Toggles
+    mode = Toggles.HDR.output
+    if mode == "auto":
+        return "pq" if available() else "srgb"
+    return "pq" if mode == "pq" else "srgb"
 
 
 def attach_window(window) -> bool:

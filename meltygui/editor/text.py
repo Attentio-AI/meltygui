@@ -2002,7 +2002,8 @@ def draw_color3_token(input_value, draw_state=None,
 
     # Fixed-size popover (closable windows don't auto-resize; the picker body is
     # live imgui the framework can't measure): SV square + N channel rows + hex.
-    picker_h = 180 + 14 + len(vals) * 26 + 26
+    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height
+    picker_h = color_picker_height(len(vals))
     color_changed, new_color = draw_color_picker(
         tuple(vals), name=f"{draw_state.name}_picker", closed=not is_open,
         window_pos=(0, 10), parent_window=draw_state, width=216, height=picker_h,
@@ -2153,7 +2154,8 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     # persists when the (cached) editor body is skipped. Fixed size: closable
     # windows don't auto-resize and the picker body is raw imgui the framework
     # can't measure - SV square + N channel rows + hex.
-    picker_h = 180 + 14 + len(vals) * 26 + 26
+    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height
+    picker_h = color_picker_height(len(vals))
     # window_pos is relative to the imgui cursor at call time - park the
     # cursor back on the swatch's top-left so (0, 10) anchors just under it,
     # exactly like the wrapped popover.

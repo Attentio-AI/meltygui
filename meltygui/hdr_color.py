@@ -337,3 +337,92 @@ vec3 melty_pq_encode(vec3 nits) {
     return pow((c1 + c2 * yp) / (1.0 + c3 * yp), vec3(m2));
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# The wide-gamut picker's colour model (draw_color_picker's "Wide" tab)
+# ---------------------------------------------------------------------------
+#
+# The picker works in DISPLAY P3 HSV plus an EXPOSURE: (h, s, v) is the
+# classic square on P3 primaries (P3 saturates further than sRGB), and
+# exposure is a linear multiplier above white - v = 1 with exposure 4 is
+# white(4). Every displayable colour has one such tuple: the P3 gamut
+# contains sRGB, so anything the display can show packs non-negative in P3.
+
+import colorsys as _colorsys
+
+
+def p3_hsv_from_extended(r: float, g: float, b: float):
+    """Extended-sRGB → (h, s, v, exposure) in P3 HSV. A component outside P3
+    (negative after the primaries conversion) clips to the P3 edge."""
+    lin = linear_srgb_to_p3((srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)))
+    lin = tuple(max(0.0, c) for c in lin)
+    peak = max(lin)
+    exposure = peak if peak > 1.0 else 1.0
+    enc = tuple(linear_to_srgb(c / exposure) for c in lin)      # Display P3 uses the sRGB curve
+    h, s, v = _colorsys.rgb_to_hsv(*enc)
+    return h, s, v, exposure
+
+
+def extended_from_p3_hsv(h: float, s: float, v: float, exposure: float = 1.0):
+    """(h, s, v, exposure) in P3 HSV → extended-sRGB (r, g, b)."""
+    enc = _colorsys.hsv_to_rgb(h, s, v)
+    lin = tuple(srgb_to_linear(c) * exposure for c in enc)
+    return tuple(linear_to_srgb(c) for c in linear_p3_to_srgb(lin))
+
+
+def wide_square_linear(hue: float, size: int, top_fraction: float, max_stops: float):
+    """The picker square for one hue as a (size, size, 4) float32 array of
+    LINEAR scRGB (row 0 = top). X is P3 saturation 0→1. The top
+    `top_fraction` of the rows is exposure: 2^max_stops at the top down to
+    1.0 (white) at the seam; the rest is the classic value axis 1→0."""
+    import numpy as np
+    n = int(size)
+    top = max(1, int(round(n * top_fraction)))
+    s = np.linspace(0.0, 1.0, n, dtype=np.float32)[None, :, None]           # columns
+    rows = np.arange(n, dtype=np.float32)
+    v = np.ones(n, dtype=np.float32)
+    exposure = np.ones(n, dtype=np.float32)
+    exposure[:top] = 2.0 ** (max_stops * (1.0 - rows[:top] / top))
+    v[top:] = 1.0 - (rows[top:] - top) / max(1, n - top - 1)
+    v = np.clip(v, 0.0, 1.0)[:, None, None]
+    exposure = exposure[:, None, None]
+    hue_rgb = np.asarray(_colorsys.hsv_to_rgb(hue, 1.0, 1.0), dtype=np.float32)[None, None, :]
+    enc = v * (1.0 - s * (1.0 - hue_rgb))                                     # HSV at fixed hue, P3-encoded
+    lin = np.where(enc <= 0.04045, enc / 12.92, ((enc + 0.055) / 1.055) ** 2.4) * exposure
+    m = np.asarray(P3_TO_SRGB, dtype=np.float32)
+    out = np.empty((n, n, 4), dtype=np.float32)
+    out[..., :3] = lin @ m.T
+    out[..., 3] = 1.0
+    return out
+
+
+def srgb_saturation_limit(hue: float, v: float, steps: int = 14) -> float:
+    """Largest P3 saturation at (hue, v) whose colour still sits inside the
+    sRGB gamut (bisection; 1.0 when every saturation fits, e.g. at black)."""
+    def inside(s):
+        lin = linear_p3_to_srgb(tuple(srgb_to_linear(c) for c in _colorsys.hsv_to_rgb(hue, s, v)))
+        return all(-1e-4 <= c <= 1.0 + 1e-4 for c in lin)
+    if inside(1.0):
+        return 1.0
+    lo, hi = 0.0, 1.0
+    for _ in range(steps):
+        mid = 0.5 * (lo + hi)
+        if inside(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def srgb_region_outline(hue: float, top_fraction: float, samples: int = 32):
+    """The sRGB-reachable region of the wide square for one hue, as a list
+    of (x, y) fractions of the square: along the white seam from the left
+    edge to the gamut edge, then down the gamut edge to black."""
+    points = [(0.0, top_fraction)]
+    for i in range(samples + 1):
+        v = 1.0 - i / samples
+        x = srgb_saturation_limit(hue, v)
+        y = top_fraction + (1.0 - v) * (1.0 - top_fraction)
+        points.append((x, y))
+    return points

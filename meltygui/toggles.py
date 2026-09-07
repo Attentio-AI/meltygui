@@ -1341,15 +1341,26 @@ class Toggles:
         # [tint=(0.62, 0.36, 0.52)]
         vertex_octaves = 12.0
         # Presentation encode of the linear scRGB scene into the 8-bit
-        # swapchain: "srgb" (SDR, what an untagged window shows) or "pq"
-        # (BT.2020 + ST 2084, for a surface tagged PQ). Read live.
+        # swapchain AND the surface's colour tag (wayland_color.py):
+        # "auto" — PQ whenever the compositor offers colour management (the
+        # Hyprland HDR session), sRGB otherwise (GNOME); "pq" — BT.2020 +
+        # ST 2084, surface tagged PQ; "srgb" — SDR, untagged: everything
+        # clips to the sRGB gamut and to white. Read live.
         # [tint=(0.62, 0.36, 0.52)]
-        output = "srgb"
+        output = "auto"
         # Nits of reference white (a colour of 1.0) under the "pq" encode -
         # match the desktop's SDR reference (Hyprland: the monitor's
         # sdrMaxLuminance) so SDR content lands at the same brightness.
         # [tint=(0.62, 0.36, 0.52)]
         pq_reference_nits = 250.0
+        # The colour picker's Wide tab: how far above white its square
+        # reaches, in stops (4 = white(16)), and the fraction of the
+        # square's height that exposure band takes (the rest is the classic
+        # value axis). Read live.
+        # [tint=(0.62, 0.36, 0.52)]
+        picker_max_stops = 4.0
+        # [tint=(0.62, 0.36, 0.52)]
+        picker_top_fraction = 0.3
 
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:
@@ -2562,7 +2573,7 @@ class Toggles:
 
     debug_z_depth = False
     filters = True
-    filter_brightness = True
+    filter_brightness = False
     show_excluded = True
     layer_stack_trace = False
     show_line_breaks = False
@@ -2668,7 +2679,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 0.787
+    glow_strength = 0.138
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),

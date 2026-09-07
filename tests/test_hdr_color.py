@@ -206,3 +206,38 @@ def test_glsl_decode_matches_python(gl_context):
                 assert abs(got[i] - want_lin[i]) < 0.03, (color, got, want_lin)
         assert abs(got[3] - want_a) < 0.01, (color, got)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+
+# test the wide picker color model --------------------------------------------------
+
+def test_p3_hsv_round_trip_covers_sdr_p3_and_bright():
+    for color in ((0.2, 0.5, 0.8), (1.0, 1.0, 1.0), HC.p3(1, 0, 0), HC.white(4.0), HC.p3(0, 1, 0, scale=3)):
+        h, s, v, e = HC.p3_hsv_from_extended(*color)
+        assert 0.0 <= s <= 1.0 + 1e-6 and 0.0 <= v <= 1.0 + 1e-6 and e >= 1.0
+        back = HC.extended_from_p3_hsv(h, s, v, e)
+        assert _close(back, color, 2e-3), (color, back)
+    # white(4) is v=1 at exposure 4; P3 red is saturation 1 at exposure 1
+    assert abs(HC.p3_hsv_from_extended(*HC.white(4.0))[3] - 4.0) < 1e-6
+    h, s, v, e = HC.p3_hsv_from_extended(*HC.p3(1, 0, 0))
+    assert abs(s - 1.0) < 1e-6 and abs(v - 1.0) < 1e-6 and abs(e - 1.0) < 1e-6
+
+
+def test_srgb_limit_is_below_one_for_saturated_hues_and_one_at_black():
+    assert HC.srgb_saturation_limit(0.0, 1.0) < 1.0          # P3 red: full saturation is outside sRGB
+    assert HC.srgb_saturation_limit(0.0, 0.0) == 1.0         # black: everything fits
+    lim = HC.srgb_saturation_limit(0.33, 0.8)
+    lin = HC.linear_p3_to_srgb(tuple(HC.srgb_to_linear(c) for c in HC._colorsys.hsv_to_rgb(0.33, lim, 0.8)))
+    assert all(-1e-3 <= c <= 1.0 + 1e-3 for c in lin)
+    pts = HC.srgb_region_outline(0.0, 0.35, samples=8)
+    assert pts[0] == (0.0, 0.35) and abs(pts[-1][1] - 1.0) < 1e-9 and len(pts) == 10
+
+
+def test_wide_square_texture_has_the_expected_corners():
+    import numpy as np
+    sq = HC.wide_square_linear(0.0, 64, 0.25, 4.0)
+    assert sq.shape == (64, 64, 4) and sq.dtype == np.float32
+    assert np.allclose(sq[16, 0, :3], 1.0, atol=0.02)                 # seam, s=0: white
+    assert np.allclose(sq[0, 0, :3], 16.0, rtol=0.05)                 # top-left: white(16)
+    assert np.allclose(sq[63, :, :3], 0.0, atol=1e-3)                 # bottom row: black
+    red = sq[16, 63, :3]                                              # seam, s=1: P3 red in scRGB
+    assert red[0] > 1.2 and red[1] < 0 and red[2] < 0

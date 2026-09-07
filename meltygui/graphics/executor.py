@@ -141,9 +141,14 @@ class FilterExecutor:
 
         GL.glDisable(GL.GL_DEPTH_TEST)
 
-        # Handle input framebuffer - get texture from framebuffer if specified
+        # Handle input framebuffer - get texture from framebuffer if specified.
+        # Reading and writing the SAME framebuffer (the in-place filters over
+        # the scene target in scene_target.py) must go through a copy: the
+        # attachment shortcut would hand back the very texture the pass is
+        # about to clear and draw into, and the filter samples zeros.
         if input_framebuffer is not None:
-            texture_id, width, height = self._get_texture_from_framebuffer(input_framebuffer)
+            texture_id, width, height = self._get_texture_from_framebuffer(
+                input_framebuffer, force_copy=(input_framebuffer == output_framebuffer))
         else:
             # Get texture dimensions from texture_id
             GL.glBindTexture(GL.GL_TEXTURE_2D, texture_id)
@@ -361,12 +366,14 @@ class FilterExecutor:
         self._texture_cache[input_texture_id] = (new_texture, width, height)
         return new_texture
 
-    def _get_texture_from_framebuffer(self, framebuffer_id: int) -> Tuple[int, int, int]:
+    def _get_texture_from_framebuffer(self, framebuffer_id: int, force_copy: bool = False) -> Tuple[int, int, int]:
         """
         Get a texture from a framebuffer's color attachment, or create one from its contents.
 
         Args:
             framebuffer_id: The framebuffer to read from (0 for main screen)
+            force_copy: Never return the attachment itself — copy the contents
+                (required when the caller renders back into this framebuffer)
 
         Returns:
             Tuple of (texture_id, width, height)
@@ -387,7 +394,7 @@ class FilterExecutor:
 
         # Try to get the texture attachment (for non-zero FBOs)
         texture_id = None
-        if framebuffer_id != 0:
+        if framebuffer_id != 0 and not force_copy:
             try:
                 # Check what's attached to COLOR_ATTACHMENT0
                 attachment_type = GL.glGetFramebufferAttachmentParameteriv(

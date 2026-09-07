@@ -368,6 +368,18 @@ float _spec_edge_dist(vec2 uv, vec2 dir, float d0, float max_d, vec2 texel) {
     return hi;
 }
 
+// Extended sRGB (mirrored for negatives, unbounded above) — hdr_color.py.
+vec3 melty_encode(vec3 v) {
+    vec3 a = abs(v);
+    vec3 e = mix(a * 12.92, 1.055 * pow(a, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, a));
+    return sign(v) * e;
+}
+vec3 melty_decode(vec3 c) {
+    vec3 a = abs(c);
+    vec3 l = mix(a / 12.92, pow((a + 0.055) / 1.055, vec3(2.4)), step(0.04045, a));
+    return sign(c) * l;
+}
+
 void main() {
     vec2 uv = v_texcoord;
 
@@ -423,9 +435,16 @@ void main() {
         shadow_intensity *= max(0.0, 1.0 - glum * glow_shadow_cut);
     }
 
-    // Apply shadow by darkening toward shadow_color
-    vec3 shadowed = mix(color.rgb, shadow_color, shadow_intensity * shadow_opacity);
-    shadowed += glow_light * glow_strength;
+    // The scene is LINEAR scRGB (hdr_color.py) but every knob here —
+    // shadow_color, the opacities, the glow and specular strengths — was
+    // tuned against the sRGB-ENCODED frame, so the mix runs in that domain
+    // and decodes at the end: the same look, and a shadow_color of
+    // (0, 0.02, 0.05) stays the blue-black it reads as (taken as linear
+    // light it is sRGB (0, 0.15, 0.25): the blue shadows of 09-07).
+    // Extended curves: values above 1 and below 0 pass through.
+    vec3 color_enc = melty_encode(color.rgb);
+    vec3 shadowed = mix(color_enc, shadow_color, shadow_intensity * shadow_opacity);
+    shadowed += melty_encode(glow_light) * glow_strength;
 
     // Specular bevel highlight on the lit edge. March toward the light in
     // the full-res depth mask: the first sample that drops below this
@@ -515,8 +534,8 @@ void main() {
         frame_cov = 1.0 - smoothstep(-0.5, 0.5, fdist);
     }
     float bg_alpha = shadow_intensity * shadow_opacity;
-    vec3 bg_rgb = shadow_color * bg_alpha;
-    fragColor = vec4(mix(bg_rgb, vec3(shadowed), frame_cov), mix(bg_alpha, color.a, frame_cov));
+    vec3 bg_rgb = melty_decode(shadow_color) * bg_alpha;
+    fragColor = vec4(mix(bg_rgb, melty_decode(shadowed), frame_cov), mix(bg_alpha, color.a, frame_cov));
 }
 """
 

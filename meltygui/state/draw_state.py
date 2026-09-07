@@ -102,6 +102,17 @@ class TabState(DictConversion):
         self.tab_icons = {}
 
 
+class ColorPickerState(DictConversion):
+    """draw_color_picker's persisted state (injected via
+    `picker_state: ColorPickerState = None`): which tab is showing —
+    "wide" (the P3 + brightness square, the default) or "srgb" (the
+    classic square)."""
+
+    def __init__(self):
+        super().__init__()
+        self.tab = "wide"
+
+
 @no_save("close_hold")
 class TabBarState(DictConversion):
     """Per-editor state for draw_code_editor's tab bar (injected via
