@@ -39,6 +39,7 @@ ctrl = y only).
 import math
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import numpy
 import numpy as np
 import OpenGL.GL as gl
@@ -138,6 +139,7 @@ void main() {
     vec3 c = n_lines > 1
         ? texture(lut, (float(v_line) + 0.5) / float(n_lines)).rgb
         : single_color;
+    c = pow(max(c, 0.0), vec3(2.2));   // LUT / tint are display-referred sRGB; the FBO is linear (hdr_color.py)
     FragColor = vec4(c * a, a);     // premultiplied — the FBO composites ONE / 1-a
 }
 """
@@ -304,9 +306,9 @@ def _draw_axes_overlay(draw_list, img_pos, width, height, n_samples, y_range,
     caption (series dim × line count) top-right. Pure imgui draw-list
     text, recomputed per frame from the camera params."""
     x0, y0 = img_pos
-    grid_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.07)
-    tick_col = imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.8)
-    dim_col = imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.55)
+    grid_col = pack_color(1.0, 1.0, 1.0, 0.07)
+    tick_col = pack_color(0.85, 0.85, 0.85, 0.8)
+    dim_col = pack_color(0.85, 0.85, 0.85, 0.55)
     # x: visible index span from the inverse camera at the image edges.
     ux, uy = unit
     if n_samples > 1:

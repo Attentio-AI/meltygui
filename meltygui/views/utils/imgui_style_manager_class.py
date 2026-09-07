@@ -1,4 +1,5 @@
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color, unpack_color, style_color
 import colorsys
 
 from src.lsd.gl_gui.global_style import GlobalStyle
@@ -115,23 +116,16 @@ class ImGuiStyleManager:
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self._safe_rgb_to_hsv(r, g, b)
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
-        imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
-        def _unpack_color(packed_color):
-            """Convert a packed u32 color to RGBA components (0-1 range)"""
-            return (
-                ((packed_color >> 0) & 0xFF) / 255.0,  # R
-                ((packed_color >> 8) & 0xFF) / 255.0,  # G
-                ((packed_color >> 16) & 0xFF) / 255.0,  # B
-            )
-        return _unpack_color(imgui_color)
+        return unpack_color(imgui_color)[:3]
 
     def make_color(self, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self.hsv
         value = (v * GlobalStyle.secondary_value) + value
 
         modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
-        imgui_color = imgui.get_color_u32_rgba(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
+        imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
         return imgui_color
 
     def make_color_rgb(self, r, g, b, saturation_scale=0.4, alpha=1.0, factor=0.3, value=0.5):
@@ -180,7 +174,7 @@ class ImGuiStyleManager:
             Packed u32 color value
         """
         color = self.make_color_style(input, alpha)
-        return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
+        return pack_color(color[0], color[1], color[2], alpha)
 
     def make_color_style_value_imgui(self, input, saturation=None, alpha=1.0, value=0.0):
         """
@@ -191,7 +185,7 @@ class ImGuiStyleManager:
             Packed u32 color value
         """
         color = self.make_color_style_value(input, alpha, saturation=saturation, value=value)
-        return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
+        return pack_color(color[0], color[1], color[2], alpha)
 
 
     def make_color_style_rgb(self, r, g, b, input,factor=0.6):
@@ -260,28 +254,14 @@ class ImGuiStyleManager:
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make(self, value, saturation_scale=1.0, alpha=1.0):
-        def _unpack_color(packed_color):
-            """Convert a packed u32 color to RGBA components (0-1 range)"""
-            return (
-                ((packed_color >> 0) & 0xFF) / 255.0,  # R
-                ((packed_color >> 8) & 0xFF) / 255.0,  # G
-                ((packed_color >> 16) & 0xFF) / 255.0,  # B
-                ((packed_color >> 24) & 0xFF) / 255.0  # A
-            )
+        _unpack_color = unpack_color
 
         color = self.make_color(value, saturation_scale, alpha)
         unpacked = _unpack_color(color)
         return (unpacked[0], unpacked[1], unpacked[2])
 
     def make_color_unpacked(self, value, saturation_scale=1.0, alpha=1.0):
-        def _unpack_color(packed_color):
-            """Convert a packed u32 color to RGBA components (0-1 range)"""
-            return (
-                ((packed_color >> 0) & 0xFF) / 255.0,  # R
-                ((packed_color >> 8) & 0xFF) / 255.0,  # G
-                ((packed_color >> 16) & 0xFF) / 255.0,  # B
-                ((packed_color >> 24) & 0xFF) / 255.0  # A
-            )
+        _unpack_color = unpack_color
         color = self.make_color(value, saturation_scale, alpha)
         return _unpack_color(color)
 
@@ -423,6 +403,9 @@ class ImGuiStyleManager:
             for idx, col in cached:
                 real_colors[idx] = col
             return
+        # Entries are recorded as the packer's bytes / 255 (hdr_color.style_color):
+        # imgui converts a style float4 to u32 by itself, and that conversion
+        # must reproduce pack_color's layout (the SDR bit, the 7-bit alpha).
         colors = _TintTableRecorder()
 
         def make_color(input, alpha=1.0):
@@ -516,7 +499,7 @@ class _TintTableRecorder:
         self.entries = []
 
     def __setitem__(self, idx, col):
-        self.entries.append((idx, col))
+        self.entries.append((idx, style_color(*col)))
 
 
 _TINT_TABLE_CACHE = globals().get("_TINT_TABLE_CACHE", {})   # (r, g, b, cap) → [(idx, color)]

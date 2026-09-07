@@ -319,8 +319,9 @@ class FilterExecutor:
 
         texture = GL.glGenTextures(1)
         GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
-        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, width, height, 0,
-                        GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, None)
+        # fp16: the filters run over a linear scRGB scene (scene_target.py)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA16F, width, height, 0,
+                        GL.GL_RGBA, GL.GL_HALF_FLOAT, None)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
         GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
@@ -432,7 +433,7 @@ class FilterExecutor:
         # Copy framebuffer contents to the texture
         GL.glBindFramebuffer(GL.GL_READ_FRAMEBUFFER, framebuffer_id)
         GL.glBindTexture(GL.GL_TEXTURE_2D, temp_texture)
-        GL.glCopyTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 0, 0, width, height, 0)
+        GL.glCopyTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA16F, 0, 0, width, height, 0)
 
         # Restore bindings
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, original_fbo)

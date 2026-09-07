@@ -7,6 +7,7 @@ from typing import MutableMapping
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui import mouse_cursor
@@ -328,7 +329,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
             factor=factor, saturation_scale=saturation, alpha=1.0)
         bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
         dl.add_rect_filled(x, y, x + w, y + h,
-                           imgui.get_color_u32_rgba(bg[0], bg[1], bg[2], alpha),
+                           pack_color(bg[0], bg[1], bg[2], alpha),
                            rounding=rounding)
     # text_color: use this exact rgb for the label instead of the theme-mix
     # pipeline below — that pipeline only lets text_value/text_saturation
@@ -358,7 +359,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
     # low-left of their geometric cell, so shift right and up a hair.
     tx = x + text_offset_x if text_offset_x is not None else x + (w - ts.x) * 0.5
     dl.add_text(tx + 2.0 * scale, y + (h - ts.y) * 0.5 - scale,
-                imgui.get_color_u32_rgba(tc[0], tc[1], tc[2], 1.0), text)
+                pack_color(tc[0], tc[1], tc[2], 1.0), text)
     # layout=False: draw-only — no dummy (nothing submitted to the window
     # group, so an out-of-flow draw like a DragDrop ghost can't stretch the
     # view's measured content) and no click subscription.
@@ -730,7 +731,7 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
                                       current=kwargs.get("search_current", False))
                 if Melty.channels_split:
                     draw_list.channels_set_current(Melty.get_channel())
-            packed_name_color = imgui.get_color_u32_rgba(*name_color[:3], 1.0)
+            packed_name_color = pack_color(*name_color[:3], 1.0)
             draw_list.add_text(cursor_pos[0], cursor_pos[1], packed_name_color, clipped_name)
             imgui.dummy(text_width, imgui.get_frame_height())
             pop_style_var(1)
@@ -842,7 +843,7 @@ def draw_header_end(input_value=None, name="", show_close=True, key=None, melty=
             button_x, row_top = imgui.get_cursor_screen_pos()
             icon_x = button_x - redraw_pad_x - slot_width + (slot_width - icon_width) / 2
             icon_y = row_top + (button_height - icon_height) / 2
-            redraw_color = imgui.get_color_u32_rgba(1, 1, 1, redraw_alpha)
+            redraw_color = pack_color(1, 1, 1, redraw_alpha)
             imgui.get_window_draw_list().add_text(icon_x, icon_y, redraw_color, redraw_icon)
         if show_close:
             if flat_button(f"{close_icon}##{unique}", draw_state,

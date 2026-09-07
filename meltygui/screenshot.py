@@ -419,13 +419,18 @@ def _capture_tile(name):
     # Content is top-anchored in a possibly bottom-padded texture: the logical
     # w x h pixels live in the texture rows [alloc_h - h, alloc_h), not at y=0.
     alloc_h = (getattr(tile, "alloc_size", None) or tile.size)[1]
-    data = gl.glReadPixels(0, int(alloc_h) - int(h), int(w), int(h), gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)  # restore the default framebuffer
+    # Tiles hold LINEAR scRGB (fp16, hdr_color.py): read floats and sRGB-encode
+    # for the PNG the way the presentation pass does for the screen.
+    data = gl.glReadPixels(0, int(alloc_h) - int(h), int(w), int(h), gl.GL_RGBA, gl.GL_FLOAT)
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, Melty.default_framebuffer())  # restore main frame's target
 
-    if isinstance(data, bytes):
-        arr = np.frombuffer(data, dtype=np.uint8)
-    else:
-        arr = np.asarray(data, dtype=np.uint8).ravel()
+    lin = np.asarray(data, dtype=np.float32).reshape(-1, 4)
+    rgb = np.clip(lin[:, :3], 0.0, 1.0)
+    enc = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+    arr = np.empty((lin.shape[0], 4), dtype=np.uint8)
+    arr[:, :3] = np.round(enc * 255.0)
+    arr[:, 3] = np.round(np.clip(lin[:, 3], 0.0, 1.0) * 255.0)
+    arr = arr.ravel()
     arr = arr.reshape(int(h), int(w), 4)
     arr = np.flipud(arr)  # GL origin is bottom-left -> top-left
 

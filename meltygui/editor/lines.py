@@ -25,6 +25,7 @@ does. Font Awesome icons are NOT monospaced: each is drawn in its own cell.
 import bisect
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.melty import Melty
@@ -50,7 +51,7 @@ def pop_code_font(pushed):
 
 
 def _u32(rgb, alpha):
-    return imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2], alpha)
+    return pack_color(rgb[0], rgb[1], rgb[2], alpha)
 
 
 def _wash_factors():

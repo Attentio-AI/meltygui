@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -281,7 +282,7 @@ def _mix(style_manager, tint, value, factor, saturation):
 
 
 def _color_u32(color, alpha=1.0):
-    return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
+    return pack_color(color[0], color[1], color[2], alpha)
 
 
 def _ellipsize(text, max_width):

@@ -1504,8 +1504,7 @@ def _def_wash_u32(tint):
                           Toggles.TextEditor.bg_min_brightness,
                           Toggles.TextEditor.bg_max_brightness))
     a = max(0.0, min(1.0, Toggles.TextEditor.def_block_alpha))
-    return ((int(a * 255) << 24) | (int(b * 255) << 16)
-            | (int(g * 255) << 8) | int(r * 255))
+    return pack_color(r, g, b, a)
 
 
 def _text_hit(row, show_path=False):
@@ -3888,7 +3887,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     row_bg_value, row_bg_hot = 0.045, 0.10
     row_text_value, row_text_hot = 0.9, 1.5
     ctx_text_value = 0.5  # Code context rows (ancestors that didn't match)
-    hot_bg_untinted = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.07)  # hover/select wash on untinted Code rows
+    hot_bg_untinted = pack_color(1.0, 1.0, 1.0, 0.07)  # hover/select wash on untinted Code rows
     TREE_INDENT = 16.0  # px per Code tree level (file -> class -> def)
     # Group background behind a Code row AND its descendants (a file's block
     # envelopes its classes/defs, a def all its defs) in the row's own
@@ -3909,14 +3908,14 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     VAL_W = 108.0
     # Selection: a flat outline, NOT the search glow's gradient - white with a
     # slight blue tint so it reads the same over every category's row tint.
-    sel_color = imgui.get_color_u32_rgba(0.88, 0.93, 1.0, 1.0)
+    sel_color = pack_color(0.88, 0.93, 1.0, 1.0)
     sel_thickness = 1.5
     # Scroll scrollbar: a slim gutter at the rows' right edge while they
     # overflow the window (rows narrow by SCROLLBAR_W + SCROLLBAR_GAP then).
     SCROLLBAR_W, SCROLLBAR_GAP = 4.0, 4.0
     scrollbar_min_grab_h = 18.0
-    scrollbar_track_color = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.05)
-    scrollbar_grab_color = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.22)
+    scrollbar_track_color = pack_color(1.0, 1.0, 1.0, 0.05)
+    scrollbar_grab_color = pack_color(1.0, 1.0, 1.0, 0.22)
 
     w = (draw_state.content_width - 10) if draw_state and draw_state.content_width else 200
     sm = Melty.style_manager
@@ -3946,7 +3945,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         c = tint if (isinstance(tint, tuple) and len(tint) >= 3) else (0.5, 0.5, 0.5)
         col = sm.make_color_rgb(c[0], c[1], c[2], value=value, factor=factor,
                                 saturation_scale=sat)
-        return imgui.get_color_u32_rgba(col[0], col[1], col[2], alpha)
+        return pack_color(col[0], col[1], col[2], alpha)
 
     # ---- category chip layout, calculated first so the content dummy can
     # report the right height: chips flow left-to-right and WRAP into further
@@ -4212,7 +4211,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             # display - count > 0 comes from an older caller): a selectable
             # text at the list's end; activating it loads the whole result set.
             dl.add_text(bx + ICON_COL + 8, ry + (ROW_H - line_h) / 2.0,
-                        imgui.get_color_u32_rgba(*((0.9, 0.9, 0.9) if hot
+                        pack_color(*((0.9, 0.9, 0.9) if hot
                                                    else (0.55, 0.55, 0.55)), 1.0),
                         (f"+ {hit.count} more — load all" if hit.count
                          else "load all results"))
@@ -4426,7 +4425,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
                 traceback.print_exc()
             if _cr_drawn and _csuf:
                 dl.add_text(bx + bw - 8 - _sw, _ty,
-                            imgui.get_color_u32_rgba(0.52, 0.55, 0.6, suffix_alpha), _csuf)
+                            pack_color(0.52, 0.55, 0.6, suffix_alpha), _csuf)
                 _suffix_w = _sw + 12.0  # right-edge widgets (pick count) sit left of it
             if _cr_drawn and draw_state.on_action(
                     "left_mouse_down", view_id=f"gs_row_act_{idx}",
@@ -4494,7 +4493,7 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
             cs = str(cnt_)
             cw = imgui.calc_text_size(cs)[0]
             dl.add_text(r_edge - cw, ry + (ROW_H - line_h) / 2.0,
-                        imgui.get_color_u32_rgba(0.62, 0.62, 0.62, 1.0), cs)
+                        pack_color(0.62, 0.62, 0.62, 1.0), cs)
             r_edge -= cw + 8
         # File name, right-aligned at whatever far-right space is left -
         # barely brighter than the row background (see file_text_value).
@@ -5496,7 +5495,7 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     if right_mouse_drag:
         b_str = f"{zoom_state.brightness:.3f}"
         overlay.add_text(right_mouse_drag.x, right_mouse_drag.y - 30,
-                         col=imgui.get_color_u32_rgba(*highlight_color[:3], 1),
+                         col=pack_color(*highlight_color[:3], 1),
                          text=f"brightness:{zoom_state.brightness:.3}\ncontrast:{zoom_state.contrast:.3}")
 
         if io.key_shift:
@@ -5742,13 +5741,13 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
                                 uv_b=uv_b,
                                 rounding=5.0)
     draw_list.add_rect(raw_img_left, raw_img_top, raw_img_right + 1, raw_img_bottom + 1,
-                       imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
+                       pack_color(*mixed_color[:3], 1.0),
                        0.0, 0, 1.0)
     Core.melty.pop_clip()
 
     line_height = imgui.get_text_line_height()
     draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
-                       imgui.get_color_u32_rgba(*mixed_color[:3], 1.0),
+                       pack_color(*mixed_color[:3], 1.0),
                        text=f"{original_id} - {texture_id} - {width}x{height} - Zoom: {zoom_state.zoom:.2f}x")
 
     gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
@@ -6008,7 +6007,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             height = draw_state.height
 
             draw_list.add_rect_filled(left, top, right, bottom,
-                                      col=imgui.get_color_u32_rgba(*color), rounding=4.0)
+                                      col=pack_color(*color), rounding=4.0)
 
             if opacity > 0:
                 Core.melty.cache.mask_mark_rect(draw_state, Core.melty.max_depth - 1, draw_state.shadow_depth, left,
@@ -6019,7 +6018,7 @@ def draw_drag_drop_target(input_value, draw_state, on_drag, do_flow, depth,
             # draw_list.add_line(draw_state.left, draw_state.abs_top - 2 - offset,
             #                    draw_state.left + draw_state.width,
             #                    draw_state.abs_top - 2 - offset,
-            #                    col=imgui.get_color_u32_rgba(*color), thickness=3)
+            #                    col=pack_color(*color), thickness=3)
 
     return False, flow_spacing
 
@@ -6033,6 +6032,7 @@ def toggle_offscreen():
 
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 # new comment
 def draw_vertical_scrollbar(content_height: float,
                             view_height: float,
@@ -6050,8 +6050,8 @@ def draw_vertical_scrollbar(content_height: float,
     if min_grab_size is None:
         min_grab_size = float(style.grab_min_size)
 
-    col_track = imgui.get_color_u32_rgba(0, 0, 0, 0.1)
-    col_grab = imgui.get_color_u32_rgba(1, 1, 1, 0.3)
+    col_track = pack_color(0, 0, 0, 0.1)
+    col_grab = pack_color(1, 1, 1, 0.3)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
     # Early clamps & deriveds
@@ -6424,9 +6424,9 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     bleed_color, outline_color = memo
 
     if outline:
-        packed_outline = imgui.get_color_u32_rgba(*outline_color[:3], 1.0)
+        packed_outline = pack_color(*outline_color[:3], 1.0)
         if outline_tint is not None:
-            packed_outline = imgui.get_color_u32_rgba(*outline_tint[:3], 1.0)
+            packed_outline = pack_color(*outline_tint[:3], 1.0)
         imgui.get_window_draw_list().add_rect(
             *outline_rect, col=packed_outline, rounding=corner_radius, thickness=stroke_width,
         )
@@ -6448,10 +6448,10 @@ def draw_bg(left=25, top=0, width=0, height=57, depth=0, rounding=6.0, bg_offset
     # Applies to whatever ends up as the fill - depth-ramp color OR a passed
     # bg_color/tint, so the cap holds regardless of the input's hue/brightness.
     bg_color = _clamp_bg_value(bg_color, max_bg_value)
-    packed_fill = imgui.get_color_u32_rgba(bg_color[0], bg_color[1], bg_color[2], 1.0)
+    packed_fill = pack_color(bg_color[0], bg_color[1], bg_color[2], 1.0)
     if tint is not None:
         tinted = _clamp_bg_value(tint, max_bg_value)
-        packed_fill = imgui.get_color_u32_rgba(*tinted[:3], opacity)
+        packed_fill = pack_color(*tinted[:3], opacity)
 
     if opacity > 0.0:
         imgui.get_window_draw_list().add_rect_filled(*fill_rect, col=packed_fill, rounding=corner_radius)
@@ -6532,13 +6532,13 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
 
     if alpha > 0.0 and show_button_bg:
         draw_list.add_rect_filled(bx0, by0, bx1, by1,
-                                  imgui.get_color_u32_rgba(*mixed_color[:3], alpha), rounding=rnd)
+                                  pack_color(*mixed_color[:3], alpha), rounding=rnd)
 
     # Tint fill: button mutes `color` into a dark bg, so to show a window's tint
     # we paint the raw colour over it — at low alpha so it stays a subtle wash.
     elif tint is not None and show_button_bg:
         draw_list.add_rect_filled(bx0, by0, bx1, by1,
-                                  imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], 0.33),
+                                  pack_color(tint[0], tint[1], tint[2], 0.33),
                                   rounding=rnd)
 
     # Search match highlight (drawn under the text): the current row radiates a
@@ -6557,15 +6557,15 @@ def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left
     if text_align == "left":
         draw_list.add_text(draw_state.abs_left + 5,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
-                           imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
+                           pack_color(*text_color[:3], 1.0), button_txt)
     elif text_align == "right":
         draw_list.add_text(draw_state.abs_left + width - min_size[0] - 5,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
-                           imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
+                           pack_color(*text_color[:3], 1.0), button_txt)
     else:
         draw_list.add_text(draw_state.abs_left + (width - min_size[0]) / 2.0 + 2,
                            draw_state.abs_top + (height - min_size[1]) / 2.0 - 1,
-                           imgui.get_color_u32_rgba(*text_color[:3], 1.0), button_txt)
+                           pack_color(*text_color[:3], 1.0), button_txt)
 
     if left_mouse_down:
         # Effect ledger, exactly as flat_button: a fired button is an
@@ -6654,12 +6654,12 @@ def draw_bool(
     cursor_start = imgui.get_cursor_pos_x()
 
     if input_value:
-        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_selected(), 1.0)
+        bg_color = pack_color(*Tint.checkbox_bg_selected(), 1.0)
         text_color = (*Tint.checkbox_text_true(), 1.0)
         # icons are available as a dropdown! Use f"{}"  is encouraged
         icon = f""
     else:
-        bg_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg(), 1.0)
+        bg_color = pack_color(*Tint.checkbox_bg(), 1.0)
         text_color = (*Tint.checkbox_text(), 0.45)
         icon = f""
 
@@ -6685,7 +6685,7 @@ def draw_bool(
     
     # draw list should not be abbrivated ds
     draw_list = imgui.get_window_draw_list()
-    outline_color = imgui.get_color_u32_rgba(*Tint.checkbox_outline(), 1.0)
+    outline_color = pack_color(*Tint.checkbox_outline(), 1.0)
 
     # This is an example of a comment I don't really like. Documenting what something 
     # does is fine but if that's needed it usually means the code is written poorly.
@@ -6720,7 +6720,7 @@ def draw_bool(
         box_left, box_top, box_right, box_bottom)
 
     if box_hovered:
-        hover_color = imgui.get_color_u32_rgba(*Tint.checkbox_bg_hovered(), 0.2)
+        hover_color = pack_color(*Tint.checkbox_bg_hovered(), 0.2)
         draw_list.add_rect_filled(box_left, box_top, box_right, box_bottom,
                                   rounding=4, col=hover_color)
 
@@ -7331,9 +7331,9 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
 
     SQ, BAR_W, GAP = 180, 18, 8
     dl = imgui.get_window_draw_list()
-    white = imgui.get_color_u32_rgba(1, 1, 1, 1)
-    black = imgui.get_color_u32_rgba(0, 0, 0, 1)
-    trans = imgui.get_color_u32_rgba(0, 0, 0, 0)
+    white = pack_color(1, 1, 1, 1)
+    black = pack_color(0, 0, 0, 1)
+    trans = pack_color(0, 0, 0, 0)
     changed = False
     hsv_changed = False  # only convert HSV->RGB when the square/hue is actually changed
 
@@ -7345,7 +7345,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
     # --- SV square: white->hue across, transparent->black down ---
     sx0, sy0 = imgui.get_cursor_screen_pos()
     hr, hg, hb = imgui.color_convert_hsv_to_rgb(h, 1.0, 1.0)
-    hue = imgui.get_color_u32_rgba(hr, hg, hb, 1)
+    hue = pack_color(hr, hg, hb, 1)
     dl.add_rect_filled_multicolor(sx0, sy0, sx0 + SQ, sy0 + SQ, white, hue, hue, white)
     dl.add_rect_filled_multicolor(sx0, sy0, sx0 + SQ, sy0 + SQ, trans, trans, black, black)
     imgui.invisible_button("##sv", SQ, SQ)
@@ -7362,8 +7362,8 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None, **kwar
         t0, t1 = i / 6.0, (i + 1) / 6.0
         r0, g0, b0 = imgui.color_convert_hsv_to_rgb(t0, 1, 1)
         r1, g1, b1 = imgui.color_convert_hsv_to_rgb(t1, 1, 1)
-        c0 = imgui.get_color_u32_rgba(r0, g0, b0, 1)
-        c1 = imgui.get_color_u32_rgba(r1, g1, b1, 1)
+        c0 = pack_color(r0, g0, b0, 1)
+        c1 = pack_color(r1, g1, b1, 1)
         dl.add_rect_filled_multicolor(hx0, hy0 + SQ * t0, hx0 + BAR_W, hy0 + SQ * t1, c0, c0, c1, c1)
     imgui.invisible_button("##hue", BAR_W, SQ)
     if imgui.is_item_active():
@@ -7516,7 +7516,7 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
                 _omn, _omx = imgui.get_item_rect_min(), imgui.get_item_rect_max()
                 imgui.get_window_draw_list().add_rect(
                     _omn.x - 1.5, _omn.y - 1.5, _omx.x + 1.5, _omx.y + 1.5,
-                    imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.55), rounding=4.0)
+                    pack_color(1.0, 1.0, 1.0, 0.55), rounding=4.0)
             is_open = Melty.popover_focused_ds is draw_state  # reflect the toggle this frame
 
             # The picker window is closable -> fixed size (auto-resize is off for
@@ -7633,7 +7633,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     if not is_color:
         # Missing tint: a hollow chip; a click stamps in an opaque black.
         draw_list.add_rect(x, y, x + size, y + size,
-                           imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.35),
+                           pack_color(1.0, 1.0, 1.0, 0.35),
                            rounding=corner_radius)
         if draw_state.on_action("left_mouse_down", view_id=view_id, rect=rect,
                                 priority_delta=priority_delta) is not None:
@@ -7648,29 +7648,29 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
         # half: the colour opaque - so transparency shows in the chip.
         half = x + size * 0.5
         draw_list.add_rect_filled(x, y, half, y + size,
-                                  imgui.get_color_u32_rgba(*checker_dark, 1.0),
+                                  pack_color(*checker_dark, 1.0),
                                   rounding=corner_radius,
                                   flags=imgui.DRAW_ROUND_CORNERS_LEFT)
         cell = size * 0.5
         draw_list.add_rect_filled(x + cell * 0.5, y, half, y + cell * 0.5,
-                                  imgui.get_color_u32_rgba(*checker_light, 1.0))
+                                  pack_color(*checker_light, 1.0))
         draw_list.add_rect_filled(x, y + cell * 0.5, x + cell * 0.5, y + size,
-                                  imgui.get_color_u32_rgba(*checker_light, 1.0))
+                                  pack_color(*checker_light, 1.0))
         draw_list.add_rect_filled(x, y, half, y + size,
-                                  imgui.get_color_u32_rgba(r, g, b, alpha),
+                                  pack_color(r, g, b, alpha),
                                   rounding=corner_radius,
                                   flags=imgui.DRAW_ROUND_CORNERS_LEFT)
         draw_list.add_rect_filled(half, y, x + size, y + size,
-                                  imgui.get_color_u32_rgba(r, g, b, 1.0),
+                                  pack_color(r, g, b, 1.0),
                                   rounding=corner_radius,
                                   flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
     else:
         draw_list.add_rect_filled(x, y, x + size, y + size,
-                                  imgui.get_color_u32_rgba(r, g, b, 1.0),
+                                  pack_color(r, g, b, 1.0),
                                   rounding=corner_radius)
     if outline:
         draw_list.add_rect(x - 1.5, y - 1.5, x + size + 1.5, y + size + 1.5,
-                           imgui.get_color_u32_rgba(*outline_color),
+                           pack_color(*outline_color),
                            rounding=corner_radius)
 
     # `owner`: this chip last opened the popover. It stays the owner past an
@@ -7783,7 +7783,7 @@ def draw_float_ctx(input_value):
     draw_list.add_rect(upper_left_x=input_value.abs_left, upper_left_y=input_value.abs_top,
                        lower_right_x=input_value.abs_left + input_value.width,
                        lower_right_y=input_value.abs_top + input_value.height,
-                       col=imgui.get_color_u32_rgba(1, 0, 0, 0.5), thickness=1.0)
+                       col=pack_color(1, 0, 0, 0.5), thickness=1.0)
 
 
 @render_func(is_default_for=(float), shadow=False, use_cache=False, wrap=False, tint=(0.114, 0.087, 0.35),
@@ -8516,8 +8516,8 @@ def draw_enum_tabs(input_value: type, tab_state: TabState):
 
 def draw_debug(x, y, label, color=(1, 0, 0), size=16):
     draw_list: _DrawList = imgui.get_overlay_draw_list()
-    draw_list.add_circle_filled(x, y, size, imgui.get_color_u32_rgba(*color, 1.0))
-    draw_list.add_text(x + size + 2, y - size / 2, imgui.get_color_u32_rgba(*color, 1.0), label)
+    draw_list.add_circle_filled(x, y, size, pack_color(*color, 1.0))
+    draw_list.add_text(x + size + 2, y - size / 2, pack_color(*color, 1.0), label)
 
 
 def draw_lens(lens, draw_state):
@@ -10717,7 +10717,7 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
         dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
                            draw_state.abs_left + draw_state.width,
                            draw_state.abs_top + draw_state.height,
-                           imgui.get_color_u32_rgba(1, 1, 1, 0.16),
+                           pack_color(1, 1, 1, 0.16),
                            rounding=getattr(draw_state, 'corner_radius', 6))
 
     if clicked:
@@ -11455,7 +11455,7 @@ def _dd_paint_tag(draw_list, right, top, height, tag, active,
             b = b * (1 - _DD_ROW_TINT_A) + row_tint[2] * _DD_ROW_TINT_A
         if active:
             r, g, b = r * 0.84 + 0.16, g * 0.84 + 0.16, b * 0.84 + 0.16
-        mask = imgui.get_color_u32_rgba(min(max(r, 0.0), 1.0),
+        mask = pack_color(min(max(r, 0.0), 1.0),
                                         min(max(g, 0.0), 1.0),
                                         min(max(b, 0.0), 1.0), 1.0)
         draw_list.add_rect_filled(tag_x - 6, top + 1, tag_x + tag_w + 6,
@@ -11469,7 +11469,7 @@ def _dd_paint_tag(draw_list, right, top, height, tag, active,
             green = green * (1 - fade) + bg[1] * fade
             blue = blue * (1 - fade) + bg[2] * fade
         draw_list.add_text(x, tag_y,
-                           imgui.get_color_u32_rgba(red, green, blue, alpha),
+                           pack_color(red, green, blue, alpha),
                            text)
         x += imgui.calc_text_size(text)[0] + _DD_TAG_GAP
 
@@ -11548,11 +11548,11 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             g = max(0.0, m - (m - g) * _ROW_TINT_S_BOOST)
             b = max(0.0, m - (m - b) * _ROW_TINT_S_BOOST)
         dl.add_rect_filled(x, y + 1, x + w, y + h - 1,
-                           imgui.get_color_u32_rgba(r, g, b, _ROW_TINT_A),
+                           pack_color(r, g, b, _ROW_TINT_A),
                            rounding=getattr(draw_state, 'corner_radius', 6))
     if active:
         dl.add_rect_filled(x, y, x + w, y + h,
-                           imgui.get_color_u32_rgba(1, 1, 1, 0.16),
+                           pack_color(1, 1, 1, 0.16),
                            rounding=getattr(draw_state, 'corner_radius', 6))
 
     # Raw imgui.text_colored() for the label, coloured by the value's embedded
@@ -11609,7 +11609,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                 _lbl = _lbl[:-1]
             _lbl += "…"
         dl.add_text(x + left_pad, _ty,
-                    imgui.get_color_u32_rgba(color[0], color[1], color[2], 0.9),
+                    pack_color(color[0], color[1], color[2], 0.9),
                     _lbl)
         # Shared column (widest label in the menu, capped, precomputed by
         # draw_dd_menu) so every row's editor starts at the same x - with the
@@ -11707,7 +11707,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
         _ax = x + w - 24
         _over_act = hovered and mp[0] >= _ax - 4
         dl.add_text(_ax, y + (h - line_h) * 0.5,
-                    imgui.get_color_u32_rgba(0.85, 0.32, 0.28,
+                    pack_color(0.85, 0.32, 0.28,
                                              0.95 if _over_act else 0.4),
                     "")
         if _over_act and imgui.is_mouse_clicked(0):
@@ -11950,7 +11950,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         dl.add_rect_filled(draw_state.abs_left, draw_state.abs_top,
                            draw_state.abs_left + draw_state.width,
                            draw_state.abs_top + draw_state.height,
-                           imgui.get_color_u32_rgba(1, 1, 1, 0.16),
+                           pack_color(1, 1, 1, 0.16),
                            rounding=getattr(draw_state, 'corner_radius', 6))
 
     chevron = f"  {fa_chrevron_right}" if is_branch else "    "  # fa-chevron-right

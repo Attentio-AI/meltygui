@@ -18,9 +18,11 @@ are created once per process.
 import ctypes
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import OpenGL.GL as gl
 
 from src.lsd.gl_gui.gl_state import GLTexture
+from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, set_decode_uniforms
 
 _VS = """
 #version 330 core
@@ -30,9 +32,10 @@ layout(location = 2) in vec4 Color;
 uniform vec2 uSize;
 out vec2 fUV;
 out vec4 fColor;
+""" + _GLSL_DECODE + """
 void main() {
     fUV = UV;
-    fColor = Color;
+    fColor = melty_decode_color(Color);   // linear scRGB, like the screen pass
     // imgui-style ortho: display y=0 (text top) -> ndc +1, so the baked
     // texture's v=1 row is the TOP of the text.
     gl_Position = vec4(Position.x * 2.0 / uSize.x - 1.0,
@@ -161,8 +164,8 @@ def _render_draw_data(dd, w, h):
     tex = gl.glGenTextures(1)
     try:
         gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, w, h, 0,
-                        gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, w, h, 0,
+                        gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER,
                            gl.GL_LINEAR_MIPMAP_LINEAR)
         gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
@@ -193,6 +196,7 @@ def _render_draw_data(dd, w, h):
 
         gl.glUseProgram(_state["prog"])
         gl.glUniform2f(_state["u_size"], float(w), float(h))
+        set_decode_uniforms(_state["prog"])
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindVertexArray(_state["vao"])
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, _state["vbo"])
@@ -232,7 +236,7 @@ def _render_draw_data(dd, w, h):
     finally:
         gl.glDeleteFramebuffers(1, [fbo])
         saved.restore()
-    return GLTexture(tex, gl.GL_TEXTURE_2D, (h, w), gl.GL_RGBA8)
+    return GLTexture(tex, gl.GL_TEXTURE_2D, (h, w), gl.GL_RGBA16F)
 
 
 def bake_text(text, font=None, pad=2):
@@ -255,7 +259,7 @@ def bake_text(text, font=None, pad=2):
             w = max(1, int(ts.x + 0.5)) + pad * 2
             h = max(1, int(ts.y + 0.5)) + pad * 2
             imgui.get_overlay_draw_list().add_text(
-                float(pad), float(pad), imgui.get_color_u32_rgba(1, 1, 1, 1), text)
+                float(pad), float(pad), pack_color(1, 1, 1, 1), text)
         finally:
             if font is not None:
                 imgui.pop_font()
@@ -285,7 +289,7 @@ def bake_texts(texts, font=None, pad=2, gap=8):
             imgui.push_font(font)
         try:
             dl = imgui.get_overlay_draw_list()
-            col = imgui.get_color_u32_rgba(1, 1, 1, 1)
+            col = pack_color(1, 1, 1, 1)
             rows, y, w_max = {}, 0, 1
             for t in texts:
                 ts = imgui.calc_text_size(t)

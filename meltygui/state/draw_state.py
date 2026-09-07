@@ -4,6 +4,7 @@ from enum import Enum
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import libcst as cst
 
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -1920,8 +1921,8 @@ class DrawState(DictConversion):
 
         draw_list = imgui.get_overlay_draw_list()
         draw_list.add_rect(self.left, self.top, self.left + self.width, self.top + self.height,
-                           imgui.get_color_u32_rgba(*tint[:3], 1.0) if tint is not None else
-                           imgui.get_color_u32_rgba(1, 1, 1, 1),
+                           pack_color(*tint[:3], 1.0) if tint is not None else
+                           pack_color(1, 1, 1, 1),
                            rounding=rounding, thickness=1)
 
         if Core.melty.channels_split:
@@ -2077,17 +2078,17 @@ class DrawState(DictConversion):
             overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
                                     invalidation_rect[0] + ds.width,
                                     invalidation_rect[1] + text_size.y,
-                                    imgui.get_color_u32_rgba(*color[:3],
+                                    pack_color(*color[:3],
                                                              1))
 
             overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
-                             imgui.get_color_u32_rgba(*(0, 0, 0),
+                             pack_color(*(0, 0, 0),
                                                       1),
                              text)
 
             overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2],
                              invalidation_rect[3],
-                             imgui.get_color_u32_rgba(*color[:3],
+                             pack_color(*color[:3],
                                                       1),
                              thickness=1.0)
 

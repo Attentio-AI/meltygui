@@ -9,6 +9,7 @@ from contextlib import contextmanager as _contextmanager
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.toggles import Toggles
@@ -322,15 +323,15 @@ def _draw_column_entry(draw_list, column_left, content_width, line_height, paddi
             and bg_top <= mouse.y <= bg_bottom):
         opacity = 1.0
 
-    label_u32 = imgui.get_color_u32_rgba(label_color[0], label_color[1],
+    label_u32 = pack_color(label_color[0], label_color[1],
                                          label_color[2], label_color[3] * opacity)
-    content_u32 = imgui.get_color_u32_rgba(content_color[0], content_color[1],
+    content_u32 = pack_color(content_color[0], content_color[1],
                                            content_color[2], content_color[3] * opacity)
 
     rect = (column_left - padding, bg_top, column_left + content_width + padding, bg_bottom)
 
     # background rectangle with some transparency
-    draw_list.add_rect_filled(*rect, imgui.get_color_u32_rgba(0, 0, 0, opacity), rounding=2)
+    draw_list.add_rect_filled(*rect, pack_color(0, 0, 0, opacity), rounding=2)
 
     if hit_rects is not None:
         hit_rect = rect if clip is None else (max(rect[0], clip[0]), max(rect[1], clip[1]),
@@ -475,7 +476,7 @@ def _draw_scrolled_column(draw_list, io, tag, rows, column_left, content_width,
         thumb_bottom = viewport_bottom - (offset / max_offset) * travel
         draw_list.add_rect_filled(viewport[2] - thumb_width, thumb_bottom - thumb_height,
                                   viewport[2], thumb_bottom,
-                                  imgui.get_color_u32_rgba(1, 1, 1, 0.25), rounding=1)
+                                  pack_color(1, 1, 1, 0.25), rounding=1)
 
     if show_badge and unseen:
         _draw_new_badge(draw_list, tag, unseen, column_left, content_width,
@@ -498,9 +499,9 @@ def _draw_new_badge(draw_list, tag, unseen, column_left, content_width,
     x0 = column_left + (content_width - pill_width) / 2
     y1 = viewport_bottom - padding * 2
     y0 = y1 - pill_height
-    yellow = imgui.get_color_u32_rgba(1, 1, 0, 1)
+    yellow = pack_color(1, 1, 0, 1)
     draw_list.add_rect_filled(x0, y0, x0 + pill_width, y1,
-                              imgui.get_color_u32_rgba(0, 0, 0, 0.9),
+                              pack_color(0, 0, 0, 0.9),
                               rounding=pill_height / 2)
     draw_list.add_rect(x0, y0, x0 + pill_width, y1, yellow,
                        rounding=pill_height / 2, thickness=1.0)
@@ -589,7 +590,7 @@ def _draw_copy_flash(draw_list):
         return
     alpha = remaining / _COPY_FLASH_SECONDS
     draw_list.add_rect(x0, y0, x1, y1,
-                       imgui.get_color_u32_rgba(1, 1, 0, alpha), rounding=2, thickness=1.5)
+                       pack_color(1, 1, 0, alpha), rounding=2, thickness=1.5)
     from src.lsd.gl_gui.utils.glfw_utils import request_render
     request_render()
 
@@ -620,7 +621,7 @@ def draw_notifications():
 
         content_width = column_width - padding * 2  # left-aligned content box
         line_height = imgui.get_text_line_height()
-        title_color = imgui.get_color_u32_rgba(1, 1, 0, 1)
+        title_color = pack_color(1, 1, 0, 1)
 
         tagged_columns = [(tag, notifications) for tag, notifications
                           in NotificationCenter.tagged_notifications.items()

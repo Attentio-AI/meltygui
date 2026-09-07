@@ -1,6 +1,7 @@
 import types
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.view.core_conversion import address
 from src.lsd.gl_gui.view.core_conversion.address import Address
@@ -44,11 +45,11 @@ def draw_jump_to(input_value: Address, unique, width=30, error_msg=None,
     rounding = 4.0
     top_corners = imgui.DRAW_ROUND_CORNERS_TOP
     if msg:
-        fill_col = (235 << 24) | (40 << 16) | (30 << 8) | 70    # dark red-tinted fill
-        line_col = (255 << 24) | (70 << 16) | (60 << 8) | 150   # red outline
+        fill_col = pack_color(70 / 255, 30 / 255, 40 / 255, 235 / 255)    # dark red-tinted fill
+        line_col = pack_color(150 / 255, 60 / 255, 70 / 255, 1.0)         # red outline
     else:
-        fill_col = (230 << 24) | (62 << 16) | (52 << 8) | 44
-        line_col = (255 << 24) | (90 << 16) | (78 << 8) | 66
+        fill_col = pack_color(44 / 255, 52 / 255, 62 / 255, 230 / 255)
+        line_col = pack_color(66 / 255, 78 / 255, 90 / 255, 1.0)
     draw_list.add_rect_filled(x0, y0, x1, y1, fill_col, rounding, top_corners)
     draw_list.add_rect(x0, y0, x1, y1, line_col, rounding, top_corners)
 

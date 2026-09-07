@@ -199,12 +199,16 @@ class _Rect:
 # ==============================
 # GL helpers
 # ==============================
-def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA8, clamp_to_border=False, filter=gl.GL_LINEAR) -> int:
+# Tiles hold LINEAR scRGB (hdr_color.py): RGBA16F keeps everything above 1 and
+# below 0 and doesn't band in the darks the way 8 bits of linear would.
+def _create_color_tex(w: int, h: int, internal_format=gl.GL_RGBA16F, clamp_to_border=False, filter=gl.GL_LINEAR) -> int:
     Melty.cache.tex_init_count += 1
 
     tex = gl.glGenTextures(1)
     gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+    upload_type = gl.GL_HALF_FLOAT if internal_format in (gl.GL_RGBA16F, gl.GL_RGB16F) else (
+        gl.GL_FLOAT if internal_format in (gl.GL_RGBA32F, gl.GL_RGB32F) else gl.GL_UNSIGNED_BYTE)
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, internal_format, w, h, 0, gl.GL_RGBA, upload_type, None)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, filter)
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, filter)
     if clamp_to_border:
@@ -285,7 +289,6 @@ def _display_max_size() -> Tuple[int, int]:
 
 
 def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Optional[int]]:
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
     fbo = gl.glGenFramebuffers(1)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
     gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, tex, 0)
@@ -302,7 +305,7 @@ def _create_fbo_with_tex(tex: int, depth_stencil: bool, w, h) -> Tuple[int, Opti
     if status != gl.GL_FRAMEBUFFER_COMPLETE:
         print_stack_trace()
         raise RuntimeError(f"FBO incomplete: 0x{status:04X}")
-    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, Melty.default_framebuffer())
     return fbo, rbo
 
 
@@ -4634,7 +4637,7 @@ class TileCacheMasked:
             _fc_marks.append(("setup", time.perf_counter()))
             # PASS 1: Snapshot the current framebuffer
             # ================================================================
-            gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
+            gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, Melty.default_framebuffer())
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._snapshot_fbo)
             gl.glBlitFramebuffer(
                 0, 0, dd_fb_w, dd_fb_h, 0, 0, dd_fb_w, dd_fb_h, gl.GL_COLOR_BUFFER_BIT, gl.GL_NEAREST

@@ -11,6 +11,7 @@ from typing import MutableMapping, Optional
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import libcst as cst
 from imgui.core import _DrawList
 
@@ -613,6 +614,14 @@ class Melty:
 
     filter = Filter()
     detached = False
+
+    @classmethod
+    def default_framebuffer(cls):
+        """The framebuffer a frame's draws go to: the fp16 scene target
+        (scene_target.py) while a frame is open, else the window's 0. Every
+        'bind 0' inside a frame must go through here."""
+        from src.lsd.gl_gui import scene_target
+        return scene_target.framebuffer()
 
     seen_values = []
 
@@ -1485,10 +1494,10 @@ class Melty:
                            / max(1, note.fade_frames))
             ring = note.radius * (0.30 + 0.70 * progress)
             overlay.add_circle(x, y, ring,
-                               imgui.get_color_u32_rgba(r, g, b, 0.85 * alpha),
+                               pack_color(r, g, b, 0.85 * alpha),
                                32, note.thickness)
             overlay.add_circle(x, y, ring * 0.55,
-                               imgui.get_color_u32_rgba(r, g, b, 0.40 * alpha),
+                               pack_color(r, g, b, 0.40 * alpha),
                                32, max(1.0, note.thickness * 0.6))
             return
         if kind == "cursor":
@@ -1510,8 +1519,8 @@ class Melty:
                                         x + ox + 7.2 * scale, y + oy + 18.9 * scale,
                                         color)
             shadow = 1.4 * scale
-            _pieces(shadow, shadow, imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.45 * alpha))
-            _pieces(0.0, 0.0, imgui.get_color_u32_rgba(r, g, b, 0.95 * alpha))
+            _pieces(shadow, shadow, pack_color(0.0, 0.0, 0.0, 0.45 * alpha))
+            _pieces(0.0, 0.0, pack_color(r, g, b, 0.95 * alpha))
 
     @classmethod
     def overlay_channel_for(cls, ds) -> int:
@@ -1949,7 +1958,7 @@ class Melty:
 
         cls.layer_inc = 0.04 / ((Melty.max_layer - 1.0) * (Melty.max_depth - 1.0)) * 65535.0
 
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, cls.default_framebuffer())
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, 0)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, 0)
@@ -2785,13 +2794,13 @@ class Melty:
         grad = rgb2 is not None and tuple(rgb2[:3]) != tuple(rgb[:3])
         if rgb2 is None:
             rgb2 = rgb
-        fill = imgui.get_color_u32_rgba(*rgb, alpha)
+        fill = pack_color(*rgb, alpha)
         dl_flags = overlay_dl.flags
         overlay_dl.flags = dl_flags & ~imgui.DRAW_LIST_ANTI_ALIASED_FILL
         try:
             for i in range(segments):
                 if grad:
-                    fill = imgui.get_color_u32_rgba(
+                    fill = pack_color(
                         *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
                         alpha)
                 overlay_dl.add_triangle_filled(a[i][0], a[i][1], b[i][0], b[i][1],
@@ -2830,13 +2839,13 @@ class Melty:
                 for i in range(segments):
                     seg_rgb = Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments)
                     for pts, e_alpha in ((a, side_alpha[0]), (b, side_alpha[1])):
-                        edge = imgui.get_color_u32_rgba(*seg_rgb, e_alpha)
+                        edge = pack_color(*seg_rgb, e_alpha)
                         overlay_dl.add_polyline([pts[i], pts[i + 1]], edge,
                                                 flags=imgui.DRAW_NONE,
                                                 thickness=Swoosh.ribbon_edge_thickness)
             else:
                 for pts, e_alpha in ((a, side_alpha[0]), (b, side_alpha[1])):
-                    edge = imgui.get_color_u32_rgba(*rgb, e_alpha)
+                    edge = pack_color(*rgb, e_alpha)
                     overlay_dl.add_polyline(pts, edge, flags=imgui.DRAW_NONE,
                                             thickness=Swoosh.ribbon_edge_thickness)
         return True
@@ -2984,7 +2993,7 @@ class Melty:
         if rgb2 is None:
             rgb2 = rgb
         alpha = Swoosh.alpha * mouse_fade
-        col = imgui.get_color_u32_rgba(*rgb, alpha)
+        col = pack_color(*rgb, alpha)
         segments = max(2, int(Swoosh.segments))
         end_hw = Swoosh.end_thickness
         mid_hw = Swoosh.mid_thickness
@@ -3024,7 +3033,7 @@ class Melty:
             if grad:
                 # Remember t=0 is the parent end, t=1 the child end, so the gradient
                 # blends parent color -> child color along its length.
-                col = imgui.get_color_u32_rgba(
+                col = pack_color(
                     *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
                     alpha)
             l0, l1 = left[i], left[i + 1]
@@ -3040,7 +3049,7 @@ class Melty:
         if Swoosh.aa_width > 0.0:
             if grad:
                 for i in range(segments):
-                    seg_col = imgui.get_color_u32_rgba(
+                    seg_col = pack_color(
                         *Melty._lerp_rgb(rgb, rgb2, (i + 0.5) / segments),
                         alpha)
                     overlay_dl.add_polyline([left[i], left[i + 1]], seg_col,
@@ -3055,9 +3064,9 @@ class Melty:
         # read as dots rather than chopped-off edges - each in its own endcap color.
         cap_r = end_hw * Swoosh.cap_scale
         overlay_dl.add_circle_filled(x0, y0, cap_r,
-                                     imgui.get_color_u32_rgba(*rgb, alpha))
+                                     pack_color(*rgb, alpha))
         overlay_dl.add_circle_filled(x1, y1, cap_r,
-                                     imgui.get_color_u32_rgba(*rgb2, alpha))
+                                     pack_color(*rgb2, alpha))
 
     @classmethod
     def is_wrapped(cls):
@@ -3185,7 +3194,7 @@ class Melty:
 
         if Toggles.debug_z_depth:
             draw_list = imgui.get_overlay_draw_list()
-            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, imgui.get_color_u32_rgba(1, 0, 0, 1),
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, pack_color(1, 0, 0, 1),
                                f"Layer {draw_state.layer} "
                                f"Depth {draw_state.depth} "
                                f"zpos {draw_state.z_pos} "
@@ -3194,7 +3203,7 @@ class Melty:
                                f"Melty.z_pos {cls.z_pos} "
                                f"Melty.depth {cls.depth}")
 
-            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, imgui.get_color_u32_rgba(1, 1, 0, 1),
+            draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, pack_color(1, 1, 0, 1),
                                f"kwargs['active_layer'] {kwargs['active_layer']} "
                                )
 
@@ -3478,7 +3487,7 @@ class Melty:
             draw_state = list(cls.selected)[-1] if len(cls.selected) > 0 else None
             if draw_state is not None:
                 draw_list = imgui.get_overlay_draw_list()
-                draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, imgui.get_color_u32_rgba(1, 0, 0, 1),
+                draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 40, pack_color(1, 0, 0, 1),
                                    f"Layer {draw_state.layer} "
                                    f"Depth {draw_state.depth} "
                                    f"zpos {draw_state.z_pos} "
@@ -3720,8 +3729,8 @@ class Melty:
                         # live tint is gone by this post-draw highlight code).
                         parent_tint = offset_ds.current_tint or (draw_state._kwargs.get("tint", (1, 1, 1))[:3], 1.0)
                         highlight_rgb = Melty._highlight_rgb(parent_tint)
-                        outline_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_outline_alpha)
-                        bg_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_bg_alpha)
+                        outline_col = pack_color(*highlight_rgb, Tint.highlight_outline_alpha)
+                        bg_col = pack_color(*highlight_rgb, Tint.highlight_bg_alpha)
 
                         # Parent view: faint fill + matching highlight outline,
                         # clipped to the parent's own clip rect so the highlight
@@ -3798,7 +3807,7 @@ class Melty:
                         child_tint = draw_state.current_tint
                     child_rgb = (Melty._highlight_rgb(tuple(child_tint[:3]))
                                  if child_tint else highlight_rgb)
-                    child_outline_col = imgui.get_color_u32_rgba(
+                    child_outline_col = pack_color(
                         *child_rgb, Tint.highlight_outline_alpha)
 
                     overlay_dl.channels_set_current(Melty.overlay_channel_for(draw_state))
@@ -3910,7 +3919,7 @@ class Melty:
 
         window_size = imgui.get_io().display_size
         if Toggles.show_fps:
-            overlay.add_text(window_size.x - 600, 5, imgui.get_color_u32_rgba(1, 1, 1, 1),
+            overlay.add_text(window_size.x - 600, 5, pack_color(1, 1, 1, 1),
                              f"FPS: {imgui.get_io().framerate:.1f}")
 
         _ef_mark("post_layers")   # TEMP perf
@@ -3946,8 +3955,8 @@ class Melty:
             # the highlight boxes (current_tint may be None -> falls back to
             # the live tint inside _highlight_rgb).
             select_rgb = cls._highlight_rgb(selected_ds.current_tint)
-            bg_col = imgui.get_color_u32_rgba(*select_rgb, Tint.select_bg_alpha)
-            outline_col = imgui.get_color_u32_rgba(*select_rgb, Tint.select_outline_alpha)
+            bg_col = pack_color(*select_rgb, Tint.select_bg_alpha)
+            outline_col = pack_color(*select_rgb, Tint.select_outline_alpha)
             rounding = getattr(selected_ds, 'corner_radius', 6)
 
             clip_rect = selected_ds.abs_clip_rect
@@ -4022,10 +4031,10 @@ class Melty:
                 if clip is not None:
                     overlay.push_clip_rect(clip[0], clip[1], clip[2], clip[3], True)
                 overlay.add_rect_filled(x0, y0, x1, y1,
-                                        imgui.get_color_u32_rgba(r, g, b, 0.25 * alpha),
+                                        pack_color(r, g, b, 0.25 * alpha),
                                         rounding=note.rounding)
                 overlay.add_rect(x0, y0, x1, y1,
-                                 imgui.get_color_u32_rgba(r, g, b, 0.9 * alpha),
+                                 pack_color(r, g, b, 0.9 * alpha),
                                  rounding=note.rounding, thickness=note.thickness)
                 if clip is not None:
                     overlay.pop_clip_rect()
@@ -4049,15 +4058,15 @@ class Melty:
                 overlay.add_rect_filled(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1],
                                         invalidation_rect[0] + ds.width,
                                         invalidation_rect[1] + text_size.y,
-                                        imgui.get_color_u32_rgba(*color[:3], alpha_from_frame_past * alpha_from_note))
+                                        pack_color(*color[:3], alpha_from_frame_past * alpha_from_note))
 
-                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1], imgui.get_color_u32_rgba(*(0,0,0),
+                overlay.add_text(invalidation_rect[0] + ds.width - text_size.x, invalidation_rect[1], pack_color(*(0,0,0),
                                                                                                            alpha_from_frame_past * alpha_from_note),
                                  f"{note.name} |{note.reason}")
 
                 if Toggles.InvalidateTracker.draw_rect:
                     overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
-                                        imgui.get_color_u32_rgba(*color[:3], alpha_from_frame_past / 2.0 * alpha_from_note), thickness=1.0)
+                                        pack_color(*color[:3], alpha_from_frame_past / 2.0 * alpha_from_note), thickness=1.0)
 
 
 
@@ -4072,24 +4081,24 @@ class Melty:
 
                     invalidation_rect = note.rect
 
-                    overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, imgui.get_color_u32_rgba(*color,
+                    overlay.add_text(invalidation_rect[0], invalidation_rect[1] - 15, pack_color(*color,
                                                                                                                alpha_from_frame_past),
                                      f"{note.name} |{note.reason}")
 
 
                     overlay.add_rect(invalidation_rect[0], invalidation_rect[1], invalidation_rect[2], invalidation_rect[3],
-                                     imgui.get_color_u32_rgba(*color, alpha_from_frame_past), thickness=1.0)
+                                     pack_color(*color, alpha_from_frame_past), thickness=1.0)
 
         if Toggles.show_filled_tiles:
             # Mirror the InvalidateTracker overlay loop, but for tiles whose
             # filled_bbox now covers their full area - a transparent green
             # wash so you can see at a glance which views the scroll-driven
             # invalidation has stopped touching.
-            fill_col = imgui.get_color_u32_rgba(0.0, 1.0, 0.2, 0.18)
-            edge_col = imgui.get_color_u32_rgba(0.0, 1.0, 0.2, 0.55)
+            fill_col = pack_color(0.0, 1.0, 0.2, 0.18)
+            edge_col = pack_color(0.0, 1.0, 0.2, 0.55)
 
-            fill_col_fill = imgui.get_color_u32_rgba(1.0, 1.0, 0.2, 0.18)
-            edge_col_fill = imgui.get_color_u32_rgba(1.0, 1.0, 0.2, 0.55)
+            fill_col_fill = pack_color(1.0, 1.0, 0.2, 0.18)
+            edge_col_fill = pack_color(1.0, 1.0, 0.2, 0.55)
             for tile in cls.cache._tiles.values():
                 ds = tile.draw_state
                 if ds is None or ds.width is None or ds.height is None:
@@ -4209,10 +4218,11 @@ class Melty:
         _gt.stamp("captures")
         _ps_t3 = _pp()
         
+        _scene_fb = Melty.default_framebuffer()
         if Toggles.filter_brightness:
             Melty.filter.brightness_contrast(
-                         input_framebuffer=0,
-                         output_framebuffer=0,
+                         input_framebuffer=_scene_fb,
+                         output_framebuffer=_scene_fb,
                          brightness=Toggles.brightness,
                          contrast=Toggles.contrast,
                          width=int(fb_w),
@@ -4283,8 +4293,8 @@ class Melty:
                 from src.lsd.gl_gui.titlebar import frame_geometry
                 _f_origin, _f_radius, _f_size = frame_geometry(int(fb_w), int(fb_h))
                 Melty.filter.shadow_composite(
-                    input_framebuffer=0,
-                    output_framebuffer=0,
+                    input_framebuffer=_scene_fb,
+                    output_framebuffer=_scene_fb,
                     shadow_map=shadow_raw,
                     frame_origin=_f_origin,
                     frame_radius=_f_radius,
@@ -4323,7 +4333,7 @@ class Melty:
         if Toggles.glow_debug_view:
             _gdbg = Melty.cache.glow_tex
             if _gdbg is not None:
-                Melty.filter.passthrough(_gdbg, output_framebuffer=0)
+                Melty.filter.passthrough(_gdbg, output_framebuffer=_scene_fb)
 
         _gt.stamp("filters")
         _ps_t4 = _pp()
@@ -4337,6 +4347,12 @@ class Melty:
         if wants_transparent_framebuffer():
             gl.glViewport(0, 0, int(fb_w), int(fb_h))
             composite_window_frame(int(fb_w), int(fb_h))
+        # Presentation: the linear fp16 scene encoded into the swapchain
+        # (scene_target.present, Toggles.HDR.output). The texture GL back
+        # holds the finished, display-encoded frame the screenshots read.
+        from src.lsd.gl_gui import scene_target, wayland_color
+        wayland_color.sync(window)        # surface tag follows Toggles.HDR.output
+        scene_target.present(int(fb_w), int(fb_h))
         _gt.stamp("overlay")
         _ps_t5 = _pp()
 
@@ -4481,6 +4497,8 @@ class Melty:
             print(f"[melty] window tree release failed: {e}")
         try:
             from src.lsd.gl_gui.gl_state import GLState
+            from src.lsd.gl_gui import scene_target
+            scene_target.shutdown()
             GLState.shutdown_all()
         except Exception as e:
             print(f"[melty] gl_state shutdown failed: {e}")

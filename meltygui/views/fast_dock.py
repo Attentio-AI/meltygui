@@ -20,6 +20,7 @@ import ctypes
 import struct
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Toggles, WindowManager
@@ -105,7 +106,7 @@ def _mix(style_manager, tint, value, factor, saturation):
 
 
 def _color_u32(color, alpha=1.0):
-    return imgui.get_color_u32_rgba(color[0], color[1], color[2], alpha)
+    return pack_color(color[0], color[1], color[2], alpha)
 
 
 def _floor_value(rgb, min_value):

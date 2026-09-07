@@ -45,6 +45,7 @@ import ctypes
 import math
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import numpy as np
 import OpenGL.GL as gl
 
@@ -220,9 +221,9 @@ void main() {
     // striking the TOP face — from underneath there's no shadow at all.
     float plane_t = -1.0;
     float plane_a = 0.0;
-    // The caught shadow darkens toward the UI's compositor shadow color
-    // (Toggles.shadow_color rides in as shadow_tint) — the same slight
-    // blue the rest of the studio's shadows carry, instead of pure black.
+    // The caught shadow darkens toward shadow_tint — a neutral grey-black
+    // (Toggles.Voxels.floor_shadow_color), decoupled from the blue-black
+    // the rest of the studio's compositor shadows carry.
     vec3 plane_c = shadow_tint;
     // plane_side mirrors the catcher to the box's OTHER face when the view
     // is upside-down (+1 = floor at -z, -1 = at +z; latched between drags
@@ -350,18 +351,12 @@ void main() {
         acc.rgb += (1.0 - acc.a) * plane_c * plane_a;
         acc.a   += (1.0 - acc.a) * plane_a;
     }
-    // Output gamma on the finished 2-D image, folded into the sRGB encode:
-    // gamma 1.0 = pure sRGB encode (brightest, colorimetrically "correct"),
-    // 2.2 = raw linear out (darkest). The default sits between — the encode
-    // alone reads too bright/washed against the studio's dark UI.
-    // Dither ±half an 8-bit quantum (interleaved gradient noise, Jimenez):
-    // the RGBA8 target snaps smooth dark gradients — the plane's exponential
-    // falloff especially, post-gamma — into visible contour bands; sub-LSB
-    // noise makes adjacent quanta average out instead. Alpha too: the fade
-    // is largely an ALPHA ramp composited over the UI.
-    float dither = (fract(52.9829189 * fract(
-        dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) / 255.0;
-    FragColor = vec4(pow(acc.rgb, vec3(gamma / 2.2)) + dither, acc.a + dither);
+    // The target is the linear fp16 scene (hdr_color.py): no sRGB encode
+    // here, the presentation pass does that once. `gamma` is an artistic
+    // curve on the linear image, 1.0 = untouched (the colorimetric result),
+    // above 1 darkens the mids against the studio's dark UI. No dither: the
+    // fp16 target doesn't band.
+    FragColor = vec4(pow(max(acc.rgb, 0.0), vec3(gamma)), acc.a);
 }
 """
 
@@ -516,7 +511,10 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
         def create():
             tex_id = _scalar_int(gl.glGenTextures(1))
             gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, W, H, 0,
+            # cuda_march writes gamma-encoded premultiplied bytes: an sRGB
+            # internal format hands image_blit_pass linear light for the
+            # fp16 scene (hdr_color.py).
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_SRGB8_ALPHA8, W, H, 0,
                             gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
             for pn, pv in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST),
                            (gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST),
@@ -524,7 +522,7 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
                            (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
                 gl.glTexParameteri(gl.GL_TEXTURE_2D, pn, pv)
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-            return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_RGBA8)
+            return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_SRGB8_ALPHA8)
 
         img = gl_state.get("cuda_image", create,
                            lambda tx: gl.glDeleteTextures([tx.texture_id]),
@@ -1527,7 +1525,7 @@ def lut_io(input_value=None, gl_state: GLState = None, view_func=None,
         x, y = imgui.get_cursor_screen_pos()
         for s in range(segs):
             i = min(n - 1, int(s * (n - 1) / max(1, segs - 1))) * 3
-            col = imgui.get_color_u32_rgba(lut[i], lut[i + 1], lut[i + 2], 1.0)
+            col = pack_color(lut[i], lut[i + 1], lut[i + 2], 1.0)
             draw_list.add_rect_filled(x + bar_w * s / segs, y,
                                       x + bar_w * (s + 1) / segs, y + bar_h, col)
         imgui.dummy(bar_w, bar_h)
@@ -1679,7 +1677,7 @@ def _draw_axis_lines(draw_list, img_pos, edges):
     are NOT drawn here any more — they're textured billboards in the voxel
     FBO (_billboard_specs + _render_label_billboards), so they live in the
     3-D scene."""
-    line_col = imgui.get_color_u32_rgba(0.9, 0.9, 1.0, 0.5)
+    line_col = pack_color(0.9, 0.9, 1.0, 0.5)
     for a, b, pa, pb, t0, t1, z0, z1 in edges:
         dx, dy = pb[0] - pa[0], pb[1] - pa[1]
         length = math.hypot(dx, dy)
@@ -1972,9 +1970,9 @@ def _draw_voxel_error(draw_state, message, who="draw_voxels"):
     dl = imgui.get_window_draw_list()
     x, y = imgui.get_cursor_screen_pos()
     dl.add_rect_filled(x, y, x + width, y + height,
-                       imgui.get_color_u32_rgba(0.09, 0.05, 0.05, 1.0), 6.0)
+                       pack_color(0.09, 0.05, 0.05, 1.0), 6.0)
     dl.add_rect(x, y, x + width, y + height,
-                imgui.get_color_u32_rgba(0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
+                pack_color(0.75, 0.25, 0.25, 0.9), 6.0, thickness=1.5)
     pad = 12.0
     imgui.set_cursor_screen_pos((x + pad, y + pad))
     imgui.push_text_wrap_pos(x + width - pad)
@@ -2000,7 +1998,7 @@ def _draw_image_notice(img_pos, width, text):
     tw, th = imgui.calc_text_size(text, wrap_width=wrap_w)
     imgui.get_window_draw_list().add_rect_filled(
         x + 2, y + 2, x + min(tw, wrap_w) + 2 * pad + 2, y + th + 2 * pad + 2,
-        imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.6), 4.0)
+        pack_color(0.0, 0.0, 0.0, 0.6), 4.0)
     cur = imgui.get_cursor_screen_pos()
     imgui.set_cursor_screen_pos((x + pad + 2, y + pad + 2))
     imgui.push_text_wrap_pos(x + pad + 2 + wrap_w)
@@ -2051,9 +2049,9 @@ def _draw_tensor_meta(img_pos, height, t):
     x0, y0 = x + 2, y + height - th - 2 * pad - 2
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(x0, y0, x0 + tw + 2 * pad, y0 + th + 2 * pad,
-                       imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.55), 4.0)
-    dl.add_text(x0 + pad, y0 + pad, imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 1.0), head)
-    dl.add_text(x0 + pad + hw + gap, y0 + pad, imgui.get_color_u32_rgba(*size_tint), size_txt)
+                       pack_color(0.0, 0.0, 0.0, 0.55), 4.0)
+    dl.add_text(x0 + pad, y0 + pad, pack_color(0.85, 0.85, 0.85, 1.0), head)
+    dl.add_text(x0 + pad + hw + gap, y0 + pad, pack_color(*size_tint), size_txt)
 
 
 def _is_tensorish(v):
@@ -2705,7 +2703,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                 shade=_cm.shade_params(
                     draw_plane=bool(draw_plane), shadow_opacity=float(shadow_opacity),
                     shadow_softness=float(shadow_softness),
-                    shadow_tint=tuple(float(c) for c in Toggles.shadow_color)[:3],
+                    shadow_tint=tuple(float(c) for c in Toggles.Voxels.floor_shadow_color)[:3],
                     plane_side=float(plane_side), draw_shading=bool(draw_shading),
                     self_shading=bool(self_shading),
                     light_pos=tuple(float(c) for c in light_pos),
@@ -2727,9 +2725,9 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                        draw_plane=bool(draw_plane),
                        shadow_opacity=float(shadow_opacity),
                        shadow_softness=float(shadow_softness),
-                       # The studio-wide compositor shadow color: the floor
-                       # shadow matches whatever the UI's shadows are tinted.
-                       shadow_tint=tuple(float(c) for c in Toggles.shadow_color),
+                       # The floor shadow's own colour (neutral grey), not
+                       # the UI's blue-black compositor Toggles.floor_color.
+                       shadow_tint=tuple(float(c) for c in Toggles.Voxels.floor_shadow_color)[:3],
                        draw_shading=bool(draw_shading),
                        self_shading=bool(self_shading),
                        plane_side=float(plane_side),

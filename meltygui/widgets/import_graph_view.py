@@ -25,6 +25,7 @@ import math
 from pathlib import Path
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import Toggles
@@ -135,7 +136,7 @@ def render_import_graph(input_value=None, draw_state=None,
             status += f"  ·  {Path(state.selected).name}"
     else:
         status = "no graph yet — build one"
-    dl.add_text(status_x, status_y, imgui.get_color_u32_rgba(0.75, 0.78, 0.82, 1.0), status)
+    dl.add_text(status_x, status_y, pack_color(0.75, 0.78, 0.82, 1.0), status)
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + px(4))
     x0, y0 = imgui.get_cursor_screen_pos()
     height = max(1.0, (draw_state.height or 400) - (y0 - draw_state.abs_top) - px(4))
@@ -260,20 +261,20 @@ def render_import_graph(input_value=None, draw_state=None,
                 alpha=1.0)
             mixed = brightness_clamp(mixed[0], mixed[1], mixed[2], 0.0,
                                      Toggles.CodeEditor.tab_active_bg_max_brightness)
-            col = fill_memo[key] = imgui.get_color_u32_rgba(mixed[0], mixed[1], mixed[2], alpha)
+            col = fill_memo[key] = pack_color(mixed[0], mixed[1], mixed[2], alpha)
         return col
 
     selected_tint = (_tint_of(meta, selected) if selected is not None else None) or highlight_fallback_tint
     hue, saturation, value = colorsys.rgb_to_hsv(*selected_tint)
     importers_tint = colorsys.hsv_to_rgb(hue, saturation * importer_saturation,
                                          min(1.0, value + importer_value_boost))
-    imports_col = imgui.get_color_u32_rgba(*selected_tint, 0.9)
-    importers_col = imgui.get_color_u32_rgba(*importers_tint, 0.9)
-    edge_col = imgui.get_color_u32_rgba(0.8, 0.85, 0.95, edge_alpha)
-    faded_edge_col = imgui.get_color_u32_rgba(0.8, 0.85, 0.95, edge_alpha * faded_alpha)
-    text_col = imgui.get_color_u32_rgba(0.92, 0.92, 0.92, 1.0)
-    faded_text_col = imgui.get_color_u32_rgba(0.92, 0.92, 0.92, faded_alpha)
-    outline_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.85)
+    imports_col = pack_color(*selected_tint, 0.9)
+    importers_col = pack_color(*importers_tint, 0.9)
+    edge_col = pack_color(0.8, 0.85, 0.95, edge_alpha)
+    faded_edge_col = pack_color(0.8, 0.85, 0.95, edge_alpha * faded_alpha)
+    text_col = pack_color(0.92, 0.92, 0.92, 1.0)
+    faded_text_col = pack_color(0.92, 0.92, 0.92, faded_alpha)
+    outline_col = pack_color(1.0, 1.0, 1.0, 0.85)
 
     # ── edges (under the boxes): importer → imported, right edge → left edge
     # when the line runs left → right (the layered case), centre → centre

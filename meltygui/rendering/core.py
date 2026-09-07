@@ -14,6 +14,7 @@ from typing import Any, get_type_hints
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui import mouse_cursor
@@ -331,9 +332,9 @@ def draw_overlay_scrollbar(draw_state, max_scroll_y, clip_height,
     tint = draw_state.current_tint
     grab_alpha = min(1.0, (0.9 if (hovered or active) else 0.5) * bar_brightness)
     if tint is not None:
-        col_grab = imgui.get_color_u32_rgba(*tint[:3], grab_alpha)
+        col_grab = pack_color(*tint[:3], grab_alpha)
     else:
-        col_grab = imgui.get_color_u32_rgba(1, 1, 1, grab_alpha)
+        col_grab = pack_color(1, 1, 1, grab_alpha)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)
 
     overlay_clip = None
@@ -1537,7 +1538,7 @@ def render_func(*args, **o_kwargs):
             if _has_imgui and 'draw_state' in wanted_params:
                 overlay_list: _DrawList = imgui.get_overlay_draw_list()
                 overlay_list.add_text(*imgui.get_cursor_screen_pos(),
-                                      imgui.get_color_u32_rgba(1.0, 0.0, 0.0, 1.0),
+                                      pack_color(1.0, 0.0, 0.0, 1.0),
                                       f"ID {draw_state.name}")
                 kwargs['use_cache'] = False
                 print(f"Duplicate unique detected: {unique} for {draw_state.name} {input_value.__class__.__name__} {func.__name__}. Forcing re-render.")
@@ -2949,7 +2950,7 @@ def render_func(*args, **o_kwargs):
             #         draw_list.add_line(draw_state.left + snap_int(boundary_x), draw_state.abs_top  + snap_int(columns_top) + 30,
             #                            draw_state.left + snap_int(boundary_x),
             #                            draw_state.abs_top + snap_int(draw_state.height),
-            #                            imgui.get_color_u32_rgba(0.0, 0.0, 0.0, 0.3), 1)
+            #                            pack_color(0.0, 0.0, 0.0, 0.3), 1)
 
 
             ##########################
@@ -2958,7 +2959,7 @@ def render_func(*args, **o_kwargs):
                 fa_live_icon = "\uf0e7  Live"
                 draw_list: _DrawList = imgui.get_window_draw_list()
                 draw_list.add_text(draw_state.left + 5, draw_state.top - 20,
-                                   imgui.get_color_u32_rgba(1.0, 0.0,
+                                   pack_color(1.0, 0.0,
                                                             0.0, 1.0), fa_live_icon)
                 Melty.cache.invalidate(tile_id, note=Note(name="Live view", reason="live=True", tint=(1, 0.5, 0.5)))
             kwargs.pop("live", None)
@@ -3806,7 +3807,7 @@ def render_func(*args, **o_kwargs):
                     converted_icon_text = f"\uf0ad"
                     overlay_list: _DrawList = imgui.get_window_draw_list()
                     overlay_list.add_text(*(draw_state.left + draw_state.header_width + 5, draw_state.top + 5),
-                                          imgui.get_color_u32_rgba(0.5, 0.0, 0.0, 1.0),
+                                          pack_color(0.5, 0.0, 0.0, 1.0),
                                           f"{converted_icon_text}")
 
                 if show_bg:
@@ -4215,7 +4216,7 @@ def render_func(*args, **o_kwargs):
                                 draw_list.channels_set_current(draw_state.window_index + 10)
                             parent_tint = draw_state.current_tint or (draw_state._kwargs.get("tint", (1, 1, 1))[:3], 1.0)
                             highlight_rgb = (1, 0, 0)
-                            bg_col = imgui.get_color_u32_rgba(*highlight_rgb, Tint.highlight_bg_alpha)
+                            bg_col = pack_color(*highlight_rgb, Tint.highlight_bg_alpha)
 
                             # Parent view: faint fill + matching tint outline,
                             # clipped to the parent's own clip rect so the highlight
@@ -5117,12 +5118,12 @@ def render_func(*args, **o_kwargs):
             draw_list.add_text(
                 *(draw_state.left + 2,
                   draw_state.top + draw_state.height - draw_state.footer_height - 20),
-                imgui.get_color_u32_rgba(1, 0, 0, 1.0),
+                pack_color(1, 0, 0, 1.0),
                 f"{load_icon} {pending_obj.status}")
         else:
             draw_list.add_text(
                 *(draw_state.left + 2, draw_state.top + draw_state.height - draw_state.footer_height - 20),
-                imgui.get_color_u32_rgba(1, 1, 1, 0.5),
+                pack_color(1, 1, 1, 0.5),
                 f"{load_icon} {pending_obj.status}")
 
     def draw_inner_main(clean_args, draw_state, input_value, unique, kwargs):
@@ -5172,9 +5173,9 @@ def render_func(*args, **o_kwargs):
             draw_list = imgui.get_overlay_draw_list()
             draw_list.channels_set_current(Melty.max_layer - 1)
 
-            red = imgui.get_color_u32_rgba(1, 0, 0, 1.0)
-            yellow = imgui.get_color_u32_rgba(1, 1, 0, 1.0)
-            green = imgui.get_color_u32_rgba(0, 1, 0, 1.0)
+            red = pack_color(1, 0, 0, 1.0)
+            yellow = pack_color(1, 1, 0, 1.0)
+            green = pack_color(0, 1, 0, 1.0)
             draw_list.add_text(draw_state.abs_left, draw_state.abs_top - 20, red,
                                 "abs_left, abs_top, width, height")
             draw_list.add_rect(draw_state.abs_left, draw_state.abs_top, draw_state.abs_left + draw_state.width,
@@ -5397,7 +5398,7 @@ def render_func(*args, **o_kwargs):
                         draw_list.add_text(
                             *(draw_state.left + 2,
                               draw_state.top + draw_state.height - draw_state.footer_height - 20),
-                            imgui.get_color_u32_rgba(1, 1, 1, 0.5),
+                            pack_color(1, 1, 1, 0.5),
                             f"\uf110 {return_value.status}")
                         return_value.originated = wrapper
                         return_value = False, return_value
@@ -6136,7 +6137,7 @@ def draw_resize_handle(a_ds):
         right - margin - 1, bottom - arrow_size - margin,
         right - margin - 1, bottom - margin,
         right - margin - 1 - arrow_size, bottom - margin,
-        imgui.get_color_u32_rgba(1, 1, 1, alpha)
+        pack_color(1, 1, 1, alpha)
     )
     # Bottom corner
     if alpha > 0.0:

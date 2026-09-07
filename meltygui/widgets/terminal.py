@@ -27,6 +27,7 @@ import uuid
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.melty import Melty
@@ -55,7 +56,7 @@ _PALETTE = {
 }
 _DEFAULT_FG = (0.85, 0.85, 0.85)
 _DEFAULT_BG = None  # None == transparent, let the window background show through
-_SEL_COLOR = (102 << 24) | (204 << 16) | (102 << 8) | 51   # translucent blue wash
+_SEL_COLOR = pack_color(51 / 255, 102 / 255, 204 / 255, 102 / 255)   # pale blue wash
 
 # Special keys -> the escape sequences an xterm-based terminal sends for them.
 _PTY_KEYS = {
@@ -570,8 +571,7 @@ class Terminal:
 # --------------------------------------------------------------------------- #
 
 def _pack(rgb, alpha=255):
-    r, g, b = (max(0, min(255, int(c * 255))) for c in rgb)
-    return (alpha << 24) | (b << 16) | (g << 8) | r
+    return pack_color(rgb[0], rgb[1], rgb[2], alpha / 255.0)
 
 
 def _resolve(name, default, bold=False):
@@ -659,8 +659,8 @@ _PROJECT_ROOT = "/home/lukas/Desktop/latent-descent"
 _LINK_RE = re.compile(
     r'File "(?P<p1>[^"\n]+)", line (?P<l1>\d+)'
     r'|(?<![\w./~-])(?P<p2>(?:/|~/|\./|\.\./)[^\s:"\'\)\],]+\.[A-Za-z0-9_]+):(?P<l2>\d+)')
-_LINK_COLOR = (200 << 24) | (255 << 16) | (180 << 8) | 110   # ABGR color (cyan-blue)
-_LINK_HOVER_COLOR = (255 << 24) | (255 << 16) | (235 << 8) | 170  # brighter on hover
+_LINK_COLOR = pack_color(110 / 255, 180 / 255, 1.0, 200 / 255)      # underline (cyan-blue)
+_LINK_HOVER_COLOR = pack_color(170 / 255, 235 / 255, 1.0, 1.0)      # brighter on hover
 
 
 def _resolve_path(p):

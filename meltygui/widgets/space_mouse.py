@@ -29,6 +29,7 @@ from __future__ import annotations
 import math
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import numpy as np
 
 from src.lsd.gl_gui.events import space_mouse
@@ -413,13 +414,13 @@ def _draw_readout(draw_state, raw, axes, status, bar_width, row_height,
             f"frame {st['frame_ms']:.0f} ms   ({Toggles.SpaceMouse.socket_path})")
     tint = (0.55, 0.9, 0.55, 1.0) if status.startswith("connected") else (1.0, 0.6, 0.4, 1.0)
     if draw_hz:
-        draw_list.add_text(left, y, imgui.get_color_u32_rgba(*tint), text)
+        draw_list.add_text(left, y, pack_color(*tint), text)
     y += row_height
     name_x, raw_x, norm_x = left, left + 30, left + 90
     bar_x = left + 160
     mid = bar_x + bar_width * 0.5
-    white = imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 1.0)
-    dim = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.12)
+    white = pack_color(0.85, 0.85, 0.85, 1.0)
+    dim = pack_color(1.0, 1.0, 1.0, 0.12)
     for name, r, a in zip(space_mouse.AXES, raw, axes):
         draw_list.add_text(name_x, y, white, name)
         draw_list.add_text(raw_x, y, white, f"{int(r):5d}")
@@ -429,6 +430,6 @@ def _draw_readout(draw_state, raw, axes, status, bar_width, row_height,
         fill = max(-1.0, min(1.0, a)) * bar_width * 0.5
         color = axis_tint if fill >= 0 else axis_tint_negative
         draw_list.add_rect_filled(min(mid, mid + fill), y + 4, max(mid, mid + fill), y + row_height - 4,
-                                  imgui.get_color_u32_rgba(*color, 0.9), 2.0)
+                                  pack_color(*color, 0.9), 2.0)
         y += row_height
     imgui.dummy(bar_x + bar_width - x, y - imgui.get_cursor_screen_pos()[1] + 4)

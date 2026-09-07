@@ -8,6 +8,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 import torch
 import json
+from src.lsd.gl_gui.hdr_color import pack_color
 
 
 @dataclass(frozen=True)
@@ -391,7 +392,7 @@ class Swoosh:
 
 
     # [tint=(0.55, 0.073, 0.073, 1.0), show_tint=True]
-    ribbon_alpha = 0.37         # fill opacity of the band (below the fade area)
+    ribbon_alpha = 0.91         # fill opacity of the band (below the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
                                 # exceeds fade_size x fade_size; alpha then scales
                                 # inversely with area (constant total ink, 0 = off)
@@ -893,7 +894,7 @@ class Toggles:
                 Snippet("", "dl = imgui.get_window_draw_list()", ""),
             ],
             ("rect",): [
-                Snippet("", "dl.add_rect_filled(x, y, x + w, y + h, imgui.get_color_u32_rgba($0), "
+                Snippet("", "dl.add_rect_filled(x, y, x + w, y + h, pack_color($0), "
                             "rounding=getattr(draw_state, 'corner_radius', 6))",
                         ""),
             ],
@@ -901,7 +902,7 @@ class Toggles:
                 Snippet("", "pos = imgui.get_cursor_screen_pos()", ""),
             ],
             ("u32",): [
-                Snippet("", "imgui.get_color_u32_rgba($0)", ""),
+                Snippet("", "pack_color($0)", ""),
             ],
             ("txc",): [
                 Snippet("", "imgui.text_colored($0, 1.0, 1.0, 1.0, 1.0)", ""),
@@ -1153,7 +1154,7 @@ class Toggles:
         # Falloff hardness for the blur's inverse-square profile - how
         # concentrated the "lightsource" is. Higher = tighter core with a
         # longer radial tail; 0 falls back to the default linear feather.
-        def_line_blur_falloff = 2.662
+        def_line_blur_falloff = 3.044
         # Perceived-brightness clamp on the BLURRED band's color only -
         # applied on top of the line_tint_* adjustment (which already ran
         # through bg_min/max), so the feathered glow can hold a different
@@ -1226,10 +1227,11 @@ class Toggles:
 
     # [tint=(0.013, 0.583, 0.013), show_tint=True]
     class Voxels:
-        # Output gamma on the finished voxel image, folded into the raymarch
-        # shader's final sRGB encode: 1.0 = pure sRGB encode (brightest,
-        # colorimetrically "correct"); 2.2 = raw linear out (darkest). Read
-        # live per frame by draw_voxels.
+        # Artistic curve on the finished volume image, applied to the LINEAR
+        # light the raymarch hands the fp16 scene (the presentation pass
+        # does the one sRGB encode): 1.0 = untouched (colorimetrically
+        # "correct"), above 1 darkens the mids against the studio's darks.
+        # Read live per frame by draw_voxels.
         gamma = 1.00
 
         # Auto neural flow: when nf_on is OFF and a DISPLAYED axis is longer
@@ -1247,6 +1249,12 @@ class Toggles:
         # is a rotation in VIEW space about the orbit center, roll included.
         # Read live per frame.
         mouse_navigation = "turntable"
+
+        # What the volume's FLOOR shadow darkens toward (both the GL and the
+        # cuda_march paths). Neutral grey-black; the UI's own window
+        # shadows keep their blue-black Toggles.shadow_color. Read live
+        # per render.
+        floor_shadow_color = (0.03, 0.03, 0.03)
 
     @defaults(tint=(0.545, 0.451, 0.248))
     class UIScale:
@@ -1309,6 +1317,39 @@ class Toggles:
         freetype_hinting = True
 
     # [icon=""]
+
+    @defaults(tint=(0.62, 0.36, 0.52))
+    class HDR:
+        # HDR / wide-gamut colour (gl_gui/hdr_color.py). Colour tuples are
+        # EXTENDED sRGB: 1.0 = the panel's SDR reference white, above it is
+        # brighter and negatives are outside the sRGB gamut (write them with
+        # white(n) / p3(r, g, b)). The GPU works in linear scRGB fp16 and
+        # the presentation pass (Melty.post_frame) encodes for the output.
+
+        # Ceiling of the HDR byte curve, in multiples of reference white on
+        # P3 primaries: the brightest fully saturated colour a vertex can
+        # carry (white(64) on a 250-nit desktop is 16 000 nits — headroom
+        # for a dimmed desktop, not a target). Raising it spreads the same
+        # 255 codes over more octaves (see vertex_octaves). Read live by the
+        # packer and the shaders.
+        # [tint=(0.62, 0.36, 0.52)]
+        vertex_range = 64.0
+        # Octaves below vertex_range the 255 codes cover: code 1 sits at
+        # vertex_range / 2^vertex_octaves, code 0 is exactly zero. 12 -> ~21
+        # codes per doubling (a 3.3 % step), enough for accents; long
+        # smooth HDR gradients want more codes, not more octaves.
+        # [tint=(0.62, 0.36, 0.52)]
+        vertex_octaves = 12.0
+        # Presentation encode of the linear scRGB scene into the 8-bit
+        # swapchain: "srgb" (SDR, what an untagged window shows) or "pq"
+        # (BT.2020 + ST 2084, for a surface tagged PQ). Read live.
+        # [tint=(0.62, 0.36, 0.52)]
+        output = "srgb"
+        # Nits of reference white (a colour of 1.0) under the "pq" encode -
+        # match the desktop's SDR reference (Hyprland: the monitor's
+        # sdrMaxLuminance) so SDR content lands at the same brightness.
+        # [tint=(0.62, 0.36, 0.52)]
+        pq_reference_nits = 250.0
 
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:
@@ -2550,7 +2591,7 @@ class Toggles:
     shadow_height_scale = 3.716
     # Penumbra widening per unit of depth gap: bigger = softer, more
     # diffuse shadows from tall casters.
-    shadow_blur_scale = 0.209
+    shadow_blur_scale = 0.16
     # Contact-hardening: curve of penumbra growth along the shadow's
     # LENGTH - 0 at the caster's silhouette edge, 1 at the shadow tip
     # (the shader measures the edge distance by bisecting along
@@ -2627,7 +2668,7 @@ class Toggles:
     # bilinear fetch upsamples for free.
     glow_downscale = 1
     # Master strength of the glow light at composite time.
-    glow_strength = 0.45
+    glow_strength = 0.787
     # How strongly glow luminance cancels shadow beneath it (0 = shadows
     # ignore glows, >1 = a full lit glow erases the shadow under it).
     # Keep MODEST: shadows are cast relative from the casters (light_dir),

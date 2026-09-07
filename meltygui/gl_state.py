@@ -423,8 +423,9 @@ class GLState:
             fbo = _scalar(gl.glGenFramebuffers(1))
             color_id = _scalar(gl.glGenTextures(1))
             gl.glBindTexture(gl.GL_TEXTURE_2D, color_id)
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, width, height, 0,
-                            gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+            # fp16: to composite with the linear scRGB scene (hdr_color.py)
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, width, height, 0,
+                            gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
@@ -447,7 +448,7 @@ class GLState:
                 gl.glDeleteFramebuffers(1, [fbo])
                 gl.glDeleteTextures([color_id, depth_id])
                 raise RuntimeError(f"FBO incomplete: {hex(status)} ({width}x{height})")
-            color = GLTexture(color_id, gl.GL_TEXTURE_2D, (height, width), gl.GL_RGBA8)
+            color = GLTexture(color_id, gl.GL_TEXTURE_2D, (height, width), gl.GL_RGBA16F)
             depth = GLTexture(depth_id, gl.GL_TEXTURE_2D, (height, width), gl.GL_DEPTH_COMPONENT24)
             return FBO(fbo, color, depth, width, height)
 

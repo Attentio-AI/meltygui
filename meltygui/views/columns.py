@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui.utils.glfw_utils import request_render
@@ -1431,7 +1432,7 @@ class ColumnLayout:
                 snap_int(self.top),
                 snap_int(self.win_x + self._band_right()),
                 snap_int(self._band_bottom()),
-                imgui.get_color_u32_rgba(*band_color),
+                pack_color(*band_color),
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
 
@@ -1762,7 +1763,7 @@ class RowLayout:
                 snap_int(self.win_y + self._band_top()),
                 snap_int(self.right),
                 snap_int(self.win_y + self._band_bottom()),
-                imgui.get_color_u32_rgba(*band_color),
+                pack_color(*band_color),
                 rounding=radius)
             draw_list.channels_set_current(Core.melty.get_channel())
 

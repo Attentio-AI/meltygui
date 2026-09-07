@@ -16,6 +16,7 @@ import colorsys
 from pathlib import Path
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color, with_alpha
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
@@ -254,7 +255,7 @@ def render_file_tree(input_value=None, draw_state=None,
             status += f", {len(graph.errors)} unparsed"
     else:
         status = "no graph yet"
-    dl.add_text(status_x, status_y, imgui.get_color_u32_rgba(0.75, 0.78, 0.82, 1.0), status)
+    dl.add_text(status_x, status_y, pack_color(0.75, 0.78, 0.82, 1.0), status)
     imgui.set_cursor_pos_y(imgui.get_cursor_pos_y() + px(4))
     x0, y0 = imgui.get_cursor_screen_pos()
 
@@ -299,8 +300,8 @@ def render_file_tree(input_value=None, draw_state=None,
               if (left_mouse_double_clicked and hasattr(left_mouse_double_clicked, "x")) else None)
     clip = getattr(draw_state, "abs_clip_rect", None)
 
-    text_col = imgui.get_color_u32_rgba(0.92, 0.92, 0.92, 1.0)
-    unused_col = imgui.get_color_u32_rgba(*unused_text)
+    text_col = pack_color(0.92, 0.92, 0.92, 1.0)
+    unused_col = pack_color(*unused_text)
     font_size = imgui.get_font_size()
     # The scaled name must still fit the row.
     font_scale_max = min(usage_font_scale_max, row_h / max(font_size, 1.0))
@@ -320,16 +321,16 @@ def render_file_tree(input_value=None, draw_state=None,
                 alpha=1.0)
             mixed = brightness_clamp(mixed[0], mixed[1], mixed[2], 0.0,
                                      Toggles.CodeEditor.tab_active_bg_max_brightness)
-            bg = bg_memo[tint] = imgui.get_color_u32_rgba(mixed[0], mixed[1], mixed[2], 1.0)
+            bg = bg_memo[tint] = pack_color(mixed[0], mixed[1], mixed[2], 1.0)
         return bg
-    hover_col = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.08)
-    select_col = imgui.get_color_u32_rgba(0.4, 0.6, 0.9, 0.35)
+    hover_col = pack_color(1.0, 1.0, 1.0, 0.08)
+    select_col = pack_color(0.4, 0.6, 0.9, 0.35)
 
-    imports_col = imgui.get_color_u32_rgba(*imports_tint, 0.9)
-    importers_col = imgui.get_color_u32_rgba(*importers_tint, 0.9)
-    both_col = imgui.get_color_u32_rgba(*[(a + b) / 2 for a, b in zip(imports_tint, importers_tint)], 0.9)
-    imports_wash = imgui.get_color_u32_rgba(*imports_tint, 0.14)
-    importers_wash = imgui.get_color_u32_rgba(*importers_tint, 0.14)
+    imports_col = pack_color(*imports_tint, 0.9)
+    importers_col = pack_color(*importers_tint, 0.9)
+    both_col = pack_color(*[(a + b) / 2 for a, b in zip(imports_tint, importers_tint)], 0.9)
+    imports_wash = pack_color(*imports_tint, 0.14)
+    importers_wash = pack_color(*importers_tint, 0.14)
     folder_alpha = 0.45
 
     def highlight_of(p):
@@ -386,8 +387,8 @@ def render_file_tree(input_value=None, draw_state=None,
         if mark is not None:
             bar_col, wash_col, scale = mark
             if scale < 1.0:
-                bar_col = (bar_col & 0x00FFFFFF) | (int(0.9 * scale * 255) << 24)
-                wash_col = (wash_col & 0x00FFFFFF) | (int(0.14 * scale * 255) << 24)
+                bar_col = with_alpha(bar_col, 0.9 * scale)
+                wash_col = with_alpha(wash_col, 0.14 * scale)
             draw_list.add_rect_filled(x, ry, rx + cw, ry + row_h, wash_col)
             draw_list.add_rect_filled(x, ry, x + px(highlight_bar_width), ry + row_h, bar_col)
         if p.is_dir():

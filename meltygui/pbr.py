@@ -61,6 +61,13 @@ from src.lsd.gl_gui.gl_state import GLState, GLTexture, _scalar
 from src.lsd.gl_gui.shader_func import shader_func
 
 
+
+def _frame_framebuffer():
+    """The frame's render target (the fp16 scene while a frame is open)."""
+    from src.lsd.gl_gui.melty import Melty
+    return Melty.default_framebuffer()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  Meshes - numpy generators → (positions, normals, indices) → GL VAOs
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1161,7 +1168,8 @@ void main() {
 
     vec3 c = ambient + Lo + emissive;
     c = aces(c * exposure);
-    c = pow(c, vec3(1.0 / 2.2));
+    // Linear out: the target is the fp16 scene (hdr_color.py), the
+    // presentation pass encodes once.
     FragColor = vec4(c, 1.0);
 }
 """
@@ -1208,7 +1216,7 @@ def _shadow_target(gl_state: GLState, size):
         gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_TEXTURE_2D, tex, 0)
         gl.glDrawBuffer(gl.GL_NONE)
         gl.glReadBuffer(gl.GL_NONE)
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, _frame_framebuffer())
         return (fbo, GLTexture(tex, gl.GL_TEXTURE_2D, (size, size), gl.GL_DEPTH_COMPONENT24))
 
     def delete(v):
@@ -1225,7 +1233,7 @@ def _msaa_target(gl_state: GLState, key, width, height, samples):
     def create():
         color = _scalar(gl.glGenRenderbuffers(1))
         gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, color)
-        gl.glRenderbufferStorageMultisample(gl.GL_RENDERBUFFER, samples, gl.GL_RGBA8, width, height)
+        gl.glRenderbufferStorageMultisample(gl.GL_RENDERBUFFER, samples, gl.GL_RGBA16F, width, height)
         depth = _scalar(gl.glGenRenderbuffers(1))
         gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, depth)
         gl.glRenderbufferStorageMultisample(gl.GL_RENDERBUFFER, samples, gl.GL_DEPTH_COMPONENT24,
@@ -1236,7 +1244,7 @@ def _msaa_target(gl_state: GLState, key, width, height, samples):
         gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_RENDERBUFFER, color)
         gl.glFramebufferRenderbuffer(gl.GL_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_RENDERBUFFER, depth)
         ok = gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) == gl.GL_FRAMEBUFFER_COMPLETE
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, _frame_framebuffer())
         if not ok:
             gl.glDeleteFramebuffers(1, [fbo]); gl.glDeleteRenderbuffers(2, [color, depth])
             raise RuntimeError("multisample framebuffer incomplete")

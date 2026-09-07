@@ -6,6 +6,7 @@ from pathlib import Path
 import uuid
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 import glfw
 
 from src.lsd.gl_gui.melty import Melty
@@ -46,7 +47,7 @@ class ChatInterfaceState(DictConversion):
 
 
 def _color(tint, alpha=1):
-    return imgui.get_color_u32_rgba(*tint[:3], alpha)
+    return pack_color(*tint[:3], alpha)
 
 
 def _button(draw_state, key, label, x, y, width, tint, enabled=True, height=None,
@@ -1011,7 +1012,7 @@ def _cleanup_chat(draw_state):
             proxy.close()
 
 
-@window(tint=(0.1661, 0.20, 0.22), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
+@window(tint=(0.972, 0.5184, 0.00), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
 @render_func(auto_resize=False, min_width=700, min_height=500,
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,

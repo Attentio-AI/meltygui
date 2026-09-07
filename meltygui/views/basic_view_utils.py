@@ -2,6 +2,7 @@ import inspect
 import sys
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import Toggles
@@ -145,13 +146,13 @@ def draw_rect(x=None, y=None, width=5, height=None, color=(1, 1, 1, 1)):
         line_height = imgui.get_text_line_height()
         height = line_height + padding[1] * 2
     imgui.get_foreground_draw_list().add_rect_filled(
-        x, y, x + width, y + height, imgui.get_color_u32_rgba(*color))
+        x, y, x + width, y + height, pack_color(*color))
 
     clicked = False
     if imgui.is_mouse_hovering_rect(x, y, x + max(width, 10), y + height):
         white = (1.0, 1.0, 1.0, 1.0)
         imgui.get_foreground_draw_list().add_rect(
-            x, y, x + width, y + height, imgui.get_color_u32_rgba(*white))
+            x, y, x + width, y + height, pack_color(*white))
         if imgui.is_mouse_clicked(imgui.MOUSE_BUTTON_LEFT):
             clicked = True
     return clicked

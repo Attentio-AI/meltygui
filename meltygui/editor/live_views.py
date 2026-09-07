@@ -38,6 +38,7 @@ import time
 import weakref
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.model.core_model.draw_state import Anchor, Pin
@@ -414,10 +415,10 @@ def _paint_value_pill_body(inline_text, span_x, text_y, span_width,
     draw_list: _DrawList = imgui.get_window_draw_list()
     draw_list.add_rect_filled(
         box_x, box_y, box_x + box_width, box_y + box_height,
-        imgui.get_color_u32_rgba(fill_rgb[0], fill_rgb[1], fill_rgb[2], 0.97),
+        pack_color(fill_rgb[0], fill_rgb[1], fill_rgb[2], 0.97),
         rounding=corner_radius)
     draw_list.add_text(text_x, text_y,
-                       imgui.get_color_u32_rgba(text_rgb[0], text_rgb[1],
+                       pack_color(text_rgb[0], text_rgb[1],
                                                 text_rgb[2], 0.97),
                        inline_text)
     if swatch is not None and len(inline_text) >= swatch[1] + len(_SWATCH_HOLE):
@@ -430,11 +431,11 @@ def _paint_value_pill_body(inline_text, span_x, text_y, span_width,
         chip_mid = chip_x + side * 0.5
         draw_list.add_rect_filled(
             chip_x, chip_y, chip_mid, chip_y + side,
-            imgui.get_color_u32_rgba(rgba[0], rgba[1], rgba[2], 1.0),
+            pack_color(rgba[0], rgba[1], rgba[2], 1.0),
             rounding=2.0, flags=imgui.DRAW_ROUND_CORNERS_LEFT)
         draw_list.add_rect_filled(
             chip_mid, chip_y, chip_x + side, chip_y + side,
-            imgui.get_color_u32_rgba(rgba[0], rgba[1], rgba[2], rgba[3]),
+            pack_color(rgba[0], rgba[1], rgba[2], rgba[3]),
             rounding=2.0, flags=imgui.DRAW_ROUND_CORNERS_RIGHT)
 
 
@@ -1544,7 +1545,7 @@ def draw_live_view_marker(input_value=None, draw_state=None,
     if hovered and inline_text is None:
         dl: _DrawList = imgui.get_window_draw_list()
         dl.add_rect(x, y + 2, x + w, y + h - 3,
-                    imgui.get_color_u32_rgba(*base, 0.9 if open_now else 0.6),
+                    pack_color(*base, 0.9 if open_now else 0.6),
                     rounding=corner_radius)
     imgui.dummy(w, h)
 
@@ -2102,7 +2103,7 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
         _cw = getattr(draw_state, "content_width", 800.0)
         _rdl.add_rect_filled(
             origin_x - 4.0, _ry, origin_x + _cw, _ry + line_px,
-            imgui.get_color_u32_rgba(*_ml_col))
+            pack_color(*_ml_col))
         if _ml_msg:
             # Same treatment as the editor's parse-error box (text_editor's
             # draw_text): a wrapped, capped-width box sitting flush ABOVE the
@@ -2120,10 +2121,10 @@ def draw_snapshot_overlay(x=0, y=0, w=0, h=0, draw_state=None, char_w=8.0,
                 _by1 = _by0 + _ts.y + 2 * _pad_y
             _rdl.add_rect_filled(
                 _bx0, _by0, _bx1, _by1,
-                imgui.get_color_u32_rgba(0.275, 0.118, 0.157, 0.922), 4.0)
+                pack_color(0.275, 0.118, 0.157, 0.922), 4.0)
             _rdl.add_rect(
                 _bx0, _by0, _bx1, _by1,
-                imgui.get_color_u32_rgba(0.588, 0.235, 0.275, 1.0), 4.0)
+                pack_color(0.588, 0.235, 0.275, 1.0), 4.0)
             _save_cursor = imgui.get_cursor_screen_pos()
             imgui.set_cursor_screen_pos((_bx0 + _pad_x, _by0 + _pad_y))
             imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + _max_w)

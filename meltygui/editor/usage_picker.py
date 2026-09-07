@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Tint, Toggles
@@ -368,10 +369,10 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
     more_tint = (0.55, 0.72, 0.85)       # the Code tab's default blue
     more_text_value, more_text_hot = 0.5, 1.0
     text_saturation = 0.8
-    sel_color = imgui.get_color_u32_rgba(0.88, 0.93, 1.0, 1.0)
+    sel_color = pack_color(0.88, 0.93, 1.0, 1.0)
     sel_thickness = 1.5
-    hot_bg_untinted = imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.07)
-    suffix_color = imgui.get_color_u32_rgba(0.52, 0.55, 0.6, suffix_alpha)
+    hot_bg_untinted = pack_color(1.0, 1.0, 1.0, 0.07)
+    suffix_color = pack_color(0.52, 0.55, 0.6, suffix_alpha)
 
     model = input_value
     rows = model.rows if model is not None else []
@@ -381,7 +382,7 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
         c = tint if (isinstance(tint, tuple) and len(tint) >= 3) else (0.5, 0.5, 0.5)
         col = sm.make_color_rgb(c[0], c[1], c[2], value=value, factor=factor,
                                 saturation_scale=sat)
-        return imgui.get_color_u32_rgba(col[0], col[1], col[2], alpha)
+        return pack_color(col[0], col[1], col[2], alpha)
 
     draw_list = imgui.get_window_draw_list()
     origin = imgui.get_cursor_screen_pos()
@@ -521,9 +522,9 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
                 marker_width = imgui.calc_text_size(added_label + " " + removed_label).x
                 marker_left = x0 + width - 2.0 - marker_width
                 draw_list.add_text(marker_left, text_y,
-                    imgui.get_color_u32_rgba(*Tint.change_count(added=True), 0.95), added_label)
+                    pack_color(*Tint.change_count(added=True), 0.95), added_label)
                 draw_list.add_text(marker_left + imgui.calc_text_size(added_label + " ").x,
-                    text_y, imgui.get_color_u32_rgba(*Tint.change_count(added=False), 0.95), removed_label)
+                    text_y, pack_color(*Tint.change_count(added=False), 0.95), removed_label)
             elif change_kind:
                 if change_kind == "add":
                     marker, color = "+", Tint.change_count(added=True)
@@ -531,7 +532,7 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
                     marker, color = "−", Tint.change_count(added=False)
                 else:
                     marker, color = "~", Tint.dd_text((0.06, 0.24, 0.45))
-                packed = imgui.get_color_u32_rgba(*color, 0.95)
+                packed = pack_color(*color, 0.95)
                 if line_numbers_left:
                     marker = row.label.partition(" @ ")[0] if row.label else marker
                     marker_width = imgui.calc_text_size(marker).x
@@ -563,7 +564,7 @@ def paint_usage_rows(input_value, draw_state, *, width=None,
                     number_x = content_left - 5.0 - imgui.calc_text_size(number).x
                     number_color = Tint.line_number_tint(group_tint)
                     draw_list.add_text(number_x, text_y,
-                                       imgui.get_color_u32_rgba(*number_color[:3], 1.0), number)
+                                       pack_color(*number_color[:3], 1.0), number)
                     code_w = max(0.0, x0 + width - 8.0 - marker_width - text_x)
                 else:
                     code_w = max(0.0, x0 + width - 8.0 - suffix_w - 12.0 - text_x)

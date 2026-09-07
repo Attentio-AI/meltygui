@@ -7,6 +7,7 @@ import time
 
 import glfw
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color, unpack_color, scale_alpha
 
 from src.lsd.gl_gui.model.core_model.draw_state import (DropDownState,
                                                         TextEditorState)
@@ -34,9 +35,7 @@ def _hex(h):
     r = int(h[1:3], 16)
     g = int(h[3:5], 16)
     b = int(h[5:7], 16)
-    a = 255
-    # ImGui uses ABGR packing for color u32
-    return (a << 24) | (b << 16) | (g << 8) | r
+    return pack_color(r / 255.0, g / 255.0, b / 255.0, 1.0)
 
 
 COLORS = {
@@ -1187,8 +1186,8 @@ def _draw_fim_ghost(ds, ghost, text, origin_x, origin_y, line_px, vcols=None):
     when more is buffered beyond this chunk. A pending request with no
     complete line yet shows a single dim ellipsis."""
     dl = imgui.get_window_draw_list()
-    col = imgui.get_color_u32_rgba(0.66, 0.70, 0.78, 0.55)
-    hint = imgui.get_color_u32_rgba(0.66, 0.70, 0.78, 0.32)
+    col = pack_color(0.66, 0.70, 0.78, 0.55)
+    hint = pack_color(0.66, 0.70, 0.78, 0.32)
     x, y = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
     if not ghost.text:
         dl.add_text(x + 2, y, hint, "…")
@@ -1232,10 +1231,10 @@ def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcol
     if params:
         active = max(0, min(active, len(params) - 1))   # extra args ride the last (*args)
 
-    name_col = imgui.get_color_u32_rgba(0.55, 0.78, 1.0, 1.0)
-    dim = imgui.get_color_u32_rgba(0.72, 0.76, 0.84, 1.0)
-    acc = imgui.get_color_u32_rgba(1.0, 0.84, 0.42, 1.0)
-    type_col = imgui.get_color_u32_rgba(0.55, 0.72, 0.55, 1.0)   # muted green for the type
+    name_col = pack_color(0.55, 0.78, 1.0, 1.0)
+    dim = pack_color(0.72, 0.76, 0.84, 1.0)
+    acc = pack_color(1.0, 0.84, 0.42, 1.0)
+    type_col = pack_color(0.55, 0.72, 0.55, 1.0)   # dim green for the type
 
     # Lay out out with their x-offsets (so we can clip to the active one).
     segs = []          # (string, color, x_offset, is_active)
@@ -1281,8 +1280,8 @@ def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcol
     pad = 7
     x0 = base_x - pad
     x1 = min(clip[2] - 2, base_x + total + pad)   # overflow clips on the right
-    bg = imgui.get_color_u32_rgba(0.11, 0.12, 0.15, 0.97)
-    border = imgui.get_color_u32_rgba(0.30, 0.33, 0.42, 0.9)
+    bg = pack_color(0.11, 0.12, 0.15, 0.97)
+    border = pack_color(0.30, 0.33, 0.42, 0.9)
     dl = imgui.get_window_draw_list()
     dl.add_rect_filled(x0, hy - 3, x1, hy + th + 3, bg, rounding=4)
     dl.add_rect(x0, hy - 3, x1, hy + th + 3, border, rounding=4)
@@ -1429,7 +1428,7 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
     _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=0)
     dl = imgui.get_window_draw_list()
     if text_tint is not None:
-        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2],
+        color = pack_color(text_tint[0], text_tint[1], text_tint[2],
                                          text_tint[3] if len(text_tint) > 3 else 1.0)
     else:
         color = COLORS['icon']
@@ -1440,7 +1439,7 @@ def draw_icon_selector_plain(input_value, width=20, height=20, name=None,
     hovered = x <= io.mouse_pos.x < x + w and y <= io.mouse_pos.y < y + h
     if hovered:
         dl.add_rect(x, y, x + w, y + h,
-                    imgui.get_color_u32_rgba(1, 1, 1, 0.25), 5.0)
+                    pack_color(1, 1, 1, 0.25), 5.0)
     clicked = hovered and imgui.is_mouse_clicked(0)
     if editor_ds is None:
         return False, cur
@@ -1607,7 +1606,7 @@ def draw_bool_token(input_value, draw_state=None, text_tint=None, **kwargs):
     # the word wears the comment's color instead of keyword-blue, so
     # widgets inside colored comments stop shouting.
     if text_tint is not None:
-        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2],
+        color = pack_color(text_tint[0], text_tint[1], text_tint[2],
                                          text_tint[3] if len(text_tint) > 3 else 1.0)
     else:
         color = COLORS['bool']
@@ -1783,7 +1782,7 @@ def draw_bool_token_plain(input_value, width=20, height=20, name=None,
     h = max(1.0, height)
     _plain_tv_bg(x, y, w, h, tint=tint, bg_offset=0)
     if text_tint is not None:
-        color = imgui.get_color_u32_rgba(text_tint[0], text_tint[1], text_tint[2],
+        color = pack_color(text_tint[0], text_tint[1], text_tint[2],
                                          text_tint[3] if len(text_tint) > 3 else 1.0)
     else:
         color = COLORS['bool']
@@ -3738,7 +3737,7 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
         # hover-edge invalidation above repaints it in and out).
         dl = imgui.get_window_draw_list()
         dl.add_text(x + width + 6.0, y - height,
-                    imgui.get_color_u32_rgba(1.0, 0.45, 0.40, 1.0), status[1])
+                    pack_color(1.0, 0.45, 0.40, 1.0), status[1])
 
     if live_clicked:
         _mode = 'live'
@@ -5424,8 +5423,7 @@ def _fade_packed(packed, alpha_factor):
     got = _GLYPH_MIX_CACHE.get(key)
     if got is not None:
         return got
-    a = int(((packed >> 24) & 0xFF) * max(0.0, min(1.0, alpha_factor)))
-    got = (packed & 0x00FFFFFF) | (a << 24)
+    got = scale_alpha(packed, max(0.0, min(1.0, alpha_factor)))
     _GLYPH_MIX_CACHE[key] = got
     return got
 
@@ -5438,17 +5436,11 @@ def _mix_packed(packed, rgb, k):
     got = _GLYPH_MIX_CACHE.get(key)
     if got is not None:
         return got
-    r = (packed & 0xFF) / 255.0
-    g = ((packed >> 8) & 0xFF) / 255.0
-    b = ((packed >> 16) & 0xFF) / 255.0
-    a = (packed >> 24) & 0xFF
+    r, g, b, a = unpack_color(packed)
     r += (rgb[0] - r) * k
     g += (rgb[1] - g) * k
     b += (rgb[2] - b) * k
-    out = ((a << 24)
-           | (min(255, max(0, int(b * 255))) << 16)
-           | (min(255, max(0, int(g * 255))) << 8)
-           | min(255, max(0, int(r * 255))))
+    out = pack_color(r, g, b, a)
     if len(_GLYPH_MIX_CACHE) > 4096:
         _GLYPH_MIX_CACHE.clear()
     _GLYPH_MIX_CACHE[key] = out
@@ -6690,8 +6682,7 @@ def _usage_wash_color(n_targets):
     tweak to usage_tint shows immediately."""
     from src.lsd.gl_gui.toggles import Toggles
     r, g, b, a = Toggles.TextEditor.usage_tint(n_targets)
-    pr, pg, pb, pa = (min(255, max(0, int(c * 255))) for c in (r, g, b, a))
-    return (pa << 24) | (pb << 16) | (pg << 8) | pr
+    return pack_color(r, g, b, max(0.0, min(1.0, a)))
 
 
 def _is_icon_char(c):
@@ -13591,7 +13582,7 @@ def draw_text(input_value: str, height=None,
             _bx1 = origin_x + (max(_ll[_e0:_e1] or (0,)) + 1) * char_w
             _bx1 = max(_bx1, sx + 2 * char_w)
             _b_rgb = _bg_adjust(tuple(_b_tint[:3]), _bg_f)
-            _b_col = imgui.get_color_u32_rgba(_b_rgb[0], _b_rgb[1], _b_rgb[2], _dt_block_a)
+            _b_col = pack_color(_b_rgb[0], _b_rgb[1], _b_rgb[2], _dt_block_a)
             if _dt_block_sh:
                 # The peel: top corners sit AT the enclosing scope's surface
                 # (base = nesting level × block offset - flat, no shadow at
@@ -13607,7 +13598,7 @@ def draw_text(input_value: str, height=None,
             if _dt_outline_a > 0:
                 _b_ol = _ol_rgb(_b_rgb)
                 draw_list.add_rect(sx, sy, _bx1, ey,
-                                   imgui.get_color_u32_rgba(
+                                   pack_color(
                                        _b_ol[0], _b_ol[1], _b_ol[2],
                                        _dt_outline_a), 4.0,
                                    thickness=_dt_outline_t)
@@ -13668,7 +13659,7 @@ def draw_text(input_value: str, height=None,
                     t = (_i + 1) / steps
                     cur = ((1.0 / (1.0 + k * t) ** 2) - floor) / (1.0 - floor) \
                         if k > 0 else 1.0 - t
-                    _c = imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2],
+                    _c = pack_color(rgb[0], rgb[1], rgb[2],
                                                   alpha * (prev - cur))
                     prev = cur
                     e = _dt_line_blur_r * t
@@ -13686,7 +13677,7 @@ def draw_text(input_value: str, height=None,
                 _lb = _brightness_clamp(_la[0], _la[1], _la[2],
                                         _dt_line_blur_minv, _dt_line_blur_maxv) \
                     if (_dt_line_blur and _dt_line_blur_r > 0) else _la
-                _l_col = imgui.get_color_u32_rgba(_la[0], _la[1], _la[2],
+                _l_col = pack_color(_la[0], _la[1], _la[2],
                                                   _dt_line_a * _l_sc)
                 if _dt_line_full:
                     if _dt_line_blur and _dt_line_blur_r > 0:
@@ -13714,7 +13705,7 @@ def draw_text(input_value: str, height=None,
                                                   _l_col, 3.0)
                         _l_ol = _ol_rgb(_la)
                         draw_list.add_rect(sx - 3, sy, ex + 3, ey,
-                                           imgui.get_color_u32_rgba(
+                                           pack_color(
                                                _l_ol[0], _l_ol[1], _l_ol[2],
                                                _dt_outline_a * _l_sc), 3.0,
                                            thickness=_dt_outline_t)
@@ -13743,7 +13734,7 @@ def draw_text(input_value: str, height=None,
             # _s_scale < 1 indicates a PROPAGATED tint (reference flow) - same
             # color family, fainter wash per hop from the tinted definition.
             _sa = _bg_adjust(tuple(_s_tint[:3]), _sym_f)
-            _s_col = imgui.get_color_u32_rgba(_sa[0], _sa[1], _sa[2],
+            _s_col = pack_color(_sa[0], _sa[1], _sa[2],
                                               _dt_sym_a * _s_scale)
             if _dt_sym_sh:
                 # Ride the scope surface: the wash's lift is the peeling
@@ -13767,7 +13758,7 @@ def draw_text(input_value: str, height=None,
             if _dt_sym_ol_a > 0:
                 _s_ol = _ol_rgb(_sa, _dt_sym_ol_b)
                 draw_list.add_rect(sx - 1, sy + 1, ex + 1, ey - 1,
-                                   imgui.get_color_u32_rgba(
+                                   pack_color(
                                        _s_ol[0], _s_ol[1], _s_ol[2],
                                        _dt_sym_ol_a * _s_scale), 3.0,
                                    thickness=_dt_sym_ol_t)
@@ -13877,16 +13868,16 @@ def draw_text(input_value: str, height=None,
                     _sg_rgb = _bg_adjust(
                         _sg_tint if _sg_tint is not None else _sg_base,
                         _sg_active_factors)
-                    _sg_col = imgui.get_color_u32_rgba(
+                    _sg_col = pack_color(
                         _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_active_alpha)
                 elif _sg_tint is not None:
                     _sg_rgb = _bg_adjust(_sg_tint, _sg_factors)
-                    _sg_col = imgui.get_color_u32_rgba(
+                    _sg_col = pack_color(
                         _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_alpha)
                 else:
                     if _sg_base_col is None:
                         _sg_rgb = _bg_adjust(_sg_base, _sg_factors)
-                        _sg_base_col = imgui.get_color_u32_rgba(
+                        _sg_base_col = pack_color(
                             _sg_rgb[0], _sg_rgb[1], _sg_rgb[2], _sg_alpha)
                     _sg_col = _sg_base_col
                 if _sg_x < rect_min_x:
@@ -13922,7 +13913,7 @@ def draw_text(input_value: str, height=None,
                      int((rect_min_y - origin_y) // line_px) - 1, 0)
         _last = min(bisect.bisect_right(_starts, hi) - 1,
                     int((rect_max_y - origin_y) // line_px) + 1, _n_lines - 1)
-        sel_u32 = imgui.get_color_u32_rgba(*sel_color)
+        sel_u32 = pack_color(*sel_color)
         for line_idx in range(_first, _last + 1):
             line_abs_start = _starts[line_idx]
             line_abs_end = (_starts[line_idx + 1] - 1
@@ -13969,7 +13960,7 @@ def draw_text(input_value: str, height=None,
             # Only when the token recurs (its own occurrence plus at least one
             # other) - so the caret's own occurrence is washed too.
             if len(_ranges) > 1:
-                _tm_color = imgui.get_color_u32_rgba(*Toggles.TextEditor.token_match_tint)
+                _tm_color = pack_color(*Toggles.TextEditor.token_match_tint)
                 for _ms, _me in _ranges:
                     _m_line, _ = _index_to_line_col(text, _ms)
                     sy = origin_y + _m_line * line_px
@@ -14091,7 +14082,7 @@ def draw_text(input_value: str, height=None,
             ey1 = ey0 + line_px
             if not (ey1 < rect_min_y or ey0 > rect_max_y):
                 draw_list.add_rect_filled(origin_x - 4, ey0, origin_x + visible_width, ey1,
-                                          imgui.get_color_u32_rgba(*error_line_wash))
+                                          pack_color(*error_line_wash))
     # Import quick-fix affordance: every symbol an import would bind wears a
     # translucent yellow underline, and the floating Alt+Enter hint appears at
     # the end of the line only when the mouse is over one of those underlined
@@ -14104,7 +14095,7 @@ def draw_text(input_value: str, height=None,
     # a bounding boxable tile every frame and once on the leave edge.
     if _qf_fixes:
         _po_hover_ln = None
-        _ul_col = imgui.get_color_u32_rgba(0.92, 0.80, 0.18, 0.95)
+        _ul_col = pack_color(0.92, 0.80, 0.18, 0.95)
         for _ul_ln in _qf_fixes:
             _ul_y = origin_y + (_ul_ln - 1) * line_px
             if _ul_y + line_px < rect_min_y or _ul_y > rect_max_y:
@@ -14152,12 +14143,12 @@ def draw_text(input_value: str, height=None,
             if rect_min_y <= _po_y <= rect_max_y:
                 draw_list.add_rect_filled(
                     _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
-                    imgui.get_color_u32_rgba(0.13, 0.16, 0.24, 0.96), 5.0)
+                    pack_color(0.13, 0.16, 0.24, 0.96), 5.0)
                 draw_list.add_rect(
                     _po_x - 8, _po_y - 2, _po_x + _po_w + 8, _po_y + _po_h + 4,
-                    imgui.get_color_u32_rgba(0.45, 0.60, 0.90, 0.55), 5.0)
+                    pack_color(0.45, 0.60, 0.90, 0.55), 5.0)
                 draw_list.add_text(_po_x, _po_y,
-                                   imgui.get_color_u32_rgba(0.72, 0.82, 1.0, 1.0),
+                                   pack_color(0.72, 0.82, 1.0, 1.0),
                                    _po_label)
 
     # Side-by-side diff anchors: enough for an OUTSIDE ribbon pass (the code
@@ -14204,7 +14195,7 @@ def draw_text(input_value: str, height=None,
             dy1 = dy0 + line_px
             if dy1 < rect_min_y or dy0 > rect_max_y:
                 continue
-            draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, imgui.get_color_u32_rgba(*bg))
+            draw_list.add_rect_filled(origin_x - 4, dy0, origin_x + visible_width, dy1, pack_color(*bg))
     _pf("body:err_diff")
     # Syntax-highlighted text - only the visible window is tokenized (see
     # `_window`), so this is O(visible) not O(buffer). The loop starts at the
@@ -14364,7 +14355,7 @@ def draw_text(input_value: str, height=None,
     # which are the same objects frame after frame during a drag / hover
     # session - so a hit replaces all of it with a packed value per token.
     # Optional tint for plain embedded text; syntax palettes stay unchanged.
-    _plain_color = (imgui.get_color_u32_rgba(*text_tint[:3], 1.0)
+    _plain_color = (pack_color(*text_tint[:3], 1.0)
                     if text_tint is not None and not syntax_highlight else None)
     _tc_key = (tokens, win_off, _dt_spans, _dt_comments, _dt_mix, _ct_factors, _tx_f, _plain_color)
     _tc_memo = getattr(ds, '_tok_color_memo', None)
@@ -14443,7 +14434,7 @@ def draw_text(input_value: str, height=None,
                     _pk = _COMMENT_TINT_CACHE.get(_ck)
                     if _pk is None:
                         _cr, _cg, _cb = _comment_tint_color(_cc)
-                        _pk = imgui.get_color_u32_rgba(_cr, _cg, _cb, 1.0)
+                        _pk = pack_color(_cr, _cg, _cb, 1.0)
                         if len(_COMMENT_TINT_CACHE) > 1024:
                             _COMMENT_TINT_CACHE.clear()
                         _COMMENT_TINT_CACHE[_ck] = _pk
@@ -14575,9 +14566,7 @@ def draw_text(input_value: str, height=None,
                             # their native token blue reads as live code,
                             # not comment, at presentation dim.
                             _dc = COLORS['comment']
-                            _wc = ((_dc & 0xFF) / 255.0,
-                                   ((_dc >> 8) & 0xFF) / 255.0,
-                                   ((_dc >> 16) & 0xFF) / 255.0)
+                            _wc = unpack_color(_dc)[:3]
                         _pb = min(1.0, (1.0 - _pres_k)
                                   * Toggles.TextEditor.presentation_widget_boost)
                         _wc = (_wc[0] * _pb, _wc[1] * _pb, _wc[2] * _pb)
@@ -15108,12 +15097,12 @@ def draw_text(input_value: str, height=None,
         if not blink_cursor or (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
             cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
             current_line_rect = (int(origin_x), int(cy + 1), int(origin_x + visible_width), int(cy + line_px + 1))
-            line_highlight_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 0.05)
+            line_highlight_color = pack_color(*Tint.cursor_tint()[:3], 0.05)
             draw_list.channels_set_current(Core.melty.get_channel() - 1)  # draw under the text
             draw_list.add_rect_filled(*current_line_rect, line_highlight_color)
             draw_list.channels_set_current(Core.melty.get_channel() + 1)  # draw under the text
 
-            imgui_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 1.0)
+            imgui_color = pack_color(*Tint.cursor_tint()[:3], 1.0)
             draw_list.add_line(cx, cy, cx, cy + line_px, imgui_color, 2.0)
             # Highlight selection
 
@@ -15147,8 +15136,8 @@ def draw_text(input_value: str, height=None,
         _fold_hdr = _restore_hdr
     if show_gutter and gutter_w > 0:
         gutter_bg = (*Tint.line_number_bg()[:3], 1.0)  # dark tinted gray
-        num_color = imgui.get_color_u32_rgba(*Tint.line_number_tint()[:3], 1.0)
-        cur_color = imgui.get_color_u32_rgba(*Tint.cursor_tint()[:3], 1.0)
+        num_color = pack_color(*Tint.line_number_tint()[:3], 1.0)
+        cur_color = pack_color(*Tint.cursor_tint()[:3], 1.0)
         cur_line = _index_to_line_col(text, ds.text_cursor_pos)[0] if is_focused else -1
         # Clamp the column's top to the text body (origin_y) so the fill doesn't
         # ride up over the header bar above it; rect_min_y still works once the
@@ -15173,7 +15162,7 @@ def draw_text(input_value: str, height=None,
         _chev_in_indent = bool(gutter_indent)
         _gut_clip_r = left + gutter_w + (gutter_margin if _chev_in_indent else 0.0)
         draw_list.push_clip_rect(left, gutter_top, _gut_clip_r, rect_max_y, True)
-        draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, imgui.get_color_u32_rgba(*gutter_bg))
+        draw_list.add_rect_filled(left, gutter_top, left + gutter_w, rect_max_y, pack_color(*gutter_bg))
         # Line-tint lookup for the heat wash below: a line with a definition
         # tint draws its number with THAT color instead of the usage heat ramp.
         _dt_line_map = {l[0]: l for l in _dt_lines} if _dt_lines else {}
@@ -15333,7 +15322,7 @@ def draw_text(input_value: str, height=None,
                 _lt = _dt_line_map.get(line_idx)
                 if _lt is not None:
                     _ga = _bg_adjust(tuple(_lt[1][:3]), _bg_f)
-                    _hb = imgui.get_color_u32_rgba(_ga[0], _ga[1], _ga[2],
+                    _hb = pack_color(_ga[0], _ga[1], _ga[2],
                                                    0.55 * _lt[2])
                 else:
                     _hb = _usage_wash_color(heat)
@@ -15401,10 +15390,10 @@ def draw_text(input_value: str, height=None,
                                     and line_idx in _restore_diff))
                 if _is_diff_g:
                     _dft = Toggles.TextEditor.diff_fold_tint
-                    _gcc = imgui.get_color_u32_rgba(
+                    _gcc = pack_color(
                         *_dsep_rgb[:3], min(1.0, _dft[3] + (0.35 if _ghov else 0.0)))
                 else:
-                    _gcc = imgui.get_color_u32_rgba(
+                    _gcc = pack_color(
                         0.9, 0.9, 0.9, 0.55 if _ghov else 0.31)
                 _gcy = ly + line_px * 0.5
                 if _col_g and _is_diff_g:
@@ -15455,7 +15444,7 @@ def draw_text(input_value: str, height=None,
                 _blt = _dt_line_map.get(line_idx)
                 if _blt is not None:
                     _bga = _bg_adjust(tuple(_blt[1][:3]), _bg_f)
-                    _bc = imgui.get_color_u32_rgba(_bga[0], _bga[1], _bga[2], 1.0)
+                    _bc = pack_color(_bga[0], _bga[1], _bga[2], 1.0)
                 else:
                     _bc = cur_color if line_idx == cur_line else num_color
                 _bcx = left + _lv_btn_w * 0.5
@@ -15464,7 +15453,7 @@ def draw_text(input_value: str, height=None,
                     draw_list.add_rect_filled(
                         left + 1.0, ly + 1.0, left + _lv_btn_w - 1.0,
                         ly + line_px - 1.0,
-                        imgui.get_color_u32_rgba(1.0, 1.0, 1.0, 0.10), 3.0)
+                        pack_color(1.0, 1.0, 1.0, 0.10), 3.0)
                 if _inline_all:
                     # info icon: circle + dot + stem - the value is already
                     # shown inline, nothing to open.
@@ -15534,7 +15523,7 @@ def draw_text(input_value: str, height=None,
         _need_chev = gutter_w <= 0.0    # no gutter: chevrons fall back here
         # Collapsed diff gap separator band (color resolved beside
         # _diff_band_h at the preview-rows block).
-        _dsep_col = imgui.get_color_u32_rgba(*_dsep_rgb[:3], 0.35)
+        _dsep_col = pack_color(*_dsep_rgb[:3], 0.35)
         # A def fold header is widened by the run buttons trailing the def's
         # name (the def_name token view's trail_cells); the badge - placed
         # from the header's CHAR length - shifts with them.
@@ -15586,7 +15575,7 @@ def draw_text(input_value: str, height=None,
 
             if _is_diff_fold:
                 _dft = Toggles.TextEditor.diff_fold_tint
-                _fcc = imgui.get_color_u32_rgba(
+                _fcc = pack_color(
                     *_dsep_rgb[:3], min(1.0, _dft[3] + (0.3 if _fhov else 0.0)))
                 if _fcol:
                     # Collapsed diff gap: a thin separator line across the
@@ -15597,7 +15586,7 @@ def draw_text(input_value: str, height=None,
                         left + gutter_w, _dby, left + ds.content_width,
                         _dby + _diff_band_h, _dsep_col)
             else:
-                _fcc = imgui.get_color_u32_rgba(
+                _fcc = pack_color(
                     0.9, 0.9, 0.9, 0.4 if _fhov else 0.31)
             _fcx, _fcy = _fr[0] + 8.0, (_fr[1] + _fr[3]) * 0.5
             if _is_diff_fold and _fcol:
@@ -15638,8 +15627,8 @@ def draw_text(input_value: str, height=None,
                                  left + ds.content_width, rect_max_y, True)
         _fm_y = (line_px - imgui.get_text_line_height()) * 0.5
         _need_chev = gutter_w <= 0.0
-        _dsep_col = imgui.get_color_u32_rgba(*_dsep_rgb[:3], 0.35)
-        _fcc = imgui.get_color_u32_rgba(
+        _dsep_col = pack_color(*_dsep_rgb[:3], 0.35)
+        _fcc = pack_color(
             *_dsep_rgb[:3], Toggles.TextEditor.diff_fold_tint[3])
         _rd_offs = _line_starts(text)
         _fv0 = int((rect_min_y - origin_y) // line_px) - 2
@@ -15701,11 +15690,11 @@ def draw_text(input_value: str, height=None,
             _ug_w = len(_ug_txt) * 7.5 + 20.0
             draw_list.add_rect_filled(
                 _ug_x1 - _ug_w, _ug_y0, _ug_x1, _ug_y0 + 17.0,
-                imgui.get_color_u32_rgba(0.08, 0.08, 0.08, 0.6), 8.5)
+                pack_color(0.08, 0.08, 0.08, 0.6), 8.5)
             draw_list.add_circle_filled(_ug_x1 - _ug_w + 9.0, _ug_y0 + 8.5, 3.5,
-                                        imgui.get_color_u32_rgba(*_ug_dot))
+                                        pack_color(*_ug_dot))
             draw_list.add_text(_ug_x1 - _ug_w + 16.0, _ug_y0 + 1.5,
-                               imgui.get_color_u32_rgba(0.85, 0.85, 0.85, 0.85),
+                               pack_color(0.85, 0.85, 0.85, 0.85),
                                _ug_txt)
 
     # Icon-picker orphan close: the picker popover is latched by its icon
@@ -16086,8 +16075,8 @@ def draw_text(input_value: str, height=None,
         fill_col = (0.275, 0.118, 0.157, 0.922)
         line_col = (0.588, 0.235, 0.275, 1.0)
         err_draw_list = imgui.get_window_draw_list()
-        err_draw_list.add_rect_filled(bx0, by0, bx1, by1, imgui.get_color_u32_rgba(*fill_col), 4.0)
-        err_draw_list.add_rect(bx0, by0, bx1, by1, imgui.get_color_u32_rgba(*line_col), 4.0)
+        err_draw_list.add_rect_filled(bx0, by0, bx1, by1, pack_color(*fill_col), 4.0)
+        err_draw_list.add_rect(bx0, by0, bx1, by1, pack_color(*line_col), 4.0)
         imgui.set_cursor_screen_pos((bx0 + pad_x, by0 + pad_y))
         imgui.push_text_wrap_pos(imgui.get_cursor_pos_x() + max_w)
         imgui.text_colored(msg, 1.0, 0.72, 0.68, 1.0)

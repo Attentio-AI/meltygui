@@ -27,6 +27,7 @@ import types
 from pathlib import Path
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.fonts import Font
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
@@ -527,15 +528,15 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
         if Melty.channels_split:
             draw_list.channels_set_current(max(0, Melty.get_channel() - card_channel_drop))
         draw_list.add_rect_filled(x, y, x + width, y + height,
-                                  imgui.get_color_u32_rgba(card[0], card[1], card[2], 1.0))
+                                  pack_color(card[0], card[1], card[2], 1.0))
         if Melty.channels_split:
             draw_list.channels_set_current(Melty.get_channel())
     tint = _file_meta_tint(pane.path) or FileMeta.tint
     rgb = _tab_text_color(tint, Toggles.CodeEditor.tab_active_text_brightness,
                           Toggles.CodeEditor.tab_active_text_saturation,
                           Toggles.CodeEditor.tab_active_text_min_brightness)
-    name_u32 = imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2], 1.0)
-    rest_u32 = imgui.get_color_u32_rgba(rgb[0], rgb[1], rgb[2], 0.7)
+    name_u32 = pack_color(rgb[0], rgb[1], rgb[2], 1.0)
+    rest_u32 = pack_color(rgb[0], rgb[1], rgb[2], 0.7)
     try:
         shown = str(Path(pane.path).resolve().relative_to(_PROJECT_ROOT))
     except (OSError, ValueError):

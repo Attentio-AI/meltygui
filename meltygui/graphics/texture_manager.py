@@ -6,6 +6,7 @@ from OpenGL.GL import (
     glGenTextures, glBindTexture, glTexImage2D, glTexParameteri,
     glDeleteTextures, glGetTexImage, glActiveTexture,
     GL_TEXTURE_2D, GL_RGBA, GL_RGB, GL_RED, GL_RG, GL_UNSIGNED_BYTE,
+    GL_SRGB8_ALPHA8, GL_SRGB8,
 )
 from PIL import Image
 import io
@@ -81,8 +82,12 @@ class TextureManager:
         """Create the GL texture. MUST be called from GL thread."""
         texture_id = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, texture_id)
+        # 8-bit images are sRGB-encoded; an sRGB internal format decodes
+        # to linear at sample time, which is what the linear scRGB scene
+        # (scene_color.py) composites.
+        internal = {GL_RGBA: GL_SRGB8_ALPHA8, GL_RGB: GL_SRGB8}.get(pending.gl_format, pending.gl_format)
         glTexImage2D(
-            GL_TEXTURE_2D, 0, pending.gl_format,
+            GL_TEXTURE_2D, 0, internal,
             pending.tex_width, pending.tex_height, 0,
             pending.gl_format, GL_UNSIGNED_BYTE, pending.data
         )

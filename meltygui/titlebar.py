@@ -1100,7 +1100,8 @@ def composite_window_frame(fb_w, fb_h):
     depth = gl.glIsEnabled(gl.GL_DEPTH_TEST)
     stencil = gl.glIsEnabled(gl.GL_STENCIL_TEST)
     try:
-        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+        from src.lsd.gl_gui.melty import Melty
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, Melty.default_framebuffer())
         gl.glViewport(0, 0, int(fb_w), int(fb_h))
         gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glDisable(gl.GL_DEPTH_TEST)

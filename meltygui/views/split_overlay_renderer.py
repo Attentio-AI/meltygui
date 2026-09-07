@@ -24,6 +24,7 @@ from imgui.integrations.opengl import (
     get_common_gl_state,
     restore_common_gl_state,
 )
+from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, set_decode_uniforms
 
 
 class _FakeWindowRect:
@@ -61,6 +62,28 @@ class SplitOverlayRenderer(GlfwRenderer):
     # them grayscale; images/tiles are actual textures (Atlas == 0) and get
     # uniform coverage == alpha, which with the same blend func is plain
     # alpha blending. Proven byte-identical for non-glyph UI lists.
+    # Vertex colours are Melty's HDR/P3 packing (gl_gui/hdr_color.py): the
+    # vertex stage decodes the u32 into LINEAR scRGB and alpha, so the
+    # blend func happens in linear light on the fp16 scene target and a
+    # colour above 1.0 (white(4)) or outside sRGB (p3(1, 0, 0)) arrives
+    # intact. The two curve uniforms are set per draw (_bind_text_mode).
+    VERTEX_SHADER_SRC = """
+    #version 330
+
+    uniform mat4 ProjMtx;
+    in vec2 Position;
+    in vec2 UV;
+    in vec4 Color;
+    out vec2 Frag_UV;
+    out vec4 Frag_Color;
+    """ + _GLSL_DECODE + """
+    void main() {
+        Frag_UV = UV;
+        Frag_Color = melty_decode_color(Color);
+        gl_Position = ProjMtx * vec4(Position.xy, 0, 1);
+    }
+    """
+
     FRAGMENT_SHADER_SRC = """
     #version 330
 
@@ -250,6 +273,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         # handing out an ARGB buffer), the desktop showed through. Tiles
         # rendered offscreen start from alpha 0, but with the union rule
         # their alpha is the true coverage, so a blitted alpha lands solid.
+        set_decode_uniforms(self._shader_handle)   # Toggles.HLS curve, live
         if not self._lcd_ok:
             gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
                                    gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)

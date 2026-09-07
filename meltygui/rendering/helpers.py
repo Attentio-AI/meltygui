@@ -1,4 +1,5 @@
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.melty import Melty
 
@@ -150,13 +151,13 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
     # Use channels: 0 for lines (back), 1 for boxes (front)
     if is_hovered:
         line_channel = 0
-        line_color = imgui.get_color_u32_rgba(1, 1, 1, 1)
-        dot_color = imgui.get_color_u32_rgba(1, 1, 1, 1)
+        line_color = pack_color(1, 1, 1, 1)
+        dot_color = pack_color(1, 1, 1, 1)
         line_thickness = 2.5
     else:
         line_channel = 0
-        line_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3] * 0.5)
-        dot_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
+        line_color = pack_color(tint[0], tint[1], tint[2], tint[3] * 0.5)
+        dot_color = pack_color(tint[0], tint[1], tint[2], tint[3])
         line_thickness = 1.0
 
     draw_list.add_bezier_cubic(
@@ -183,15 +184,15 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
         text_y - padding,
         text_x + text_width + padding,
         text_y + label_height - padding,
-        imgui.get_color_u32_rgba(0.1, 0.1, 0.1, 1.0)
+        pack_color(0.1, 0.1, 0.1, 1.0)
     )
 
     # Draw outline in tint color (or yellow if hovered)
     if is_hovered:
-        outline_color = imgui.get_color_u32_rgba(1, 1, 1, 1)
+        outline_color = pack_color(1, 1, 1, 1)
         outline_thickness = 2.0
     else:
-        outline_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
+        outline_color = pack_color(tint[0], tint[1], tint[2], tint[3])
         outline_thickness = 1.0
 
     draw_list.add_rect(
@@ -206,7 +207,7 @@ def floating_text(text: str, x_offset: float = 0, line_height: float = None, tin
     )
 
     # Draw text lines
-    text_color = imgui.get_color_u32_rgba(tint[0], tint[1], tint[2], tint[3])
+    text_color = pack_color(tint[0], tint[1], tint[2], tint[3])
     line_y = text_y
     for line in text_lines:
         draw_list.add_text(
@@ -238,7 +239,7 @@ def draw_vertical_scrollbar(content_height: float,
         min_grab_size = float(style.grab_min_size)
 
     if tint is not None:
-        col_grab = imgui.get_color_u32_rgba(*tint[:3], 1.0)
+        col_grab = pack_color(*tint[:3], 1.0)
     else:
         col_grab = imgui.get_color_u32(imgui.COLOR_SCROLLBAR_GRAB)
     col_border = imgui.get_color_u32(imgui.COLOR_BORDER)

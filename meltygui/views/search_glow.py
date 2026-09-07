@@ -26,6 +26,7 @@ distinct values.
 import math
 
 import imgui
+from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.toggles import Toggles
 
@@ -89,7 +90,7 @@ def _draw_glow(draw_list, x0, y0, x1, y1, spec):
             d = t * falloff
             a_outer = opacity * (1.0 - t) ** exp
             outer = [(bx + nx * d, by + ny * d) for (bx, by, nx, ny) in samples]
-            col = imgui.get_color_u32_rgba(cr, cg, cb, (a_inner + a_outer) * 0.5)
+            col = pack_color(cr, cg, cb, (a_inner + a_outer) * 0.5)
             for i in range(n):
                 j = i + 1 if i + 1 < n else 0
                 ix0, iy0 = inner[i]
@@ -124,7 +125,7 @@ def draw_search_highlight_multi(draw_list, segs, *, current):
     a = float(spec.outline_alpha)
     if a > 0.0:
         oc = spec.outline_color
-        col = imgui.get_color_u32_rgba(oc[0], oc[1], oc[2], a)
+        col = pack_color(oc[0], oc[1], oc[2], a)
         for x0, y0, x1, y1 in segs:
             draw_list.add_rect(x0, y0, x1, y1, col,
                                rounding=float(spec.cutout_radius),
@@ -146,6 +147,6 @@ def draw_search_highlight(draw_list, x0, y0, x1, y1, *, current, rounding=0.0):
     a = float(spec.outline_alpha)
     if a > 0.0:
         oc = spec.outline_color
-        draw_list.add_rect(x0, y0, x1, y1, imgui.get_color_u32_rgba(oc[0], oc[1], oc[2], a),
+        draw_list.add_rect(x0, y0, x1, y1, pack_color(oc[0], oc[1], oc[2], a),
                            rounding=max(float(rounding), float(spec.cutout_radius)),
                            thickness=float(spec.outline_thickness))
