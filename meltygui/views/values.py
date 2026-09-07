@@ -6033,7 +6033,7 @@ def toggle_offscreen():
 
 
 import imgui
-from src.lsd.gl_gui.hdr_color import pack_color
+from src.lsd.gl_gui.hdr_color import pack_color, scale_saturation
 # new comment
 def draw_vertical_scrollbar(content_height: float,
                             view_height: float,
@@ -6222,7 +6222,7 @@ def _clamp_bg_value(color, max_bg_value):
 
     # k is the cut applied to the value; undo it with saturation.
     k = max_bg_value / value
-    saturation = min(1.0, ((value - low) / value) / k)
+    saturation = scale_saturation((value - low) / value, 1.0 / k)
     chroma = max_bg_value * saturation
     new_low = max_bg_value - chroma
     span = value - low

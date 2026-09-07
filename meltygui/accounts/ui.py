@@ -1471,7 +1471,7 @@ def _cleanup_accounts(draw_state):
         KINDS[entry["kind"]].close(entry)
 
 
-@window(input_value=accounts, tint=(0.84, 0.84, 0.77), icon=f"",
+@window(input_value=accounts, tint=(2.08, 1.80, 0.92), icon=f"",
         display_name="Internet Accounts", initial={"width": 760, "height": 460})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              on_cleanup=_cleanup_accounts,

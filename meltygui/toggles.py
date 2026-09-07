@@ -8,7 +8,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
 import torch
 import json
-from src.lsd.gl_gui.hdr_color import pack_color
+from src.lsd.gl_gui.hdr_color import pack_color, scale_saturation
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,9 @@ def mix(r1, g1, b1, r2, g2, b2, alpha):
 
 @window
 class Tint:
-    max_saturation = 3.0
+    # Saturation boosts go through hdr_color.scale_saturation: never past
+    # the tint's own gamut edge (the sRGB edge for an SDR tint, its own
+    # extended saturation for a P3 one), so the old 3.0 cap is gone.
     max_value = 10.0
 
     @staticmethod
@@ -104,7 +106,7 @@ class Tint:
         value_factor = 1.648
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -117,7 +119,7 @@ class Tint:
         saturation_factor = 1.2
         value_factor = -0.002
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
         
@@ -131,7 +133,7 @@ class Tint:
         value_factor = 0.068
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -147,7 +149,7 @@ class Tint:
 
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -161,7 +163,7 @@ class Tint:
         saturation_factor = 0.6
         value_factor = 0.258
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, -1), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -176,7 +178,7 @@ class Tint:
         value_factor = 2.125
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -191,7 +193,7 @@ class Tint:
         value_factor = 1.018
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -209,7 +211,7 @@ class Tint:
         value_factor = 2.161
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -234,7 +236,7 @@ class Tint:
         value_factor = 2.899
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -255,7 +257,7 @@ class Tint:
 
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, min_value), max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -271,7 +273,7 @@ class Tint:
         value_factor = Toggles.TextEditor.gutter_value
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -287,7 +289,7 @@ class Tint:
         max_value = 0.6
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -307,7 +309,7 @@ class Tint:
         min_value = 0.12
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, min_value), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
@@ -322,7 +324,7 @@ class Tint:
         value_factor = 0.668
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      min(max(active_hsv[1] * saturation_factor, 0), Tint.max_saturation),
+                      scale_saturation(active_hsv[1], saturation_factor),
                       min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 

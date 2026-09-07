@@ -1,5 +1,5 @@
 import imgui
-from src.lsd.gl_gui.hdr_color import pack_color, unpack_color, style_color
+from src.lsd.gl_gui.hdr_color import pack_color, unpack_color, style_color, scale_saturation
 import colorsys
 
 from src.lsd.gl_gui.global_style import GlobalStyle
@@ -84,19 +84,26 @@ class ImGuiStyleManager:
 
     @staticmethod
     def _safe_rgb_to_hsv(r, g, b):
-        # colorsys.rgb_to_hsv divides by max(r, g, b); slightly out-of-range
-        # channels (e.g. a computed bleed tint like (0.0, -0.005, -0.009))
-        # hit ZeroDivisionError, so clamp every channel into [0, 1] first.
-        def clamp(c):
+        # EXTENDED sRGB HSV: colours are never clamped into [0, 1] anymore.
+        # colorsys is exact on extended values whenever max(r, g, b) > 0 -
+        # a channel above 1 lands in v (> 1 = brighter than SDR white), a
+        # negative channel in s (> 1 = outside the sRGB gamut, the P3 tints
+        # from hdr_color.p3), and hsv_to_rgb hands both straight back. The
+        # old per-channel clamp is why draw_bg never showed a tint's HDR
+        # headroom or wide gamut (09-07). The one hazard is a max channel
+        # ≤ 0 (a black tint like (0.0, -0.005, -0.009), or all-negative):
+        # colorsys divides by it, so the only sensible result is black.
+        def clean(c):
             try:
                 c = float(c)
             except (TypeError, ValueError):
                 return 0.0
-            if c != c:  # NaN
-                return 0.0
-            return min(1.0, max(0.0, c))
+            return 0.0 if c != c else c  # NaN → 0
 
-        return colorsys.rgb_to_hsv(clamp(r), clamp(g), clamp(b))
+        r, g, b = clean(r), clean(g), clean(b)
+        if max(r, g, b) <= 0.0:
+            return 0.0, 0.0, 0.0
+        return colorsys.rgb_to_hsv(r, g, b)
 
     def make_custom_styled(self, r, g, b, input, alpha=1.0, value=0.5, saturation=None):
         h, s, v = self._safe_rgb_to_hsv(r, g, b)
@@ -110,12 +117,12 @@ class ImGuiStyleManager:
         if 'max_value' in input:
             value = min(value, input["max_value"])
 
-        modified_rgb = colorsys.hsv_to_rgb(h, min(1.0, s * saturation_scale), value)
+        modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make_custom(self, r, g, b, value, saturation_scale=1.0, alpha=1.0):
         h, s, v = self._safe_rgb_to_hsv(r, g, b)
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
         imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
         return unpack_color(imgui_color)[:3]
@@ -124,7 +131,7 @@ class ImGuiStyleManager:
         h, s, v = self.hsv
         value = (v * GlobalStyle.secondary_value) + value
 
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
         imgui_color = pack_color(modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
         return imgui_color
 
@@ -208,7 +215,7 @@ class ImGuiStyleManager:
             value = min(value, input["max_value"])
         alpha = input["alpha"]
 
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
 
         def mix(r1, g1, b1, r2, g2, b2, alpha):
             """Mix two colors with alpha blending"""
@@ -236,7 +243,7 @@ class ImGuiStyleManager:
         if 'max_value' in input:
             value = min(value, input["max_value"])
 
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make_color_style(self, input, alpha=1.0):
@@ -250,7 +257,7 @@ class ImGuiStyleManager:
             value = min(value, input["max_value"])
         alpha = input["alpha"]
 
-        modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+        modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
         return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
     def make(self, value, saturation_scale=1.0, alpha=1.0):
@@ -415,7 +422,7 @@ class ImGuiStyleManager:
             value = (v * GlobalStyle.base_value) + value
             alpha = input["alpha"]
 
-            modified_rgb = colorsys.hsv_to_rgb(h, s * saturation_scale, value)
+            modified_rgb = colorsys.hsv_to_rgb(h, scale_saturation(s, saturation_scale), value)
             return (modified_rgb[0], modified_rgb[1], modified_rgb[2], alpha)
 
         # Widget fills (buttons, frame backgrounds = text edits + drag/slider

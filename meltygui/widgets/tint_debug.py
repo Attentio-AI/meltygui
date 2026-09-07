@@ -37,7 +37,7 @@ def sample_function():
 
 
 @window(disable_scroll=False, icon="", display_name="External Editor",
-        tint=(0.13, 0.08, 0.22))
+        tint=(0.29, 0.08, 0.74))
 @render_func(tint=(0.35, 0.18, 0.42))
 def external_editor(draw_state=None):
     misc = draw_state.misc

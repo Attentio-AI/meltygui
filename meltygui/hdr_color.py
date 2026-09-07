@@ -125,6 +125,22 @@ def p3(r: float, g: float, b: float, scale: float = 1.0):
     return tuple(linear_to_srgb(c) for c in linear_p3_to_srgb(lin))
 
 
+def scale_saturation(saturation: float, factor: float) -> float:
+    """``saturation * factor`` for an EXTENDED-HSV saturation (colorsys on an
+    extended-sRGB tuple: s > 1 means a channel below 0 — outside the sRGB
+    gamut), capped at the colour's OWN gamut edge: 1.0 for a tint inside
+    sRGB, its own s for a wider one. A boost factor above 1 (the bg ramps'
+    1.1, the gutter's 1.05) must not push an sRGB primary out past P3 —
+    the packer clips per channel in linear P3, so an sRGB red tint and a
+    P3 red tint landed on the SAME P3-edge colour and P3 tints looked no
+    more saturated than sRGB ones (09-07). Before HDR imgui's u32 clamp
+    capped every boost at the sRGB edge; this keeps that look for SDR
+    tints and lets a wide tint keep exactly the chroma it was given."""
+    if saturation <= 0.0:
+        return 0.0
+    return min(max(1.0, saturation), saturation * factor)
+
+
 def scale(color, k: float):
     """``color`` (an extended-sRGB tuple) with its linear light multiplied by
     ``k``; alpha, if present, is kept."""
