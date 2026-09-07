@@ -24,7 +24,7 @@ from imgui.integrations.opengl import (
     get_common_gl_state,
     restore_common_gl_state,
 )
-from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, set_decode_uniforms
+from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, set_decode_uniforms
 
 
 class _FakeWindowRect:
@@ -67,6 +67,9 @@ class SplitOverlayRenderer(GlfwRenderer):
     # blend func happens in linear light on the fp16 scene target and a
     # colour above 1.0 (white(4)) or outside sRGB (p3(1, 0, 0)) arrives
     # intact. The two curve uniforms are set per draw (_bind_text_mode).
+    # The result is PREMULTIPLIED (melty_decode_premultiplied): imgui's AA
+    # feather vertices carry a zero alpha byte, which is not an SDR colour,
+    # and should not bleed their rgb to the edge.
     VERTEX_SHADER_SRC = """
     #version 330
 
@@ -79,7 +82,7 @@ class SplitOverlayRenderer(GlfwRenderer):
     """ + _GLSL_DECODE + """
     void main() {
         Frag_UV = UV;
-        Frag_Color = melty_decode_color(Color);
+        Frag_Color = melty_decode_premultiplied(Color);
         gl_Position = ProjMtx * vec4(Position.xy, 0, 1);
     }
     """
@@ -94,11 +97,12 @@ class SplitOverlayRenderer(GlfwRenderer):
     uniform int Bgr;          // Toggles.Fonts.lcd_bgr
     uniform float Gamma;      // Toggles.Fonts.text_gamma
     in vec2 Frag_UV;
-    in vec4 Frag_Color;
+    in vec4 Frag_Color;   // premultiplied (see VERTEX_SHADER_SRC)
     layout(location = 0, index = 0) out vec4 Out_Color;
     layout(location = 0, index = 1) out vec4 Out_Cov;
-
+    """ + _GLSL_UNPREMULTIPLY + """
     void main() {
+        vec4 color = melty_unpremultiply(Frag_Color);
         vec4 t = texture(Texture, Frag_UV.st);
         vec3 cov = vec3(t.a);
         if (Atlas == 1) {
@@ -112,8 +116,8 @@ class SplitOverlayRenderer(GlfwRenderer):
                 cov = pow(cov, vec3(1.0 / Gamma));
             }
         }
-        float a = Frag_Color.a;
-        Out_Color = vec4(Frag_Color.rgb * t.rgb, a * t.a);
+        float a = color.a;
+        Out_Color = vec4(color.rgb * t.rgb, a * t.a);
         Out_Cov   = vec4(cov * a, a * t.a);
     }
     """

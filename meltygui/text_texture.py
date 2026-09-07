@@ -22,7 +22,7 @@ from src.lsd.gl_gui.hdr_color import pack_color
 import OpenGL.GL as gl
 
 from src.lsd.gl_gui.gl_state import GLTexture
-from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, set_decode_uniforms
+from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, set_decode_uniforms
 
 _VS = """
 #version 330 core
@@ -35,7 +35,7 @@ out vec4 fColor;
 """ + _GLSL_DECODE + """
 void main() {
     fUV = UV;
-    fColor = melty_decode_color(Color);   // linear scRGB, like the screen pass
+    fColor = melty_decode_premultiplied(Color);   // linear scRGB, premultiplied, like the screen pass
     // imgui-style ortho: display y=0 (text top) -> ndc +1, so the baked
     // texture's v=1 row is the TOP of the text.
     gl_Position = vec4(Position.x * 2.0 / uSize.x - 1.0,
@@ -47,10 +47,11 @@ _FS = """
 #version 330 core
 uniform sampler2D Texture;
 in vec2 fUV;
-in vec4 fColor;
+in vec4 fColor;   // premultiplied (see _VS)
 out vec4 OutColor;
+""" + _GLSL_UNPREMULTIPLY + """
 void main() {
-    OutColor = fColor * texture(Texture, fUV);
+    OutColor = melty_unpremultiply(fColor) * texture(Texture, fUV);
 }
 """
 

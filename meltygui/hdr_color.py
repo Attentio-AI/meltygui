@@ -289,6 +289,28 @@ vec4 melty_decode_color(vec4 c) {
     }
     return vec4(rgb, alpha);
 }
+
+// The VARYING form: rgb PREMULTIPLIED by alpha. imgui's anti-aliased fills
+// and strokes give the feather's outer vertices the same RGB bytes with an
+// alpha BYTE of 0 — which clears the SDR bit, so decoded per vertex those
+// bytes read as an HDR log code (a 61/255 grey becomes linear 0.11, four
+// times brighter) and the rasterizer interpolates that brightness across
+// the feather: a light 1-px fringe around every rounded rect (09-07). A
+// zero-alpha vertex must contribute NOTHING to the colour, which is what
+// premultiplied interpolation does; the fragment stage divides the alpha
+// back out (melty_unpremultiply) so the blend stays straight-alpha.
+vec4 melty_decode_premultiplied(vec4 c) {
+    vec4 d = melty_decode_color(c);
+    return vec4(d.rgb * d.a, d.a);
+}
+"""
+
+# Fragment-side inverse of melty_decode_premultiplied (the fragment shaders
+# don't include GLSL_DECODE, so this is spliced on its own).
+GLSL_UNPREMULTIPLY = """
+vec4 melty_unpremultiply(vec4 f) {
+    return vec4(f.rgb / max(f.a, 1e-6), f.a);
+}
 """
 
 

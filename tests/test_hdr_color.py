@@ -241,3 +241,84 @@ def test_wide_square_texture_has_the_expected_corners():
     assert np.allclose(sq[63, :, :3], 0.0, atol=1e-3)                 # bottom row: black
     red = sq[16, 63, :3]                                              # seam, s=1: P3 red in scRGB
     assert red[0] > 1.2 and red[1] < 0 and red[2] < 0
+
+
+def test_aa_feather_keeps_its_colour(gl_context):
+    """imgui's anti-aliased edge: the feather's outer vertices repeat the
+    fill's RGB bytes with an alpha BYTE of 0 (the SDR bit gone with it).
+    Through the renderer's premultiplied varying + unpremultiply the ramp
+    must stay the fill's colour with only the alpha falling off — the
+    per-vertex decode read those bytes as an HDR code and painted a light
+    fringe around every rounded rect (09-07)."""
+    import ctypes
+    import numpy as np
+    import OpenGL.GL as gl
+
+    vs = """
+    #version 330
+    in vec2 Position; in vec2 UV; in vec4 Color;
+    out vec4 Frag_Color;
+    %s
+    void main() { Frag_Color = melty_decode_premultiplied(Color); gl_Position = vec4(Position, 0, 1); }
+    """ % HC.GLSL_DECODE
+    fs = """
+    #version 330
+    in vec4 Frag_Color; out vec4 Out;
+    %s
+    void main() { Out = melty_unpremultiply(Frag_Color); }
+    """ % HC.GLSL_UNPREMULTIPLY
+    prog = gl.glCreateProgram()
+    for kind, src in ((gl.GL_VERTEX_SHADER, vs), (gl.GL_FRAGMENT_SHADER, fs)):
+        sh = gl.glCreateShader(kind)
+        gl.glShaderSource(sh, src)
+        gl.glCompileShader(sh)
+        assert gl.glGetShaderiv(sh, gl.GL_COMPILE_STATUS), gl.glGetShaderInfoLog(sh)
+        gl.glAttachShader(prog, sh)
+    gl.glLinkProgram(prog)
+    assert gl.glGetProgramiv(prog, gl.GL_LINK_STATUS), gl.glGetProgramInfoLog(prog)
+
+    size = 64
+    tex = gl.glGenTextures(1)
+    gl.glBindTexture(gl.GL_TEXTURE_2D, tex)
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, size, size, 0, gl.GL_RGBA, gl.GL_FLOAT, None)
+    fbo = gl.glGenFramebuffers(1)
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo)
+    gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, tex, 0)
+    assert gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) == gl.GL_FRAMEBUFFER_COMPLETE
+    gl.glViewport(0, 0, size, size)
+    gl.glDisable(gl.GL_BLEND)
+    gl.glDisable(gl.GL_SCISSOR_TEST)
+
+    vert = np.dtype([("pos", np.float32, 2), ("uv", np.float32, 2), ("col", np.uint32)])
+    vao = gl.glGenVertexArrays(1)
+    vbo = gl.glGenBuffers(1)
+    gl.glBindVertexArray(vao)
+    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+    lp, lc = (gl.glGetAttribLocation(prog, n) for n in ("Position", "Color"))
+    gl.glEnableVertexAttribArray(lp)
+    gl.glEnableVertexAttribArray(lc)
+    gl.glVertexAttribPointer(lp, 2, gl.GL_FLOAT, gl.GL_FALSE, 20, ctypes.c_void_p(0))
+    gl.glVertexAttribPointer(lc, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, 20, ctypes.c_void_p(16))
+    gl.glUseProgram(prog)
+    HC.set_decode_uniforms(prog)
+
+    grey = 61 / 255
+    fill = HC.pack_color(grey, grey, grey, 1.0)
+    feather = fill & 0x00FFFFFF          # what ImDrawList's col_trans does
+    quad = np.zeros(6, dtype=vert)
+    # left edge = the fill, right edge = the feather's outer vertices
+    quad["pos"] = [(-1, -1), (1, -1), (1, 1), (-1, -1), (1, 1), (-1, 1)]
+    quad["col"] = [fill, feather, feather, fill, feather, fill]
+    gl.glBufferData(gl.GL_ARRAY_BUFFER, quad.nbytes, quad, gl.GL_STREAM_DRAW)
+    gl.glClearColor(0, 0, 0, 0)
+    gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+    gl.glDrawArrays(gl.GL_TRIANGLES, 0, 6)
+
+    want = HC.srgb_to_linear(grey)
+    for x in (4, size // 2, size - 4):
+        px = np.asarray(gl.glReadPixels(x, size // 2, 1, 1, gl.GL_RGBA, gl.GL_FLOAT)).ravel()
+        r, g, b, a = (float(v) for v in px)
+        assert abs(a - (1.0 - (x + 0.5) / size)) < 0.03, (x, px)
+        for got in (r, g, b):
+            assert abs(got / want - 1.0) < 0.03, (x, px, want)
+    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
