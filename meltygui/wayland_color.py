@@ -23,6 +23,20 @@ default, resolves to "pq" whenever the manager is bound — resolved_output):
                                  ready → get_surface → set_image_description
     Toggles.HDR.output "srgb" → unset_image_description
 The next commit (GLFW's swap) applies it. Hotswap-safe module state.
+
+REFERENCE WHITE follows the desktop: `attach` also takes a
+wp_color_management_surface_feedback_v1 and `query_preferred` reads the
+compositor's PREFERRED parametric description for the surface
+(get_preferred_parametric → get_information → the `luminances` event) — its
+reference luminance is what the compositor shows an untagged sRGB window's
+white as (Hyprland: the monitor's sdr_max_luminance, see Monitor.cpp
+`applyCMType`), so `desired_reference()` hands it to set_luminances AND the
+PQ encode and a colour of 1.0 lands at the same nits as every SDR window.
+A `preferred_changed` event (the user moved the desktop's SDR white, or
+the window changed monitor) re-queries and re-tags on the next sync.
+Without the feature (no feedback, no luminances event) the fallback is
+`Toggles.HDR.pq_reference_nits`; `Toggles.HDR.follow_desktop_white = False`
+pins the toggle's value regardless.
 """
 from __future__ import annotations
 
@@ -40,6 +54,11 @@ _STATE = globals().get("_STATE") or {
     "done": False, "ready": None, "failed": None, "identity": None,
     "reference_nits": None, "keep": [], "ifaces": {}, "error": None, "attached_to": None,
 }
+# Fields added after the first release (a hotswapped module keeps the old dict).
+for _key, _default in (("feedback", None), ("preferred_reference", None), ("preferred_dirty", False),
+                       ("preferred_query_failed", None), ("info_luminances", None), ("info_done", False),
+                       ("synced_reference", None)):
+    _STATE.setdefault(_key, _default)
 
 # wp_color_manager_v1 enums (color-management-v1.xml)
 TF_EXT_LINEAR, TF_SRGB, TF_EXT_SRGB, TF_ST2084_PQ, TF_HLG = 5, 9, 10, 11, 13
@@ -130,6 +149,10 @@ _UINT_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uin
 _VOID_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
 _FAILED_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_char_p)
 _UINT2_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32)
+_UINT3_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                             ctypes.c_uint32)
+_ICC_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int32, ctypes.c_uint32)
+_INT8_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, *([ctypes.c_int32] * 8))
 
 
 def _on_global(data, registry, name, interface, version):
@@ -185,6 +208,33 @@ def _on_ready2(data, proxy, hi, lo):
     _STATE["ready"] = True
 
 
+def _on_preferred_changed(data, proxy, *identity):
+    # The compositor's preferred description for the surface changed (SDR
+    # white moved, monitor changed): re-read it on the next sync.
+    _STATE["preferred_dirty"] = True
+
+
+def _on_info_luminances(data, proxy, min_lum, max_lum, reference):
+    # min is in 0.0001 cd/m², max and reference in cd/m²
+    _STATE["info_luminances"] = (int(min_lum) / 10000.0, float(max_lum), float(reference))
+
+
+def _on_info_done(data, proxy):
+    _STATE["info_done"] = True
+
+
+def _on_info_icc(data, proxy, fd, size):
+    import os
+    try:
+        os.close(int(fd))       # never sent for a parametric info; a leak otherwise
+    except OSError:
+        pass
+
+
+def _on_info_ignore(data, proxy, *args):
+    pass
+
+
 def _table(callbacks):
     cbs = [ctor(fn) for ctor, fn in callbacks]
     table = (ctypes.c_void_p * len(cbs))(*[ctypes.cast(cb, ctypes.c_void_p).value for cb in cbs])
@@ -199,6 +249,15 @@ def _build_listeners():
                                          (_VOID_CB, _on_done)])
     _STATE["desc_listener"] = _table([(_FAILED_CB, _on_failed), (_UINT_CB, _on_ready),
                                       (_UINT2_CB, _on_ready2)])
+    _STATE["feedback_listener"] = _table([(_UINT_CB, _on_preferred_changed),
+                                          (_UINT2_CB, _on_preferred_changed)])
+    # wp_image_description_info_v1 events, in table order (see _build_interfaces)
+    _STATE["info_listener"] = _table([
+        (_VOID_CB, _on_info_done), (_ICC_CB, _on_info_icc), (_INT8_CB, _on_info_ignore),
+        (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore),
+        (_UINT3_CB, _on_info_luminances), (_INT8_CB, _on_info_ignore), (_UINT2_CB, _on_info_ignore),
+        (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore),
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +279,11 @@ def attach(display, surface) -> bool:
         if _STATE["display"] != display:
             _STATE.update(registry=None, manager=None, cm_surface=None, description=None,
                           applied=None, done=False, supported_tf=set(), supported_primaries=set(),
-                          supported_features=set())
+                          supported_features=set(), feedback=None, preferred_reference=None,
+                          preferred_dirty=False, preferred_query_failed=None, synced_reference=None)
+        elif _STATE["surface"] != surface:
+            _STATE.update(cm_surface=None, feedback=None, preferred_reference=None,
+                          preferred_dirty=False, preferred_query_failed=None, synced_reference=None)
         _STATE.update(display=display, surface=surface)
         if not _STATE["ifaces"]:
             _STATE["ifaces"] = _build_interfaces(wl, _STATE["keep"])
@@ -244,6 +307,7 @@ def attach(display, surface) -> bool:
             _STATE["error"] = "compositor offers no wp_color_manager_v1"
             return False
         _STATE["error"] = None
+        query_preferred()         # the desktop's SDR white; a failure here only means the fallback
         return True
     except Exception as e:      # never take the studio down over a colour tag
         _STATE["error"] = f"{type(e).__name__}: {e}"
@@ -359,6 +423,99 @@ def reference_nits():
     return _STATE["reference_nits"] if _STATE["applied"] == "pq" else None
 
 
+def _ensure_feedback() -> bool:
+    _, wl = _c()
+    manager, surface = _STATE["manager"], _STATE["surface"]
+    if not (manager and surface):
+        return False
+    if _STATE["feedback"] is None:
+        fb = wl.wl_proxy_marshal_flags(manager, 3, ctypes.addressof(_STATE["ifaces"]["feedback"]),
+                                       _STATE["manager_version"], 0, ctypes.c_void_p(None),
+                                       ctypes.c_void_p(surface))
+        if not fb:
+            _STATE["preferred_query_failed"] = "get_surface_feedback failed"
+            return False
+        _STATE["feedback"] = fb
+        wl.wl_proxy_add_listener(fb, _STATE["feedback_listener"], None)
+    return True
+
+
+def query_preferred() -> float | None:
+    """Ask the compositor for the surface's PREFERRED parametric image
+    description and read its reference luminance (nits) — the desktop's SDR
+    white. Blocks for a few roundtrips. Returns the reference (also kept in
+    `_STATE["preferred_reference"]`), or None with the reason in
+    `preferred_query_failed()`."""
+    _, wl = _c()
+    _STATE["preferred_dirty"] = False
+    if not _ensure_feedback():
+        return None
+    ver, display = _STATE["manager_version"], _STATE["display"]
+    ifaces = _STATE["ifaces"]
+    _STATE.update(ready=None, failed=None, identity=None, info_luminances=None, info_done=False)
+    desc = wl.wl_proxy_marshal_flags(_STATE["feedback"], 2, ctypes.addressof(ifaces["desc"]), ver, 0,
+                                     ctypes.c_void_p(None))
+    if not desc:
+        _STATE["preferred_query_failed"] = "get_preferred_parametric failed"
+        return None
+    wl.wl_proxy_add_listener(desc, _STATE["desc_listener"], None)
+    info = None
+    try:
+        for _ in range(4):
+            wl.wl_display_roundtrip(display)
+            if _STATE["ready"] is not None:
+                break
+        if not _STATE["ready"]:
+            _STATE["preferred_query_failed"] = f"preferred description failed: {_STATE['failed']}"
+            return None
+        info = wl.wl_proxy_marshal_flags(desc, 1, ctypes.addressof(ifaces["info"]), ver, 0,
+                                         ctypes.c_void_p(None))
+        if not info:
+            _STATE["preferred_query_failed"] = "get_information failed"
+            return None
+        wl.wl_proxy_add_listener(info, _STATE["info_listener"], None)
+        for _ in range(4):
+            wl.wl_display_roundtrip(display)
+            if _STATE["info_done"]:
+                break
+        lums = _STATE["info_luminances"]
+        if not lums or lums[2] <= 0:
+            _STATE["preferred_query_failed"] = "preferred description carries no luminances"
+            return None
+        _STATE["preferred_reference"] = float(lums[2])
+        _STATE["preferred_query_failed"] = None
+        return _STATE["preferred_reference"]
+    finally:
+        # The info object has no destroy request (it ends with `done`); the
+        # description is destroyed through special request 0.
+        if info:
+            wl.wl_proxy_destroy(info)
+        wl.wl_proxy_marshal_flags(desc, 0, ctypes.c_void_p(None), ver, 1)
+
+
+def preferred_reference():
+    """The compositor's reference white for this surface in nits, or None."""
+    return _STATE["preferred_reference"]
+
+
+def preferred_query_failed():
+    return _STATE["preferred_query_failed"]
+
+
+def desired_reference() -> float:
+    """Reference white (nits) for the PQ tag + encode: the desktop's, when it
+    told us and `Toggles.HDR.follow_desktop_white`; else the toggle."""
+    from src.lsd.gl_gui.toggles import Toggles
+    if _STATE["preferred_dirty"] and available():
+        try:
+            query_preferred()
+        except Exception as e:
+            _STATE["preferred_query_failed"] = f"{type(e).__name__}: {e}"
+    if Toggles.HDR.follow_desktop_white and _STATE["preferred_reference"]:
+        return float(_STATE["preferred_reference"])
+    return float(Toggles.HDR.pq_reference_nits)
+
+
 def applied():
     return _STATE["applied"]
 
@@ -369,14 +526,14 @@ def sync(window=None) -> str | None:
     if not available():
         return _STATE["applied"]
     wanted = resolved_output()
-    if wanted == _STATE["wanted"]:
+    reference = desired_reference() if wanted == "pq" else None
+    if wanted == _STATE["wanted"] and reference == _STATE["synced_reference"]:
         return _STATE["applied"]
     _STATE["wanted"] = wanted
-    from src.lsd.gl_gui.toggles import Toggles
+    _STATE["synced_reference"] = reference
     try:
         if wanted == "pq":
-            if create_description(PRIMARIES_BT2020, TF_ST2084_PQ,
-                                  reference_nits=float(Toggles.HDR.pq_reference_nits)) \
+            if create_description(PRIMARIES_BT2020, TF_ST2084_PQ, reference_nits=reference) \
                     and set_surface_description():
                 _STATE["applied"] = "pq"
             else:

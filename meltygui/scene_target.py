@@ -148,7 +148,10 @@ def present(width: int, height: int) -> bool:
     # an untagged app is sRGB to the compositor, whatever the toggle says.
     from src.lsd.gl_gui import wayland_color
     pq = wayland_color.resolved_output() == "pq" and (wayland_color.applied() == "pq" or not wayland_color.available())
-    reference = wayland_color.reference_nits() or float(Toggles.HDR.pq_reference_nits)
+    # 1.0 = the desktop's SDR white: the reference the applied PQ tag carries
+    # (wayland_color.desired_reference - the compositor's preferred
+    # description, else Toggles.HDR.pq_reference_nits).
+    reference = wayland_color.reference_nits() or wayland_color.desired_reference()
     _present_pass(_STATE["gl"], scene=_STATE["tex"], pq_output=1 if pq else 0,
                   reference_nits=float(reference))
     gl.glBindVertexArray(0)

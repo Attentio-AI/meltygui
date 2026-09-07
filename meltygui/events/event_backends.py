@@ -578,9 +578,14 @@ class GlfwQueueBackend:
         # Fires often, so keep it minimal and chain imgui's own cursor callback.
         # It DOES stamp presence for the GC watchdog (gc_manager.tick): a
         # return to the studio starts with the pointer crossing the window.
+        # The loop renders only on request (LSDStudio's render loop gates
+        # on _needs_render - a wait_events wake alone is no frame), so a
+        # new move here triggers the frame that answers it.
         try:
             from src.lsd.gl_gui.melty import Melty
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
             Melty._last_presence_time = time.monotonic()
+            request_render()
         except Exception:
             pass
         self._chain(getattr(self, "_prev_cursor", None), window, x, y)
@@ -588,9 +593,11 @@ class GlfwQueueBackend:
     def _on_enter(self, window, entered):
         try:
             from src.lsd.gl_gui.melty import Melty
+            from src.lsd.gl_gui.utils.glfw_utils import request_render
             Melty._pointer_inside = bool(entered)
             if entered:
                 Melty._last_presence_time = time.monotonic()
+            request_render()      # hover state changes either way (see _on_move)
         except Exception:
             pass
         self._chain(getattr(self, "_prev_enter", None), window, entered)

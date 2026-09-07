@@ -1348,9 +1348,17 @@ class Toggles:
         # clips to the sRGB gamut and to white. Read live.
         # [tint=(0.62, 0.36, 0.52)]
         output = "auto"
-        # Nits of reference white (a colour of 1.0) under the "pq" encode -
-        # match the desktop's SDR reference (Hyprland: the monitor's
-        # sdrMaxLuminance) so SDR content lands at the same brightness.
+        # Under the "pq" encode a colour of 1.0 is shown at the desktop's
+        # SDR reference white — read from the compositor's preferred image
+        # description for our surface (wayland_color.query_preferred;
+        # Hyprland: the monitor's sdr_max_luminance) and re-read whenever
+        # it changes, so the studio's white tracks the desktop's SDR white
+        # setting like every untagged window. Off = pin pq_reference_nits.
+        # [tint=(0.62, 0.36, 0.52)]
+        follow_desktop_white = True
+        # Nits of reference white (a colour of 1.0) under the "pq" encode
+        # when the compositor doesn't say (no luminances in its preferred
+        # description) or follow_desktop_white is off.
         # [tint=(0.62, 0.36, 0.52)]
         pq_reference_nits = 250.0
         # The colour picker's Wide tab: how far above white its square

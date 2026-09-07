@@ -52,7 +52,7 @@ rows_demo = Rows({
 # auto_resize=False: a fixed-size window so the edges have a stable space to
 # resize in; edges move independently of the window either way.
 @window
-@render_func(tint=(0.16, 0.35, 0.49), auto_resize=False, min_width=720, min_height=420)
+@render_func(tint=(0.19, 0.23, 0.29), auto_resize=False, min_width=720, min_height=420)
 def draw_columns_demo(_, draw_state):
     imgui.text("draw_rows / draw_columns: shared edges — rows, columns, nested both ways, "
                "and the window frame all collide")
