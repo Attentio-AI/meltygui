@@ -949,6 +949,9 @@ _pending_surface_size = globals().get("_pending_surface_size")
 
 _pending_surface_offset = globals().get("_pending_surface_offset")
 _frame_surface_offset = globals().get("_frame_surface_offset")
+# The queued request also wants the CONTENT fitted into the work area
+# (the launch restore - request_surface_size(fit=True)).
+_pending_surface_fit = globals().get("_pending_surface_fit") or False
 # Frames a request has waited for the Hyprland feed to see the window (its
 # `address:` selector): the launch restore is filed before the feed's
 # first poll. Bounded so a dead feed can't hold a request forever.
@@ -956,7 +959,7 @@ _pending_surface_wait = globals().get("_pending_surface_wait") or 0
 PENDING_SURFACE_WAIT_FRAMES = 300
 
 
-def request_surface_size(window, width, height, offset=None):
+def request_surface_size(window, width, height, offset=None, fit=False):
     """Queue an app-side resize (the right-drag) for the top of the NEXT
     frame (apply_pending_surface_size, before process_inputs). Applied
     mid-frame it committed a new buffer size and geometry with content laid
@@ -964,17 +967,39 @@ def request_surface_size(window, width, height, offset=None):
     requests in the same frame replace earlier ones. ``offset`` = (dx, dy)
     px to MOVE the window by in the same commit (the buffer offset of the
     swap's attach — wayland_move.set_surface_offset; the near-edge push:
-    grow right by d and move left by d = the left edge moved out)."""
-    global _pending_surface_size, _pending_surface_offset
+    grow right by d and move left by d = the left edge moved out).
+    ``fit`` (Hyprland, the launch restore): add to the move whatever keeps
+    the CONTENT inside the work area at the new size — the compositor
+    centred the window at its INITIAL size and the box grows anchored at
+    its top-left, so a restored studio ran off the bottom and right of
+    the screen (and the OS-edge walls then hold it there, 09-09)."""
+    global _pending_surface_size, _pending_surface_offset, _pending_surface_fit
     _pending_surface_size = (int(width), int(height))
     _pending_surface_offset = tuple(int(v) for v in offset) if offset else None
+    _pending_surface_fit = bool(fit)
+
+
+def fit_offset(rect, size, area, inset):
+    """(dx, dy) that moves a surface at ``rect`` (x, y, w, h on screen) to
+    where its CONTENT — the surface at its new ``size`` less ``inset`` px
+    of shadow margin on every side — lies inside the work ``area`` (x, y,
+    w, h). A content larger than the area keeps its near (top / left)
+    edge on the area's."""
+    out = []
+    for i in (0, 1):
+        near = rect[i] + inset
+        far = rect[i] + size[i] - inset
+        d = min(0, (area[i] + area[i + 2]) - far)     # pull back past the far edge
+        d = max(d, area[i] - near)                    # never past the near one
+        out.append(int(d))
+    return tuple(out)
 
 
 def apply_pending_surface_size(window):
     """LSDStudio's loop, before process_inputs: apply the queued resize so
     this frame lays out at the new size. Returns the size applied."""
     global _pending_surface_size, _pending_surface_offset, _frame_surface_offset
-    global _pending_surface_wait
+    global _pending_surface_wait, _pending_surface_fit
     from src.lsd.gl_gui import wayland_move, os_frame
     wayland_move.clear_surface_offset()          # last frame's offset is spent
     # The roots' passes re-base with the OS near edge's motion lands HERE,
@@ -995,6 +1020,14 @@ def apply_pending_surface_size(window):
         _pending_surface_wait += 1
         return None
     _pending_surface_wait = 0
+    if _pending_surface_fit and geometry_feed.backend() == "hyprland":
+        rect, area = geometry_feed.frame_rect(), geometry_feed.workarea()
+        if rect is not None and area is not None:
+            dx, dy = fit_offset(rect, size, area, int(window_inset()))
+            if dx or dy:
+                ox, oy = offset or (0, 0)
+                offset = (ox + dx, oy + dy)
+    _pending_surface_fit = False
     _pending_surface_size = None
     _pending_surface_offset = None
     from src.lsd.gl_gui.toggles import Toggles

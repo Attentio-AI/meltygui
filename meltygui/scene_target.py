@@ -105,6 +105,19 @@ out vec4 FragColor;
 """ + GLSL_ENCODE + """
 void main() {
     vec4 c = texture(scene, uv);
+    // The scene is premultiplied in LINEAR light; the swapchain is
+    // premultiplied in ENCODED (electrical) values — what Wayland assumes
+    // without a wp_color_representation alpha mode, so the compositor
+    // divides the stored value by alpha before decoding. Encoding a*c as
+    // it stood read back as pq(a*c)/a: far above pq(c) at the dark end
+    // (PQ and sRGB are steepest there), so every translucent pixel — the
+    // shadow margin, the rounded corners' anti-aliased edge — came out
+    // much brighter than the scene held, the shadow beside the content a
+    // bright blue rim over a black desktop (09-09). Un-premultiply, encode
+    // the straight colour, multiply back. Opaque pixels are unchanged.
+    float a = clamp(c.a, 0.0, 1.0);
+    vec3 rgb = a > 0.0 ? c.rgb / a : vec3(0.0);
+    vec3 encoded;
     if (pq_output == 1) {
         // Linear scRGB -> BT.2020 -> PQ. reference_nits is what 1.0 shows
         // as (the desktop's SDR reference), so SDR content matches an
@@ -113,11 +126,12 @@ void main() {
         // scRGB with NEGATIVE components (p3(1,0,0) = (1.22, -0.04, -0.02)
         // linear) and clamping them before the matrix collapses it back to
         // the sRGB gamut. BT.2020 contains P3, so the result is non-negative.
-        vec3 nits = max(MELTY_SRGB_TO_BT2020 * c.rgb, 0.0) * reference_nits;
-        FragColor = vec4(melty_pq_encode(nits), c.a);
+        vec3 nits = max(MELTY_SRGB_TO_BT2020 * rgb, 0.0) * reference_nits;
+        encoded = melty_pq_encode(nits);
     } else {
-        FragColor = vec4(melty_linear_to_srgb(c.rgb), c.a);
+        encoded = melty_linear_to_srgb(rgb);
     }
+    FragColor = vec4(encoded * a, a);
 }
 """
 
