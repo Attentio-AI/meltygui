@@ -111,6 +111,12 @@ vec2 remapValue(sampler3D vol, vec3 p) {
     return vec2(v, m);
 }
 
+// Extended-sRGB decode (hdr_color.py's convention): the sRGB curve
+// mirrored for negatives, no ceiling — a LUT entry above 1 is brighter than
+// the desktop's white, a negative one is outside the sRGB gamut (P3). A
+// plain pow() turned negatives into NaN.
+vec3 decodeSrgb(vec3 c) { return sign(c) * pow(abs(c), vec3(2.2)); }
+
 // The old viewer's opacity ramp: values at/above the gate (1 - threshold)
 // are FULLY opaque — a hard isosurface — and below it opacity falls off as
 // (m/gate)^4, scaled by density and the volume_scale-NORMALIZED segment
@@ -309,7 +315,7 @@ void main() {
             // sRGB, so decode each sample before accumulating (encode once at
             // the end). Blending in sRGB space skews mixes toward the more
             // saturated component — the old harsh/garish translucency.
-            vec3 c = pow(texture(lut, vm.x).rgb, vec3(2.2));
+            vec3 c = decodeSrgb(texture(lut, vm.x).rgb);
             if (draw_shading) {
                 // Gradient-normal Lambert, weighted by gradient strength so
                 // flat haze keeps its unshaded look; self_shading adds a
@@ -338,7 +344,7 @@ void main() {
                                     nw.w * shading_strength);
                     }
                 }
-                c *= pow(light_tint, vec3(2.2)) * light_brightness * shade;
+                c *= decodeSrgb(light_tint) * light_brightness * shade;
             }
             acc.rgb += (1.0 - acc.a) * a * c;
             acc.a   += (1.0 - acc.a) * a;
@@ -354,9 +360,10 @@ void main() {
     // The target is the linear fp16 scene (hdr_color.py): no sRGB encode
     // here, the presentation pass does that once. `gamma` is an artistic
     // curve on the linear image, 1.0 = untouched (the colorimetric result),
-    // above 1 darkens the mids against the studio's dark UI. No dither: the
-    // fp16 target doesn't band.
-    FragColor = vec4(pow(max(acc.rgb, 0.0), vec3(gamma)), acc.a);
+    // above 1 darkens the mids against the studio's dark UI. Mirrored for
+    // negatives (P3 rides as negative scRGB). No dither: the fp16 target
+    // doesn't band.
+    FragColor = vec4(sign(acc.rgb) * pow(abs(acc.rgb), vec3(gamma)), acc.a);
 }
 """
 
@@ -402,7 +409,7 @@ def voxel_pass(gl_state: GLState = None, tilt=0.5, spin=0.8, roll=0.0, zoom=3.4,
         gl.glBindSampler(unit, 0)   # sampler bindings outlive the draw call
 
 
-# ── cuda_march image path: kernel-rendered RGBA8 → display-GPU texture → FBO ──
+# ── cuda_march.py path: kernel-rendered fp16 RGBA → display-GPU texture → FBO ──
 IMAGE_BLIT_FRAG = """
 #version 330 core
 out vec4 FragColor;
@@ -432,8 +439,9 @@ def _cuda_march_ready():
 
 def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
     """Run the CUDA raymarcher over `cv` (CudaVolumeView) at width×height
-    and return a display-GPU RGBA8 GLTexture holding the premultiplied
-    image — or None (error recorded in _CUDA_LAST_ERROR, drawn as status).
+    and return a display-GPU RGBA16F GLTexture holding the premultiplied
+    LINEAR image (HDR headroom and P3 negatives intact, hdr_color.py) — or
+    None (error recorded in _CUDA_LAST_ERROR, drawn as status).
     Resources by gl_state key: the output image + LUT live on the TENSOR's
     device, a pinned host buffer carries the image over, and `cuda_image`
     is the GL texture it lands in (all re-made only when size/device/LUT
@@ -445,7 +453,7 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
     W, H = int(width), int(height)
     try:
         out = gl_state.get("cuda_out",
-                           lambda: torch.empty(H, W, 4, dtype=torch.uint8, device=dev),
+                           lambda: torch.empty(H, W, 4, dtype=torch.float16, device=dev),
                            deps=(W, H, str(dev)))
         lut_list = LUTS.get(lut, LUTS["jet"])
         lut_t = gl_state.get("cuda_lut",
@@ -453,7 +461,7 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
                                                   device=dev).reshape(-1, 3).contiguous(),
                              deps=(str(lut), len(lut_list), str(dev)))
         host = gl_state.get("cuda_host",
-                            lambda: torch.empty(H, W, 4, dtype=torch.uint8).pin_memory(),
+                            lambda: torch.empty(H, W, 4, dtype=torch.float16).pin_memory(),
                             deps=(W, H))
         # shading params ride one small device array, re-uploaded only when
         # a value changes (deps = the values themselves)
@@ -511,18 +519,18 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
         def create():
             tex_id = _scalar_int(gl.glGenTextures(1))
             gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
-            # cuda_march writes gamma-encoded premultiplied bytes: an sRGB
-            # internal format hands image_blit_pass linear light for the
-            # fp16 scene (hdr_color.py).
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_SRGB8_ALPHA8, W, H, 0,
-                            gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+            # cuda_march writes linear premultiplied fp16 - the same light
+            # the screen pass writes - so the image rides into the fp16 pipeline
+            # (hdr_color.py) unclamped, no encode, no 8-bit textures.
+            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, W, H, 0,
+                            gl.GL_RGBA, gl.GL_HALF_FLOAT, None)
             for pn, pv in ((gl.GL_TEXTURE_MIN_FILTER, gl.GL_NEAREST),
                            (gl.GL_TEXTURE_MAG_FILTER, gl.GL_NEAREST),
                            (gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE),
                            (gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)):
                 gl.glTexParameteri(gl.GL_TEXTURE_2D, pn, pv)
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-            return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_SRGB8_ALPHA8)
+            return GLTexture(tex_id, gl.GL_TEXTURE_2D, (H, W), gl.GL_RGBA16F)
 
         img = gl_state.get("cuda_image", create,
                            lambda tx: gl.glDeleteTextures([tx.texture_id]),
@@ -530,7 +538,7 @@ def _cuda_render(gl_state, cv, width, height, lut="jet", shade=None, **cam):
         gl.glBindTexture(gl.GL_TEXTURE_2D, img.texture_id)
         with tight_unpack():
             gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, W, H, gl.GL_RGBA,
-                               gl.GL_UNSIGNED_BYTE, host.numpy())
+                               gl.GL_HALF_FLOAT, host.numpy())
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         _CUDA_LAST_ERROR = None
         return img
@@ -712,15 +720,74 @@ def _label_atlas(gl_state, texts):
 # lut_host (bottom of file) turns these into shared 1-D textures; draw_voxels
 # samples the one its `lut` param names. Editing a list re-uploads.
 
-def _bake_lut(fn, n=256):
-    """Sample fn(v ∈ [0,1]) → (r, g, b) into the flat-list LUT shape."""
+def _bake_lut(fn, n=256, clamp=True):
+    """Sample fn(v ∈ [0,1]) → (r, g, b) into the flat-list LUT shape.
+    Entries are EXTENDED sRGB (hdr_color.py): `clamp=False` keeps values
+    past [0, 1] — above 1 is brighter than the desktop's white, negative is
+    outside the sRGB gamut (P3) — for a table that is HDR on its own."""
     out = []
     for i in range(n):
-        r, g, b = fn(i / (n - 1))
-        out += [min(1.0, max(0.0, float(r))),
-                min(1.0, max(0.0, float(g))),
-                min(1.0, max(0.0, float(b)))]
+        rgb = fn(i / (n - 1))
+        if clamp:
+            rgb = (min(1.0, max(0.0, float(c))) for c in rgb)
+        out += [float(c) for c in rgb]
     return out
+
+
+def hdr_ramp(hue_at, peak=16.0, chroma=1.0, white_from=0.55, n=1024):
+    """Build an HDR colour scale as a flat LUT list: ``n`` entries spaced
+    UNIFORMLY in Oklab lightness from black to ``peak`` × the desktop's
+    white, each the most saturated colour of hue ``hue_at(u)`` (u = the
+    lightness fraction, 0 → 1; radians) that fits the P3 box that tall,
+    times ``chroma``. That is what "a bigger LUT" means: an SDR scale
+    (``hot``: black → red → yellow → white) runs the max-chroma edges of a
+    box ONE white tall; this runs the same kind of path up a box ``peak``
+    whites tall, so the scale has log2(peak) extra stops of distinguishable
+    levels — not a brighter table, a longer one. Entries are extended sRGB,
+    unclamped (P3 reaches below 0, HDR above 1).
+
+    Whitening is a SECOND axis of information, not a side effect: past
+    ``white_from`` the chroma eases to zero at the peak (smoothstep), so
+    the top of the range reads as saturated → pale → white while the
+    lightness keeps climbing — the box alone would keep a P3 yellow fully
+    saturated to within a few percent of the peak and then snap to white,
+    since a pure yellow fits a 16× box until its two channels hit 16. The
+    ease also lands the scale inside what the panel can show: a 12× white
+    saturated yellow is past any panel's peak and the compositor would
+    desaturate it anyway (Hyprland's luminance-preserving rule)."""
+    from src.lsd.gl_gui.hdr_color import (
+        _cbrt, linear_to_srgb, oklab_max_chroma, oklab_to_linear)
+    peak_lightness = _cbrt(peak)
+    out = []
+    for i in range(n):
+        u = i / (n - 1)
+        lightness = u * peak_lightness
+        hue = hue_at(u)
+        w = min(1.0, max(0.0, (u - white_from) / (1.0 - white_from)))
+        envelope = 1.0 - w * w * (3.0 - 2.0 * w)
+        c = chroma * envelope * oklab_max_chroma(lightness, hue, peak)
+        lin = oklab_to_linear((lightness, c * math.cos(hue), c * math.sin(hue)))
+        out += [linear_to_srgb(v) for v in lin]
+    return out
+
+
+def _hot_hdr_hue(u):
+    """`hot`'s hue path for hdr_ramp: P3 red through the lower half of the
+    lightness range, turning to P3 yellow across the middle, yellow above
+    (the box then whitens it toward the peak). The SDR `hot` is untouched:
+    an HDR scale is its own picker entry, never a scaled SDR one, so a
+    colour scale people know keeps meaning what it meant (Lukas 09-08)."""
+    from src.lsd.gl_gui.hdr_color import linear_p3_to_srgb, oklab_hue
+    # [tint=(0.95, 0.35, 0.1)]
+    red_until = 0.4        # lightness fraction that stays pure red
+    # [tint=(0.95, 0.75, 0.2)]
+    yellow_from = 0.7      # ... and where it has fully turned yellow
+    red = oklab_hue(linear_p3_to_srgb((1.0, 0.0, 0.0)))
+    yellow = oklab_hue(linear_p3_to_srgb((1.0, 1.0, 0.0)))
+    t = min(1.0, max(0.0, (u - red_until) / (yellow_from - red_until)))
+    t = t * t * (3.0 - 2.0 * t)                      # smoothstep
+    return red + (yellow - red) * t
+
 
 
 def _poly(coeffs):
@@ -823,6 +890,9 @@ LUTS = {
     "hot": _bake_lut(lambda v: (3.0 * v, 3.0 * v - 1.0, 3.0 * v - 2.0)),
     "coolwarm": _bake_lut(_coolwarm),
     "seismic": _bake_lut(_seismic),
+    # ── HDR ramps get their own entries (hdr_ramp - uniform Oklab lightness
+    # up a 16× box, max chroma that fits, 4 stops longer than the SDR one)
+    "hot_hdr": hdr_ramp(_hot_hdr_hue, peak=16.0),
 }
 
 # Host-converted 1-D textures by LUT name - module-level (hotswap-reused) so
@@ -2645,6 +2715,14 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
                                  pan=(pan_x, pan_y, pan_z),
                                  ortho=ortho, roll=roll)
 
+    # A dragged step size can cross zero (the number token has no floor). A
+    # non-positive step walks the GL path BACKWARDS out of the box on its
+    # first step, so every slice shows only its entry voxel - a flat plane
+    # cut along the data's edges (the cuda path only uses it as a sampling
+    # stride and shrugged it off, the "GL path looks broken" ticket on
+    # 09-08). Floor it here, once, for both paths.
+    step_size = max(float(step_size), 1e-5)
+
     # ── GL pass: every resource tracked + lifecycle-managed by gl_state ──
     fb = gl_state.fbo("target", width, height)
     depth_was_on = gl.glIsEnabled(gl.GL_DEPTH_TEST)
@@ -2688,7 +2766,7 @@ def draw_voxels(input_value=None, gl_state: GLState = None, selectable=False,
         # GLSL type (the loop bound must be an int).
         if isinstance(tex, CudaVolumeView):
             # The CUDA kernel already produced the premultiplied image (on
-            # the tensor's GPU, hopped to a display-GPU RGBA8 texture);
+            # the tensor's GPU, hopped to a display-GPU RGBA16F texture);
             # blit it into the FBO under the same blend state so labels,
             # outline and the rest of the view are untouched.
             from src.lsd.gl_gui import cuda_march as _cm

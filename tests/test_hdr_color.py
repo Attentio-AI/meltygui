@@ -322,3 +322,24 @@ def test_aa_feather_keeps_its_colour(gl_context):
         for got in (r, g, b):
             assert abs(got / want - 1.0) < 0.03, (x, px, want)
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
+
+
+def test_oklab_round_trip_and_box_chroma():
+    """Oklab is the space HDR colour scales are authored in: white is L = 1,
+    16 x white is cbrt(16), extended (P3) values round-trip, and the max
+    chroma inside the P3 box pinches to 0 at black and at the peak."""
+    import math
+    from src.lsd.gl_gui.hdr_color import (
+        linear_to_oklab, oklab_to_linear, oklab_max_chroma, linear_p3_to_srgb, oklab_hue)
+    assert abs(linear_to_oklab((1.0, 1.0, 1.0))[0] - 1.0) < 1e-3
+    assert abs(linear_to_oklab((16.0, 16.0, 16.0))[0] - 16 ** (1 / 3)) < 1e-3
+    for rgb in ((0.2, 0.7, 0.1), linear_p3_to_srgb((1.0, 0.0, 0.0)), (4.0, 0.5, -0.3)):
+        back = oklab_to_linear(linear_to_oklab(rgb))
+        assert all(abs(x - y) < 1e-6 for x, y in zip(rgb, back))
+    red = oklab_hue(linear_p3_to_srgb((1.0, 0.0, 0.0)))
+    assert oklab_max_chroma(0.0, red, 16.0) == 0.0
+    assert oklab_max_chroma(16 ** (1 / 3), red, 16.0) == 0.0
+    mid = oklab_max_chroma(1.0, red, 16.0)
+    assert mid > oklab_max_chroma(0.6, red, 1.0) > 0.0      # the taller box has more chroma
+    assert oklab_max_chroma(1.0, red, 1.0) == 0.0            # L = 1 is the SDR box's top: white only
+    assert oklab_max_chroma(2.4, red, 16.0) < mid            # pinching toward the peak

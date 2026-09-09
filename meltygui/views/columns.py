@@ -77,8 +77,15 @@ class Rows(dict):
 # cell, never to the cell's the edge dict: two cells ending on the same
 # edge (an outer column and the nested view's last column, the window
 # frame and the last column) have their own.
-_REGISTRY = {"x": ("_edge_views", "_pending_drags", "_frame_edges", "_edge_cells"),
-             "y": ("_row_views", "_pending_row_drags", "_frame_rows", "_row_cells")}
+# The fifth slot holds the across-axis BAND a keyed layout registered
+# with its edge list (``band=`` on ColumnLayout / RowLayout): a pair of
+# edge dicts of the OTHER axis, read live, so _edge_under_cursor can scope
+# a layout that shares its draw_state's clip with many siblings (a tile
+# tree built flat layout a draw_state).
+_REGISTRY = {"x": ("_edge_views", "_pending_drags", "_frame_edges", "_edge_cells",
+                   "_edge_bands"),
+             "y": ("_row_views", "_pending_row_drags", "_frame_rows", "_row_cells",
+                   "_row_bands")}
 
 
 def _axis_min(axis):
@@ -101,6 +108,31 @@ def _frame(window, axis):
 
 def _specs(window, axis):
     return getattr(window, _REGISTRY[axis][3])
+
+
+def frame_edges(window):
+    """The window's four frame edge dicts ``(left, right, top, bottom)`` —
+    the root frame a layout drawn straight on the window adopts (the tile
+    manager's root). Runs the per-frame edge pass so the pairs exist."""
+    _ensure_window_state(window)
+    window_edge_pass(window)
+    left, right = _frame(window, "x") or ({"x": 0.0}, {"x": float(window.width or 0)})
+    top, bottom = _frame(window, "y") or ({"y": 0.0}, {"y": float(window.height or 0)})
+    return left, right, top, bottom
+
+
+def _bands(window, axis):
+    return getattr(window, _REGISTRY[axis][4])
+
+
+def layout_key(kind, draw_state, key=None):
+    """The registry key of one layout on its window: ``("row", ds.id)`` for
+    a ColumnLayout / ``("rows", ds.id)`` for a RowLayout — NOT the bare
+    draw_state id (a host ds that IS the window would clobber the frame
+    entry) — with ``key`` folded in when the host builds SEVERAL layouts of
+    one axis on the same draw_state (each needs its own entry, handles and
+    drag baselines; see ``key=`` on the layouts)."""
+    return (kind, draw_state.id) if key is None else (kind, draw_state.id, key)
 
 
 def _column_floor(column_mins, i):
@@ -243,13 +275,15 @@ def _clamp_interior(edges, axis="x"):
 
 
 def _ensure_window_state(window):
-    for views_attr, pending_attr, _frame_attr, specs_attr in _REGISTRY.values():
+    for views_attr, pending_attr, _frame_attr, specs_attr, bands_attr in _REGISTRY.values():
         if getattr(window, views_attr, None) is None:
             setattr(window, views_attr, {})
         if getattr(window, pending_attr, None) is None:
             setattr(window, pending_attr, [])
         if getattr(window, specs_attr, None) is None:
             setattr(window, specs_attr, {})
+        if getattr(window, bands_attr, None) is None:
+            setattr(window, bands_attr, {})
 
 
 def _all_edges(window, axis="x"):
@@ -704,13 +738,17 @@ def release_row(draw_state):
     re-register on construction, so releasing before building them later
     in the same frame is safe."""
     window = draw_state.parent_window or draw_state
-    for axis, key in (("x", ("row", draw_state.id)), ("y", ("rows", draw_state.id))):
-        views = getattr(window, _REGISTRY[axis][0], None)
-        if views is not None:
-            views.pop(key, None)
-        specs = getattr(window, _REGISTRY[axis][3], None)
-        if specs is not None:
-            specs.pop(key, None)
+    for axis, kind in (("x", "row"), ("y", "rows")):
+        for attr in (_REGISTRY[axis][0], _REGISTRY[axis][3], _REGISTRY[axis][4]):
+            table = getattr(window, attr, None)
+            if table is None:
+                continue
+            # The host entry AND every keyed one of this host (a keyed
+            # layout's key is (kind, ds.id, key)).
+            for k in [k for k in table
+                      if isinstance(k, tuple) and len(k) >= 2
+                      and k[0] == kind and k[1] == draw_state.id]:
+                del table[k]
     draw_state._column_container = False
     draw_state._row_container = False
 
@@ -860,10 +898,12 @@ def _frame_pass(window, axis):
     specs[window.id] = ([max(_axis_min(axis), declared)], [None])
     near, far = fe
 
+    bands = _bands(window, axis)
     for key, (ds, _) in list(views.items()):
         if ds is not window and getattr(ds, "closed", False):
             del views[key]
             specs.pop(key, None)
+            bands.pop(key, None)
 
     # Foreign size change since last frame → the far frame edge follows it
     # THROUGH the collision solve. Third slot None = NOT a cursor drag (the
@@ -1113,8 +1153,17 @@ def _edge_under_cursor(window, axis, along, across_abs, before=False):
     the full window) — None only if no edges exist yet."""
     _ensure_window_state(window)
     best, best_pos = None, None
-    for ds, edge_list in _views(window, axis).values():
-        lo, hi = _across_band(ds, axis)
+    bands = _bands(window, axis)
+    other = "y" if axis == "x" else "x"
+    origin = window.abs_top if axis == "x" else window.abs_left
+    for key, (ds, edge_list) in _views(window, axis).items():
+        band = bands.get(key)
+        if band is not None:
+            # A keyed layout's own across-axis pair (live edge dicts), not
+            # the host's clip - its siblings share that clip.
+            lo, hi = origin + band[0][other], origin + band[1][other]
+        else:
+            lo, hi = _across_band(ds, axis)
         if not (lo - 1 <= across_abs <= hi + 1):
             continue
         for e in edge_list:
@@ -1215,10 +1264,24 @@ class ColumnLayout:
     def __init__(self, draw_state, n_cols, column_edges=None,
                  column_widths=None, left_edge=None, right_edge=None,
                  resizable=True, padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9),
-                 padding_y=None, column_mins=None, column_maxes=None):
+                 padding_y=None, column_mins=None, column_maxes=None,
+                 key=None, band=None, persist=True):
         self.draw_state = draw_state
         self.n_cols = n_cols
         n_lines = self.n_lines = n_cols + 1
+        # ``key`` - used when a host builds SEVERAL row layouts on its
+        # draw_state (a tile tree goes flat): each gets its own registry
+        # entry, on_action ids and drag baselines instead of clobbering
+        # the last one's. ``band`` - the layout's own vertical extent as a
+        # pair of ROW edge indices ``(top_edge, bottom_edge)`` (window
+        # coords, read live): the grab zones and edge_under_cursor clip
+        # to it rather than to the host's clip / measured row height.
+        # ``persist=False`` hands the edges list back on ``self.edges``
+        # without stamping ``draw_state.column_edges`` - for a host that
+        # keeps the edges in its own storage (the tile tree).
+        self.key = key
+        self.band = band
+        self.persist = persist
         # Cells inset by `padding` on every side and the whole row carries
         # ONE filled rounded band (drawn before the cells, so their rounded
         # backgrounds read as holes in it): the band shows through the
@@ -1314,12 +1377,15 @@ class ColumnLayout:
         # _clamp_interior. (Pixel widths otherwise: a frame resize only
         # affects the divider it touches.)
         _clamp_interior(edges)
-        if seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
+        if persist and seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
             # Stamp so auto-state persists the list; in-place x mutations on
             # the dicts persist without re-stamping.
             draw_state.column_edges = edges
         self.edges = edges
         self.owned = owned
+        # False while the seed was TRANSIENT (container not laid out yet):
+        # a persist=False host should not keep these edges either.
+        self.seed_valid = seed_valid
 
         # Keyed ("row", id), NOT bare draw_state.id: when the host ds IS the
         # window (a window body that draws its own cells, e.g. the code
@@ -1329,11 +1395,16 @@ class ColumnLayout:
         # _solve_collisions doesn't find a dragged edge and silently drops the
         # drag (the divider reads as "not draggable"). Keys are opaque
         # (consumers iterate them); the eviction pass matches by ds.
-        window._edge_views[("row", draw_state.id)] = (draw_state, edges)
+        registry_key = layout_key("row", draw_state, key)
+        window._edge_views[registry_key] = (draw_state, edges)
+        if band is not None:
+            _bands(window, "x")[registry_key] = band
+        else:
+            _bands(window, "x").pop(registry_key, None)
         # The cells' floors & caps, owned by THIS view (not _REGISTRY): the
         # solve reads these, not the far-edge state, so a nested layout
         # ending on the same edge can't read (or wipe) this row's specs.
-        _specs(window, "x")[("row", draw_state.id)] = (
+        _specs(window, "x")[registry_key] = (
             [_column_floor(column_mins, i) for i in range(n_cols)],
             [_column_cap(column_maxes, i, _column_floor(column_mins, i))
              for i in range(n_cols)])
@@ -1348,23 +1419,31 @@ class ColumnLayout:
         # this needs no stored state or invalidation of its own.
         self.edge_hovered = False
         if resizable:
-            height = max(getattr(draw_state, "_edge_lines_height", 0.0),
-                         MIN_ROW_HEIGHT)
+            if band is not None:
+                win_y = window.abs_top
+                grab_top = win_y + band[0]["y"]
+                grab_bottom = win_y + band[1]["y"]
+            else:
+                grab_top = self.top
+                grab_bottom = self.top + max(
+                    getattr(draw_state, "_edge_lines_height", 0.0),
+                    MIN_ROW_HEIGHT)
+            handle_tag = "" if key is None else f"_{key}"
             seen_handles = set()
             for k in range(n_lines):
                 if not owned[k]:
                     continue
                 lo, hi = _grab_zone(edges, k)
-                rect = (self.win_x + lo, self.top,
-                        self.win_x + hi, self.top + height)
+                rect = (self.win_x + lo, grab_top,
+                        self.win_x + hi, grab_bottom)
                 if draw_state.hover_eligible(rect=rect):
                     self.edge_hovered = True
                 drag = draw_state.on_action("left_mouse_drag",
-                                            view_id=f"col_edge_{k}",
+                                            view_id=f"col_edge{handle_tag}_{k}",
                                             rect=rect, priority_delta=1,
                                             cursor=mouse_cursor.RESIZE_EW)
                 press = draw_state.on_action("left_mouse_down",
-                                             view_id=f"col_edge_{k}",
+                                             view_id=f"col_edge{handle_tag}_{k}",
                                              rect=rect, priority_delta=1)
                 if press:
                     # Resize press, before any drag motion: freeze hosts
@@ -1376,8 +1455,13 @@ class ColumnLayout:
                 if not drag:
                     continue
                 self.active_edge = k
-                seen_handles.add(k)
-                inc = _drag_inc(draw_state, k, drag)
+                # Handles: the int edge index for the default layout, a
+                # ("col", key, k) tuple for a keyed one - own namespace
+                # per layout so the prune below never touches a sibling's
+                # baseline.
+                handle = k if key is None else ("col", key, k)
+                seen_handles.add(handle)
+                inc = _drag_inc(draw_state, handle, drag)
                 if inc:
                     window._pending_drags.append(
                         (edges[k], edges[k]["x"] + inc))
@@ -1385,11 +1469,18 @@ class ColumnLayout:
             totals = getattr(draw_state, "_drag_totals", None)
             if totals:
                 # Mirror of the window_edge_pass prune scoping: our handles
-                # are the int edge indices; leave the window's "frame total"
-                # baselines (and a Row host's "row_*") alone - same dict
-                # when the host ds IS the window or hosts both rows.
-                for h in [h for h in totals
-                          if isinstance(h, int) and h not in seen_handles]:
+                # are the int edge indices (or this key's "col" tuples);
+                # leave the window's "win_*" baselines (and a RowLayout's
+                # "row_*") alone - one dict when the host view IS the window
+                # or hosts both layouts.
+                if key is None:
+                    stale = [h for h in totals
+                             if isinstance(h, int) and h not in seen_handles]
+                else:
+                    stale = [h for h in totals
+                             if isinstance(h, tuple) and h[:2] == ("col", key)
+                             and h not in seen_handles]
+                for h in stale:
                     del totals[h]
             if self.active_edge is not None:
                 # size-changing views already update live (see the re-solve
@@ -1591,10 +1682,17 @@ class RowLayout:
     def __init__(self, draw_state, n_rows, row_edges=None, row_heights=None,
                  top_edge=None, bottom_edge=None, resizable=True,
                  padding=6.0, border_color=(0.0, 0.0, 0.0, 0.9),
-                 padding_x=None, row_mins=None, row_maxes=None):
+                 padding_x=None, row_mins=None, row_maxes=None,
+                 key=None, band=None, persist=True):
         self.draw_state = draw_state
         self.n_rows = n_rows
         n_lines = self.n_lines = n_rows + 1
+        # ``key`` / ``band`` / ``persist`` - as on ColumnLayout; ``band``
+        # here is the layout's horizontal extent, a pair of COLUMN edge
+        # dicts ``(left_edge, right_edge)``.
+        self.key = key
+        self.band = band
+        self.persist = persist
         # Same band + padding contract as ColumnLayout; ``padding_x``
         # overrides the HORIZONTAL inset alone. ``row_mins`` / ``row_maxes``
         # stamp "min" / "max" on each row's BOTTOM edge (see _edge_min /
@@ -1667,6 +1765,7 @@ class RowLayout:
             owned[-1] = False
         self.edges = edges
         self.owned = owned
+        self.seed_valid = seed_valid
         for i in range(n_rows):
             floor = row_mins[i] if row_mins and i < len(row_mins) else None
             if floor:
@@ -1688,16 +1787,21 @@ class RowLayout:
         if lead > 0.5:
             edges[1]["min"] = _row_floor(row_mins, 0) + lead
         _clamp_interior(edges, axis="y")
-        if seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
+        if persist and seed_valid and (not ok or any(a is not b for a, b in zip(stored, edges))):
             draw_state.row_edges = edges
 
         # Keyed ("rows", id) - see ColumnLayout's ("row", id) note: a host
         # ds that IS the window must not clobber the spec entry.
-        _views(window, "y")[("rows", draw_state.id)] = (draw_state, edges)
+        registry_key = layout_key("rows", draw_state, key)
+        _views(window, "y")[registry_key] = (draw_state, edges)
+        if band is not None:
+            _bands(window, "y")[registry_key] = band
+        else:
+            _bands(window, "y").pop(registry_key, None)
         floors = [_row_floor(row_mins, i) for i in range(n_rows)]
         if lead > 0.5:
             floors[0] += lead
-        _specs(window, "y")[("rows", draw_state.id)] = (
+        _specs(window, "y")[registry_key] = (
             floors,
             [_column_cap(row_maxes, i, _row_floor(row_mins, i))
              for i in range(n_rows)])
@@ -1705,20 +1809,26 @@ class RowLayout:
         self.active_edge = None
         self.edge_hovered = False
         if resizable:
+            if band is not None:
+                grab_left = self.win_x + band[0]["x"]
+                grab_right = self.win_x + band[1]["x"]
+            else:
+                grab_left, grab_right = self.left, self.right
+            handle_tag = "" if key is None else f"_{key}"
             seen_handles = set()
             for k in range(n_lines):
                 if not owned[k]:
                     continue
                 lo, hi = _grab_zone(edges, k, axis="y")
-                rect = (self.left, self.win_y + lo, self.right, self.win_y + hi)
+                rect = (grab_left, self.win_y + lo, grab_right, self.win_y + hi)
                 if draw_state.hover_eligible(rect=rect):
                     self.edge_hovered = True
                 drag = draw_state.on_action("left_mouse_drag",
-                                            view_id=f"row_edge_{k}",
+                                            view_id=f"row_edge{handle_tag}_{k}",
                                             rect=rect, priority_delta=1,
                                             cursor=mouse_cursor.RESIZE_NS)
                 press = draw_state.on_action("left_mouse_down",
-                                             view_id=f"row_edge_{k}",
+                                             view_id=f"row_edge{handle_tag}_{k}",
                                              rect=rect, priority_delta=1)
                 if press:
                     from src.lsd.gl_gui.melty import Melty
@@ -1726,7 +1836,7 @@ class RowLayout:
                 if not drag:
                     continue
                 self.active_edge = k
-                handle = f"row_{k}"
+                handle = f"row_{k}" if key is None else ("rows", key, k)
                 seen_handles.add(handle)
                 inc = _drag_inc(draw_state, handle, drag, total="total_dy")
                 if inc:
@@ -1735,11 +1845,18 @@ class RowLayout:
 
             totals = getattr(draw_state, "_drag_totals", None)
             if totals:
-                # Own namespace only ("row_*"): a ColumnLayout on the same
-                # host keeps its intents, the window its "win_*".
-                for h in [h for h in totals
-                          if isinstance(h, str) and h.startswith("row_")
-                          and h not in seen_handles]:
+                # Own namespace only ("row_*", or this key's "rows"
+                # prefix): a ColumnLayout on the same host keeps its int
+                # keys, the window its "win_*".
+                if key is None:
+                    stale = [h for h in totals
+                             if isinstance(h, str) and h.startswith("row_")
+                             and h not in seen_handles]
+                else:
+                    stale = [h for h in totals
+                             if isinstance(h, tuple) and h[:2] == ("rows", key)
+                             and h not in seen_handles]
+                for h in stale:
                     del totals[h]
             if self.active_edge is not None:
                 if not draw_state.size_change:

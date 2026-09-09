@@ -652,11 +652,25 @@ def render_func(*args, **o_kwargs):
     wanted_params = list(params.keys())
     wanted_params.remove("args") if "args" in wanted_params else None
     wanted_params.remove("o_kwargs") if "o_kwargs" in wanted_params else None
-    # Decorator's tint is the function's code-reference color (provenance),
-    # not a render kwarg - keep it out of the call-kwargs merge so invoking the
-    # func never tints the view (or seeds draw_state.tint) from it.
-    merge_o_kwargs = {k: v for k, v in o_kwargs.items() if k != "tint"}
+    # Decorator kwargs - tint included - are the SourcePriority.DECORATION
+    # layer: merged UNDER the per-call kwargs below (`merge_o_kwargs | kwargs`),
+    # so a `@window(tint=...)` (draw_main passes the registration's kwargs as
+    # caller kwargs), a Mode tint, a caller or a `# [tint=...]` comment all
+    # outrank the `@render_func(tint=...)` tint, which only paints a view when
+    # nothing above it supplies one. (It was stripped here for a while so an
+    # invocation never took its func's tint; re-added 09-08 at this rank.)
+    # The render_func tint here also lets a parsed-class @defaults tint -
+    # AT_DEFAULT_CODE_TYPE, above DECORATION - beat it, see _tint_is_decoration.
+    merge_o_kwargs = o_kwargs
     header_defaults = merge_o_kwargs
+    _decoration_tint = o_kwargs.get("tint")
+
+    def _tint_is_decoration(kwargs):
+        """True when the tint in kwargs is still the decorator's own object —
+        no higher layer (caller / @window / mode / comment / instance attr)
+        replaced it — so a source ranked above DECORATION in SourcePriority
+        but applied later in the chain may take over."""
+        return _decoration_tint is not None and kwargs.get("tint") is _decoration_tint
     param_defaults = {p: params[p].default for p in params if params[p].default is not inspect.Parameter.empty}
     # Decoration-time plan for the per-call "get the params the caller
     # didn't pass" loop: (param, wanted_type) with the pass-through names
@@ -3765,7 +3779,15 @@ def render_func(*args, **o_kwargs):
                                 isinstance(decorator_value.get("tint"), (tuple, list)) and \
                                 len(decorator_value["tint"]) >= 3:
                             _deco_tint = decorator_value["tint"]
-                if "tint" in kwargs and kwargs.get("tint", None) is not None:
+                # A tint that is only the @defaults_func decoration's
+                # (DECORATION) yields to a parsed-class @defaults tint
+                # (AT_DEFAULT_CODE_TYPE, ranked above it) - anything higher
+                # already replaced the decoration's object in kwargs.
+                if _deco_tint is not None and _tint_is_decoration(kwargs):
+                    previous_tint = style_manager.get_tint()
+                    style_manager.set_imgui_tint(*_deco_tint)
+
+                elif "tint" in kwargs and kwargs.get("tint", None) is not None:
                     previous_tint = style_manager.get_tint()
                     new_tint = kwargs.get("tint")
                     if isinstance(new_tint, (tuple, list)):

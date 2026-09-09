@@ -11,6 +11,7 @@ from typing import MutableMapping, Optional
 
 import glfw
 import imgui
+from src.lsd.gl_gui import hdr_color
 from src.lsd.gl_gui.hdr_color import pack_color
 import libcst as cst
 from imgui.core import _DrawList
@@ -1396,7 +1397,7 @@ class Melty:
         return rank
 
     @classmethod
-    def emphasize(cls, key, rect, tint=(1.0, 0.85, 0.3), auto_fade=True,
+    def emphasize(cls, key, rect, tint=hdr_color.p3(1.0, 0.82, 0.22), auto_fade=True,
                   rounding=6.0, fade_frames=18, thickness=2.0, clip=None):
         """Register a rounded-rect emphasis flash, drawn by the overlay pass
         (next to the InvalidateTracker loop) with the same frame-based fade:
@@ -1418,6 +1419,12 @@ class Melty:
         force-releases any hold that goes emphasis_hold_grace rendered frames
         untouched — so a note can never stick around after its owner stops
         rendering.
+
+        tint is a HUE: an extended-sRGB tuple (the default is a Display-P3
+        amber). The overlay pass lifts it into HDR at draw time — the
+        outline at 2^Toggles.HDR.emphasis_stops × reference white, the fill
+        at 2^Toggles.HDR.emphasis_fill_stops, plus a faint bloom halo — so
+        callers never bake brightness into the tint and the knobs are live.
 
         rect is (x0, y0, x1, y1) in absolute screen coords, or a zero-arg
         callable returning one (or None to skip a frame) so the flash can
@@ -1443,7 +1450,7 @@ class Melty:
             note.clip = clip
 
     @classmethod
-    def emphasize_click(cls, key, center, tint=(1.0, 0.85, 0.3), radius=None,
+    def emphasize_click(cls, key, center, tint=hdr_color.p3(1.0, 0.82, 0.22), radius=None,
                         fade_frames=24, thickness=2.5):
         """Circular click emphasis: an expanding, fading ring pair centered
         on `center` (absolute screen coords). Fire-and-forget — one call per
@@ -1483,21 +1490,39 @@ class Melty:
         request_render()
 
     @classmethod
+    def _emphasis_colors(cls, tint):
+        """(line, fill) extended-sRGB tuples for an emphasis note's hue
+        tint: its linear light lifted by Toggles.HDR.emphasis_stops /
+        emphasis_fill_stops (read live, so editing the toggle retunes every
+        flash on screen). The fill stays near SDR so the flashed content
+        under it is still readable; the outline and rings are what glow."""
+        hue = tuple(tint[:3])
+        line = hdr_color.scale(hue, 2.0 ** float(Toggles.HDR.emphasis_stops))
+        fill = hdr_color.scale(hue, 2.0 ** float(Toggles.HDR.emphasis_fill_stops))
+        return line, fill
+
+    @classmethod
     def _draw_emphasis_shape(cls, overlay, kind, note, center, alpha):
         """The non-rect emphasis kinds (overlay pass). ripple: two expanding
-        rings; cursor: a classic pointer arrow with a soft drop shadow (no
-        polyline outline — fills only, so it needs no draw-list flags)."""
+        HDR rings plus a faint wide bloom ring; cursor: a classic pointer
+        arrow with a soft drop shadow (no polyline outline — fills only, so
+        it needs no draw-list flags)."""
         x, y = center
         r, g, b = note.tint[:3]
         if kind == "ripple":
+            (lr, lg, lb), _fill = cls._emphasis_colors(note.tint)
             progress = min(1.0, (cls.frame_count - note.frame)
                            / max(1, note.fade_frames))
             ring = note.radius * (0.30 + 0.70 * progress)
+            # bloom: a wide, faint HDR ring under the crisp one
             overlay.add_circle(x, y, ring,
-                               pack_color(r, g, b, 0.85 * alpha),
+                               pack_color(lr, lg, lb, 0.22 * alpha),
+                               32, note.thickness * 3.0)
+            overlay.add_circle(x, y, ring,
+                               pack_color(lr, lg, lb, 0.85 * alpha),
                                32, note.thickness)
             overlay.add_circle(x, y, ring * 0.55,
-                               pack_color(r, g, b, 0.40 * alpha),
+                               pack_color(lr, lg, lb, 0.40 * alpha),
                                32, max(1.0, note.thickness * 0.6))
             return
         if kind == "cursor":
@@ -4020,7 +4045,10 @@ class Melty:
                 continue
             if rect is not None:
                 x0, y0, x1, y1 = rect
-                r, g, b = note.tint[:3]
+                # HDR lift (Toggles.HDR.emphasis_stops / emphasis_fill_stops):
+                # the outline glows past the desktop's white, the fill stays
+                # near SDR so the flashed content is still readable.
+                (lr, lg, lb), (fr, fg, fb) = cls._emphasis_colors(note.tint)
                 # Draw-list-level scissor (NOT imgui.push_clip_rect -- that
                 # one corrupts tiles): the note's own clip, if any.
                 clip = getattr(note, "clip", None)
@@ -4031,10 +4059,14 @@ class Melty:
                 if clip is not None:
                     overlay.push_clip_rect(clip[0], clip[1], clip[2], clip[3], True)
                 overlay.add_rect_filled(x0, y0, x1, y1,
-                                        pack_color(r, g, b, 0.25 * alpha),
+                                        pack_color(fr, fg, fb, 0.25 * alpha),
                                         rounding=note.rounding)
+                # bloom halo: a wider, softer outline under the crisp one
                 overlay.add_rect(x0, y0, x1, y1,
-                                 pack_color(r, g, b, 0.9 * alpha),
+                                 pack_color(lr, lg, lb, 0.28 * alpha),
+                                 rounding=note.rounding, thickness=note.thickness * 3.0)
+                overlay.add_rect(x0, y0, x1, y1,
+                                 pack_color(lr, lg, lb, 0.9 * alpha),
                                  rounding=note.rounding, thickness=note.thickness)
                 if clip is not None:
                     overlay.pop_clip_rect()

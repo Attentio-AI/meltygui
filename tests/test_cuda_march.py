@@ -19,15 +19,24 @@ from src.lsd.gl_gui.view.playground.voxel_playground import (
 DEV = "cuda:0"
 
 
+def _bytes(out):
+    """The kernel writes LINEAR premultiplied fp16; the pixel checks below
+    were written against the old 8-bit sRGB-encoded image, so encode the
+    same way (clamp, 1/2.2, 8-bit) before comparing."""
+    f = out.float().clamp(0.0, 1.0)
+    f[..., :3] = f[..., :3] ** (1.0 / 2.2)
+    return (f * 255.0 + 0.5).to(torch.uint8).cpu().numpy()
+
+
 def _march(vol_or_cv, lut, W=160, H=120, **kw):
-    out = torch.zeros(H, W, 4, dtype=torch.uint8, device=DEV)
+    out = torch.zeros(H, W, 4, dtype=torch.float16, device=DEV)
     if hasattr(vol_or_cv, "nf"):
         cv = vol_or_cv
         cm.march(cv.view, out, lut, display_shape=cv.shape, nf=cv.nf, norm=cv.norm, **kw)
     else:
         v = vol_or_cv.float().contiguous()
         cm.march(v, out, lut, display_shape=tuple(v.shape), **kw)
-    return out.cpu().numpy()
+    return _bytes(out)
 
 
 @pytest.fixture(scope="module")
@@ -174,9 +183,9 @@ def test_shading_touches_only_the_floor_unless_self():
     mip = cm.build_mip(vol, display_shape=tuple(vol.shape))
     def render(sp, **extra):
         sh = torch.tensor(sp, dtype=torch.float32, device=DEV)
-        out = torch.zeros(120, 160, 4, dtype=torch.uint8, device=DEV)
+        out = torch.zeros(120, 160, 4, dtype=torch.float16, device=DEV)
         cm.march(vol, out, lut, shade=sh, **kw, **extra)
-        return out.cpu().numpy().astype(int)
+        return _bytes(out).astype(int)
     off = render(cm.shade_params())
     plane_only = render(cm.shade_params(draw_plane=True, draw_shading=True),
                         floor_map=fmap, floor_extent=fmap.extent)
@@ -234,9 +243,9 @@ def test_mip_sparse_occluders_still_shadow():
     def render(mip, draw_plane):
         sh = torch.tensor(cm.shade_params(draw_plane=draw_plane, draw_shading=True),
                           dtype=torch.float32, device=DEV)
-        out = torch.zeros(160, 160, 4, dtype=torch.uint8, device=DEV)
+        out = torch.zeros(160, 160, 4, dtype=torch.float16, device=DEV)
         cm.march(vol, out, lut, mip=mip, shade=sh, **kw)
-        return out.cpu().numpy().astype(int)
+        return _bytes(out).astype(int)
     def shadow_px(mip):
         # the shadow = what the plane adds over the plane-off render
         diff = np.abs(render(mip, True) - render(mip, False)).max(-1)
@@ -263,9 +272,9 @@ def test_baked_floor_map_matches_live_march():
     sh = torch.tensor(cm.shade_params(draw_plane=True, draw_shading=True),
                       dtype=torch.float32, device=DEV)
     def render(**extra):
-        out = torch.zeros(200, 200, 4, dtype=torch.uint8, device=DEV)
+        out = torch.zeros(200, 200, 4, dtype=torch.float16, device=DEV)
         cm.march(vol, out, lut, shade=sh, **kw, **extra)
-        return out.cpu().numpy().astype(int)
+        return _bytes(out).astype(int)
     ref = render()                                        # live full-res march
     # steps=24 matches the live path's budget exactly (the production
     # default of 64 is deliberately MORE precise, which would differ)
@@ -277,9 +286,9 @@ def test_baked_floor_map_matches_live_march():
     # Pixels the plane doesn't touch must be untouched by the map path.
     sh_np = torch.tensor(cm.shade_params(draw_plane=False, draw_shading=True),
                          dtype=torch.float32, device=DEV)
-    out_np = torch.zeros(200, 200, 4, dtype=torch.uint8, device=DEV)
+    out_np = torch.zeros(200, 200, 4, dtype=torch.float16, device=DEV)
     cm.march(vol, out_np, lut, shade=sh_np, **kw)
-    floorish = np.abs(ref - out_np.cpu().numpy().astype(int)).max(-1) > 2
+    floorish = np.abs(ref - _bytes(out_np).astype(int)).max(-1) > 2
     assert floorish.any()
     assert np.median(diff[~floorish]) == 0
     # Floor pixels match in bulk. Exact equality is impossible BY DESIGN:
@@ -318,9 +327,9 @@ def test_dda_coarse_skip_is_exact():
               volume_scale=(1.0, 1.0, 0.5), max_steps=100000,
               threshold=0.3, density=0.7)
     def render(m):
-        out = torch.zeros(160, 160, 4, dtype=torch.uint8, device=DEV)
+        out = torch.zeros(160, 160, 4, dtype=torch.float16, device=DEV)
         cm.march(vol, out, lut, mip=m, **kw)
-        return out.cpu().numpy()
+        return _bytes(out)
     a = render(None)
     b = render(cm.build_mip(vol, display_shape=tuple(vol.shape)))
     assert a[..., 3].any()
@@ -337,9 +346,9 @@ def test_step_size_is_the_coalescing_stride():
               volume_scale=(1.0, 1.0, 0.25), max_steps=100000,
               threshold=0.3, density=0.7)
     def render(step):
-        out = torch.zeros(120, 120, 4, dtype=torch.uint8, device=DEV)
+        out = torch.zeros(120, 120, 4, dtype=torch.float16, device=DEV)
         cm.march(vol, out, lut, step_size=step, **kw)
-        return out.cpu().numpy().astype(int)
+        return _bytes(out).astype(int)
     exact = render(0.0005)                    # K = 1 (voxel = 2/256)
     tiny = render(0.004)                      # ~K = 1 boundary: voxel=0.0078 -> K=1
     assert np.array_equal(exact, tiny)        # sub-voxel steps are exact
@@ -348,3 +357,76 @@ def test_step_size_is_the_coalescing_stride():
     assert coarse[..., 3].any()
     # coarse is an approximation of the same image, not a different scene
     assert np.abs(exact - coarse)[lit].mean() < 30
+
+
+def test_hdr_lut_rides_through_linear_output():
+    """An HDR table (entries past [0, 1], P3 negatives) reaches the linear
+    fp16 output unclamped and NaN-free; the SDR table it descends from is
+    byte-for-byte the table it always was."""
+    import math
+    from src.lsd.gl_gui.hdr_color import linear_to_oklab, srgb_to_linear
+    from src.lsd.gl_gui.view.playground.voxel_playground import LUTS
+    assert max(LUTS["hot"]) <= 1.0 and min(LUTS["hot"]) >= 0.0
+    hot_hdr = LUTS["hot_hdr"]
+    assert max(hot_hdr) > 2.0 and min(hot_hdr) < 0.0     # HDR peak + P3 negatives
+    # the scale's SHAPE: lightness climbs uniformly to cbrt(16), chroma peaks
+    # in the middle and eases to white at the top (no cliff)
+    rows = np.array(hot_hdr).reshape(-1, 3)
+    lab = [linear_to_oklab(tuple(srgb_to_linear(float(c)) for c in r)) for r in rows]
+    L = np.array([l[0] for l in lab]); C = np.array([math.hypot(l[1], l[2]) for l in lab])
+    assert np.all(np.diff(L) > 0) and abs(L[-1] - 16 ** (1 / 3)) < 1e-3
+    assert np.allclose(np.diff(L), np.diff(L)[0], atol=1e-6)
+    n = len(rows)
+    assert C[n // 2] > 0.3 and C[int(n * 0.8)] < C[n // 2] and C[int(n * 0.95)] < C[int(n * 0.8)]
+    assert C[-1] < 1e-3 and np.allclose(rows[-1], rows[-1][0])   # ends at neutral 16x white
+    z, y, x = torch.meshgrid(torch.linspace(-1, 1, 24), torch.linspace(-1, 1, 32),
+                             torch.linspace(-1, 1, 40), indexing="ij")
+    vol = torch.exp(-(x * x + y * y + z * z) * 3.0).to(DEV)
+    kw = dict(tilt=0.35, spin=0.8, zoom=3.4, volume_scale=(1.0, 0.8, 0.6),
+              # thin haze, so the ray reaches the opaque core (gate 0.7)
+              step_size=0.01, max_steps=600, threshold=0.3, density=0.02, gamma=1.0)
+
+    def render(table):
+        lut_t = torch.tensor(table, dtype=torch.float32, device=DEV).reshape(-1, 3)
+        out = torch.zeros(120, 160, 4, dtype=torch.float16, device=DEV)
+        cm.march(vol.float().contiguous(), out, lut_t, display_shape=tuple(vol.shape), **kw)
+        return out.float().cpu().numpy()
+
+    sdr, hdr = render(LUTS["hot"]), render(hot_hdr)
+    assert np.isfinite(hdr).all() and sdr[..., :3].max() <= 1.0 + 1e-3
+    assert hdr[..., :3].max() > 2.0                          # the core glows
+    assert (hdr[..., 2] < 0).any()                           # P3 red/yellow: negative blue
+
+
+def test_gl_voxel_pass_hdr_lut_reaches_fp16_target(st):
+    """The GL path with the same HDR table: the fp16 FBO reads back values
+    above 1.0 and finite negatives (the mirrored decode), and stays within
+    [0, 1] for the SDR table."""
+    import OpenGL.GL as gl
+    from src.lsd.gl_gui.view.playground.voxel_playground import LUTS, voxel_pass
+    z, y, x = torch.meshgrid(torch.linspace(-1, 1, 24), torch.linspace(-1, 1, 32),
+                             torch.linspace(-1, 1, 40), indexing="ij")
+    vol = torch.exp(-(x * x + y * y + z * z) * 3.0)
+    W, H = 128, 96
+    fb = st.fbo("target_hdr", W, H)
+    tex = st.texture3d("volume_hdr", vol.numpy(), version=1)
+    cam = dict(tilt=0.35, spin=0.8, zoom=3.4, pan_x=0.0, pan_y=0.0, pan_z=0.0,
+               ortho=False, aspect=W / H, volume_scale=(1.0, 0.8, 0.6),
+               step_size=0.005, max_steps=2000, density=0.02, threshold=0.3,
+               brightness=1.0, contrast=1.0, gamma=1.0, centered=False,
+               draw_plane=False, draw_shading=False, self_shading=False)
+
+    def render(name):
+        lut_tex = st.texture1d(f"lut_{name}", LUTS[name], version=(name,))
+        with fb:
+            gl.glDisable(gl.GL_DEPTH_TEST); gl.glDisable(gl.GL_BLEND)
+            gl.glClearColor(0, 0, 0, 0); gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            voxel_pass(st, volume=tex, volume_lin=tex, lut=lut_tex, **cam)
+            raw = gl.glReadPixels(0, 0, W, H, gl.GL_RGBA, gl.GL_FLOAT)
+        assert voxel_pass.last_error is None, voxel_pass.last_error
+        return np.frombuffer(raw, np.float32).reshape(H, W, 4).copy()
+
+    sdr, hdr = render("hot"), render("hot_hdr")
+    assert np.isfinite(hdr).all() and sdr[..., 3].any()
+    assert sdr[..., :3].max() <= 1.0 + 1e-3 and sdr[..., :3].min() >= 0.0
+    assert hdr[..., :3].max() > 2.0 and (hdr[..., 2] < 0).any()

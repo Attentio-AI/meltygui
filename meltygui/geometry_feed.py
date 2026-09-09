@@ -32,9 +32,13 @@ Hyprland renders the WHOLE surface at `at` and ignores the xdg window
 geometry (Renderer.cpp offsets popups only), so `at`/`size` are the
 SURFACE rect and `frame_rect(inset=…)` shrinks it by the shadow margin to
 get the content; and it ignores a toplevel's buffer offset, so a
-client-side move goes through `hypr_move_window` (the `movewindowpixel`
-dispatcher over the same socket — titlebar.apply_pending_surface_size)
-instead of wayland_move.set_surface_offset.
+client-side move goes through `hypr_set_box` / `hypr_move_window` over
+the same socket (titlebar.apply_pending_surface_size) instead of
+wayland_move.set_surface_offset. The 0.56 Lua config manager parses
+`dispatch` as Lua (`hl.dsp.window.move{…}`; the classic text is a syntax
+error) — `hypr_config_is_lua` probes which, and `hypr_set_box` folds the
+resize + move into one `eval` anchored at the top-left, since Hyprland's
+floating resize is centred.
 """
 import ctypes
 import json
@@ -57,7 +61,7 @@ CALL_TIMEOUT_MS = 2000
 _STATE = globals().get("_STATE") or {
     "thread": None, "running": False, "available": False, "error": None,
     "pid": None, "frame": None, "monitors": None, "workarea": None,
-    "updates": 0, "loop": None, "backend": None, "gen": 0,
+    "updates": 0, "loop": None, "backend": None, "gen": 0, "lua": None,
 }
 
 _G_BUS_TYPE_SESSION = 2
@@ -328,42 +332,118 @@ def _hyprland_thread_main(pid, gen):
         _STATE["available"] = False
 
 
-def _hypr_dispatch(command):
-    """`dispatch <command>` on the studio's window; True on "ok"."""
+def _hypr_selector():
+    """Hyprland's window selector for the studio's window, or None while
+    the feed has not seen it."""
     frame = _STATE["frame"]
     if backend() != "hyprland" or frame is None:
-        return False
+        return None
+    return f"address:{frame['address']}"
+
+
+def hypr_config_is_lua():
+    """Does this Hyprland parse socket `dispatch` requests as LUA (the
+    0.56 Lua config manager: `dispatch X` is `eval return hl.dispatch(X)`,
+    so the classic `movewindowpixel dx dy,address:…` text is a Lua syntax
+    error — every move and resize the studio sent under it was refused
+    with "')' expected", which is what kept the window fixed while the UI
+    moved, 09-08)? Probed ONCE per feed generation with `eval return true`:
+    "ok" = Lua; the hyprlang build answers "eval is only supported with
+    the lua config manager"."""
+    known = _STATE.get("lua")
+    if known is not None:
+        return known
     try:
-        reply = hypr_request(f"dispatch {command},address:{frame['address']}")
+        reply = hypr_request("eval return true").strip()
+    except Exception as ex:
+        _STATE["error"] = str(ex)
+        return False                            # unknown: try again next time
+    _STATE["lua"] = reply == "ok"
+    return _STATE["lua"]
+
+
+def _hypr_run(request, what):
+    """One request expected to answer "ok"; the error text lands in
+    `last_error()` under ``what`` otherwise."""
+    try:
+        reply = hypr_request(request)
     except Exception as ex:
         _STATE["error"] = str(ex)
         return False
     ok = reply.strip() == "ok"
     if not ok:
-        _STATE["error"] = f"{command.split()[0]}: {reply.strip()}"
+        _STATE["error"] = f"{what}: {reply.strip()}"
+    return ok
+
+
+def _hypr_dispatch(command):
+    """Legacy (hyprlang) `dispatch <command>,address:…` on the studio's
+    window; True on "ok"."""
+    selector = _hypr_selector()
+    if selector is None:
+        return False
+    return _hypr_run(f"dispatch {command},{selector}", command.split()[0])
+
+
+def _hypr_eval(script, what):
+    """`eval <script>` on the Lua config manager; True on "ok"."""
+    return _hypr_run(f"eval {script}", what)
+
+
+def hypr_set_box(width, height, dx=0, dy=0):
+    """Resize the studio's window box to (width, height) logical px AND
+    move it by (dx, dy), anchored at its top-left, as ONE request —
+    Hyprland's floating resize is CENTRED (DefaultFloatingAlgorithm
+    ::resizeTarget translates by −Δ/2 whatever the corner), so a bare
+    exact resize slid the window by half the growth. On the Lua build
+    one `eval` reads the window's goal position, resizes, then moves it
+    ABSOLUTELY to goal + (dx, dy): atomic (nothing observes the centred
+    intermediate), integral (no half-pixel goals), and never dependent on
+    the feed's possibly stale position. Hyprland never adopts a size the
+    client commits by itself (CWindow::clampWindowSize only clamps its
+    OWN size — a bare glfw.set_window_size changed the buffer and left
+    the box where it was, 09-06), so this is the way the box follows the
+    surface; the configure it sends back names the size GLFW already
+    applied. Legacy hyprlang build (unverified here): resizewindowpixel
+    exact + movewindowpixel, the centred half-step uncompensated."""
+    width, height, dx, dy = int(width), int(height), int(dx), int(dy)
+    selector = _hypr_selector()
+    if selector is None:
+        return False
+    if hypr_config_is_lua():
+        script = (f'local w = hl.get_window("{selector}"); '
+                  f'if not w then error("no window {selector}") end; '
+                  f'local p = w.at; '
+                  f'hl.dispatch(hl.dsp.window.resize({{x = {width}, y = {height}, window = "{selector}"}})); '
+                  f'hl.dispatch(hl.dsp.window.move({{x = p.x + ({dx}), y = p.y + ({dy}), window = "{selector}"}}))')
+        return _hypr_eval(script, "set_box")
+    ok = _hypr_dispatch(f"resizewindowpixel exact {width} {height}")
+    if dx or dy:
+        ok = _hypr_dispatch(f"movewindowpixel {dx} {dy}") and ok
     return ok
 
 
 def hypr_resize_window(width, height):
-    """Resize the studio's window box to (width, height) logical px through
-    Hyprland's `resizewindowpixel exact` dispatcher. Hyprland never adopts
-    a size the client commits on its own (CWindow::clampWindowSize only
-    clamps Hyprland's OWN size): a bare glfw.set_window_size changed the
-    buffer and left the box where it was (09-06). The dispatcher makes
-    Hyprland configure the toplevel to that size — the same size GLFW just
-    applied, so the configure is a no-op on our side."""
-    return _hypr_dispatch(f"resizewindowpixel exact {int(width)} {int(height)}")
+    """Resize the studio's window box to (width, height) logical px, its
+    top-left held (hypr_set_box)."""
+    return hypr_set_box(width, height)
 
 
 def hypr_move_window(dx, dy):
-    """Move the studio's window by (dx, dy) logical px through Hyprland's
-    `movewindowpixel` dispatcher — the Hyprland stand-in for the buffer-
-    offset move (which Hyprland ignores on toplevels). Synchronous, ~0.05
-    ms; True when Hyprland answered "ok". The feed shows the move on its
-    next poll, which is what os_frame's in-flight bookkeeping waits for."""
+    """Move the studio's window by (dx, dy) logical px — the Hyprland
+    stand-in for the buffer-offset move (which Hyprland ignores on
+    toplevels). Synchronous, ~0.05 ms; True when Hyprland answered "ok".
+    The feed shows the move on its next poll, which is what os_frame's
+    in-flight bookkeeping waits for."""
     dx, dy = int(dx), int(dy)
     if not (dx or dy):
         return False
+    selector = _hypr_selector()
+    if selector is None:
+        return False
+    if hypr_config_is_lua():
+        return _hypr_eval(f'hl.dispatch(hl.dsp.window.move({{x = {dx}, y = {dy}, relative = true, '
+                          f'window = "{selector}"}}))', "move")
     return _hypr_dispatch(f"movewindowpixel {dx} {dy}")
 
 
@@ -540,6 +620,7 @@ def start(pid=None):
     _STATE["running"] = True
     _STATE["backend"] = wanted
     _STATE["frame"] = None
+    _STATE["lua"] = None                    # re-probe the dispatching (hypr_config_is_lua)
     _STATE["available"] = False
     target = _hyprland_thread_main if wanted == "hyprland" else _thread_main
     thread = threading.Thread(target=target, args=(_STATE["pid"], _STATE["gen"]),

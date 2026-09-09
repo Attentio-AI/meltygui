@@ -105,8 +105,9 @@ class TabState(DictConversion):
 class ColorPickerState(DictConversion):
     """draw_color_picker's persisted state (injected via
     `picker_state: ColorPickerState = None`): which tab is showing —
-    "wide" (the P3 + brightness square, the default) or "srgb" (the
-    classic square)."""
+    "wide" (the P3 + brightness square, the default), "srgb" (the
+    classic square) or "extended" (the classic square with the P3
+    extension to its right, the sRGB+ tab)."""
 
     def __init__(self):
         super().__init__()

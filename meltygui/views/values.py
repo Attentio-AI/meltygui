@@ -7283,28 +7283,56 @@ def draw_comment(input_value: Comment, draw_state, style_manager, cursor_hover=F
 PICKER_SQUARE = 180
 # [tint=(0.85, 0.75, 0.05)]
 PICKER_TABS_HEIGHT = 30
+# The sRGB+ tab's wide-gamut extension, to the RIGHT of the classic square
+# (same height as the square; its width is what the tab adds to the popover).
+# [tint=(0.85, 0.75, 0.05)]
+PICKER_EXTENSION = 60
+# The sRGB+ tab's exposure band ABOVE the square (and its extension): white
+# at the seam up to 2^Toggles.HDR.picker_max_stops at the top. Every tab
+# reserves this height above its square, so the classic square sits at the
+# same screen spot whichever tab is showing.
+# [tint=(0.85, 0.75, 0.05)]
+PICKER_EXPOSURE_BAND = 54
 
 
 def color_picker_height(n_channels: int, has_info: bool = False) -> int:
-    """Height of draw_color_picker's popover: tab row + square + the
-    channel rows + the readout line (+ the info caption)."""
-    return PICKER_TABS_HEIGHT + PICKER_SQUARE + 14 + n_channels * 26 + 26 + (22 if has_info else 0)
+    """Height of draw_color_picker's popover: tab row + exposure band +
+    square + the channel rows + the readout line (+ the info caption)."""
+    return (PICKER_TABS_HEIGHT + PICKER_EXPOSURE_BAND + PICKER_SQUARE + 14
+            + n_channels * 26 + 26 + (22 if has_info else 0))
+
+
+def color_picker_top_offset(gap: int = 10) -> int:
+    """The popover's y offset below its anchor: `gap` px less the exposure
+    band, so the band grows the window UPWARD and the square stays where a
+    band-less popover put it."""
+    return gap - PICKER_EXPOSURE_BAND
+
+
+def color_picker_width() -> int:
+    """Width of draw_color_picker's popover: the square + hue bar row of
+    the widest tab (sRGB+, whose extension sits between square and hue bar)
+    plus the window margins. One size for every tab — the popover is a
+    fixed-size closable window and the tab is the picker's own state."""
+    return 216 + PICKER_EXTENSION
 
 
 @render_func(use_cache=False, show_bg=True, shadow=False, selectable=False, with_header=None)
 def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
                       picker_state: ColorPickerState = None, gl_state: GLState = None, **kwargs):
-    """The colour picker popover, two tabs: **Wide** (default) — a Display-P3
-    hue/saturation/value square whose value axis runs on above white
-    (`Toggles.HDR.picker_max_stops`), rendered as an fp16 texture so every
-    texel is the real HDR/P3 colour, with the sRGB-reachable region outlined
-    — and **sRGB**, the classic square. Both take and return extended-sRGB
-    tuples (hdr_color.py), so a colour picked on one tab reads back on the
-    other (an out-of-sRGB value shows clipped on the sRGB tab)."""
+    """The colour picker popover, three tabs: **Wide** (default) — a
+    Display-P3 hue/saturation/value square whose value axis runs on above
+    white (`Toggles.HDR.picker_max_stops`), rendered as an fp16 texture so
+    every texel is the real HDR/P3 colour, with the sRGB-reachable region
+    outlined — **sRGB**, the classic square — and **sRGB+**, the classic
+    square kept at its size with a wide-gamut extension to its right
+    (`_draw_extended_picker`). All take and return extended-sRGB tuples
+    (hdr_color.py), so a colour picked on one tab reads back on the others
+    (an out-of-sRGB value shows clipped on the sRGB tab)."""
     # [tint=(0.85, 0.75, 0.05)]
     tab_tint = (0.62, 0.36, 0.52)
     imgui.dummy(0, 2)
-    for label, key in (("Wide", "wide"), ("sRGB", "srgb")):
+    for label, key in (("Wide", "wide"), ("sRGB", "srgb"), ("sRGB+", "extended")):
         selected = picker_state.tab == key
         if button(label, tint=tab_tint, tint_value=0.32 if selected else 0.12, height=21, shadow=selected,
                   use_cache=True, corner_radius=4, name=f"cp_tab_{key}")[0]:
@@ -7312,6 +7340,11 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
             request_render()
         imgui.same_line(spacing=4)
     imgui.new_line()
+    if picker_state.tab == "extended":
+        return _draw_extended_picker(input_value, draw_state, gl_state, info)
+    # The exposure band room stays reserved: the square lands at the same y on
+    # every tab (color_picker_top_offset anchors the popover higher).
+    imgui.dummy(0, PICKER_EXPOSURE_BAND)
     if picker_state.tab == "srgb":
         return _draw_srgb_picker(input_value, draw_state, info)
     return _draw_wide_picker(input_value, draw_state, gl_state, info)
@@ -7498,6 +7531,224 @@ def _wide_square_texture(gl_state, hue, size, top_fraction, max_stops):
 
     return gl_state.get("wide_square", create, lambda t: gl.glDeleteTextures([t.texture_id]),
                         deps=(round(float(hue), 4), int(size), round(top_fraction, 4), round(max_stops, 4)))
+
+
+def _draw_extended_picker(input_value, draw_state, gl_state, info):
+    """The sRGB+ tab: the classic sRGB HSV square at its usual size and
+    place, extended on two sides — to its RIGHT a PICKER_EXTENSION-wide
+    strip that carries every row on past the sRGB gamut edge into Display
+    P3 (colour-continuous across the seam, the top row ending in the pure
+    P3 primary), and ABOVE square and strip a PICKER_EXPOSURE_BAND-tall
+    exposure band that lifts the top row from white at the seam to
+    2^Toggles.HDR.picker_max_stops at the top. The whole area is one fp16
+    texture per hue (hdr_color.srgb_plus_linear) so every texel is the real
+    wide / HDR colour. One drag runs across all of it (_srgb_plus_pick):
+    inside the square the classic (s, v); past the right seam s = 1 and x
+    is the depth into P3; above the top seam v = 1 and the height is
+    exposure. The hue bar is sRGB hue (the square's). Below black there is
+    nothing to extend into, so the square's bottom stays the bottom.
+    `draw_state._cpx_precise` echoes our own edits back like the other
+    tabs' caches; `_cpx_coords` memoizes the inverse for an external value
+    (a bisection, not a per-frame cost)."""
+    from src.lsd.gl_gui import hdr_color
+    # [tint=(0.85, 0.75, 0.05)]
+    seam_color = (1.0, 1.0, 1.0, 0.35)
+    SQ, EXT, BAND, BAR_W, GAP = PICKER_SQUARE, PICKER_EXTENSION, PICKER_EXPOSURE_BAND, 18, 8
+    max_stops = float(Toggles.HDR.picker_max_stops)
+    imgui.dummy(0, 3)
+    vals = list(input_value)
+    has_alpha = len(vals) >= 4
+    r, g, b = float(vals[0]), float(vals[1]), float(vals[2])
+    a = float(vals[3]) if has_alpha else 1.0
+    in_r, in_g, in_b, in_a = r, g, b, a
+
+    ECHO_TOL = 0.002
+    _prec = getattr(draw_state, '_cpx_precise', None)
+    is_echo = _prec is not None and all(abs(pc - c) <= ECHO_TOL for pc, c in zip(_prec[0], (r, g, b, a)))
+    if is_echo:
+        r, g, b, a = _prec[0]
+        h, s, v, x, exposure = _prec[1]
+    else:
+        memo = getattr(draw_state, '_cpx_coords', None)
+        if memo is not None and memo[0] == (r, g, b):
+            h, s, v, x, exposure = memo[1]
+        else:
+            hint = _prec[1][0] if _prec is not None else None
+            h, s, v, x, exposure = hdr_color.srgb_extension_coords(r, g, b, hue_hint=hint)
+            if _prec is not None:
+                if s <= 0.0 or v <= 0.0:
+                    h = _prec[1][0]
+                if v <= 0.0:
+                    s = _prec[1][1]
+            draw_state._cpx_coords = ((r, g, b), (h, s, v, x, exposure))
+
+    dl = imgui.get_window_draw_list()
+    white = pack_color(1, 1, 1, 1)
+    black = pack_color(0, 0, 0, 1)
+    changed = False
+    hsv_changed = False
+
+    # --- the picking area: band over square + strip, the texture ---
+    ax0, ay0 = imgui.get_cursor_screen_pos()          # the area's top-left
+    sx0, sy0 = ax0, ay0 + BAND                        # the square's top-left
+    tex = _srgb_plus_texture(gl_state, h, SQ, EXT, BAND, max_stops)
+    if tex is not None:
+        dl.add_image(tex.texture_id, (ax0, ay0), (ax0 + SQ + EXT, ay0 + BAND + SQ))
+    seam = pack_color(*seam_color)
+    dl.add_line(sx0 + SQ, ay0, sx0 + SQ, sy0 + SQ, seam, 1.0)        # sRGB | P3
+    dl.add_line(ax0, sy0, ax0 + SQ + EXT, sy0, seam, 1.0)            # exposure | SDR
+    imgui.invisible_button("##xsv", SQ + EXT, BAND + SQ)
+    if imgui.is_item_active():
+        mx, my = imgui.get_mouse_pos()
+        s, x, v, exposure = _srgb_plus_pick(mx - sx0, my - sy0, SQ, EXT, BAND, max_stops)
+        hsv_changed = True
+
+    # --- hue bar: sRGB hue (the square's axis), the full height ---
+    imgui.same_line(spacing=GAP)
+    hx0, hy0 = imgui.get_cursor_screen_pos()
+    bar_h = BAND + SQ
+    for i in range(6):
+        t0, t1 = i / 6.0, (i + 1) / 6.0
+        c0 = pack_color(*imgui.color_convert_hsv_to_rgb(t0, 1, 1), 1)
+        c1 = pack_color(*imgui.color_convert_hsv_to_rgb(t1, 1, 1), 1)
+        dl.add_rect_filled_multicolor(hx0, hy0 + bar_h * t0, hx0 + BAR_W, hy0 + bar_h * t1, c0, c0, c1, c1)
+    imgui.invisible_button("##xhue", BAR_W, bar_h)
+    if imgui.is_item_active():
+        h = min(max((imgui.get_mouse_pos()[1] - hy0) / bar_h, 0.0), 1.0)
+        hsv_changed = True
+
+    # --- markers ---
+    px, py = _srgb_plus_marker(s, x, v, exposure, SQ, EXT, BAND, max_stops)
+    cx, cy = sx0 + px, sy0 + py
+    dl.add_circle(cx, cy, 6, black, thickness=1.0)
+    dl.add_circle(cx, cy, 5, white, thickness=1.5)
+    hmy = hy0 + h * bar_h
+    dl.add_rect(hx0 - 1, hmy - 2, hx0 + BAR_W + 1, hmy + 2, white, thickness=1.5)
+
+    if hsv_changed:
+        r, g, b = hdr_color.extended_from_srgb_extension(h, s, v, x, exposure)
+        changed = True
+
+    # --- channel rows: extended sRGB, so they read past 1 and below 0 ---
+    imgui.dummy(0, 4)
+    imgui.push_item_width(SQ + EXT + GAP + BAR_W)
+    out, edited = [], []
+    lo, hi = -1.0, hdr_color.linear_to_srgb(2.0 ** max_stops)
+    for lbl, cur in ([("R", r), ("G", g), ("B", b)] + ([("A", a)] if has_alpha else [])):
+        imgui.set_next_item_width(draw_state.content_width - 30)
+        if lbl == "A":
+            ch, nv = imgui.drag_float(f"{lbl}##cpx_{lbl}", cur, 0.004, 0.0, 1.0, "%.3f")
+        else:
+            ch, nv = imgui.drag_float(f"{lbl}##cpx_{lbl}", cur, 0.006, lo, hi, "%.3f")
+        if ch:
+            changed = True
+        edited.append(ch)
+        out.append(nv if ch else cur)
+        imgui.dummy(0, 1)
+    imgui.pop_item_width()
+    r, g, b = out[0], out[1], out[2]
+    if has_alpha:
+        a = out[3]
+
+    # --- readout: hex inside sRGB, else the gamut + exposure ---
+    if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+        request_render()
+        return True, None
+    imgui.same_line()
+    if all(0.0 <= c <= 1.0 for c in (r, g, b)):
+        ri, gi, bi = (int(round(c * 255)) for c in (r, g, b))
+        readout = (f"#{ri:02x}{gi:02x}{bi:02x}{int(round(a * 255)):02x}"
+                   if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
+    else:
+        gamut = "sRGB" if x <= 0.0 else "P3"
+        readout = f"{exposure:.2f}× white · " + (gamut if exposure <= 1.0 else gamut + " HDR")
+    imgui.text_colored(readout, *Tint.subtle_text())
+    if info:
+        imgui.dummy(0, 2)
+        imgui.text_colored(str(info), 1.0, 1.0, 1.0, 0.45)
+    if changed:
+        if has_alpha and not edited[3]:
+            a = in_a
+        if not hsv_changed:
+            if not edited[0]:
+                r = in_r
+            if not edited[1]:
+                g = in_g
+            if not edited[2]:
+                b = in_b
+            nh, ns, nv, nx, ne = hdr_color.srgb_extension_coords(r, g, b, hue_hint=h)
+            if ns <= 0.0 or nv <= 0.0:
+                nh = h
+            if nv <= 0.0:
+                ns = s
+            h, s, v, x, exposure = nh, ns, nv, nx, ne
+        draw_state._cpx_precise = ((r, g, b, a), (h, s, v, x, exposure))
+        request_render()
+        return True, ((r, g, b, a) if has_alpha else (r, g, b))
+    return False, input_value
+
+
+def _srgb_plus_pick(px, py, square, ext, band, max_stops):
+    """Cursor offset from the SQUARE's top-left, in px (negative y = over
+    the exposure band, x past `square` = over the P3 strip) →
+    (s, x, v, exposure)."""
+    if px <= square:
+        s, x = max(px / square, 0.0), 0.0
+    else:
+        s, x = 1.0, min(max((px - square) / max(1e-6, ext), 0.0), 1.0)
+    if py < 0.0:
+        fy = min(max(-py / max(1e-6, band), 0.0), 1.0)      # 0 at the seam, 1 at the top
+        return s, x, 1.0, 2.0 ** (max_stops * fy)
+    v = 1.0 - min(max(py / square, 0.0), 1.0)
+    return s, x, v, 1.0
+
+
+def _srgb_plus_marker(s, x, v, exposure, square, ext, band, max_stops):
+    """(s, x, v, exposure) → marker offset from the square's top-left, in
+    px; the inverse of _srgb_plus_pick."""
+    import math
+    px = s * square if x <= 0.0 else square + x * ext
+    if exposure > 1.0:
+        py = -band * min(1.0, math.log2(exposure) / max_stops)
+    else:
+        py = (1.0 - v) * square
+    return px, py
+
+
+def _extension_pick(fx, ext_fraction):
+    """Cursor x as a fraction of the SQUARE's width (past 1 = over the
+    extension, whose width is ext_fraction squares) → (s, x): the classic
+    saturation inside the square, s = 1 and the P3 depth x past the seam."""
+    if fx <= 1.0:
+        return max(fx, 0.0), 0.0
+    return 1.0, min(max((fx - 1.0) / max(1e-6, ext_fraction), 0.0), 1.0)
+
+
+def _srgb_plus_texture(gl_state, hue, square, ext, band, max_stops):
+    """The sRGB+ picking area (band + square + strip) as an RGBA16F
+    GLTexture, cached on the picker's GLState and re-baked when the hue (or
+    the layout) changes."""
+    if gl_state is None:
+        return None
+    from src.lsd.gl_gui import hdr_color
+    import OpenGL.GL as gl
+    from src.lsd.gl_gui.gl_state import GLTexture, _scalar
+    cols, rows = int(square + ext), int(band + square)
+
+    def create():
+        data = hdr_color.srgb_plus_linear(hue, square, ext, band, max_stops)
+        tex_id = _scalar(gl.glGenTextures(1))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, tex_id)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA16F, cols, rows, 0, gl.GL_RGBA, gl.GL_FLOAT, data)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP_TO_EDGE)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP_TO_EDGE)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        return GLTexture(tex_id, gl.GL_TEXTURE_2D, (cols, rows), gl.GL_RGBA16F)
+
+    return gl_state.get("srgb_plus", create, lambda t: gl.glDeleteTextures([t.texture_id]),
+                        deps=(round(float(hue), 4), int(square), int(ext), int(band), round(max_stops, 4)))
 
 
 def _draw_srgb_picker(input_value, draw_state, info):
@@ -7761,14 +8012,14 @@ def draw_tuple(input_value: tuple | types.NoneType, name, unique, draw_state, ou
     # popover renders at the invoking cursor + window_pos (core_render's
     # nested-window anchor), and the cursor here sits just under the swatch -
     # so the up offset is the picker's own height plus the swatch row.
-    _pop_y = 10
+    _pop_y = color_picker_top_offset()
     _anchor_y = imgui.get_cursor_screen_pos()[1]
     _disp_h = imgui.get_io().display_size[1]
     if _anchor_y + _pop_y + picker_h > _disp_h - 10:
         _pop_y = -(picker_h + 38)
     color_changed, new_color = draw_color_picker(input_value, name=f"color_picker{unique}",
                                                  closed=not is_open, window_pos=(0, _pop_y), info=_info,
-                                                 parent_window=draw_state, width=216, height=picker_h,
+                                                 parent_window=draw_state, width=color_picker_width(), height=picker_h,
                                                  mode=Modes.POPOVER)
     if is_open:
         if color_changed:
@@ -7943,7 +8194,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     _info = (info() if callable(info) else info) if is_open else None
     picker_h = color_picker_height(4, bool(_info))
     # Anchor under the chip; flip up past the display bottom (draw_tuple).
-    _pop_y = 10
+    _pop_y = color_picker_top_offset()
     _disp_h = imgui.get_io().display_size[1]
     if y + size + _pop_y + picker_h > _disp_h - 10:
         _pop_y = -(picker_h + 38)
@@ -7951,7 +8202,7 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     color_changed, new_color = draw_color_picker(
         input_value, name=picker_name, closed=not is_open,
         window_pos=(0, _pop_y), info=_info, parent_window=anchor,
-        width=216, height=picker_h, mode=Modes.POPOVER)
+        width=color_picker_width(), height=picker_h, mode=Modes.POPOVER)
 
     imgui.same_line(spacing=0)
     if is_open and Melty.popover_focused_ds is draw_state:
@@ -10469,8 +10720,28 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     #     print("Up key pressed")g
     fa_up_arrow = ""
     fa_down_arrow = ""
+    # The toolbar buttons are flat_buttons (draw-list, no @render_func
+    # wrapper) styled to match `button` exactly: same text_value /
+    # text_saturation / hover boosts, and the shadow lift = button's
+    # z_offset 3 + the wrapper's shadow +1. The fill hue comes from the
+    # tint (button's factor=1.0 makes `color` moot), so each call pushes the
+    # tint the old button carried — the decorator's blue for the arrows.
+    # [tint=(0.0, 0.241, 0.556)]
+    button_default_tint = (0.0, 0.241, 0.556)
+
+    def _menu_button(label, view_id, height, tint=button_default_tint):
+        style_manager = Melty.style_manager
+        previous = style_manager.push_tint_fields(*tint[:4])
+        try:
+            return flat_button(label, draw_state, view_id=view_id, height=height,
+                               text_value=0.694, text_saturation=1.2,
+                               hover_text_boost=1.5, shadow_offset=4.0,
+                               event="left_mouse_down", style_manager=style_manager)
+        finally:
+            style_manager.pop_tint_fields(previous)
+
     if input_value._parent.id is not None:
-        if button(fa_up_arrow, height=50)[0]:
+        if _menu_button(fa_up_arrow, f"ctx_menu_up##{unique}", height=50):
             input_value.context_menu_offset += 1
             # Nav generation; rides into the func tab's select_line guard so
             # EVERY arrow press re-applies the auto-selection, even when
@@ -10482,7 +10753,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
 
         imgui.same_line()
     if input_value.context_menu_offset > 0:
-        if button(fa_down_arrow, height=50)[0]:
+        if _menu_button(fa_down_arrow, f"ctx_menu_down##{unique}", height=50):
             input_value.context_menu_offset = max(0, input_value.context_menu_offset - 1)
             input_value._scope_nav_seq = getattr(input_value, "_scope_nav_seq", 0) + 1
             Core.melty.cache.invalidate_up(draw_state._tile_id, max_depth=5)
@@ -10499,7 +10770,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # view is visible), queue the view capture, hide this menu (asking to reopen
     # it afterward), then let screenshot.process_take_screenshot_flags grab the
     # view's shot a few frames later, open the shot in nemo, and reopen the menu.
-    if button(f" ", height=30, tint=(0, 0, 0, 1.0), name=f"screenshot_window##{unique}")[0]:
+    if _menu_button(f" ", f"screenshot_window##{unique}", height=30, tint=(0, 0, 0, 1.0)):
         from src.lsd.gl_gui.screenshot import request_view_capture
 
         def _open_in_nemo(shot_path):
@@ -10523,7 +10794,7 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # boot a fresh claude-d session pre-typed (NOT sent) with the shot path +
     # the view's render function (the same function the Input tab edits), and
     # open the Claude Terminals window so the new session's terminal comes up.
-    if button(f" claude", height=30, tint=(0, 0, 0, 1.0), name=f"claude_session##{unique}")[0]:
+    if _menu_button(f" claude", f"claude_session##{unique}", height=30, tint=(0, 0, 0, 1.0)):
         from src.lsd.gl_gui.screenshot import request_view_capture
         view_ds = input_value
         # Resolve the menu's offset-walked target so the shot + function match
@@ -10567,8 +10838,8 @@ def draw_context_menu(input_value, draw_state, cursor_hover_inverted, func, uniq
     # target renders without its parents on the stack, which would capture
     # a chain that bottoms out in dispatch machinery.
     bug_icon = ""  # fa-bug - red as a debug affordance
-    if button(f"{bug_icon}", height=30, tint=(0.42, 0.24, 0.06, 1.0),
-              name=f"recapture_trace##{unique}")[0]:
+    if _menu_button(f"{bug_icon}", f"recapture_trace##{unique}", height=30,
+                    tint=(0.42, 0.24, 0.06, 1.0)):
         _rc_target = input_value
         for _ in range(context_menu_offset):
             if _rc_target._parent is None or _rc_target._parent is _rc_target:

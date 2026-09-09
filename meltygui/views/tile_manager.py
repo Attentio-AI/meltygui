@@ -1,0 +1,448 @@
+"""Tiled window manager: a Blender-style tree of splits drawn flat.
+
+The layout is a TREE of ``Split`` nodes (an axis + children) ending in
+``Tile`` leaves, rendered by plain functions — no render_func per node, no
+draw_state per tile. One ``Split`` is ONE ``ColumnLayout`` (axis "x") or
+``RowLayout`` (axis "y") call over its children; a child of the OPPOSITE
+axis is the only thing that recurses, and a Split never holds a Split of
+its own axis (``normalize`` keeps that invariant, mirroring Blender's
+areas: same-axis neighbours are siblings in one flat list).
+
+Every node renders into a FRAME of four shared edge dicts
+``(left, right, top, bottom)`` — the enclosing cell's pair on the split's
+axis and the pass-through pair on the other — so a Rows in a Columns cell
+collides with the outer rows exactly like draw_columns / draw_rows do.
+The interior edges of a Split live IN THE TREE (``node["edges"]``, the
+n-1 dicts between its children, window coords); its far edges are never
+stored, they are adopted by reference from the frame every frame. The
+layouts register on the host window with ``key=path`` and ``band=`` (see
+columns.py), so one draw_state hosts the whole tree and every divider,
+including the window frame, drags through the same collision solve.
+
+Data ops (``split_tile`` / ``join_tiles`` / ``normalize``) are pure list
+edits on the tree; ``resolve_frames`` walks the stored edges from a root
+frame without rendering, so they can place a new edge at a midpoint.
+
+Gestures (Blender's): a left-drag from a tile's CORNER inward splits it —
+a mostly-horizontal drag cuts a vertical divider (axis "x"), a vertical
+one a horizontal divider (axis "y"); the new tile sits on the corner's
+side and the new edge follows the cursor for the rest of the drag through
+the same collision solve as any divider (``tile_corner_gesture``). The
+live gesture lives in the injected ``TileManagerState``.
+"""
+import imgui
+
+from src.lsd.gl_gui import mouse_cursor
+from src.lsd.gl_gui.hdr_color import pack_color
+from src.lsd.gl_gui.model.dict_conversion import DictConversion
+from src.lsd.gl_gui.view.core_views.blit_offscreen import snap_int
+from src.lsd.gl_gui.view.core_views.columns import (ColumnLayout, RowLayout,
+                                                    MIN_COLUMN_WIDTH,
+                                                    MIN_ROW_HEIGHT,
+                                                    _ensure_window_state,
+                                                    _pending, frame_edges)
+from src.lsd.gl_gui.view.core_views.decoration.core_decoration import (
+    Core, no_save)
+from src.lsd.gl_gui.view.invalidation_tracker import Note
+
+_NOTE = dict(name="draw_tiles", tint=(0.55, 0.85, 0.45))
+
+
+@no_save("gesture")
+class TileManagerState(DictConversion):
+    """Injected state of a tile-manager host (declare
+    ``tile_state: TileManagerState = None`` on the render_func). ``gesture``
+    is the live corner drag — ``{"corner": view_id, "axis", "edge"}`` from
+    the frame the split happened until the button is released — and is
+    never persisted."""
+
+    def __init__(self):
+        super().__init__()
+        self.gesture = None
+
+
+# The four corners of a tile: (name, on the left?, on the top?).
+CORNERS = (("nw", True, True), ("ne", False, True),
+           ("sw", True, False), ("se", False, False))
+
+
+class Tile(dict):
+    """Leaf of the tile tree: ``{"name": str, "tint": (r, g, b)}`` — for
+    now a coloured rectangle; later the window / value it hosts."""
+
+    def __init__(self, name="tile", tint=(0.3, 0.3, 0.3)):
+        super().__init__(name=name, tint=tint)
+
+
+class Split(dict):
+    """A run of same-axis cells: ``{"axis": "x" | "y", "children": [...],
+    "edges": [{axis: px}, ...]}``. ``"x"`` lays the children side by side
+    (columns), ``"y"`` stacks them (rows). ``edges`` are the n-1 INTERIOR
+    edge dicts in window coords, seeded by the first render when empty."""
+
+    def __init__(self, axis="x", children=None, edges=None):
+        super().__init__(axis=axis, children=list(children or []),
+                         edges=list(edges or []))
+
+
+def other_axis(axis):
+    return "y" if axis == "x" else "x"
+
+
+def frame_pair(frame, axis):
+    """The frame's two edges on ``axis``: (left, right) or (top, bottom)."""
+    left, right, top, bottom = frame
+    return (left, right) if axis == "x" else (top, bottom)
+
+
+def child_frame(frame, axis, near, far):
+    """The frame a child gets: the parent's frame with the ``axis`` pair
+    replaced by the child's cell edges, the other pair passed through."""
+    left, right, top, bottom = frame
+    if axis == "x":
+        return near, far, top, bottom
+    return left, right, near, far
+
+
+def full_edges(node, frame):
+    """A Split's complete edge list — far edges from the frame, interior
+    edges from the tree — the list its layout is built over."""
+    near, far = frame_pair(frame, node["axis"])
+    return [near, *node["edges"], far]
+
+
+def node_at(tree, path):
+    """The node at ``path`` (a tuple of child indices from the root)."""
+    node = tree
+    for index in path:
+        node = node["children"][index]
+    return node
+
+
+def walk(tree, path=()):
+    """Every ``(path, node)`` of the tree, parents before children, seeded
+    or not."""
+    yield path, tree
+    if isinstance(tree, Split):
+        for index, child in enumerate(tree["children"]):
+            yield from walk(child, path + (index,))
+
+
+def resolve_frames(tree, root_frame, path=()):
+    """Walk the tree WITHOUT rendering, yielding ``(path, node, frame)``
+    for every node from the stored edges alone. A Split whose interior
+    edges have not been seeded yet (fewer than n-1) is yielded, but its
+    children are skipped — their frames don't exist until a render seeds
+    them."""
+    yield path, tree, root_frame
+    if not isinstance(tree, Split):
+        return
+    children = tree["children"]
+    if len(tree["edges"]) != max(len(children) - 1, 0):
+        return
+    edges = full_edges(tree, root_frame)
+    for index, child in enumerate(children):
+        frame = child_frame(root_frame, tree["axis"], edges[index], edges[index + 1])
+        yield from resolve_frames(child, frame, path + (index,))
+
+
+def frame_rect(frame, window):
+    """A frame as an absolute screen rect ``(x0, y0, x1, y1)``."""
+    left, right, top, bottom = frame
+    return (window.abs_left + left["x"], window.abs_top + top["y"],
+            window.abs_left + right["x"], window.abs_top + bottom["y"])
+
+
+def tile_rect(frame, draw_state, gap=4.0):
+    """A tile's painted box (absolute, ints): its frame inset by ``gap``
+    / 2 and clipped to the host's visible box, or None when nothing of it
+    shows."""
+    window = draw_state.parent_window or draw_state
+    x0, y0, x1, y1 = frame_rect(frame, window)
+    clip = Core.melty.get_clip_rect() or draw_state.abs_clip_rect
+    half = gap / 2
+    x0, y0 = snap_int(x0 + half), snap_int(y0 + half)
+    x1, y1 = snap_int(x1 - half), snap_int(y1 - half)
+    if clip is not None:
+        x0, y0 = max(x0, clip[0]), max(y0, clip[1])
+        x1, y1 = min(x1, clip[2]), min(y1, clip[3])
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def corner_rect(rect, on_left, on_top, size):
+    """The ``size`` px square in one corner of ``rect``."""
+    x0, y0, x1, y1 = rect
+    cx0 = x0 if on_left else x1 - size
+    cy0 = y0 if on_top else y1 - size
+    return cx0, cy0, cx0 + size, cy0 + size
+
+
+def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
+              tile_state=None, gap=4.0):
+    """Paint one leaf — its tint as a filled rect inset by ``gap`` / 2 on
+    every side (so the dividers read as gaps), its name, and a corner grip
+    where hovered — and run the corner split gesture when ``tree`` /
+    ``root_frame`` / ``tile_state`` are given (``draw_tiles`` passes
+    them). Returns True when the gesture changed the tree."""
+    # [tint=(1.0, 0.8, 0.3)]
+    label_inset = 6.0
+    # [tint=(1.0, 0.8, 0.3)]
+    corner_size = 14.0
+    label_color = (1.0, 1.0, 1.0, 0.9)
+    corner_hover_color = (1.0, 1.0, 1.0, 0.35)
+
+    rect = tile_rect(frame, draw_state, gap=gap)
+    if rect is None:
+        return False
+    x0, y0, _x1, _y1 = rect
+    draw_list = imgui.get_window_draw_list()
+    draw_list.add_rect_filled(*rect, pack_color(*tile["tint"], 1.0))
+    draw_list.add_text(x0 + label_inset, y0 + label_inset,
+                       pack_color(*label_color), str(tile["name"]))
+
+    changed = False
+    for name, on_left, on_top in CORNERS:
+        grip = corner_rect(rect, on_left, on_top, corner_size)
+        if draw_state.hover_eligible(rect=grip):
+            draw_list.add_rect_filled(*grip, pack_color(*corner_hover_color))
+        if tree is not None and root_frame is not None and tile_state is not None:
+            changed = tile_corner_gesture(
+                tile, frame, draw_state, path, tree, root_frame, tile_state,
+                name, on_left, on_top, grip) or changed
+    return changed
+
+
+def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
+                        tile_state, corner, on_left, on_top, grip):
+    """One corner's split gesture. The grip is an ``on_action`` sub-rect
+    above the edge grab zones (the two overlap at a tile's corners).
+    A drag that travels ``split_threshold`` px INTO the tile splits it:
+    the dominant direction picks the axis, the new tile goes on the
+    corner's side, the new edge lands under the cursor. From then until
+    release every frame queues a cursor-driven drag of that edge on the
+    window's solve, so it follows the pointer and pushes neighbours like
+    any divider. The view id keys on the tile OBJECT, not its path — the
+    split shifts the path while the drag is still captured. Returns True
+    on the frame the tree changed."""
+    # [tint=(1.0, 0.8, 0.3)]
+    split_threshold = 8.0
+
+    view_id = f"tile_corner_{id(tile)}_{corner}"
+    draw_state.on_action("left_mouse_down", view_id=view_id, rect=grip,
+                         priority_delta=2, cursor=mouse_cursor.RESIZE_ALL)
+    drag = draw_state.on_action("left_mouse_drag", view_id=view_id, rect=grip,
+                                priority_delta=2)
+    gesture = tile_state.gesture
+    window = draw_state.parent_window or draw_state
+
+    if gesture is not None and gesture["corner"] == view_id:
+        if drag is None:
+            tile_state.gesture = None            # released
+            return False
+        # Follow the cursor: an extra cursor-driven drag of the new edge
+        # (the parent's layout registers it on the frame after the split).
+        axis = gesture["axis"]
+        along = (drag.x - window.abs_left) if axis == "x" else (drag.y - window.abs_top)
+        _ensure_window_state(window)
+        _pending(window, axis).append((gesture["edge"], float(along), True))
+        draw_state.invalidate(note=Note(reason="tile split drag", **_NOTE))
+        return False
+
+    if drag is None or gesture is not None:
+        return False
+    dx, dy = drag.total_dx, drag.total_dy
+    if max(abs(dx), abs(dy)) < split_threshold:
+        return False
+    axis = "x" if abs(dx) >= abs(dy) else "y"
+    inward = (dx > 0) == on_left if axis == "x" else (dy > 0) == on_top
+    if not inward:
+        return False                             # outward = join, later
+    before = on_left if axis == "x" else on_top
+    near, far = frame_pair(frame, axis)
+    floor = MIN_COLUMN_WIDTH if axis == "x" else MIN_ROW_HEIGHT
+    along = (drag.x - window.abs_left) if axis == "x" else (drag.y - window.abs_top)
+    lo, hi = near[axis] + floor, far[axis] - floor
+    if hi < lo:
+        return False                             # too small to split
+    at = min(max(float(along), lo), hi)
+    new_path = split_tile(tree, path, axis, root_frame, at=at, before=before)
+    new_node = node_at(tree, new_path[:-1])
+    edge_index = new_path[-1] if before else new_path[-1] - 1
+    tile_state.gesture = {"corner": view_id, "axis": axis,
+                          "edge": new_node["edges"][edge_index]}
+    draw_state.invalidate(note=Note(reason="tile split", **_NOTE))
+    return True
+
+
+def draw_tile_node(node, frame, draw_state, path=(), tree=None,
+                   root_frame=None, tile_state=None, gap=4.0):
+    """Render one node into ``frame``. A Tile paints (and runs its corner
+    gestures when ``tree`` / ``root_frame`` / ``tile_state`` are given); a
+    Split builds ONE layout over its children (columns for axis "x", rows
+    for "y") keyed by ``path`` so many layouts share the host draw_state,
+    writes the seeded / clamped interior edges back into the tree, and
+    recurses into each child with that child's cell edges as its frame.
+    Returns True when a gesture changed the tree — the children are
+    snapshotted first, so a split mid-walk renders on the next frame."""
+    if not isinstance(node, Split):
+        return draw_tile(node, frame, draw_state, path=path, tree=tree,
+                         root_frame=root_frame, tile_state=tile_state, gap=gap)
+    children = node["children"]
+    if not children:
+        return False
+    axis = node["axis"]
+    near, far = frame_pair(frame, axis)
+    across = frame_pair(frame, other_axis(axis))
+    stored = full_edges(node, frame)
+    if axis == "x":
+        layout = ColumnLayout(draw_state, len(children), column_edges=stored,
+                              left_edge=near, right_edge=far, band=across,
+                              key=path, persist=False, padding=0.0,
+                              border_color=None)
+    else:
+        layout = RowLayout(draw_state, len(children), row_edges=stored,
+                           top_edge=near, bottom_edge=far, band=across,
+                           key=path, persist=False, padding=0.0,
+                           border_color=None)
+    if layout.seed_valid:
+        interior = layout.edges[1:-1]
+        if any(a is not b for a, b in zip(node["edges"], interior)) \
+                or len(node["edges"]) != len(interior):
+            node["edges"] = interior
+    edges = layout.edges
+    changed = False
+    for index, child in enumerate(list(children)):
+        if draw_tile_node(child, child_frame(frame, axis, edges[index], edges[index + 1]),
+                          draw_state, path + (index,), tree=tree,
+                          root_frame=root_frame, tile_state=tile_state, gap=gap):
+            changed = True
+            break                                # the tree moved under us
+    return changed
+
+
+def draw_tiles(tree, draw_state, tile_state=None, gap=4.0):
+    """Render a whole tile tree over the host window's frame: the root
+    adopts the window's four frame edges (``frame_edges``), so the window
+    frame and every divider move through one collision solve. Call from a
+    render_func body with its injected ``tile_state`` (without one the
+    tiles draw and their edges drag, but corners don't split). Returns
+    True when a gesture changed the tree this frame."""
+    window = draw_state.parent_window or draw_state
+    root_frame = frame_edges(window)
+    changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
+                             root_frame=root_frame, tile_state=tile_state,
+                             gap=gap)
+    left, right, top, bottom = root_frame
+    imgui.dummy(max(0.0, right["x"] - left["x"]), max(0.0, bottom["y"] - top["y"]))
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Data interface - pure edits on the tree
+# ---------------------------------------------------------------------------
+
+def midpoint(near, far, axis):
+    return {axis: (near[axis] + far[axis]) / 2}
+
+
+def split_tile(tree, path, axis, root_frame, new_tile=None, at=None,
+               before=False):
+    """Split the tile at ``path`` along ``axis`` — Blender's area split.
+    The new tile lands after the old one (right of / below it), or before
+    it with ``before=True``, with a new edge at ``at`` (window coords on
+    that axis) or at the midpoint of the tile's frame (frames come from
+    ``resolve_frames`` over ``root_frame``). Same axis as the parent: a
+    new sibling in the parent's flat list. Otherwise the leaf becomes a
+    two-child Split of ``axis``. Returns the new tile's path."""
+    frames = {p: f for p, _n, f in resolve_frames(tree, root_frame)}
+    frame = frames[path]
+    near, far = frame_pair(frame, axis)
+    edge = midpoint(near, far, axis) if at is None else {axis: float(at)}
+    tile = node_at(tree, path)
+    if new_tile is None:
+        new_tile = Tile(name=f"{tile['name']}'", tint=tile["tint"])
+    pair = [new_tile, tile] if before else [tile, new_tile]
+    new_offset = 0 if before else 1
+    parent = node_at(tree, path[:-1]) if path else None
+    if parent is not None and parent["axis"] == axis:
+        index = path[-1]
+        parent["children"][index:index + 1] = pair
+        parent["edges"].insert(index, edge)
+        return path[:-1] + (index + new_offset,)
+    split = Split(axis=axis, children=pair, edges=[edge])
+    if parent is None:
+        # The root is replaced IN PLACE (the caller holds the object).
+        tree.clear()
+        tree.update(split)
+        return (new_offset,)
+    parent["children"][path[-1]] = split
+    return path + (new_offset,)
+
+
+def join_tiles(tree, path, direction=+1):
+    """Join the tile at ``path`` into its sibling ``direction`` away (+1 =
+    the next, -1 = the previous) — Blender's area join: the tile and the
+    edge between them go, the neighbour takes the room. Returns the
+    neighbour's path after normalization."""
+    if not path:
+        raise ValueError("cannot join the root")
+    parent = node_at(tree, path[:-1])
+    index = path[-1]
+    neighbour = index + direction
+    if not 0 <= neighbour < len(parent["children"]):
+        raise ValueError("no neighbour to join into")
+    seeded = len(parent["edges"]) == len(parent["children"]) - 1
+    parent["children"].pop(index)
+    if seeded:
+        parent["edges"].pop(min(index, neighbour))
+    kept = neighbour if neighbour < index else index
+    kept_node = parent["children"][kept]
+    normalize(tree)
+    return locate(tree, kept_node)
+
+
+def locate(tree, target):
+    """The path of ``target`` (by identity) in the tree, or None."""
+    for path, node in walk(tree):
+        if node is target:
+            return path
+    return None
+
+
+def normalize(tree):
+    """Restore the invariants after an edit: a Split with ONE child is
+    replaced by that child (the root keeps its Split shell, so the caller's
+    object identity holds), and a Split child of its parent's axis is
+    spliced into the parent's list, edges included. Returns the tree."""
+    changed = True
+    while changed:
+        changed = False
+        for _path, node in list(walk(tree)):
+            if not isinstance(node, Split):
+                continue
+            children = node["children"]
+            for index, child in enumerate(list(children)):
+                if not isinstance(child, Split):
+                    continue
+                if len(child["children"]) == 1:
+                    children[index] = child["children"][0]
+                    changed = True
+                elif child["axis"] == node["axis"]:
+                    children[index:index + 1] = child["children"]
+                    # The child's interior edges join the node's list at
+                    # the slot before this cell's far edge.
+                    node["edges"][index:index] = child["edges"]
+                    changed = True
+                if changed:
+                    break
+            if changed:
+                break
+    # The root itself: one Split child of the root collapses into it.
+    if isinstance(tree, Split) and len(tree["children"]) == 1 \
+            and isinstance(tree["children"][0], Split):
+        only = tree["children"][0]
+        tree.clear()
+        tree.update(only)
+    return tree

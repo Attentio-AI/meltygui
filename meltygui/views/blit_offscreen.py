@@ -1749,6 +1749,7 @@ class TileCacheMasked:
         if t is not None:
             target_frame = self._frame_id + 1
             _bump_note(t, f"invalidate:{getattr(note, 'name', None)}")
+            self._note_invalidation(k, note, force)
             t.last_invalidated_frame = max(t.last_invalidated_frame, target_frame)
             t.dirty = self._is_dirty(t)
 
@@ -2028,8 +2029,39 @@ class TileCacheMasked:
         self._glow_size = (0, 0)
         self._glow_tex_empty = True
 
+    # --- MCP query diagnostics (mcp_query.tile_cache) ---------------------
+    # Class-level attributes so a hotswapped method finds them under the live
+    # object. `_frame_stats`: one (frame, body_runs, cache_hits, captures)
+    # per query frame; `_invalidation_history`: (frame, key, note name,
+    # reason, force) per invalidate that destroyed a tile. Both bounded.
+    _frame_body_runs = 0
+    _frame_cache_hits = 0
+    _frame_stats = None
+    _invalidation_history = None
+    FRAME_STATS_LEN = 600
+    INVALIDATION_HISTORY_LEN = 4000
+
+    def _note_frame_stats(self) -> None:
+        stats = self._frame_stats
+        if stats is None:
+            from collections import deque
+            stats = self._frame_stats = deque(maxlen=self.FRAME_STATS_LEN)
+        stats.append((Melty.frame_count, self._frame_body_runs, self._frame_cache_hits,
+                      len(self._pending)))
+        self._frame_body_runs = 0
+        self._frame_cache_hits = 0
+
+    def _note_invalidation(self, k: str, note, force: bool) -> None:
+        history = self._invalidation_history
+        if history is None:
+            from collections import deque
+            history = self._invalidation_history = deque(maxlen=self.INVALIDATION_HISTORY_LEN)
+        history.append((Melty.frame_count, k, getattr(note, "name", None),
+                        getattr(note, "reason", None), bool(force)))
+
     def mask_begin_frame(self, framebuffer_size: Tuple[int, int]) -> None:
         fb_w, fb_h = map(int, framebuffer_size)
+        self._note_frame_stats()
         self._frame_id += 1
         self._recording = True
         self._cancelled_keys.clear()
@@ -4042,6 +4074,7 @@ class TileCacheMasked:
                         auto_resize=draw_state.auto_resize,
                     )
                 )
+                self._frame_cache_hits += 1
                 return False
 
         self._stack.append(
@@ -4056,6 +4089,7 @@ class TileCacheMasked:
                 auto_resize=draw_state.auto_resize,
             )
         )
+        self._frame_body_runs += 1
 
         return True
 

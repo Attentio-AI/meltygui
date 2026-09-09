@@ -102,15 +102,55 @@ def request_eval(code, model_server, timeout=10.0):
     return _format(req["out"], req["result"], req["error"], where="render thread")
 
 
+def request_call(fn, model_server, timeout=10.0):
+    """Run the no-arg callable `fn` on the render thread (inline when no
+    studio is running) and return `(result, error_text)`. The typed MCP
+    query tools (mcp_query.py) ride this instead of eval_python's source
+    string: same queue, same post_frame drain, a Python value back."""
+    import traceback
+    studio_running = False
+    try:
+        studio_running = model_server._studio_running()
+    except Exception:
+        pass
+    if not studio_running:
+        try:
+            return fn(), None
+        except Exception:
+            return None, traceback.format_exc()
+
+    req = {"fn": fn, "event": threading.Event(), "result": None, "error": None}
+    with _lock:
+        _pending.append(req)
+    try:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+    except Exception:
+        pass
+    if not req["event"].wait(timeout):
+        with _lock:
+            if req in _pending:
+                _pending.remove(req)
+        return None, f"timed out after {timeout:.0f}s waiting for the render thread"
+    return req["result"], req["error"]
+
+
 def process_evals():
     """Run pending eval requests on the render thread. Call from post_frame."""
+    import traceback
     with _lock:
         if not _pending:
             return
         reqs = _pending[:]
         _pending.clear()
     for req in reqs:
-        req["out"], req["result"], req["error"] = _run_code(req["code"], req["extra"])
+        if "fn" in req:
+            try:
+                req["result"] = req["fn"]()
+            except Exception:
+                req["error"] = traceback.format_exc()
+        else:
+            req["out"], req["result"], req["error"] = _run_code(req["code"], req["extra"])
         req["event"].set()
 
 

@@ -105,6 +105,80 @@ def linear_p3_to_srgb(rgb):
 
 
 # ---------------------------------------------------------------------------
+# Oklab: the perceptual space HDR colour SCALES are authored in
+# ---------------------------------------------------------------------------
+# Björn Ottosson's Oklab on LINEAR sRGB light. It is scale-invariant (no
+# absolute nits: lightness is a cube root, so 16 × white sits at L = 2.52)
+# and works on extended values (negative components = P3), which is what a
+# ramp that keeps climbing past the desktop's white needs. Its cube-root
+# lightness is a fair match for equal perceptual steps above white; it does
+# NOT model the Hunt effect (bright colours reading more saturated), so a
+# uniform-L ramp is "uniform" in the CIELAB sense, not a full HDR appearance
+# model.
+
+_OKLAB_M1 = ((0.4122214708, 0.5363325363, 0.0514459929),
+             (0.2119034982, 0.6806995451, 0.1073969566),
+             (0.0883024619, 0.2817188376, 0.6299787005))
+_OKLAB_M2 = ((0.2104542553, 0.7936177850, -0.0040720468),
+             (1.9779984951, -2.4285922050, 0.4505937099),
+             (0.0259040371, 0.7827717662, -0.8086757660))
+_OKLAB_M1_INV = _mat_inv(_OKLAB_M1)
+_OKLAB_M2_INV = _mat_inv(_OKLAB_M2)
+
+
+def _cbrt(x: float) -> float:
+    return math.copysign(abs(x) ** (1.0 / 3.0), x)
+
+
+def linear_to_oklab(rgb):
+    """Linear sRGB (extended) → Oklab ``(L, a, b)``; white (1, 1, 1) is L = 1."""
+    lms = _mat_mul_vec(_OKLAB_M1, rgb)
+    return _mat_mul_vec(_OKLAB_M2, tuple(_cbrt(c) for c in lms))
+
+
+def oklab_to_linear(lab):
+    """Oklab ``(L, a, b)`` → linear sRGB (extended)."""
+    lms = _mat_mul_vec(_OKLAB_M2_INV, lab)
+    return _mat_mul_vec(_OKLAB_M1_INV, tuple(c * c * c for c in lms))
+
+
+def oklab_hue(rgb) -> float:
+    """Oklab hue angle (radians) of a linear sRGB colour."""
+    _, a, b = linear_to_oklab(rgb)
+    return math.atan2(b, a)
+
+
+def oklab_max_chroma(lightness: float, hue: float, peak: float = 1.0,
+                     steps: int = 40) -> float:
+    """The largest Oklab chroma at ``(lightness, hue)`` whose colour still
+    fits the DISPLAY-P3 box ``[0, peak]³`` in linear light — ``peak`` = the
+    brightest white the scale may reach, in multiples of the desktop's
+    white (1 = the SDR gamut). This is the gamut boundary an HDR colour
+    scale rides: it pinches to grey at black AND at the peak, so a ramp of
+    max-chroma colours whitens PROGRESSIVELY toward its top instead of
+    switching to white. Bisection: chroma grows monotonically out of the
+    box along a ray of fixed lightness and hue."""
+    if lightness <= 0.0 or lightness >= _cbrt(peak):
+        return 0.0
+    ca, sa = math.cos(hue), math.sin(hue)
+
+    def fits(chroma):
+        p3_rgb = linear_srgb_to_p3(oklab_to_linear((lightness, chroma * ca, chroma * sa)))
+        return all(-1e-6 <= c <= peak + 1e-6 for c in p3_rgb)
+
+    lo, hi = 0.0, 1.0 + _cbrt(peak)
+    if fits(hi):
+        return hi
+    for _ in range(steps):
+        mid = (lo + hi) * 0.5
+        if fits(mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+# ---------------------------------------------------------------------------
 # Helpers for writing colours
 # ---------------------------------------------------------------------------
 
@@ -432,6 +506,204 @@ def wide_square_linear(hue: float, size: int, top_fraction: float, max_stops: fl
     out = np.empty((n, n, 4), dtype=np.float32)
     out[..., :3] = lin @ m.T
     out[..., 3] = 1.0
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The "sRGB+" tab: the classic sRGB square, extended past its right edge
+# ---------------------------------------------------------------------------
+#
+# The square is the classic sRGB HSV square, untouched. Each of its rows
+# (an sRGB value v) ends at the sRGB gamut edge (hue, 1, v); the extension
+# to its right carries that edge carried on in DISPLAY P3: same P3 hue,
+# saturation from the edge's own P3 saturation up to 1 and value from the
+# edge's P3 value up to the row's v - so the strip is colour-continuous
+# at the seam, the top row's right edge is a pure P3 primary, and the
+# extension shows all the colours sRGB cannot reach. Exposure
+# (brightness above white) is not on the square: it rides through unchanged.
+
+
+def srgb_extension_edge(hue: float, v: float):
+    """The sRGB gamut edge colour (hue, s=1, v) in P3 HSV: (hp, sp, vp)."""
+    r, g, b = _colorsys.hsv_to_rgb(hue, 1.0, v)
+    hp, sp, vp, _exposure = p3_hsv_from_extended(r, g, b)
+    return hp, sp, vp
+
+
+def extended_from_srgb_extension(hue: float, s: float, v: float, x: float, exposure: float = 1.0):
+    """sRGB+ coordinates → extended-sRGB (r, g, b). (hue, s, v) is the
+    classic sRGB HSV square; x in [0, 1] is how far into the extension the
+    marker sits (0 = the square's right edge, only meaningful at s = 1)."""
+    if x <= 0.0:
+        rgb = _colorsys.hsv_to_rgb(hue, s, v)
+        return tuple(linear_to_srgb(srgb_to_linear(c) * exposure) for c in rgb)
+    hp, sp, vp = srgb_extension_edge(hue, v)
+    x = min(x, 1.0)
+    return extended_from_p3_hsv(hp, sp + (1.0 - sp) * x, vp + (v - vp) * x, exposure)
+
+
+def srgb_extension_coords(r: float, g: float, b: float, hue_hint: float = None, steps: int = 6):
+    """Extended-sRGB → (hue, s, v, x, exposure) of the sRGB+ strip, the
+    inverse of extended_from_srgb_extension. Inside sRGB it is the classic
+    HSV with x = 0. Outside, s = 1: for a hue, the row v is the bisection
+    root of the extension's P3 value (with x fixed by the P3 saturation)
+    against the target's, and the hue is corrected by a few secant steps
+    toward the target's P3 hue. hue_hint seeds that search (the cached hue keeps the marker
+    steady when the colour is gray)."""
+    lin = (srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b))
+    peak = max(lin)
+    srgb_exposure = peak if peak > 1.0 else 1.0
+    norm = tuple(c / srgb_exposure for c in lin)
+    if all(-1e-6 <= c <= 1.0 + 1e-6 for c in norm):
+        enc = tuple(linear_to_srgb(min(1.0, max(0.0, c))) for c in norm)
+        h, s, v = _colorsys.rgb_to_hsv(*enc)
+        return h, s, v, 0.0, srgb_exposure
+    hp, sp, vp, exposure = p3_hsv_from_extended(r, g, b)
+    vp_abs_lin = srgb_to_linear(vp) * exposure      # the P3 peak in absolute linear light
+    vp_abs = linear_to_srgb(vp_abs_lin)             # ... and sRGB-encoded (the HSV value scale)
+    if hue_hint is None:
+        enc = tuple(linear_to_srgb(min(1.0, max(0.0, c / exposure))) for c in lin)
+        hue_hint = _colorsys.rgb_to_hsv(*enc)[0]
+
+    def solve_row(h):
+        """(v, x, exposure) for hue h: x is fixed per row by the P3
+        saturation; the row is the bisection root of the extension's P3
+        value against the target's ABSOLUTE peak — an HDR colour takes the
+        SDR row that reaches it when one does, else the top row with the
+        rest as exposure (exposure is a free split of the same colour)."""
+        def at(v):
+            _hp, sp_e, vp_e = srgb_extension_edge(h, v)
+            x = min(max((sp - sp_e) / max(1e-6, 1.0 - sp_e), 0.0), 1.0)
+            return vp_e + (v - vp_e) * x, x
+        top_value, top_x = at(1.0)
+        if top_value <= vp_abs:
+            # Top row + exposure. HSV saturation is not invariant under a
+            # linear scale (the sRGB curve's offset), and the target's sp
+            # was computed from the colour normalized to its peak - so find the
+            # x whose top-row colour, normalized the same way, has that
+            # saturation (monotone in x), and take the exposure from the
+            # ratio of their peaks.
+            hp_e, sp_e, vp_e = srgb_extension_edge(h, 1.0)
+
+            def normalized(x):
+                rgb = _colorsys.hsv_to_rgb(hp_e, sp_e + (1.0 - sp_e) * x, vp_e + (1.0 - vp_e) * x)
+                lin = tuple(srgb_to_linear(c) for c in rgb)
+                peak = max(lin)
+                enc = tuple(linear_to_srgb(c / max(1e-9, peak)) for c in lin)
+                return _colorsys.rgb_to_hsv(*enc)[1], peak
+            lo, hi = 0.0, 1.0
+            for _ in range(20):
+                mid = 0.5 * (lo + hi)
+                if normalized(mid)[0] < sp:
+                    lo = mid
+                else:
+                    hi = mid
+            x = 0.5 * (lo + hi)
+            return 1.0, x, vp_abs_lin / max(1e-9, normalized(x)[1])
+        lo, hi = 0.0, 1.0
+        for _ in range(18):
+            mid = 0.5 * (lo + hi)
+            if at(mid)[0] < vp_abs:
+                lo = mid
+            else:
+                hi = mid
+        v = 0.5 * (lo + hi)
+        return v, at(v)[1], 1.0
+
+    def wrap(d):
+        return (d + 0.5) % 1.0 - 0.5
+
+    def residual(h):
+        v, x, e = solve_row(h)
+        return wrap(hp - srgb_extension_edge(h, v)[0]), v, x, e
+
+    h = hue_hint
+    delta, v, x, e = residual(h)
+    for _ in range(steps):
+        if abs(delta) < 1e-7:
+            break
+        # secant step: the sRGB→P3 hue slope is ~0.5 around green, ~1 elsewhere
+        probe = 1e-3
+        slope = wrap(srgb_extension_edge(h + probe, v)[0] - srgb_extension_edge(h, v)[0]) / probe
+        h = (h + delta / min(max(slope, 0.25), 4.0)) % 1.0
+        delta, v, x, e = residual(h)
+    if abs(delta) > 1e-4:
+        # The secant wandered (a poor hint across a hue sector): bracket the
+        # sign change of the residual over the hue circle and bisect it -
+        # the sRGB→P3 hue map is monotone, so exactly one bracket holds it.
+        n = 24
+        samples = [(i / n, residual(i / n)[0]) for i in range(n)]
+        lo, hi = None, None
+        for i in range(n):
+            h0, d0 = samples[i]
+            h1, d1 = samples[(i + 1) % n]
+            if d0 >= 0.0 > d1 or (d0 >= 0.0 and d1 >= 0.0 and d1 < d0 - 0.5):
+                lo, hi = h0, h0 + 1.0 / n
+                break
+        if lo is None:
+            lo, hi = 0.0, 1.0
+        for _ in range(22):
+            mid = 0.5 * (lo + hi)
+            if residual(mid % 1.0)[0] >= 0.0:
+                lo = mid
+            else:
+                hi = mid
+        h = (0.5 * (lo + hi)) % 1.0
+        _d, v, x, e = residual(h)
+    return h, 1.0, v, x, e
+
+
+def srgb_extension_linear(hue: float, rows: int, cols: int):
+    """The extension strip for one sRGB hue as a (rows, cols, 4) float32
+    array of LINEAR scRGB (row 0 = top = v 1, bottom = black; column 0 =
+    the sRGB edge, last column = P3 saturation 1 at the row's value)."""
+    import numpy as np
+    n_rows, n_cols = int(rows), int(cols)
+    x = np.linspace(0.0, 1.0, n_cols, dtype=np.float32)[None, :, None]
+    v_row = np.empty(n_rows, dtype=np.float32)
+    hp = np.empty(n_rows, dtype=np.float32)
+    sp = np.empty(n_rows, dtype=np.float32)
+    vp = np.empty(n_rows, dtype=np.float32)
+    for i in range(n_rows):
+        v_row[i] = 1.0 - i / max(1, n_rows - 1)
+        hp[i], sp[i], vp[i] = srgb_extension_edge(hue, float(v_row[i]))
+    hue_rgb = np.asarray([_colorsys.hsv_to_rgb(float(h), 1.0, 1.0) for h in hp],
+                         dtype=np.float32)[:, None, :]                          # per-row P3 hue
+    s = sp[:, None, None] + (1.0 - sp[:, None, None]) * x                       # P3 saturation past the edge
+    vv = vp[:, None, None] + (v_row[:, None, None] - vp[:, None, None]) * x     # P3 value up to the row's v
+    enc = vv * (1.0 - s * (1.0 - hue_rgb))                                      # HSV at that position, P3-encoded
+    lin = np.where(enc <= 0.04045, enc / 12.92, ((enc + 0.055) / 1.055) ** 2.4)
+    m = np.asarray(P3_TO_SRGB, dtype=np.float32)
+    out = np.empty((n_rows, n_cols, 4), dtype=np.float32)
+    out[..., :3] = lin @ m.T
+    out[..., 3] = 1.0
+    return out
+
+
+def srgb_plus_linear(hue: float, square: int, ext: int, band: int, max_stops: float):
+    """The sRGB+ tab's whole picking area for one hue as a
+    (band + square, square + ext, 4) float32 array of LINEAR scRGB: the
+    classic sRGB square (rows band.., cols ..square), the P3 extension to
+    its right (srgb_extension_linear), and above both an exposure band —
+    the top row (v = 1) of each lifted by 2^max_stops at the top down to
+    1.0 at the seam, so the band's bottom row IS the square's top row."""
+    import numpy as np
+    n_sq, n_ext, n_band = int(square), int(ext), int(band)
+    out = np.empty((n_band + n_sq, n_sq + n_ext, 4), dtype=np.float32)
+    out[..., 3] = 1.0
+    # the classic square, sRGB-encoded (row 0 = v 1, col 0 = s 0)
+    s_axis = np.linspace(0.0, 1.0, n_sq, dtype=np.float32)[None, :, None]
+    v_axis = np.linspace(1.0, 0.0, n_sq, dtype=np.float32)[:, None, None]
+    hue_rgb = np.asarray(_colorsys.hsv_to_rgb(hue, 1.0, 1.0), dtype=np.float32)[None, None, :]
+    enc = v_axis * (1.0 - s_axis * (1.0 - hue_rgb))
+    square_lin = np.where(enc <= 0.04045, enc / 12.92, ((enc + 0.055) / 1.055) ** 2.4)
+    out[n_band:, :n_sq, :3] = square_lin
+    if n_ext:
+        out[n_band:, n_sq:, :] = srgb_extension_linear(hue, n_sq, n_ext)
+    if n_band:
+        rows = np.arange(n_band, dtype=np.float32)
+        exposure = (2.0 ** (max_stops * (1.0 - rows / n_band)))[:, None, None]
+        out[:n_band, :, :3] = out[n_band, :, :3][None, :, :] * exposure
     return out
 
 

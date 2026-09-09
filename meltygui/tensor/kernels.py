@@ -23,8 +23,9 @@ Mechanics: PyCUDA SourceModule, compiled once per DEVICE (its primary
 context is retained and pushed around the launch only — never around GL
 calls, see cuda_interop's context rules), launched on the legacy default
 stream, which orders after torch's default-stream producers without an
-explicit sync. The output image is a torch uint8 (H, W, 4) tensor on the
-tensor's device (premultiplied RGBA8, same encode as the GL pass); the
+explicit sync. The output image is a torch float16 (H, W, 4) tensor on the
+tensor's device (premultiplied LINEAR RGBA, the same light the GL pass writes
+into the fp16 scene — values above 1 are HDR, negatives are P3); the
 caller moves it to wherever it's displayed.
 """
 
@@ -107,6 +108,10 @@ __device__ __forceinline__ float dot3(float3 a, float3 b) { return a.x*b.x + a.y
 __device__ __forceinline__ float len3(float3 a) { return sqrtf(dot3(a, a)); }
 __device__ __forceinline__ float3 norm3(float3 a) { float l = len3(a); return l > 0.f ? mul3(a, 1.f/l) : a; }
 __device__ __forceinline__ float clamp01(float x) { return fminf(fmaxf(x, 0.f), 1.f); }
+// Extended-sRGB decode (hdr_color.py): the sRGB curve mirrored for negatives,
+// no ceiling — a LUT entry above 1 is brighter than the desktop's white, a
+// negative one is outside the sRGB gamut (P3). powf alone made NaNs of those.
+__device__ __forceinline__ float srgb_dec(float x) { return copysignf(powf(fabsf(x), 2.2f), x); }
 
 // Slab test against the box [-b, +b]: (t_enter, t_exit).
 __device__ __forceinline__ float2 rayBox(float3 ro, float3 rd, float3 b) {
@@ -371,9 +376,9 @@ __device__ bool dda_fine(const Ctx& c, const Shade& S,
             if (a > 0.0f) {
                 float f = fminf(fmaxf(vm.x * (float)lut_n - 0.5f, 0.0f), (float)(lut_n - 1));
                 int i0 = (int)floorf(f); int i1 = min(i0 + 1, lut_n - 1); float wl = f - (float)i0;
-                float3 col = f3(powf(lut[3*i0]   * (1.f - wl) + lut[3*i1]   * wl, 2.2f),
-                                powf(lut[3*i0+1] * (1.f - wl) + lut[3*i1+1] * wl, 2.2f),
-                                powf(lut[3*i0+2] * (1.f - wl) + lut[3*i1+2] * wl, 2.2f));
+                float3 col = f3(srgb_dec(lut[3*i0]   * (1.f - wl) + lut[3*i1]   * wl),
+                                srgb_dec(lut[3*i0+1] * (1.f - wl) + lut[3*i1+1] * wl),
+                                srgb_dec(lut[3*i0+2] * (1.f - wl) + lut[3*i1+2] * wl));
                 // Voxels keep their LUT colours — no normal-based Lambert;
                 // self_shading is a pure transmittance darkening.
                 if (S.draw_shading && S.self_shading && a > 0.01f) {
@@ -410,7 +415,7 @@ extern "C" __global__ void march(
     int nf_chop, int nf_along, int nf_chunk,
     float nlo, float nhi, int norm_mode,
     const float* __restrict__ lut, int lut_n,
-    unsigned char* __restrict__ out, int W, int H,
+    __half* __restrict__ out, int W, int H,
     float tilt, float spin, float roll, float zoom, float pan_x, float pan_y, float pan_z,
     int ortho, float aspect, float vsx, float vsy, float vsz,
     float step_size, int max_steps, float density, float threshold,
@@ -573,15 +578,17 @@ extern "C" __global__ void march(
             acc.w += (1.0f - acc.w) * plane_a;
         }
     }
-    float g = gamma / 2.2f;
-    float dither = (fmodf(52.9829189f * fmodf(
-        ((float)px + 0.5f) * 0.06711056f + ((float)py + 0.5f) * 0.00583715f, 1.0f), 1.0f)
-        - 0.5f) / 255.0f;
-    unsigned char* o = out + ((long long)py * W + px) * 4;
-    o[0] = (unsigned char)(clamp01(powf(acc.x, g) + dither) * 255.0f + 0.5f);
-    o[1] = (unsigned char)(clamp01(powf(acc.y, g) + dither) * 255.0f + 0.5f);
-    o[2] = (unsigned char)(clamp01(powf(acc.z, g) + dither) * 255.0f + 0.5f);
-    o[3] = (unsigned char)(clamp01(acc.w + dither) * 255.0f + 0.5f);
+    // Linear premultiplied fp16, exactly what the GL pass hands the fp16
+    // scene: `gamma` is the same artistic curve on linear light (1.0 =
+    // untouched), no sRGB encode (the presentation pass does that once),
+    // no clamp — HDR headroom rides through — and no dither (fp16 doesn't
+    // band).
+    // The curve is mirrored for negatives (P3 rides as negative scRGB).
+    __half* o = out + ((long long)py * W + px) * 4;
+    o[0] = __float2half(copysignf(powf(fabsf(acc.x), gamma), acc.x));
+    o[1] = __float2half(copysignf(powf(fabsf(acc.y), gamma), acc.y));
+    o[2] = __float2half(copysignf(powf(fabsf(acc.z), gamma), acc.z));
+    o[3] = __float2half(clamp01(acc.w));
 }
 
 // Box-filter the DISPLAY volume (nf remap + normalize included, via
@@ -768,9 +775,10 @@ def march(view, out, lut, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
           contrast=1.0, gamma=1.6, centered=False, shade=None, mip=None,
           floor_map=None, floor_extent=(0.0, 0.0)):
     """Raymarch `view` (a 3-D torch view (z, y, x) on a CUDA device, ANY
-    strides, ANY supported dtype) into `out` (torch uint8 (H, W, 4) on the
-    same device; premultiplied RGBA8). `lut` is a float32 (n, 3) torch
-    tensor on that device. `display_shape` = (nz, ny, nx) after neural
+    strides, ANY supported dtype) into `out` (torch float16 (H, W, 4) on the
+    same device; premultiplied LINEAR RGBA, the GL pass's own output). `lut`
+    is a float32 (n, 3) torch tensor on that device — extended sRGB, so an
+    HDR table's entries past [0, 1] ride through. `display_shape` = (nz, ny, nx) after neural
     flow; `nf` = (chop_axis, along_axis, chunk) with axes 0=z 1=y 2=x (chop
     -1 = off); `norm` = (lo, hi, mode); `shade` = a float32 torch tensor of
     SHADE_N on the same device (shade_params(...)) or None = shading off.
@@ -780,6 +788,8 @@ def march(view, out, lut, *, display_shape, nf=(-1, -1, 0), norm=(0.0, 1.0, 0),
     loads on big tensors)."""
     import torch
     assert view.dim() == 3 and out.dim() == 3 and out.shape[2] == 4
+    if out.dtype != torch.float16:
+        raise ValueError("cuda_march: out must be a float16 (H, W, 4) tensor")
     dev = view.device.index or 0
     if (out.device.index or 0) != dev or (lut.device.index or 0) != dev:
         raise ValueError("cuda_march: view/out/lut must share a device")

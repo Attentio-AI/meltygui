@@ -1012,7 +1012,7 @@ def _cleanup_chat(draw_state):
             proxy.close()
 
 
-@window(tint=(2.20, 1.32, -0.50), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
+@window(tint=(3.53, 1.60, -0.79), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
 @render_func(auto_resize=False, min_width=700, min_height=500,
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,

@@ -2628,7 +2628,7 @@ def orchestrator_sync():
         request_render()
 
 
-@window(input_value=None, tint=(0.76, 0.44, 0.00), icon=f"",
+@window(input_value=None, tint=(2.37, 0.11, -0.28), icon=f"",
         display_name="Orchestrator", initial={"width": 430, "height": 340})
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              is_tree=False, show_name=True, shadow=True, tint=(0.719, 0.478, 0.208))

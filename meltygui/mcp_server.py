@@ -243,6 +243,11 @@ MCP_TOOL_TINTS = {
     "screenshot":       (0.80, 0.60, 1.00, 1.0),
     "list_windows":     (0.70, 0.75, 0.85, 1.0),
     "eval_python":      (0.45, 0.95, 0.80, 1.0),
+    "find_views":       (0.60, 0.85, 0.95, 1.0),
+    "describe_view":    (0.60, 0.85, 0.95, 1.0),
+    "hit_test":         (0.95, 0.75, 0.55, 1.0),
+    "param_sources":    (0.85, 0.70, 0.95, 1.0),
+    "tile_cache":       (0.70, 0.95, 0.60, 1.0),
 }
 MCP_DEFAULT_TINT = (0.70, 0.72, 0.82, 1.0)
 MCP_ERROR_TINT = (1.00, 0.35, 0.35, 1.0)
@@ -480,6 +485,70 @@ def start_launcher_mcp(model_server, host=HOST, port=PORT):
         """
         from src.lsd.gl_gui.mcp_eval import request_eval
         return request_eval(code, model_server)
+
+    # --- Typed state queries (mcp_query.py): JSON read on the render thread ---
+
+    def _query(collect):
+        if not model_server._studio_running():
+            return "no studio session running — call launch first"
+        from src.lsd.gl_gui.mcp_query import run_query
+        return run_query(collect, model_server)
+
+    @logged_tool()
+    def find_views(func: str = "", name: str = "", window: str = "",
+                   include_closed: bool = False, limit: int = 50) -> str:
+        """Find live Melty views (draw_states) by case-insensitive substring:
+        `func` on the render function's qualname, `name` on the view name /
+        tile_id, `window` on the ROOT window title (see list_windows). Rows
+        are front-most first with rect, clip, closed / hidden / hovered flags,
+        layer, z_pos, parent window and the input value's type. Use the
+        returned `tile_id` with describe_view / param_sources / tile_cache."""
+        from src.lsd.gl_gui.mcp_query import collect_find_views
+        return _query(lambda: collect_find_views(func, name, window, include_closed, limit))
+
+    @logged_tool()
+    def describe_view(view: str, children_depth: int = 1) -> str:
+        """One view in full: summary, resolved kwargs, diverged auto_params,
+        event_rect scopes, this frame's event subscriptions and cursor
+        registration, its tile-cache entry (dirty, last clean / invalidated
+        frame, last bump reason), window_pos / content size / scroll, the
+        render-tree ancestors and window chain, and children to
+        `children_depth`. `view` = a tile_id (exact or unique substring) or
+        a draw_state id prefix."""
+        from src.lsd.gl_gui.mcp_query import collect_describe_view
+        return _query(lambda: collect_describe_view(view, children_depth))
+
+    @logged_tool()
+    def hit_test(x: float, y: float) -> str:
+        """The BVH stack at screen point (x, y), front to back, each view
+        with its z_pos / priority and the event subscriptions + cursor shape
+        registered for it. Subscriptions exist only for views under the REAL
+        pointer (`pointer`, `pointer_matches_point`); elsewhere the stack is
+        exact but subscriptions are empty. Also: Melty.hovered_ds, the
+        resolved cursor shape, drag capture and blocker views."""
+        from src.lsd.gl_gui.mcp_query import collect_hit_test
+        return _query(lambda: collect_hit_test(x, y))
+
+    @logged_tool()
+    def param_sources(view: str, param: str = "") -> str:
+        """The context menu's inputs tab as data: for each parameter of the
+        view (or just `param`) the value it reads, the DRIVING source (the
+        SourcePriority pick) and every source that sets it in priority order
+        (kind, writable, value). `sources` lists the sources with file:line."""
+        from src.lsd.gl_gui.mcp_query import collect_param_sources
+        return _query(lambda: collect_param_sources(view, param))
+
+    @logged_tool()
+    def tile_cache(view: str = "", history_frames: int = 0, limit: int = 100) -> str:
+        """Blit tile-cache state. With `view`: that tile (dirty, clean /
+        invalidated cache frames, last bump, blit_served_frame, tracker note)
+        and its invalidations over the last `history_frames` frames. Without:
+        tile totals, per-frame body_runs / cache_hits / captures (last 10
+        frames, or `history_frames`), the latest `limit` invalidations and the
+        top invalidators over the window — a per-frame invalidator shows up
+        here with a count near the frame count."""
+        from src.lsd.gl_gui.mcp_query import collect_tile_cache
+        return _query(lambda: collect_tile_cache(view, history_frames, limit))
 
     @logged_tool()
     def restart_launcher() -> str:

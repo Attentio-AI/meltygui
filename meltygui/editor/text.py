@@ -2002,11 +2002,11 @@ def draw_color3_token(input_value, draw_state=None,
 
     # Fixed-size popover (closable windows don't auto-resize; the picker body is
     # live imgui the framework can't measure): SV square + N channel rows + hex.
-    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height
+    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height, color_picker_width, color_picker_top_offset
     picker_h = color_picker_height(len(vals))
     color_changed, new_color = draw_color_picker(
         tuple(vals), name=f"{draw_state.name}_picker", closed=not is_open,
-        window_pos=(0, 10), parent_window=draw_state, width=216, height=picker_h,
+        window_pos=(0, color_picker_top_offset()), parent_window=draw_state, width=color_picker_width(), height=picker_h,
         mode=Mode.POPOVER)
     if is_open:
         if any(k == glfw.KEY_ESCAPE for k, _ in Melty.frame_key_events):
@@ -2154,7 +2154,7 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     # persists when the (cached) editor body is skipped. Fixed size: closable
     # windows don't auto-resize and the picker body is raw imgui the framework
     # can't measure - SV square + N channel rows + hex.
-    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height
+    from src.lsd.gl_gui.view.core_views.new_core_view import color_picker_height, color_picker_width, color_picker_top_offset
     picker_h = color_picker_height(len(vals))
     # window_pos is relative to the imgui cursor at call time - park the
     # cursor back on the swatch's top-left so (0, 10) anchors just under it,
@@ -2162,8 +2162,8 @@ def _color_swatch_plain(s, vals, splice, width, height, name, editor_ds):
     imgui.set_cursor_screen_pos((x, y))
     color_changed, new_color, pick_ds = draw_color_picker(
         tuple(vals), name=f"{name}_picker", closed=not want_open,
-        window_pos=(0, 10),
-        parent_window=editor_ds, width=216, height=picker_h,
+        window_pos=(0, color_picker_top_offset()),
+        parent_window=editor_ds, width=color_picker_width(), height=picker_h,
         mode=Mode.POPOVER, return_extras=True)
     pickers[name] = pick_ds
 
@@ -9208,6 +9208,33 @@ def fold_root_scopes(ranges, skip=()):
         ranges = inner
 
 
+def fold_child_scopes(ranges, roots):
+    """The scopes ONE level inside each of `roots`: for every root, the
+    first nesting level of the ranges strictly inside it (a function's
+    own if/for/with blocks and nested defs, not the blocks inside those).
+    Collapse-all folds these along with the roots, so a root expanded
+    later shows its members folded rather than fully open; expand-all
+    opens them back. `ranges` are normalized (sorted, strictly nested)
+    and `roots` a subset of them. Returned in `ranges` order."""
+    roots = sorted(set(roots))
+    out = []
+    root_i = 0
+    open_end = -1                # end of the current child being skipped
+    for fold_range in ranges:
+        while root_i < len(roots) and roots[root_i][1] < fold_range[0]:
+            root_i += 1
+            open_end = -1
+        if root_i >= len(roots):
+            break
+        root = roots[root_i]
+        if fold_range == root or fold_range[0] < root[0]:
+            continue             # the root itself, or a range above it
+        if fold_range[0] > open_end:
+            out.append(fold_range)
+            open_end = fold_range[1]
+    return out
+
+
 def _fold_normalize_ranges(n_lines, ranges):
     """Caller fold ranges → sorted, clipped (start, end) tuples. 0-based
     INCLUSIVE buffer lines; a collapsed range keeps line `start` visible and
@@ -10199,7 +10226,9 @@ def draw_text(input_value: str, height=None,
                     # Collapse-all inside: the outermost plus every
                     # default-collapsed run covered (nested ones too - the
                     # same asymmetry as the whole-buffer variant).
-                    _targets = set(_outer) | (_skip & set(_sel_folds))
+                    _targets = (set(_outer)
+                                | set(fold_child_scopes(_sel_folds, _outer))
+                                | (_skip & set(_sel_folds)))
                     ds._fold_collapsed.update(_targets)
                 elif ctrl_minus_down:
                     _targets = set(_outer)
@@ -10235,13 +10264,20 @@ def draw_text(input_value: str, height=None,
                 # folded if their root is later expanded), but expand-all
                 # leaves them untouched - they only expand via their own
                 # badge or the caret-scoped shortcuts.
+                # Both go ONE level deeper than the roots as well
+                # (fold_child_scopes): collapse-all folds a function's own
+                # if/for/with blocks and inner defs, so expanding that
+                # function later shows them again - but not the blocks
+                # inside THOSE; expand-all flips the same set back open.
                 _skip = set(_fold_default_col or ())
                 _roots = fold_root_scopes(_rngs, _skip)
+                _children = fold_child_scopes(_rngs, _roots)
                 if ctrl_shift_minus_down:
-                    _targets = set(_roots) | _skip
+                    _targets = set(_roots) | set(_children) | _skip
                     ds._fold_collapsed.update(_targets)
                 else:
-                    _targets = [r for r in _roots if r not in _skip]
+                    _targets = [r for r in _roots + _children
+                                if r not in _skip]
                     ds._fold_collapsed.difference_update(_targets)
                 ds._fold_search_exp.difference_update(_targets)
                 _fold_kb_all = True

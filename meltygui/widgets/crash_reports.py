@@ -303,7 +303,7 @@ def _ellipsize(text, max_width):
 
 # disable_scroll=False: the @window draw path defaults it to True (most
 # windows lay out their own scrolling); this one is a scrolling list.
-@window(input_value=reports, tint=(1.03, -0.21, 0.17), icon=f"",
+@window(input_value=reports, tint=(0.25, 0.23, 0.23), icon=f"",
         display_name="Crash Reports", initial={"width": 720, "height": 480},
         disable_scroll=False)
 @render_func(use_cache=True, selectable=False, show_add_delete=False,

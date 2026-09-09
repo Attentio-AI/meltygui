@@ -919,6 +919,64 @@ def loads(data, *, vis=None, root=None, run_on_load=True):
     return obj
 
 
+# ---------------------------------------------------------------------------
+# Session path selection (`py latent_descent.py --load_from X --save_to Y`)
+# ---------------------------------------------------------------------------
+
+LOAD_FROM_ENV = "LSD_LOAD_FROM"     # env fallbacks for hosts that call main()
+SAVE_TO_ENV = "LSD_SAVE_TO"         # ignore argv (the launcher)
+
+
+def pkl_path_for(path):
+    """The pickle a session file name denotes: `custom.ini` -> `custom.pkl`,
+    `x.pkl` -> itself, an extension-less backup name -> name + `.pkl`
+    (splitext would mangle the dotted backup names)."""
+    path = str(path)
+    if path.endswith(".pkl"):
+        return path
+    if path.endswith(".ini"):
+        return path[:-4] + ".pkl"
+    return path + ".pkl"
+
+
+def ini_sibling_for(path):
+    """The legacy `.ini` (custom_data) that rides beside a session pickle."""
+    path = str(path)
+    if path.endswith(".ini"):
+        return path
+    if path.endswith(".pkl"):
+        return path[:-4] + ".ini"
+    return path + ".ini"
+
+
+def resolve_session_paths(argv=None, environ=None, root=None):
+    """(load_from, save_to) absolute paths, or None where nothing was asked.
+
+    `--load_from FILE` / `--save_to FILE` on argv win; the `LSD_LOAD_FROM` /
+    `LSD_SAVE_TO` env vars are the fallback. Relative paths resolve against
+    `root` (the repo root, the cwd of a direct launch). Unknown argv entries
+    are left alone (the model flag is parsed elsewhere with parse_known_args).
+    """
+    import argparse
+    argv = list(sys.argv[1:] if argv is None else argv)
+    environ = os.environ if environ is None else environ
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--load_from", "--load-from", dest="load_from", default=None)
+    parser.add_argument("--save_to", "--save-to", dest="save_to", default=None)
+    args, _unknown = parser.parse_known_args(argv)
+    load_from = args.load_from or environ.get(LOAD_FROM_ENV) or None
+    save_to = args.save_to or environ.get(SAVE_TO_ENV) or None
+    root = os.getcwd() if root is None else str(root)
+
+    def _abs(value):
+        if not value:
+            return None
+        value = os.path.expanduser(str(value))
+        return value if os.path.isabs(value) else os.path.join(root, value)
+
+    return _abs(load_from), _abs(save_to)
+
+
 def save(obj, path, excluded=None):
     """Atomic save: serialize FULLY first (so a dump failure leaves the existing
     pkl untouched — never a truncated/empty file), then temp-write + rename so a

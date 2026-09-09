@@ -394,7 +394,7 @@ class Swoosh:
 
 
     # [tint=(0.55, 0.073, 0.073, 1.0), show_tint=True]
-    ribbon_alpha = 0.91         # fill opacity of the band (below the fade area)
+    ribbon_alpha = 0.36         # fill opacity of the band (below the fade area)
     ribbon_fade_size = 328.2    # px: the fill starts thinning once the band's AREA
                                 # exceeds fade_size x fade_size; alpha then scales
                                 # inversely with area (constant total ink, 0 = off)
@@ -1371,6 +1371,19 @@ class Toggles:
         picker_max_stops = 4.0
         # [tint=(0.62, 0.36, 0.52)]
         picker_top_fraction = 0.3
+        # Emphasis flashes (Melty.emphasize / emphasize_click, the overlay
+        # pass): how far above the desktop's white the flash is lifted, in
+        # stops of linear light — the outline / ripple rings at
+        # 2^emphasis_stops (3 = white(8): 2000 nits on a 250-nit desktop),
+        # the rect's fill at 2^emphasis_fill_stops, the bloom halo around
+        # the outline at emphasis_stops too but faint. Callers pass a hue
+        # tint (SDR or P3) and the lift is applied at draw time, so an edit
+        # here is live. Under the "srgb" output everything clips to white
+        # and the flash just reads as a bright, saturated highlight.
+        # [tint=(0.62, 0.36, 0.52)]
+        emphasis_stops = 3.0
+        # [tint=(0.62, 0.36, 0.52)]
+        emphasis_fill_stops = 1.0
 
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:

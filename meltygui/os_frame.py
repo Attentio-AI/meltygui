@@ -336,6 +336,28 @@ def begin_frame():
                 if seen is not None and abs(seen[1] - far[axis]) < 1.0:
                     _STATE["os_seen"][i] = (seen[0], far[axis])
             _STATE["size_expected"][i] = size[i]
+    for axis in _AXIS:
+        _walls_to_edges(axis)
+
+
+def _walls_to_edges(axis):
+    """An OS edge already PAST the screen wall (the studio dragged partly
+    off the screen by the compositor's own move; Hyprland's reserved strip
+    moving the work area's edge under it) is where it is: the wall on that
+    side moves out to the edge for this frame's solves. Left at the work
+    area, the solver read the wall's floor chain as violated and clamped
+    the edge back onto the wall on the first OS-level drag — the studio
+    teleported by the whole overhang and grew by as much on the other
+    side (a top-left right-drag on a studio 475 px off the left edge,
+    09-09). Pinned there, a drag further out is blocked and flips (the
+    far side grows), a drag inward moves the edge, and the next frame's
+    stamp follows it back toward the work area."""
+    if _STATE["mode"] == "walls":
+        return
+    near, far = _STATE["edges"][axis]
+    scr_near, scr_far = _STATE["screen"][axis]
+    scr_near[axis] = min(scr_near[axis], near[axis])
+    scr_far[axis] = max(scr_far[axis], far[axis])
 
 
 def _foreign_change(axis, d, size, far_held):

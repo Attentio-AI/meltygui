@@ -353,7 +353,7 @@ def _begin_wm_resize(window, direction):
 
 
 def _toggle_maximize(window):
-    if glfw.get_window_attrib(window, glfw.MAXIMIZED):
+    if _maximized(window):
         glfw.restore_window(window)
     else:
         glfw.maximize_window(window)
@@ -468,7 +468,7 @@ def paint_window_controls(draw_list):
     io = imgui.get_io()
     disp_w = io.display_size.x
     mx, my = io.mouse_pos.x, io.mouse_pos.y
-    maximized = bool(window is not None and glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    maximized = _maximized(window)
     rects = _button_layout(disp_w, maximized)
     over_button = next((i for i, (x0, y0, x1, y1) in enumerate(rects)
                         if x0 <= mx <= x1 and y0 <= my <= y1), None)
@@ -544,6 +544,19 @@ def _close_blocked_by_merge():
         return False
 
 
+def _close_window(window):
+    """The close button's action. Flags the loop to exit and wakes it, so
+    the should_close check runs right after THIS frame instead of on the
+    next input event (the loop parks in glfw.wait_events). The surface
+    itself is hidden by the loop's exit path (LSDStudio._run_visualization's
+    finally) BEFORE the seconds-long teardown — never here, mid-frame: the
+    frame that fires this still swaps, and swapping onto a surface GLFW has
+    just unmapped is what the compositor-close callback path never does."""
+    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    glfw.set_window_should_close(window, True)
+    request_render()      # posts the empty event that wakes wait_events
+
+
 def draw_titlebar(window):
     """Per-frame entry point — call inside the imgui frame on the viz thread.
 
@@ -567,7 +580,7 @@ def draw_titlebar(window):
     io = imgui.get_io()
     disp_w, disp_h = io.display_size.x, io.display_size.y
     mx, my = io.mouse_pos.x, io.mouse_pos.y
-    maximized = bool(glfw.get_window_attrib(window, glfw.MAXIMIZED))
+    maximized = _maximized(window)
     sync_window_geometry(window)
     sync_input_region(window)
     # The strip and edge gestures hand the drag to the window manager
@@ -611,7 +624,7 @@ def draw_titlebar(window):
             elif _close_blocked_by_merge():
                 pass        # merge window opened instead; app stays up
             else:
-                glfw.set_window_should_close(window, True)
+                _close_window(window)
         _pressed_button = None
 
     # --- drag strip along the top edge -------------------------------------
@@ -723,8 +736,26 @@ def _frame_transparent(window):
 
 
 def _maximized(window):
+    """Is the OS window maximized? The ONE read every maximize-sensitive
+    path takes (the shadow inset, the button glyph, the edge zones, the
+    background right-drag's registration). GLFW's MAXIMIZED attribute
+    everywhere but Hyprland: Hyprland sends the xdg `maximized` state to
+    EVERY toplevel at map, to stop clients drawing their own decorations
+    (XDGShell.cpp, "this forces apps to not draw CSD"), and never clears
+    it — so GLFW read the studio as maximized for its whole life there:
+    inset 0, no edge zones, and draw_titlebar never registered the
+    background right-drag (09-09, "right-drag does nothing on
+    Hyprland"). There the feed's own flag is the truth: Hyprland's
+    `fullscreen == 1` (the maximize fullscreen mode) on the studio's
+    client, False until the feed has seen the window."""
+    if window is None:
+        return False
+    if _box_is_surface():
+        from src.lsd.gl_gui import geometry_feed
+        frame = geometry_feed._STATE.get("frame") or {}
+        return bool(frame.get("maximized", False))
     try:
-        return bool(window is not None and glfw.get_window_attrib(window, glfw.MAXIMIZED))
+        return bool(glfw.get_window_attrib(window, glfw.MAXIMIZED))
     except Exception:
         return False
 
@@ -890,12 +921,16 @@ def _box_is_surface():
     return geometry_feed.backend() == "hyprland"
 
 
-def set_surface_size(window, width, height):
+def set_surface_size(window, width, height, offset=None):
     """The one way this module resizes the OS surface: flags the resulting
     framebuffer-size callback as ours, so on_surface_resized leaves it
     alone (a compositor configure would be grown by the margin). On
-    Hyprland the box is ALSO resized through its dispatcher — the buffer
-    alone leaves the box where it was (geometry_feed.hypr_resize_window)."""
+    Hyprland the box is ALSO resized through its IPC — the buffer alone
+    leaves the box where it was — and ``offset`` (dx, dy), the move that
+    rides the same commit elsewhere, goes into that SAME request
+    (geometry_feed.hypr_set_box: resize + move anchored top-left, one
+    eval); other backends ignore ``offset`` here and arm the buffer
+    offset themselves (apply_pending_surface_size)."""
     global _self_resize
     _self_resize = True
     try:
@@ -904,7 +939,8 @@ def set_surface_size(window, width, height):
         _self_resize = False
     if _box_is_surface():
         from src.lsd.gl_gui import geometry_feed
-        geometry_feed.hypr_resize_window(width, height)
+        dx, dy = offset if offset else (0, 0)
+        geometry_feed.hypr_set_box(width, height, dx, dy)
 
 
 # An app-side resize requested mid-frame, applied at the next frame's start.
@@ -913,6 +949,11 @@ _pending_surface_size = globals().get("_pending_surface_size")
 
 _pending_surface_offset = globals().get("_pending_surface_offset")
 _frame_surface_offset = globals().get("_frame_surface_offset")
+# Frames a request has waited for the Hyprland feed to see the window (its
+# `address:` selector): the launch restore is filed before the feed's
+# first poll. Bounded so a dead feed can't hold a request forever.
+_pending_surface_wait = globals().get("_pending_surface_wait") or 0
+PENDING_SURFACE_WAIT_FRAMES = 300
 
 
 def request_surface_size(window, width, height, offset=None):
@@ -933,6 +974,7 @@ def apply_pending_surface_size(window):
     """LSDStudio's loop, before process_inputs: apply the queued resize so
     this frame lays out at the new size. Returns the size applied."""
     global _pending_surface_size, _pending_surface_offset, _frame_surface_offset
+    global _pending_surface_wait
     from src.lsd.gl_gui import wayland_move, os_frame
     wayland_move.clear_surface_offset()          # last frame's offset is spent
     # The roots' passes re-base with the OS near edge's motion lands HERE,
@@ -942,6 +984,17 @@ def apply_pending_surface_size(window):
     if size is None or window is None:
         return None
     offset = _pending_surface_offset
+    from src.lsd.gl_gui import geometry_feed
+    if (geometry_feed.backend() == "hyprland" and geometry_feed._hypr_selector() is None
+            and _pending_surface_wait < PENDING_SURFACE_WAIT_FRAMES):
+        # Hyprland resizes the box only through its IPC, addressed by the
+        # window handle the feed reports - before its first poll (the
+        # launch restore, LSDStudio's create-window path) nothing can be
+        # sent, so the request holds for the next frame. Applying it now
+        # spent it on a bare glfw.set_window_size Hyprland ignores.
+        _pending_surface_wait += 1
+        return None
+    _pending_surface_wait = 0
     _pending_surface_size = None
     _pending_surface_offset = None
     from src.lsd.gl_gui.toggles import Toggles
@@ -951,7 +1004,11 @@ def apply_pending_surface_size(window):
         except Exception:
             was = None
         print(f"[os_frame] apply pending surface size {size} (was {was}) offset {offset}")
-    set_surface_size(window, *size)
+    from src.lsd.gl_gui import geometry_feed
+    on_hyprland = geometry_feed.backend() == "hyprland"
+    # Hyprland ignores a toplevel's buffer offset (the surface stays
+    # anchored at `at`): the move rides the box resize's own IPC request.
+    set_surface_size(window, *size, offset=offset if on_hyprland else None)
     # The move rides the same commit: armed HERE, right after GLFW's resize
     # (which reset the EGL window's offset to 0) and before anything is
     # drawn. Arming it late - right before the swap - blanked every frame
@@ -963,14 +1020,8 @@ def apply_pending_surface_size(window):
     # as for GLFW's own resizes. Nothing else touches the EGL window until
     # the swap.
     _frame_surface_offset = None
-    if offset and (offset[0] or offset[1]):
-        from src.lsd.gl_gui import geometry_feed
-        if geometry_feed.backend() == "hyprland":
-            # Hyprland ignores a toplevel's buffer offset (its surface
-            # stays anchored at `at`): ask it to move the window instead.
-            geometry_feed.hypr_move_window(offset[0], offset[1])
-        else:
-            wayland_move.set_surface_offset(offset[0], offset[1])
+    if offset and (offset[0] or offset[1]) and not on_hyprland:
+        wayland_move.set_surface_offset(offset[0], offset[1])
     return size
 
 
