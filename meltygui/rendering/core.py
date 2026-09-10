@@ -964,7 +964,10 @@ def render_func(*args, **o_kwargs):
 
         suffix = f"{old_suffix}_{suffix}_{unique_name}_{key}"
 
-        if "layer_unique" in kwargs:
+        # A deferred re-entry from Melty.draw (the layer pass) brings the
+        # window's own unique, and parks the cursor at its ABS position.
+        deferred_entry = "layer_unique" in kwargs
+        if deferred_entry:
             unique = kwargs.pop("layer_unique")
         else:
             if len(Melty.melty_window_stack) > 0:
@@ -1021,8 +1024,14 @@ def render_func(*args, **o_kwargs):
         # window on the stack: a host that draws its contents straight to the
         # root imgui window (the hdr-viewer) still gets popovers - the
         # context_menu= below - placed relative to their spawner (09-10).
+        # Never on a deferred re-entry: Melty.draw parks the cursor at the
+        # window's abs position, which already carries window_pos, so
+        # capturing the offset from it here pulls window_pos in once more
+        # per cached frame: the colour-picker popover (window_pos y = the
+        # exposure-band lift) walked up the screen until the display cap
+        # held it, and jittered whenever its spawner's body ran (09-10).
         explicit_parent = kwargs.get("parent_window") is not None
-        if _has_imgui and (len(Melty.melty_window_stack) > 0 or explicit_parent):
+        if _has_imgui and not deferred_entry and (len(Melty.melty_window_stack) > 0 or explicit_parent):
             draw_state.parent_window = kwargs.get("parent_window", None)
             if draw_state.parent_window is None:
                 draw_state.parent_window = Melty.melty_window_stack[-1]

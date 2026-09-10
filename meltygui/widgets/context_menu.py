@@ -18,7 +18,7 @@ demo = {"greeting": "right-click me", "count": 3}
 
 
 @window
-@render_func(tint=(0.55, 0.25, 0.5), auto_resize=False, min_width=420, min_height=200)
+@render_func(tint=(0.78, 0.16, 0.75), auto_resize=False, min_width=420, min_height=200)
 def draw_context_menu_demo(_, draw_state):
     imgui.text("context_menu={label: callable} — right-click a value below")
 
