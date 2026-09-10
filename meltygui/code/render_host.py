@@ -809,10 +809,10 @@ class RenderHost(_DeepAttrMixin, dict):
             if Melty.cache is not None and wds0._tile_id is not None:
                 Melty.cache.invalidate_up(wds0._tile_id, force=True, max_depth=4)
             return True
-        # Every host is windowed (draw() gives each a 40x40 stub envelope at
-        # (-38, 100) - invisible chrome; the DATA windows a host feeds are
-        # separate subwindows drawn from draw_main's registered loop), so
-        # `self.window` used to short-circuit this gate for code hosts and the
+        # Every host is windowed (draw() draws each a stub envelope parked
+        # entirely OFF the screen - invisible chrome; the DATA windows a host
+        # opens are separate subwindows drawn from draw_main's registered loop), so
+        # `self.window` used to short-circuit this gate for ALL hosts and the
         # event-driven pump below never ran: 17 hosts × ~0.2 ms of envelope +
         # io-wrapper blit-replay on every frame the mouse wasn't held (Lukas
         # 08-31: dropped the window term - flags, upstream identity, dirty
@@ -846,6 +846,16 @@ class RenderHost(_DeepAttrMixin, dict):
                 if cache._is_dirty(tile):
                     return True
         return (Melty.frame_count + (id(self) >> 4)) % 30 == 0
+
+    @staticmethod
+    def stub_width(stub_size):
+        """The width the stub envelope actually renders at: the size draw()
+        asks for, floored by Mode.HOST_WINDOW's min_width (the wrapper clamps
+        `width` up to it). draw() parks the envelope this far off the display."""
+        from typing import Any
+        from src.lsd.gl_gui.view.mode import Mode
+        floor = Mode.HOST_WINDOW.value[Any].kwargs.get("min_width", 0)
+        return max(stub_size, floor)
 
     def draw(self, **extra):
         """Drive the wrapper for one frame. Resolve input_value (an upstream proxy →
@@ -887,15 +897,28 @@ class RenderHost(_DeepAttrMixin, dict):
 
             request_render()
 
+        # The envelope is chrome only (a host's DATA windows are separate
+        # @windows), so it is parked entirely OFF the display: its right edge
+        # sits `stub_gap` px left of x = 0, where nothing paints and nothing
+        # hit-tests. The mode's min_width / min_height floor the 40 px asked
+        # for (Mode outranks the caller, style guide rule 5), so the offset
+        # is taken off the floored width — it used to sit at x = -38 with the
+        # 50 px floor and showed a 12 px sliver down the left edge.
+        # [tint=(0.3, 0.0, 0.7)] stub_size = 40
+        # [tint=(0.3, 0.0, 0.7)] stub_gap = 10
+        # [tint=(0.3, 0.0, 0.7)] stub_top = 100
+        stub_size = 40
+        stub_gap = 10
+        stub_top = 100
         win_kwargs = {"name": self.name}
         if self.window:
             win_kwargs.setdefault("mode", Mode.HOST_WINDOW)
             win_kwargs["active_layer"] = 1
             win_kwargs["unmanaged"] = True
             win_kwargs["closed"] = False
-            win_kwargs['height'] = 40
-            win_kwargs['width'] = 40
-            win_kwargs["window_pos"] = (-38, 100)
+            win_kwargs['height'] = stub_size
+            win_kwargs['width'] = stub_size
+            win_kwargs["window_pos"] = (-(self.stub_width(stub_size) + stub_gap), stub_top)
 
         win_kwargs.update(extra)
 

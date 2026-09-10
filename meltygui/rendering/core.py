@@ -1017,8 +1017,13 @@ def render_func(*args, **o_kwargs):
         if "closed" in kwargs:
             draw_state.closed = kwargs["closed"]
 
-        if _has_imgui and len(Melty.melty_window_stack) > 0:
-            draw_state.parent_window = kwargs.get("parent_window", Melty.melty_window_stack[-1])
+        # An explicit parent_window= makes the view render even with no melty
+        # window on the stack: a host that draws its contents straight to the
+        # root imgui window (the hdr-viewer) still gets popovers - the
+        # context_menu= below - placed relative to their spawner (09-10).
+        explicit_parent = kwargs.get("parent_window") is not None
+        if _has_imgui and (len(Melty.melty_window_stack) > 0 or explicit_parent):
+            draw_state.parent_window = kwargs.get("parent_window", None)
             if draw_state.parent_window is None:
                 draw_state.parent_window = Melty.melty_window_stack[-1]
 
@@ -1051,14 +1056,39 @@ def render_func(*args, **o_kwargs):
 
         if closable:
             if draw_state.parent_window is None and not kwargs.get("unmanaged", False):
-                # Read before the defaultdict inserts the entry below.
+                # Read BEFORE the defaultdict inserts the entry below. A new
+                # key first reuses the hollow entry saved under this NAME
+                # (or ID of a previous draw_state - see reclaim_window_slot),
+                # keeping its z-order slot instead of leaving a stale twin.
                 newly_registered = tile_id not in Melty.registered_windows
+                _entry = Melty.registered_windows.get(tile_id)
+                if _entry is None or _entry.draw_state is None:
+                    # First registration of this key this run (a loaded
+                    # session is hollow until now) - once per window.
+                    if Melty.reclaim_window_slot(name, tile_id):
+                        newly_registered = False
                 Melty.registered_windows[tile_id].input_value = input_value
                 Melty.registered_windows[tile_id].draw_state = draw_state
                 Melty.registered_windows[tile_id].window_args = kwargs
                 Melty.registered_windows[tile_id].name = name
                 # First-seen windows feed the dock's "Recently added" section.
                 Melty.note_window_seen(name)
+                # Mirror the resolved tint onto the draw_state, open or
+                # closed. The dock reads a row's tint through locate_tint:
+                # draw_state._kwargs first, else draw_state.tint - and a
+                # CLOSED window returns below BEFORE _restamp_kwargs, while
+                # the render path only seeds draw_state.tint if it is None
+                # (never None since DrawState defaults it). So a window's
+                # `@window(tint=...)` / instance / decoration tint reached the
+                # dock only while the window was open, and every closed
+                # window read the default grey after a reboot. Stamped here
+                # it persists with the draw_state and re-stamps on the first
+                # frame of every boot (registered_windows is hollow then, so
+                # the wrapper runs once per closed window before the
+                # dispatch loop's skip takes over).
+                _window_tint = kwargs.get("tint")
+                if _window_tint is not None and draw_state.tint != _window_tint:
+                    draw_state.tint = _window_tint
 
                 if newly_registered and Melty.frame_count > 2:
                     Melty.cache.invalidate_by_obj(Melty.registered_windows)
@@ -1389,7 +1419,7 @@ def render_func(*args, **o_kwargs):
                 if layer == len(Melty.registered_windows) - 1 and not "z_absolute" in kwargs:
                     layer = len(Melty.registered_windows) + Melty.top_layer_boost
 
-                if closable and len(Melty.melty_window_stack) > 0:
+                if closable and (len(Melty.melty_window_stack) > 0 or explicit_parent):
                     if kwargs.get("inline", False):
                         if kwargs.get("with_header", None) is not None:
                             imgui.push_id(tile_id + "_inline")
@@ -1974,8 +2004,13 @@ def render_func(*args, **o_kwargs):
                 # higher than the last - so several lost windows pile up
                 # visibly along the edge instead of covering each other.
                 # window_pos shifts by the delta in ABS coordinates (same as
-                # summon_window) so anchor points ride along.
-                if draw_state.frame_count == 0 and draw_state.parent_window is None:
+                # summon_window) so anchor offsets ride along. An `unmanaged`
+                # window is placed by code, never saved or dragged (the
+                # RenderHost's envelopes, parked off the display on
+                # purpose), so it is never rescued; the rescue would land it
+                # on screen for its first frame and waste a cascade slot.
+                if (draw_state.frame_count == 0 and draw_state.parent_window is None
+                        and not kwargs.get("unmanaged", False)):
                     disp_w, disp_h = imgui.get_io().display_size
                     if disp_w > RESCUE_EDGE_MARGIN * 2 and disp_h > RESCUE_EDGE_MARGIN * 2:
                         w = draw_state.width if draw_state.width else 200
@@ -3976,73 +4011,91 @@ def render_func(*args, **o_kwargs):
                     draw_state.selected = draw_state in Melty.selected
 
                 ########### CONTEXT MENU HANDLING ############
-                from src.lsd.gl_gui.view.core_views.new_core_view import draw_context_menu
-                draw_context_menu = kwargs.get("context_menu", draw_context_menu)
-                if draw_context_menu is not None:
-                    # Gate on the occlusion-aware bounding hover so a right-click
-                    # only opens the topmost view's menu - not views sitting
-                    # behind a closable window under the cursor. (on_action's
-                    # priority resolution should pick the topmost subscriber, but
-                    # this guards the case where the front window isn't itself a
-                    # right-click subscriber and therefore doesn't consume the event.)
-                    is_root_view = draw_state.parent_window is None and not draw_state.closable
+                from src.lsd.gl_gui.view.core_views.new_core_view import (
+                    draw_context_menu, draw_context_menu_items, INSPECT)
+                # context_menu={label: callable}: a right-click opens the labels as
+                # a dropdown menu at the origin (draw_context_menu_items) instead
+                # of the inspector; an Inspect row opens the inspector. No dict:
+                # the right-click opens the inspector directly, as it always has.
+                menu_items = kwargs.get("context_menu")
+                # Gate on the occlusion-aware bounding hover so a right-click
+                # only opens the topmost view's menu - not views sitting
+                # behind a closable window under the cursor. (on_action's
+                # priority resolution could pick the topmost subscriber, but
+                # this guards the case where the front window isn't itself a
+                # right-click subscriber and so doesn't consume the event.)
+                is_root_view = draw_state.parent_window is None and not draw_state.closable
 
-                    if not is_root_view:
-                        right_click = draw_state.on_action("right_mouse_clicked")
-                        if right_click and draw_state._bounding_hovered:
-                            draw_state.context_menu_open = not draw_state.context_menu_open
-                            if draw_state.context_menu_ds is not None:
-                                draw_state.context_menu_ds.closed = not draw_state.context_menu_open
-                                if draw_state.context_menu_open:
-                                    # Reopen at the pin anchor. window_pos is
-                                    # also where a drag of the menu starts, and
-                                    # the draw_state outlives the open, so a
-                                    # stale offset would otherwise anchor the
-                                    # menu that far from its spawner.
-                                    draw_state.context_menu_ds.window_pos = (0, 0)
-                        if draw_state.context_menu_open:
-                            # (The depth menus are pushed in the inline pass - see the
-                            # `active_window is None` block - not here in the full-render
-                            # pass, where the stack is Melty.draw's re-dispatch.)
-                            # if draw_state._is_nested:
-                            #     bg_offset = 0
-                            # Melty.bg_depth += bg_offset
-                            tint = style_manager.get_tint()
+                # A root view gets no inspector on right-click, but an explicit
+                # context_menu= dict is an opt-in: the hdr-viewer draws
+                # draw_texture straight into its root window and wants its
+                # menu there (09-10).
+                if not is_root_view or menu_items is not None:
+                    # The menu opens on the right button's event, judged a click
+                    # by the travel the UP event covers - not on the double_clicked:
+                    # CLICKED is held for the double-click window (250 ms) whenever
+                    # a double subscriber is hovered, and the corner double
+                    # right-drag registers it on every window, so the menu
+                    # always came up a quarter second late (09-10).
+                    from src.lsd.gl_gui.events.input_handler import CLICK_MAX_DISTANCE
+                    release = draw_state.on_action("right_mouse_up")
+                    right_click = (release is not None and draw_state._bounding_hovered
+                                   and (release.total_dx ** 2 + release.total_dy ** 2)
+                                   <= CLICK_MAX_DISTANCE ** 2)
+                    open_inspector = False
+                    if menu_items is not None:
+                        picked = draw_context_menu_items(draw_state, menu_items, right_click, name, unique)
+                        open_inspector = picked is INSPECT
+                        right_click = False   # the items menu took it; Inspect is the inspector's way in
+                    if right_click or open_inspector:
+                        draw_state.context_menu_open = True if open_inspector else not draw_state.context_menu_open
+                        if draw_state.context_menu_ds is not None:
+                            draw_state.context_menu_ds.closed = not draw_state.context_menu_open
+                            if draw_state.context_menu_open:
+                                # Reopen at the pin anchor. window_pos is
+                                # also where a drag of the menu ended, and
+                                # the draw_state outlives the open, so a
+                                # stale value would otherwise reopen the
+                                # menu that far from its spawner.
+                                draw_state.context_menu_ds.window_pos = (0, 0)
+                    if draw_state.context_menu_open:
+                        # (Call-site frames are captured in the inline pass - see the
+                        # `active_layer is None` block - not here in the full-render
+                        # pass, where the frame is Melty.draw's re-dispatch.)
+                        tint = style_manager.get_tint()
 
-                            mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
-                                                                       value=0.03, factor=0.2,
-                                                                       saturation_scale=0.5,
-                                                                       alpha=1.0)
-                            returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
-                                                             tint=mixed_color, show_tint=False, show_add_delete=False,
-                                                             min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
-                                                             persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
-                                                             bg_offset=Tint.context_menu_bg_offset, swoosh_mode=SwooshMode.LINE,
-                                                             with_footer=None, use_cache=True,
-                                                             name=f"{name}##context_menu_{unique}", auto_resize=False,
-                                                             return_extras=True)
+                        mixed_color = style_manager.make_color_rgb(tint[0], tint[1], tint[2],
+                                                                   value=0.03, factor=0.2,
+                                                                   saturation_scale=0.5,
+                                                                   alpha=1.0)
+                        returned_val = draw_context_menu(input_value=draw_state, mode=Mode.WINDOW_NO_HEADER, func=func,
+                                                         tint=mixed_color, show_tint=False, show_add_delete=False,
+                                                         min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
+                                                         persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
+                                                         bg_offset=Tint.context_menu_bg_offset, swoosh_mode=SwooshMode.LINE,
+                                                         with_footer=None, use_cache=True,
+                                                         name=f"{name}##context_menu_{unique}", auto_resize=False,
+                                                         return_extras=True)
 
-                            ctx_ds = returned_val[2]
-                            ctx_ds.tint = tint
-                            # Melty.bg_depth -= bg_offset
-                            draw_state.context_menu_ds = ctx_ds
-                            # ctx_ds.parent_window = Melty.melty_window_stack[-1] if len(Melty.melty_window_stack) > 0 else None
-                            if Melty.frame_count > 2:
-                                if ctx_ds.last_seen is None:
-                                    ctx_ds.closed = False
-                                    # No scroll adjustment here: the pin
-                                    # anchors to the view's raw box top, which
-                                    # sits far above the visible clip when the
-                                    # view is scrolled, but DrawState._pinned_base_y
-                                    # now bounds that anchor to the clip window
-                                    # so the menu stays pinned to it. Adding
-                                    # (clamped_top - abs_top) on top of the bound
-                                    # double-compensated and opened the menu a
-                                    # scroll-height BELOW its spawner.
-                                    ctx_ds.window_pos = (0, 0)
+                        ctx_ds = returned_val[2]
+                        ctx_ds.tint = tint
+                        draw_state.context_menu_ds = ctx_ds
+                        if Melty.frame_count > 2:
+                            if ctx_ds.last_seen is None:
+                                ctx_ds.closed = False
+                                # No scroll compensation here: the pin
+                                # anchors to the target's raw box top, which
+                                # sits far above the visible clip when the
+                                # view is scrolled, but DrawState._pinned_base_y
+                                # now bounds that anchor to the parent window
+                                # so the menu stays adjacent to it. Adding
+                                # (clipped_top - abs_top) on top of that bound
+                                # over-compensated and opened the menu a
+                                # scroll-height BELOW its spawner.
+                                ctx_ds.window_pos = (0, 0)
 
-                            if ctx_ds.closed:
-                                draw_state.context_menu_open = False
+                        if ctx_ds.closed:
+                            draw_state.context_menu_open = False
 
                 if kwargs.get("show_bg", False):
                     outline_margin = 3

@@ -17,8 +17,8 @@ from typing import Any
 
 import OpenGL.GL as gl
 import glfw
+import math
 import numpy
-import torch
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui.fonts import Font
@@ -32,7 +32,7 @@ from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.modes import Modes
 from src.lsd.gl_gui.notifications import display
 from src.lsd.gl_gui.render_funcs import RenderFuncs
-from src.lsd.gl_gui.toggles import Toggles, Tint, mix
+from src.lsd.gl_gui.toggles import Toggles, Tint, mix, rgb_to_hsv, hsv_to_rgb
 from src.lsd.gl_gui.gl_state import GLState
 from src.lsd.gl_gui.utils.custom_views import print_colored_traceback, push_style_var, \
     pop_style_var, end, begin
@@ -2636,6 +2636,29 @@ def global_search_results(q, store=None, limit=60, kinds=None, scores=None, tier
                 scores[id(hit)] = (_dist, _prefix, _terms)
     return out
 
+def _search_click_away(search, draw_state):
+    """True when the GlobalSearch window should close because the pointer
+    was pressed outside it. Same mechanism as draw_tuple_fast's picker: the
+    window holds `Melty.popover_focused_ds` while open. The root's
+    left_mouse_down runs `clear_focus` with the press's hit stack protected,
+    so a press INSIDE this window's tree keeps the slot and a press anywhere
+    else empties it (or hands it to whatever popover that press opened); the
+    next body run reads the slot and closes. A popover spawned FROM the
+    search — a chip's colour picker, a row's dropdown — has this window in
+    its ancestor closure, so taking the slot does not close the search.
+    The slot is (re)taken whenever the body resumes after a gap of frames,
+    which is how every close path ends (Esc, the X, a picked hit stop the
+    body), with the same opening-click grace the pickers stamp."""
+    # Frames the body may skip before "reopened" is assumed. [tint=(0.9, 0.5, 0.2)]
+    reopen_gap_frames = 2
+    if Melty.frame_count - search._body_frame > reopen_gap_frames:
+        Melty.popover_focused_ds = draw_state
+        Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+    search._body_frame = Melty.frame_count
+    slot = Melty.popover_focused_ds
+    return slot is None or draw_state.id not in Melty.ancestor_closure([slot])
+
+
 def _dismiss_global_search():
     """Close the GlobalSearch window and release the box's text focus — called
     after a result is activated (clicked or Enter), so picking a result also
@@ -3592,6 +3615,11 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # Expose our own window draw_state + honour a focus request from draw_main's
     # Ctrl+Shift+F shortcut (one-shot: grab the box's text focus this frame).
     input_value.window_ds = draw_state
+    # Click-away dismissal, the draw_tuple's way (see _search_click_away):
+    # a press anywhere outside this window's tree closes the search.
+    if _search_click_away(input_value, draw_state):
+        _dismiss_global_search()
+        return False, input_value
     # Warm the shared Toggles cst-dict host so the dict is ready by the time
     # the Toggles row is picked, and register this window as its consumer -
     # that keeps it alive while the search is open and lets the idle sweep
@@ -4560,6 +4588,7 @@ class GlobalSearch:
     query = ""
     window_ds = None  # this window's own draw_state (for the show shortcut)
     _focus_requested = False
+    _body_frame = -10  # frame the body last drew - a gap means "reopened" (_search_click_away)
     _last_query = None
     _last_scope = None  # (query, active_kind) the results were computed for
     _scores = None  # id(hit) -> (dist, prefix, file) for the current results (score = 0)
@@ -4749,8 +4778,6 @@ def run_chain(input_value, chain=None, draw_state=None, route=None,
 
     return changed, value     
 
-some_test_tensor = torch.randn(3, 3)
-
 # Nested sample data for the recursive dropdown demo.
 dropdown_demo_data = {
     "small": 12,
@@ -4814,12 +4841,19 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
                 GlobalSearch.window_ds.invalidate()
         else:
             gs = Core.melty.open_window("GlobalSearch")
-            # Cursor for a never-placed window, its previous spot
-            # otherwise; bottom-half rule + clamped to on-screen - see
-            # _place_global_search_window.
-            _place_global_search_window(gs, imgui.get_mouse_pos(),
-                                        imgui.get_io().display_size.y)
-            GlobalSearch._focus_requested = True
+            if gs is None:
+                # Not registered yet (nothing has drawn it this session): say so
+                # instead of raising inside the root's frame.
+                from src.lsd.gl_gui.notifications import notify as _notify
+                _notify("GlobalSearch window is not registered", tint=(1, 0.4, 0.4),
+                        tag="GlobalSearch")
+            else:
+                # Cursor for a never-placed window, its remembered spot
+                # otherwise; bottom-half rule + clamped fully onscreen - see
+                # _place_global_search_window.
+                _place_global_search_window(gs, imgui.get_mouse_pos(),
+                                            imgui.get_io().display_size.y)
+                GlobalSearch._focus_requested = True
         request_render()
 
     # Ctrl+Shift+3: the region screenshot tool (utils.screenshot) - same
@@ -5040,6 +5074,8 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
             _gs.closed = True
             Core.melty.text_focused_ds = None
             Core.melty.focused_ds = None
+            if Core.melty.popover_focused_ds is _gs:
+                Core.melty.popover_focused_ds = None
 
             request_render()
 
@@ -5080,10 +5116,18 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
     # clear the root's nested list. A window opened by any path sets
     # closed=False on this same draw_state, so it draws the next frame.
     _dm_mark("head")
+    # Only a draw_state that IS the state registry's object under its key
+    # may be skipped: the skip refreshes that object's delete countdown in
+    # place of the wrapper, so refreshing a stale key (a previous run's,
+    # left on the ManagedWindow across an in-process relaunch) let the
+    # new draw_state under the same key be pruned at the next save.
+    # A mismatch falls through to the wrapper, which re-links its entry.
     _closed_windows = {}
+    _registry = vis.root.draw_state_registry
     for _mw in Core.melty.registered_windows.values():
         _mds = _mw.draw_state
-        if _mds is not None and _mds.closed and _mw.name:
+        if (_mds is not None and _mds.closed and _mw.name
+                and _registry.get(_mds.unique) is _mds):
             _closed_windows[_mw.name] = _mds
 
     for window_cls, stored_kwargs in Core.melty.annotated_window_classes.values():
@@ -5420,340 +5464,9 @@ def draw_pending_texture(input_value: PendingTexture, draw_state, **kwargs):
     return return_val
 
 
-@render_func(is_default_for=numpy.uint32, show_bg=False, use_cache=False, show_add_delete=False, z_offset=0,
-             fill_height=True, selectable=False,
-             indent_size=0, min_width=35, min_height=35, wrap=False, disable_scroll=True,
-             zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
-def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
-                 zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
-                 max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
-                 draw_state=None, jet=False, **kwargs):
-    original_id = input_value
-    texture_id = input_value
-    imgui.dummy(draw_state.width, draw_state.height - 20)
-
-    # Ensure we have valid state if this is the first run
-    if not hasattr(zoom_state, 'zoom'):
-        zoom_state.zoom = 1.0
-        zoom_state.center_u = 0.5
-        zoom_state.center_v = 0.5
-
-    # Check if opengl texture ID is valid
-    if not gl.glIsTexture(texture_id):
-        imgui.text(f"Error: {texture_id} is not a valid texture")
-        return False, input_value
-
-    # 1. Query Texture Properties
-    original_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
-    gl.glBindTexture(gl.GL_TEXTURE_2D, texture_id)
-
-    width = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_WIDTH)
-    height = gl.glGetTexLevelParameteriv(gl.GL_TEXTURE_2D, 0, gl.GL_TEXTURE_HEIGHT)
-    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
-
-    if width > 16384 or height > 16384:
-        imgui.text(f"Error: Texture size {width}x{height} exceeds maximum supported size.")
-        return False, input_value
-
-    if width == 0 or height == 0:
-        return False, input_value
-
-    # 2. Canvas Setup (Fill available space)
-    view_width = max(1, draw_state.width)
-    view_height = max(1, draw_state.height)
-
-    # 3. Calculate Aspect Ratio Corrections
-    tex_aspect = width / height
-    view_aspect = view_width / view_height
-
-    # Calculate the visible UV width/height based on zoom and aspect ratio.
-    if view_aspect > tex_aspect:
-        # View is wider: Fit to Height
-        uv_height_size = 1.0 / zoom_state.zoom
-        uv_width_size = uv_height_size * (view_aspect / tex_aspect)
-    else:
-        # View is taller: Fit to Width
-        uv_width_size = 1.0 / zoom_state.zoom
-        uv_height_size = uv_width_size * (tex_aspect / view_aspect)
-
-    mixed_color = (1, 1, 1, 1)
-    highlight_color = (1, 1, 1, 1)
-
-    if style_manager is not None:
-        mixed_color = style_manager.make_color_rgb(*mixed_color[:3],
-                                                   value=0.3,
-                                                   factor=0.9,
-                                                   saturation_scale=1.0,
-                                                   alpha=1.0)
-        highlight_color = style_manager.make_color_rgb(*mixed_color[:3],
-                                                       value=1.0,
-                                                       factor=0.9,
-                                                       saturation_scale=1.0,
-                                                       alpha=1.0)
-    io = imgui.get_io()
-    overlay: _DrawList = imgui.get_overlay_draw_list()
-
-    if right_mouse_drag:
-        b_str = f"{zoom_state.brightness:.3f}"
-        overlay.add_text(right_mouse_drag.x, right_mouse_drag.y - 30,
-                         col=pack_color(*highlight_color[:3], 1),
-                         text=f"brightness:{zoom_state.brightness:.3}\ncontrast:{zoom_state.contrast:.3}")
-
-        if io.key_shift:
-            if io.key_ctrl:
-                zoom_state.hue += right_mouse_drag.dx * 0.001
-                zoom_state.saturation -= right_mouse_drag.dy * 0.001
-            else:
-                zoom_state.brightness += right_mouse_drag.dx * 0.001
-                zoom_state.contrast -= right_mouse_drag.dy * 0.001
-        else:
-            if io.key_ctrl:
-                zoom_state.hue += right_mouse_drag.dx * 0.005
-                zoom_state.saturation -= right_mouse_drag.dy * 0.005
-            else:
-                zoom_state.brightness += right_mouse_drag.dx * 0.005
-                zoom_state.contrast -= right_mouse_drag.dy * 0.005
-
-        # zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
-        # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
-
-    if jet:
-        texture_id = Core.melty.filter.brightness_contrast(
-            input_value,
-            brightness=zoom_state.brightness,
-            contrast=zoom_state.contrast
-        )
-
-        # texture_id = Core.melty.filter.swirl(
-        #     input_value,
-        #     radius=zoom_state.brightness,
-        #     angle=zoom_state.contrast
-        #
-        # )
-        texture_id = Core.melty.filter.jet(texture_id, offset=zoom_state.hue)
-    else:
-        texture_id = Core.melty.filter.brightness_contrast(
-            input_value,
-            brightness=zoom_state.brightness,
-            contrast=zoom_state.contrast
-        )
-
-        # texture_id = Core.melty.filter.swirl(
-        #     input_value,
-        #     radius=zoom_state.brightness,
-        #     angle=zoom_state.contrast
-        #
-        # )
-        texture_id = Core.melty.filter.hue_saturation(
-            texture_id,
-            saturation=(zoom_state.saturation),
-            hue_shift=(zoom_state.hue),
-        )
-
-    # texture_id = Core.melty.filter.swirl(
-    #     input_value,
-    #     radius=1.0,
-    #     angle=(zoom_state.brightness * 5),
-    # )
-    # texture_id = Core.melty.filter.swirl(
-    #     texture_id,
-    #     angle=zoom_state.brightness,
-    #     radius=zoom_state.contrast
-    # )
-
-    p_min = (draw_state.abs_left + 2, draw_state.abs_top + 2)
-    p_max = (draw_state.abs_left + draw_state.width, draw_state.abs_top + draw_state.height - 2)
-    p_min_x, p_min_y = p_min[0], p_min[1]
-
-    scroll_delta = 0
-    if scroll_y_changed is not None:
-        scroll_delta = scroll_y_changed.value
-
-    # --- Logic: Zoom and Pan ---
-
-    zoom_delta = 0.0
-
-    # 4a. Handle Zoom Triggers (Scroll & Keyboard)
-
-    # Keyboard Shortcuts (1, 2, 3, 4)
-    forced_zoom = -1.0
-    key_1 = 49
-    numpad_key_1 = 321
-    if hovered:
-        if imgui.is_key_pressed(key_1) or imgui.is_key_pressed(numpad_key_1):  # Key '1'
-            forced_zoom = 1.0
-            # Reset Pan to Center
-            zoom_state.center_u = 0.5
-            zoom_state.center_v = 0.5
-            zoom_state.brightness = 0.0
-            zoom_state.contrast = 1.0
-            zoom_state.hue = 0.0
-            zoom_state.saturation = 1.0
-        elif imgui.is_key_pressed(50):  # Key '2'
-            forced_zoom = 0.5
-            zoom_state.brightness = 0.0
-            zoom_state.contrast = 1.0
-            zoom_state.hue = 0.0
-            zoom_state.saturation = 1.0
-        elif imgui.is_key_pressed(51):  # Key '3'
-            forced_zoom = 0.25
-            zoom_state.brightness = 0.0
-            zoom_state.contrast = 1.0
-            zoom_state.hue = 0.0
-            zoom_state.saturation = 1.0
-        elif imgui.is_key_pressed(52):  # Key '4'
-            forced_zoom = 0.125
-            zoom_state.brightness = 0.0
-            zoom_state.contrast = 1.0
-            zoom_state.hue = 0.0
-            zoom_state.saturation = 1.0
-
-    if forced_zoom > 0:
-        zoom_state.zoom = forced_zoom
-        # Recalculate uv sizes immediately for consistent bounding this frame
-        if view_aspect > tex_aspect:
-            uv_height_size = 1.0 / zoom_state.zoom
-            uv_width_size = uv_height_size * (view_aspect / tex_aspect)
-        else:
-            uv_width_size = 1.0 / zoom_state.zoom
-            uv_height_size = uv_width_size * (tex_aspect / view_aspect)
-
-    # Scroll Logic
-    if scroll_delta != 0:
-        if io.key_shift:
-            zoom_delta = scroll_delta * zoom_speed * 0.3
-        else:
-            zoom_delta = scroll_delta * zoom_speed
-    elif middle_mouse_drag and middle_mouse_drag.modifiers == glfw.MOD_CONTROL:
-        zoom_delta = io.mouse_delta.y * -0.008
-
-    # 4b. Handle Pan (Middle Click Drag)
-    if middle_mouse_drag and middle_mouse_drag.modifiers != glfw.MOD_CONTROL:
-        u_scale = uv_width_size / view_width
-        v_scale = uv_height_size / view_height
-        if middle_mouse_drag.modifiers == glfw.MOD_SHIFT:
-            zoom_state.center_u -= middle_mouse_drag.dx * u_scale * 0.5
-            zoom_state.center_v += middle_mouse_drag.dy * v_scale * 0.5
-        else:
-            zoom_state.center_u -= middle_mouse_drag.dx * u_scale
-            zoom_state.center_v += middle_mouse_drag.dy * v_scale
-
-    # 4c. Apply Zoom Logic (Zoom to Cursor)
-    if zoom_delta != 0.0:
-        zoom_factor = 1.0 + zoom_delta
-        new_zoom = max(min_zoom, min(zoom_state.zoom * zoom_factor, max_zoom))
-
-        if new_zoom != zoom_state.zoom:
-            mouse_pos = imgui.get_mouse_pos()
-
-            if io.key_ctrl:
-                mouse_u_ratio, mouse_v_ratio = (0.5, 0.5)
-            else:
-                mouse_u_ratio = (mouse_pos[0] - p_min_x) / view_width
-                mouse_v_ratio = (mouse_pos[1] - p_min_y) / view_height
-
-            curr_uv_w = uv_width_size
-            curr_uv_h = uv_height_size
-
-            # Recalculate NEW UV dimensions
-            if view_aspect > tex_aspect:
-                new_uv_h = 1.0 / new_zoom
-                new_uv_w = new_uv_h * (view_aspect / tex_aspect)
-            else:
-                new_uv_w = 1.0 / new_zoom
-                new_uv_h = new_uv_w * (tex_aspect / view_aspect)
-
-            diff_w = curr_uv_w - new_uv_w
-            diff_h = curr_uv_h - new_uv_h
-
-            zoom_state.center_u += diff_w * (mouse_u_ratio - 0.5)
-            zoom_state.center_v += diff_h * (0.5 - mouse_v_ratio)
-
-            zoom_state.zoom = new_zoom
-
-            # Update these for Step 5
-            uv_width_size = new_uv_w
-            uv_height_size = new_uv_h
-
-    # 5. Calculate Final UVs and Clamp to Bounds
-    half_uv_w = uv_width_size * 0.5
-    half_uv_h = uv_height_size * 0.5
-
-    # --- Bounding Logic Start ---
-    margin_px = 20.0
-
-    pixel_u = uv_width_size / view_width
-    pixel_v = uv_height_size / view_height
-    margin_u = margin_px * pixel_u
-    margin_v = margin_px * pixel_v
-
-    min_u = -half_uv_w + margin_u
-    max_u = 1.0 + half_uv_w - margin_u
-
-    if min_u > max_u:
-        zoom_state.center_u = 0.5
-    else:
-        zoom_state.center_u = max(min_u, min(zoom_state.center_u, max_u))
-
-    min_v = -half_uv_h + margin_v
-    max_v = 1.0 + half_uv_h - margin_v
-
-    if min_v > max_v:
-        zoom_state.center_v = 0.5
-    else:
-        zoom_state.center_v = max(min_v, min(zoom_state.center_v, max_v))
-    # --- Bounding Logic End ---
-
-    uv_x_min = zoom_state.center_u - half_uv_w
-    uv_x_max = zoom_state.center_u + half_uv_w
-    uv_y_min = zoom_state.center_v - half_uv_h
-    uv_y_max = zoom_state.center_v + half_uv_h
-
-    uv_a = (uv_x_min, uv_y_max)
-    uv_b = (uv_x_max, uv_y_min)
-
-    # 6. Clip and Draw
-    scale_u_px = view_width / uv_width_size
-    scale_v_px = view_height / uv_height_size
-
-    # Project Texture Edges
-    raw_img_left = p_min_x + (0.0 - uv_x_min) * scale_u_px
-    raw_img_right = p_min_x + (1.0 - uv_x_min) * scale_u_px
-    raw_img_top = p_min_y + (uv_y_max - 1.0) * scale_v_px
-    raw_img_bottom = p_min_y + (uv_y_max - 0.0) * scale_v_px
-
-    # Intersect with Viewport
-    clip_left = max(p_min_x, raw_img_left)
-    clip_right = min(p_max[0], raw_img_right)
-    clip_top = max(p_min_y, raw_img_top)
-    clip_bottom = min(p_max[1], raw_img_bottom)
-    draw_list: _DrawList = imgui.get_window_draw_list()
-
-    if imgui.is_mouse_hovering_rect(clip_left, clip_top, clip_right, clip_bottom):
-        draw_state.hover_reported = True
-    else:
-        draw_state.hover_reported = False
-
-    Core.melty.push_clip((clip_left, clip_top, clip_right - 3, clip_bottom))
-    draw_list.add_image_rounded(texture_id,
-                                a=p_min,
-                                b=p_max,
-                                uv_a=uv_a,
-                                uv_b=uv_b,
-                                rounding=5.0)
-    draw_list.add_rect(raw_img_left, raw_img_top, raw_img_right + 1, raw_img_bottom + 1,
-                       pack_color(*mixed_color[:3], 1.0),
-                       0.0, 0, 1.0)
-    Core.melty.pop_clip()
-
-    line_height = imgui.get_text_line_height()
-    draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
-                       pack_color(*mixed_color[:3], 1.0),
-                       text=f"{original_id} - {texture_id} - {width}x{height} - Zoom: {zoom_state.zoom:.2f}x")
-
-    gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
-
-    return False, draw_state
+# draw_texture lives in texture_view.py (importable by this module); re-exported
+# here, in its old position, so registration order and this import path match.
+from src.lsd.gl_gui.view.core_views.texture_view import draw_texture  # noqa: E402,F401
 
 
 @render_func(is_default_for=ManagedWindow, is_tree=False, show_name=False, use_cache=True,
@@ -8148,16 +7861,20 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
                            rounding=corner_radius)
 
     # `owner`: this chip last opened the popover. It stays the owner past an
-    # outside click / Esc / re-render (which clears the slot), so it can draw
-    # the for ONE more frame with closed=True - a nested window is only
-    # hidden on a frame it is drawn) - before letting go.
-    # draw_tuple's difference: the popover slot holds a draw_state whose
-    # ancestor closure is protected from the click's clear_focus. In
-    # draw_tuple that's the chip's OWN draw_state; here every chip shares
-    # the host's (the whole editor is its closure - nothing outside the
-    # picker could ever close it), so the slot is the PICKER WINDOW's
-    # draw_state (its own closure = the picker) once it opens, and the
-    # host only for the opening frame (protected by the popover grace).
+    # outside click / escape / re-run (which clear the slot) until its next
+    # run, where it draws the picker once more with closed=True and lets go.
+    # The window itself does not wait for that run: a Mode.POPOVER window is
+    # discarded by end_frame as soon as the slot no longer names it or an
+    # ancestor (Melty.popover_orphaned) - so a chip whose host stopped
+    # running (tab switched away, tile served from the blit cache) leaves its
+    # picker hanging on screen.
+    # draw_tuple's lifecycle: the popover slot names a draw_state whose
+    # ancestor closure is protected from the click-away clear_focus. In
+    # draw_tuple that is the chip's OWN draw_state; here every chip shares
+    # the host's (the whole editor is its closure — nothing outside the
+    # picker could ever close it), so the slot holds the PICKER WINDOW's
+    # draw_state (its own closure = the picker) once it exists, and the
+    # host only for the opening frame (covered by the popover grace).
     owner = getattr(draw_state, "_tint_edit_key", None) == view_id
     picker_name = f"color_picker{view_id}"
     # The picker hangs off the HEADER row, so its parent_window is the
@@ -8199,19 +7916,23 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     if y + size + _pop_y + picker_h > _disp_h - 10:
         _pop_y = -(picker_h + 38)
     imgui.set_cursor_screen_pos((x, y + size))
-    color_changed, new_color = draw_color_picker(
+    color_changed, new_color, picker_ds = draw_color_picker(
         input_value, name=picker_name, closed=not is_open,
         window_pos=(0, _pop_y), info=_info, parent_window=anchor,
-        width=color_picker_width(), height=picker_h, mode=Modes.POPOVER)
+        width=color_picker_width(), height=picker_h, mode=Modes.POPOVER,
+        return_extras=True)
 
     imgui.same_line(spacing=0)
     if is_open and Melty.popover_focused_ds is draw_state:
         # Hand the slot from the host to the picker window now that it is
-        # registered (same frame, under the opening grace).
-        for nested in Melty.root_draw_states.get(anchor.id, ()):
-            if getattr(nested, "name", None) == picker_name:
-                Melty.popover_focused_ds = nested
-                break
+        # drawn (same frame, after the opening grace) - the draw_state the
+        # wrapper hands back, never a lookup that can miss: while the slot
+        # held the HOST, every click inside the host's window (the whole
+        # editor for a side-bar chip) protected it, and the picker could not
+        # be dismissed. From here the window lives on the slot alone -
+        # Melty.popover_orphaned discards it at end_frame once the slot
+        # moves away, whether or not this chip ever runs again.
+        Melty.popover_focused_ds = picker_ds
     if not is_open:
         draw_state._tint_edit_key = None
         draw_state.invalidate()
@@ -10703,6 +10424,163 @@ def _merged_call_stack_frames(target_ds, menu_state):
     menu_state._merged_stack_key = key
     menu_state._merged_stack = merged
     return merged
+
+
+# Reported by draw_context_menu_items when its Inspect row was picked: the
+# wrapper (core_render's context-menu block) opens the inspector,
+# draw_context_menu, in the menu's place.
+INSPECT = object()
+
+
+def draw_context_menu_items(draw_state, items, right_click, name, unique):
+    """The `context_menu={label: callable}` popover of a view: the dropdown's
+    own menu (draw_dd_menu — rows, hover, keys, click-away) opened AT THE
+    POINTER by a right-click instead of under a trigger button. Called by
+    the wrapper (core_render's context-menu block) on every body run of the
+    view, `right_click` = a right-click landed on it this run.
+
+    Open/closed is the dropdowns' slot: the VIEW holds Melty.popover_focused_ds
+    while its menu is open, exactly as a dropdown trigger does, so a click
+    anywhere outside the menu hands the slot on (the wrapper's click-away
+    clear_focus, which also re-runs this view) and the next call draws the
+    menu closed. The menu is a latching window: it is called EVERY run with
+    `closed=` so its window re-registers on each open (a window drawn only
+    while its draw_state is already closed never registers — the reopen
+    that died 09-10).
+
+    A picked row runs its callable here and closes the menu; the Inspect row
+    at the bottom reports INSPECT so the wrapper opens the inspector in the
+    menu's place. Returns INSPECT, the picked label, or None."""
+    from src.lsd.gl_gui.model.core_model.draw_state import ContextMenuItemsState
+    # [tint=(0.85, 0.75, 0.05)]
+    inspect_label = f" Inspect"
+    inspect_tint = (0.42, 0.24, 0.06)
+    state_key = "context_menu_items_state"
+
+    # The menu's state lives in the view's misc, where injected states go,
+    # so it persists with the draw_state (DropDownState: cursor/open paths,
+    # the drag-resized menu_size) and carries where the menu opened.
+    state = draw_state.misc.get(state_key)
+    if not isinstance(state, ContextMenuItemsState):
+        state = draw_state.misc[state_key] = ContextMenuItemsState()
+    draw_state.misc_used.add(state_key)
+
+    is_open = Melty.popover_focused_ds is draw_state
+    if right_click:
+        if is_open:
+            Melty.popover_focused_ds = None
+            _dd_close(state)
+        else:
+            Melty.popover_focused_ds = draw_state
+            Melty._popover_open_frame = Melty.frame_count  # grace the opening click
+            mouse_x, mouse_y = imgui.get_mouse_pos()
+            state.open_at = (mouse_x - draw_state.abs_left, mouse_y - draw_state.abs_top)
+            _dd_close(state)
+            state._kbd_mode = False
+            state._last_mouse = None
+        is_open = not is_open
+        draw_state.invalidate()
+        request_render()
+
+    collection = {str(label): action for label, action in items.items()}
+    collection[inspect_label] = INSPECT
+
+    # Popover size: content-fit until the user drag-resizes it - the same
+    # mechanism as draw_dropdown (see its popover-size comment): a forced
+    # size goes on before the window begins, else a fit is stamped after
+    # every open frame and a size that differs is the resize handle's work.
+    menu_ds = state._menu_ds
+    menu_size = state.menu_size
+    if is_open and menu_ds is not None:
+        opening = getattr(Melty, "_popover_open_frame", None) == Melty.frame_count
+        if opening and menu_size is not None:
+            menu_ds.width, menu_ds.height = menu_size
+            state._menu_fit = tuple(menu_size)
+        if menu_ds.width is None or menu_ds.width < 5:
+            menu_ds.width = _DD_MENU_MIN_W
+    # The menu's top-left sits this far RIGHT of the pointer, so the pointer
+    # rests on the first row rather than on the popover's left edge (the
+    # wrapper's resize handle) — Lukas 09-10.
+    # [tint=(0.939, 0.453, 0.245)]
+    pointer_inset_x = 8
+    # Below the pointer unless that runs past the display edge - then above it.
+    open_x, open_y = state.open_at
+    open_x += pointer_inset_x
+    if menu_ds is not None and menu_ds.height:
+        display_h = imgui.get_io().display_size[1]
+        if draw_state.abs_top + open_y + menu_ds.height > display_h - 10:
+            open_y -= menu_ds.height
+    # The pointer is the anchor through the CURSOR (draw_tuple_fast's picker
+    # does the same), never through window_pos: the wrapper folds a nested
+    # window's window_pos offset into its content measure, so an offset
+    # menu grew by that offset every frame. Restored after — the wrapper
+    # reads the cursor right after this block for the view's own header.
+    # Row labels are Tint.dd_text over the menu tint (its value × 2.16). A view
+    # sitting in a dark-tinted window hands over a dark tint and the labels
+    # came out dim against the popover (Lukas 09-10), so the tint's value is
+    # floored here — raise the floor for brighter labels. The popover bg is
+    # darkened by depth from the same tint and barely moves with it.
+    # [tint=(0.994, 0.872, 0.0)]
+    menu_tint_value_floor = 0.5
+    menu_tint = draw_state.tint
+    if menu_tint is not None:
+        hue, saturation, value = rgb_to_hsv(*menu_tint[:3])
+        if value < menu_tint_value_floor:
+            menu_tint = hsv_to_rgb(hue, saturation, menu_tint_value_floor)
+    cursor = imgui.get_cursor_screen_pos()
+    imgui.set_cursor_screen_pos((draw_state.abs_left + open_x, draw_state.abs_top + open_y))
+    changed, picked, menu_ds = draw_dd_menu(
+        collection, tint=menu_tint,
+        name=f"{name}##context_menu_items_{unique}",
+        closed=not is_open, temp=True, shadow=False, auto_resize=False,
+        window_pos=(0, 0), max_height=_DD_MENU_MAX_H,
+        parent_window=draw_state, swoosh=False, disable_scroll=False,
+        show_search=False, row_tints={INSPECT: inspect_tint},
+        root_state=state, path_prefix=(), return_extras=True)
+    imgui.set_cursor_screen_pos(cursor)
+    state._menu_ds = menu_ds
+    if not is_open or menu_ds is None:
+        return None
+
+    current = (menu_ds.width, menu_ds.height)
+    last_fit = getattr(state, "_menu_fit", None)
+    if last_fit is not None and current != last_fit and current[0] and current[1]:
+        state.menu_size = current       # the resize handle moved it
+        state._menu_fit = current
+    elif state.menu_size is None:
+        fit = _dd_menu_fit(menu_ds)
+        if fit is not None and fit != current:
+            menu_ds.width, menu_ds.height = fit
+            request_render()
+        state._menu_fit = (menu_ds.width, menu_ds.height)
+
+    def _dismiss():
+        Melty.popover_focused_ds = None
+        _dd_close(state)
+        draw_state.invalidate()
+        request_render()
+
+    if changed:
+        label = _dd_label_for_path(collection, _dd_as_tuple(state._picked_path))
+        _dismiss()
+        if picked is INSPECT:
+            return INSPECT
+        if callable(picked):
+            picked()
+        return label
+
+    if any(k == glfw.KEY_ESCAPE for k, _ in Core.melty.frame_key_events):
+        _dismiss()
+        return None
+
+    # Click-outside dismissal - the MENU is the inside (a click back to the
+    # view header closes it too, as a native context menu does).
+    if imgui.is_mouse_clicked(0):
+        mouse_x, mouse_y = imgui.get_mouse_pos()
+        under = Core.melty.bvh_query(mouse_x, mouse_y)
+        if not any(_ds_in_subtree(ds, menu_ds) for ds in under):
+            _dismiss()
+    return None
 
 
 @render_func(use_cache=True, disable_scroll=True, show_header=False,

@@ -677,7 +677,13 @@ void main() {
     vec4 color = texture(u_texture, v_texcoord);
     // Apply contrast around midpoint, then add brightness
     color.rgb = (color.rgb - 0.5) * contrast + 0.5 + brightness;
-    color.rgb = clamp(color.rgb, 0.0, 1.0);
+    // No ceiling and no floor: the working space is linear scRGB
+    // (hdr_color.py) -- values above 1.0 are real highlights and NEGATIVE
+    // components are colours outside sRGB (a BT.2020 green is
+    // (-1.9, 3.6, -0.3)). Flooring them here collapsed every wide-gamut
+    // pixel to the sRGB gamut before the present pass could convert
+    // primaries, so HDR screenshots showed muted (09-10). The present
+    // pass clamps AFTER its primaries matrix, where it is safe.
     fragColor = color;
 }
 """
@@ -742,16 +748,40 @@ vec3 hsl2rgb(vec3 c) {
     );
 }
 
+// sRGB <-> BT.2020 primaries (linear, D65; column-major, same numbers as
+// hdr_color.MELTY_SRGB_TO_BT2020). HSL is done in BT.2020 because it
+// contains everything a panel shows (P3 included): a wide colour is scRGB
+// with NEGATIVE components (hdr_color.py) and HSL cannot take those. The
+// old max(rgb, 0) collapsed such pixels to the sRGB gamut, so HDR
+// screenshots showed muted even at saturation 1 (09-10).
+const mat3 SRGB_TO_BT2020 = mat3(
+    0.6274039, 0.0690973, 0.0163914,
+    0.3292830, 0.9195404, 0.0880133,
+    0.0433131, 0.0113623, 0.8955953);
+const mat3 BT2020_TO_SRGB = mat3(
+    1.6604910, -0.1245505, -0.0181508,
+    -0.5876411, 1.1328999, -0.1005789,
+    -0.0728499, -0.0083494, 1.1187297);
+
 void main() {
     vec4 color = texture(u_texture, v_texcoord);
-    vec3 hsl = rgb2hsl(color.rgb);
+    if (hue_shift == 0.0 && saturation == 1.0 && lightness == 0.0) {
+        fragColor = color;  // identity: bit-exact passthrough
+        return;
+    }
+    vec3 wide = max(SRGB_TO_BT2020 * color.rgb, 0.0);
+    // HSL is defined on [0, 1]; an HDR pixel (a component above 1.0) is
+    // normalised by its brightest component first and scaled back after,
+    // so highlights keep their level through the edit.
+    float scale = max(max(max(wide.r, wide.g), wide.b), 1.0);
+    vec3 hsl = rgb2hsl(wide / scale);
     
     // Apply adjustments
     hsl.x = fract(hsl.x + hue_shift * 0.5);  // Hue shift
     hsl.y = clamp(hsl.y * saturation, 0.0, 1.0);  // Saturation
     hsl.z = clamp(hsl.z + lightness, 0.0, 1.0);   // Lightness
     
-    fragColor = vec4(hsl2rgb(hsl), color.a);
+    fragColor = vec4(BT2020_TO_SRGB * (hsl2rgb(hsl) * scale), color.a);
 }
 """
 

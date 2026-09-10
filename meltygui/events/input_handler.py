@@ -558,7 +558,17 @@ class InputHandler:
             state.chord = False
             return
 
-        self._emit(input_id, EventAction.UP, x, y, t=t)
+        # UP carries the travel since its press (total_dx/dy), so a subscriber
+        # can tell a clean release from the end of a drag without waiting for
+        # CLICKED - which is held back for the double-click window whenever a
+        # double subscriber is hovered (the wrapper's corner double right-drag
+        # covers every window, so every right CLICKED waits 250 ms). The
+        # context menu opens with this event instead.
+        travel = (x - state.down_x, y - state.down_y) if was_down else (0.0, 0.0)
+        self._pending.append(InputEvent(
+            input_id, EventAction.UP, _view_id_to_tile_id.get(input_id, None), x, y,
+            0, 0, 0, t, self._modifiers, travel[0], travel[1]
+        ))
 
         if was_down:
             dist = ((x - state.down_x) ** 2 + (y - state.down_y) ** 2) ** 0.5

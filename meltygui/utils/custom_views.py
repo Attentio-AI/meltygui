@@ -6,13 +6,12 @@ from traceback import _parse_value_tb
 
 import glfw
 import imgui
-import psutil
 from imgui import ImGuiError
 
 from src.lsd.gl_gui.model.model_enums import RelaxedEnum
 from src.lsd.gl_gui.utils.glfw_utils import _needs_render, print_stack_trace
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core
-from src.lsd.train.lsd_utils import singleton
+from src.lsd.gl_gui.utils.singleton import singleton
 
 
 class GroupType(Enum):
@@ -673,7 +672,6 @@ def print_colored_traceback(exc_type=None, exc_value=None, exc_traceback=None, l
     #     file.write(line)
 
 import gc
-import torch
 
 
 def memory_flame_chart(scope=None, threshold_kb=1, depth=10000, width=80, color=True, aggregate_by_type=True,
@@ -982,6 +980,7 @@ def memory_flame_chart(scope=None, threshold_kb=1, depth=10000, width=80, color=
         return obj_size
 
     # Get total memory of this process as a comparison
+    import psutil   # lazy: only this profiler needs it
     process = psutil.Process(os.getpid())
     total_process_memory = process.memory_info().rss
 
@@ -1313,6 +1312,7 @@ def cleanup_cuda_memory(verbose=False, vis=None):
     # Check if CUDA is available
     print_stack_trace(1)
 
+    import torch
     if not torch.cuda.is_available():
         print("CUDA is not available")
         return (0, 0, 0)
@@ -1386,6 +1386,7 @@ def find_cuda_tensors():
     """
     cuda_tensors = []
 
+    import torch
     # Get all objects in memory
     for obj in gc.get_objects():
         try:

@@ -750,7 +750,11 @@ def _maximized(window):
     client, False until the feed has seen the window."""
     if window is None:
         return False
-    if _box_is_surface():
+    if _on_hyprland():
+        # Whatever the compositor does with the window geometry, it still
+        # forces the maximized state at map (XDGShell.cpp) - reading GLFW's
+        # attribute on the state-honouring build zeroed the inset and
+        # dropped the right-drag again (09-10, first login on that build).
         from src.lsd.gl_gui import geometry_feed
         frame = geometry_feed._STATE.get("frame") or {}
         return bool(frame.get("maximized", False))
@@ -911,17 +915,30 @@ _geometry_applied = globals().get("_geometry_applied")
 _self_resize = False
 
 
-def _box_is_surface():
-    """Hyprland: the compositor's window box IS the surface — it renders
-    the whole surface at `at`, ignores the xdg geometry for placement, and
-    never adopts a size the client commits by itself (geometry_feed's
-    module docstring). Every place that reads a configure as a GEOMETRY
-    size, or resizes by committing a buffer, branches on this."""
+def _on_hyprland():
+    """The Hyprland backend (whatever it does with the window geometry):
+    the box is resized through its IPC, and its `maximized` state is the
+    feed's flag, not GLFW's."""
     from src.lsd.gl_gui import geometry_feed
     return geometry_feed.backend() == "hyprland"
 
 
-def set_surface_size(window, width, height, offset=None):
+def _box_is_surface():
+    """A Hyprland that does NOT honour the xdg window geometry: the
+    compositor's window box IS the surface — it renders the whole surface
+    at `at` and ignores the geometry for placement (geometry_feed's module
+    docstring). Every place that reads a configure as a GEOMETRY size, or
+    resizes by committing a buffer, branches on this. The patched
+    compositor (`render:xdg_window_geometry`, 09-09) makes the box the
+    CONTENT — then this is False and the GNOME handling applies: the
+    geometry is the content rect, a configure names the content and the
+    surface is regrown around it by the margin (geometry_feed
+    .hypr_honors_geometry)."""
+    from src.lsd.gl_gui import geometry_feed
+    return geometry_feed.backend() == "hyprland" and not geometry_feed.hypr_honors_geometry()
+
+
+def set_surface_size(window, width, height, offset=None, box=True):
     """The one way this module resizes the OS surface: flags the resulting
     framebuffer-size callback as ours, so on_surface_resized leaves it
     alone (a compositor configure would be grown by the margin). On
@@ -930,17 +947,26 @@ def set_surface_size(window, width, height, offset=None):
     rides the same commit elsewhere, goes into that SAME request
     (geometry_feed.hypr_set_box: resize + move anchored top-left, one
     eval); other backends ignore ``offset`` here and arm the buffer
-    offset themselves (apply_pending_surface_size)."""
+    offset themselves (apply_pending_surface_size). On a Hyprland that
+    honours the window geometry the box is the CONTENT: the IPC gets the
+    surface size less the shadow margin on every side. ``box=False``
+    (on_surface_resized's regrow after a compositor configure) skips the
+    IPC: the box already has that size, and asking again would configure
+    the same size back at GLFW and regrow once more, forever."""
     global _self_resize
     _self_resize = True
     try:
         glfw.set_window_size(window, int(width), int(height))
     finally:
         _self_resize = False
-    if _box_is_surface():
+    if box and _on_hyprland():
         from src.lsd.gl_gui import geometry_feed
         dx, dy = offset if offset else (0, 0)
-        geometry_feed.hypr_set_box(width, height, dx, dy)
+        box_w, box_h = int(width), int(height)
+        if geometry_feed.hypr_honors_geometry():
+            inset = int(window_inset())
+            box_w, box_h = max(1, box_w - 2 * inset), max(1, box_h - 2 * inset)
+        geometry_feed.hypr_set_box(box_w, box_h, dx, dy)
 
 
 # An app-side resize requested mid-frame, applied at the next frame's start.
@@ -1023,7 +1049,12 @@ def apply_pending_surface_size(window):
     if _pending_surface_fit and geometry_feed.backend() == "hyprland":
         rect, area = geometry_feed.frame_rect(), geometry_feed.workarea()
         if rect is not None and area is not None:
-            dx, dy = fit_offset(rect, size, area, int(window_inset()))
+            inset = int(window_inset())
+            if geometry_feed.hypr_honors_geometry():
+                # the feed's rect and the box are the CONTENT: fit the surface less its margin
+                dx, dy = fit_offset(rect, (size[0] - 2 * inset, size[1] - 2 * inset), area, 0)
+            else:
+                dx, dy = fit_offset(rect, size, area, inset)
             if dx or dy:
                 ox, oy = offset or (0, 0)
                 offset = (ox + dx, oy + dy)
@@ -1038,7 +1069,7 @@ def apply_pending_surface_size(window):
             was = None
         print(f"[os_frame] apply pending surface size {size} (was {was}) offset {offset}")
     from src.lsd.gl_gui import geometry_feed
-    on_hyprland = geometry_feed.backend() == "hyprland"
+    on_hyprland = _on_hyprland()
     # Hyprland ignores a toplevel's buffer offset (the surface stays
     # anchored at `at`): the move rides the box resize's own IPC request.
     set_surface_size(window, *size, offset=offset if on_hyprland else None)
@@ -1088,7 +1119,7 @@ def on_surface_resized(window, width, height):
         sync_window_geometry(window, (int(width), int(height)))
         return None
     grown = (int(width) + 2 * inset, int(height) + 2 * inset)
-    set_surface_size(window, *grown)      # its resize callback syncs the geometry
+    set_surface_size(window, *grown, box=False)      # its nested callback syncs the geometry; the box IS this size
     return grown
 
 

@@ -5,7 +5,6 @@ from enum import Enum
 import glfw
 import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
-import libcst as cst
 
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.toggles import shadow_depth_at, Toggles
@@ -281,6 +280,19 @@ class DropDownState(DictConversion):
         self.menu_size = None
         self._menu_ds = None
         self._menu_fit = None
+
+
+class ContextMenuItemsState(DropDownState):
+    """The `context_menu={label: callable}` popover's dropdown state — the
+    root_state of the draw_dd_menu it opens — one per view carrying a menu,
+    kept in that view's draw_state.misc like an injected state
+    (new_core_view.draw_context_menu_items). Adds where the menu opened."""
+
+    def __init__(self):
+        super().__init__()
+        # The right-click's position relative to the view's top-left: the
+        # popover's window_pos, re-applied every frame so it stays put.
+        self.open_at = (0, 0)
 
 
 @exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
@@ -1860,6 +1872,7 @@ class DrawState(DictConversion):
         # return layer_index
 
     def init_cst_state(self, node, module_id: str):
+        import libcst as cst   # lazy: libcst takes ~80 ms to import
         self.cst = None
         self.cst.path_key = Core.melty.current_path()
         self.cst.module_id = module_id

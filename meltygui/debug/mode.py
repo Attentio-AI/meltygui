@@ -254,14 +254,18 @@ class Mode(Enum):
     }
 
     # Lightweight anchored popover: a small auto-fitting, header-less, non-draggable
-    # temp window (like the dropdown menu). The caller sets closed / window_pos /
-    # parent_anchor to anchor it to a trigger and toggle visibility.
+    # temp window (like the dropdown menu). The caller supplies closed / window_pos /
+    # parent_window to anchor it to a trigger and toggle visibility. `popover` marks
+    # the window for Melty.popover_orphaned: it lives only while
+    # Melty.popover_focused_ds names it or one of its ancestors; end_frame
+    # discards it the moment the slot moves away, whether or not the view that
+    # drew it ever runs again (a tab switch, a cached spawner).
     POPOVER = {
         Any: ModeOverrides(
             kwargs={"show_bg": True, "selectable": False, "use_cache": False, "melty_window": False,
                     "closable": True, "auto_resize": True, "draggable": False, "shadow": True,
                     "show_tint": False, "show_header": False, "with_header": None, "disable_scroll": True,
-                    "temp": True, "swoosh": False, "indent_size": 2},
+                    "temp": True, "swoosh": False, "indent_size": 2, "popover": True},
             recursive=False
         )
     }

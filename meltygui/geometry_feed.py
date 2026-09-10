@@ -62,6 +62,7 @@ _STATE = globals().get("_STATE") or {
     "thread": None, "running": False, "available": False, "error": None,
     "pid": None, "frame": None, "monitors": None, "workarea": None,
     "updates": 0, "loop": None, "backend": None, "gen": 0, "lua": None,
+    "geometry": None,
 }
 
 _G_BUS_TYPE_SESSION = 2
@@ -73,13 +74,81 @@ HYPR_REQUEST_TIMEOUT_S = 0.25
 HYPR_MONITORS_EVERY_S = 1.0
 
 
+# The resolved socket is remembered for HYPR_SOCKET_RECHECK_S, so the
+# per-frame backend() reads cost one dict lookup, not a connect.
+HYPR_SOCKET_RECHECK_S = 2.0
+_socket_resolution = globals().get("_socket_resolution")   # ((signature, hypr dir), path, checked_at)
+
+
+def _hypr_runtime_dir():
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.path.join(runtime, "hypr")
+
+
+def _socket_accepts(path, timeout=0.25):
+    """Is a Hyprland listening on this unix socket? A stale socket FILE
+    stays behind when an instance dies without cleaning up. One cheap
+    `version` request (a bare connect-and-close makes the peer's reply
+    fail on a broken pipe)."""
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(path)
+        sock.sendall(b"version")
+        sock.recv(4096)
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
 def hyprland_socket_path():
-    """The Hyprland request socket of THIS session, or None outside one."""
+    """The Hyprland request socket of the LIVE session, or None outside one.
+    HYPRLAND_INSTANCE_SIGNATURE is the first candidate, but a process
+    started from a shell that outlived a relogin (the launcher's tmux
+    pane, 09-10) inherits the DEAD instance's signature — and that
+    instance's socket file can still be there (a crash leaves it behind), so
+    existence proves nothing: the env's socket wins if it accepts a
+    connection, else the newest instance directory whose socket does, else
+    the env's path as it is (unavailable, retried by the feed thread — a
+    Hyprland mid-restart). Re-resolved every HYPR_SOCKET_RECHECK_S and
+    whenever a request fails (`forget_socket`)."""
+    global _socket_resolution
     signature = os.environ.get(HYPR_SIGNATURE_ENV)
     if not signature:
         return None
-    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    return os.path.join(runtime, "hypr", signature, ".socket.sock")
+    now = time.monotonic()
+    hypr_dir = _hypr_runtime_dir()
+    cached = _socket_resolution
+    if cached and cached[0] == (signature, hypr_dir) and now - cached[2] < HYPR_SOCKET_RECHECK_S:
+        return cached[1]
+    env_path = os.path.join(hypr_dir, signature, ".socket.sock")
+    path = None
+    if os.path.exists(env_path) and _socket_accepts(env_path):
+        path = env_path
+    else:
+        try:
+            others = [d for d in os.listdir(hypr_dir) if d != signature
+                      and os.path.exists(os.path.join(hypr_dir, d, ".socket.sock"))]
+        except OSError:
+            others = []
+        others.sort(key=lambda d: os.path.getmtime(os.path.join(hypr_dir, d)), reverse=True)
+        for other in others:
+            candidate = os.path.join(hypr_dir, other, ".socket.sock")
+            if _socket_accepts(candidate):
+                path = candidate
+                break
+        if path is None and os.path.exists(env_path):
+            path = env_path
+    _socket_resolution = ((signature, hypr_dir), path, now)
+    return path
+
+
+def forget_socket():
+    """Drop the memoized socket so the next lookup rescans the instances."""
+    global _socket_resolution
+    _socket_resolution = None
 
 
 def backend():
@@ -328,6 +397,8 @@ def _hyprland_thread_main(pid, gen):
             deadline = time.monotonic() + RETRY_SECONDS
             while _alive(gen) and time.monotonic() < deadline:
                 time.sleep(0.25)
+            forget_socket()
+            path = hyprland_socket_path()       # the instance may have restarted under us
     if _STATE.get("gen") == gen:
         _STATE["available"] = False
 
@@ -339,6 +410,31 @@ def _hypr_selector():
     if backend() != "hyprland" or frame is None:
         return None
     return f"address:{frame['address']}"
+
+
+def hypr_honors_geometry():
+    """Does this Hyprland honour xdg_surface.set_window_geometry on
+    toplevels (the 09-09 compositor patch, `render:xdg_window_geometry`)?
+    Then the feed's `at` / `size` are the CONTENT box — the border, the
+    shadow and the hit test hug it — and the surface overhangs it by the
+    shadow margin, exactly as on GNOME; `frame_rect` needs no inset and
+    `titlebar.sync_window_geometry` sends the content rect. Probed ONCE
+    per feed generation with `getoption`: "bool: true" = yes; a stock or
+    older binary answers "no such option" (= no) and keeps the
+    box-is-the-surface handling."""
+    known = _STATE.get("geometry")
+    if known is not None:
+        return known
+    if backend() != "hyprland":
+        return False
+    try:
+        reply = hypr_request("getoption render:xdg_window_geometry")
+    except Exception as ex:
+        _STATE["error"] = str(ex)
+        return False                            # unknown: try again next time
+    first = reply.strip().split("\n", 1)[0].strip()
+    _STATE["geometry"] = first.startswith("bool:") and first.split(":", 1)[1].strip() in ("true", "1")
+    return _STATE["geometry"]
 
 
 def hypr_config_is_lua():
@@ -621,6 +717,7 @@ def start(pid=None):
     _STATE["backend"] = wanted
     _STATE["frame"] = None
     _STATE["lua"] = None                    # re-probe the dispatching (hypr_config_is_lua)
+    _STATE["geometry"] = None               # re-probe the geometry support (hypr_honors_geometry)
     _STATE["available"] = False
     target = _hyprland_thread_main if wanted == "hyprland" else _thread_main
     thread = threading.Thread(target=target, args=(_STATE["pid"], _STATE["gen"]),
@@ -657,14 +754,15 @@ def last_error():
 def frame_rect(inset=0):
     """(x, y, width, height) of the studio's content rect on the screen, or
     None while the feed is unavailable. ``inset`` = the transparent shadow
-    margin (titlebar.window_inset) — applied on the Hyprland backend only,
-    whose rect is the SURFACE; the GNOME feed's frame rect is the xdg
-    geometry, already the content."""
+    margin (titlebar.window_inset) — applied only on a Hyprland that does
+    NOT honour the window geometry (its rect is then the SURFACE); the
+    GNOME feed's frame rect and a geometry-honouring Hyprland's box are
+    the xdg geometry, already the content (hypr_honors_geometry)."""
     frame = _STATE["frame"]
     if not _STATE["available"] or frame is None:
         return None
     x, y, w, h = frame["x"], frame["y"], frame["width"], frame["height"]
-    if inset and _STATE.get("backend") == "hyprland":
+    if inset and _STATE.get("backend") == "hyprland" and not hypr_honors_geometry():
         inset = int(inset)
         x, y, w, h = x + inset, y + inset, max(w - 2 * inset, 0), max(h - 2 * inset, 0)
     return (x, y, w, h)

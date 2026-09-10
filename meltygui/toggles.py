@@ -6,7 +6,6 @@ from src.lsd.gl_gui.render_funcs import RenderFuncs
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.view_utils.imgui_style_manager_class import ImGuiStyleManager
-import torch
 import json
 from src.lsd.gl_gui.hdr_color import pack_color, scale_saturation
 

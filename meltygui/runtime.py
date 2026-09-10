@@ -13,10 +13,7 @@ import glfw
 import imgui
 from src.lsd.gl_gui import hdr_color
 from src.lsd.gl_gui.hdr_color import pack_color
-import libcst as cst
 from imgui.core import _DrawList
-
-from rtree import index as rtree_index
 
 from src.lsd.gl_gui.notifications import draw_notifications, notify
 from src.lsd.gl_gui.render_funcs import RenderFuncs
@@ -570,6 +567,21 @@ class FileWatch:
 _RESOLVED_PATH_MEMO = globals().get("_RESOLVED_PATH_MEMO", {})   # str(path) → resolved key (Melty.read_code)
 
 
+class _LazyRtree:
+    """An rtree.index.Index built on first use, so importing melty does not pay
+    for rtree (~9 ms) — a host that never draws a BVH never loads it."""
+    __slots__ = ('_index',)
+
+    def __init__(self):
+        self._index = None
+
+    def __getattr__(self, name):
+        if self._index is None:
+            from rtree import index as rtree_index
+            self._index = rtree_index.Index()
+        return getattr(self._index, name)
+
+
 class Melty:
 
     draw_state_registry = None
@@ -857,7 +869,7 @@ class Melty:
 
     # LibCST tracking -----------------------------------------
     _path_stack: list[tuple[str, int | None]] = []  # (field, idx)
-    _root_by_module: dict[str, cst.Module] = {}
+    _root_by_module: dict[str, "cst.Module"] = {}   # libcst.Module; libcst is imported lazily (80 ms)
     _gen_by_module: dict[str, int] = {}
 
     last_attr = ""
@@ -1033,8 +1045,8 @@ class Melty:
     any_window_hovered = False
     glfw_close_requested = False
 
-    # BVH spatial index for draw states
-    _bvh = rtree_index.Index()
+    # BVH spatial index for draw states (rtree, built on first use: see _LazyRtree)
+    _bvh = _LazyRtree()
     _bvh_next_id = 0
     _bvh_id_to_ds = {}
     # Bumped on every insert/delete that mutates the index. bvh_query memoizes
@@ -1668,33 +1680,23 @@ class Melty:
         return hits
 
     @classmethod
-    def clear_focus(cls, not_this=None):
-        # Clear all focus slots (text / popover / general) EXCEPT any owner that is
-        # an ancestor of `not_this`. `not_this` is the view(s) just interacted with
-        # (e.g. the bvh hit-stack under the cursor on mouse-up). We protect each
-        # seed's full ANCESTOR CLOSURE - including both _parent and parent_window -
-        # so clicking anywhere inside a focus owner's subtree keeps it focused even
-        # when the seed is several windows up (a dropdown's search box lives in its
-        # menu window, whose parent_window is the dropdown trigger that holds the
-        # true focus). Protecting only the direct parents dropped that owner,
-        # which closed the dropdown / killed search search + arrow input on any click.
-        if isinstance(not_this, (list, tuple)):
-            seeds = [n for n in not_this if n is not None]
-        elif not_this is not None:
-            seeds = [not_this]
-        else:
-            seeds = []
-
-        protect = set()
+    def ancestor_closure(cls, seeds):
+        """The ids of every draw_state reachable UP from `seeds` — each seed
+        itself, then its `_parent` and `parent_window` chains — plus the
+        context-menu hop below. This is the "inside" test the focus slots
+        use: a click keeps an owner focused when the owner is in the closure
+        of the hit stack (clear_focus), and a popover window is alive while
+        the popover slot names something in ITS closure (popover_orphaned)."""
+        closure = set()
         for seed in seeds:
             stack = [seed]
             guard = 0
             while stack and guard < 256:
                 guard += 1
                 node = stack.pop()
-                if node is None or getattr(node, "id", None) in protect:
+                if node is None or getattr(node, "id", None) in closure:
                     continue
-                protect.add(node.id)
+                closure.add(node.id)
                 parent = getattr(node, "_parent", None)
                 pwin = getattr(node, "parent_window", None)
                 if parent is not None and parent is not node:
@@ -1714,6 +1716,50 @@ class Melty:
                 target = getattr(node, "_raw_input_value", None)
                 if target is not None and getattr(target, "context_menu_ds", None) is node:
                     stack.append(target)
+        return closure
+
+    @classmethod
+    def popover_orphaned(cls, ds):
+        """True for a nested POPOVER window (Mode.POPOVER stamps `popover`
+        in its kwargs) that nothing holds open any more: the popover slot is
+        empty or names a view outside the window's ancestor closure (another
+        popover took the slot, a click away cleared it). A popover used to be
+        hidden only on a frame its SPAWNER drew it closed=True — so when the
+        spawner stopped running (its tab switched away, its tile served from
+        the blit cache after the slot was cleared) the window stayed in
+        root_draw_states, dispatched from the layer loop every frame: visible,
+        front-most, and no click could dismiss it. end_frame discards an
+        orphaned popover directly, spawner or no spawner. The slot is set in
+        the body before the window is drawn (or handed to the window right
+        after, in the same frame), so a popover is never orphaned on the
+        frame it opens."""
+        kwargs = getattr(ds, "_kwargs", None)
+        if type(kwargs) is not dict or not kwargs.get("popover", False):
+            return False
+        owner = cls.popover_focused_ds
+        if owner is None:
+            return True
+        return owner.id not in cls.ancestor_closure([ds])
+
+    @classmethod
+    def clear_focus(cls, not_this=None):
+        # Clear all focus slots (text / popover / general) EXCEPT any owner that is
+        # an ancestor of `not_this`. `not_this` is the view(s) just interacted with
+        # (e.g. the bvh hit-stack under the cursor on mouse click). We protect each
+        # seed's full ANCESTOR CLOSURE - walking both _parent and parent_window -
+        # so clicking anywhere inside a focus owner's subtree keeps it focused even
+        # when the owner is several levels up (a dropdown's search box lives in its
+        # menu window, whose parent_window is the dropdown trigger that holds the
+        # popover slot). Protecting only the immediate parents dropped that owner,
+        # which closed the dropdown / killed its search + arrow input on any click.
+        if isinstance(not_this, (list, tuple)):
+            seeds = [n for n in not_this if n is not None]
+        elif not_this is not None:
+            seeds = [not_this]
+        else:
+            seeds = []
+
+        protect = cls.ancestor_closure(seeds)
 
         # A just-opened popover gets a one-frame grace: the very click that opens
         # it also fires clear_focus, and the opener (e.g. a tiny colour swatch) may
@@ -3532,6 +3578,12 @@ class Melty:
                 if ds.abs_closed or ds.closed:
                     to_discard.add((parent_ds_id, ds))
                     continue
+                # A popover whose slot moved away closes itself - its spawner
+                # may never draw it closed (see popover_orphaned).
+                if cls.popover_orphaned(ds):
+                    ds.closed = True
+                    to_discard.add((parent_ds_id, ds))
+                    continue
                 # Hide - don't discard - nested windows whose spawning view is
                 # fully offset-clipped out of sight. The window stays
                 # registered (a discard could never come back while the layer
@@ -4519,8 +4571,10 @@ class Melty:
                 ds = getattr(mw, "draw_state", None)
                 if ds is not None:
                     cls.release_window_tree(ds); n_trees += 1
-                # the ManagedWindow's own value slot pins the root's tensors
-                mw.input_value = None
+                # The ManagedWindow's own slots pin the root's input AND its
+                # draw_state; a relaunch in this process must not inherit
+                # either (see ManagedWindow.unbind).
+                mw.unbind()
             for parent_id in list(cls.root_draw_states.keys()):
                 for ds in list(cls.root_draw_states.get(parent_id) or ()):
                     cls.release_window_tree(ds); n_trees += 1
@@ -4636,9 +4690,53 @@ class Melty:
         clean = target.split("##")[0]
         for w in cls.registered_windows.values():
             wn = getattr(w, 'name', None)
-            if wn and (wn == target or wn.split("##")[0] == clean):
-                return getattr(w, 'draw_state', None)
+            if not wn or not (wn == target or wn.split("##")[0] == clean):
+                continue
+            # Only a BOUND entry counts. A hollow one (draw_state=None) is a
+            # saved key nothing has drawn under this run - usually the
+            # window's key from a previous draw_state (the id is part of the
+            # key), sitting ahead of the live one in z-order. Returning that
+            # makes Ctrl+Shift+F, the dock and the Windows search tab open
+            # nothing (09-10).
+            draw_state = getattr(w, 'draw_state', None)
+            if draw_state is not None:
+                return draw_state
         return None
+
+    @classmethod
+    def reclaim_window_slot(cls, name, tile_id):
+        """A window registering under a NEW key (`tile_id` unseen this run)
+        takes over the hollow entry saved under its `name`, if any: the key
+        is `name##hash(unique + draw_state.id)`, so a window whose
+        draw_state was re-minted (the registry rebuilt, a pruned entry)
+        comes back under a fresh key while the profile still carries the
+        old one — hollow for good, since nothing ever draws under it, and
+        FIRST in every by-name scan (find_window, the Windows search tab).
+        The entry is re-keyed in place (same ManagedWindow, same z-order
+        slot, same dict object — it is the AppModel's) rather than left to
+        pile up; a twin that was itself saved beside the live key is
+        dropped. Called by the wrapper on a key's first registration of the
+        run (its entry is still hollow), so the scan is once per window.
+        Returns True when a slot was reclaimed."""
+        windows = cls.registered_windows
+        stale_key = None
+        for key, managed_window in windows.items():
+            if (key != tile_id and getattr(managed_window, 'name', None) == name
+                    and getattr(managed_window, 'draw_state', None) is None):
+                stale_key = key
+                break
+        if stale_key is None:
+            return False
+        if tile_id in windows:
+            # Both keys were saved (the twin outlived a session): the live
+            # key's place is the current z-order and the old one just goes.
+            del windows[stale_key]
+            return True
+        items = list(windows.items())
+        windows.clear()
+        for key, managed_window in items:
+            windows[tile_id if key == stale_key else key] = managed_window
+        return True
 
     @classmethod
     def open_window(cls, name):
@@ -4661,9 +4759,11 @@ class Melty:
         if name is None:
             return None
         clean = str(name).split("##")[0]
+        # Bound entries first: a hollow one (see find_window) has no
+        # input_value to read a tint from.
         for w in cls.registered_windows.values():
             wn = getattr(w, 'name', None)
-            if wn and str(wn).split("##")[0] == clean:
+            if wn and str(wn).split("##")[0] == clean and getattr(w, 'draw_state', None) is not None:
                 return getattr(getattr(w, 'input_value', None), 'tint', getattr(w, 'tint', None))
         return None
 
@@ -4862,6 +4962,13 @@ class Melty:
                 adopted[window_key] = (managed_window if isinstance(managed_window, ManagedWindow)
                                        else ManagedWindow(name=str(window_key)))
         for window_key, managed_window in cls.registered_windows.items():
+            # A pre-load entry is either hollow or left over from the previous
+            # run in this process (cleanup unbinds it, but never trust it):
+            # its draw_state will belong to the OLD root and shadow the one
+            # just loaded under the same registry key. Keep the entry for its
+            # old position but drop the bindings.
+            if isinstance(managed_window, ManagedWindow):
+                managed_window.unbind()
             adopted[window_key] = managed_window
         cls.registered_windows = adopted
         app_model.registered_windows = adopted
@@ -5313,7 +5420,7 @@ class Melty:
         cls._path_stack.pop()
 
     @classmethod
-    def current_root(cls, module_id: str) -> cst.Module:
+    def current_root(cls, module_id: str) -> "cst.Module":
         return cls._root_by_module[module_id]
 
     @classmethod
@@ -6149,3 +6256,17 @@ class ManagedWindow(DictConversion):
         self.window_args = window_args
         self.name = name
         self.hidden = False
+
+    def unbind(self):
+        """Drop the runtime bindings. Everything but name/hidden belongs to
+        ONE studio run: the wrapper re-fills all three at registration, and a
+        draw_state carried past a run points into the OLD root. The dispatch
+        loop's closed-window skip refreshes the delete countdown on whatever
+        draw_state sits here instead of running the wrapper, so a stale one
+        kept the old object alive while the loaded one under the same
+        registry key sat at countdown 0 and was pruned from the next save —
+        closed windows came back the boot after as fresh draw_states (default
+        tint / size / position, grey rows in the dock)."""
+        self.input_value = None
+        self.draw_state = None
+        self.window_args = None

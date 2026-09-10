@@ -11,7 +11,15 @@ from copy import copy
 from enum import Enum
 from typing import Any, Dict, Optional, Union, List, Tuple
 
-from transformers import PreTrainedTokenizerBase, LlamaTokenizerFast
+
+
+def _loaded_class(module, name):
+    """A class from an optional heavy module (torch, transformers), or None if that module was
+    never imported. Used for isinstance() checks: a value can only be an instance of the class if
+    its module is already loaded, so this never triggers the import."""
+    mod = sys.modules.get(module)
+    return getattr(mod, name, None) if mod is not None else None
+
 
 from src.lsd.gl_gui.model.core_markers import FieldMeta
 from src.lsd.gl_gui.model.dict_conversion_util import ClassUtility
@@ -765,22 +773,13 @@ class DictConversion(metaclass=FieldMeta):
         if input_value is None:
             return None
 
-        from torch import Tensor
-        if isinstance(input_value, Tensor):
-            return input_value
-
-        if isinstance(input_value, Tensor):
-            return input_value
-
-        if isinstance(input_value, LlamaTokenizerFast):
-            return input_value
-
-        if isinstance(input_value, PreTrainedTokenizerBase):
-            return input_value
-
-        from torch import nn
-        if isinstance(input_value, nn.Module):
-            return input_value
+        # Pass heavy ML objects through untouched. Looked up via sys.modules so a GUI that never
+        # imported torch/transformers doesn't break them here.
+        for module, name in (('torch', 'Tensor'), ('transformers', 'LlamaTokenizerFast'),
+                             ('transformers', 'PreTrainedTokenizerBase'), ('torch.nn', 'Module')):
+            cls = _loaded_class(module, name)
+            if cls is not None and isinstance(input_value, cls):
+                return input_value
 
         # Handle DictConversion objects
         if hasattr(input_value, "deepcopy_exclude") and callable(getattr(input_value, "deepcopy_exclude")):

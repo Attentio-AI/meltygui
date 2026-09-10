@@ -384,14 +384,16 @@ def _color_kwargs(highlighted, original, bg=None):
 
 # ── Rich table rendering ─────────────────────────────────
 
-try:
-    from rich.table import Table as RichTable
-    from rich.text import Text as RichText
-    from rich.console import Console as RichConsole
-
-    _rich_available = True
-except ImportError:
-    _rich_available = False
+def _rich():
+    """(Table, Text, Console) from rich, or None. Imported on first use: rich
+    costs ~10 ms and only the watch-table printer needs it."""
+    try:
+        from rich.table import Table
+        from rich.text import Text
+        from rich.console import Console
+    except ImportError:
+        return None
+    return Table, Text, Console
 
 
 def _render_watch_table(file_line, code_line, watch_rows, error=False):
@@ -399,8 +401,10 @@ def _render_watch_table(file_line, code_line, watch_rows, error=False):
     Render a frame with watches using rich table.
     Only called when watch_rows is non-empty.
     """
-    if not _rich_available:
+    rich = _rich()
+    if rich is None:
         return _render_frame_simple(file_line, code_line, watch_rows)
+    RichTable, RichText, RichConsole = rich
 
     border_style = "rgb(100,40,40)" if error else "rgb(50,50,55)"
 

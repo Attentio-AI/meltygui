@@ -2,8 +2,7 @@ import hashlib
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-
-import torch
+import sys
 
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace, get_live_frames, _print_lock, trace_group, request_render
@@ -414,7 +413,8 @@ class Background:
             pass
 
         if do_print:
-            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+            torch = sys.modules.get('torch')  # lazy: never load torch just for a debug print
+            if torch is not None and hasattr(torch, 'cuda') and torch.cuda.is_available():
                 mem_str = ""
                 for i in range(torch.cuda.device_count()):
                     mem_alloc = torch.cuda.memory_allocated(i) / 1024 ** 3
