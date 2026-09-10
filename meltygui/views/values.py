@@ -7006,6 +7006,9 @@ PICKER_EXTENSION = 60
 # same screen spot whichever tab is showing.
 # [tint=(0.85, 0.75, 0.05)]
 PICKER_EXPOSURE_BAND = 54
+# Gap between the swatch's bottom edge and the popover's top.
+# [tint=(0.85, 0.75, 0.05)]
+PICKER_ANCHOR_GAP = 10
 
 
 def color_picker_height(n_channels: int, has_info: bool = False) -> int:
@@ -7015,11 +7018,14 @@ def color_picker_height(n_channels: int, has_info: bool = False) -> int:
             + n_channels * 26 + 26 + (22 if has_info else 0))
 
 
-def color_picker_top_offset(gap: int = 10) -> int:
-    """The popover's y offset below its anchor: `gap` px less the exposure
-    band, so the band grows the window UPWARD and the square stays where a
-    band-less popover put it."""
-    return gap - PICKER_EXPOSURE_BAND
+def color_picker_top_offset(gap: int = PICKER_ANCHOR_GAP) -> int:
+    """The popover's y offset below its anchor (the cursor under the
+    swatch): the popover HANGS under the swatch, tabs first, and the
+    exposure band pushes the square down. It used to return `gap` less the
+    band so the window grew upward and the square kept its band-less spot —
+    that parked the tab row above the swatch, over the host's header row
+    (Lukas 09-10: too high)."""
+    return gap
 
 
 def color_picker_width() -> int:
@@ -7042,13 +7048,22 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
     (`_draw_extended_picker`). All take and return extended-sRGB tuples
     (hdr_color.py), so a colour picked on one tab reads back on the others
     (an out-of-sRGB value shows clipped on the sRGB tab)."""
+    # The tab strip: draw-list flat_buttons (no wrapper per tab), neutral
+    # grey like draw_tabs' untinted strip — the active tab gets the filled
+    # rect, the others draw label-only.
     # [tint=(0.85, 0.75, 0.05)]
-    tab_tint = (0.62, 0.36, 0.52)
+    tab_color = (0.5, 0.5, 0.5)
+    # [tint=(0.85, 0.75, 0.05)]
+    tab_height = 21
+    from src.lsd.gl_gui.view.core_views.headers import flat_button
     imgui.dummy(0, 2)
     for label, key in (("Wide", "wide"), ("sRGB", "srgb"), ("sRGB+", "extended")):
         selected = picker_state.tab == key
-        if button(label, tint=tab_tint, tint_value=0.32 if selected else 0.12, height=21, shadow=selected,
-                  use_cache=True, corner_radius=4, name=f"cp_tab_{key}")[0]:
+        if flat_button(label, draw_state, view_id=f"cp_tab_{key}", height=tab_height,
+                       color=tab_color, factor=1.2, corner_radius=4,
+                       tint_value=0.35 if selected else 0.15, saturation=0.3,
+                       alpha=1.0 if selected else 0.0, text_value=1.0,
+                       event="left_mouse_down"):
             picker_state.tab = key
             request_render()
         imgui.same_line(spacing=4)
@@ -7056,7 +7071,7 @@ def draw_color_picker(input_value, wrap=True, draw_state=None, info=None,
     if picker_state.tab == "extended":
         return _draw_extended_picker(input_value, draw_state, gl_state, info)
     # The exposure band room stays reserved: the square lands at the same y on
-    # every tab (color_picker_top_offset anchors the popover higher).
+    # every tab.
     imgui.dummy(0, PICKER_EXPOSURE_BAND)
     if picker_state.tab == "srgb":
         return _draw_srgb_picker(input_value, draw_state, info)
