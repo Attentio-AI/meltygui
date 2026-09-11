@@ -838,6 +838,22 @@ def render_func(*args, **o_kwargs):
 
         # kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
 
+        # A view drawn at root level inside an OS-window surface fills it
+        # (Melty.root_fill, stamped by Surface.frame): width always, height
+        # for the first root view of the frame, auto_resize off - so a
+        # one-view body (@glfw_window) needs no size kwargs.
+        _fill = Melty.root_fill
+        if (_fill is not None and not Melty.melty_window_stack
+                and not kwargs.get('closable') and not kwargs.get('glfw_window')
+                and kwargs.get('parent_window') is None):
+            if kwargs.get('width') is None:
+                kwargs['width'] = _fill[0]
+            if kwargs.get('height') is None and not Melty.root_fill_used:
+                kwargs['height'] = _fill[1]
+                Melty.root_fill_used = True
+            kwargs.setdefault('auto_resize', False)
+            kwargs.setdefault('show_header', False)     # the root window has the title bar
+
         passed_width = kwargs.get('width', None)
         passed_height = kwargs.get('height', None)
 

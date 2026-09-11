@@ -807,6 +807,15 @@ class Melty:
     clip_stack_holder = {}
     annotated_window_classes = {}
     registered_windows = defaultdict(lambda: ManagedWindow())
+    # OS-window surfaces (surface.py / app.py). root_fill: the (w, h) a
+    # top-level view fills on the active surface; stamped in the body
+    # by Surface.frame and consumed by the render wrapper (width always,
+    # height for the first root view of the frame). surface_requests:
+    # ManagedWindow entries drawn with glfw_window=True whose OS window the
+    # app loop has yet to create.
+    root_fill = None
+    root_fill_used = False
+    surface_requests = []
     # Self-registering RenderHost objects (id -> host). draw_main renders each one
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}
