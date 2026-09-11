@@ -641,11 +641,15 @@ def draw_titlebar(window):
     in_strip = my <= strip_h and mx < bar_left
     anywhere = bool(Toggles.Melty.move_drag_anywhere) and over_button is None
     if gestures and edge is None and (in_strip or anywhere):
+        # Move pointer only where the strip would actually get the drag
+        # (cursor_gate): bare background, never over a view that claims it.
         Melty.event_handler.register_hovered(
             _STRIP_ID,
             ["left_mouse_dragged", "left_mouse_double_clicked"] if in_strip
             else ["left_mouse_dragged"],
-            priority=_STRIP_PRIORITY)
+            priority=_STRIP_PRIORITY,
+            cursor=mouse_cursor.MOVE if Toggles.Melty.window_move_cursor else None,
+            cursor_gate="left_mouse_dragged")
     strip_events = (getattr(Melty, "events", None) or {}).get(_STRIP_ID, {})
     if _wm_move_started and not Melty.event_handler.is_down("left_mouse"):
         _wm_move_started = False  # synthetic release landed - re-arm

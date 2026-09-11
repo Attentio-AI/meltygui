@@ -375,7 +375,7 @@ class InputHandler:
         self._blocker_views.clear()
         self._view_cursor.clear()
 
-    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False, cursor=None, cursor_rect=None):
+    def register_hovered(self, view_id: Any, subscribed: list[str], priority: int = 0, tile_id=None, selected=False, blocker=False, cursor=None, cursor_rect=None, cursor_gate=None):
         """Register hovered view. Priority 0 = topmost.
 
         cursor=<imgui MOUSE_CURSOR_*> names the pointer shape to show while
@@ -385,7 +385,11 @@ class InputHandler:
         the LATEST pointer position, so a registration made at the start of a
         slow frame drops the moment the pointer has left (None = trust the
         hover test that registered it). An empty `subscribed` list is
-        allowed: a cursor-only registration.
+        allowed: a cursor-only registration. cursor_gate=<event name>
+        ("left_mouse_dragged") shows the shape only while THIS view is the
+        subscriber that event would resolve to first — the one a press here
+        would hand the drag to — so a drag handle's shape never shows over
+        a child that takes the drag itself (gl_gui/mouse_cursor.py).
 
         Multiple calls with the same view_id will merge subscriptions,
         using the lowest (best) priority.
@@ -402,7 +406,11 @@ class InputHandler:
         if blocker:
             self._blocker_views.add(view_id)
         if cursor is not None:
-            self._view_cursor[view_id] = (cursor, cursor_rect)
+            gate_key = None
+            if cursor_gate is not None:
+                gate_input_id, gate_action, _inv, _nb = parse_event_name(cursor_gate)
+                gate_key = (gate_input_id, gate_action)
+            self._view_cursor[view_id] = (cursor, cursor_rect, gate_key)
         # Stamped even on a cursor-only (empty subscribed) registration: the
         # blocker pass keeps a blocker's OWN tile by this map.
         _view_id_to_tile_id[view_id] = tile_id
@@ -1061,14 +1069,26 @@ class InputHandler:
             # registers next frame; never sticking beats one frame of arrow.)
             vc = self._view_cursor
             pointer_x, pointer_y = self._cursor_x, self._cursor_y
+            gate_owner = {}     # gate key -> the view that event resolves to first
             for v, _, _ in self._hovered:
                 entry = vc.get(v)
                 if entry is None:
                     continue
-                c, rect = entry
+                c, rect, gate_key = entry
                 if rect is not None and not (rect[0] <= pointer_x <= rect[2]
                                              and rect[1] <= pointer_y <= rect[3]):
                     continue
+                if gate_key is not None:
+                    # A gated shape (a window's MOVE handle) belongs to the
+                    # view that would CAPTURE the gate event - the same
+                    # process the press uses for drag_capture above - so
+                    # a child that takes the drag itself hides it, and the
+                    # walk goes on to the shape below.
+                    if gate_key not in gate_owner:
+                        owners = resolve(gate_key, key_index)
+                        gate_owner[gate_key] = owners[0] if owners else None
+                    if gate_owner[gate_key] != v:
+                        continue
                 shape = c
                 break
         self.cursor_shape = shape

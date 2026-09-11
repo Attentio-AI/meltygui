@@ -15,6 +15,12 @@ Two ways a view says which shape the pointer should show:
   subscription is ``on_action([], view_id=..., rect=..., cursor=...)`` — no
   events, just the shape over that rect. Views the wrapper registers for
   events can declare a whole-content shape with ``@render_func(mouse_cursor=…)``.
+  ``cursor_gate="left_mouse_dragged"`` ties the shape to a DRAG HANDLE: it
+  shows only where this registration is the subscriber that would capture
+  that event (the topmost ``left_mouse_dragged`` subscriber under the
+  pointer), so a window's move handle shows ``MOVE`` on its bare areas and
+  nothing over a child that takes the drag itself (a slider, a text
+  selection) — the shape tracks where the drag would actually land.
 * **Immediate.** ``imgui.set_mouse_cursor(shape)`` inside code that runs
   THIS frame (imgui resets it every ``new_frame``) — for gestures whose owner
   is not a hover subscription: the right-drag corner resize block in
@@ -57,6 +63,12 @@ RESIZE_NW = 105     # top-left corner
 RESIZE_SE = 106     # bottom-right corner
 RESIZE_NE = 107     # top-right corner
 RESIZE_SW = 108     # bottom-left corner
+# The window-move shape (the desktop's "move" fleur) shown where a left
+# drag would move a window - a melty window's move handle (core_render's
+# `window_move` on_action) or the OS window's drag strip / drag-anywhere
+# background (titlebar.py) - gated by `cursor_gate="left_mouse_dragged"`
+# so it only appears where that handle would actually CAPTURE the drag.
+MOVE = 109
 
 _GLFW_SHAPE = {
     TEXT: glfw.IBEAM_CURSOR,
@@ -72,6 +84,7 @@ _GLFW_SHAPE = {
     RESIZE_N: glfw.RESIZE_NS_CURSOR, RESIZE_S: glfw.RESIZE_NS_CURSOR,
     RESIZE_NW: glfw.RESIZE_NWSE_CURSOR, RESIZE_SE: glfw.RESIZE_NWSE_CURSOR,
     RESIZE_NE: glfw.RESIZE_NESW_CURSOR, RESIZE_SW: glfw.RESIZE_NESW_CURSOR,
+    MOVE: glfw.RESIZE_ALL_CURSOR,
 }
 
 # Theme search NAMES per shape - the XDG name first, then the legacy X name,
@@ -93,6 +106,7 @@ _SHAPE_NAMES = {
     RESIZE_SE: ("se-resize", "bottom_right_corner"),
     RESIZE_NE: ("ne-resize", "top_right_corner"),
     RESIZE_SW: ("sw-resize", "bottom_left_corner"),
+    MOVE: ("move", "fleur"),
 }
 # libXcursor's default search path (XCURSOR_PATH overrides it).
 _XCURSOR_DEFAULT_PATH = "~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps"

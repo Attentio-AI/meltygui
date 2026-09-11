@@ -2055,7 +2055,7 @@ class DrawState(DictConversion):
         return max_layer_depth - z_pos
 
     def _register_action(self, view_id, event_names, registered_priority, rect, cursor,
-                         debug_priority=0, debug_delta=0):
+                         debug_priority=0, debug_delta=0, cursor_gate=None):
         """The registration half of on_action: hover-test `rect` (None = this
         view's bbox) and subscribe. Shared by the live call and the cache-hit
         replay so both obey the same z-order / blocker rules."""
@@ -2085,7 +2085,7 @@ class DrawState(DictConversion):
         Core.melty.event_handler.register_hovered(view_id, event_names,
                                                   priority=registered_priority,
                                                   tile_id=self._tile_id, cursor=cursor,
-                                                  cursor_rect=cursor_rect)
+                                                  cursor_rect=cursor_rect, cursor_gate=cursor_gate)
 
         overlay = imgui.get_overlay_draw_list()
         overlay.channels_set_current(Core.melty.max_layer - 1)
@@ -2131,14 +2131,14 @@ class DrawState(DictConversion):
             return
         base = self._action_base_priority(z_pos=self.z_pos)
         left, top = self._abs_left(), self._abs_top()
-        for view_suffix, event_names, offset, relative_rect, cursor in record[1]:
+        for view_suffix, event_names, offset, relative_rect, cursor, cursor_gate in record[1]:
             view_id = self._tile_id if view_suffix is None else str(self._tile_id) + "_" + str(view_suffix)
             rect = None
             if relative_rect is not None:
                 rect = (left + relative_rect[0], top + relative_rect[1],
                         left + relative_rect[2], top + relative_rect[3])
             self._register_action(view_id, list(event_names), base + offset, rect, cursor,
-                                  debug_priority=base + offset)
+                                  debug_priority=base + offset, cursor_gate=cursor_gate)
 
     @property
     def priority(self):
@@ -2179,9 +2179,13 @@ class DrawState(DictConversion):
         for f, v in snapshot.items():
             setattr(self, f, v)
 
-    def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None):
+    def on_action(self, event_names, view_id=None, priority=None, priority_delta=0, rect=None, cursor=None,
+                  cursor_gate=None):
         """Subscribe this view to `event_names` (or, with an empty list, just
         tag `rect` with a pointer `cursor` shape) for this frame.
+        `cursor_gate="left_mouse_dragged"` shows the shape only where this
+        subscription is the one that event would be captured by
+        (InputHandler.register_hovered) — a drag handle's shape.
 
         Called from a view BODY it is recorded on the draw_state as well
         (`_body_actions`), because the wrapper skips the body on a blit-cache
@@ -2224,10 +2228,11 @@ class DrawState(DictConversion):
                 relative_rect = (rect[0] - left, rect[1] - top, rect[2] - left, rect[3] - top)
             record[1].append((view_suffix, tuple(event_names),
                               registered_priority - self._action_base_priority(z_pos=self.z_pos),
-                              relative_rect, cursor))
+                              relative_rect, cursor, cursor_gate))
 
         self._register_action(view_id, event_names, registered_priority, rect, cursor,
-                              debug_priority=priority, debug_delta=priority_delta)
+                              debug_priority=priority, debug_delta=priority_delta,
+                              cursor_gate=cursor_gate)
 
         if single_event:
             if view_id in Core.melty.events:

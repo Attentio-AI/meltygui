@@ -1438,6 +1438,12 @@ class Toggles:
         # only the strip moves. Double-click-maximize stays strip-only.
         move_drag_anywhere = True
 
+        # Show the desktop's "move" pointer (mouse_state.MOVE) wherever a
+        # left drag would move a window: a melty window's bare areas (its
+        # resize handle) and the OS window's drag strip / drag-anywhere
+        # background. Off = the normal arrow there.
+        window_move_cursor = True
+
         # px hit zones for edge/corner resize on the undecorated window.
         resize_border = 6
         resize_corner = 18

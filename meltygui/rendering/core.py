@@ -2515,7 +2515,14 @@ def render_func(*args, **o_kwargs):
                 _explicit_window_pos = kwargs.get("window_pos", None) is not None
                 if not _explicit_window_pos:
                     on_held = draw_state.on_action("left_mouse_held", "window_move", priority_delta=-2)
-                    on_drag = draw_state.on_action("left_mouse_drag", "window_move")
+                    # The move handle shows the MOVE pointer only where a
+                    # press would hand IT the drag (cursor_gate): any child
+                    # that takes left drags (resize rows, sliders, dnd
+                    # headers, the corner handle) keeps its own shape.
+                    on_drag = draw_state.on_action(
+                        "left_mouse_drag", "window_move",
+                        cursor=mouse_cursor.MOVE if Toggles.Melty.window_move_cursor else None,
+                        cursor_gate="left_mouse_dragged")
                     left_mouse_down = draw_state.on_action("left_mouse_down", "window_move", priority_delta=-1)
 
                     if left_mouse_down:
