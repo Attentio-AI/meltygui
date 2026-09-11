@@ -87,7 +87,7 @@ ROOT_FLAGS = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WIN
               | imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.WINDOW_NO_NAV_INPUTS
               | imgui.WINDOW_NO_NAV | imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS
               | imgui.WINDOW_NO_SCROLL_WITH_MOUSE)
-ROOT_BG = (0.10, 0.10, 0.10, 1.0)
+ROOT_BG = (0.011, 0.011, 0.011, 1.0)     # linear scRGB (the present pass encodes): hex#1a1a1a
 
 
 class Surface:
@@ -326,7 +326,7 @@ class Surface:
 
         top = titlebar.top_inset() if self.chrome else 0.0
         imgui.set_cursor_screen_pos((0, top))
-        Melty.root_fill = (float(disp_w), float(disp_h) - top)
+        Melty.root_fill = (float(disp_w), float(disp_h) - top, float(top))   # (w, h below the chrome, top inset)
         Melty.root_fill_used = False
         try:
             self.body(self)
@@ -363,13 +363,7 @@ class Surface:
         """The window's visible body (the studio's draw_main draws its own):
         edge to edge, the same corner radius as the alpha cut."""
         from src.lsd.gl_gui.hdr_color import pack_color
-        colour = ROOT_BG
-        sm = Melty.style_manager
-        try:
-            colour = sm.get_color('window_bg') if sm is not None and hasattr(sm, 'get_color') else colour
-        except Exception:
-            colour = ROOT_BG
-        draw_list.add_rect_filled(0, 0, w, h, pack_color(*colour), rounding=radius)
+        draw_list.add_rect_filled(0, 0, w, h, pack_color(*ROOT_BG), rounding=radius)
 
     # --- geometry (children) ---------------------------------------------------------
     def content_size(self):

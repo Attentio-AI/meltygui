@@ -23,10 +23,30 @@ from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
     from src.lsd.gl_gui.view.core_views.texture_view import draw_texture
+    from src.lsd.gl_gui.view.core_views.new_core_view import (
+        draw_any, draw_button, draw_str, draw_float, draw_int, draw_enum, draw_dropdown,
+        draw_color_picker, draw_collection_as_tabs)
+    from src.lsd.gl_gui.view.core_views.columns import draw_columns, draw_rows
+    from src.lsd.gl_gui.view.playground.folder_files import draw_folder_files
+    from src.lsd.gl_gui.view.playground.terminal_playground import draw_terminal
 
+_NCV = 'src.lsd.gl_gui.view.core_views.new_core_view'
 _VIEWS = {
     'draw_text': ('src.lsd.gl_gui.view.core_views.text_editor', 'draw_text'),
     'draw_texture': ('src.lsd.gl_gui.view.core_views.texture_view', 'draw_texture'),
+    'draw_any': (_NCV, 'draw_any'),
+    'draw_button': (_NCV, 'draw_button'),
+    'draw_str': (_NCV, 'draw_str'),
+    'draw_float': (_NCV, 'draw_float'),
+    'draw_int': (_NCV, 'draw_int'),
+    'draw_enum': (_NCV, 'draw_enum'),
+    'draw_dropdown': (_NCV, 'draw_dropdown'),
+    'draw_color_picker': (_NCV, 'draw_color_picker'),
+    'draw_collection_as_tabs': (_NCV, 'draw_collection_as_tabs'),
+    'draw_columns': ('src.lsd.gl_gui.view.core_views.columns', 'draw_columns'),
+    'draw_rows': ('src.lsd.gl_gui.view.core_views.columns', 'draw_rows'),
+    'draw_folder_files': ('src.lsd.gl_gui.view.playground.folder_files', 'draw_folder_files'),
+    'draw_terminal': ('src.lsd.gl_gui.view.playground.terminal_playground', 'draw_terminal'),
 }
 
 
@@ -42,4 +62,4 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['glfw_window', 'run', 'pressed', 'content_size', 'mark', 'draw_text', 'draw_texture']
+__all__ = ['glfw_window', 'run', 'pressed', 'content_size', 'mark', *_VIEWS]

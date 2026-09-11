@@ -838,21 +838,28 @@ def render_func(*args, **o_kwargs):
 
         # kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
 
-        # A view drawn at root level inside an OS-window surface fills it
-        # (Melty.root_fill, stamped by Surface.frame): width always, height
-        # for the first root view of the frame, auto_resize off - so a
-        # one-view body (@glfw_window) needs no size kwargs.
+        # A view that cannot size itself (its @render_func has
+        # determines_height=False or fill_height - draw_text, draw_texture,
+        # layouts) drawn at root level inside an OS-window surface fills the
+        # window (Melty.root_fill is stamped by Surface.frame): the first such
+        # view of the frame gets the remaining height, all get the width,
+        # headerless (the OS window has the title bar). Self-sizing views
+        # (buttons, fields) lay out naturally - so a body can put a row of
+        # widgets above an editor.
         _fill = Melty.root_fill
         if (_fill is not None and not Melty.melty_window_stack
+                and (merge_o_kwargs.get('determines_height', True) is False
+                     or merge_o_kwargs.get('fill_height') is not None)
                 and not kwargs.get('closable') and not kwargs.get('glfw_window')
                 and kwargs.get('parent_window') is None):
             if kwargs.get('width') is None:
                 kwargs['width'] = _fill[0]
             if kwargs.get('height') is None and not Melty.root_fill_used:
-                kwargs['height'] = _fill[1]
+                _y = imgui.get_cursor_screen_pos()[1] if _has_imgui else 0.0
+                kwargs['height'] = max(40.0, _fill[1] - max(0.0, _y - _fill[2]))
                 Melty.root_fill_used = True
             kwargs.setdefault('auto_resize', False)
-            kwargs.setdefault('show_header', False)     # the root window has the title bar
+            kwargs.setdefault('show_header', False)
 
         passed_width = kwargs.get('width', None)
         passed_height = kwargs.get('height', None)
