@@ -337,7 +337,11 @@ def _hypr_poll_windows(pid, path):
     when the rect (or the window) changed — the count is the consumers'
     change signal, a poll that saw nothing new must not bump it."""
     clients = json.loads(hypr_request("j/clients", path))
-    win = pick_window([hyprland_window_info(c) for c in clients], pid)
+    infos = [hyprland_window_info(c) for c in clients]
+    # Every window of ours (app.py surfaces: several per process), for the
+    # by-title lookups (surface_rect / place_window / _current_frame).
+    _STATE["windows"] = [w for w in infos if w.get("pid") == pid]
+    win = pick_window(infos, pid)
     cur = _STATE["frame"]
     if win is None:
         if cur is not None:
@@ -403,10 +407,66 @@ def _hyprland_thread_main(pid, gen):
         _STATE["available"] = False
 
 
+def _current_frame():
+    """The feed's window dict for the CURRENT window: the studio's picked
+    one, or — once app.py surfaces are in use — the active surface's,
+    matched by title (several windows share our pid and class)."""
+    title = _active_surface_title()
+    if title is not None:
+        return _window_by_title(title)
+    return _STATE["frame"]
+
+
+def _active_surface_title():
+    try:
+        from src.lsd.gl_gui.surface import Surface
+    except Exception:
+        return None
+    active = Surface.active
+    return active.title if active is not None else None
+
+
+def _window_by_title(title):
+    for w in _STATE.get("windows") or ():
+        if w.get("title") == title:
+            return w
+    return None
+
+
+def surface_rect(title):
+    """(x, y, width, height) of OUR window titled ``title`` (its surface
+    rect, logical px), or None while the feed has not seen it."""
+    if not _STATE["available"]:
+        return None
+    w = _window_by_title(title)
+    return (w["x"], w["y"], w["width"], w["height"]) if w else None
+
+
+def place_window(title, rect):
+    """Move AND resize our window titled ``title`` to ``rect`` (absolute
+    logical px, top-left anchored) in one request — app.py's child
+    surfaces following their parent. Hyprland only; True on "ok"."""
+    if backend() != "hyprland":
+        return False
+    w = _window_by_title(title)
+    if w is None:
+        return False
+    selector = f"address:{w['address']}"
+    x, y, width, height = (int(v) for v in rect)
+    if hypr_config_is_lua():
+        script = (f'local w = hl.get_window("{selector}"); '
+                  f'if not w then error("no window {selector}") end; '
+                  f'hl.dispatch(hl.dsp.window.resize({{x = {width}, y = {height}, window = "{selector}"}})); '
+                  f'hl.dispatch(hl.dsp.window.move({{x = {x}, y = {y}, window = "{selector}"}}))')
+        return _hypr_eval(script, "place_window")
+    ok = _hypr_run(f"dispatch resizewindowpixel exact {width} {height},{selector}", "resizewindowpixel")
+    return _hypr_run(f"dispatch movewindowpixel exact {x} {y},{selector}", "movewindowpixel") and ok
+
+
 def _hypr_selector():
-    """Hyprland's window selector for the studio's window, or None while
-    the feed has not seen it."""
-    frame = _STATE["frame"]
+    """Hyprland's window selector for the current window (_current_frame),
+    or None while the feed has not seen it."""
+    frame = _current_frame()
     if backend() != "hyprland" or frame is None:
         return None
     return f"address:{frame['address']}"
@@ -465,8 +525,12 @@ def _hypr_run(request, what):
         reply = hypr_request(request)
     except Exception as ex:
         _STATE["error"] = str(ex)
+        if os.environ.get("MELTY_DEBUG"):
+            print(f"[geometry_feed] {what}: {request!r} -> EXC {ex}", flush=True)
         return False
     ok = reply.strip() == "ok"
+    if os.environ.get("MELTY_DEBUG"):
+        print(f"[geometry_feed] {what}: {request[:160]!r} -> {reply.strip()[:80]!r}", flush=True)
     if not ok:
         _STATE["error"] = f"{what}: {reply.strip()}"
     return ok
@@ -758,7 +822,7 @@ def frame_rect(inset=0):
     NOT honour the window geometry (its rect is then the SURFACE); the
     GNOME feed's frame rect and a geometry-honouring Hyprland's box are
     the xdg geometry, already the content (hypr_honors_geometry)."""
-    frame = _STATE["frame"]
+    frame = _current_frame()
     if not _STATE["available"] or frame is None:
         return None
     x, y, w, h = frame["x"], frame["y"], frame["width"], frame["height"]

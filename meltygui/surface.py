@@ -48,7 +48,8 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 MELTY_ATTRS = ('glfw_window', 'vis', 'framebuffer_size', 'frame_inset', 'frame_origin',
                'root_draw_states', 'root_draw_states_by_layer', 'cache', 'backend',
                'event_handler', 'frame_key_events', 'hovered_ds', 'imgui_main_window_hovered',
-               'glfw_close_requested', 'any_window_hovered', 'any_window_hovered_pending')
+               'glfw_close_requested', 'any_window_hovered', 'any_window_hovered_pending',
+               'filter')      # its executor's VAO is per GL context
 # Module globals that assume one window (titlebar/os_frame resolve "the window"
 # through Melty.glfw_window, so with the swap they see this window's).
 MODULE_GLOBALS = {
@@ -64,6 +65,7 @@ MODULE_GLOBALS = {
     input_handler: ('_BUTTON_PROBE',),
 }
 _DEFAULTS = None      # Default module globals, captured before the first surface
+_DEBUG = bool(__import__('os').environ.get('MELTY_DEBUG'))
 
 
 def _capture_defaults():
@@ -103,7 +105,13 @@ class Surface:
         parent-relative geometry, exactly as for a closable melty window)."""
         _capture_defaults()
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
-        self.title = title or name
+        self.title = _unique_title(title or name)
+        self.request = None         # the melty.surface_children entry of a child
+        self.toplevel = None        # xdg_toplevel proxy (wayland_move), for set_parent
+        self.await_ack = False      # a rect sent, the parent yet to show it
+        self.sent_at = 0.0
+        self.seen_rect = None       # the feed's rect last tick (present_children)
+        self.stale = False          # closing because its call stopped, not an OS close
         self.children: list = []
         self.frames = 0
         self.closed = False
@@ -146,7 +154,8 @@ class Surface:
             root_draw_states={}, root_draw_states_by_layer=defaultdict(list),
             cache=None, backend=None, event_handler=input_handler.InputHandler(),
             frame_key_events=[], hovered_ds=None, imgui_main_window_hovered=False,
-            glfw_close_requested=False, any_window_hovered=False, any_window_hovered_pending=False)
+            glfw_close_requested=False, any_window_hovered=False, any_window_hovered_pending=False,
+            filter=type(Melty.filter)())
 
         # imgui context sharing the owner's atlas (the owner context OWNS it,
         # so this surface can die without taking the atlas with it).
@@ -163,14 +172,28 @@ class Surface:
         Melty.cache.enabled = False
         if glfw.get_platform() == glfw.PLATFORM_WAYLAND:
             wayland_move.attach(self.window)
+            self.toplevel = wayland_move.toplevel_proxy()
             self.hdr_tagged = wayland_color.attach_window(self.window)
         else:
             self.hdr_tagged = False
         if parent is not None:
             parent.children.append(self)
-            _set_xdg_parent(self.window, parent.window)
+            if self.toplevel and parent.toplevel:
+                wayland_move.set_parent(self.toplevel, parent.toplevel)
         self._hook_callbacks()
         Surface.all.append(self)
+        # The chrome chrome window's shadow margin: the content the caller
+        # sized is laid out inside a surface grown by the margin on every
+        # side. Requested like a studio's launch restore - applied at the
+        # first frame (apply_pending_surface_size, self-flagged so the
+        # resize hook leaves it alone) and, on Hyprland, fitted into the
+        # work area: the compositor centres a window at its initial size
+        # and the box grows anchored top-left, so an unfitted window runs
+        # off the screen and its clamps fight the regrow (09-11).
+        inset = int(titlebar.window_inset()) if self.chrome else 0
+        if inset > 0:
+            titlebar.request_surface_size(self.window, int(size[0]) + 2 * inset,
+                                          int(size[1]) + 2 * inset, fit=True)
 
     # --- activation ----------------------------------------------------------------
     def _stash(self):
@@ -189,6 +212,8 @@ class Surface:
         """Make this surface's window, GL context, imgui context and per-window
         state current. Cheap when already active."""
         if Surface.active is not self:
+            if _DEBUG:
+                print(f'[surface] activate {getattr(Surface.active, "title", None)!r} -> {self.title!r}', flush=True)
             if Surface.active is not None:
                 Surface.active._stash()
             Surface.active = self
@@ -197,19 +222,35 @@ class Surface:
         imgui.set_current_context(self.ctx)
 
     def _hook_callbacks(self):
-        """GLFW callbacks fire inside poll_events, possibly while ANOTHER
-        surface's state is loaded (the input backend appends to
-        Melty.frame_key_events; titlebar's resize hook uses its globals).
-        Chain a wrapper in front of every callback that activates us first."""
+        """GLFW callbacks fire inside poll_events — and inside any GLFW call
+        that dispatches Wayland events (set_window_size, a roundtrip), i.e.
+        possibly while ANOTHER surface is mid-frame. The input backend
+        appends to Melty.frame_key_events and titlebar's resize hook reads
+        its globals, so chain a wrapper in front of every callback that
+        loads OUR per-window state for the duration of the callback and
+        puts the interrupted surface's back afterwards. Never the GL or
+        imgui context: the interrupted frame keeps rendering into its own."""
         def hook(setter, extra=None):
             prev = None
 
             def wrapper(window, *args):
-                self.activate()
-                if extra is not None:
-                    extra(*args)
-                if prev is not None:
-                    prev(window, *args)
+                interrupted = Surface.active
+                if interrupted is not self:
+                    if interrupted is not None:
+                        interrupted._stash()
+                    Surface.active = self
+                    self._restore()
+                try:
+                    if extra is not None:
+                        extra(*args)
+                    if prev is not None:
+                        prev(window, *args)
+                finally:
+                    if interrupted is not self:
+                        self._stash()
+                        Surface.active = interrupted
+                        if interrupted is not None:
+                            interrupted._restore()
             prev = setter(self.window, wrapper)
 
         hook(glfw.set_key_callback)
@@ -225,7 +266,10 @@ class Surface:
 
     def _on_framebuffer_size(self, width, height):
         request_render()
-        titlebar.on_surface_resized(self.window, width, height)
+        applied = titlebar.on_surface_resized(self.window, width, height)
+        if _DEBUG:
+            print(f'[surface {self.title}] framebuffer {width}x{height} '
+                  f'self_resize={titlebar._self_resize} regrow={applied}', flush=True)
 
     # --- render ---------------------------------------------------------------------
     def frame(self):
@@ -293,7 +337,19 @@ class Surface:
         if self.chrome:
             titlebar.draw_titlebar(self.window)
         views.end_frame()
-        Melty.post_frame(self.impl, self.window)   # imgui render, shadow, corner cut, blur, swap
+        try:
+            Melty.post_frame(self.impl, self.window)   # imgui render, shadow, corner cut, PQ, swap
+        except Exception:
+            if _DEBUG:
+                import ctypes
+                cur = glfw.get_current_context()
+                cg = titlebar._corner_gl
+                print(f'[surface {self.title}] post_frame FAILED ctx={ctypes.cast(cur, ctypes.c_void_p).value:#x} '
+                      f'mine={ctypes.cast(self.window, ctypes.c_void_p).value:#x} corner_gl={id(cg):#x} '
+                      f'corner_cache={getattr(cg, "_cache", None) and list(getattr(cg, "_cache").keys())} '
+                      f'mods_corner={id(self._mods[(titlebar, "_corner_gl")]):#x} active={Surface.active.title!r}',
+                      flush=True)
+            raise
         self.frames += 1
 
     def _root_background(self, draw_list, w, h, radius):
@@ -314,16 +370,52 @@ class Surface:
 
     # --- teardown --------------------------------------------------------------------
     def destroy(self):
+        if _DEBUG:
+            print(f'[surface] destroy {self.title!r} (active={getattr(Surface.active, "title", None)!r})', flush=True)
         for child in list(self.children):
             child.destroy()
         if self.parent is not None and self in self.parent.children:
             self.parent.children.remove(self)
         self.activate()
+        from src.lsd.gl_gui.gl_state import GLState, current_context
+        context = current_context()
         try:
-            self.impl.shutdown()
+            if len(Surface.all) > 1:
+                # Other surfaces live on: the renderer's shutdown would
+                # delete the shader program and the font texture, SHARED
+                # across the GL share group. Drop only this context's own
+                # vertex objects.
+                impl = self.impl
+                if getattr(impl, '_vao_handle', -1) > 0:
+                    gl.glDeleteVertexArrays(1, [impl._vao_handle])
+                for name in ('_vbo_handle', '_elements_handle'):
+                    handle = getattr(impl, name, -1)
+                    if handle > 0:
+                        gl.glDeleteBuffers(1, [handle])
+                impl._vao_handle = impl._vbo_handle = impl._elements_handle = 0
+            else:
+                self.impl.shutdown()
         except Exception:
             pass
+        # This surface's GL objects, deleted while it's still current: the
+        # scene target, the chrome's GLState and the shader filter. Whatever
+        # else is queued for it later (the GLState updates after the window
+        # is gone) is discarded below - its names die with the context.
         scene_target.shutdown()
+        for state in (titlebar._corner_gl, scene_target._STATE.get('gl')):
+            if state is not None:
+                try:
+                    state.release()
+                except Exception:
+                    pass
+        try:
+            Melty.filter.cleanup()
+        except Exception:
+            pass
+        try:
+            GLState.flush_deletes()
+        except Exception:
+            pass
         if self in Surface.all:
             Surface.all.remove(self)
         Surface.active = None
@@ -332,12 +424,9 @@ class Surface:
         imgui.destroy_context(self.ctx)
         glfw.destroy_window(self.window)
         self.window = None
+        GLState.discard_context(context)
         if Surface.all:
-            # The renderer's shutdown deleted the SHARED font texture it had
-            # uploaded; a survivor re-uploads it.
-            survivor = Surface.all[0]
-            survivor.activate()
-            survivor.impl.refresh_font_texture()
+            Surface.all[0].activate()
         elif Surface.owner_window is not None:
             glfw.make_context_current(Surface.owner_window)
 
@@ -361,11 +450,13 @@ def _owner_io():
             imgui.set_current_context(prev)
 
 
-def _set_xdg_parent(child, parent):
-    """xdg_toplevel.set_parent: the compositor keeps the child above its
-    parent and minimises them together. Best effort through wayland_move's
-    proxy discovery; unavailable is fine."""
-    try:
-        wayland_move.set_parent(child, parent)
-    except Exception:
-        pass
+def _unique_title(title):
+    """Window titles double as the geometry feed's per-window key (several
+    windows share our pid and class), so no two surfaces share one."""
+    taken = {s.title for s in Surface.all}
+    if title not in taken:
+        return title
+    n = 2
+    while f'{title} ({n})' in taken:
+        n += 1
+    return f'{title} ({n})'

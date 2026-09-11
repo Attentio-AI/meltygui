@@ -674,6 +674,34 @@ def _grab(opcode_name, *extra):
     return True
 
 
+def toplevel_proxy():
+    """The attached window's xdg_toplevel proxy (for set_parent), or None."""
+    return _STATE.get("toplevel")
+
+
+def set_parent(child_toplevel, parent_toplevel):
+    """xdg_toplevel.set_parent(child, parent): the compositor keeps the
+    child stacked above its parent and minimises them together (app.py's
+    child surfaces). Both proxies come from toplevel_proxy() of the
+    respective attached windows. True when the request went out."""
+    if not child_toplevel:
+        return False
+    try:
+        _, wl = _c()
+        opcodes = _opcodes(child_toplevel, ("set_parent",))
+        if "set_parent" not in opcodes:
+            return False
+        wl.wl_proxy_marshal_flags(child_toplevel, opcodes["set_parent"], None,
+                                  wl.wl_proxy_get_version(child_toplevel), 0,
+                                  ctypes.c_void_p(parent_toplevel or 0))
+        if _STATE.get("display"):
+            wl.wl_display_flush(_STATE["display"])
+        return True
+    except Exception as ex:
+        _STATE["error"] = f"set_parent: {ex}"
+        return False
+
+
 def begin_move(window=None):
     """xdg_toplevel.move with the held press's serial: the compositor moves
     the window from here (Super+drag semantics). The pressed button is

@@ -1013,6 +1013,22 @@ def render_func(*args, **o_kwargs):
         closable = kwargs.get("closable", False)
         detached = kwargs.get("detached", False)
         draw_state._view_func = func
+        draw_state._wrapper = wrapper
+
+        # glfw_window=True requests a CHILD GLFW WINDOW of the active surface
+        # (surface.py). Like closable=True the view renders nothing here -
+        # app.py opens a Surface whose body draws this view (Melty.
+        # draw_surface_root) and the result comes back a frame later
+        # through returned_values. The child surface's draw call carries no
+        # glfw_window, so it renders normally there.
+        if kwargs.get('glfw_window') and not deferred_entry:
+            _tile = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
+            draw_state._tile_id = _tile
+            Melty.surface_window_request(_tile, name, input_value, kwargs, draw_state)
+            return_value = Melty.returned_values.pop(_tile, None) or (False, None)
+            if return_extras:
+                return return_value[0], return_value[1], draw_state
+            return return_value
 
         if _drag_drop.DragDrop.active and draw_state is _drag_drop.DragDrop.item_ds:
             # The floating dragged item anchors available_width on ITSELF

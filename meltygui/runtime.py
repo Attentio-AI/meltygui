@@ -816,6 +816,58 @@ class Melty:
     root_fill = None
     root_fill_used = False
     surface_requests = []
+    surface_windows = {}     # tile_id -> request (see surface_window_request)
+    app_tick = 0             # app.py loop iteration; a request not refreshed this tick closes
+
+    @classmethod
+    def surface_window_request(cls, tile_id, name, input_value, kwargs, draw_state):
+        """draw_x(glfw_window=True): record (or refresh) the request for a
+        CHILD OS WINDOW of the active surface. The wrapper returns the
+        deferred result; app.py creates the Surface, whose body is
+        draw_surface_root, and closes it when a tick goes by without this
+        call — immediate mode, like a closable window. window_pos= pins
+        the parent-relative position (else the user moves it and the
+        offset is adopted); window_size= sets the size."""
+        from types import SimpleNamespace
+        req = cls.surface_windows.get(tile_id)
+        if req is None:
+            req = SimpleNamespace(tile_id=tile_id, name=name, surface=None, parent_surface=None,
+                                  closed=False, pinned=False, tick=-1)
+            cls.surface_windows[tile_id] = req
+        req.input_value, req.kwargs, req.draw_state = input_value, kwargs, draw_state
+        req.tick = cls.app_tick
+        req.pinned = 'window_pos' in kwargs
+        # The parent-relative geometry lives on the request; the pare
+        # draw_state rendering INLINE in the child surface, and the inline
+        # path stamps window_pos itself.
+        if req.pinned:
+            req.window_pos = tuple(int(v) for v in kwargs['window_pos'])
+        elif getattr(req, 'window_pos', None) is None:
+            req.window_pos = (48, 48)
+        if 'window_size' in kwargs:
+            req.window_size = tuple(int(v) for v in kwargs['window_size'])
+        elif getattr(req, 'window_size', None) is None:
+            req.window_size = tuple(int(v) for v in (draw_state.window_size
+                                                     or draw_state._initial_window_size or (600, 400)))
+        if req.surface is None and not req.closed and req not in cls.surface_requests:
+            from src.lsd.gl_gui.surface import Surface
+            req.parent_surface = Surface.active
+            cls.surface_requests.append(req)
+        return req
+
+    @classmethod
+    def draw_surface_root(cls, req, surface):
+        """The child surface's body: the requested view drawn INLINE at the
+        surface root (root_fill sizes it; the surface's own chrome is its
+        title bar), on the same draw_state as the parent-side call, its
+        result threaded back through pending_return_values."""
+        kwargs = {k: v for k, v in req.kwargs.items()
+                  if k not in ('glfw_window', 'window_pos', 'window_size', 'closable',
+                               'layer_unique', 'draw_state', 'return_extras')}
+        kwargs['draw_state'] = req.draw_state
+        result = req.draw_state._wrapper(req.input_value, **kwargs)
+        if result is not None:
+            cls.pending_return_values[req.tile_id] = tuple(result)[:2]
     # Self-registering RenderHost objects (id -> host). draw_main renders each one
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}

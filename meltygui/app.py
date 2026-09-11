@@ -181,7 +181,11 @@ def _init_melty():
     # starts file watchers and a jedi worker we do not need.
     Melty.annotation_mode = False
     Toggles.show_fps = False
+    if os.environ.get('MELTY_NO_OS_FRAME'):
+        Toggles.Melty.push_os_window_edges = False
     Surface.app_id = _state['app_id']
+    from src.lsd.gl_gui import geometry_feed
+    geometry_feed.start()          # for rects: the size fit, child placement, os_frame
     mark('melty configured')
 
 
@@ -251,6 +255,7 @@ def run():
     first = True
     try:
         while Surface.all:
+            Melty.app_tick += 1
             glfw.poll_events()
             _open_requested_children()
             for surface in list(Surface.all):
@@ -259,9 +264,12 @@ def run():
                 except Exception:
                     _state['failed'] = True
                     raise
+            for surface in list(Surface.all):
                 _present_children(surface)
+            _close_stale_children()
             for surface in list(Surface.all):
                 if surface.closed:
+                    _note_closed(surface)
                     surface.destroy()
             if first and Surface.all:
                 first = False
@@ -277,50 +285,119 @@ def run():
 
 def _open_requested_children():
     """Child surfaces the render wrapper asked for (glfw_window=True) since
-    the last frame: see Melty.surface_requests."""
+    the last tick: Melty.surface_requests, filled by surface_window_request."""
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.surface import Surface
-    requests = getattr(Melty, 'surface_requests', None)
-    if not requests:
-        return
-    for entry in list(requests):
-        requests.remove(entry)
-        parent = entry.parent_surface
-        if parent is None or parent not in Surface.all:
+    requests = Melty.surface_requests
+    while requests:
+        req = requests.pop(0)
+        parent = req.parent_surface
+        if parent is None or parent not in Surface.all or req.surface is not None:
             continue
-        ds = entry.draw_state
-        size = tuple(int(v) for v in (ds.window_size or ds._initial_window_size or (600, 400)))
-        child = Surface(entry.name, _child_body(entry), title=entry.name, size=size,
+        ds = req.draw_state
+        size = req.window_size
+        child = Surface(req.name, _child_body(req), title=req.name.split('##')[0], size=size,
                         parent=parent, draw_state=ds)
-        entry.surface = child
+        child.request = req
+        req.surface = child
+        _debug(f'child surface {child.title!r} of {parent.title!r} size={size}')
 
 
-def _child_body(entry):
+def _child_body(req):
     def body(surface):
         from src.lsd.gl_gui.melty import Melty
-        Melty.draw_surface_root(entry, surface)
+        Melty.draw_surface_root(req, surface)
     return body
 
 
+def _close_stale_children():
+    """Immediate mode: a child whose glfw_window=True call was not made
+    this tick closes (its parent stopped drawing it); the next call
+    reopens it."""
+    from src.lsd.gl_gui.melty import Melty
+    for req in list(Melty.surface_windows.values()):
+        child = req.surface
+        if child is not None and req.tick != Melty.app_tick:
+            child.closed = True
+            child.stale = True
+
+
+def _note_closed(surface):
+    """A surface on its way out. An OS close of a child (the title bar's
+    X, the compositor) leaves its request CLOSED: the parent's calls
+    return (False, None) from then on, as a closed melty window's do. A
+    stale child (not drawn this tick) just drops its surface."""
+    req = surface.request
+    if req is not None:
+        req.surface = None
+        if not getattr(surface, 'stale', False):
+            req.closed = True
+            if req.draw_state is not None:
+                req.draw_state.closed = True
+    for child in list(surface.children):
+        _note_closed(child)
+
+
+ACK_TIMEOUT_S = 0.5
+
+
+def _debug(msg):
+    if os.environ.get('MELTY_DEBUG'):
+        print(f'[app] {msg}', flush=True)
+
+
 def _present_children(parent):
-    """Copy each child's parent-relative geometry out to the compositor
-    (Hyprland: geometry_feed.hypr_set_box). Nothing on other backends."""
+    """Children follow their parent exactly as nested melty windows do:
+    the request's window_pos is the parent-relative offset. Each tick the
+    child's target rect = the parent's screen rect (geometry feed) + the
+    offset, sent to the compositor when it differs from what was last
+    sent (Hyprland). A child the USER dragged — its feed rect moved while
+    the parent's did not, once our own last placement was acknowledged —
+    adopts the new offset, unless window_pos= pinned it. GNOME: rects are
+    read but never sent."""
     if not parent.children:
         return
-    from src.lsd.gl_gui import geometry_feed
-    origin = geometry_feed.surface_rect(parent.window)
-    if origin is None:
+    import glfw
+    from src.lsd.gl_gui import geometry_feed, titlebar
+    prect = geometry_feed.surface_rect(parent.title)
+    if prect is None:
         return
-    for child in parent.children:
-        ds = child.draw_state
-        if ds is None:
+    now = time.monotonic()
+    parent_moved = parent.seen_rect is not None and tuple(prect[:2]) != tuple(parent.seen_rect[:2])
+    parent.seen_rect = prect
+    for child in list(parent.children):
+        req = child.request
+        if req is None or child.window is None:
             continue
-        pos = ds.window_pos or (0, 0)
-        size = child.content_size()
-        rect = (int(origin[0] + pos[0]), int(origin[1] + pos[1]), int(size[0]), int(size[1]))
-        if rect != child.last_sent_rect:
-            if geometry_feed.place_window(child.window, rect):
-                child.last_sent_rect = rect
+        crect = geometry_feed.surface_rect(child.title)
+        child_moved = (crect is not None and child.seen_rect is not None
+                       and tuple(crect[:2]) != tuple(child.seen_rect[:2]))
+        child.seen_rect = crect
+        if child.await_ack and child.last_sent_rect is not None:
+            if (crect is not None and tuple(crect[:2]) == tuple(child.last_sent_rect[:2])) \
+                    or now - child.sent_at > ACK_TIMEOUT_S:
+                child.await_ack = False
+                child_moved = False          # that was our placement landing
+        if (child_moved and not parent_moved and not req.pinned and not child.await_ack
+                and child.last_sent_rect is not None):
+            req.window_pos = (crect[0] - prect[0], crect[1] - prect[1])
+            _debug(f'child {child.title!r} dragged: offset now {req.window_pos}')
+        pos = req.window_pos
+        width, height = glfw.get_window_size(child.window)
+        if geometry_feed.hypr_honors_geometry():
+            # The box is the CONTENT: the surface less the shadow inset.
+            child.activate()
+            inset = int(titlebar.window_inset())
+            width, height = max(1, width - 2 * inset), max(1, height - 2 * inset)
+        target = (int(prect[0] + pos[0]), int(prect[1] + pos[1]), int(width), int(height))
+        if target != child.last_sent_rect:
+            if crect is not None and tuple(crect) == target:
+                child.last_sent_rect = target       # already there
+            elif geometry_feed.place_window(child.title, target):
+                _debug(f'place {child.title!r} at {target} (parent {prect[:2]} + {pos})')
+                child.last_sent_rect = target
+                child.await_ack = True
+                child.sent_at = now
 
 
 # Window input -----------------------------------------------------------------------------
