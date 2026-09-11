@@ -838,6 +838,29 @@ def render_func(*args, **o_kwargs):
 
         # kwargs = Melty.default_kwargs_by_attrib_type[kwargs.get("type_collection", type(collection))][key] | kwargs
 
+        # A view that cannot size itself (its @render_func has
+        # determines_height=False or fill_height - draw_text, draw_texture,
+        # layouts) drawn at root level inside an OS-window surface fills the
+        # window (Melty.root_fill is stamped by Surface.frame): the first such
+        # view of the frame gets the remaining height, all get the width,
+        # headerless (the OS window has the title bar). Self-sizing views
+        # (buttons, fields) lay out naturally - so a body can put a row of
+        # widgets above an editor.
+        _fill = Melty.root_fill
+        if (_fill is not None and not Melty.melty_window_stack
+                and (merge_o_kwargs.get('determines_height', True) is False
+                     or merge_o_kwargs.get('fill_height') is not None)
+                and not kwargs.get('closable') and not kwargs.get('glfw_window')
+                and kwargs.get('parent_window') is None):
+            if kwargs.get('width') is None:
+                kwargs['width'] = _fill[0]
+            if kwargs.get('height') is None and not Melty.root_fill_used:
+                _y = imgui.get_cursor_screen_pos()[1] if _has_imgui else 0.0
+                kwargs['height'] = max(40.0, _fill[1] - max(0.0, _y - _fill[2]))
+                Melty.root_fill_used = True
+            kwargs.setdefault('auto_resize', False)
+            kwargs.setdefault('show_header', False)
+
         passed_width = kwargs.get('width', None)
         passed_height = kwargs.get('height', None)
 
@@ -997,6 +1020,22 @@ def render_func(*args, **o_kwargs):
         closable = kwargs.get("closable", False)
         detached = kwargs.get("detached", False)
         draw_state._view_func = func
+        draw_state._wrapper = wrapper
+
+        # glfw_window=True requests a CHILD GLFW WINDOW of the active surface
+        # (surface.py). Like closable=True the view renders nothing here -
+        # app.py opens a Surface whose body draws this view (Melty.
+        # draw_surface_root) and the result comes back a frame later
+        # through returned_values. The child surface's draw call carries no
+        # glfw_window, so it renders normally there.
+        if kwargs.get('glfw_window') and not deferred_entry:
+            _tile = f"{name}##{strhash(str(unique) + str(draw_state.id))}"
+            draw_state._tile_id = _tile
+            Melty.surface_window_request(_tile, name, input_value, kwargs, draw_state)
+            return_value = Melty.returned_values.pop(_tile, None) or (False, None)
+            if return_extras:
+                return return_value[0], return_value[1], draw_state
+            return return_value
 
         if _drag_drop.DragDrop.active and draw_state is _drag_drop.DragDrop.item_ds:
             # The floating dragged item anchors available_width on ITSELF

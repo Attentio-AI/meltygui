@@ -19,7 +19,7 @@ Flow (`sync(window)` once per frame from Melty.post_frame; "auto", the
 default, resolves to "pq" whenever the manager is bound — resolved_output):
     Toggles.HDR.output "pq"   → create_parametric_creator → set_primaries_named
                                  (bt2020) + set_tf_named (st2084_pq) +
-                                 set_luminances (0, 10000, reference) → create →
+                                 set_luminances (desktop min, desktop max, reference) → create →
                                  ready → get_surface → set_image_description
     Toggles.HDR.output "srgb" → unset_image_description
 The next commit (GLFW's swap) applies it. Hotswap-safe module state.
@@ -55,7 +55,8 @@ _STATE = globals().get("_STATE") or {
     "reference_nits": None, "keep": [], "ifaces": {}, "error": None, "attached_to": None,
 }
 # Fields added after the first release (a hotswapped module keeps the old dict).
-for _key, _default in (("feedback", None), ("preferred_reference", None), ("preferred_dirty", False),
+for _key, _default in (("feedback", None), ("preferred_reference", None), ("preferred_luminances", None),
+                       ("preferred_dirty", False),
                        ("preferred_query_failed", None), ("info_luminances", None), ("info_done", False),
                        ("synced_reference", None)):
     _STATE.setdefault(_key, _default)
@@ -210,8 +211,12 @@ def _on_ready2(data, proxy, hi, lo):
 
 def _on_preferred_changed(data, proxy, *identity):
     # The compositor's preferred description for the surface changed (SDR
-    # white moved, monitor changed): re-read it on the next sync.
+    # white moved, monitor changed): re-read it on the next sync, which
+    # runs in post_frame — so ask for a frame (an idle app otherwise keeps
+    # the stale tag until the next input).
     _STATE["preferred_dirty"] = True
+    from src.lsd.gl_gui.utils.glfw_utils import request_render
+    request_render()
 
 
 def _on_info_luminances(data, proxy, min_lum, max_lum, reference):
@@ -337,7 +342,7 @@ def _destroy(key):
 
 
 def create_description(primaries: int, tf: int, reference_nits: float | None = None,
-                       max_nits: float = 10000.0) -> bool:
+                       max_nits: float = 10000.0, min_nits: float = 0.0) -> bool:
     """A parametric image description; blocks for the compositor's ready /
     failed. On success it replaces `_STATE["description"]`."""
     _, wl = _c()
@@ -360,7 +365,7 @@ def create_description(primaries: int, tf: int, reference_nits: float | None = N
     if reference_nits and FEATURE_SET_LUMINANCES in _STATE["supported_features"]:
         # min_lum is in 0.0001 cd/m², the others in cd/m²
         wl.wl_proxy_marshal_flags(creator, 5, ctypes.c_void_p(None), ver, 0,
-                                  ctypes.c_uint32(0), ctypes.c_uint32(int(max_nits)),
+                                  ctypes.c_uint32(int(round(min_nits * 10000))), ctypes.c_uint32(int(max_nits)),
                                   ctypes.c_uint32(int(round(reference_nits))))
         used_reference = float(int(round(reference_nits)))
     _STATE.update(ready=None, failed=None, identity=None)
@@ -483,6 +488,7 @@ def query_preferred() -> float | None:
             _STATE["preferred_query_failed"] = "preferred description carries no luminances"
             return None
         _STATE["preferred_reference"] = float(lums[2])
+        _STATE["preferred_luminances"] = (float(lums[0]), float(lums[1]), float(lums[2]))
         _STATE["preferred_query_failed"] = None
         return _STATE["preferred_reference"]
     finally:
@@ -516,6 +522,22 @@ def desired_reference() -> float:
     return float(Toggles.HDR.pq_reference_nits)
 
 
+def desired_luminances() -> tuple[float, float, float]:
+    """(min, max, reference) nits for the PQ tag. The range is the
+    DESKTOP's (its preferred description: the panel's peak, 1241 here), not
+    PQ's 0..10000: Hyprland tone-maps a surface whose declared max exceeds
+    the output's (getCMSettings needsTonemap, max >= dst * 1.01) — the
+    10000-nit frog came out compressed under the panel's peak while
+    Chromium, which echoes the preferred range, showed it clipped at the
+    peak as it is (Lukas 09-11). Declaring the desktop's range makes the
+    compositor pass our nits through and clip at the panel, like Chromium."""
+    reference = desired_reference()
+    lums = _STATE["preferred_luminances"]
+    if lums and lums[1] > reference:
+        return (lums[0], lums[1], reference)
+    return (0.0, 10000.0, reference)
+
+
 def applied():
     return _STATE["applied"]
 
@@ -526,14 +548,15 @@ def sync(window=None) -> str | None:
     if not available():
         return _STATE["applied"]
     wanted = resolved_output()
-    reference = desired_reference() if wanted == "pq" else None
-    if wanted == _STATE["wanted"] and reference == _STATE["synced_reference"]:
+    lums = desired_luminances() if wanted == "pq" else None
+    if wanted == _STATE["wanted"] and lums == _STATE["synced_reference"]:
         return _STATE["applied"]
     _STATE["wanted"] = wanted
-    _STATE["synced_reference"] = reference
+    _STATE["synced_reference"] = lums
     try:
         if wanted == "pq":
-            if create_description(PRIMARIES_BT2020, TF_ST2084_PQ, reference_nits=reference) \
+            if create_description(PRIMARIES_BT2020, TF_ST2084_PQ, reference_nits=lums[2],
+                                  max_nits=lums[1], min_nits=lums[0]) \
                     and set_surface_description():
                 _STATE["applied"] = "pq"
             else:

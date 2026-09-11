@@ -54,8 +54,23 @@ def _persistent(name, factory):
 
 
 _live_states = _persistent("_live_states", weakref.WeakSet)
-_delete_queue = _persistent("_delete_queue", list)   # [(key, value, deleter)]
+_delete_queue = _persistent("_delete_queue", list)   # [(key, value, deleter, context)]
 _queue_lock = _persistent("_queue_lock", threading.RLock)
+
+
+def current_context():
+    """The current GL context as a hashable key (the GLFW window pointer),
+    or None when unknown. GL object NAMES are per context (VAOs, FBOs) or
+    per share group (textures, buffers), so a deferred delete queued by a
+    state born in one context must run in that context — with several OS
+    windows (surface.py) the same name means a different object elsewhere."""
+    try:
+        import glfw
+        import ctypes
+        ctx = glfw.get_current_context()
+        return ctypes.cast(ctx, ctypes.c_void_p).value if ctx else None
+    except Exception:
+        return None
 
 # The thread that owns the GL context. NOT the Python main thread - the studio
 # renders on its visualization thread while the main thread runs the chat
@@ -268,6 +283,7 @@ class GLState:
 
     def __init__(self):
         self._resources = {}
+        self._context = current_context()     # while its names are valid
         _live_states.add(self)
 
     # ── core ────────────────────────────────────────────────────────────
@@ -303,7 +319,7 @@ class GLState:
         with _queue_lock:
             for key, rec in self._resources.items():
                 if rec.deleter is not None:
-                    _delete_queue.append((key, rec.value, rec.deleter))
+                    _delete_queue.append((key, rec.value, rec.deleter, self._context))
         self._resources.clear()
 
     def __del__(self):
@@ -313,12 +329,11 @@ class GLState:
         except Exception:
             pass
 
-    @staticmethod
-    def _queue(key, rec):
+    def _queue(self, key, rec):
         if rec.deleter is None:
             return
         with _queue_lock:
-            _delete_queue.append((key, rec.value, rec.deleter))
+            _delete_queue.append((key, rec.value, rec.deleter, self._context))
 
     # ── lifecycle hooks (called from pty.py) ──────────────────────────
 
@@ -330,17 +345,33 @@ class GLState:
         if not is_gl_thread():
             return 0
         n = 0
+        current = current_context()
+        deferred = []           # another context's names: run when it's current
         while True:
             with _queue_lock:
                 if not _delete_queue:
                     break
-                key, value, deleter = _delete_queue.pop()
+                key, value, deleter, context = _delete_queue.pop()
+            if context is not None and current is not None and context != current:
+                deferred.append((key, value, deleter, context))
+                continue
             try:
                 deleter(value)
             except Exception as e:
                 print(f"[gl_state] delete failed for {key!r}: {e}")
             n += 1
+        if deferred:
+            with _queue_lock:
+                _delete_queue.extend(deferred)
         return n
+
+    @staticmethod
+    def discard_context(context):
+        """A GL context is gone (surface.py destroyed its window): drop the
+        deletes queued for it — their names died with it, and run in
+        another context they would delete THAT context's objects."""
+        with _queue_lock:
+            _delete_queue[:] = [e for e in _delete_queue if e[3] != context]
 
     @classmethod
     def on_window_deleted(cls, window_ds):

@@ -165,7 +165,7 @@ def _observe():
         rect, area = geometry_feed.frame_rect(inset=titlebar.window_inset()), geometry_feed.workarea()
         if rect is None or area is None:
             return None
-        frame = geometry_feed._STATE.get("frame") or {}
+        frame = geometry_feed._current_frame() or {}     # the ACTIVE surface's window (extension.py)
         return ((float(rect[0]), float(rect[1])), tuple(float(v) for v in area), "feed",
                 (float(rect[0] + rect[2]), float(rect[1] + rect[3])), frame.get("id"))
     window = titlebar._studio_window()
