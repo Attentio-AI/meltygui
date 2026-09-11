@@ -277,22 +277,35 @@ def run():
     for fn, kw in _ROOTS:
         Surface(kw['name'], _root_body(fn, kw['name']), title=kw['title'] or kw['name'], size=kw['size'])
     mark(f'{len(Surface.all)} window(s) created')
+    from src.lsd.gl_gui.utils import glfw_utils
     bench = os.environ.get('MELTY_BENCH')
     first = True
+    frames = 0
+    glfw_utils.request_render()
     try:
         while Surface.all:
-            Melty.app_tick += 1
             glfw.poll_events()
             _open_requested_children()
-            for surface in list(Surface.all):
-                try:
-                    surface.frame()
-                except Exception:
-                    _state['failed'] = True
-                    raise
+            # A frame only on a request (request_render: the input layer's
+            # callbacks, Surface's focus/resize/close hooks, animations via
+            # frames_left, post-render rendering, a window / white flag), as in
+            # the studio's loop; an idle app blocks in wait_events. The flag
+            # is cleared BEFORE the frame so a request made mid-frame
+            # remains for the next iteration. app_tick advances only with a
+            # frame: a child not drawn in a TICK closes (_close_stale_children).
+            if glfw_utils._needs_render.is_set():
+                glfw_utils._needs_render.clear()
+                Melty.app_tick += 1
+                frames += 1
+                for surface in list(Surface.all):
+                    try:
+                        surface.frame()
+                    except Exception:
+                        _state['failed'] = True
+                        raise
+                _close_stale_children()
             for surface in list(Surface.all):
                 _present_children(surface)
-            _close_stale_children()
             for surface in list(Surface.all):
                 if surface.closed:
                     _note_closed(surface)
@@ -303,7 +316,18 @@ def run():
                 _write_startup_log(_state['app_id'], ' '.join(s.name for s in Surface.all))
                 if bench:
                     break
+            if glfw_utils._needs_render.is_set():
+                continue
+            # glfw.wait_events also returns for events not asked for (on
+            # Hyprland the NVIDIA EGL driver's per-swap wl_buffer teardown is
+            # posted on the event queue), hence the gate above. Children
+            # follow their parent through the geometry feed, a child that
+            # requests nothing: poll while any exist. The idle wait is
+            # bounded so a signal (Ctrl+C) gets a turn: Python runs its
+            # handler between bytecodes, never inside a blocked OS call.
+            glfw.wait_events_timeout(1 / 60 if any(s.children for s in Surface.all) else 1.0)
     finally:
+        _debug(f'{frames} frames rendered')
         for surface in list(Surface.all):
             surface.destroy()
         glfw.terminate()
