@@ -161,7 +161,14 @@ class Surface:
         # so this surface can die without taking the atlas with it).
         owner_io = _owner_io()
         self.ctx = imgui.create_context(shared_font_atlas=owner_io.fonts)
+        # create_context only makes the new context current when NONE is
+        # (the owner's is), so select ours before touching its io.
+        imgui.set_current_context(self.ctx)
         imgui.get_io().ini_file_name = None
+        # The renderer uploads the atlas in its constructor, BEFORE it stamps
+        # display_size: the FreeType hinting pass (fonts.hint_atlas) frames on
+        # the current context and dies on the (-1, -1) default.
+        imgui.get_io().display_size = (float(size[0]), float(size[1]))
         self.activate()
         glfw.swap_interval(1)
         from src.lsd.gl_gui.view.core_views.split_overlay_renderer import SplitOverlayRenderer
