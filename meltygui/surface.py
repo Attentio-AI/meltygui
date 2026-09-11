@@ -151,7 +151,7 @@ class Surface:
                                 window=self.window, tracked_keys=[], first_frame_keys=set(),
                                 fa_font=None),
             framebuffer_size=None, frame_inset=0, frame_origin=(0, 0),
-            root_draw_states={}, root_draw_states_by_layer=defaultdict(list),
+            root_draw_states=defaultdict(list), root_draw_states_by_layer=defaultdict(list),
             cache=None, backend=None, event_handler=input_handler.InputHandler(),
             frame_key_events=[], hovered_ds=None, imgui_main_window_hovered=False,
             glfw_close_requested=False, any_window_hovered=False, any_window_hovered_pending=False,

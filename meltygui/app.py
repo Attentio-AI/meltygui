@@ -203,6 +203,32 @@ def glfw_window(fn=None, *, name=None, title=None, size=(1280, 800), app_id=None
     return wrap(fn) if fn is not None else wrap
 
 
+def _root_body(fn, name):
+    """The window's body. A plain function draws inline into the surface
+    root (its filling view sizes itself to the window). A RENDER FUNC (the
+    @window playgrounds: `@glfw_window` over `@render_func`, the direct
+    swap) is drawn as the window's root view the way the studio draws a
+    @window: a melty view filling the window, with the background and
+    layout context its children (draw_rows, draw_any, fields) expect —
+    minus the closable chrome, which the OS window provides."""
+    if not hasattr(fn, '__render_func__'):
+        return lambda surface: fn()
+
+    def body(surface):
+        from src.lsd.gl_gui.melty import Melty
+        width, height, top = Melty.root_fill
+        # A closable melty window (the studio's Mode.MODE_WINDOW), sized to
+        # the surface: layouts (draw_rows / draw_columns) register their
+        # edges on the enclosing WINDOW, so the root must be one. Its own
+        # chrome is off - the OS window has its title bar.
+        fn(None, name=name, closable=True, draggable=False, window_pos=(0, top),
+           width=width, height=height, auto_resize=False, show_header=False,
+           with_footer=None, with_header_end=None, shadow=False, show_bg=True,
+           selectable=False, use_cache=True, disable_scroll=True, indent_size=5,
+           initial={'width': width, 'height': height, 'window_pos': (0, top)})
+    return body
+
+
 def _hook_main_return():
     """Start the loop when the main module's top level returns, so a script
     is just decorated functions. A local trace function on that frame sees
@@ -249,7 +275,7 @@ def run():
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.surface import Surface
     for fn, kw in _ROOTS:
-        Surface(kw['name'], lambda s, fn=fn: fn(), title=kw['title'] or kw['name'], size=kw['size'])
+        Surface(kw['name'], _root_body(fn, kw['name']), title=kw['title'] or kw['name'], size=kw['size'])
     mark(f'{len(Surface.all)} window(s) created')
     bench = os.environ.get('MELTY_BENCH')
     first = True
