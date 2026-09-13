@@ -18,7 +18,7 @@ IDEs and type checkers the real definitions for completion.
 """
 from typing import TYPE_CHECKING
 
-from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark
+from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark, persisted
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
@@ -67,4 +67,4 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['glfw_window', 'run', 'pressed', 'content_size', 'mark', *_VIEWS]
+__all__ = ['glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', *_VIEWS]

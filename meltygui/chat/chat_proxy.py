@@ -10,6 +10,12 @@ import time
 from src.lsd.gl_gui.chat.messages import Message, UserMessage, user_message, input_text
 
 
+def writer_conflict(error):
+    message = str(error or "").lower()
+    return ("active writer" in message or
+            ("session" in message and "already in use" in message))
+
+
 def epoch_seconds(value):
     """A provider's timestamp as epoch seconds: seconds or milliseconds
     (anything past 1e11 is milliseconds), an ISO-8601 string, or 0 when
@@ -83,10 +89,26 @@ class ChatProxy(dict):
 
     def __getitem__(self, key):
         chat = super().__getitem__(key)
-        if not chat.loaded and not chat.loading:
-            chat.loading = True
-            self.submit("hydrate", key)
+        self.active_key = key
+        self._load_history(key, chat)
         return chat
+
+    def _load_history(self, key, chat):
+        operation = getattr(chat, "pending_history", None)
+        if ((not chat.loaded or operation) and not chat.loading and not chat.refreshing
+                and not chat["running"] and "send" not in chat.inflight):
+            chat.loading = not chat.loaded
+            chat.refreshing = chat.loaded
+            chat.pending_history = None
+            self.submit(operation or "hydrate", key)
+
+    def refresh_history(self, key, operation="hydrate"):
+        """Keep inactive transcripts cached; refresh them when displayed again."""
+        chat = dict.get(self, key)
+        if chat is not None and chat.loaded:
+            chat.pending_history = operation
+            if getattr(self, "active_key", None) == key:
+                self._load_history(key, chat)
 
     def publish(self, kind, value):
         if not self.closed:
@@ -103,7 +125,11 @@ class ChatProxy(dict):
         try:
             self.connect()
             while not self.closed:
-                job = self.jobs.get()
+                try:
+                    job = self.jobs.get(timeout=5.0)
+                except queue.Empty:
+                    self.refresh()
+                    continue
                 if job is None:
                     break
                 operation, args = job
@@ -185,6 +211,7 @@ class ChatProxy(dict):
                         chat.inflight.add("send")
                         chat["running"] = True
                         chat["updated"] = time.time()
+                        chat["last_user_at"] = chat["updated"]
                         self.submit("send", key, chat.remote_id, message_id, input_text(message), chat.resumed)
                         break
             for request_id, request in chat["requests"].items():

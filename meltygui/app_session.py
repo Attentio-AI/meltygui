@@ -6,7 +6,9 @@ scroll positions, selections, injected state objects (`FileExplorerState`,
 `TextEditorState`, ...) and nested-window z-order come back the next boot.
 A `@glfw_window` app has no AppModel; this module gives it the same thing
 with nothing to add to the app: `AppSession` is the model — the three
-fields Melty reads off the studio's root — loaded by `app._init_melty`
+fields Melty reads off the studio's root, plus `app_state`, the objects
+the app itself keeps through `melty.persisted(name, factory)` (the code
+editor's `OpenFiles`) — loaded by `app._init_melty`
 BEFORE the first Surface (each surface's `Melty.vis.root` IS the session,
 so `get_draw_state`, `note_window_seen` and `adopt_registered_windows` find
 their stores where they look for them), and written by `app.run` on the
@@ -44,6 +46,10 @@ class AppSession(DictConversion):
         self.registered_windows = {}
         # Window names in first-seen order (Melty.note_window_seen).
         self.render_windows = []
+        # The app's own persisted objects (app.persisted): name -> a
+        # DictConversion lets app objects through the dict it hands over
+        # and keeps between runs, like a studio model field.
+        self.app_state = {}
 
 
 def session_dir(app_id):
@@ -96,10 +102,19 @@ def prune(session):
     dead = [key for key, draw_state in registry.items() if not isinstance(draw_state, DrawState)]
     for key in dead:
         registry.pop(key)
+    for draw_state in registry.values():
+        # A context menu never survives a restart: the flag is @no_save
+        # now, but a session written before that carries it, and an open
+        # menu drawn from frame 0 (under its spawner) captures a black
+        # tile that the first real open then serves (09-13).
+        if getattr(draw_state, 'context_menu_open', False):
+            draw_state.context_menu_open = False
     if not isinstance(session.registered_windows, dict):
         session.registered_windows = {}
     if not isinstance(session.render_windows, list):
         session.render_windows = []
+    if not isinstance(getattr(session, 'app_state', None), dict):
+        session.app_state = {}
     return len(dead)
 
 

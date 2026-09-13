@@ -1,4 +1,4 @@
-"""The desktop's left-drag-move toggle, mirrored in melty's own title bar.
+"""The desktop's window-gesture toggle, mirrored in melty's own title bar.
 
 Lukas's patched Hyprland (~/.local/opt/hyprland-hdr, `general:left_drag_move`)
 moves a floating window by a plain left drag on its empty space, and its
@@ -14,6 +14,20 @@ controls (titlebar.py), so on that desktop they get the same button:
     enabled()     left-drag move applies to THIS window's class right now
     toggle()      runs the desktop's own script for the class — one source
                   of truth, one notification, the hyprbars refresh included
+
+The button owns BOTH compositor gestures for this app's class (09-13):
+plain left-drag MOVE (general:left_drag_move) and right-drag RESIZE
+(general:right_drag_resize). Lit = the compositor drives them; faded = the
+class is excluded from both and the melty app does them itself — its
+drag-anywhere xdg_toplevel.move (titlebar.drag_anywhere_enabled) and its
+right-drag resize through the edge physics (os_frame), which is also what
+lets nested melty windows keep their own right-drag (the compositor's
+resize swallows the press otherwise). The studio is excluded statically in
+hyprland.lua; apps flip through this button. `toggle()` runs the script
+with `--gestures`, which moves the class through both exclude lists; a
+probe that finds the right list out of step with the left one (a hyprbars
+button or the Settings app edited only the left) runs `--gestures --sync`
+once to align it (`resize_synced`).
 
 Both reads are `getoption` requests on Hyprland's socket
 (geometry_feed.hypr_request, ~0.05 ms) made on a daemon thread, the same
@@ -36,6 +50,8 @@ import time
 
 OPTION = "general:left_drag_move"
 EXCLUDE_OPTION = "general:left_drag_move_exclude"
+RESIZE_OPTION = "general:right_drag_resize"
+RESIZE_EXCLUDE_OPTION = "general:right_drag_resize_exclude"
 
 # The desktop's toggle script: on PATH if the session exports it, else at
 # the desktop's install root (config/hyprland.lua's `root`).
@@ -51,6 +67,8 @@ _state = globals().get("_state") or {
     "probed_at": 0.0,
     "thread": None,
     "toggling": False,
+    "resize_synced": True,  # right_drag_resize_exclude list matches the move list
+    "synced_for": None,     # (wm_class, enabled) the last --sync ran for: no loop on a failing script
 }
 
 
@@ -60,12 +78,23 @@ _state = globals().get("_state") or {
 
 def window_class():
     """The class Hyprland files this process's window under: what the feed
-    saw (`j/clients` → wm_class), else the app's declared id (a melty app's
-    Surface.app_id), else the studio's own (geometry_feed.WM_CLASS)."""
+    saw (`j/clients` → wm_class), else the BOOTED melty app's id
+    (app.boot's app_id — the GLFW app_id / X11 class hint; known before
+    any Surface exists, which is when the first probe runs), else the
+    app's declared Surface.app_id, else the studio's own
+    (geometry_feed.WM_CLASS). The studio fallback is LAST and only for a
+    process that never booted as an app: a probe that read an app as
+    "lsd-studio" toggled and synced the wrong class (09-13)."""
     from src.lsd.gl_gui import geometry_feed
     frame = geometry_feed._STATE.get("frame") if isinstance(geometry_feed._STATE, dict) else None
     if frame and frame.get("wm_class"):
         return frame["wm_class"]
+    try:
+        from src.lsd.gl_gui import app
+        if app._state.get("booted") and app._state.get("app_id"):
+            return app._state["app_id"]
+    except Exception:
+        pass
     try:
         from src.lsd.gl_gui.surface import Surface
         if Surface.all:
@@ -73,6 +102,24 @@ def window_class():
     except Exception:
         pass
     return geometry_feed.WM_CLASS
+
+
+def class_is_certain():
+    """True when window_class() comes from something that names THIS
+    process's window: the feed's frame or the booted app's id. The
+    Surface.app_id default and the studio fallback are guesses — good
+    enough to paint the button, never to WRITE the compositor's lists
+    (an app probed before its Surface existed read itself as the studio
+    and synced the studio's entry away, 09-13)."""
+    from src.lsd.gl_gui import geometry_feed
+    frame = geometry_feed._STATE.get("frame") if isinstance(geometry_feed._STATE, dict) else None
+    if frame and frame.get("wm_class"):
+        return True
+    try:
+        from src.lsd.gl_gui import app
+        return bool(app._state.get("booted") and app._state.get("app_id"))
+    except Exception:
+        return False
 
 
 def _getoption(name, request=None):
@@ -117,37 +164,74 @@ def class_excluded(exclude_text, wm_class):
 
 def detect(request=None):
     """(available, enabled, wm_class) read from the compositor now."""
+    return detect_gestures(request)[:3]
+
+
+def detect_gestures(request=None):
+    """(available, enabled, wm_class, resize_synced): the left-drag read plus
+    whether the class's membership in right_drag_resize_exclude matches
+    its left-list membership (True when the compositor has no
+    right_drag_resize, or the feature is off — nothing to align)."""
     from src.lsd.gl_gui import geometry_feed
     if geometry_feed.backend() != "hyprland":
-        return False, False, ""
+        return False, False, "", True
     kind, value = _getoption(OPTION, request)
     if kind is None:
-        return False, False, ""
+        return False, False, "", True
     wm_class = window_class()
     if not value:
-        return True, False, wm_class          # the feature itself is off
+        return True, False, wm_class, True    # the feature itself is off
     _kind, exclude = _getoption(EXCLUDE_OPTION, request)
-    return True, not class_excluded(str(exclude or ""), wm_class), wm_class
+    enabled = not class_excluded(str(exclude or ""), wm_class)
+    resize_kind, resize_on = _getoption(RESIZE_OPTION, request)
+    if resize_kind is None or not resize_on:
+        return True, enabled, wm_class, True
+    _kind, resize_exclude = _getoption(RESIZE_EXCLUDE_OPTION, request)
+    resize_excluded = class_excluded(str(resize_exclude or ""), wm_class)
+    return True, enabled, wm_class, resize_excluded == (not enabled)
 
 
 # ---------------------------------------------------------------------------
 # Probe thread
 # ---------------------------------------------------------------------------
 
-def _probe():
+def _probe(run=None):
     try:
-        available, enabled, wm_class = detect()
+        available, enabled, wm_class, resize_synced = detect_gestures()
     except Exception:
-        available, enabled, wm_class = False, False, ""
+        available, enabled, wm_class, resize_synced = False, False, "", True
     changed = (available, enabled) != (_state["available"], _state["enabled"])
     _state.update(available=available, enabled=enabled, wm_class=wm_class,
-                  probed_at=time.monotonic())
+                  resize_synced=resize_synced, probed_at=time.monotonic())
     if changed:
         try:
             from src.lsd.gl_gui.utils.glfw_utils import request_render
             request_render()
         except Exception:
             pass
+    if available and not resize_synced and class_is_certain():
+        _sync_resize(wm_class, enabled, run)
+
+
+def _sync_resize(wm_class, enabled, run=None):
+    """Align right_drag_resize_exclude with the left list for this class
+    (the script's `--gestures --sync`), once per (class, state) — a script
+    that fails must not be re-run every probe. Re-probes after."""
+    if _state["synced_for"] == (wm_class, enabled) or not os.path.isfile(TOGGLE_SCRIPT):
+        return
+    _state["synced_for"] = (wm_class, enabled)
+    run = run or subprocess.run
+    try:
+        run([TOGGLE_SCRIPT, "--gestures", "--sync", wm_class], close_fds=False,
+            capture_output=True, timeout=10.0)
+    except Exception as ex:
+        print(f"[hypr_left_drag] {TOGGLE_SCRIPT} --gestures --sync {wm_class!r}: {ex}", flush=True)
+        return
+    try:
+        _, _, _, resize_synced = detect_gestures()
+    except Exception:
+        return
+    _state["resize_synced"] = resize_synced
 
 
 def start_probe(force=False):
@@ -174,7 +258,9 @@ def available():
 
 
 def enabled():
-    """Left-drag move applies to this window's class (as of the last probe)."""
+    """The compositor's gestures (left-drag move, right-drag resize) apply
+    to this window's class (as of the last probe). False = the melty app
+    moves and resizes itself."""
     return bool(_state["enabled"])
 
 
@@ -208,18 +294,19 @@ def _run_toggle(wm_class, run=None):
     run = run or subprocess.run
     try:
         # posix_spawn: absolute executable, close_fds=False, no env / preexec_fn.
-        run([TOGGLE_SCRIPT, wm_class], close_fds=False, capture_output=True, timeout=10.0)
+        run([TOGGLE_SCRIPT, "--gestures", wm_class], close_fds=False, capture_output=True, timeout=10.0)
     except Exception as ex:
-        print(f"[hypr_left_drag] {TOGGLE_SCRIPT} {wm_class!r}: {ex}", flush=True)
+        print(f"[hypr_left_drag] {TOGGLE_SCRIPT} --gestures {wm_class!r}: {ex}", flush=True)
     finally:
         _state["toggling"] = False
-    _probe()
+    _probe(run)
 
 
 def toggle(run=None):
-    """Flip left-drag move for this window's class through the desktop's
-    own script (it edits the exclude list, persists it, refreshes hyprbars
-    and notifies). The button flips at once (the probe after the script
+    """Flip the compositor's window gestures (left-drag move AND right-drag
+    resize) for this window's class through the desktop's own script
+    (`--gestures`: it edits both exclude lists, persists them, refreshes
+    hyprbars and notifies). The button flips at once (the probe after the script
     confirms); a second click while one runs is ignored. Returns the
     worker thread, or None when nothing was started."""
     if not available() or _state["toggling"]:

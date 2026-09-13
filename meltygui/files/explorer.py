@@ -316,7 +316,7 @@ def chip_swatch(tint, bg_rgb, mix=0.55):
 
 
 def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tint,
-                 swatch=None, show_brush=True, setter=None):
+                 swatch=None, show_brush=True, setter=None, brush_color=None):
     """One row's tint control at (x, y): the `draw_tuple_fast` chip when
     `tint` is painted, else the paint-brush button. `key` is the store
     path; `hovered` says the pointer is on the row (the brush brightens
@@ -328,12 +328,13 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     (and registers) no brush for an unpainted row — the listing shows it
     only on the selected row. ``setter(value)`` writes the tint somewhere
     other than the file-meta store (the chat window's conversations); None
-    clears. Returns True when the store was written."""
+    clears. `brush_color` optionally supplies the exact icon RGB (the chat
+    sidebar matches its expand arrow). Returns True when the store was written."""
     write = setter or (lambda value, _k=key: set_row_tint(_k, value))
     # [tint=(0.55, 0.72, 0.95)]
     brush_icon = f"\uf1fc"
-    brush_col = pack_color(1.0, 1.0, 1.0, 0.22)
-    brush_hover_col = pack_color(1.0, 1.0, 1.0, 0.9)
+    brush_col = pack_color(*brush_color, 1.0) if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.22)
+    brush_hover_col = brush_col if brush_color is not None else pack_color(1.0, 1.0, 1.0, 0.9)
     from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple_fast
 
     view_id = f"tint_{key}"

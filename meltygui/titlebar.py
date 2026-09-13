@@ -32,6 +32,7 @@ each frame, so flipping the toggle takes effect without a restart.
 """
 
 import ctypes
+import time
 
 import glfw
 import imgui
@@ -430,6 +431,24 @@ def button_layout():
     return titlebar_buttons.system_layout()
 
 
+def drag_anywhere_enabled():
+    """Whether an unclaimed left drag on bare background moves the OS window
+    through melty's OWN xdg_toplevel.move this frame:
+    Toggles.Melty.move_drag_anywhere, and — on the patched Hyprland that
+    carries the window-gesture toggle (hypr_left_drag) — only while the
+    compositor's own left-drag move does NOT apply to this app's class
+    (the chrome's "move" button faded). Lit, the compositor drives the
+    move itself and melty stands down; faded (the studio always, an app
+    after a click), melty moves and resizes the window itself. The drag
+    strip is the app's caption and keeps moving either way."""
+    from src.lsd.gl_gui.toggles import Toggles
+    if not Toggles.Melty.move_drag_anywhere:
+        return False
+    if hypr_left_drag.available():
+        return not hypr_left_drag.enabled()
+    return True
+
+
 def control_kinds():
     """button_layout() plus the desktop's own extra: on Lukas's patched
     Hyprland (hypr_left_drag.available — the compositor has
@@ -807,32 +826,43 @@ def draw_titlebar(window):
     # nothing else claimed it. Clean clicks are untouched (dragged fires
     # only past the handler's drag threshold). Double-click = maximize,
     # same lowest-priority rule.
-    # Toggles.Melty.move_drag_anywhere widens the drag (not the double-click)
-    # to the whole window at the same worst priority: only a drag nothing
-    # else claimed - including background - moves the OS window.
+    # drag_anywhere_enabled (Toggles.Melty.move_drag_anywhere, gated by the
+    # desktop's left-drag-move toggle where it exists) widens the drag (not
+    # the double-click) to the whole window at the same worst priority: even
+    # a drag nobody else claimed - bare background - moves the OS window.
     # Toggles.Melty.disable_double_click_maximize drops the double-click
     # subscription entirely, so the click reaches the view under the cursor.
+    # Both the strip and the right-drag resize below subscribe NON-BLOCKING:
+    # a closable melty window is an event blocker (window_render with
+    # `blocker=closable`) and a melty window's root IS such a window, pinned
+    # over the whole surface - a plain subscription at worst priority sat
+    # behind that blocker and was dropped before dispatch (the app's left /
+    # right drags never reached the OS chrome; the studio's roots leave its
+    # background bare, which is why they worked there). A non_blocking
+    # subscription survives the blocker pass and still resolves LAST, so a
+    # view that claims the drag keeps winning (input_handler: the
+    # non-blocking chain stops at the first blocking subscriber).
     strip_h = float(Toggles.Melty.drag_strip_height)
     in_strip = my <= strip_h and strip_left <= mx < strip_right
     strip_double_click = in_strip and not Toggles.Melty.disable_double_click_maximize
-    anywhere = bool(Toggles.Melty.move_drag_anywhere) and over_button is None
+    anywhere = drag_anywhere_enabled() and over_button is None
     if gestures and edge is None and (in_strip or anywhere):
         # Move pointer only where the strip would actually get the drag
         # (cursor_gate): bare background, never over a view that claims it.
         Melty.event_handler.register_hovered(
             _STRIP_ID,
-            ["left_mouse_dragged", "left_mouse_double_clicked"] if strip_double_click
-            else ["left_mouse_dragged"],
+            ["non_blocking_left_mouse_dragged", "non_blocking_left_mouse_double_clicked"]
+            if strip_double_click else ["non_blocking_left_mouse_dragged"],
             priority=_STRIP_PRIORITY,
             cursor=mouse_cursor.MOVE if Toggles.Melty.window_move_cursor else None,
             cursor_gate="left_mouse_dragged")
     strip_events = (getattr(Melty, "events", None) or {}).get(_STRIP_ID, {})
     if _wm_move_started and not Melty.event_handler.is_down("left_mouse"):
         _wm_move_started = False  # synthetic release landed - re-arm
-    if "left_mouse_double_clicked" in strip_events \
+    if "non_blocking_left_mouse_double_clicked" in strip_events \
             and not Toggles.Melty.disable_double_click_maximize:
         _toggle_maximize(window)
-    elif "left_mouse_dragged" in strip_events and not _wm_move_started:
+    elif "non_blocking_left_mouse_dragged" in strip_events and not _wm_move_started:
         _wm_move_started = True
         if _begin_wm_move(window):
             return
@@ -851,7 +881,8 @@ def draw_titlebar(window):
     # exactly like a melty window's edge at the display.
     if not maximized and over_button is None and edge is None:
         Melty.event_handler.register_hovered(
-            _RESIZE_ID, ["right_mouse_dragged", "right_mouse_double_dragged"], priority=_STRIP_PRIORITY)
+            _RESIZE_ID, ["non_blocking_right_mouse_dragged", "non_blocking_right_mouse_double_dragged"],
+            priority=_STRIP_PRIORITY)
     # (the drag events themselves are consumed by poll_os_window_drag at
     # the frame's START - before the root windows solve - so the OS edge
     # moves in the same frame the hand did)
@@ -878,12 +909,13 @@ def poll_os_window_drag():
     resize_events = (getattr(Melty, "events", None) or {}).get(_RESIZE_ID, {})
     if _rdrag is not None and not handler.is_down("right_mouse"):
         _rdrag = None  # cursor ended - re-latch on the next drag
-    drag = resize_events.get("right_mouse_double_dragged") or resize_events.get("right_mouse_dragged")
+    drag = (resize_events.get("non_blocking_right_mouse_double_dragged")
+            or resize_events.get("non_blocking_right_mouse_dragged"))
     if drag is None:
         return
     from src.lsd.gl_gui import os_frame
     if _rdrag is None:
-        _rdrag = {"top_left": "right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0}
+        _rdrag = {"top_left": "non_blocking_right_mouse_double_dragged" in resize_events, "x": 0.0, "y": 0.0}
     index = 0 if _rdrag["top_left"] else 1
     for axis, total in (("x", "total_dx"), ("y", "total_dy")):
         now = float(getattr(drag, total, 0.0) or 0.0)
@@ -1294,6 +1326,9 @@ def apply_pending_surface_size(window):
     return size
 
 
+_last_stamped_size = globals().get("_last_stamped_size")
+
+
 def on_surface_resized(window, width, height):
     """LSDStudio's framebuffer-size callback hook. With the window geometry
     inset to the content, a compositor configure (interactive resize from
@@ -1304,10 +1339,19 @@ def on_surface_resized(window, width, height):
     content edge on every configure of a drag). Our own resizes
     (set_surface_size) are flagged and pass through; maximized/fullscreen
     have no margin and pass through too. Returns the size applied."""
-    global _last_surface_size
+    global _last_surface_size, _last_stamped_size
+    size = (int(width), int(height))
+    if size != _last_stamped_size:
+        # Any backend, ours or the compositor's: stamp the gesture for
+        # freeze_resize views (Melty.resize_gesture_live); the cache keeps
+        # frames coming past the last configure until they settle.
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        _last_stamped_size = size
+        Melty.os_resize_time = time.monotonic()
+        request_render()
     if not _on_wayland() or not wayland_move.geometry_available():
         return None
-    size = (int(width), int(height))
     if _self_resize:
         # Our resize (the right-drag, a compensation): the geometry rides in
         # the SAME commit as the new buffer. If from draw_titlebar a frame

@@ -1758,12 +1758,36 @@ def _transfer_wrapper_state(live_wrapper, new_wrapper, new_raw) -> None:
     if (live_wrapper.__code__ is not new_wrapper.__code__
             or lc is None or nc is None or len(lc) != len(nc)):
         return
+    # The wrapper's closure also holds the helpers `render_func` defines local
+    # to it (draw_inner_main, _auto_state_params, ...). Those are NOT config:
+    # they share the live wrapper's wrapper, so their config reached them
+    # already - and the throwaway's copies close over the throwaway raw, so
+    # copying draw_inner_main made the live wrapper run the throwaway body
+    # (exec'd into a COPY of the module globals: the file browser kept
+    # reading a stale `current` after a tint-chip edit, 09-13). Skip every
+    # sibling helper and anything else that closes over the throwaway.
+    nested_prefix = new_wrapper.__code__.co_qualname.rsplit(".", 1)[0] + "."
+
+    def _is_throwaway_helper(content):
+        if not isinstance(content, types.FunctionType):
+            return False
+        if content.__code__.co_qualname.startswith(nested_prefix):
+            return True
+        for cell in content.__closure__ or ():
+            try:
+                v = cell.cell_contents
+            except ValueError:
+                continue
+            if v is new_raw or v is new_wrapper:
+                return True
+        return False
+
     for live_cell, new_cell in zip(lc, nc):
         try:
             content = new_cell.cell_contents
         except ValueError:
             continue
-        if content is new_raw or content is new_wrapper:
+        if content is new_raw or content is new_wrapper or _is_throwaway_helper(content):
             continue
         try:
             live_cell.cell_contents = content

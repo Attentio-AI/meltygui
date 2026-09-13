@@ -932,6 +932,18 @@ class Melty:
     # mark_start_offscreen to snap a clean pre-drag capture while their
     # state is still unchanged (full tile coverage - nothing stale survives).
     resize_press_frame = -1
+    # Frame stamp of the last OS-window size change seen by the GUI
+    # (glbar.on_surface_resized, any backend): a compositor-driven
+    # resize when the window's; edge zones hand the drag to the
+    # compositor, the grab swallows the button, so no button is down
+    # while the configures stream in. resize_gesture_live() counts the
+    # OS_RESIZE_SETTLE_S after the last one as part of the gesture so
+    # freeze_resize views stay frozen through it and settle once the
+    # configures stop (in time, not frames: a drag's configures come at
+    # the compositor's pace, a settle frame is cheap, a mid-drag settle is
+    # a full re-render).
+    os_resize_time = -1000.0
+    OS_RESIZE_SETTLE_S = 0.15
     is_melty_window = False
     melty_window_stack = []
     default_font = None
@@ -2063,6 +2075,23 @@ class Melty:
             cls.vis.fa_font = cls.font_mgr.peek(Font.FONTAWESOME_14)
         if cls.cache is not None:
             cls.cache.invalidate_all()
+
+    @classmethod
+    def resize_gesture_live(cls):
+        """A gesture that may be changing view sizes is in flight: a mouse
+        drag (any button, or Melty.on_drag), or an OS-window resize whose
+        last configure landed within OS_RESIZE_SETTLE_S. The
+        activity test of the frozen-blit path (blit_offscreen) and of the
+        edge-solve invalidate deferral (columns._drag_live)."""
+        if imgui.is_mouse_down(0) or imgui.is_mouse_down(1) or imgui.is_mouse_down(2) or cls.on_drag:
+            return True
+        return cls.os_resize_live()
+
+    @classmethod
+    def os_resize_live(cls):
+        """An OS-window resize is in flight: a configure landed within
+        OS_RESIZE_SETTLE_S (titlebar.on_surface_resized stamps it)."""
+        return time.monotonic() - cls.os_resize_time <= cls.OS_RESIZE_SETTLE_S
 
     @classmethod
     def focused_key_pending(cls):

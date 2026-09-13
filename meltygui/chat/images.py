@@ -23,6 +23,7 @@ import os
 import queue
 import threading
 import time
+import weakref
 
 from src.lsd.gl_gui.chat.messages import ImageReference
 
@@ -105,7 +106,19 @@ class ImageCache:
         self.jobs = queue.Queue()
         self.worker = None
         self.lock = threading.Lock()
+        self.views = weakref.WeakValueDictionary()
         self.generation = 0          # bumped when a decode finishes, layouts keyed on it re-fit
+
+    def watch(self, draw_state):
+        if callable(getattr(draw_state, "invalidate_up", None)):
+            self.views[id(draw_state)] = draw_state
+
+    def decoded_changed(self):
+        self.generation += 1
+        for view in list(self.views.values()):
+            view.invalidate_up()
+        if self.wake is not None:
+            self.wake()
 
     def entry(self, ref):
         key = image_key(ref)
@@ -141,9 +154,7 @@ class ImageCache:
             except Exception as error:
                 entry.error = f"{type(error).__name__}: {error}"
                 entry.status = "failed"
-            self.generation += 1
-            if self.wake is not None:
-                self.wake()
+            self.decoded_changed()
 
     # -- render-only -------------------------------------------------------
 

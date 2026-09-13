@@ -1197,6 +1197,12 @@ class TileCacheMasked:
         self.key_to_draw_state: Dict[str, any] = {}
 
         self._tiles: Dict[str, Tile] = {}
+        # Key -> draw_state of every freeze_resize view served FROZEN since
+        # the resize gesture began: mask_begin_frame settles them (one
+        # live render at the final dimensions) on the first frame the gesture is
+        # over. A mouse gesture's release already re-renders the ancestors,
+        # but a compositor resize (Melty.os_resize_frame) ends silently.
+        self._frozen_served: Dict[str, any] = {}
         self._stack: List[_Ctx] = []
         self._key_to_ctx: Dict[str, _Ctx] = {}
         self._pending: List[_Pending] = []
@@ -1414,9 +1420,18 @@ class TileCacheMasked:
             return False
         return l <= 0 and top <= 0 and r >= w and b >= h
 
-    def _accumulate_filled(self, t: Tile, draw_state) -> None:
+    def _accumulate_filled(self, t: Tile, draw_state, on_screen=None) -> None:
         """Union the current frame's visible-portion (tile size minus
-        ``clipped_by_rect`` insets) into the tile's cumulative ``filled_bbox``."""
+        ``clipped_by_rect`` insets, further cut to ``on_screen`` — the part
+        of the tile rect inside the display, in tile-local xyxy) into the
+        tile's cumulative ``filled_bbox``. Texels outside the display never
+        get real pixels (PASS 3 samples the snapshot, black past its edge),
+        so a capture of a view hanging off the screen counts only for the
+        part that was on it — the serve gate (_visible_unfilled) re-renders
+        the rest once the view moves into view (a context menu opens at its
+        spawner's top-right corner, off the display's right edge, and is
+        pinned back inside a frame later: served from that first capture
+        its rows showed two letters, 09-13)."""
         if t is None or draw_state is None:
             return
         cb = draw_state.clipped_by_rect or (0, 0, 0, 0)
@@ -1425,6 +1440,9 @@ class TileCacheMasked:
         bt = max(0, int(cb[1]))
         br = max(bl, w - max(0, int(cb[2])))
         bb = max(bt, h - max(0, int(cb[3])))
+        if on_screen is not None:
+            bl, bt = max(bl, int(on_screen[0])), max(bt, int(on_screen[1]))
+            br, bb = min(br, int(on_screen[2])), min(bb, int(on_screen[3]))
         if br <= bl or bb <= bt:
             return  # nothing actually written this frame
         if t.filled_bbox is None:
@@ -1432,6 +1450,50 @@ class TileCacheMasked:
         else:
             pl, pt, pr, pbottom = t.filled_bbox
             t.filled_bbox = (min(pl, bl), min(pt, bt), max(pr, br), max(pbottom, bb))
+
+    @staticmethod
+    def _display_rect_screen():
+        """The display (content) rect in screen coords, xyxy: what a
+        capture can actually sample. None without draw data."""
+        try:
+            io = imgui.get_io()
+            w, h = io.display_size
+        except Exception:
+            return None
+        if not w or not h:
+            return None
+        return (0.0, 0.0, float(w), float(h))
+
+    def _on_screen_tile_rect(self, x, y, w, h):
+        """The part of the tile rect (x, y, w, h in screen coords) inside
+        the display, in tile-local xyxy; the whole tile without a display."""
+        disp = self._display_rect_screen()
+        if disp is None:
+            return (0, 0, int(w), int(h))
+        return (max(0.0, disp[0] - x), max(0.0, disp[1] - y),
+                min(float(w), disp[2] - x), min(float(h), disp[3] - y))
+
+    def _visible_unfilled(self, t: Tile, draw_state) -> bool:
+        """True when the part of ``draw_state``'s rect now on screen (and
+        inside its clip) has texels the tile never captured (filled_bbox):
+        serving it would show the black past the display's edge that an
+        off-screen capture recorded. Such a tile is re-rendered instead."""
+        if t is None or draw_state is None:
+            return False
+        if t.filled_bbox is None:
+            return t.last_clean_frame >= 0
+        x, y = draw_state.abs_left, draw_state.abs_top
+        if x is None or y is None:
+            return False
+        w, h = t.size
+        vl, vt, vr, vb = self._on_screen_tile_rect(x, y, w, h)
+        cb = draw_state.clipped_by_rect or (0, 0, 0, 0)
+        vl, vt = max(vl, cb[0] or 0), max(vt, cb[1] or 0)
+        vr, vb = min(vr, w - (cb[2] or 0)), min(vb, h - (cb[3] or 0))
+        if vr <= vl or vb <= vt:
+            return False            # nothing of this is visible: nothing to miss
+        fl, ft, fr, fb = t.filled_bbox
+        return fl > vl + 0.5 or ft > vt + 0.5 or fr < vr - 0.5 or fb < vb - 0.5
 
     @staticmethod
     def _oversized(size: Optional[Tuple[int, int]]) -> bool:
@@ -2069,6 +2131,17 @@ class TileCacheMasked:
         fb_w, fb_h = map(int, framebuffer_size)
         self._note_frame_stats()
         self._frame_id += 1
+        if self._frozen_served and Melty.os_resize_live():
+            # Frames until the OS resize settles: no input drives change.
+            request_render()
+        if self._frozen_served and not Melty.resize_gesture_live():
+            for key, ds in self._frozen_served.items():
+                if not getattr(ds, "closed", False):
+                    self.invalidate_up(key, max_depth=4, force=True,
+                                       note=Note(name="freeze settle", reason="resize gesture over",
+                                                 tint=(0.5, 1.0, 0.5)))
+            self._frozen_served = {}
+            request_render()
         self._recording = True
         self._cancelled_keys.clear()
         self._enq_mask_keys.clear()
@@ -3963,6 +4036,14 @@ class TileCacheMasked:
                          and (t.size == (size[0], size[1]))
                          and (not self._is_dirty(t))
                          and (not draw_state.size_change))
+            if use_image and self._visible_unfilled(t, draw_state):
+                # Captured while (partially) off the display: the tile holds
+                # black where the screen ended. Render live and re-capture
+                # now that more of the view is on screen.
+                use_image = False
+                t.last_invalidated_frame = max(t.last_invalidated_frame, self._frame_id)
+                t.dirty = self._is_dirty(t)
+                _bump_note(t, "off-screen capture")
 
             # Frozen resize (opt-in via freeze_resize, off by default): while a
             # mouse drag is actively changing this view's size, skip the live
@@ -3998,8 +4079,7 @@ class TileCacheMasked:
             #      at the live edge.
             #   3. mouse up: the flags drop, the settle re-render draws the
             #      bar on the window list again and the capture bakes it.
-            dragging = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
-                        or imgui.is_mouse_down(2) or Melty.on_drag)
+            dragging = Melty.resize_gesture_live()
             frozen = False
             if getattr(draw_state, "freeze_resize", False) and t is not None and has_area:
                 if not dragging:
@@ -4011,6 +4091,7 @@ class TileCacheMasked:
                     # between the-render and cache-hit draws).
                     use_image = False
                     frozen = True
+                    self._frozen_served[rkey] = draw_state
                 elif (t.size != (size[0], size[1])
                       or Melty.resize_press_frame == Melty.frame_count):
                     # State 1: one clean live render this frame - at the
@@ -4856,7 +4937,8 @@ class TileCacheMasked:
                         # Track which portion of the tile got pixels this frame
                         # so scroll frame invalidations can stop once the union
                         # covers the whole tile (see _tile_fully_filled).
-                        self._accumulate_filled(p.tile, p.draw_state)
+                        self._accumulate_filled(p.tile, p.draw_state,
+                                                on_screen=self._on_screen_tile_rect(x, y, w, h))
                     except Exception as e:
                         print(
                             f"Error copying to tile {p.key}: {e} {p.tile.draw_state.to_dict()} input_value={p.tile.draw_state._input_value}")

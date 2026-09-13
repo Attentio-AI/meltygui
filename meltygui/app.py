@@ -80,6 +80,9 @@ def boot(app_id=None):
     """Start melty: shortcuts, glfw, the owner window, the import thread.
     Idempotent; the first @glfw_window calls it."""
     if _state['booted']:
+        if app_id and app_id != _state['app_id']:
+            print(f"melty: app_id {app_id!r} ignored — already booted as {_state['app_id']!r} "
+                  f"(the first boot names the session and cache directories)", file=sys.stderr)
         return
     _state['booted'] = True
     _state['app_id'] = app_id or _default_app_id()
@@ -180,9 +183,7 @@ def _init_melty():
     # first Surface so every surface's `Melty.vis.root` is the session and
     # get_draw_state / note_window_seen / the window z-order read and write
     # the stores that run() saves on exit.
-    from src.lsd.gl_gui import app_session
-    session = app_session.load(_state['app_id'])
-    _state['session'] = session
+    session = _load_session()
     Melty.draw_state_registry = session.draw_state_registry
     Melty.adopt_registered_windows(session)
     Surface.session = session
@@ -198,6 +199,42 @@ def _init_melty():
     from src.lsd.gl_gui import geometry_feed
     geometry_feed.start()          # for rects: the size fit, child placement, os_frame
     mark('melty configured')
+
+
+def _load_session():
+    """The app's AppSession (app_session.load), read once: by the first
+    `persisted` call or by _init_melty, whichever comes first. Needs the
+    melty imports (the pickled classes), so it waits for them."""
+    session = _state.get('session')
+    if session is None:
+        _wait_imports()
+        from src.lsd.gl_gui import app_session
+        session = app_session.load(_state['app_id'])
+        _state['session'] = session
+        mark('session loaded')
+    return session
+
+
+def persisted(name, factory, *, app_id=None):
+    """An object the app keeps between runs: last run's saved `name`, or a
+    fresh `factory()` when there is none (or the saved one is not an
+    instance of `factory`, a class). It rides the app's session
+    (app_session.AppSession.app_state) and is saved with the draw states
+    when the loop exits, so it must be a DictConversion — its public,
+    non-@no_save fields persist, exactly as a studio model field does.
+
+        open_files = melty.persisted('open_files', OpenFiles, app_id='melty-code-editor')
+
+    `app_id` names the session file when this runs before the first
+    `@glfw_window` (the usual place — the object feeds the window's body);
+    the decorator's later `app_id` must match it."""
+    boot(app_id)
+    session = _load_session()
+    saved = session.app_state.get(name)
+    if saved is None or (isinstance(factory, type) and not isinstance(saved, factory)):
+        saved = factory()
+        session.app_state[name] = saved
+    return saved
 
 
 # --- the decorator ------------------------------------------------------------------

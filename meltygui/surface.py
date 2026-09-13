@@ -200,15 +200,15 @@ class Surface:
         self.impl = SplitOverlayRenderer(self.window)
         Melty.init_input_backend(self.window)
         Melty.cache = TileCacheMasked()
-        # The blit cache stays OFF for an app window: switched on (at the
-        # studio's frame-2 schedule or later) it serves nested popovers'
-        # row tiles blank / shadow-less and paints a black block under a
-        # context menu (09-12, melty_code_editor) - a Melty gap still to
-        # find. Consequences of running cache-off are handled elsewhere:
-        # marks resolve their owning window from the window stack
-        # (TileCacheMasked._mark_position - ownerless marks read as topmost
-        # and cast over nested windows), and retained tiles of an undrawn
-        # branch die without a capture ( (branch_dropped).
+        # The blit cache starts OFF and resize() switches it on after the
+        # second frame, the studio's schedule (lsd_studio: frame_count 2).
+        # Off, nothing is ever tile-cached: every view, every RenderHost
+        # body and draw_text reverts on every frame and freeze_resize
+        # never engages (09-13, melty_code_editor: 18 ms hover frames).
+        # The popover artifacts that kept it off (row tiles blank, a black
+        # block under a context menu, 09-12) were captures of a menu
+        # opened off the display's right edge served after it was pinned
+        # back in - TileCacheMasked._fill_unfilled now re-renders those.
         Melty.cache.enabled = False
         if glfw.get_platform() == glfw.PLATFORM_WAYLAND:
             # The tag is the window's stable identity for the compositor
@@ -389,7 +389,10 @@ class Surface:
 
         top = titlebar.top_inset() if self.chrome else 0.0
         imgui.set_cursor_screen_pos((0, top))
-        Melty.root_fill = (float(disp_w), float(disp_h) - top, float(top))   # (w, h below the chrome, top inset)
+        # The root fills the OS MODEL's size (os_frame.content_size): equal
+        # to the display except while our own resize is still landing.
+        fill_w, fill_h = os_frame.content_size((disp_w, disp_h)) if self.chrome else (disp_w, disp_h)
+        Melty.root_fill = (float(fill_w), float(fill_h) - top, float(top))   # (w, h below the chrome, top y)
         Melty.root_fill_used = False
         # The body runs INSIDE the ground, as the studio's windows run inside
         # draw_main's show_bg: one bg depth down, the ground's tint and colour
@@ -432,6 +435,8 @@ class Surface:
                       flush=True)
             raise
         self.frames += 1
+        if self.frames == 2 and not Melty.cache.enabled:
+            Melty.cache.set_enabled(True)
 
     def _root_background(self, w, h, radius):
         """The window's ground: what the studio's Main Window paints under

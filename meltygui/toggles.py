@@ -240,6 +240,27 @@ class Tint:
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
+    @defaults(tint=(0.54, 0.54, 0.54))
+    def cursor_line_tint():
+        # The caret ROW's wash in draw_text. Same hue as the caret, but the
+        # brightness is capped at Toggles.TextEditor.cursor_line_max_brightness
+        # rather than Tint.max_value: the caret may go too-bright on a bright
+        # theme, and the same colour behind a whole row of text at any alpha
+        # drowned the glyphs (09-13).
+        style_manager: ImGuiStyleManager = Core.melty.style_manager
+        active_hsv = style_manager.hsv
+
+        hue_delta = 0.00
+        saturation_factor = 0.958
+        value_factor = 2.899
+
+        active_hsv = ((active_hsv[0] + hue_delta),
+                      scale_saturation(active_hsv[1], saturation_factor),
+                      min(max(active_hsv[2] * value_factor, 0),
+                          Toggles.TextEditor.cursor_line_max_brightness))
+        return hsv_to_rgb(*active_hsv)
+
+    @staticmethod
     @defaults(tint=(0.45, 0.45, 0.45))
     def line_number_tint(requested_tint=None):
         style_manager: ImGuiStyleManager = Core.melty.style_manager
@@ -555,6 +576,15 @@ class Toggles:
         # [tint=(0.36, 0.62, 0.66)]
         live_marker_create_budget = 300
         token_match_tint = (0.277, 0.50, 0.50, 0.22)
+        # The caret row's wash (Tint.cursor_line_tint, drawn under the text
+        # by draw_text): the brightest the wash colour may get (HSV value,
+        # 1.0 = SDR white) and its alpha. Raise max_brightness to make the
+        # row pop on dark themes; lower it if glyphs get hard to read. Read
+        # live.
+        # [tint=(0.277, 0.50, 0.50)]
+        cursor_line_max_brightness = 0.6
+        # [tint=(0.277, 0.50, 0.50)]
+        cursor_line_alpha = 0.08
         # [tint=(0.55, 0.496, 0.147, 1.0), show_tint=True]
         check_syntax_errors = True
 
@@ -1477,11 +1507,14 @@ class Toggles:
         titlebar_button_refresh_s = 30
         # On Lukas's patched Hyprland (the compositor has
         # general:left_drag_move) the chrome also shows the desktop's
-        # left-drag-move toggle — the hyprbars `state = "left_drag_move"`
-        # button: lit while a plain left drag on empty space moves this
-        # app's windows, faded while the app is in left_drag_move_exclude,
-        # a click flips it through desktop/left-drag-toggle (persisted
-        # by the desktop's Settings). Innermost of the right group.
+        # window-gesture toggle — the hyprbars `state = "left_drag_move"`
+        # button: lit while the COMPOSITOR moves this app's windows on a
+        # plain left drag and resizes them on a right drag, faded while the
+        # app is in left_drag_move_exclude + right_drag_resize_exclude and
+        # does both itself (drag-anywhere xdg move, right-drag through the
+        # edge physics, nested melty windows' own right-drag). A click flips
+        # it through desktop/left-drag-toggle --gestures (persisted by the
+        # desktop's Settings). Innermost of the right group.
         # Off = never shown. (gl_gui/hypr_left_drag.py)
         # [tint=(0.55, 0.75, 0.35)]
         titlebar_move_toggle = True
@@ -2566,6 +2599,21 @@ class Toggles:
         category_height = 300
 
     class Chat:
+        # Centered transcript and right-aligned user bubble width limits.
+        # [tint=(0.45, 0.48, 0.52)]
+        transcript_max_width = 900.0
+        # [tint=(0.72, 0.43, 0.28)]
+        user_message_max_width = 680.0
+        # Sidebar navigation stays neutral when the selected conversation changes.
+        # [tint=(0.45, 0.48, 0.52), show_tint=True]
+        navigation_tint = (0.45, 0.48, 0.52)
+        # [tint=(0.58, 0.6, 0.63), show_tint=True]
+        codex_tag_tint = (0.58, 0.6, 0.63)
+        # [tint=(0.72, 0.43, 0.28), show_tint=True]
+        claude_tag_tint = (0.72, 0.43, 0.28)
+        # Selected sidebar chats rise above their folder plate.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        selected_chat_shadow_offset = 5.0
         # Drop-shadow offsets in the Chat window (cards, code blocks, buttons,
         # the transcript scrollbar thumb). 0 disables a shadow.
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]

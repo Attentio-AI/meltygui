@@ -879,6 +879,16 @@ class RenderHost(_DeepAttrMixin, dict):
         if env_ds is None or wds is None:
             return True
         cache = Melty.cache
+        if cache is None or not cache.enabled:
+            # No blit cache (a melty app's surface, tests): no tiles, so
+            # nothing that can carry a dirty mark: a run_in_background
+            # completion (Melty.cache.invalidate on the io view's key) would
+            # only reach this host on the 1-in-30 heartbeat - which an
+            # edit-request app that idles between events never counts up to:
+            # the code editor's file host sat on its loading stand-in until
+            # a stray click (09-13). Poll instead: the io bodies are cheap
+            # (~0.1 ms of wrapper each) and writes only happen on request.
+            return True
         if cache is not None:
             for ds in (env_ds, wds):
                 tile = cache._tiles.get(getattr(ds, "_tile_id", None))

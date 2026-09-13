@@ -418,7 +418,10 @@ class TileMode(Enum):
          "min_width", "min_height", "max_height", "is_focused", "drag_window_pos_x", "drag_window_pos_y",
          "drag_mode", "is_hovered_last", "bg_shown", "draw_window_pos_x", "z_offset", "melty_window",
          "misc_used", "draw_window_pos_y", "drag_delta", "screen_pos", "hover_rects", "melty_window", "auto_resize",
-         "imgui_is_item_activated", "frame_count", "text_search_count")
+         "imgui_is_item_activated", "frame_count", "text_search_count",
+         # A context menu open at quit came back open at the next boot,
+         # drawn under the view that spawned it (09-13, melty_code_editor).
+         "context_menu_open")
 @exclude("current_tint", "overhead_time", "premature_break", "drag_mode",
          "clip_rect", "_input_value", "flow_spacing", "expanded_rect", 'max_column', 'text_selection_start', 'text_selection_end',
          'width', "size_change", 'left', 'top', "clipped", "fully_clipped", "melty_window", "text_double_click_time", "text_cursor_blink_time",
@@ -1479,7 +1482,12 @@ class DrawState(DictConversion):
         if size is None or disp is None:
             return pos
         keep = min(48, size)
-        lo, hi = keep - size, disp[axis] - keep
+        if self._kwargs.get("keep_in_view", False):
+            # Popup menus stay wholly visible. Ordinary movable windows retain
+            # their sliver allowance so you can deliberately tuck them away.
+            lo, hi = 0, max(0, disp[axis] - size)
+        else:
+            lo, hi = keep - size, disp[axis] - keep
         # whether the cap is holding this axis: the OS-edge physics
         # (os_frame._root_extent) pull a scrolled-out nested window out of
         # its parent's collision extent

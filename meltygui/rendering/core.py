@@ -1961,6 +1961,16 @@ def render_func(*args, **o_kwargs):
 
             kwargs['depth'] = Melty.depth
             draw_state._draggable = kwargs.get("draggable", False)
+            # A closable window whose FRAME the caller dictates every frame -
+            # position AND size passed, never draggable: an app's root
+            # pinned to the OS window (surface.root_view_kwargs). It cannot
+            # hold a relative position of its own (os_frame re-bases its
+            # nested windows instead), and its right-drag only ever latches
+            # an edge (a column / row divider, or its own frame edge, which
+            # pushes the OS edge through the gap cell) - never a plain size
+            # change the pin would break next frame.
+            draw_state._frame_pinned = bool(closable and kwargs.get("draggable") is False
+                                            and passed_width is not None and passed_height is not None)
 
             # Wrapping
             parent_wrap = Melty.wrap_stack[-1] if len(Melty.wrap_stack) > 0 else False
@@ -2117,15 +2127,25 @@ def render_func(*args, **o_kwargs):
             # right-drag resize is in flight (auto-resize windows have no
             # resize handle, so corner_drag stays None for them).
             corner_drag = None
-            if not auto_resize and (passed_width is None or passed_height is None):
+            # A frame-pinned window (an app's root: width AND height fixed,
+            # never draggable) runs this block's A LATCH ONLY: its right-drag
+            # moves the column / row edge under the cursor (a divider, not the
+            # window's own top edge, which pushes the OS edge through the
+            # os_frame_width below), exactly as in a studio window; without this
+            # a right-drag on an app's columns fell through to the titlebar's
+            # background subscription and resized the OS window (09-13). The
+            # plain size / position fallbacks are skipped for it (the pin
+            # rubber-stamps both next frame) and it gets no corner handle.
+            frame_pinned = bool(getattr(draw_state, "_frame_pinned", False))
+            if not auto_resize and (passed_width is None or passed_height is None or frame_pinned):
                 # Resolved through the module each call so columns.py hotswaps
                 # keep reaching the width-retargeting below (and to avoid a
                 # circular import at module load).
                 from src.lsd.gl_gui.view.core_views import columns as _columns
                 corner_rect = get_resize_handle(draw_state)
-                handle_drag = draw_state.on_action("left_mouse_drag", view_id="window_resize",
-                                                   rect=corner_rect, priority_delta=1,
-                                                   cursor=mouse_cursor.RESIZE_SE)
+                handle_drag = None if frame_pinned else draw_state.on_action(
+                    "left_mouse_drag", view_id="window_resize",
+                    rect=corner_rect, priority_delta=1, cursor=mouse_cursor.RESIZE_SE)
 
                 corner_drag = draw_state.on_action("right_mouse_drag", view_id="corner_drag", priority_delta=-1)
                 # DOUBLE right-drag (the 2nd press of a double right-click,
@@ -2153,8 +2173,9 @@ def render_func(*args, **o_kwargs):
                 # window-move press and right-press raise chain; if a child
                 # wins the press chain first, we simply fall back to the
                 # rebase (old behavior).
-                handle_press = draw_state.on_action("non_blocking_left_mouse_down", view_id="window_resize",
-                                                    rect=corner_rect, priority_delta=2)
+                handle_press = None if frame_pinned else draw_state.on_action(
+                    "non_blocking_left_mouse_down", view_id="window_resize",
+                    rect=corner_rect, priority_delta=2)
                 corner_press = draw_state.on_action("non_blocking_right_mouse_down", view_id="corner_drag",
                                                     priority_delta=1)
 
@@ -2262,7 +2283,7 @@ def render_func(*args, **o_kwargs):
                     # a ROW edge (the window's own top/bottom frame edges
                     # included) through the y-axis solve.
                     queued_rows = False
-                    if passed_height is None:
+                    if passed_height is None or frame_pinned:
                         # A right-drag (corner_drag) retargets the height to
                         # a ROW edge latched once at drag start - the row
                         # edge BELOW the cursor (plain drag), ABOVE it in
@@ -2296,7 +2317,7 @@ def render_func(*args, **o_kwargs):
                                     queued_rows = True
                             except Exception:
                                 queued_rows = False
-                        if not queued_rows:
+                        if not queued_rows and not frame_pinned:
                             new_h = snap_int(max(size_h, draw_state.min_height))
                             if draw_state.max_height:
                                 new_h = min(new_h, snap_int(draw_state.max_height))
@@ -2313,7 +2334,7 @@ def render_func(*args, **o_kwargs):
                                     draw_state._initial_window_pos_resize[1]
                                     + (draw_state._initial_window_size[1] - new_h))
 
-                    if passed_width is None:
+                    if passed_width is None or frame_pinned:
                         # A right-drag (corner_drag) retargets the width to a
                         # COLUMN edge latched once at drag start: plain drag
                         # takes the edge to the cursor's RIGHT, left held
@@ -2361,7 +2382,7 @@ def render_func(*args, **o_kwargs):
                                     queued = True
                             except Exception:
                                 queued = False
-                        if not queued:
+                        if not queued and not frame_pinned:
                             new_w = snap_int(max(size_w, draw_state.min_width))
                             draw_state.width = new_w
                             if from_top_left:

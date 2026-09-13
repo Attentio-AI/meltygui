@@ -10554,17 +10554,7 @@ def draw_context_menu_items(draw_state, items, right_click, name, unique):
     if not is_open or menu_ds is None:
         return None
 
-    current = (menu_ds.width, menu_ds.height)
-    last_fit = getattr(state, "_menu_fit", None)
-    if last_fit is not None and current != last_fit and current[0] and current[1]:
-        state.menu_size = current       # the resize handle moved it
-        state._menu_fit = current
-    elif state.menu_size is None:
-        fit = _dd_menu_fit(menu_ds)
-        if fit is not None and fit != current:
-            menu_ds.width, menu_ds.height = fit
-            request_render()
-        state._menu_fit = (menu_ds.width, menu_ds.height)
+    _dd_update_menu_size(state, menu_ds)
 
     def _dismiss():
         Melty.popover_focused_ds = None
@@ -11115,11 +11105,13 @@ def draw_drop_down_item(input_value, name="", unique=0, shadow=False, draw_state
              is_tree=False, show_name=True, with_header=draw_header)
 @window
 def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_state: DropDownState, shadow=True,
-                  text_align="left", **kwargs):
+                  text_align="left", open_upwards=None, menu_min_width=None, **kwargs):
     """Root of a recursive dropdown. Renders a trigger button showing the current
     selection; clicking it opens the (click-o-open) root popover. Nested dict
     rows inside the popover open their own sub-menus on hover. Returns
-    (changed, selected_leaf) when the user picks a value.
+    (changed, selected_leaf) when the user picks a value. `open_upwards`
+    defaults to choosing the side with room. True forces above, False below;
+    `menu_min_width` sets its width floor.
 
     Open/closed is a single global slot -- ``Melty.popover_focused_ds`` holds the
     draw_state of whichever dropdown's popover is currently shown. Each dropdown
@@ -11205,6 +11197,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     trigger_text_value = 1.023
     if _ttb and getattr(input_value, "tint", None) is None:
         trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
+    trigger_top = imgui.get_cursor_screen_pos()[1]
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger{unique}", show_bg=False, width=trigger_w,
                         show_button_bg=kwargs.get("show_button_bg", True),
                         shadow=shadow, tint=trigger_tint,
@@ -11258,30 +11251,18 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             drop_down_state._kbd_mode = False
         drop_down_state._last_mouse = (_mp[0], _mp[1])
 
-    # ── Popover size: content-fit until the user drag-resizes it ──
-    # The menu runs auto_resize=False so the wrapper gives it the resize
-    # handle (+ right-drag corner resize); its size is then ours: while
-    # drop_down_state.menu_size is None we stamp the wrapper's own
-    # content-fit rule after every open frame (_dd_menu_fit: the measured
-    # unclipped content rect under its min-width / max-height / display
-    # clamps), and a size that differs from what we stamped is the resize
-    # handle's work - adopted into menu_size (persisted) and re-applied on
-    # every later open. Opening grace special: a persisted size goes on
-    # before the window begins.
-    menu_ds = getattr(drop_down_state, "_menu_ds", None)
-    menu_size = getattr(drop_down_state, "menu_size", None)
-    if is_open and menu_ds is not None:
-        opening = getattr(Melty, "_popover_open_frame", None) == Melty.frame_count
-        if opening and menu_size is not None:
-            menu_ds.width, menu_ds.height = menu_size
-            drop_down_state._menu_fit = tuple(menu_size)
-        if menu_ds.width is None or menu_ds.width < 5:
-            menu_ds.width = _DD_MENU_MIN_W
+    # Size from the current rows, never the previous window's clipped bounds.
+    # The model catalog may arrive after opening, and a search may temporarily
+    # leave the items. Neither may become the next menu's permanent size.
+    menu_width, menu_height, menu_top = _dd_popup_geometry(
+        collection, getattr(drop_down_state, "search_query", ""),
+        trigger_top, trigger_h, open_upwards, menu_min_width)
     changed, new_item, menu_ds = draw_dd_menu(
         collection, tint=draw_state.tint,
         name=f"{unique}_menu",
         closed=not is_open, temp=True, shadow=False, auto_resize=False,
-        window_pos=(0, trigger_h - _DD_ROW_H), max_height=_DD_MENU_MAX_H,
+        window_pos=(0, menu_top - imgui.get_cursor_screen_pos()[1]),
+        width=menu_width, height=menu_height,
         parent_window=draw_state, swoosh=False, disable_scroll=False,
         row_tags=kwargs.get("row_tags"),
         row_tints=kwargs.get("row_tints"),
@@ -11289,19 +11270,12 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         text_toward_bg=kwargs.get("text_toward_bg", 0.0),
         root_state=drop_down_state, path_prefix=(), return_extras=True)
     drop_down_state._menu_ds = menu_ds
-    if is_open and menu_ds is not None:
-        current = (menu_ds.width, menu_ds.height)
-        last_fit = getattr(drop_down_state, "_menu_fit", None)
-        if last_fit is not None and current != last_fit and current[0] and current[1]:
-            drop_down_state.menu_size = current       # the resize handle moved it
-            drop_down_state._menu_fit = current
-        elif getattr(drop_down_state, "menu_size", None) is None:
-            fit = _dd_menu_fit(menu_ds)
-            if fit is not None and fit != current:
-                menu_ds.width, menu_ds.height = fit
-                request_render()
-            drop_down_state._menu_fit = (menu_ds.width, menu_ds.height)
     if is_open:
+        pending = getattr(drop_down_state, "_pending_pick", None)
+        if pending is not None:
+            drop_down_state._pending_pick = None
+            drop_down_state._picked_path = _dd_as_tuple(pending)
+            changed, new_item = True, _dd_walk(collection, _dd_as_tuple(pending))
         if changed:
             _p = _dd_as_tuple(getattr(drop_down_state, "_picked_path", ()))
             drop_down_state.selected_path = _p
@@ -11353,22 +11327,9 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
                 request_render()
                 return True, picked
 
-        # Click-outside dismissal: a fresh left click landing on neither the
-        # trigger nor anywhere inside the popover subtree closes it (matches
-        # native popover behaviour). Selection clicks already returned above, and
-        # sub-menus open on hover, so this only fires for genuine outside clicks.
-        if imgui.is_mouse_clicked(0) and not clicked:
-            mx, my = imgui.get_mouse_pos()
-            under = Core.melty.bvh_query(mx, my)
-            if not any(_ds_in_subtree(ds, draw_state) for ds in under):
-                if _DD_DBG:
-                    with open("/tmp/dd_debug.log", "a") as _f:
-                        _f.write(f"[DD-DBG] CLOSE via click-outside f={Melty.frame_count} name={name!r} "
-                                 f"mouse=({mx:.0f},{my:.0f}) under={[id(d) for d in under]} ds={id(draw_state)}\n")
-                Melty.popover_focused_ds = None
-                _dd_close(drop_down_state)
-                draw_state.invalidate()
-                request_render()
+        # Window press dispatch owns click-away dismissal. It uses the captured
+        # press position and both parent links; a second post-imgui check here
+        # races deferred menu rendering and mistakes nested menu clicks for exits.
 
         # Focus settle (bounded, NOT a permanent repaint loop): right after open
         # the search box asks for text focus, but the opening click's
@@ -11391,29 +11352,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
 
 
 def _ds_in_subtree(node, ancestor, max_depth=64):
-    """True if ``node`` is ``ancestor`` or a descendant of it. Walks the
-    ``_parent`` chain, stopping on the root's self-loop (root._parent is root).
-    A context-menu window counts as inside its TARGET's subtree: the menu's
-    parent chain doesn't run through the view it was opened on, so a click in
-    a menu over an open popover read as click-outside and dismissed the
-    popover (and the menu with it). The menu is recognized by the existing
-    mutual link — its input_value is the target draw_state, whose
-    ``context_menu_ds`` points back at the menu — so no new state."""
-    seen = 0
-    while node is not None and seen < max_depth:
-        if node is ancestor:
-            return True
-        target = getattr(node, "_raw_input_value", None)
-        if target is not None and getattr(target, "context_menu_ds", None) is node:
-            node = target
-            seen += 1
-            continue
-        parent = getattr(node, "_parent", None)
-        if parent is None or parent is node:
-            break
-        node = parent
-        seen += 1
-    return False
+    """Use the same window ancestry as focus dispatch, including popovers."""
+    return ancestor.id in Core.melty.ancestor_closure([node])
 
 
 def _dd_entries(container):
@@ -11625,11 +11565,27 @@ def _dd_scroll_cursor_into_view(menu_ds, row_index, row0_offset=0.0, pitch=None)
         request_render()
 
 
+def _dd_pick(root_state, path):
+    """Keep a selection until the owning dropdown consumes it.
+
+    Submenus render as independent floating windows, often after their parent
+    has already drawn. A one-frame return value cannot reliably cross that
+    boundary; the shared dropdown state owns the pending selection.
+    """
+    root_state._picked_path = tuple(path)
+    root_state._pending_pick = tuple(path)
+    owner = Melty.popover_focused_ds
+    if owner is not None:
+        owner.invalidate_up()
+    request_render()
+
+
 def _dd_close(root_state):
     """Reset popover state on close: collapse the open/cursor paths, clear the
     search query, and release the search box's text focus if it held it."""
     if root_state is None:
         return
+    root_state._pending_pick = None
     open_was = _dd_as_tuple(root_state.open_path)
     root_state.open_path = ()
     root_state.cursor_path = ()
@@ -11739,7 +11695,45 @@ _DD_MENU_MIN_H = 33
 _DD_MENU_MAX_H = 500
 
 
-def _dd_menu_fit(menu_ds):
+def _dd_submenu_position(left, top, row_width, width, height, display_w, display_h):
+    right = left + row_width
+    x = right if right + width <= display_w else left - width
+    return max(0, min(x, display_w - width)), max(0, min(top, display_h - height))
+
+
+def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
+                       open_upwards=None, min_width=None):
+    """Content-sized popup contained in the display, independent of old bounds."""
+    rows = _dd_visible_entries(collection, (search or "").strip().lower())
+    display_w, display_h = imgui.get_io().display_size
+    natural_height = (len(rows) + 2) * _DD_ROW_H
+    above = max(0, trigger_top)
+    below = max(0, display_h - trigger_top - trigger_height)
+    upwards = (below < min(natural_height, _DD_MENU_MAX_H) and above > below
+               if open_upwards is None else open_upwards)
+    height = min(natural_height, _DD_MENU_MAX_H, above if upwards else below)
+    width = min(display_w, max(
+        _DD_MENU_MIN_W if min_width is None else min_width,
+        max((imgui.calc_text_size(row[2])[0] + 48 for row in rows), default=0)))
+    top = trigger_top - height if upwards else trigger_top + trigger_height
+    return snap_int(width), snap_int(height), snap_int(top)
+
+
+def _dd_update_menu_size(state, menu_ds, min_width=None, max_height=None):
+    current = (menu_ds.width, menu_ds.height)
+    last_fit = getattr(state, "_menu_fit", None)
+    if (getattr(menu_ds, "_initial_window_size", None) is not None
+            and last_fit is not None and current != last_fit and all(current)):
+        state.menu_size = current
+    elif getattr(state, "menu_size", None) is None:
+        fit = _dd_menu_fit(menu_ds, min_width=min_width, max_height=max_height)
+        if fit is not None and fit != current:
+            menu_ds.width, menu_ds.height = fit
+            request_render()
+    state._menu_fit = (menu_ds.width, menu_ds.height)
+
+
+def _dd_menu_fit(menu_ds, min_width=None, max_height=None):
     """The popover size that fits its content — what the wrapper's
     auto_resize computed for a closable window: the measured UNCLIPPED
     group rect (_content_rect), width floored at min_width, height capped
@@ -11749,8 +11743,8 @@ def _dd_menu_fit(menu_ds):
     if not rect or rect[0] <= 0 or rect[1] <= 0:
         return None
     display_w, display_h = imgui.get_io().display_size
-    fit_w = snap_int(max(min(rect[0], display_w), _DD_MENU_MIN_W))
-    fit_h = snap_int(max(min(rect[1], display_h, _DD_MENU_MAX_H), _DD_MENU_MIN_H))
+    fit_w = snap_int(max(min(rect[0], display_w), _DD_MENU_MIN_W if min_width is None else min_width))
+    fit_h = snap_int(max(min(rect[1], display_h, _DD_MENU_MAX_H if max_height is None else max_height), _DD_MENU_MIN_H))
     return (fit_w, fit_h)
 # Limits on the scope-label column of code-preview rows (usage-jump picker):
 # the main code column clamps here, and longer labels ellipsize, so the
@@ -12047,7 +12041,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
                                     view_id=f"dd_code_act_{key}",
                                     rect=(_cx, y, _cx + _cw, y + h),
                                     priority_delta=4) is not None:
-                root_state._picked_path = tuple(row_path)
+                _dd_pick(root_state, row_path)
                 imgui.set_cursor_screen_pos((x, y + h))
                 return value
         imgui.set_cursor_screen_pos((x, y + h))
@@ -12100,14 +12094,14 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
             return UNSET_VALUE
 
     if hovered and imgui.is_mouse_clicked(0):
-        root_state._picked_path = tuple(row_path)
+        _dd_pick(root_state, row_path)
         return value
     return UNSET_VALUE
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
              closable=True, melty_window=False, auto_resize=True, with_header=None,
-             max_height=420, min_width=300, swoosh=False, min_height=33)
+             max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=True, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
@@ -12384,9 +12378,19 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         # Always call the sub-menu (so off-path ones stay registered but hidden
         # via closed=True, never leaving a stale painted frame); only the on-path
         # branch actually draws. Pinned to the right of this row with window_pos.
+        search = str(getattr(root_state, "search", "") or "")
+        if any(search in str(key).lower() for key in row_path):
+            search = ""
+        popup_width, popup_height, _ = _dd_popup_geometry(value, search, 0, 0, False)
+        popup_left, popup_top = _dd_submenu_position(
+            draw_state.abs_left, draw_state.abs_top, draw_state.width,
+            popup_width, popup_height, *imgui.get_io().display_size)
+        cursor_x, cursor_y = imgui.get_cursor_screen_pos()
         changed, picked, _sub_ds = draw_dd_menu(value, name=f"{label}_submenu", tint=tint,
                                        closed=not sub_open, temp=True, use_cache=False,
-                                       window_pos=(draw_state.width, -_DD_ROW_H), show_add_delete=False,
+                                       window_pos=(popup_left - cursor_x, popup_top - cursor_y),
+                                       width=popup_width, height=popup_height, auto_resize=False,
+                                       show_add_delete=False,
                                        parent_window=draw_state, disable_scroll=False,
                                        full_render=full_render, row_tints=row_tints,
                                        root_state=root_state, path_prefix=row_path,
@@ -12404,7 +12408,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         if changed:
             return True, picked
     elif clicked:
-        root_state._picked_path = tuple(row_path)
+        _dd_pick(root_state, row_path)
         return True, value
 
     return False, value

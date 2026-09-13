@@ -15133,7 +15133,7 @@ def draw_text(input_value: str, height=None,
         if not blink_cursor or (time.time() - ds.text_cursor_blink_time) % 1.0 < 0.5:
             cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
             current_line_rect = (int(origin_x), int(cy + 1), int(origin_x + visible_width), int(cy + line_px + 1))
-            line_highlight_color = pack_color(*Tint.cursor_tint()[:3], 0.05)
+            line_highlight_color = pack_color(*Tint.cursor_line_tint()[:3], Toggles.TextEditor.cursor_line_alpha)
             draw_list.channels_set_current(Core.melty.get_channel() - 1)  # draw under the text
             draw_list.add_rect_filled(*current_line_rect, line_highlight_color)
             draw_list.channels_set_current(Core.melty.get_channel() + 1)  # draw under the text

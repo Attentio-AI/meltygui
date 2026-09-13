@@ -210,6 +210,39 @@ def _movable_roots():
             if getattr(ds, "closable", False) and ds.window_pos is not None]
 
 
+def _frame_pinned(ds):
+    """A root whose frame the caller dictates every frame — an app's root
+    pinned to the OS window (core_render stamps `_frame_pinned` for a
+    closable, never-draggable window with width AND height passed). It
+    RIDES with the surface: it cannot hold a screen position (the pin
+    re-stamps window_pos next frame), so it is never re-based."""
+    return bool(getattr(ds, "_frame_pinned", False))
+
+
+def _rebased_windows():
+    """The windows that hold their SCREEN position when the OS near edge
+    moves (apply_rebase / a foreign near resize): the movable roots that
+    are not frame-pinned, plus the DIRECT nested closable windows of the
+    pinned ones — a pinned root follows the surface, so its children (their
+    window_pos is parent-relative) are the studio roots of that world.
+    Without this a nested window that pushed the OS near edge out ended
+    outside the surface by the push: its own pass slid it as if its parent
+    held the screen, the parent was re-based, then pinned back (09-13)."""
+    held, pinned = [], set()
+    for ds in _movable_roots():
+        if _frame_pinned(ds):
+            pinned.add(id(ds))
+        else:
+            held.append(ds)
+    if pinned:
+        for ds in _all_windows():
+            parent = getattr(ds, "parent_window", None)
+            if (parent is not None and id(parent) in pinned
+                    and getattr(ds, "closable", False) and ds.window_pos is not None):
+                held.append(ds)
+    return held
+
+
 def _depth(ds):
     depth, node = 0, getattr(ds, "parent_window", None)
     while node is not None and depth < 64:
@@ -382,7 +415,7 @@ def _foreign_change(axis, d, size, far_held):
     near[axis] += d
     if far_held:
         _trace(f"{axis}: foreign near resize {d:+.0f} — roots hold the screen")
-        for ds in _movable_roots():
+        for ds in _rebased_windows():
             _rebase(ds, axis, -d)
         far[axis] = near[axis] + size
     else:
@@ -507,12 +540,40 @@ def attach(window, axis, has_pending=True, hand_move=False):
     return ctx
 
 
-def gap_lists(ctx, window_near, window_far):
+def gap_lists(ctx, window_near, window_far, rigid=False):
     """The two zero-floor gap cells linking a root's frame pair (screen
-    coords) to the OS frame pair."""
+    coords) to the OS frame pair. A free root's gaps are uncapped: it
+    sits anywhere inside the surface and only a push reaches the OS
+    edge. ``rigid`` (a frame-pinned root — an app's root, its frame IS
+    the OS window's) caps them at zero too, so the OS edge follows the
+    frame edge BOTH ways: a divider pushed past the pile pushes it out,
+    a capped column at its maximum PULLS it in, a right-drag on the
+    frame edge shrinks the window — exactly what a studio window's own
+    frame does, with no special handling on the drags (Lukas 09-13)."""
     near, far = _STATE["edges"][ctx.axis]
+    cap = 0.0 if rigid else None
     return ([[near, window_near], [window_far, far]],
-            [([0.0], [None]), ([0.0], [None])])
+            [([0.0], [cap]), ([0.0], [cap])])
+
+
+def content_size(display):
+    """The size an app's root should be laid out at THIS frame: the OS
+    model's (far - near per axis) once begin_frame has run for the frame,
+    else the display's. They differ only while our own resize request is
+    in flight (Hyprland answers the IPC resize a frame or two later); laid
+    out at the lagging display size the pinned root's frame was pulled
+    back to the old size for a frame and pushed out again the next — the
+    dividers froze and jittered against it (Lukas 09-13). Foreign sizes
+    are folded into the model at begin_frame, so this never hides one."""
+    from src.lsd.gl_gui.melty import Melty
+    if not _enabled() or _STATE["frame"] != Melty.frame_count:
+        return display
+    out = []
+    for axis, i in _AXIS.items():
+        near, far = _STATE["edges"][axis]
+        size = far[axis] - near[axis]
+        out.append(float(display[i]) if size <= 0 else float(size))
+    return tuple(out)
 
 
 def detach(window, axis, ctx):
@@ -578,7 +639,7 @@ def apply_rebase():
         if not d:
             continue
         _STATE["unapplied"][i] = 0.0
-        for ds in _movable_roots():
+        for ds in _rebased_windows():
             _rebase(ds, axis, -d)
         _trace(f"{axis}: roots re-based {-d:+.0f} with the move")
 

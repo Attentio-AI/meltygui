@@ -322,7 +322,9 @@ def _cells_from_lists(edge_lists, axis="x", specs=()):
                 # OS level's "os_near, W),) contact at zero width
                 floor = _axis_min(axis) if floor is None else float(floor)
                 cap = caps[m - 1] if m - 1 < len(caps) else None
-                cap = None if not cap else max(float(cap), floor)
+                # None = unbounded; an explicit 0.0 is a RIGID cell (the
+                # pinned root's link to the OS frame: os_frame.gap_cell)
+                cap = None if cap is None else max(float(cap), floor)
             else:
                 floor, cap = _edge_min(edges, m, axis), _edge_max(edges, m)
             key = (id(near), id(far))
@@ -337,11 +339,48 @@ def _cells_from_lists(edge_lists, axis="x", specs=()):
     return list(cells.values())
 
 
+def _detached_outer_edges(window, axis):
+    """``{id(edge): (edge, "near" | "far")}`` — every layout's OUTER edge
+    (its first / last) that is DETACHED: neither the window's frame edge
+    nor an edge any other list on the window shares (a nested layout's
+    adopted cell edges are shared, a layout built with its own
+    ``top_edge=`` / ``bottom_edge=`` dicts is not — the chat sidebar's
+    rows, 09-13). Such an edge is the layout's own boundary, re-dictated
+    on every build (see _window_graph), so to the hand it is where the
+    window ends: _edge_under_cursor lands a right-drag resize on the frame
+    edge behind it instead of on the dict itself."""
+    fe = _frame(window, axis) or ()
+    frame_ids = {id(e) for e in fe}
+    views = _views(window, axis)
+    seen = {}
+    for key, (ds, edges) in views.items():
+        if key == window.id:
+            continue
+        for e in edges:
+            seen[id(e)] = seen.get(id(e), 0) + 1
+    detached = {}
+    for key, (ds, edges) in views.items():
+        if key == window.id or len(edges) < 2:
+            continue
+        for e, side in ((edges[0], "near"), (edges[-1], "far")):
+            if id(e) in frame_ids or seen.get(id(e), 0) != 1:
+                continue
+            detached[id(e)] = (e, side)
+    return detached
+
+
 def _window_graph(window, axis, extra_lists=(), extra_specs=()):
     """The cell graph of every layout registered on the window for
     ``axis`` (per-view specs where the layouts stamped them), plus
     ``extra_lists`` / ``extra_specs`` — the OS level's cells a root
-    window's pass adds for the solve only (os_frame.attach)."""
+    window's pass adds for the solve only (os_frame.attach). A layout's
+    DETACHED outer edge (_detached_outer_edges) is deliberately NOT linked
+    to the frame: a layout that hands its far edges in re-dictates their
+    positions every frame (the chat sidebar builds them from the flow
+    origin), so a push the solve gave such an edge was thrown away on the
+    next build and the divider only jittered against the clamp (09-13).
+    The push stops at the layout's floor there; the right-drag RESIZE
+    gesture reaches the frame through _edge_under_cursor instead."""
     views, specs = _views(window, axis), _specs(window, axis)
     keys = list(views)
     lists = [views[k][1] for k in keys] + list(extra_lists)
@@ -538,7 +577,8 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     fe = _frame(window, axis) or ()
     local_graph = _window_graph(window, axis)
     if os_ctx is not None and len(fe) == 2:
-        gap_lists, gap_specs = os_frame.gap_lists(os_ctx, fe[0], fe[1])
+        gap_lists, gap_specs = os_frame.gap_lists(
+            os_ctx, fe[0], fe[1], rigid=bool(getattr(window, "_frame_pinned", False)))
         os_graph = _window_graph(window, axis, extra_lists=list(os_ctx.lists) + gap_lists,
                                  extra_specs=list(os_ctx.specs) + gap_specs)
         base_walls, os_ids = os_ctx.walls, os_ctx.os_ids
@@ -714,8 +754,7 @@ def _drag_live():
     mouse drag (any button) is in flight. Programmatic edge moves (foreign
     width writes) fall outside it, so they still invalidate normally."""
     from src.lsd.gl_gui.melty import Melty
-    return (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
-            or imgui.is_mouse_down(2) or Melty.on_drag)
+    return Melty.resize_gesture_live()
 
 
 def _defer_freeze_settle(window, draw_state):
@@ -961,7 +1000,12 @@ def _frame_pass(window, axis):
         seen_handles.add(handle)
         inc = _drag_inc(window, handle, drag, total=total)
         if inc:
-            _pending(window, axis).append((e, e[axis] + inc))
+            # Third slot True = CURSOR-DRIVEN (a hand on the edge): solved on
+            # the OS-level graph like the corner right-drag, or a frame edge
+            # pushed into the OS edge pushes IT (an app's pinned root: its
+            # frame IS the OS window's). A 2-tuple read as a foreign write
+            # and solved locally - the push stopped at the frame (09-13).
+            _pending(window, axis).append((e, e[axis] + inc, True))
     totals = getattr(window, "_drag_totals", None)
     if totals:
         # Prune ONLY this axis's "win_<axis>_*" namespace: when a layout
@@ -1173,10 +1217,18 @@ def _edge_under_cursor(window, axis, along, across_abs, before=False):
                     best, best_pos = e, pos
             elif pos > along + 0.5 and (best_pos is None or pos < best_pos):
                 best, best_pos = e, pos
+    fe = _frame(window, axis)
     if best is None:
-        fe = _frame(window, axis)
         if fe:
             best = fe[0] if before else fe[1]
+    elif fe and id(best) in _detached_outer_edges(window, axis):
+        # The innermost cell's far edge is a layout's DETACHED outer edge:
+        # to the hand that cell ends at the edge, so the resize takes
+        # the FRAME edge on that side (the gap cell in _window_graph then
+        # carries the drag back into the layout when the frame expands
+        # it). Latched detached, the drag only ever compressed the layout
+        # and the window never shrank (see chat sidebar, Lukas 09-13).
+        best = fe[0] if before else fe[1]
     return best
 
 
@@ -1471,8 +1523,11 @@ class ColumnLayout:
                 seen_handles.add(handle)
                 inc = _drag_inc(draw_state, handle, drag)
                 if inc:
+                    # cursor-driven (third slot): a divider pushed past the
+                    # pile pushes the frame edge AND, through it, the OS
+                    # edge (an app's root) - see _frame_pass's handles
                     window._pending_drags.append(
-                        (edges[k], edges[k]["x"] + inc))
+                        (edges[k], edges[k]["x"] + inc, True))
 
             totals = getattr(draw_state, "_drag_totals", None)
             if totals:
@@ -1849,7 +1904,7 @@ class RowLayout:
                 inc = _drag_inc(draw_state, handle, drag, total="total_dy")
                 if inc:
                     _pending(window, "y").append(
-                        (edges[k], edges[k]["y"] + inc))
+                        (edges[k], edges[k]["y"] + inc, True))      # cursor-driven, as for columns
 
             totals = getattr(draw_state, "_drag_totals", None)
             if totals:
