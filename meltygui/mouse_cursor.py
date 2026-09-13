@@ -63,11 +63,14 @@ RESIZE_NW = 105     # top-left corner
 RESIZE_SE = 106     # bottom-right corner
 RESIZE_NE = 107     # top-right corner
 RESIZE_SW = 108     # bottom-left corner
-# The window-move shape (the desktop's "move" fleur) shown where a left
-# drag would move a window - a melty window's move handle (core_render's
-# `window_move` on_action) or the OS window's drag strip / drag-anywhere
-# background (titlebar.py) - gated by `cursor_gate="left_mouse_dragged"`
-# so it only appears where that handle would actually CAPTURE the drag.
+# The window-move shape: shown where a left drag would move a window - a
+# melty window's move handle (core_render's `window_move` on_action) and
+# the OS window's drag strip / drag-anywhere background (titlebar.py) -
+# gated by `cursor_gate="left_mouse_dragged"` so it only appears where that
+# handle would actually CAPTURE the drag. It is on screen most of the time,
+# so it is NOT the four-way fleur: it is the theme's own arrow (the default
+# pointer, same hotspot) recoloured DARK GREY (`_RECOLORED`,
+# load_theme_cursor) - a quiet "this drags the window" hint.
 MOVE = 109
 
 _GLFW_SHAPE = {
@@ -84,7 +87,7 @@ _GLFW_SHAPE = {
     RESIZE_N: glfw.RESIZE_NS_CURSOR, RESIZE_S: glfw.RESIZE_NS_CURSOR,
     RESIZE_NW: glfw.RESIZE_NWSE_CURSOR, RESIZE_SE: glfw.RESIZE_NWSE_CURSOR,
     RESIZE_NE: glfw.RESIZE_NESW_CURSOR, RESIZE_SW: glfw.RESIZE_NESW_CURSOR,
-    MOVE: glfw.RESIZE_ALL_CURSOR,
+    MOVE: glfw.ARROW_CURSOR,     # no badge without a theme image: the plain arrow
 }
 
 # Theme search NAMES per shape - the XDG name first, then the legacy X name,
@@ -106,14 +109,22 @@ _SHAPE_NAMES = {
     RESIZE_SE: ("se-resize", "bottom_right_corner"),
     RESIZE_NE: ("ne-resize", "top_right_corner"),
     RESIZE_SW: ("sw-resize", "bottom_left_corner"),
-    MOVE: ("move", "fleur"),
+    MOVE: ("default", "left_ptr"),      # the regular arrow, recoloured below
+}
+# Recoloured shapes: `shape -> (body grey, outline grey)`. The theme image's
+# dark pixels (the body) go to the body grey, its bright pixels (the outline)
+# to the outline grey, by luminance - so a black-on-white arrow keeps its
+# white outline but reads on light AND dark. How to tune: raise the body
+# grey for a lighter pointer, lower the outline grey to darken the rim.
+_RECOLORED = {
+    MOVE: (70, 255),
 }
 # libXcursor's default search path (XCURSOR_PATH overrides it).
 _XCURSOR_DEFAULT_PATH = "~/.local/share/icons:~/.icons:/usr/share/icons:/usr/share/pixmaps"
 _XCURSOR_IMAGE_TYPE = 0xFFFD0002
 _GLFW_DEFAULT_CURSOR_SIZE = 16   # wl_init.c loadCursorTheme, XCURSOR_SIZE unset
 
-_cursors = {}        # shape -> GLFWcursor* (None = the GLFW default arrow)
+_cursors = {}        # (shape, theme names, greys) -> GLFWcursor | (None = the platform default arrow)
 _applied = ARROW     # shape last pushed to GLFW; None = unknown, re-push
 _applied_immediate = False   # the last push came from an immediate shape
 _requested = None    # request(): immediate shape for THIS frame, consumed at the tail
@@ -161,10 +172,34 @@ def load_theme_cursor(shape, size, theme=None):
     """The theme's image for `shape` at the nominal `size` nearest to what
     the theme ships (Xcursor's rule, ties to the larger), as
     (PIL RGBA image, xhot, yhot) ready for glfw.create_cursor. Frame 0 only.
-    Xcursor pixels are premultiplied ARGB; GLFW wants straight RGBA, so
-    the alpha is divided back out. None when the theme has no such shape."""
+    A `_RECOLORED` shape comes back recoloured. None when the theme has no
+    such shape."""
     theme = theme or os.environ.get("XCURSOR_THEME") or "default"
-    names = _SHAPE_NAMES.get(shape)
+    loaded = _load_theme_image(theme, _SHAPE_NAMES.get(shape), size)
+    greys = _RECOLORED.get(shape)
+    if loaded is None or greys is None:
+        return loaded
+    image, xhot, yhot = loaded
+    return _recolor(image, *greys), xhot, yhot
+
+
+def _recolor(image, body_grey, outline_grey):
+    """`image` with every pixel's RGB replaced by a grey between `body_grey`
+    (where the source is black) and `outline_grey` (where it is white),
+    picked by the source pixel's luminance; alpha untouched."""
+    import numpy as np
+    from PIL import Image
+    pixels = np.asarray(image).astype(np.float32)
+    luminance = pixels[..., :3].mean(axis=-1, keepdims=True) / 255.0
+    pixels[..., :3] = body_grey + (outline_grey - body_grey) * luminance
+    return Image.fromarray(pixels.round().astype(np.uint8), "RGBA")
+
+
+def _load_theme_image(theme, names, size):
+    """One theme cursor file (`names` tried in order, then the `default`
+    theme) decoded to (PIL RGBA image, xhot, yhot). Xcursor pixels are
+    premultiplied ARGB; GLFW wants straight RGBA, so the alpha is divided
+    back out. None when the theme has no such shape."""
     if not names:
         return None
     path = _find_cursor_file(theme, names)
@@ -231,8 +266,11 @@ def _glfw_cursor(shape):
     on scale-1 monitors, blurry (not wrong-sized) on scale-2 ones. Any
     failure falls back to the standard cursor; a shape the theme can't
     provide at all falls back to the arrow and is not retried."""
-    if shape in _cursors:
-        return _cursors[shape]
+    # Keyed by the theme names and recolour greys too: a hotswap that edits
+    # them (this module's registries to re-exec) gets the new image at once.
+    key = (shape, _SHAPE_NAMES.get(shape), _RECOLORED.get(shape))
+    if key in _cursors:
+        return _cursors[key]
     std = _GLFW_SHAPE.get(shape)
     cur = None
     if std is not None and _wayland():
@@ -250,7 +288,7 @@ def _glfw_cursor(shape):
         except Exception as e:
             print(f"mouse_cursor: no native cursor for shape {shape}: {e}")
             cur = None
-    _cursors[shape] = cur
+    _cursors[key] = cur
     return cur
 
 

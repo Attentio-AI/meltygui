@@ -1428,8 +1428,15 @@ class Toggles:
         # px height of the invisible drag strip along the top edge - a drag
         # outside inside it (a few px of travel past the press) moves the OS
         # window; a clean click there falls through to whatever view is under
-        # the cursor. Double-click toggles maximize.
+        # the cursor. Double-click toggles maximize (unless
+        # disable_double_click_maximize below).
         drag_strip_height = 50
+
+        # On (default): the drag strip never subscribes to double-click, so
+        # it falls through to the view under the cursor like any other
+        # click. Off: a double-click on the strip toggles the OS window's
+        # maximize, the WM caption rule. Applied live (each frame).
+        disable_double_click_maximize = True
 
         # Left-drag ANYWHERE in the window moves the OS window - the melty
         # way - as the worst-priority drag subscriber: a view that wants the
@@ -1443,6 +1450,26 @@ class Toggles:
         # resize handle) and the OS window's drag strip / drag-anywhere
         # background. Off = the normal arrow there.
         window_move_cursor = True
+
+        # Which window controls the frameless chrome shows, and on which
+        # side. "" (the default) follows the DESKTOP's own title-bar button
+        # setting, what GTK / Qt header bars follow (gl_gui/titlebar_buttons
+        # .py: the GNOME key `org.gnome.desktop.wm.preferences button-layout`
+        # via gsettings — GNOME, Budgie, and any desktop with a dconf
+        # profile, Hyprland included — Cinnamon's and MATE's keys, KDE's
+        # kwinrc, xfwm4's button_layout, then the settings portal), read on
+        # a background thread at boot, on focus gain and every
+        # titlebar_button_refresh_s. A GNOME-syntax string pins it instead:
+        # "left:right", comma-separated minimize / maximize / close —
+        # "close,minimize,maximize:" puts every control on the left,
+        # ":minimize,close" drops the maximize button, "" + no colon is all
+        # left (mutter's rule). Applied live (each frame).
+        # [tint=(0.55, 0.75, 0.35)]
+        titlebar_button_layout = ""
+        # Seconds between re-reads of the desktop's button setting while
+        # frames render (0 = only at boot and on focus gain).
+        # [tint=(0.55, 0.75, 0.35)]
+        titlebar_button_refresh_s = 30
 
         # px hit zones for edge/corner resize on the undecorated window.
         resize_border = 6
@@ -1491,6 +1518,16 @@ class Toggles:
         # under its window's tint — copy a window's tint here to match it.
         # [tint=(0.55, 0.75, 0.35)]
         melty_window_tint = (0.653, 0.758, 0.806)
+
+        # Tint of a melty APP's root surface (surface.Surface.frame): the
+        # ground every @glfw_window body draws on, painted through draw_bg
+        # exactly as the studio's Main Window paints its desktop, so a
+        # window filling the surface sits at bg depth 1 like a studio window
+        # (at depth 0 over a black bg stack every root came out black,
+        # 09-12). A `@glfw_window(tint=...)` overrides it per window. The
+        # studio's default draw_state tint, so the two look alike.
+        # [tint=(0.55, 0.75, 0.35)]
+        app_root_tint = (0.11, 0.12, 0.14)
 
         # Rounded corners on the frameless OS window (px; 0 = square). The
         # window is created with a transparent framebuffer (boot-time -

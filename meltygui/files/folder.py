@@ -172,23 +172,11 @@ def _collect(store, disk, folder, seen, creates, deletes):
 # _LazyOverrideEntry / bubbling, drag reorders land as tree key order).
 
 def _file_meta(root=None):
-    """AppModel's path→params store, or None before the model exists.
-    Backfills the collection onto roots loaded from a pre-file-meta save.
-    Pass `root` explicitly in on_load callbacks — they fire inside the studio
-    constructor, BEFORE Melty.init assigns Melty.vis, so the default
-    Melty-based resolution returns None there."""
-    if root is None:
-        vis = getattr(Melty, "vis", None)
-        root = getattr(vis, "root", None) if vis is not None else None
-    if root is None:
-        return None
-    col = getattr(root, "file_meta_collection", None)
-    if col is None:
-        from src.lsd.gl_gui.model.app_model import FileMetaCollection
-        col = root.file_meta_collection = FileMetaCollection()
-    if not isinstance(getattr(col, "file_meta", None), dict):
-        col.file_meta = {}
-    return col.file_meta
+    """The shared path→params store (file_meta.file_meta_store()) — what
+    AppModel.file_meta_collection.file_meta is too. `root` is accepted for
+    the on_load callers and ignored: the store exists before any model."""
+    from src.lsd.gl_gui.model.file_meta import file_meta_store
+    return file_meta_store()
 
 
 def _apply_meta(tree, folder, meta):
@@ -264,7 +252,7 @@ def _collect_meta(tree, folder, meta):
             entry["order"] = old["order"]
         if entry:
             if old != entry:
-                from src.lsd.gl_gui.model.app_model import FileMeta
+                from src.lsd.gl_gui.model.open_files import FileMeta
                 meta[path] = FileMeta(entry)
         elif old is not None:
             meta.pop(path, None)
@@ -284,7 +272,7 @@ _META_SKIP_SUFFIXES = {".pyc"}
 
 @Melty.on_load
 def _init_file_meta(vis, root):
-    from src.lsd.gl_gui.model.app_model import FileMeta
+    from src.lsd.gl_gui.model.open_files import FileMeta
     from src.lsd.gl_gui.toggles import Toggles
     meta = _file_meta(root)
     if meta is None:
@@ -306,6 +294,7 @@ def _init_file_meta(vis, root):
         if (FileMeta.painted_tint({"tint": stored}) is None
                 or tuple(round(c, 3) for c in stored[:3]) in unpainted):
             dict.pop(meta[key], "tint", None)
+            meta.touch(key)      # raw dict op: tell the shared cache
     module_root = Path(__file__).resolve().parents[4]   # .../src
     for p in module_root.rglob("*"):
         rel = p.relative_to(module_root).parts

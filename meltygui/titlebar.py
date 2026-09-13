@@ -1,8 +1,12 @@
 """Custom application titlebar (Toggles.Melty.enhanced_titlebar).
 
 Removes the server-side decoration so the UI extends to the top of the
-display, draws min/max/close as overlay-drawlist widgets in the top-right
-corner, and hands drag / edge-resize back to the window manager via
+display, draws the window controls as overlay-drawlist widgets in the top
+corners — WHICH of minimize / maximize / close, and on which side, follows
+the desktop's own title-bar button setting (titlebar_buttons.py, or
+Toggles.Melty.titlebar_button_layout; an OS window whose root melty window
+has a header hosts them inside that header, draw_header_controls) — and
+hands drag / edge-resize back to the window manager via
 _NET_WM_MOVERESIZE — so snapping, tiling and drag smoothness stay native.
 
 Backend support. X11 (and XWayland): everything above. Native Wayland:
@@ -34,6 +38,7 @@ import imgui
 import OpenGL.GL as gl
 
 from src.lsd.gl_gui import mouse_cursor
+from src.lsd.gl_gui import titlebar_buttons
 from src.lsd.gl_gui import wayland_move
 from src.lsd.gl_gui.gl_state import GLState, is_gl_thread
 from src.lsd.gl_gui.shader_func import shader_func
@@ -399,30 +404,152 @@ _ICON_RESTORE = "\uf2d2"    # fa window-restore
 _ICON_CLOSE = "\uf00d"      # fa times
 
 
-def _button_icons(maximized):
-    return (_ICON_MINIMIZE, _ICON_RESTORE if maximized else _ICON_MAXIMIZE, _ICON_CLOSE)
+def _button_icon(kind, maximized):
+    if kind == "minimize":
+        return _ICON_MINIMIZE
+    if kind == "maximize":
+        return _ICON_RESTORE if maximized else _ICON_MAXIMIZE
+    return _ICON_CLOSE
 
 
-def _button_layout(disp_w, maximized):
-    """Rects of the three controls, right-aligned at the top: the header's
-    close button sizing (flat_button: glyph + px(15) wide, + px(8) tall, one
-    width for all three so they line up) inset by button_margin from the
-    top-right corner, button_gap apart."""
+def button_layout():
+    """(left kinds, right kinds) the chrome shows — each a tuple over
+    "minimize" / "maximize" / "close", in on-screen order: Toggles.Melty
+    .titlebar_button_layout (GNOME syntax) when set, else the desktop's own
+    title-bar button setting (titlebar_buttons.system_layout: gsettings,
+    kwinrc, xfwm4, the settings portal)."""
+    from src.lsd.gl_gui.toggles import Toggles
+    pinned = Toggles.Melty.titlebar_button_layout
+    if pinned:
+        return titlebar_buttons.parse_gnome(pinned)
+    return titlebar_buttons.system_layout()
+
+
+def _button_metrics():
+    """(margin, gap, height, {kind: width}) shared by both groups: the
+    header's close button sizing (flat_button: glyph + px(15) wide, + px(8)
+    tall — every kind its own glyph, like the header) inset by
+    button_margin from the corner, button_gap apart."""
     from src.lsd.gl_gui.melty import Melty
     # [tint=(1.0, 0.55, 0.2)]
     button_margin = Melty.px(4.0)
     # [tint=(1.0, 0.55, 0.2)]
     button_gap = Melty.px(3.0)
-    sizes = [imgui.calc_text_size(icon) for icon in _button_icons(maximized)]
-    widths = [s.x + Melty.px(15.0) for s in sizes]      # each its own glyph, like the header
-    height = max(s.y for s in sizes) + Melty.px(8.0)
-    rects = []
+    sizes = {icon: imgui.calc_text_size(icon)
+             for icon in (_ICON_MINIMIZE, _ICON_MAXIMIZE, _ICON_RESTORE, _ICON_CLOSE)}
+    height = max(s.y for s in sizes.values()) + Melty.px(8.0)
+    return button_margin, button_gap, height, {icon: s.x + Melty.px(15.0) for icon, s in sizes.items()}
+
+
+def _button_layout(disp_w, maximized):
+    """[(kind, icon, rect)] of every control the layout asks for, in
+    on-screen order: the left group from the top-left corner, the right
+    group right-aligned at the top-right, each inset button_margin from
+    its corner and button_gap apart."""
+    left_kinds, right_kinds = button_layout()
+    button_margin, button_gap, height, widths = _button_metrics()
+    buttons = []
+    x0 = button_margin
+    for kind in left_kinds:
+        icon = _button_icon(kind, maximized)
+        width = widths[icon]
+        buttons.append((kind, icon, (x0, button_margin, x0 + width, button_margin + height)))
+        x0 += width + button_gap
+    right = []
     x1 = disp_w - button_margin
-    for width in reversed(widths):
-        rects.append((x1 - width, button_margin, x1, button_margin + height))
+    for kind in reversed(right_kinds):
+        icon = _button_icon(kind, maximized)
+        width = widths[icon]
+        right.append((kind, icon, (x1 - width, button_margin, x1, button_margin + height)))
         x1 -= width + button_gap
-    rects.reverse()
-    return rects
+    right.reverse()
+    return buttons + right
+
+
+def _button_bands(buttons, disp_w):
+    """(left_edge, right_edge): the x range between the two control groups
+    — the drag strip's span (a corner group's whole column is the
+    buttons', not the strip's). The window's edges when a side is empty."""
+    left_edge = max((r[2] for kind, icon, r in buttons if r[0] < disp_w / 2), default=0.0)
+    right_edge = min((r[0] for kind, icon, r in buttons if r[0] >= disp_w / 2), default=disp_w)
+    return left_edge, right_edge
+
+
+def chrome_insets():
+    """(left_px, right_px) the window controls take from the window's top
+    corners this frame — what a melty header drawn in the chrome row keeps
+    clear on each side (surface.root_view_kwargs: `header_indent` on the
+    left, a reserving `with_header_end` on the right). 0 for an empty side
+    or with the chrome off."""
+    if not titlebar_enabled():
+        return 0.0, 0.0
+    left_kinds, right_kinds = button_layout()
+    button_margin, button_gap, height, widths = _button_metrics()
+    maximized = _maximized(_studio_window())
+
+    def group(kinds):
+        if not kinds:
+            return 0.0
+        return button_margin + sum(widths[_button_icon(k, maximized)] for k in kinds) \
+            + button_gap * len(kinds)
+
+    return group(left_kinds), group(right_kinds)
+
+
+# Melty.frame_count of the frame whose root view hosted the controls
+# (draw_header_controls): paint_window_controls and draw_titlebar's button
+# hits stand down for it - the header painted and clicked them.
+_hosted_frame = -1
+
+
+def draw_header_controls(draw_state=None, **kwargs):
+    """The `with_header_end` of an OS window's root view (surface
+    .root_view_kwargs): the window controls painted INSIDE the root's melty
+    header, where a header's close button sits — the same flat_button paint
+    as _paint_buttons, in the root's own tile (an overlay paint under a
+    cached root tile was blitted over — the glyphs vanished, 09-12), hover
+    through the wrapper's repaint of a bounding-hovered view, clicks through
+    draw_state.on_action. In the flow it claims the RIGHT group's width, so
+    the wrapper right-aligns it under those buttons and clips the header
+    before them (draw_state.header_end_width); both groups are painted at
+    their corner rects (the root fills the surface, so window and surface
+    coordinates agree). The overlay path stands down for the frame
+    (_hosted_frame)."""
+    global _hosted_frame
+    from src.lsd.gl_gui.melty import Melty
+    imgui.dummy(chrome_insets()[1], 0)
+    if draw_state is None or not titlebar_enabled():
+        return
+    window = _studio_window()
+    io = imgui.get_io()
+    buttons = _button_layout(io.display_size.x, _maximized(window))
+    mx, my = io.mouse_pos.x, io.mouse_pos.y
+    over_button = next((i for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons)
+                        if x0 <= mx <= x1 and y0 <= my <= y1), None)
+    if not draw_state._bounding_hovered or Melty.on_drag:
+        over_button = None
+    _hosted_frame = Melty.frame_count
+    _paint_buttons(imgui.get_window_draw_list(), buttons, over_button)
+    for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons):
+        # Same delivery as flat_button's own click (priority_delta=4 over
+        # the body's registrations, the plain pointer over the button).
+        if draw_state.on_action("left_mouse_clicked", view_id=f"titlebar_button_{i}",
+                                rect=(x0, y0, x1, y1), priority_delta=4,
+                                cursor=mouse_cursor.ARROW) is not None:
+            _activate_button(kind, window)
+
+
+def _activate_button(kind, window):
+    """What a control does: minimize / maximize / close (the close deferred
+    to the merge window while pending state would be lost)."""
+    if kind == "minimize":
+        glfw.iconify_window(window)
+    elif kind == "maximize":
+        _toggle_maximize(window)
+    elif _close_blocked_by_merge():
+        pass        # merge window opened instead; app stays up
+    else:
+        _close_window(window)
 
 
 def _studio_window():
@@ -438,10 +565,18 @@ def _studio_window():
 
 def _main_window_ds():
     """The Main Window's draw_state (draw_main) — the owner the controls'
-    flat-mask marks ride under. None before the root's first frame."""
+    flat-mask marks ride under. In an app (surface.py, no draw_main) the
+    surface's root melty window: with its header in the chrome row its
+    cached tile covers the corners, and an OWNERLESS mark never keeps a
+    blit from copying over the buttons. None before the root's first
+    frame."""
     from src.lsd.gl_gui.melty import Melty
     registry = getattr(Melty, "draw_state_registry", None) or {}
-    return next((d for d in registry.values() if getattr(d, "name", None) == "Main Window"), None)
+    main = next((d for d in registry.values() if getattr(d, "name", None) == "Main Window"), None)
+    if main is not None:
+        return main
+    roots = getattr(Melty, "root_draw_states", None) or {}
+    return next((d for entries in roots.values() for d in entries), None)
 
 
 def paint_window_controls(draw_list):
@@ -462,31 +597,31 @@ def paint_window_controls(draw_list):
     global _pressed_button
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.toggles import shadow_depth_at
-    if not titlebar_enabled():
-        return
+    if not titlebar_enabled() or _hosted_frame == Melty.frame_count:
+        return      # off, or the root's header painted them this frame (draw_header_controls)
     window = _studio_window()
     io = imgui.get_io()
     disp_w = io.display_size.x
     mx, my = io.mouse_pos.x, io.mouse_pos.y
     maximized = _maximized(window)
-    rects = _button_layout(disp_w, maximized)
-    over_button = next((i for i, (x0, y0, x1, y1) in enumerate(rects)
+    buttons = _button_layout(disp_w, maximized)
+    over_button = next((i for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons)
                         if x0 <= mx <= x1 and y0 <= my <= y1), None)
     # Top-most of everything painted: the highest paint rank + a little depth.
     layer = Melty.nested_layer_max - 1
     rank = shadow_depth_at(2, layer)
     owner = _main_window_ds()
     if Melty.cache is not None and owner is not None:
-        for i, (x0, y0, x1, y1) in enumerate(rects):
+        for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons):
             Melty.cache.mask_mark_rect(owner, layer, rank, x0, y0, x1 - x0, y1 - y0,
                                        f"titlebar_button_{i}", corner_radius=Melty.px(6.0))
     if Melty.channels_split:
         draw_list.channels_set_current(Melty.max_depth - 1)
-    _paint_buttons(draw_list, rects, over_button, maximized)
+    _paint_buttons(draw_list, buttons, over_button)
 
 
-def _paint_buttons(dl, rects, over_button, maximized):
-    """The three controls, each painted EXACTLY like a window header's
+def _paint_buttons(dl, buttons, over_button):
+    """The controls (`buttons` = _button_layout's list), each painted EXACTLY like a window header's
     close button (draw_header_end): the same flat_button call — colour
     (9, 1, 1), glyph + px(15) by glyph + px(8), rounded, theme-mixed glyph,
     hover brightening, a depth mark for the shadow pass (drop shadow + lit
@@ -507,7 +642,7 @@ def _paint_buttons(dl, rects, over_button, maximized):
     if style_manager is not None and chrome_tint and len(chrome_tint) >= 3:
         style_manager.set_imgui_tint(*chrome_tint[:4])
     try:
-        for i, (icon, (x0, y0, x1, y1)) in enumerate(zip(_button_icons(maximized), rects)):
+        for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons):
             # The header close's own lift over its surface (+2 over the
             # flat-mask mark paint_window_controls stamped for the button).
             add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False,
@@ -562,7 +697,8 @@ def draw_titlebar(window):
 
     Handles decoration sync, the top-right window controls' hit logic
     (their paint is paint_window_controls, earlier in the frame), the top
-    drag strip (double-click = maximize; with Toggles.Melty.move_drag_anywhere
+    drag strip (double-click = maximize unless
+    Toggles.Melty.disable_double_click_maximize; with Toggles.Melty.move_drag_anywhere
     an unclaimed left-drag anywhere moves too), edge/corner resize and the
     right-drag resize. The WM gestures go through _NET_WM_MOVERESIZE on X11
     and wayland_move (xdg_toplevel.move/resize) on Wayland.
@@ -591,12 +727,15 @@ def draw_titlebar(window):
     wayland = _on_wayland()
     gestures = _wm_gestures_available()
 
-    # --- window control buttons, right-aligned at the very top -------------
-    button_rects = _button_layout(disp_w, maximized)
-    bar_left = button_rects[0][0]
+    # --- the control buttons in the top corners, per the desktop's setup --
+    # (titlebar_buttons: re-read while frames render, if a changed desktop
+    # setting lands without a restart; the focus hook re-reads too)
+    titlebar_buttons.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
+    buttons = _button_layout(disp_w, maximized)
+    strip_left, strip_right = _button_bands(buttons, disp_w)
 
     over_button = None
-    for i, (x0, y0, x1, y1) in enumerate(button_rects):
+    for i, (kind, icon, (x0, y0, x1, y1)) in enumerate(buttons):
         if x0 <= mx <= x1 and y0 <= my <= y1:
             over_button = i
             break
@@ -613,18 +752,17 @@ def draw_titlebar(window):
             return
 
     # --- buttons: arm on press, fire on release inside ---------------------
-    if over_button is not None and imgui.is_mouse_clicked(0):
+    # (a root header hosting the controls clicks them itself -
+    # draw_header_controls - so only the strip / anywhere gating hits
+    # over_button on such a frame)
+    hosted = _hosted_frame == Melty.frame_count
+    if hosted:
+        _pressed_button = None
+    elif over_button is not None and imgui.is_mouse_clicked(0):
         _pressed_button = over_button
     if _pressed_button is not None and imgui.is_mouse_released(0):
-        if over_button == _pressed_button:
-            if _pressed_button == 0:
-                glfw.iconify_window(window)
-            elif _pressed_button == 1:
-                _toggle_maximize(window)
-            elif _close_blocked_by_merge():
-                pass        # merge window opened instead; app stays up
-            else:
-                _close_window(window)
+        if over_button == _pressed_button and _pressed_button < len(buttons):
+            _activate_button(buttons[_pressed_button][0], window)
         _pressed_button = None
 
     # --- drag strip along the top edge -------------------------------------
@@ -637,15 +775,18 @@ def draw_titlebar(window):
     # Toggles.Melty.move_drag_anywhere widens the drag (not the double-click)
     # to the whole window at the same worst priority: only a drag nothing
     # else claimed - including background - moves the OS window.
+    # Toggles.Melty.disable_double_click_maximize drops the double-click
+    # subscription entirely, so the click reaches the view under the cursor.
     strip_h = float(Toggles.Melty.drag_strip_height)
-    in_strip = my <= strip_h and mx < bar_left
+    in_strip = my <= strip_h and strip_left <= mx < strip_right
+    strip_double_click = in_strip and not Toggles.Melty.disable_double_click_maximize
     anywhere = bool(Toggles.Melty.move_drag_anywhere) and over_button is None
     if gestures and edge is None and (in_strip or anywhere):
         # Move pointer only where the strip would actually get the drag
         # (cursor_gate): bare background, never over a view that claims it.
         Melty.event_handler.register_hovered(
             _STRIP_ID,
-            ["left_mouse_dragged", "left_mouse_double_clicked"] if in_strip
+            ["left_mouse_dragged", "left_mouse_double_clicked"] if strip_double_click
             else ["left_mouse_dragged"],
             priority=_STRIP_PRIORITY,
             cursor=mouse_cursor.MOVE if Toggles.Melty.window_move_cursor else None,
@@ -653,7 +794,8 @@ def draw_titlebar(window):
     strip_events = (getattr(Melty, "events", None) or {}).get(_STRIP_ID, {})
     if _wm_move_started and not Melty.event_handler.is_down("left_mouse"):
         _wm_move_started = False  # synthetic release landed - re-arm
-    if "left_mouse_double_clicked" in strip_events:
+    if "left_mouse_double_clicked" in strip_events \
+            and not Toggles.Melty.disable_double_click_maximize:
         _toggle_maximize(window)
     elif "left_mouse_dragged" in strip_events and not _wm_move_started:
         _wm_move_started = True
@@ -1048,6 +1190,12 @@ def apply_pending_surface_size(window):
         # sent, so the request holds for the next frame. Applying it now
         # spent it on a bare glfw.set_window_size Hyprland ignores.
         _pending_surface_wait += 1
+        # An app renders on request only (app.py's loop): with nothing
+        # else asking, the held request never got its retry frame and a
+        # @glfw_window stayed at Hyprland's default floating size until the
+        # first hover (09-12). Ask for the frame that retries it.
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
         return None
     _pending_surface_wait = 0
     if _pending_surface_fit and geometry_feed.backend() == "hyprland":
@@ -1062,6 +1210,7 @@ def apply_pending_surface_size(window):
             if dx or dy:
                 ox, oy = offset or (0, 0)
                 offset = (ox + dx, oy + dy)
+                os_frame.expect_own_move(dx, dy)     # ours, not the compositor's
     _pending_surface_fit = False
     _pending_surface_size = None
     _pending_surface_offset = None

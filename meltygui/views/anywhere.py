@@ -28,7 +28,8 @@ class SourcePriority(Enum):
                                  # other kwargs merges, so at runtime it
                                  # beats @defaults, callers, and codecs alike
     MODE = 1
-    WINDOW_DECORATION = 2        # @window(...) on the func or class - outranks
+    WINDOW_DECORATION = 2        # @window(...) on the func or class, and
+                                 # @glfw_window(...) on the func - outranks
                                  # @defaults (the window kwargs drive the
                                  # window that renders the value)
     CALLER = 3                   # call-site kwargs - EXPLICITLY passed, so in
@@ -98,6 +99,7 @@ _KIND_TO_PRIORITY = {
     "decoration": SourcePriority.DECORATION,
     "window decoration": SourcePriority.WINDOW_DECORATION,   # @window on the func
     "class decoration": SourcePriority.WINDOW_DECORATION,    # @window on the class
+    "glfw window decoration": SourcePriority.WINDOW_DECORATION,  # @glfw_window on the func
     "instance attr": SourcePriority.INSTANCE_ATTR,
     "attr default": SourcePriority.AT_DEFAULT_OBJ_TYPE,  # @defaults(attr="x", ...)
     "child kwargs": SourcePriority.CHILD_KWARGS,
@@ -661,7 +663,7 @@ def _owning_code_host(cm_state, kind):
     """(str_host, source_obj) whose buffer a write of this kind lands in — the
     pair the writer-side hotswap drives. None for kinds that apply LIVE with
     no compile (comment splat, instance attr) or aren't wired yet (callers)."""
-    if kind in ("signature", "decoration", "window decoration"):
+    if kind in ("signature", "decoration", "window decoration", "glfw window decoration"):
         return cm_state.render_func_str, (cm_state.host_key or (None, None))[0]
     if kind in ("class var", "class default", "class decoration"):
         return cm_state.class_str, (cm_state.host_key or (None, None))[1]

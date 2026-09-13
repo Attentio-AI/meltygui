@@ -273,11 +273,42 @@ class FileWatch:
                         pass
 
     @classmethod
+    def unwatch_dir(cls, dirpath):
+        """Retire the per-dir emitter `watch_dir` scheduled for `dirpath`
+        (a no-op for a dir a recursive root covers, or one never watched).
+        A browser that walks directories must give each one back, or it
+        eats an inotify instance per visit (the 128-per-user cap)."""
+        dirpath = str(dirpath)
+        cls._watched_dirs.discard(dirpath)
+        watch = cls._dir_watches.pop(dirpath, None)
+        if watch is not None:
+            try:
+                cls.observer.unschedule(watch)
+            except Exception as e:
+                print(f"FileWatch: cannot unwatch {dirpath}: {e}")
+
+    @classmethod
     def start(cls):
+        # Idempotent: the studio starts it from Melty.init; a @glfw_window
+        # app starts it from the first view that watches a directory.
+        if cls.observer.is_alive():
+            return
         cls.handler.on_modified = cls._on_event
         cls.handler.on_created = cls._on_event
         cls.handler.on_moved = cls._on_moved
+        cls.handler.on_deleted = cls._on_deleted
         cls.observer.start()
+
+    @classmethod
+    def _on_deleted(cls, event):
+        """A deletion reaches the global listeners only (a directory
+        listing wants it); the per-draw_state dispatch is for content
+        changes of files views hold, which a deletion is not."""
+        for listener in list(cls.global_listeners):
+            try:
+                listener(event.src_path)
+            except Exception:
+                pass
 
     @classmethod
     def _on_moved(cls, event):
@@ -857,13 +888,16 @@ class Melty:
 
     @classmethod
     def draw_surface_root(cls, req, surface):
-        """The child surface's body: the requested view drawn INLINE at the
-        surface root (root_fill sizes it; the surface's own chrome is its
-        title bar), on the same draw_state as the parent-side call, its
-        result threaded back through pending_return_values."""
+        """The child surface's body: the requested view drawn as the
+        surface's ROOT melty window (surface.root_view_kwargs — pinned to
+        the OS window, its melty header in the chrome row when the call
+        passed with_header=), on the same draw_state as the parent-side
+        call, its result threaded back through pending_return_values."""
+        from src.lsd.gl_gui.surface import root_view_kwargs
         kwargs = {k: v for k, v in req.kwargs.items()
                   if k not in ('glfw_window', 'window_pos', 'window_size', 'closable',
                                'layer_unique', 'draw_state', 'return_extras')}
+        kwargs = root_view_kwargs(req.name, **kwargs)
         kwargs['draw_state'] = req.draw_state
         result = req.draw_state._wrapper(req.input_value, **kwargs)
         if result is not None:
@@ -871,6 +905,7 @@ class Melty:
     # Self-registering RenderHost objects (id -> host). draw_main renders each one
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}
+    render_hosts_tick = -1   # frame_tick Surface.frame last ran the hosts in (melty apps)
     scroll_stack = []
     tile_id_stack = []
     wrap_stack = []
@@ -5517,8 +5552,7 @@ class Melty:
 
     @classmethod
     def shift_down(cls):
-        return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
-                glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
+        return cls.shift_key()
 
     @classmethod
     def is_window_enabled(cls):
@@ -5540,13 +5574,22 @@ class Melty:
         depth = max(0, min(depth, len(cls.bg_stack) - 1))
         return cls.bg_stack[depth][0:3]
 
+    # Modifier state. The studio reads it off its owner glfw window (vis.window);
+    # a melty app has no vis (several glfw windows, the owner window hidden), so
+    # it reads imgui's io state which the active surface's input backend feeds.
+    # Before: `cls.vis.window` raised AttributeError in an app, and every body that
+    # asked mid-frame (the code editor's right column) was cut short there.
     @classmethod
     def shift_key(cls):
+        if cls.vis is None:
+            return bool(imgui.get_io().key_shift)
         return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_SHIFT) == glfw.PRESS or
                 glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_SHIFT) == glfw.PRESS)
 
     @classmethod
     def ctrl_key(cls, ):
+        if cls.vis is None:
+            return bool(imgui.get_io().key_ctrl)
         return (glfw.get_key(cls.vis.window, glfw.KEY_LEFT_CONTROL) == glfw.PRESS or
                 glfw.get_key(cls.vis.window, glfw.KEY_RIGHT_CONTROL) == glfw.PRESS)
 

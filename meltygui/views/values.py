@@ -1447,10 +1447,8 @@ def _jump_to_text_hit(path, line):
 def _file_meta_tint(path):
     """The tint the user painted on this file (FileMeta — same store the
     editor tabs and folder tree read), or None."""
-    from src.lsd.gl_gui.model.app_model import FileMeta
-    col = getattr(getattr(Melty.vis, "root", None), "file_meta_collection", None)
-    meta = getattr(col, "file_meta", None) or {}
-    tint = FileMeta.painted_tint(meta.get(str(path)))
+    from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
+    tint = FileMeta.painted_tint(file_meta_store().get(str(path)))
     return tuple(tint[:3]) if tint else None
 
 
@@ -5264,43 +5262,12 @@ def draw_main(input_value, vis, search_text="", draw_state=None, **kwargs):
              live=True)
     _dm_mark("ds_under_mouse")
 
-    # Self-registering RenderHost objects (view/core_conversion/render_host.py): each
-    # is a stateful wrapper that draws into its own window. Snapshot the values - a
-    # host may register/remove during render (re-entrant mutation). Skipped entirely
-    # while any mouse button is held (click + drag), a view is being scrolled
-    # (Melty.on_scroll — already lingers a few frames past the last wheel event,
-    # bridging the gaps in a trackpad's event stream), and the user is typing in a
-    # focused draw_text (RenderHost.typing_hold - keypress debounce, self-registered
-    # catch-up wake) - host draws are deferrable work that would otherwise eat
-    # into drag/scroll/typing frames; they catch up after.
+    # Self-registering RenderHost objects (view/core_conversion/render_host.py):
+    # each drives a stateful wrapper and draws into its own window. The pump
+    # (mouse-held / scroll, typing gates, draw_needed) is RenderHost.draw_all,
+    # shared with melty.py and SurfaceWindow.
     from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
-    any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
-                      or imgui.is_mouse_down(2) or Melty.space_mouse_drag)
-    # The typing hold defers only HIDDEN CACHE hosts (the-named evictable
-    # pairs - their reconverts/saves are the GIL-heavy work that eats typing
-    # frames). VISIBLE hosts keep drawing through it: the live-lab loop types
-    # into a params-panel field while each keystroke's run publishes fresh
-    # tensors to the voxel/value windows - holding those froze the
-    # visualization for the whole typing burst (they replayed stale blits and
-    # only caught up at the 500ms debounce edge).
-    typing_held = RenderHost.typing_hold()
-    _dm_marks.append((f"hosts_gate(held={int(any_mouse_held)},typing={int(bool(typing_held))})",
-                      _time.perf_counter()))
-    if not any_mouse_held and not Melty.on_scroll:
-        for h_idx, host in enumerate(list(Core.melty.render_hosts.values())):
-            if (typing_held and getattr(host, "evictable", False)
-                    and host.name.startswith("##")):
-                continue
-            # Event-driven pump: an entirely hidden cache host skips its draw
-            # polling (draw_needed - edit flags / upstream identity change /
-            # tile invalidation / slow heartbeat). An open code tab has
-            # ~20 code-cache pairs and each polled draw was ~0.1ms of wrapper
-            # overhead for nothing - this is what dropped drags to ~70fps.
-            # Visible hosts always draw.
-            if not host.draw_needed():
-                continue
-            host.draw()
-            _dm_marks.append((f"host[{str(host.name)[:24]}]", _time.perf_counter()))
+    RenderHost.draw_all(mark=lambda label: _dm_marks.append((label, _time.perf_counter())))
 
     display(len(Core.melty.render_hosts), tag="Render Hosts Count")
     _dm_mark("tail")
@@ -6182,6 +6149,10 @@ _DRAW_BG_FILL_MEMO = globals().get("_DRAW_BG_FILL_MEMO", {})     # (colour key, 
              min_height=10, wrap=True, show_add_delete=False, rounding=None, icon=None, tint=(0.0, 0.241, 0.556))
 def button(input_value="", width=5, height=14, draw_state=None, alpha=1.00, left_mouse_held=False, shadow=True,
            left_mouse_down=False,
+           # DEPRECATED (09-12): a render_func widget costs ~0.7 ms of wrapper per call.
+           # New code draws buttons with headers/links (draw a rect + label, the
+           # click claimed through the parent view's draw_state.on_click); existing
+           # call sites migrate as they are converted. Do not add new callers.
            color=(0.533, 0.068, 0.5), icon=None, highlight_hovered=True, hovered=False, style_manager=None,
            show_button_bg=True,
            factor=1.0, tint_value=0.16, text_value=0.694, saturation=1.2, text_saturation=1.2, text_align="center",
@@ -7185,7 +7156,9 @@ def _draw_wide_picker(input_value, draw_state, gl_state, info):
         a = out[3]
 
     # --- readout: exposure + gamut ---
-    if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+    # Remove the colour: returns None (the tuple popover unsets its tuple).
+    if button("\uf1f8", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True,
+              name="delete_color##", text_value=1.6)[0]:
         request_render()
         return True, None
     imgui.same_line()
@@ -7379,7 +7352,9 @@ def _draw_extended_picker(input_value, draw_state, gl_state, info):
         a = out[3]
 
     # --- readout: hex inside sRGB, else the gamut + exposure ---
-    if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+    # Remove the colour: return None (the tuple popover unsets the value).
+    if button("\uf1f8", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True,
+              name="delete_color##", text_value=1.6)[0]:
         request_render()
         return True, None
     imgui.same_line()
@@ -7613,7 +7588,8 @@ def _draw_srgb_picker(input_value, draw_state, info):
                if has_alpha else f"#{ri:02x}{gi:02x}{bi:02x}")
 
 
-    if button("", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True, name=f"delete_color##")[0]:
+    if button("\uf1f8", tint=(1, 0, 0, 0.5), height=21, shadow=True, use_cache=True,
+              name="delete_color##", text_value=1.6)[0]:
         request_render()
         return True, None
     imgui.same_line()
@@ -7800,7 +7776,8 @@ def _popover_anchor(draw_state):
 
 
 def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
-                    outline=False, info=None, priority_delta=4, setter=None):
+                    outline=False, info=None, priority_delta=4, setter=None,
+                    swatch=None):
     """draw_tuple's colour chip for immediate-mode bodies (the code editor's
     tab bar) — the fast_dock idea: no render_func / imgui widget per chip,
     the swatch goes straight to the draw list and the click is a plain
@@ -7814,7 +7791,10 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     write the caller makes with a changed value — given, every change is
     recorded on the undo stack (a SetterChange on the host's draw_state,
     keyed by view_id) and undo/redo re-apply it through the setter, since
-    a chip has no wrapper of its own for Melty.undo_requests to land in."""
+    a chip has no wrapper of its own for Melty.undo_requests to land in.
+    `swatch` (an rgb(a) tuple) is what the chip PAINTS instead of the value
+    itself — a muted preview, e.g. the tint mixed toward its background —
+    while the picker still opens on, and edits, the real value."""
     # [tint=(0.85, 0.75, 0.05)]
     corner_radius = 4.0
     # [tint=(0.85, 0.75, 0.05)]
@@ -7843,8 +7823,9 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
             return True, (0.0, 0.0, 0.0, 1.0)
         return False, input_value
 
-    r, g, b = float(input_value[0]), float(input_value[1]), float(input_value[2])
-    alpha = float(input_value[3]) if len(input_value) == 4 else 1.0
+    shown = swatch if swatch is not None else input_value
+    r, g, b = float(shown[0]), float(shown[1]), float(shown[2])
+    alpha = float(shown[3]) if len(shown) == 4 else 1.0
     if alpha < 1.0:
         # Left half: colour over a checkerboard at its real alpha; right
         # half: the colour opaque - so transparency shows in the chip.
@@ -7927,14 +7908,21 @@ def draw_tuple_fast(input_value, draw_state, view_id, x=None, y=None, size=17,
     picker_h = color_picker_height(4, bool(_info))
     # Anchor under the chip; flip up past the display bottom (draw_tuple).
     _pop_y = color_picker_top_offset()
-    _disp_h = imgui.get_io().display_size[1]
+    _disp_w, _disp_h = imgui.get_io().display_size
     if y + size + _pop_y + picker_h > _disp_h - 10:
         _pop_y = -(picker_h + 38)
+    # Flip LEFT the same way: a chip at a row's right edge (the file
+    # listing's tint picker) cannot open off the display's right side, so
+    # anchor the picker off the chip's right edge instead of its left.
+    _pop_x = 0
+    picker_w = color_picker_width()
+    if x + picker_w > _disp_w - 10:
+        _pop_x = -(picker_w - size)
     imgui.set_cursor_screen_pos((x, y + size))
     color_changed, new_color, picker_ds = draw_color_picker(
         input_value, name=picker_name, closed=not is_open,
-        window_pos=(0, _pop_y), info=_info, parent_window=anchor,
-        width=color_picker_width(), height=picker_h, mode=Modes.POPOVER,
+        window_pos=(_pop_x, _pop_y), info=_info, parent_window=anchor,
+        width=picker_w, height=picker_h, mode=Modes.POPOVER,
         return_extras=True)
 
     imgui.same_line(spacing=0)
@@ -10158,6 +10146,15 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     if isinstance(_window_deco, dict) and _window_deco:
         _add_source(f"@window({fn_name})", _window_deco,
                     DecorationsCodec, location=fn_loc, kind="window decoration")
+    # @glfw_window(...) on the view fn (`@glfw_window` over `@render_func`,
+    # app.py): every kwarg past the OS window's own (title / size / window_id /
+    # name) is the root VIEW's, handed to the view by app._draw_root - the OS
+    # window's twin of @window, and it ranks with it. Same skip-when-absent
+    # rule; a missing `@glfw_window` parses to a str and adds nothing.
+    _glfw_deco = cm_state.render_func_dict.deep.decorators.glfw_window()
+    if isinstance(_glfw_deco, dict) and _glfw_deco:
+        _add_source(f"@glfw_window({fn_name})", _glfw_deco,
+                    DecorationsCodec, location=fn_loc, kind="glfw window decoration")
 
     cm_state._collect_cache = {
         "sources": sources, "tints": source_tints,

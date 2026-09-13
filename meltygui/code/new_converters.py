@@ -2091,6 +2091,14 @@ def code_file_io(input_value, code_state: CodeState, codec=None, view_func=Rende
         imgui.same_line(spacing=0)
 
         if address is None:
+            # A refused file used to be a blank view; name the reason.
+            from src.lsd.gl_gui.view.core_conversion.address import writable_file_refusal
+            why = None
+            if isinstance(input_value, (Path, str)):
+                why = writable_file_refusal(input_value) or (
+                    None if Path(str(input_value)).is_file() else "not a file")
+            imgui.text_colored(f"Not editable: {input_value}" + (f" — {why}" if why else ""),
+                               0.9, 0.6, 0.5, 0.9)
             return False, None
 
         # Run (hotkey) and Index (jedi) only make sense on Python code \u2014 the

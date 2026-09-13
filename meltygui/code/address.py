@@ -20,6 +20,7 @@ import hashlib
 import sys
 import types
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any, Callable
 import inspect
@@ -43,6 +44,57 @@ from src.lsd.gl_gui.view.core_views.decoration.core_decoration import defaults
 # → parents[5] is the repo root (the dir that contains `src/`).
 _PROJECT_ROOT = Path(__file__).resolve().parents[5]
 
+# Every tree whose code the editor may resolve, edit and hotswap: this
+# checkout itself plus each melty APP's own project (registered by
+# app.glfw_window for the window function's file, and by app.boot for
+# the main module - an app outside this repo is otherwise "library source"
+# to every view codec, so its `@glfw_window(tint=...)` never loads as an
+# input source and a header tint property falls through to the draw_state,
+# 09-12). Resolved paths, first registration defines the order.
+_EDITABLE_ROOTS = [_PROJECT_ROOT]
+
+
+def editable_roots():
+    """The registered project roots (resolved Paths), the checkout first."""
+    return tuple(_EDITABLE_ROOTS)
+
+
+def add_editable_root(path) -> Path | None:
+    """Register a project tree as editable source — the directory `path`,
+    or the PROJECT ROOT of a file `path` (see project_root_of). Idempotent;
+    a library install (site-packages, a venv) is never registered. Returns
+    the root registered, or None when refused."""
+    try:
+        p = Path(path).expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+    root = p if p.is_dir() else project_root_of(p)
+    if root is None or _LIBRARY_PARTS & set(root.parts):
+        return None
+    if root not in _EDITABLE_ROOTS:
+        _EDITABLE_ROOTS.append(root)
+        _EDITABLE_SOURCE_CACHE.clear()
+    return root
+
+
+# Files that mark a project's root when walking up from one of its sources.
+_PROJECT_MARKERS = (".git", "pyproject.toml", "setup.py", "setup.cfg")
+
+
+def project_root_of(file) -> Path | None:
+    """The nearest ancestor of `file` carrying a project marker
+    (_PROJECT_MARKERS), else the file's own directory; None when the file
+    has no directory."""
+    try:
+        p = Path(file).resolve()
+    except (OSError, ValueError):
+        return None
+    start = p.parent if not p.is_dir() else p
+    for d in (start, *start.parents):
+        if any((d / m).exists() for m in _PROJECT_MARKERS):
+            return d
+    return start
+
 
 # str(source_file) -> bool. Whether a path is project source never changes
 # within a session, but resolve() walks every path component with an
@@ -55,9 +107,10 @@ _EDITABLE_SOURCE_CACHE = {}
 
 
 def is_editable_source(source_file) -> bool:
-    """True only for source inside the project tree. Library code (site-packages
-    / dist-packages / the venv / the stdlib) is read-only to the editor, so we
-    never resolve or write to it."""
+    """True only for source inside a registered project tree (editable_roots:
+    this checkout and every melty app's own project). Library code
+    (site-packages / dist-packages / the venv / the stdlib) is read-only to
+    the editor, so we never resolve or write to it."""
     key = str(source_file)
     got = _EDITABLE_SOURCE_CACHE.get(key)
     if got is not None:
@@ -70,35 +123,47 @@ def is_editable_source(source_file) -> bool:
     if {"site-packages", "dist-packages"} & set(p.parts):
         ok = False
     else:
-        try:
-            p.relative_to(_PROJECT_ROOT)
-        except ValueError:
-            ok = False
+        ok = any(p.is_relative_to(root) for root in _EDITABLE_ROOTS)
     if len(_EDITABLE_SOURCE_CACHE) > 4096:
         _EDITABLE_SOURCE_CACHE.clear()
     _EDITABLE_SOURCE_CACHE[key] = ok
     return ok
 
 
-def is_writable_file(path) -> bool:
-    """The gentler gate for PLAIN-FILE codecs (TextFileCodec and friends): the
-    folder-tree windows mount arbitrary directories, so whole-file editing is
-    allowed anywhere under $HOME — unlike code codecs, which hotswap live
-    objects and stay pinned to the project tree (is_editable_source). Library
-    installs are still refused: a venv lives under home too, and writing into
-    site-packages through a folder window is the same disaster the strict gate
-    exists to prevent."""
+_LIBRARY_PARTS = frozenset({"site-packages", "dist-packages", "venv", ".venv",
+                            "node_modules"})
+
+
+def writable_file_refusal(path) -> str | None:
+    """Why the PLAIN-FILE codecs (TextFileCodec and friends) will not edit
+    `path` — a short human reason — or None when they will.
+
+    The gentler gate: the folder-tree windows mount arbitrary directories and
+    apps open whatever they are handed, so whole-file editing is allowed
+    anywhere the process may write (a /tmp scratch file, a mounted drive) —
+    unlike code codecs, which hotswap live objects and stay pinned to the
+    project tree (is_editable_source). Library installs are still refused
+    whatever their permissions: a venv is writable too, and writing into
+    site-packages through a folder window is the same disaster the strict
+    gate exists to prevent. (It used to require $HOME instead of write
+    permission, and a refused file showed as a tab that never loaded.)
+    A path that does not exist yet is judged by its directory."""
     try:
         p = Path(path).resolve()
-    except (OSError, ValueError):
-        return False
-    if {"site-packages", "dist-packages", "venv", ".venv", "node_modules"} & set(p.parts):
-        return False
-    try:
-        p.relative_to(Path.home())
-    except ValueError:
-        return False
-    return True
+    except (OSError, ValueError) as e:
+        return f"path cannot be resolved ({e})"
+    hit = _LIBRARY_PARTS & set(p.parts)
+    if hit:
+        return f"inside a library install ({sorted(hit)[0]}/)"
+    target = p if p.exists() else p.parent
+    if not os.access(target, os.W_OK):
+        return "no write permission"
+    return None
+
+
+def is_writable_file(path) -> bool:
+    """The plain-file gate as a bool — see writable_file_refusal."""
+    return writable_file_refusal(path) is None
 
 
 # ╔══════════════════════════════════════════════════════════════════════════════╗

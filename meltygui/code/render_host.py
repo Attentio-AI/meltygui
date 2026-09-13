@@ -255,6 +255,61 @@ class RenderHost(_DeepAttrMixin, dict):
         return list(Melty.render_hosts.values())
 
     @classmethod
+    def draw_all(cls, mark=None):
+        """The per-frame host pump: draw every registered host that has work.
+        Hosts are self-registering (a code_file_io host loads its file on its
+        first draw, reparses after an edit, auto-saves), so whatever runs the
+        frame loop must call this once a frame — the studio from draw_main,
+        a melty app from Surface.frame — or nothing ever loads.
+
+        Skipped entirely while any mouse button is held (click or drag) or a
+        view is being scrolled (Melty.on_scroll lingers a few frames past the
+        last wheel event, bridging a trackpad's event stream): host draws are
+        deferrable work that would otherwise eat into drag/scroll frames;
+        they catch up after. The typing hold (keypress debounce, self-armed
+        catch-up wake) defers only HIDDEN CACHE hosts (##-named evictable
+        pairs — their reconverts/saves are the GIL-heavy work that eats
+        typing frames); VISIBLE hosts keep drawing through it, since a
+        params field's keystrokes publish fresh tensors into the value
+        windows and holding those froze every visualization for the burst.
+
+        Event-driven: an idle hidden cache host skips its draw entirely
+        (draw_needed — edit flags / upstream identity change / tile
+        invalidation / slow heartbeat). An open input tab registers ~20
+        code-cache pairs and each polled draw is ~0.1ms of wrapper overhead
+        doing nothing — that is what dropped drags to 70fps. ``mark(label)``,
+        if given, receives a perf-trace label per gate decision and host drawn."""
+        import imgui
+        any_mouse_held = (imgui.is_mouse_down(0) or imgui.is_mouse_down(1)
+                          or imgui.is_mouse_down(2) or Melty.space_mouse_drag)
+        typing_held = cls.typing_hold()
+        if mark is not None:
+            mark(f"hosts_gate(held={int(any_mouse_held)},typing={int(bool(typing_held))})")
+        if any_mouse_held or Melty.on_scroll:
+            return
+        # Snapshot: a host may register / remove during its draw.
+        drew = loading = False
+        for host in cls.all():
+            if (typing_held and getattr(host, "evictable", False)
+                    and host.name.startswith("##")):
+                continue
+            if host.value_key not in host:
+                loading = True
+            if not host.draw_needed():
+                continue
+            host.draw()
+            drew = True
+            if mark is not None:
+                mark(f"host[{str(host.name)[:24]}]")
+        # The loop renders only on request. A host that drew needs its result
+        # in the blit cache for the NEXT frame (its consumers re-run then),
+        # and a host whose value is still on a worker thread needs frames
+        # until it lands, so the pump asks for one in both cases; without
+        # this a melty app showed its tabs over an empty editor.
+        if drew or loading:
+            request_render()
+
+    @classmethod
     def current(cls):
         return cls._active[-1] if cls._active else None
 

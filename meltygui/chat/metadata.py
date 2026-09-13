@@ -77,12 +77,59 @@ class ChatMetadata(DictConversion):
         return remote_id
 
 
+_app_metadata = None
+
+
 def shared_metadata():
-    """Resolve the persistent mirror at the model boundary, never in a view."""
+    """Resolve the persistent mirror at the model boundary, never in a view.
+
+    In the studio it lives on the root model and is saved with the session.
+    An app on melty has no root: every proxy then shares one process-wide
+    instance, persisted to a JSON file when the app asked for it with
+    `persistent_metadata(path)`."""
+    global _app_metadata
     from src.lsd.gl_gui.melty import Melty
     root = getattr(getattr(Melty, "vis", None), "root", None)
     if root is None:
-        return ChatMetadata()
+        if _app_metadata is None:
+            _app_metadata = ChatMetadata()
+        return _app_metadata
     if not hasattr(root, "chat_metadata"):
         root.chat_metadata = ChatMetadata()
     return root.chat_metadata
+
+
+def persistent_metadata(path):
+    """The app-wide ChatMetadata, loaded from ``path`` (a JSON file; missing
+    or unreadable starts empty) and written back at interpreter exit. Call
+    it once before the first chat proxy is created."""
+    import atexit
+    import json
+    import os
+    import pathlib
+    global _app_metadata
+    path = pathlib.Path(path).expanduser()
+    metadata = shared_metadata()
+    try:
+        accounts = json.loads(path.read_text()).get("accounts", {})
+    except (OSError, ValueError):
+        accounts = {}
+    for account in accounts.values():
+        for project in account.get("projects", {}).values():
+            project["tint"] = tuple(project.get("tint", (0.5, 0.5, 0.5)))
+            for chat in project.get("chats", {}).values():
+                chat["tint"] = tuple(chat.get("tint", project["tint"]))
+    metadata.accounts.update(accounts)
+
+    def save():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps({"accounts": metadata.accounts}, indent=1))
+            os.replace(tmp, path)
+        except (OSError, TypeError, ValueError) as error:
+            print(f"chat metadata: cannot write {path}: {error}")
+
+    atexit.register(save)
+    metadata.save = save
+    return metadata

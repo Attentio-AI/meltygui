@@ -500,7 +500,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     tabs' default tint when unpainted) scaled by the active-tab knobs, so
     it is tinted toward the card, never grey."""
     from src.lsd.gl_gui.melty import Melty
-    from src.lsd.gl_gui.model.app_model import FileMeta
+    from src.lsd.gl_gui.model.open_files import FileMeta
     from src.lsd.gl_gui.toggles import Toggles
     from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
     from src.lsd.gl_gui.view.playground.open_files import _tab_text_color

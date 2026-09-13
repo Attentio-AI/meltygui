@@ -55,6 +55,9 @@ _STATE = globals().get("_STATE") or {
 # same commit as the move. Re-based at the solve they were drawn shifted
 # to a surface that had not moved yet: one frame of jelly per step.
 _STATE.setdefault("unapplied", [0.0, 0.0])
+# A move we asked for before the feed's first read (the launch frame): folded
+# into the first observation so it never reads as the compositor's.
+_STATE.setdefault("own_move_pending", [0.0, 0.0])
 # The OS edges as of the last OS-level solve (solve): what the roots were
 # last laid out against. Any difference at the next solve is the OS window
 # having moved on its own - a compositor's resize - and is pushed through
@@ -68,15 +71,9 @@ _STATE.setdefault("feed_far", [None, None])
 _STATE.setdefault("reset_frame", 0)
 
 
-# Frames from a reset (studio start) during which the_frame's events print
-# without the toggle - boot is where a stale model does the most damage,
-# and the first report of it was undiagnosable.
-BOOT_TRACE_FRAMES = 600
-
-
 def _trace(msg):
     from src.lsd.gl_gui.toggles import Toggles
-    if Toggles.Melty.push_os_window_edges_trace or _STATE.get("frame", 0) - _STATE.get("reset_frame", 0) < BOOT_TRACE_FRAMES:
+    if Toggles.Melty.push_os_window_edges_trace:
         print(f"[os_frame] {msg}")
 
 
@@ -91,6 +88,7 @@ def reset(reason="studio start"):
     _STATE["inflight"] = [None, None]
     _STATE["size_expected"] = [None, None]
     _STATE["unapplied"] = [0.0, 0.0]
+    _STATE["own_move_pending"] = [0.0, 0.0]
     _STATE["os_seen"] = [None, None]
     _STATE["pending"] = {"x": [], "y": []}
     _STATE["window_id"] = None
@@ -297,8 +295,16 @@ def begin_frame():
         near, far = _STATE["edges"][axis]
         expected = _STATE["expected"][i]
         if expected is None:                      # first sight
-            near[axis], far[axis] = pos[i], pos[i] + size[i]
-            _STATE["expected"][i] = pos[i]
+            # A launch-fit move requested before this sight lands a frame
+            # or two later: see the model where it will be, or the landing
+            # reads as a foreign near resize and the roots get re-based.
+            pending = _STATE["own_move_pending"][i]
+            _STATE["own_move_pending"][i] = 0.0
+            at = pos[i] + pending
+            near[axis], far[axis] = at, at + size[i]
+            _STATE["expected"][i] = at
+            if pending:
+                _STATE["inflight"][i] = Melty.frame_count
             _STATE["size_expected"][i] = size[i]
             _STATE["os_seen"][i] = (near[axis], far[axis])
             _STATE["feed_far"][i] = feed_far[i]
@@ -525,6 +531,41 @@ def detach(window, axis, ctx):
         _trace(f"{axis}: OS near edge moved {d_os:+.0f} (pushed by {getattr(window, 'name', '?')})")
     window._os_seen[axis] = (near[axis], far[axis])
     return d_os
+
+
+def expect_own_move(dx, dy):
+    """A window move WE requested outside flush — titlebar's launch fit
+    (apply_pending_surface_size: the size and the move that keeps the
+    content inside the work area, one commit). Book it like flush books
+    its own: the expected position moves with it (in flight, so the feed's
+    late report is not a foreign change) and the model's edges — near AND
+    far, the whole window moved — with everything that remembers them.
+    Without this the fit's move read as the compositor resizing from the
+    near edge and every root was re-based by it: a @glfw_window app came up
+    with its content shoved right by the fit's distance (09-12). Before the
+    feed's first sight the move is parked for begin_frame to fold in."""
+    from src.lsd.gl_gui.melty import Melty
+    for axis, i in _AXIS.items():
+        d = float((dx, dy)[i])
+        if not d:
+            continue
+        if _STATE["expected"][i] is None:
+            _STATE["own_move_pending"][i] += d
+            _trace(f"{axis}: own move {d:+.0f} parked for first sight")
+            continue
+        _STATE["expected"][i] += d
+        _STATE["inflight"][i] = Melty.frame_count
+        near, far = _STATE["edges"][axis]
+        near[axis] += d
+        far[axis] += d
+        for ds in _all_windows():
+            seen = getattr(ds, "_os_seen", None)
+            if seen and axis in seen:
+                seen[axis] = (seen[axis][0] + d, seen[axis][1] + d)
+        os_seen = _STATE["os_seen"][i]
+        if os_seen is not None:
+            _STATE["os_seen"][i] = (os_seen[0] + d, os_seen[1] + d)
+        _trace(f"{axis}: own move {d:+.0f} (launch fit)")
 
 
 def apply_rebase():

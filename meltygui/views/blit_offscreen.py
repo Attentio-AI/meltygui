@@ -2326,7 +2326,7 @@ class TileCacheMasked:
             return
         if self._emit_cap_hit(draw_state, "shadow"):
             return
-        owner_key = self._stack[-1].key if self._stack else None
+        owner_key = self._mark_owner(draw_state)
         if isinstance(offset, (tuple, list)):
             offs = tuple(float(o) for o in offset)
             if len(offs) != 4:
@@ -2465,7 +2465,7 @@ class TileCacheMasked:
             return
         if self._emit_cap_hit(draw_state, "shadow"):
             return
-        owner_key = self._stack[-1].key if self._stack else None
+        owner_key = self._mark_owner(draw_state)
         if isinstance(offset, (tuple, list)):
             offs = tuple(float(o) for o in offset)
             if len(offs) != len(pts):
@@ -3365,6 +3365,43 @@ class TileCacheMasked:
             hops += 1
         return False
 
+    def _branch_dropped(self, eds):
+        """True when an ANCESTOR of the retained emitter `eds` ran its body
+        this frame without reaching `eds` — the emitter's branch was not
+        drawn (a tab switch, a content swap, a culled child): none of its
+        pixels are on screen, so its retained marks must not cast either.
+        The complement of _pixels_preserved's body-run case, returned as a
+        pseudo territory hit (the ancestor's rect, its draw_state) so the
+        kill takes the same settle path as a capture hit.
+
+        Why the capture-hit test alone missed it (09-12): a tab switched
+        BACK to a pane seen before serves that pane's tile from the blit
+        cache — nothing is captured over the hidden pane's territory, so
+        its gutter / scrollbar / symbol marks stayed retained and were
+        re-stamped every frame at their old rects, under the other tab
+        (the melty code editor's compare split showed the hidden tab's
+        scrollbar grab and gutter bars). Nothing reached at all (the
+        window not drawn this frame) is NOT a drop: the emitter may still
+        be shown by a frozen tile."""
+        now = Melty.frame_count
+        node, hops = eds, 0
+        while node is not None and hops < 64:
+            if getattr(node, "last_seen", None) == now:
+                if node is eds or getattr(node, "_blit_served_frame", None) == now:
+                    return None
+                try:
+                    return (node.abs_left, node.abs_top,
+                            node.abs_left + node.width, node.abs_top + node.height,
+                            self._glow_root_ds(node), frozenset(), node)
+                except Exception:
+                    return None
+            parent = getattr(node, "_parent", None)
+            if parent is None or parent is node:
+                break
+            node = parent
+            hops += 1
+        return None
+
     def _win_z_for_ds(self, ds):
         """Encoded window-mask rank of the nearest enclosing dispatched
         window of `ds`; 1.0 (never masked) when unresolvable."""
@@ -3383,10 +3420,30 @@ class TileCacheMasked:
             hops += 1
         return 1.0
 
-    def _win_z_for_owner(self, owner_key):
-        if owner_key is None:
+    def _mark_owner(self, draw_state):
+        """What a fresh add_shadow / add_shadow_strip mark records as its
+        owner (slot 8): the RECORDING tile's key while a tile records, else
+        the emitting WINDOW's draw_state — the window whose body is running
+        (Melty.melty_window_stack), or the emitter's own draw_state when one
+        was passed. With no tile recording (the blit cache off, as a melty
+        app runs — surface.Surface leaves it disabled) every mark used to
+        be ownerless, and _win_z_for_owner reads an ownerless mark as
+        TOPMOST: the panes' marks cast their shadows over a nested context
+        menu (Lukas 09-12). A draw_state owner resolves through
+        _win_z_for_ds exactly like a key's draw_state."""
+        if self._stack:
+            return self._stack[-1].key
+        if draw_state is not None:
+            return draw_state
+        stack = Melty.melty_window_stack
+        return stack[-1] if stack else None
+
+    def _win_z_for_owner(self, owner):
+        if owner is None:
             return 1.0
-        return self._win_z_for_ds(self.key_to_draw_state.get(owner_key))
+        if isinstance(owner, str):
+            return self._win_z_for_ds(self.key_to_draw_state.get(owner))
+        return self._win_z_for_ds(owner)
 
     def _shadows_owned_by(self, root_key):
         """add_shadow() marks whose owner tile sits in root_key's subtree
@@ -5383,6 +5440,11 @@ class TileCacheMasked:
                         else:
                             _hit = _territory_hit(marks, _delta, _root_ds, _eds,
                                                   _live_clip_of(_eds))
+                            if _hit is None:
+                                # An ancestor ran its body and left this
+                                # branch undrawn: same kill as a capture
+                                # covering the territory (_branch_dropped).
+                                _hit = self._branch_dropped(_eds)
                             if _hit is not None:
                                 _log_kill("depth", _eds, _hit, not _settled)
                                 if _settled:
@@ -5542,6 +5604,8 @@ class TileCacheMasked:
                         else:
                             _hit = _territory_hit(marks, _delta, _root_ds, _eds,
                                                   _live_clip_of(_eds))
+                            if _hit is None:
+                                _hit = self._branch_dropped(_eds)
                             if _hit is not None:
                                 _log_kill("glow", _eds, _hit, not _settled)
                                 if _settled:

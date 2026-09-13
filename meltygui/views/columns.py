@@ -1344,8 +1344,16 @@ class ColumnLayout:
             # ~0) stays TRANSIENT: render with it this frame, don't persist,
             # so a later frame re-seeds at the new extent instead of
             # locking up an all-minimum-width pile.
-            min_total = sum(_column_floor(column_mins, i)
-                            for i in range(n_cols))
+            # A specified width counts in full: a seed taken while the
+            # container is too narrow to honour it (an OS window's first
+            # frames at the compositor's default size, before the launch
+            # fit passes) would compress that column to its floor and
+            # persist it so (09-12).
+            spec = list(column_widths or [])[:n_cols]
+            spec += [None] * (n_cols - len(spec))
+            min_total = sum(max(float(w), _column_floor(column_mins, i)) if w is not None
+                            else _column_floor(column_mins, i)
+                            for i, w in enumerate(spec))
             seed_valid = extent > min_total
             extent = max(extent, min_total)
             edges = _seed_edges(column_widths, n_cols, extent, base=base,

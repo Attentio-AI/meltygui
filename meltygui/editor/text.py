@@ -4906,10 +4906,8 @@ def _log_usage_mismatch(vpath, file_line, diffs, old, new, ctx):
 def _uj_file_tint(p):
     """The file's FileMeta tint for a picker row (same source the editor tabs
     use), or None."""
-    root = getattr(Melty.vis, 'root', None)
-    meta = getattr(getattr(root, 'file_meta_collection', None), 'file_meta',
-                   None) or {}
-    entry = meta.get(str(p)) if p is not None else None
+    from src.lsd.gl_gui.model.file_meta import file_meta_store
+    entry = file_meta_store().get(str(p)) if p is not None else None
     t = entry.get('tint') if isinstance(entry, dict) else None
     return tuple(t) if t else None
 

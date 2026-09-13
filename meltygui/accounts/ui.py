@@ -21,7 +21,11 @@ asking for account="default" resolve to it.
 Adding a kind: subclass AccountKind, decorate with @account_kind. The window
 renders whatever is registered — the kind supplies its status probe, its
 editable fields, its action buttons and any extra rows (a device-code card,
-the Ollama model list).
+the Ollama model list). A kind with a `chat_label` appears in the Chat
+window's provider dropdown; its conversations come from the ChatProxy
+factory registered for the kind name with `register_chat_backend`
+(chat/backends.py) — the studio registers Codex's below, an external
+package (melty_agents) registers Claude Code's against "anthropic".
 
 Layout: every row measures its buttons FIRST (`strip_layout`); if the text
 would be left less than min_text_width, or the strip is wider than the row,
@@ -44,6 +48,7 @@ import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 
 from src.lsd.gl_gui.melty import Melty
+from src.lsd.gl_gui.chat.backends import chat_backend, register_chat_backend
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
@@ -294,10 +299,17 @@ def account_kind(cls):
 
 class AccountKind:
     chat_label = None
-    chat_available = False
+
+    @property
+    def chat_available(self):
+        """A backend is registered for this kind (chat/backends.py)."""
+        return chat_backend(self.name) is not None
 
     def chat_proxy(self, account, metadata=None, wake=None):
-        return None
+        """The kind's conversations: the registered backend's proxy, or None
+        (no backend, or the backend declines for now — signing in, busy)."""
+        factory = chat_backend(self.name)
+        return factory(account, metadata, wake) if factory is not None else None
 
     def chats(self, account, wake=None):
         proxy = account.get("_chat_proxy")
@@ -934,17 +946,17 @@ class AnthropicKind(AccountKind):
         return out
 
 
+@register_chat_backend("codex")
+def codex_chats(account, metadata=None, wake=None):
+    if account.get("_codex_signing_in") or account.get("_busy"):
+        return None
+    from src.lsd.gl_gui.chat.codex_proxy import CodexChats
+    return CodexChats(account["id"], metadata, wake)
+
+
 @account_kind
 class CodexKind(AccountKind):
     chat_label = "Codex"
-    chat_available = True
-
-    def chat_proxy(self, account, metadata=None, wake=None):
-        if account.get("_codex_signing_in") or account.get("_busy"):
-            return None
-        from src.lsd.gl_gui.chat.codex_proxy import CodexChats
-        return CodexChats(account["id"], metadata, wake)
-
     name = "codex"
     label = "Codex"
     icon = f""

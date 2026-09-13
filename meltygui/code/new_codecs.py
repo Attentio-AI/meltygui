@@ -349,29 +349,20 @@ class Codec:
 
     @classmethod
     def file_meta_entry(cls, draw_state, create=False):
-        """This file's params dict in AppModel.file_meta_collection.file_meta,
-        or None (no root yet / no file resolves / no entry and not create).
-        create=True materializes the entry (and backfills the collection onto
-        a pre-field root, same self-heal as folder_files._file_meta)."""
-        from src.lsd.gl_gui.melty import Melty
-        root = getattr(getattr(Melty, "vis", None), "root", None)
-        if root is None:
-            return None
-        col = getattr(root, "file_meta_collection", None)
-        if col is None:
-            from src.lsd.gl_gui.model.app_model import FileMetaCollection
-            col = root.file_meta_collection = FileMetaCollection()
-        if not isinstance(getattr(col, "file_meta", None), dict):
-            col.file_meta = {}
+        """This file's params dict in the shared file-meta store
+        (file_meta_store(), what AppModel.file_meta_collection.file_meta is
+        too), or None (no file resolves / no entry and not create).
+        create=True materializes the entry."""
+        from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
+        meta = file_meta_store()
         path = cls.file_meta_key(draw_state)
         if path is None:
             return None
-        entry = col.file_meta.get(path)
+        entry = meta.get(path)
         if not isinstance(entry, dict):
             if not create:
                 return None
-            from src.lsd.gl_gui.model.app_model import FileMeta
-            entry = col.file_meta[path] = FileMeta()
+            entry = meta[path] = FileMeta()
         return entry
 
     @classmethod

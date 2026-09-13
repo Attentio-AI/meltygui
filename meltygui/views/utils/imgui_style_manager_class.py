@@ -379,8 +379,11 @@ class ImGuiStyleManager:
             r, g, b: RGB values between 0 and 1
         """
 
-        if self.root is None:
-            return
+        # No boot gate here: the studio's `set_root` used to be the first
+        # thing that armed this, and a @glfw_window app never called that, so
+        # setting tint was a no-op and the whole app painted from the black
+        # default (09-12). The colour math needs nothing; only the imgui
+        # style table below needs a check.
 
         # A 4-component tint carries an alpha that controls how much of the
         # current (parent) tint bleeds through. a=1.0 -> use the new color
@@ -396,6 +399,8 @@ class ImGuiStyleManager:
         self.current_rgb = (r, g, b)
         h, s, v = self._safe_rgb_to_hsv(r, g, b)
         self.hsv = (h, s, v)
+        if imgui.get_current_context() is None:
+            return
         style = imgui.get_style()
         # The 35-entry table below is a pure function of the final (r, g, b)
         # and the widget brightness cap, so it's memoized per tint: the

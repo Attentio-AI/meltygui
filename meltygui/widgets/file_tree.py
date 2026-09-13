@@ -102,7 +102,7 @@ def _meta():
 def _tint_of(meta, path):
     """The row's background tint (rgb), or None for an unpainted file — no
     stored tint, or FileMeta's black-transparent default."""
-    from src.lsd.gl_gui.model.app_model import FileMeta
+    from src.lsd.gl_gui.model.open_files import FileMeta
     entry = meta.get(str(path)) if meta is not None else None
     tint = FileMeta.painted_tint(entry)
     return tuple(tint[:3]) if tint else None
@@ -136,7 +136,7 @@ def reorder_siblings(meta, siblings, dragged, insert_index):
     dict: every sibling gets an entry, and the siblings' existing SLOTS in the
     dict (their key positions) are refilled in the new order, so nothing else
     in the dict moves. Returns True when the order changed."""
-    from src.lsd.gl_gui.model.app_model import FileMeta
+    from src.lsd.gl_gui.model.open_files import FileMeta
     keys = [str(p) for p in siblings]
     dragged_key = str(dragged)
     if dragged_key not in keys:

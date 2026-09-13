@@ -577,14 +577,27 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     from src.lsd.gl_gui.view.core_views.anywhere import get_source_for
     _aw_tint = draw_state.locate_tint
 
+    # The caption re-resolves this often while it still reads the draw_state
+    # fallback: the view's code hosts load in the background, so the first
+    # popover open (which creates them) resolves before the source that
+    # really drives the tint has parsed — a melty app's `@glfw_window(tint=)`
+    # showed as "draw_state" until a write forced a fresh collection (09-12).
+    # [tint=(0.85, 0.55, 0.25)]
+    source_retry_frames = 30
+
     def _aw_source_info(_ds=draw_state):
         # Popover caption: the LAST-KNOWN driving source. Reads the cache
-        # set_anywhere maintains; resolves (one collection) only on first
-        # popover open, then caches on the ds — never per frame.
+        # set_anywhere maintains; resolves (one collection) on first popover
+        # open, then caches on the ds — re-resolving only while the answer is
+        # the draw_state fallback (see source_retry_frames), never per frame.
         _last = getattr(_ds, "_sa_last_source", None)
         _src = _last.get("tint") if _last else None
-        if _src is None:
+        _frame = Melty.frame_count
+        _stale = (_src == "draw_state"
+                  and _frame - getattr(_ds, "_sa_source_frame", -source_retry_frames) >= source_retry_frames)
+        if _src is None or _stale:
             _src = get_source_for("tint", _ds)
+            _ds._sa_source_frame = _frame
             if _src is not None:
                 if _last is None:
                     _last = {}

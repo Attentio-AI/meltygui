@@ -36,7 +36,7 @@ import imgui
 import OpenGL.GL as gl
 
 from src.lsd.gl_gui.melty import Melty
-from src.lsd.gl_gui import (mouse_cursor, os_frame, scene_target, titlebar,
+from src.lsd.gl_gui import (mouse_cursor, os_frame, scene_target, titlebar, titlebar_buttons,
                             wayland_color, wayland_move)
 from src.lsd.gl_gui.events import input_handler
 from src.lsd.gl_gui.toggles import Toggles
@@ -87,7 +87,7 @@ ROOT_FLAGS = (imgui.WINDOW_NO_BACKGROUND | imgui.WINDOW_NO_TITLE_BAR | imgui.WIN
               | imgui.WINDOW_NO_BRING_TO_FRONT_ON_FOCUS | imgui.WINDOW_NO_NAV_INPUTS
               | imgui.WINDOW_NO_NAV | imgui.WINDOW_NO_COLLAPSE | imgui.WINDOW_NO_SAVED_SETTINGS
               | imgui.WINDOW_NO_SCROLL_WITH_MOUSE)
-ROOT_BG = (0.011, 0.011, 0.011, 1.0)     # linear scRGB (the present pass encodes): hex#1a1a1a
+ROOT_MAX_BG_VALUE = 0.130     # draw_main's max_bg_value: the ground's brightness cap
 
 
 class Surface:
@@ -98,13 +98,15 @@ class Surface:
     app_id = 'melty'
 
     def __init__(self, name, body, *, title=None, size=(1280, 800), parent=None,
-                 draw_state=None):
+                 draw_state=None, tint=None):
         """``body(surface)`` draws the window's content inline into the root.
         ``parent``: the Surface this one is a child of (glfw_window=True calls);
         ``draw_state``: the child's root draw_state (its window_pos/size are the
-        parent-relative geometry, exactly as for a closable melty window)."""
+        parent-relative geometry, exactly as for a closable melty window);
+        ``tint``: the root ground's tint (None: Toggles.Melty.app_root_tint)."""
         _capture_defaults()
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
+        self.tint = tint
         self.title = _unique_title(title or name)
         self.request = None         # the melty.surface_children entry of a child
         self.toplevel = None        # xdg_toplevel proxy (wayland_move), for set_parent
@@ -176,6 +178,15 @@ class Surface:
         self.impl = SplitOverlayRenderer(self.window)
         Melty.init_input_backend(self.window)
         Melty.cache = TileCacheMasked()
+        # The blit cache stays OFF for an app window: switched on (at the
+        # studio's frame-2 schedule or later) it serves nested popovers'
+        # row tiles blank / shadow-less and paints a black block under a
+        # context menu (09-12, melty_code_editor) - a Melty gap still to
+        # find. Consequences of running cache-off are handled elsewhere:
+        # marks resolve their owning window from the window stack
+        # (TileCacheMasked._mark_position - ownerless marks read as topmost
+        # and cast over nested windows), and retained tiles of an undrawn
+        # branch die without a capture ( (branch_dropped).
         Melty.cache.enabled = False
         if glfw.get_platform() == glfw.PLATFORM_WAYLAND:
             wayland_move.attach(self.window)
@@ -267,9 +278,16 @@ class Surface:
         hook(glfw.set_cursor_pos_callback)
         hook(glfw.set_cursor_enter_callback)
         hook(glfw.set_window_size_callback)
-        hook(glfw.set_window_focus_callback, lambda *_: request_render())
+        hook(glfw.set_window_focus_callback, self._on_focus)
         hook(glfw.set_framebuffer_size_callback, self._on_framebuffer_size)
         hook(glfw.set_window_close_callback, lambda *_: request_render())
+
+    def _on_focus(self, focused):
+        request_render()
+        if focused:
+            # The user may have changed the desktop's title-bar buttons in
+            # the meantime (titlebar_buttons: rate-limited re-read).
+            titlebar_buttons.refresh()
 
     def _on_framebuffer_size(self, width, height):
         request_render()
@@ -279,6 +297,19 @@ class Surface:
                   f'self_resize={titlebar._self_resize} regrow={applied}', flush=True)
 
     # --- render ---------------------------------------------------------------------
+    def _draw_render_hosts(self):
+        """The studio's draw_main draws every registered RenderHost once a
+        frame (RenderHost.draw_all); that is what loads a code_file_io host's
+        file, reparses it after an edit and auto-saves it. A melty app's body
+        is a plain draw function, so the surface runs the pump for it, after
+        the body and inside the imgui frame. Hosts are process-global: once
+        per app tick, however many surfaces draw in it."""
+        if not Melty.render_hosts or Melty.render_hosts_tick == Melty.app_tick:
+            return
+        Melty.render_hosts_tick = Melty.app_tick
+        from src.lsd.gl_gui.view.core_conversion.render_host import RenderHost
+        RenderHost.draw_all()
+
     def frame(self):
         self.activate()
         if glfw.window_should_close(self.window):
@@ -319,7 +350,7 @@ class Surface:
         Melty.window_stack.append((self.name, True))
 
         radius = titlebar.frame_corner_radius() if transparent else 0.0
-        self._root_background(draw_list, disp_w, disp_h, radius)
+        previous_tint, bg_color = self._root_background(disp_w, disp_h, radius)
         if transparent and Toggles.Melty.window_shadow_lift > 0:
             from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
             add_shadow((0, 0, disp_w, disp_h), offset=0.5, corner_radius=radius, clip=False)
@@ -328,10 +359,21 @@ class Surface:
         imgui.set_cursor_screen_pos((0, top))
         Melty.root_fill = (float(disp_w), float(disp_h) - top, float(top))   # (w, h below the chrome, top inset)
         Melty.root_fill_used = False
+        # The body runs INSIDE the ground, as the studio's windows run inside
+        # draw_main's show_bg: one bg depth down, the ground's tint and colour
+        # on the stacks draw_bg reads for the bleed (the wrapper's own fill).
+        Melty.bg_depth += 1
+        Melty.bg_stack.append(Melty.style_manager.get_tint())
+        Melty.bg_color_stack.append(bg_color)
         try:
             self.body(self)
+            self._draw_render_hosts()
         finally:
             Melty.root_fill = None
+            Melty.bg_depth -= 1
+            Melty.bg_stack.pop()
+            Melty.bg_color_stack.pop()
+            Melty.style_manager.set_imgui_tint(*previous_tint)
         if self.chrome:
             titlebar.paint_window_controls(draw_list)
         Melty.end_frame()
@@ -359,11 +401,21 @@ class Surface:
             raise
         self.frames += 1
 
-    def _root_background(self, draw_list, w, h, radius):
-        """The window's visible body (the studio's draw_main draws its own):
-        edge to edge, the same corner radius as the alpha cut."""
-        from src.lsd.gl_gui.hdr_color import pack_color
-        draw_list.add_rect_filled(0, 0, w, h, pack_color(*ROOT_BG), rounding=radius)
+    def _root_background(self, w, h, radius):
+        """The window's ground: what the studio's Main Window paints under
+        its windows (draw_main's show_bg — draw_bg at depth 0 under the root
+        tint, capped at the same max_bg_value), edge to edge with the alpha
+        cut's corner radius and no outline stroke. Sets the style tint for
+        the body; returns (the tint to restore, the ground's colour)."""
+        from src.lsd.gl_gui.view.core_views.new_core_view import draw_bg
+        style_manager = Melty.style_manager
+        previous_tint = style_manager.get_tint()
+        tint = self.tint if self.tint is not None else Toggles.Melty.app_root_tint
+        style_manager.set_imgui_tint(*tint[:4])
+        _, bg_color = draw_bg(bypass=True, left=0, top=0, width=w, height=h, rounding=radius,
+                              outline=False, opacity=1.0, max_bg_value=ROOT_MAX_BG_VALUE,
+                              depth=Melty.shadow_depth, style_manager=style_manager)
+        return previous_tint, bg_color
 
     # --- geometry (children) ---------------------------------------------------------
     def content_size(self):
@@ -430,6 +482,53 @@ class Surface:
             Surface.all[0].activate()
         elif Surface.owner_window is not None:
             glfw.make_context_current(Surface.owner_window)
+
+
+def root_view_kwargs(name, /, **kwargs):
+    """The kwargs that draw a render func as the active surface's ROOT melty
+    window: a closable window pinned to the OS window (layouts — draw_rows /
+    draw_columns — register their edges on the enclosing WINDOW, so the
+    root must be one), sized to it, never dragged, its own close and shadow
+    off (the OS window has the chrome). Shared by app._draw_root (a
+    `@glfw_window` over a render func) and Melty.draw_surface_root (a
+    `glfw_window=True` child).
+
+    ``with_header=`` (the decorator's, the call's) puts the MELTY HEADER in
+    the chrome row — the same header a studio window wears, beside the OS
+    window's controls: `show_name` names it after the OS window's title
+    (`display_name`, live through a retitle), the tint chip edits the
+    view's tint, and the geometry keeps clear of the controls on both sides
+    — `header_indent` past a left-side group, and a `with_header_end` that
+    only claims the right group's width (titlebar.draw_header_controls), so
+    the wrapper right-aligns and clips the header exactly as it does
+    around a header's close button. No collapse arrow (`is_tree=False`): an
+    OS window does not fold to its header. Without a header the body
+    starts under the control row (titlebar.top_inset).
+
+    Caller kwargs win over every pinned value (``show_header=False`` hides
+    a passed header, ``disable_scroll=False`` scrolls the root, a ``name=``
+    the fallback ``name`` — positional-only, so a child's own kwargs pass)."""
+    width, height, top = Melty.root_fill
+    header = kwargs.get('with_header') is not None
+    if header:
+        surface = Surface.active
+        chrome = surface is not None and surface.chrome
+        left_inset, right_inset = titlebar.chrome_insets() if chrome else (0.0, 0.0)
+        # The header row IS the chrome row: the view starts at the very
+        # top and the body is immediately under the header.
+        height, top = height + top, 0.0
+        kwargs.setdefault('is_tree', False)
+        kwargs.setdefault('show_tint', True)
+        kwargs.setdefault('display_name', surface.title if surface is not None else name)
+        kwargs.setdefault('header_indent', left_inset)
+        kwargs.setdefault('with_header_end', titlebar.draw_header_controls if right_inset > 0 else None)
+    else:
+        kwargs.setdefault('with_header_end', None)
+    pinned = dict(name=name, closable=True, draggable=False, window_pos=(0, top), width=width, height=height,
+                  auto_resize=False, show_header=header, with_footer=None, shadow=False, show_bg=True,
+                  selectable=False, use_cache=True, disable_scroll=True, indent_size=5,
+                  initial={'width': width, 'height': height, 'window_pos': (0, top)})
+    return pinned | kwargs
 
 
 def _fresh(value):

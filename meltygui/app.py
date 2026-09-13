@@ -27,6 +27,7 @@ MELTY_BENCH=1 also prints it and exits after the first frame.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import pathlib
 import sys
@@ -87,9 +88,15 @@ def boot(app_id=None):
     root = str(_repo_root())
     if root not in sys.path:
         sys.path.insert(0, root)
+    _register_editable(getattr(sys.modules.get('__main__'), '__file__', None))
     os.environ.setdefault('GDK_BACKEND', 'wayland')
     from src.lsd.gl_gui import warm_start
     warm_start.prepare(cache)
+    # The desktop's titlebar button setting (a gsettings subprocess on a
+    # background thread, stdlib-only module): landed long before the first
+    # frame draws the window controls.
+    from src.lsd.gl_gui import titlebar_buttons
+    titlebar_buttons.start_probe()
     # While the import thread holds the GIL, each of pyGLFW's Python-side
     # steps waits up to a switch interval for it (5 ms default: window
     # creation went 80 -> 150 ms). Shorten it until the imports are done.
@@ -190,12 +197,49 @@ def _init_melty():
 
 
 # --- the decorator ------------------------------------------------------------------
-def glfw_window(fn=None, *, name=None, title=None, size=(1280, 800), app_id=None):
+def _register_editable(file):
+    """Make the project holding `file` editable source (address.add_editable_root):
+    the app's own code loads into the studio's code hosts, so its decorators
+    are input sources (the inputs tab, the header's tint chip, `locate_<param>`)
+    and its files hotswap, exactly like the checkout's."""
+    if not file:
+        return
+    from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
+    add_editable_root(file)
+
+
+def glfw_window(fn=None, *, name=None, title=None, size=(1280, 800), app_id=None, **view_kwargs):
     """Register ``fn`` as an OS window. ``fn()`` draws the window's content
-    each frame; views it draws at root level fill the window."""
+    each frame; views it draws at root level fill the window.
+
+    Every other keyword argument is the root VIEW's, exactly as `@window`'s
+    are the studio window's (`tint=`, `disable_scroll=`, `value=`,
+    `with_header=`, `show_name=`, ...): a render-func body is drawn with
+    them as the window's root view; a plain-function body runs under the
+    `tint` (the style tint its filling view colours from). Like `@window`
+    the decorator is an INPUT SOURCE of the view (`@glfw_window(<fn>)` in
+    the inputs tab, read and written by `locate_<param>`): its file's
+    project becomes editable source, and a hotswap that re-runs the
+    decorator (an edited kwarg lands as a recompile of the def) updates
+    the registered window's config IN PLACE — same name, same window,
+    the new kwargs on the next frame — instead of registering a second
+    root."""
     def wrap(fn):
         boot(app_id)
-        _ROOTS.append((fn, dict(name=name or fn.__name__, title=title, size=size)))
+        try:
+            source = inspect.getsourcefile(inspect.unwrap(fn))
+        except TypeError:
+            source = None
+        _register_editable(source)
+        config = dict(name=name or fn.__name__, title=title, size=size, view_kwargs=view_kwargs)
+        for index, (registered, existing) in enumerate(_ROOTS):
+            if existing['name'] == config['name']:
+                existing.update(config)        # the live config object: the body reads it
+                if not _state['ran']:
+                    _ROOTS[index] = (fn, existing)
+                break
+        else:
+            _ROOTS.append((fn, config))
         if not _state.get('hooked'):
             _state['hooked'] = True
             _hook_main_return()
@@ -203,30 +247,54 @@ def glfw_window(fn=None, *, name=None, title=None, size=(1280, 800), app_id=None
     return wrap(fn) if fn is not None else wrap
 
 
-def _root_body(fn, name):
+def _root_body(fn, name, view_kwargs=None, config=None):
     """The window's body. A plain function draws inline into the surface
     root (its filling view sizes itself to the window). A RENDER FUNC (the
     @window playgrounds: `@glfw_window` over `@render_func`, the direct
     swap) is drawn as the window's root view the way the studio draws a
     @window: a melty view filling the window, with the background and
     layout context its children (draw_rows, draw_any, fields) expect —
-    minus the closable chrome, which the OS window provides."""
-    if not hasattr(fn, '__render_func__'):
+    minus the closable chrome, which the OS window provides.
+
+    ``config`` is the root's LIVE registration (the dict in _ROOTS): a
+    render-func body reads its `view_kwargs` on every frame, so a
+    re-decoration (a hotswapped `@glfw_window(tint=...)` edit) reaches the
+    open window; without it `view_kwargs` is fixed."""
+    def current_kwargs():
+        source = config.get('view_kwargs') if config is not None else view_kwargs
+        return dict(source or {})
+    if hasattr(fn, '__render_func__'):
+        return lambda surface: _draw_root(fn, name, **current_kwargs())
+    tint = current_kwargs().get('tint')
+    if tint is None:
         return lambda surface: fn()
 
-    def body(surface):
+    def tinted(surface):
+        # The body runs under the decorator's tint (what draw_bg and the
+        # style colours read), and after - the same push/restore the
+        # wrapper does around a tinted view.
         from src.lsd.gl_gui.melty import Melty
-        width, height, top = Melty.root_fill
-        # A closable melty window (the studio's Mode.MODE_WINDOW), sized to
-        # the surface: layouts (draw_rows / draw_columns) register their
-        # edges on the enclosing WINDOW, so the root must be one. Its own
-        # chrome is off - the OS window has its title bar.
-        fn(None, name=name, closable=True, draggable=False, window_pos=(0, top),
-           width=width, height=height, auto_resize=False, show_header=False,
-           with_footer=None, with_header_end=None, shadow=False, show_bg=True,
-           selectable=False, use_cache=True, disable_scroll=True, indent_size=5,
-           initial={'width': width, 'height': height, 'window_pos': (0, top)})
-    return body
+        previous = Melty.style_manager.get_tint()
+        Melty.style_manager.set_imgui_tint(*tint[:4])
+        try:
+            fn()
+        finally:
+            Melty.style_manager.set_imgui_tint(*previous)
+    return tinted
+
+
+def _draw_root(fn, name, value=None, **kwargs):
+    """Draw the render func ``fn`` as the window's root view, filling it:
+    what `@glfw_window` over `@render_func` does each frame. ``value`` is
+    the view's input value (None: the view owns its state); ``kwargs`` are
+    the decorator's view kwargs. ``with_header=draw_header`` puts the melty
+    header in the chrome row beside the window controls
+    (surface.root_view_kwargs)."""
+    from src.lsd.gl_gui.surface import root_view_kwargs
+    # A closable melty window (the studio's ModelessWindow), pinned to
+    # the surface: layouts (draw_rows / draw_columns) register their
+    # children on the enclosing view, so the root must be one.
+    return fn(value, **root_view_kwargs(name or fn.__name__, **kwargs))
 
 
 def _hook_main_return():
@@ -275,7 +343,13 @@ def run():
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.surface import Surface
     for fn, kw in _ROOTS:
-        Surface(kw['name'], _root_body(fn, kw['name']), title=kw['title'] or kw['name'], size=kw['size'])
+        view_kwargs = kw.get('view_kwargs') or {}
+        # A plain-function body draws straight onto the surface, so its
+        # decorator tint is the surface's; a render-func body gets its
+        # kwargs from _draw_root and sits on the default ground.
+        ground_tint = None if hasattr(fn, '__render_func__') else view_kwargs.get('tint')
+        Surface(kw['name'], _root_body(fn, kw['name'], view_kwargs, config=kw),
+                title=kw['title'] or kw['name'], size=kw['size'], tint=ground_tint)
     mark(f'{len(Surface.all)} window(s) created')
     from src.lsd.gl_gui.utils import glfw_utils
     bench = os.environ.get('MELTY_BENCH')
@@ -328,9 +402,26 @@ def run():
             glfw.wait_events_timeout(1 / 60 if any(s.children for s in Surface.all) else 1.0)
     finally:
         _debug(f'{frames} frames rendered')
+        if not _state['failed']:
+            _flush_pending_saves()
         for surface in list(Surface.all):
             surface.destroy()
         glfw.terminate()
+
+
+def _flush_pending_saves():
+    """Write the edits the file hosts hold. A code_file_io host's save is
+    the studio's deferred model: each edit queues into PendingSave (in
+    memory) and the disk write happens at apply_all_saves, which the studio
+    runs from Melty.shutdown. An app that draws such hosts (the code editor)
+    exits through here, so flush here too — before the surfaces go, while
+    the imgui context the codecs' notifications expect is still alive. A
+    failed frame skips it: nothing written from a broken state."""
+    from src.lsd.gl_gui.view.core_views.pending_save import PendingSave
+    if not PendingSave.pending_saves:
+        return
+    _debug(f'flushing {len(PendingSave.pending_saves)} pending save(s)')
+    PendingSave.apply_all_saves()
 
 
 def _open_requested_children():

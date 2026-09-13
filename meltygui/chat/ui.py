@@ -899,15 +899,15 @@ def draw_messages(messages, draw_state, state, key, width, height,
                                      full_height - summary_height - Melty.px(4),
                                      underlying, shadow=bash_shadow if isinstance(message, CommandExecution) else None)
             if tags:
-                from src.lsd.gl_gui.model.app_model import FileMeta
                 from src.lsd.gl_gui.view.playground.open_files import draw_changed_file_header
-                root = getattr(getattr(Melty, "vis", None), "root", None)
-                metadata = getattr(getattr(root, "file_meta_collection", None), "file_meta", {})
+                from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
+                metadata = file_meta_store()     # shared with the studio's tints
+                painted = FileMeta.painted_tint if metadata else None
                 for filename, counts, tag_x, tag_y, tag_width in tags:
                     file_y = y + tag_y
                     if _visible(file_y, header_height, clip):
                         file_path = str(Path(message["details"].get("cwd") or "") / filename)
-                        file_tint = FileMeta.painted_tint(metadata.get(file_path)) or underlying
+                        file_tint = (painted(metadata.get(file_path)) if painted else None) or underlying
                         imgui.set_cursor_screen_pos((x + tag_x, file_y))
                         if draw_changed_file_header(filename, file_tint, draw_state,
                                 view_id=row_key + ":file:" + filename, width=tag_width, height=header_height,
@@ -1016,7 +1016,10 @@ def _cleanup_chat(draw_state):
 @render_func(auto_resize=False, min_width=700, min_height=500,
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,
-                        column_edges=None, **kwargs):
+                        column_edges=None, new_project=None, default_project=None, **kwargs):
+    """The chat window. A new conversation runs in `new_project` when given
+    (an app started for one project), else in the selected conversation's
+    project, else `default_project` (an app's cwd; the studio: its checkout)."""
     # Ephemeral layout state also adopts already-open windows on hotswap.
     if not hasattr(state, "viewports"):
         state.viewports = {}
@@ -1109,7 +1112,8 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
         if _button(draw_state, "new-chat", "+ New conversation", x, y, min(width, Melty.px(190)), tint, not proxy.loading and not proxy.error):
             key = str(uuid.uuid4())
             current = proxy.get(state.selected.get(state.account))
-            project = current["project"] if current else state.projects.get(state.account) or str(Path(__file__).resolve().parents[5])
+            project = (new_project or (current["project"] if current else None) or state.projects.get(state.account)
+                       or default_project or str(Path(__file__).resolve().parents[5]))
             proxy[key] = {"title": "New conversation", "project": project}
             state.selected[state.account] = key
             changed = True

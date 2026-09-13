@@ -4192,7 +4192,12 @@ def render_func(*args, **o_kwargs):
                     imgui.begin_group()
                     header_start_cursor = imgui.get_cursor_screen_pos()
 
-                    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] + outline_margin,
+                    # header_indent: px the header starts to the right of the
+                    # view's left edge, past chrome that owns that space (an
+                    # OS window's left-side controls - surface.root_view_kwargs
+                    # ← titlebar.chrome_insets). Nothing else reads it.
+                    imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0] + outline_margin
+                                                 + float(kwargs.get("header_indent", 0.0) or 0.0),
                                                  imgui.get_cursor_screen_pos()[1] + outline_margin))
 
                     # Clip the main header so it doesn't draw over the end header.

@@ -103,15 +103,16 @@ class _Scope:
 
 
 # Project decorator conventions, matched BY NAME (bare or called). This is a
-# project-specific lint, so the names are checked without resolving them:
-#   * transparent - returns the function UNCHANGED (window_decoration.window
-#     and core_decoration.defaults only register), so the def's own signature
-#     is the calling convention - in any order relative to @render_func.
-#   * wrapper - @render_func replaces the function with core_render's
-#     `wrapper(input_shape=None, **kwargs)`: at most ONE positional, any
-#     kwarg accepted (modes/defaults/comment-args may fill that arguments,
-#     but only the positional shape is knowable).
-_TRANSPARENT_DECORATORS = frozenset({"window", "defaults"})
+# project-specific lint, so the names are trusted without resolving them:
+#   * transparent - leave the function UNCHANGED (window_decoration.window,
+#     core_decoration.defaults and app.glfw_window only register), so the
+#     def's own signature covers the calling code, in any order relative
+#     to @render_func.
+#   * wrapper — @render_func replaces the def with core_render's
+#     `wrapper(input_value=None, **kwargs)`: at most ONE positional, any
+#     kwarg accepted (modes/defaults/comment-args may fill required params,
+#     so only the positional shape is checkable).
+_TRANSPARENT_DECORATORS = frozenset({"window", "defaults", "glfw_window"})
 _WRAPPER_DECORATORS = frozenset({"render_func"})
 
 

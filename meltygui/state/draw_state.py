@@ -295,6 +295,30 @@ class ContextMenuItemsState(DropDownState):
         self.open_at = (0, 0)
 
 
+@no_save("open_title", "_prev_text_focus", "_hovered_title")
+class MenuBarState(DictConversion):
+    """draw_menu_bar's injected state (view/core_views/menu_bar.py): which
+    title's menu is showing and one DropDownState per title, so every menu
+    keeps its own open/cursor paths and its drag-resized menu_size — the
+    same per-popover state draw_dropdown keeps, one per menu."""
+
+    def __init__(self):
+        super().__init__()
+        # The title (top-level key of the bar's dict) whose menu is open;
+        # None while the bar is idle. Not saved: an open menu means nothing
+        # next session.
+        self.open_title = None
+        # title -> DropDownState. menu_size saved per menu.
+        self.menus = {}
+        # The last selection's full key-path, ("File", "Recent", "a.py").
+        self.selected_path = ()
+        # Who held text focus when a menu opened, handed focus back on close
+        # so a click out of the Edit menu leaves the editor typing again.
+        self._prev_text_focus = None
+        # The title under the pointer at the last run (hover-switching edge-cases).
+        self._hovered_title = None
+
+
 @exclude("zoom", "center_u", "center_v", "brightness", "contrast", "hue", "saturation")
 class ZoomState(DictConversion):
     def __init__(self):

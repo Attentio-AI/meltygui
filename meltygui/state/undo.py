@@ -906,7 +906,7 @@ class NavUndo:
             return
         from src.lsd.gl_gui.view.playground.open_files import (
             open_in_editor, editor_window_draw_state)
-        from src.lsd.gl_gui.model.app_model import OpenFiles
+        from src.lsd.gl_gui.model.open_files import OpenFiles
         if path.startswith(OpenFiles.GIT_DIFF_PREFIX):
             # Pseudo-path - never route through open_in_editor (open_file
             # would spin up a real host for it). Only re-select if the

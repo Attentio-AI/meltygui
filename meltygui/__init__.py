@@ -27,6 +27,8 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
         draw_any, draw_button, draw_str, draw_float, draw_int, draw_enum, draw_dropdown,
         draw_color_picker, draw_collection_as_tabs)
     from src.lsd.gl_gui.view.core_views.columns import draw_columns, draw_rows
+    from src.lsd.gl_gui.view.core_views.menu_bar import draw_menu_bar
+    from src.lsd.gl_gui.view.playground.fast_file_explorer import draw_fast_file_explorer
     from src.lsd.gl_gui.view.playground.folder_files import draw_folder_files
     from src.lsd.gl_gui.view.playground.terminal_playground import draw_terminal
 
@@ -45,8 +47,11 @@ _VIEWS = {
     'draw_collection_as_tabs': (_NCV, 'draw_collection_as_tabs'),
     'draw_columns': ('src.lsd.gl_gui.view.core_views.columns', 'draw_columns'),
     'draw_rows': ('src.lsd.gl_gui.view.core_views.columns', 'draw_rows'),
+    'draw_menu_bar': ('src.lsd.gl_gui.view.core_views.menu_bar', 'draw_menu_bar'),
+    'draw_fast_file_explorer': ('src.lsd.gl_gui.view.playground.fast_file_explorer', 'draw_fast_file_explorer'),
     'draw_folder_files': ('src.lsd.gl_gui.view.playground.folder_files', 'draw_folder_files'),
     'draw_terminal': ('src.lsd.gl_gui.view.playground.terminal_playground', 'draw_terminal'),
+    'draw_code_editor': ('src.lsd.gl_gui.view.playground.open_files', 'draw_code_editor'),
 }
 
 
