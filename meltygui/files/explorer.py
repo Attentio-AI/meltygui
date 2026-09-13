@@ -81,6 +81,14 @@ class FileExplorerState(DictConversion):
         self._watched = None        # the dir the view's FileWatch emitter is on
 
 
+class ShortcutState(DictConversion):
+    """Persist sidebar order independently of directory listing order."""
+
+    def __init__(self):
+        super().__init__()
+        self.order = []
+
+
 # ── the directory watch ─────────────────────────────────────────────────────
 # directory (str) -> the listing draw_states showing it. One FileWatch emitter per
 # dir in this map; a listing moves its emitter on navigation (watch_directory)
@@ -422,7 +430,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                       show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                       select_boost=0.22, plain_select_boost=0.06, select_shadow=2.0,
                       select_rounding=3.0, chip_mix=0.55, hover_boost=0.08, text_mix=0.3,
-                      folder_bg_boost=-0.12, drag_rows=True, menu_target=None,
+                      folder_bg_boost=-0.12, folder_bg_rounding=0.0, drag_rows=True, menu_target=None,
                       **kwargs):
     """The path strip + rows of one directory (see the module docstring).
     Returns ``(True, path)`` on navigation / a file double-click, else
@@ -497,17 +505,6 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                                     list_directory(directory, state.show_hidden))
     rows = ordered_rows(listing[3], meta)
 
-    # ── a painted directory: its tint washes the whole listing, rows on top ──
-    dir_tint = FileMeta.painted_tint(meta.get(dir_key)) if meta is not None else None
-    if dir_tint and folder_bg_boost is not None:
-        wash = getattr(draw_state, "abs_clip_rect", None)
-        if wash is None:
-            wash = (draw_state.abs_left, draw_state.abs_top,
-                    draw_state.abs_left + (draw_state.width or 0),
-                    draw_state.abs_top + (draw_state.height or 0))
-        draw_list.add_rect_filled(wash[0], wash[1], wash[2], wash[3],
-                                  row_bg(dir_tint, folder_bg_boost))
-
     # ── the path strip: every segment a crumb; click = jump there ──
     x0, y0 = imgui.get_cursor_screen_pos()
     crumbs = []                              # (x_left, x_right, target Path)
@@ -518,15 +515,23 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         label = part if part != os.sep else os.sep
         width = imgui.calc_text_size(label).x
         target = Path(*parts[:i + 1])
-        crumbs.append((cx, cx + width, target))
-        hovered = hover_ok and cx <= mouse_x < cx + width and y0 <= mouse_y < y0 + crumb_h
+        crumbs.append((cx - px(3), cx + width + px(3), target))
+        hovered = hover_ok and cx - px(3) <= mouse_x < cx + width + px(3) and y0 <= mouse_y < y0 + crumb_h
+        crumb_tint = FileMeta.painted_tint(meta.get(str(target))) if meta is not None else None
+        if crumb_tint:
+            draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + width + px(3), y0 + crumb_h - px(2),
+                                      row_bg(crumb_tint, folder_bg_boost or 0.0), rounding=px(3))
         if hovered:
             draw_list.add_rect_filled(cx - px(3), y0 + px(2), cx + width + px(3), y0 + crumb_h - px(2),
                                       crumb_hover_col, rounding=px(3))
         last = i == len(parts) - 1
-        draw_list.add_text(cx, crumb_y, text_col if last else dim_col, label)
+        crumb_col = (tinted_text(text_rgba, crumb_tint, text_mix) if crumb_tint
+                     else text_col if last else dim_col)
+        draw_list.add_text(cx, crumb_y, crumb_col, label)
         cx += width
-        if not last and part != os.sep:       # the root "/" is its own separator
+        if not last and part == os.sep:
+            cx += px(8)  # Keep the root chip separate from the first folder.
+        elif not last:
             draw_list.add_text(cx, crumb_y, dim_col, crumb_separator)
             cx += imgui.calc_text_size(crumb_separator).x
     imgui.dummy(content_w, crumb_h)
@@ -537,6 +542,19 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
 
     # ── content height: rows + the top inset (the fast_dock rule) ──
     rows_x, rows_y = imgui.get_cursor_screen_pos()
+    # ── a painted directory: a tint wash below the breadcrumb strip ──
+    dir_tint = FileMeta.painted_tint(meta.get(dir_key)) if meta is not None else None
+    if dir_tint and folder_bg_boost is not None:
+        wash = getattr(draw_state, "abs_clip_rect", None)
+        if wash is None:
+            wash = (draw_state.abs_left, draw_state.abs_top,
+                    draw_state.abs_left + (draw_state.width or 0),
+                    draw_state.abs_top + (draw_state.height or 0))
+        wash_top = max(wash[1], rows_y)
+        if wash_top < wash[3]:
+            draw_list.add_rect_filled(wash[0], wash_top, wash[2], wash[3],
+                                      row_bg(dir_tint, folder_bg_boost), rounding=px(folder_bg_rounding))
+
     top_inset = (rows_y + draw_state.scroll_offset[1]) - draw_state.abs_top
     imgui.dummy(content_w, max(1.0, len(rows) * row_h + max(0.0, top_inset)))
 
@@ -711,10 +729,12 @@ def _scroll_row_into_view(draw_state, index, row_h, rows_top):
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
-                            left_mouse_down=False, ctrl_up_key_pressed=False,
+                            left_mouse_clicked=False, ctrl_up_key_pressed=False,
+                            shortcut_state: ShortcutState = None,
                             shortcuts_width=190.0, shortcut_row_height=22.0, column_gap=6.0,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                             context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
+                            folder_bg_rounding=0.0,
                             **kwargs):
     """A ColumnLayout with two cells: the shortcuts (draw-list rows, a click
     navigates) and `draw_file_listing`, sharing one draggable edge
@@ -725,7 +745,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     `context_menu` = {label: callable(path)} is the listing's right-click
     menu; each callable gets the path of the right-clicked row, or of the
     directory (see the module docstring). `drag_rows` / `folder_bg_boost`
-    go to the listing."""
+    go to the listing. Shortcuts drag to reorder, with their own persisted order."""
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
@@ -747,8 +767,8 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     draw_list = imgui.get_window_draw_list()
     mouse_x, mouse_y = imgui.get_mouse_pos()
     hover_ok = draw_state._bounding_hovered
-    click = ((left_mouse_down.x, left_mouse_down.y)
-             if (left_mouse_down and hasattr(left_mouse_down, "x")) else None)
+    click = ((left_mouse_clicked.x, left_mouse_clicked.y)
+             if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
     chip = px(chip_size) if show_tint_chips else 0.0
     text_x = px(left_pad) + (chip + px(6) if show_tint_chips else 0.0)
     meta = file_meta_store()
@@ -776,6 +796,8 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
         x, y = imgui.get_cursor_screen_pos()
         row_h = px(shortcut_row_height)
         shortcuts = shortcut_directories()
+        ranks = {key: i for i, key in enumerate(shortcut_state.order)}
+        shortcuts.sort(key=lambda item: ranks.get(str(item[1]), len(ranks)))
         # The shortcut that holds the current directory: the deepest one.
         current = None
         for label, path in shortcuts:
@@ -791,6 +813,19 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
             ry1 = ry0 + row_h
             key = str(path)
             tint = FileMeta.painted_tint(meta.get(key)) if meta is not None else None
+            icon = computer_icon if path == Path(os.sep) else folder_icon
+            label_col = tinted_text(text_rgba, tint, text_mix) if tint else text_col
+            drag = DragDrop.on_drag((click_left, ry0, x + width, ry1), key=key,
+                                    draw_state=draw_state)
+            if drag:
+                ghost = drag.draw_list
+                ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
+                                      row_bg(tint or default_tint, 0.22), rounding=px(4))
+                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, label_col, icon)
+                ghost.add_text(drag.x + px(4) + px(glyph_width), drag.y + text_y_pad,
+                               label_col, label)
+                DragDrop.end_drag()
+                continue
             if tint:
                 draw_list.add_rect_filled(x, ry0, x + width, ry1, row_bg(tint), rounding=px(4))
             row_hovered = hover_ok and x <= mouse_x < x + width and ry0 <= mouse_y < ry1
@@ -805,8 +840,6 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
             if boost:
                 draw_list.add_rect_filled(x, ry0, x + width, ry1,
                                           row_bg(tint or default_tint, boost), rounding=px(4))
-            icon = computer_icon if path == Path(os.sep) else folder_icon
-            label_col = tinted_text(text_rgba, tint, text_mix) if tint else text_col
             draw_list.add_text(x + text_x, ry0 + text_y_pad, label_col, icon)
             draw_list.add_text(x + text_x + px(glyph_width), ry0 + text_y_pad, label_col, label)
             if (click is not None and click_left <= click[0] < x + width and ry0 <= click[1] < ry1
@@ -819,12 +852,17 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                 tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                              ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
                              show_brush=path == current)
+        drop = DragDrop.on_drop(draw_state=draw_state)
+        if drop is not None and drop.kind == "reorder" and drop.apply(shortcuts):
+            shortcut_state.order = [str(path) for _label, path in shortcuts]
+            picked = None
         imgui.dummy(width, len(shortcuts) * row_h)
     with columns.cell(1, height=body_height) as width:
         changed, value = draw_file_listing(str(directory), name="listing", width=width,
                                            height=body_height, disable_scroll=False,
                                            context_menu=menu_items, menu_target=menu_target,
                                            drag_rows=drag_rows, folder_bg_boost=folder_bg_boost,
+                                           folder_bg_rounding=folder_bg_rounding,
                                            show_tint_chips=show_tint_chips, chip_size=chip_size,
                                            default_tint=default_tint)
         if changed:

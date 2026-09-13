@@ -11147,7 +11147,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # Title shows the LABEL/key of the current selection (e.g. "red"), not the raw
     # value (which may be a tuple/number); selected_label is stamped at pick-time.
     _sel_label = getattr(drop_down_state, "selected_label", "") or ""
-    current = _sel_label if _sel_label else (str(input_value) if input_value is not None else "")
+    current = kwargs.get("display_label", _sel_label if _sel_label else (str(input_value) if input_value is not None else ""))
     caret = "" if is_open else ""  # fa-chevron-down / fa-chevron-right
 
     # Compact mode: in a very narrow slot (e.g. an inline table cell) there's no room
@@ -11219,7 +11219,9 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
             # frames to grab text focus so the user can type to filter immediately.
             drop_down_state.search_query = ""
             drop_down_state.search = ""
-            drop_down_state._focus_search = 8
+            drop_down_state._focus_search = 8 if len(collection) > 4 else 0
+            if len(collection) <= 4:
+                Melty.clear_focus(not_this=draw_state)
             # Start the highlight on the last-selected item (expanded to it) rather
             # than the top, so re-opening starts where you left off.
             _sp = _dd_as_tuple(getattr(drop_down_state, "selected_path", ()))
@@ -11297,6 +11299,8 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
         box_tile = getattr(drop_down_state, "_search_box_tile", None)
         text_focused = (Melty.text_focused_ds is not None and box_tile is not None
                         and getattr(Melty.text_focused_ds, "_tile_id", None) == box_tile)
+        if len(collection) <= 4:
+            text_focused = True
 
         # Esc dismisses the open dropdown (and releases its text focus via
         # _dd_close). Ungated: the global text box Esc handler may have already
@@ -11706,7 +11710,7 @@ def _dd_popup_geometry(collection, search, trigger_top, trigger_height,
     """Content-sized popup contained in the display, independent of old bounds."""
     rows = _dd_visible_entries(collection, (search or "").strip().lower())
     display_w, display_h = imgui.get_io().display_size
-    natural_height = (len(rows) + 2) * _DD_ROW_H
+    natural_height = (len(rows) + (2 if len(collection) > 4 else 1)) * _DD_ROW_H
     above = max(0, trigger_top)
     below = max(0, display_h - trigger_top - trigger_height)
     upwards = (below < min(natural_height, _DD_MENU_MAX_H) and above > below
@@ -12103,7 +12107,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
              closable=True, melty_window=False, auto_resize=True, with_header=None,
              max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
-                 show_search=True, text_align="right", row_tags=None, row_tints=None,
+                 show_search=None, text_align="right", row_tags=None, row_tints=None,
                  row_suffixes=None, row_actions=None, text_toward_bg=0.0,
                  full_render=False, row_code=None, **kwargs):
     """One level of the dropdown, drawn as its own temp popover window. Iterates
@@ -12130,6 +12134,8 @@ def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix
     (or the code editor's per-event invalidate_up) — invalidate_up
     specifically, since it cascades to the row tiles; a plain invalidate
     leaves the inner dd_rows collection clean and it blit-skips."""
+    if show_search is None:
+        show_search = len(input_value) > 4
     if show_search and not path_prefix and root_state is not None:
         # Root owns the search box. Single-line so Up/Down/Enter pass through to
         # menu nav; it auto-focuses once when the menu opens (_focus_search).
@@ -12344,7 +12350,7 @@ def dd_menu_row(input_value, draw_state, text_align="right", path_prefix=(),
         # (button's own +1.5 hover boost keys off `hovered`, which is False for
         # the keyboard-cursor row); hue is retained, only brightness moves.
         clicked, _ = button(f"{label}{chevron}", name=f"{label}_ddrow", width=draw_state.content_width - 10,
-                            height=_DD_ROW_H, hovered=hovered, text_value=0.56 + (0.9 if active else 0.0),
+                            height=_DD_ROW_H, hovered=hovered, text_color=Tint.dd_text(requested_tint=tint),
                             text_saturation=1.349, shadow=False,
                             rounding=0, show_button_bg=False, show_bg=False, use_cache=True,
                             text_align=text_align, tint=tint)

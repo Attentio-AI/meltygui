@@ -92,7 +92,17 @@ class CodexChats(ChatProxy):
 
     def execute(self, operation, *args):
         server = self.transport
-        if operation == "refresh":
+        if operation == "fork":
+            key, remote_id, project, title = args
+            writer = self._open_transport()
+            try:
+                result = writer.request("thread/fork", {"threadId": remote_id, "cwd": project})
+                fork_id = result["thread"]["id"]
+                writer.request("thread/name/set", {"threadId": fork_id, "name": title})
+                self.publish("forked", (key, fork_id))
+            finally:
+                self._close_transport(writer)
+        elif operation == "refresh":
             cursor = None
             while not self.closed:
                 result = server.request("thread/list", {"limit": 100, "cursor": cursor,
@@ -171,7 +181,9 @@ class CodexChats(ChatProxy):
             self.publish("answered", (key, request_id))
 
     def receive(self, kind, value):
-        if kind == "models":
+        if kind == "forked":
+            self.finish_fork(*value)
+        elif kind == "models":
             self.default_model = next((row["model"] for row in value
                                        if row.get("isDefault") and row.get("model")), None)
             self.models = {row.get("displayName") or row["model"]: row["model"]

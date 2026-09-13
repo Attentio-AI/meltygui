@@ -1048,7 +1048,7 @@ def render_func(*args, **o_kwargs):
             content_margin = 0.0
 
         if closable:
-            kwargs['use_cache'] = True
+            kwargs.setdefault('use_cache', True)
 
         auto_apply = kwargs.get("auto_apply", ())
 

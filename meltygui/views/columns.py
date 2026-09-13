@@ -543,6 +543,176 @@ def _drag_edge(edges, k, target, walls=frozenset(), axis="x"):
     _solve_graph(graph, edges[k], target, walls=walls, axis=axis)
 
 
+def _replay_hand_drags(window, axis, pending, os_ctx):
+    """STICKY hand drags — the feel of Hyprland's right-drag resize, for
+    every drag the edge system takes (Lukas 09-13): a divider, a frame
+    handle, a right-drag latch, in a studio window or an app's root. The
+    first frame of a gesture (a cursor-driven entry while a button is
+    held) SNAPSHOTS what this axis's solve can touch: every registered
+    edge of the window, its position and size, and the OS edges of the
+    frame's link (os_ctx). Every following frame restores that snapshot
+    and re-solves with the gesture's ACCUMULATED total as an absolute
+    target — so a step the wall or a floor swallowed is not lost, a flip
+    unwinds, pushed neighbours and the OS window come back, and the
+    original state returns exactly when the hand does. One mechanism in
+    the one solve; no per-feature bookkeeping.
+
+    The snapshot is kept in SCREEN terms where the surface can move under
+    a window: a root's window_pos (a free root holds its screen position
+    when the surface moves, apply_rebase) and a frame-pinned root's edges
+    (its content origin IS the surface's) are converted through
+    os_frame.applied_origin each frame; a nested window is parent-relative
+    and restores plainly. Foreign (non-cursor) entries pass through
+    untouched. The gesture ends when no mouse button is held."""
+    from src.lsd.gl_gui import os_frame
+    gestures = getattr(window, "_edge_gestures", None)
+    if gestures is None:
+        gestures = window._edge_gestures = {}
+    hand = [item for item in pending if len(item) > 2 and bool(item[2])]
+    # A hand MOVE of this window (os_ctx.move) is a gesture too: its push
+    # of the OS edge is re-derived from the window's current position
+    # and applied against the OS edges as they were when the move began,
+    # so an edge pushed out slides BACK as the window comes back (the
+    # window's own position is already absolute, press-anchored).
+    # Only a window moved by ITS OWN hand (the wrapper's move drag has
+    # _hand_move_frame): os_ctx.move is also set for a window riding an
+    # ancestor's hand move / resize (_hand_moved), and replaying THAT as
+    # a gesture restored the OS edges to the child's move snapshot right
+    # after the parent's solve had pushed them: the push was undone every
+    # other frame and the app crawled 16 px per 200 of hand whenever a
+    # context menu was open (09-13). The ancestor's move gesture replays
+    # the OS edges; the child just rides.
+    from src.lsd.gl_gui.melty import Melty
+    move = (os_ctx is not None and bool(getattr(os_ctx, "move", False))
+            and getattr(window, "_hand_move_frame", None) == Melty.frame_count)
+    released = not os_frame._any_button_down()
+    if released and ((not hand and not move) or gestures.get(axis) is None):
+        # the hand let go and nothing of its gesture is left to apply
+        gestures.pop(axis, None)
+        return pending
+    if not hand and not move:
+        return pending
+    # (a release frame that still carries a gesture's last increment
+    # replays it - dropped, the last step landed incrementally and the
+    # OS edges stayed one step short of the return, 09-13 - and pops after)
+    i = 0 if axis == "x" else 1
+    pinned = bool(getattr(window, "_frame_pinned", False))
+    parent = getattr(window, "parent_window", None)
+    is_root = parent is None
+    # Whose coordinates move with the SURFACE: a root's (free: apply_rebase
+    # re-bases its window_pos to track the origin; pinned: its edges are
+    # that origin) and - the studio version of an app - a pinned root's
+    # nested child, re-based exactly like a pinned root
+    # (os_frame._rebased_windows). Restored plainly, that child lost every
+    # re-base the flip's push had just earned: the solve pushed the OS
+    # edge along restored it, the push doubled frame after frame and the app
+    # grew to the whole display in four frames (Lukas 09-13). A nested
+    # window under a FREE root is parent-relative and restores plainly.
+    rides_surface = is_root or bool(getattr(parent, "_frame_pinned", False))
+    # The CORNER the window's coordinates hang from, in SCREEN terms: the
+    # surface's applied origin (os_ctx.base is near - unapplied + the
+    # window's screen position, os_frame.attach - shift through it; never
+    # off the OS dicts, which sit SHIFTED into window coordinates for the
+    # whole solve), or, for a pinned root's child hung from the far corner
+    # (a context menu), the OS FAR edge itself: compensate_far moves such
+    # a child by every move of that edge, and restoring its position
+    # against the origin undid the compensation - it jumped right by all
+    # it had pushed, pushed by that again, and the app ran off (09-13).
+    hangs_far = (not is_root and rides_surface and os_frame._driver_of(window, axis) == "far")
+    if os_ctx is None or not rides_surface:
+        origin_now = 0.0
+    elif hangs_far:
+        origin_now = os_frame.edges(axis)[1][axis] + os_ctx.base       # the OS far edge, screen coords
+    else:
+        origin_now = os_ctx.base - os_frame._screen_pos(window, axis)
+    gesture = gestures.get(axis)
+    if gesture is None:
+        snap = {}
+        edges = {}
+        for key, (ds, edge_list) in _views(window, axis).items():
+            for e in edge_list:
+                edges[id(e)] = e
+                snap[id(e)] = e[axis]
+        for e in (_frame(window, axis) or ()):
+            edges[id(e)] = e
+            snap[id(e)] = e[axis]
+        pos = window.window_pos[i] if window.window_pos is not None else None
+        gesture = gestures[axis] = {
+            "edges": edges, "snap": snap, "totals": {},
+            "pos": pos, "size": float(window.width if axis == "x" else window.height),
+            "origin": origin_now,
+            "os": None,
+        }
+    if gesture["os"] is None and os_ctx is not None:
+        gesture["os"] = {id(e): e[axis] + os_ctx.base for e in os_ctx.shifted
+                         if id(e) in os_ctx.os_ids and id(e) not in os_ctx.walls}
+    if not hand and not gesture["totals"]:
+        # a pure move gesture: only the OS edges are replayed; the push
+        # block in _solve_collisions re-derives the contact from where the
+        # move put the window this frame
+        if gesture["os"]:
+            for e in os_ctx.shifted:
+                if id(e) in gesture["os"] and id(e) not in os_ctx.walls:
+                    e[axis] = gesture["os"][id(e)] - os_ctx.base
+        if released:
+            gestures.pop(axis, None)
+        return pending
+    # accumulate this frame's increments (an edge born mid-gesture joins at zero value)
+    for edge, target, _cursor in hand:
+        eid = id(edge)
+        if eid not in gesture["snap"]:
+            gesture["edges"][eid] = edge
+            gesture["snap"][eid] = edge[axis]
+        gesture["totals"][eid] = gesture["totals"].get(eid, 0.0) + (target - edge[axis])
+    # restore the snapshot
+    shift = (gesture["origin"] - origin_now) if rides_surface else 0.0
+    edge_shift = shift if pinned else 0.0
+    for eid, e in gesture["edges"].items():
+        e[axis] = gesture["snap"][eid] + edge_shift
+    if not pinned and gesture["pos"] is not None and window.window_pos is not None:
+        pos = list(window.window_pos)
+        moved = gesture["pos"] + shift - pos[i]
+        pos[i] = gesture["pos"] + shift
+        window.window_pos = tuple(pos)
+        if os_ctx is not None and moved:
+            # attach shifted the OS dicts against the window's DRAWN
+            # position; the window now sits `moved` px from there, so the
+            # OS level re-bases with it (detach shifts back against the
+            # same base) - else the OS edges sat `moved` px off in window
+            # coordinates and the far edge slid past the screen wall by the
+            # flip's last slide (09-13)
+            os_ctx.base += moved
+            # Keep current external walls in screen coordinates when the
+            # replay changes the origin used by attach/detach.
+            for e in os_ctx.shifted:
+                e[axis] -= moved
+    if axis == "x":
+        window.width = gesture["size"]
+    else:
+        window.height = gesture["size"]
+    if os_ctx is not None and gesture["os"]:
+        for e in os_ctx.shifted:
+            if id(e) in gesture["os"] and id(e) not in os_ctx.walls:
+                e[axis] = gesture["os"][id(e)] - os_ctx.base
+    # absolute targets from the gesture's start
+    replayed = []
+    for item in pending:
+        if len(item) > 2 and bool(item[2]):
+            edge = item[0]
+            eid = id(edge)
+            replayed.append((edge, gesture["snap"][eid] + edge_shift + gesture["totals"][eid], True))
+        else:
+            replayed.append(item)
+    # an edge dragged early in the gesture but idle this frame keeps its total
+    active = {id(item[0]) for item in hand}
+    for eid, total in gesture["totals"].items():
+        if eid not in active and total and eid in gesture["edges"]:
+            replayed.append((gesture["edges"][eid], gesture["snap"][eid] + edge_shift + total, True))
+    if released:
+        gestures.pop(axis, None)
+    return replayed
+
+
 def _solve_collisions(window, axis="x", os_ctx=None):
     """Apply every queued drag of ``axis`` against the FULL cell graph of
     that axis — every registered edge list's cells at once — so contact
@@ -571,6 +741,7 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     pending_attr = _REGISTRY[axis][1]
     pending = getattr(window, pending_attr)
     setattr(window, pending_attr, [])
+    pending = _replay_hand_drags(window, axis, pending, os_ctx)     # sticky: targets from the gesture's start
     os_items = list(os_ctx.drags) if os_ctx is not None else []
     if not pending and not os_items and not (os_ctx is not None and os_ctx.move):
         return False

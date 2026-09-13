@@ -231,6 +231,34 @@ class ChatProxy(dict):
                 return True
         return False
 
+    def fork(self, key):
+        import uuid
+        source = self[key]
+        if not source.remote_id:
+            return None
+        new_key = str(uuid.uuid4())
+        self[new_key] = {"title": source["title"] + " (fork)", "project": source["project"],
+                         "created_at": time.time(), "updated": time.time()}
+        chat = dict.__getitem__(self, new_key)
+        chat.loaded, chat.loading = False, True
+        chat.inflight.add("create")
+        self.known[new_key] = chat
+        for field in ("model", "permissions", "model_explicit", "model_selected_at", "permissions_selected_at"):
+            if field in source.metadata:
+                chat.metadata[field] = source.metadata[field]
+        self.submit("fork", new_key, source.remote_id, source["project"], chat["title"])
+        return new_key
+
+    def finish_fork(self, key, remote_id):
+        chat = self.known.get(key)
+        if chat is not None:
+            chat.remote_id = remote_id
+            chat.metadata["remote_id"] = remote_id
+            chat.inflight.discard("create")
+            chat.loading = False
+            chat.fresh = False
+            chat.resumed = False
+
     def refresh(self):
         """Look for activity outside this window — a session another client
         (a terminal) is writing — and publish it: a chat's ``updated`` moves,

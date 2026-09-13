@@ -236,7 +236,12 @@ def _close_menu(draw_state, state):
     """Close whatever menu is showing: release the popover slot, collapse
     that menu's paths, hand text focus back to whoever had it."""
     if state.open_title is not None:
-        _dd_close(state.menus.get(state.open_title))
+        menu_state = state.menus.get(state.open_title)
+        _dd_close(menu_state)
+        # A picked action may remove this state before its next draw call.
+        # Close its surface now rather than waiting for closed=True next frame.
+        if menu_state is not None and menu_state._menu_ds is not None:
+            menu_state._menu_ds.closed = True
     state.open_title = None
     if Melty.popover_focused_ds is draw_state:
         Melty.popover_focused_ds = None

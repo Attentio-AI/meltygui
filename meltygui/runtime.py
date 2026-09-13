@@ -858,15 +858,31 @@ class Melty:
         draw_surface_root, and closes it when a tick goes by without this
         call — immediate mode, like a closable window. window_pos= pins
         the parent-relative position (else the user moves it and the
-        offset is adopted); window_size= sets the size."""
+        offset is adopted); window_size= sets the size. open_requested is
+        a one-frame open/reopen trigger (when supplied, start closed until
+        True); closed= explicitly controls visibility."""
         from types import SimpleNamespace
         req = cls.surface_windows.get(tile_id)
         if req is None:
             req = SimpleNamespace(tile_id=tile_id, name=name, surface=None, parent_surface=None,
-                                  closed=False, pinned=False, tick=-1)
+                                  closed='open_requested' in kwargs, pinned=False, tick=-1)
             cls.surface_windows[tile_id] = req
+            draw_state.closed = req.closed
         req.input_value, req.kwargs, req.draw_state = input_value, kwargs, draw_state
         req.tick = cls.app_tick
+        # None/omitted retains a user close; an explicit bool controls the
+        # window, just as it does for an in-surface closable view.
+        if kwargs.get('closed') is not None:
+            req.closed = bool(kwargs['closed'])
+            draw_state.closed = req.closed
+        if kwargs.get('open_requested'):
+            req.closed = draw_state.closed = False
+        if req.closed:
+            if req in cls.surface_requests:
+                cls.surface_requests.remove(req)
+            if req.surface is not None:
+                req.surface.closed = True
+            return req
         req.pinned = 'window_pos' in kwargs
         # The parent-relative geometry lives on the request; the pare
         # draw_state rendering INLINE in the child surface, and the inline
@@ -896,12 +912,26 @@ class Melty:
         from src.lsd.gl_gui.surface import root_view_kwargs
         kwargs = {k: v for k, v in req.kwargs.items()
                   if k not in ('glfw_window', 'window_pos', 'window_size', 'closable',
-                               'layer_unique', 'draw_state', 'return_extras')}
+                               'layer_unique', 'draw_state', 'return_extras', 'closed', 'open_requested')}
         kwargs = root_view_kwargs(req.name, **kwargs)
         kwargs['draw_state'] = req.draw_state
-        result = req.draw_state._wrapper(req.input_value, **kwargs)
+        req.draw_state._wrapper(req.input_value, **kwargs)
+
+    @classmethod
+    def finish_surface_root(cls, req, surface):
+        """Forward the result AFTER end_frame draws the deferred root layer.
+
+        The child root has its own tile id. In particular a view can close
+        itself while returning a value: collect that value before teardown.
+        """
+        result = cls.pending_return_values.pop(req.draw_state._tile_id, None)
         if result is not None:
             cls.pending_return_values[req.tile_id] = tuple(result)[:2]
+            if result[0]:
+                from src.lsd.gl_gui.utils.glfw_utils import request_render
+                request_render()
+        if req.draw_state.closed:
+            req.closed = surface.closed = True
     # Self-registering RenderHost objects (id -> host). draw_main renders each one
     # in its own thread every frame; see view/core_conversion/render_host.py.
     render_hosts = {}
@@ -2162,7 +2192,7 @@ class Melty:
         cls.original_frame_padding = style.frame_padding
 
         cls.returned_values.update(cls.pending_return_values)
-        cls.pending_returned_values = {}
+        cls.pending_return_values = {}
 
         Counters.nested_window_count = 0
 

@@ -412,6 +412,8 @@ class Surface:
         if self.chrome:
             titlebar.paint_window_controls(draw_list)
         Melty.end_frame()
+        if self.request is not None:
+            Melty.finish_surface_root(self.request, self)
         if self.chrome:
             os_frame.flush()
         Melty.window_stack.pop()
@@ -574,9 +576,11 @@ def root_view_kwargs(name, /, **kwargs):
         kwargs.setdefault('with_header_end', titlebar.draw_header_controls if right_inset > 0 else None)
     else:
         kwargs.setdefault('with_header_end', None)
+    # OS bodies orchestrate render calls and shortcuts every requested frame.
+    # Descendant bodies have their own caches; the app still sleeps when idle.
     pinned = dict(name=name, closable=True, draggable=False, window_pos=(0, top), width=width, height=height,
                   auto_resize=False, show_header=header, with_footer=None, shadow=False, show_bg=True,
-                  selectable=False, use_cache=True, disable_scroll=True, indent_size=5,
+                  selectable=False, use_cache=False, disable_scroll=True, indent_size=5,
                   initial={'width': width, 'height': height, 'window_pos': (0, top)})
     return pinned | kwargs
 

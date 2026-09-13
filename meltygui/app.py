@@ -531,7 +531,7 @@ def _open_requested_children():
     while requests:
         req = requests.pop(0)
         parent = req.parent_surface
-        if parent is None or parent not in Surface.all or req.surface is not None:
+        if parent is None or parent not in Surface.all or req.surface is not None or req.closed:
             continue
         ds = req.draw_state
         size = req.window_size

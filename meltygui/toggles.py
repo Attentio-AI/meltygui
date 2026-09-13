@@ -210,8 +210,8 @@ class Tint:
         value_factor = 2.161
 
         active_hsv = ((active_hsv[0] + hue_delta),
-                      scale_saturation(active_hsv[1], saturation_factor),
-                      min(max(active_hsv[2] * value_factor, 0), Tint.max_value))
+                      min(0.25, scale_saturation(active_hsv[1], saturation_factor)),
+                      min(max(active_hsv[2] * value_factor, 0.85), Tint.max_value))
         return hsv_to_rgb(*active_hsv)
 
     @staticmethod
