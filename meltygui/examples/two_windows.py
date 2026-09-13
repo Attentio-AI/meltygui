@@ -10,7 +10,7 @@ notes = "type here\n"
 log = "child window: drag me, then drag the parent\n"
 
 
-@glfw_window(title='Notes')
+@glfw_window(name='Notes')
 def notes_window():
     global notes, log
     changed, new = melty.draw_text(notes, name='notes', syntax_highlight=False)
@@ -30,6 +30,6 @@ def notes_window():
 state = {'hide_log': False}
 
 
-@glfw_window(title='Scratch', size=(600, 400))
+@glfw_window(name='Scratch', width=600, height=400)
 def scratch_window():
     melty.draw_text("a second peer window\n", name='scratch', syntax_highlight=False)

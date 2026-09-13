@@ -414,13 +414,19 @@ def _jump_to_view_source(draw_state):
 
 
 def draw_header_arrow(expanded, color=None, alpha=0.071):
-    """The header's transparent tree control, also usable by flat views."""
+    """The header's transparent tree control, also usable by flat views.
+    Dimmed by Toggles.Melty.arrow_brightness (every arrow, everywhere)."""
+    from src.lsd.gl_gui.toggles import Toggles
+    dim = float(Toggles.Melty.arrow_brightness)
+    alpha = alpha * dim
     if color is None:
         depth = max(0.0, Melty.bg_depth)
         color = Melty.style_manager.make_color_style_value(input={
-            "value": 7.788 + (depth - 30.0) * 0.05 * 0.332,
+            "value": (7.788 + (depth - 30.0) * 0.05 * 0.332) * dim,
             "saturation": 1.559 + (depth - 1.773) * -0.004,
             "alpha": alpha, "max_value": 1.601})
+    else:
+        color = tuple(c * dim for c in color[:3]) + tuple(color[3:])
     imgui.push_style_color(imgui.COLOR_TEXT, *color[:3], 1.0)
     imgui.push_style_color(imgui.COLOR_BUTTON, 0.0, 0.0, 0.0, 0.0)
     imgui.push_style_color(imgui.COLOR_BUTTON_HOVERED, 0.0, 0.0, 0.0, 0.0)

@@ -29,7 +29,7 @@ APP_SOURCE = textwrap.dedent('''
 
     SEEN = {}
 
-    @glfw_window(title='Files', app_id='fake-browser', size=(720, 640), tint=(0.32, 0.42, 0.54))
+    @glfw_window(name='Files', app_id='fake-browser', width=720, height=640, tint=(0.32, 0.42, 0.54))
     @render_func()
     def browser(_, draw_state):
         SEEN['ds'] = draw_state
@@ -129,7 +129,7 @@ def test_glfw_window_registers_its_projects_root(tmp_path, no_boot, fresh_roots)
 def test_redecoration_updates_the_registered_root_in_place(no_boot, monkeypatch):
     before = len(app._ROOTS)
 
-    @app.glfw_window(title='T', tint=(0.1, 0.2, 0.3), with_header=object())
+    @app.glfw_window(name='T', tint=(0.1, 0.2, 0.3), with_header=object())
     def editor():
         pass
     fn, config = app._ROOTS[-1]
@@ -137,13 +137,13 @@ def test_redecoration_updates_the_registered_root_in_place(no_boot, monkeypatch)
 
     monkeypatch.setitem(app._state, 'ran', True)      # the window is open
 
-    @app.glfw_window(title='T2', tint=(0.9, 0.8, 0.7))   # the hotswap and re-run
+    @app.glfw_window(name='T', width=640, height=480, tint=(0.9, 0.8, 0.7))   # the hotswap's re-run
     def editor():
         pass
     assert len(app._ROOTS) == before + 1               # no second window
     assert app._ROOTS[-1][1] is config                 # the same live config object
     assert app._ROOTS[-1][0] is fn                     # the open window keeps its body
-    assert config['title'] == 'T2' and config['view_kwargs'] == {'tint': (0.9, 0.8, 0.7)}
+    assert (config['width'], config['height']) == (640, 480) and config['view_kwargs'] == {'tint': (0.9, 0.8, 0.7)}
 
 
 def test_render_func_root_body_reads_the_live_config(monkeypatch):
@@ -208,3 +208,11 @@ def test_outside_app_decorator_is_the_tint_source(tmp_path, no_boot, fresh_roots
     assert sources["sources"][name].get("tint") == (0.32, 0.42, 0.54)
     assert sources["locations"][name][0] == str(path)
     assert get_source_for("tint", ds) == name
+
+    # A locate_ write reaches the root's live config at once (anywhere.live_apply),
+    # before the save + recompile trip the same write triggers.
+    ds.locate_tint = (0.1, 0.2, 0.3)
+    assert config["view_kwargs"]["tint"] == (0.1, 0.2, 0.3)
+    assert _sources_for(ds)["sources"][name].get("tint") == (0.1, 0.2, 0.3)
+    frame()
+    assert ds._kwargs.get("tint") == (0.1, 0.2, 0.3)

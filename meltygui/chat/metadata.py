@@ -1,5 +1,10 @@
-"""The chat equivalent of FileMetaCollection: account → project → chat."""
-import colorsys
+"""The chat equivalent of FileMetaCollection: account → project → chat.
+
+No colour is assigned here: a project (a directory) wears the tint painted
+on it in the shared file-meta store, a conversation the tint the user
+painted on its row (``entry["tint"]``, absent until then) — the file
+browser's rule, brush then picker.
+"""
 
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
 
@@ -16,10 +21,7 @@ class ChatMetadata(DictConversion):
     def project(self, account_id, project):
         projects = self.account(account_id)["projects"]
         if project not in projects:
-            # Stable after creation: the chosen colour is persisted, never re-derived.
-            hue = (len(projects) * 0.61803398875 + 0.45) % 1.0
-            projects[project] = {"tint": colorsys.hsv_to_rgb(hue, 0.55, 0.8),
-                                 "expanded": True, "order": len(projects), "chats": {}}
+            projects[project] = {"expanded": True, "order": len(projects), "chats": {}}
         return projects[project]
 
     def conversation(self, account_id, project, key):
@@ -31,10 +33,7 @@ class ChatMetadata(DictConversion):
                     target["chats"][key] = entry["chats"].pop(key)
                     break
             else:
-                hue, saturation, value = colorsys.rgb_to_hsv(*target["tint"][:3])
-                hue = (hue + len(target["chats"]) * 0.055) % 1.0
-                target["chats"][key] = {"tint": colorsys.hsv_to_rgb(hue, saturation, value),
-                                           "order": len(target["chats"])}
+                target["chats"][key] = {"order": len(target["chats"])}
         return target["chats"][key]
 
     def apply(self, account_id, chats):
@@ -43,13 +42,15 @@ class ChatMetadata(DictConversion):
             project = self.project(account_id, chat["project"])
             entry = self.conversation(account_id, chat["project"], key)
             # These are local overrides, not remotely editable chat fields.
-            chat["__overrides__"] = {"tint": entry["tint"]}
+            chat["__overrides__"] = {"tint": entry.get("tint")}
             if hasattr(chat, "applied_tint"):
-                chat.applied_tint = entry["tint"]
+                chat.applied_tint = entry.get("tint")
                 chat.metadata = entry
             orders[key] = (project["order"], entry["order"])
-        for key in sorted(chats, key=lambda key: orders[key]):
-            dict.__setitem__(chats, key, dict.pop(chats, key))
+        ordered = sorted(chats, key=lambda key: orders[key])
+        if ordered != list(chats):        # re-insert only when the order moved (this runs every frame)
+            for key in ordered:
+                dict.__setitem__(chats, key, dict.pop(chats, key))
         if hasattr(chats, "applied_order"):
             chats.applied_order = list(chats)
 
@@ -116,9 +117,12 @@ def persistent_metadata(path):
         accounts = {}
     for account in accounts.values():
         for project in account.get("projects", {}).values():
-            project["tint"] = tuple(project.get("tint", (0.5, 0.5, 0.5)))
+            project.pop("tint", None)          # a project's tint is the folder's, in the project-meta store
             for chat in project.get("chats", {}).values():
-                chat["tint"] = tuple(chat.get("tint", project["tint"]))
+                if chat.get("tint") is not None:
+                    chat["tint"] = tuple(chat["tint"])
+                else:
+                    chat.pop("tint", None)
     metadata.accounts.update(accounts)
 
     def save():

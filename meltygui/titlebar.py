@@ -40,6 +40,7 @@ import OpenGL.GL as gl
 from src.lsd.gl_gui import mouse_cursor
 from src.lsd.gl_gui import titlebar_buttons
 from src.lsd.gl_gui import wayland_move
+from src.lsd.gl_gui import hypr_left_drag
 from src.lsd.gl_gui.gl_state import GLState, is_gl_thread
 from src.lsd.gl_gui.shader_func import shader_func
 
@@ -402,6 +403,8 @@ _ICON_MINIMIZE = "\uf2d1"   # fa window-minimize
 _ICON_MAXIMIZE = "\uf2d0"   # fa window-maximize
 _ICON_RESTORE = "\uf2d2"    # fa window-restore
 _ICON_CLOSE = "\uf00d"      # fa times
+_ICON_MOVE = "\uf0b2"       # fa arrows-alt - the desktop's left-drag move toggle (hypr_left_drag)
+_ICONS = (_ICON_MINIMIZE, _ICON_MAXIMIZE, _ICON_RESTORE, _ICON_CLOSE, _ICON_MOVE)
 
 
 def _button_icon(kind, maximized):
@@ -409,6 +412,8 @@ def _button_icon(kind, maximized):
         return _ICON_MINIMIZE
     if kind == "maximize":
         return _ICON_RESTORE if maximized else _ICON_MAXIMIZE
+    if kind == "move":
+        return _ICON_MOVE
     return _ICON_CLOSE
 
 
@@ -425,6 +430,23 @@ def button_layout():
     return titlebar_buttons.system_layout()
 
 
+def control_kinds():
+    """button_layout() plus the desktop's own extra: on Lukas's patched
+    Hyprland (hypr_left_drag.available — the compositor has
+    general:left_drag_move) a "move" toggle, the hyprbars
+    `state = "left_drag_move"` button mirrored, unless
+    Toggles.Melty.titlebar_move_toggle hides it. It sits INNERMOST of the
+    right group like the hyprbars one (before minimize / maximize / close),
+    or ends the left group when everything is on the left."""
+    from src.lsd.gl_gui.toggles import Toggles
+    left_kinds, right_kinds = button_layout()
+    if not (Toggles.Melty.titlebar_move_toggle and hypr_left_drag.available()):
+        return left_kinds, right_kinds
+    if right_kinds or not left_kinds:
+        return tuple(left_kinds), ("move",) + tuple(right_kinds)
+    return tuple(left_kinds) + ("move",), tuple(right_kinds)
+
+
 def _button_metrics():
     """(margin, gap, height, {kind: width}) shared by both groups: the
     header's close button sizing (flat_button: glyph + px(15) wide, + px(8)
@@ -435,8 +457,7 @@ def _button_metrics():
     button_margin = Melty.px(4.0)
     # [tint=(1.0, 0.55, 0.2)]
     button_gap = Melty.px(3.0)
-    sizes = {icon: imgui.calc_text_size(icon)
-             for icon in (_ICON_MINIMIZE, _ICON_MAXIMIZE, _ICON_RESTORE, _ICON_CLOSE)}
+    sizes = {icon: imgui.calc_text_size(icon) for icon in _ICONS}
     height = max(s.y for s in sizes.values()) + Melty.px(8.0)
     return button_margin, button_gap, height, {icon: s.x + Melty.px(15.0) for icon, s in sizes.items()}
 
@@ -446,7 +467,7 @@ def _button_layout(disp_w, maximized):
     on-screen order: the left group from the top-left corner, the right
     group right-aligned at the top-right, each inset button_margin from
     its corner and button_gap apart."""
-    left_kinds, right_kinds = button_layout()
+    left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
     buttons = []
     x0 = button_margin
@@ -483,7 +504,7 @@ def chrome_insets():
     or with the chrome off."""
     if not titlebar_enabled():
         return 0.0, 0.0
-    left_kinds, right_kinds = button_layout()
+    left_kinds, right_kinds = control_kinds()
     button_margin, button_gap, height, widths = _button_metrics()
     maximized = _maximized(_studio_window())
 
@@ -541,11 +562,14 @@ def draw_header_controls(draw_state=None, **kwargs):
 
 def _activate_button(kind, window):
     """What a control does: minimize / maximize / close (the close deferred
-    to the merge window while pending state would be lost)."""
+    to the merge window while pending state would be lost) / the desktop's
+    left-drag-move toggle for this app (hypr_left_drag.toggle)."""
     if kind == "minimize":
         glfw.iconify_window(window)
     elif kind == "maximize":
         _toggle_maximize(window)
+    elif kind == "move":
+        hypr_left_drag.toggle()
     elif _close_blocked_by_merge():
         pass        # merge window opened instead; app stays up
     else:
@@ -636,6 +660,13 @@ def _paint_buttons(dl, buttons, over_button):
     # The header close button's colour (draw_header_end).
     # [tint=(0.9, 0.15, 0.15)]
     close_color = (9, 1, 1)
+    # The move toggle while left-drag move is OFF for this app: the
+    # hyprbars button's fade — the glyph this grey (text_color, the
+    # full-range bypass) on a disc this much darker (tint_value; 0.16 lit).
+    # [tint=(0.9, 0.15, 0.15)]
+    move_off_glyph = (0.4, 0.4, 0.4)
+    # [tint=(0.9, 0.15, 0.15)]
+    move_off_disc_value = 0.06
     style_manager = Melty.style_manager
     previous_tint = style_manager.get_tint() if style_manager is not None else None
     chrome_tint = Toggles.Melty.melty_window_tint
@@ -647,10 +678,13 @@ def _paint_buttons(dl, buttons, over_button):
             # flat-mask mark paint_window_controls stamped for the button).
             add_shadow((x0, y0, x1 - x0, y1 - y0), corner_radius=Melty.px(6.0), clip=False,
                        layer=Melty.nested_layer_max - 1, depth=2)
+            faded = kind == "move" and not hypr_left_drag.enabled()
             flat_button(icon, None, view_id=f"titlebar_button_{i}",
                         width=x1 - x0, height=y1 - y0, pos=(x0, y0),
                         hovered=(over_button == i), layout=False, draw_list=dl,
-                        color=close_color)
+                        color=close_color,
+                        **({"text_color": move_off_glyph, "tint_value": move_off_disc_value}
+                           if faded else {}))
     finally:
         if style_manager is not None and previous_tint is not None:
             style_manager.set_imgui_tint(*previous_tint)
@@ -731,6 +765,7 @@ def draw_titlebar(window):
     # (titlebar_buttons: re-read while frames render, if a changed desktop
     # setting lands without a restart; the focus hook re-reads too)
     titlebar_buttons.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
+    hypr_left_drag.refresh_if_stale(Toggles.Melty.titlebar_button_refresh_s)
     buttons = _button_layout(disp_w, maximized)
     strip_left, strip_right = _button_bands(buttons, disp_w)
 
@@ -1059,6 +1094,23 @@ _geometry_applied = globals().get("_geometry_applied")
 # True while OUR glfw.set_window_size is in flight - its framebuffer-size
 # callback is not a compositor configure (on_surface_resized).
 _self_resize = False
+# The surface size the framebuffer callback last reported (or the creation
+# size, note_surface_size): a callback repeating it is NOT a configure.
+_last_surface_size = globals().get("_last_surface_size")
+
+
+def note_surface_size(window):
+    """Record the window's current framebuffer size as the last one seen —
+    Surface.__init__, right after creation: GLFW re-fires the framebuffer
+    callback with the UNCHANGED size when the surface enters an output or
+    gets its fractional scale, and on_surface_resized read that as a
+    compositor configure and regrew the surface by the margin once too
+    often at every launch (09-12)."""
+    global _last_surface_size
+    try:
+        _last_surface_size = tuple(int(v) for v in glfw.get_framebuffer_size(window))
+    except Exception:
+        _last_surface_size = None
 
 
 def _on_hyprland():
@@ -1252,16 +1304,24 @@ def on_surface_resized(window, width, height):
     content edge on every configure of a drag). Our own resizes
     (set_surface_size) are flagged and pass through; maximized/fullscreen
     have no margin and pass through too. Returns the size applied."""
+    global _last_surface_size
     if not _on_wayland() or not wayland_move.geometry_available():
         return None
+    size = (int(width), int(height))
     if _self_resize:
         # Our resize (the right-drag, a compensation): the geometry rides in
         # the SAME commit as the new buffer. If from draw_titlebar a frame
         # later it lagged one drag step behind - Mutter pushed the window
         # up against a stale rect (jitter) and the last step's growth never
         # got the push (a gap at the top).
-        sync_window_geometry(window, (int(width), int(height)))
+        _last_surface_size = size
+        sync_window_geometry(window, size)
         return None
+    if size == _last_surface_size:
+        # GLFW re-fired the callback with the size it already had (output
+        # resize, fractional scale): no configure, nothing to regrow.
+        return None
+    _last_surface_size = size
     inset = window_inset()      # MAXIMIZED is already current inside GLFW's configure handling
     # A compositor-driven size names the GEOMETRY (the content): the
     # surface is regrown outside it by the margin on every side. The OS

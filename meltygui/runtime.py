@@ -1143,7 +1143,12 @@ class Melty:
 
     # BVH spatial index for draw states (rtree, built on first use: see _LazyRtree)
     _bvh = _LazyRtree()
-    _bvh_next_id = 0
+    _bvh_next_id = 0         # process-wide: a rid is unique across every surface's index
+    # rid → (index, id_to_ds) this box was inserted into. Surfaces (surface.py)
+    # swap `_bvh` and `_bvh_id_to_ds` per OS window; a draw_state drawn in a
+    # different index than last frame (a glfw_window=True child's root) finds
+    # its old box through this and drops itself from the index it sits in.
+    _bvh_home = {}
     _bvh_id_to_ds = {}
     # Bumped on every insert/delete that mutates the index. bvh_query memoizes
     # results by (x, y) and discards the memo whenever this changes. The index
@@ -1340,10 +1345,21 @@ class Melty:
             desired = None
 
         current = draw_state._bvh_bbox
+        rid = draw_state._bvh_id
+        if current is not None:
+            home = cls._bvh_home.get(rid)
+            if home is not None and home[0] is not cls._bvh:
+                # The view lives in another OS window's index: evict it there
+                # and (re)sync here as if it were new.
+                try:
+                    home[0].delete(rid, current)
+                except Exception:
+                    pass
+                home[1].pop(rid, None)
+                current = None
         if desired == current:
             return
 
-        rid = draw_state._bvh_id
         if rid is None:
             rid = cls._bvh_next_id
             cls._bvh_next_id += 1
@@ -1354,8 +1370,10 @@ class Melty:
         if desired is not None:
             cls._bvh.insert(rid, desired)
             cls._bvh_id_to_ds[rid] = draw_state
+            cls._bvh_home[rid] = (cls._bvh, cls._bvh_id_to_ds)
         else:
             cls._bvh_id_to_ds.pop(rid, None)
+            cls._bvh_home.pop(rid, None)
         draw_state._bvh_bbox = desired
         cls._bvh_gen += 1
 

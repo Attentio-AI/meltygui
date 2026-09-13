@@ -337,7 +337,144 @@ def _stamp_pending(attr_name, value, draw_state):
     getattr(draw_state, "_sa_verify", {}).pop(attr_name, None)
 
 
-def _defer_write(attr_name, value, draw_state, class_to_show, source=None):
+# ── Live write: the in-memory twin of the recompile ─────────────────────────
+# A write to a DECORATOR source (`@window(tint=...)`, `@glfw_window(tint=...)`,
+# `@render_func(tint=...)`) only became visible once the mouse-up recompile
+# re-ran the decorator and the reconcile installed its fresh kwargs. Every
+# render reads those kwargs from their place - the same place the recompile
+# replaces - so a drag can write the value straight there and the window
+# follows the picker live; the recompile on release lands the same value
+# and nothing moves. Each case: kind caption → apply(attr, value,
+# draw_state, class_to_show) → True when a registration was hit.
+def _apply_window_decoration(attr_name, value, draw_state, class_to_show):
+    """`Melty.annotated_window_classes[name] = (obj, kwargs)`: draw_main
+    copies `kwargs` into the window's call every frame. Matched on the
+    registered OBJECT (the view's wrapper or raw for a @window func, the
+    shown class for @window(cls)), never on the key — a `name=` registration
+    keys by that name. The dict is looked up per call: the recompile's
+    reconcile swaps in a fresh one."""
+    registry = getattr(Core.melty, "annotated_window_classes", None)
+    if not isinstance(registry, dict):
+        return False
+    view_func = getattr(draw_state, "_view_func", None)
+    owners = {id(o) for o in (view_func, _raw_of(view_func), class_to_show) if o is not None}
+    hit = False
+    for entry in registry.values():
+        if isinstance(entry, tuple) and len(entry) == 2 and id(entry[0]) in owners \
+                and isinstance(entry[1], dict):
+            entry[1][attr_name] = value
+            hit = True
+    return hit
+
+
+def _apply_glfw_window_decoration(attr_name, value, draw_state, class_to_show):
+    """`app._ROOTS[i] = (fn, config)`: the root body reads
+    `config['view_kwargs']` every frame (app._root_body), and a re-run
+    decorator updates that same dict in place."""
+    from src.lsd.gl_gui import app
+    view_func = getattr(draw_state, "_view_func", None)
+    owners = {id(o) for o in (view_func, _raw_of(view_func)) if o is not None}
+    hit = False
+    for fn, config in app._ROOTS:
+        if id(fn) in owners or id(_raw_of(fn)) in owners:
+            kwargs = config.get('view_kwargs')
+            if not isinstance(kwargs, dict):
+                kwargs = config['view_kwargs'] = {}
+            kwargs[attr_name] = value
+            hit = True
+    return hit
+
+
+def _apply_render_func_decoration(attr_name, value, draw_state, class_to_show):
+    """`@render_func(tint=…)` lives in the wrapper's closure: the `o_kwargs`
+    dict (merged under every call's kwargs) and, for the tint, the
+    `_decoration_tint` cell the wrapper compares identities against. The
+    hotswap's _transfer_wrapper_state later overwrites both cells with the
+    freshly-decorated values — the same ones."""
+    wrapper = getattr(draw_state, "_view_func", None)
+    code = getattr(wrapper, "__code__", None)
+    cells = getattr(wrapper, "__closure__", None)
+    if code is None or cells is None:
+        return False
+    names = code.co_freevars
+    if "o_kwargs" not in names:
+        return False
+    o_kwargs = cells[names.index("o_kwargs")].cell_contents
+    if not isinstance(o_kwargs, dict):
+        return False
+    o_kwargs[attr_name] = value
+    if attr_name == "tint":
+        # The identity the wrapper's `_tint_as_decoration` compares against
+        # sits in that nested helper's own closure (a cell of the wrapper).
+        for cell in _decoration_tint_cells(wrapper):
+            cell.cell_contents = value
+    return True
+
+
+def _decoration_tint_cells(wrapper):
+    """The `_decoration_tint` cells reachable from a render_func wrapper:
+    on the wrapper itself or on a nested function it closes over."""
+    found = []
+    seen = set()
+    stack = [wrapper]
+    while stack:
+        fn = stack.pop()
+        if id(fn) in seen:
+            continue
+        seen.add(id(fn))
+        code = getattr(fn, "__code__", None)
+        cells = getattr(fn, "__closure__", None)
+        if code is None or not cells:
+            continue
+        for name, cell in zip(code.co_freevars, cells):
+            try:
+                content = cell.cell_contents
+            except ValueError:
+                continue
+            if name == "_decoration_tint":
+                found.append(cell)
+            elif callable(content) and getattr(content, "__closure__", None):
+                stack.append(content)
+    return found
+
+
+def _raw_of(func):
+    try:
+        import inspect
+        return inspect.unwrap(func) if func is not None else None
+    except Exception:
+        return None
+
+
+_LIVE_APPLY = {
+    "window decoration": _apply_window_decoration,
+    "class decoration": _apply_window_decoration,
+    "glfw window decoration": _apply_glfw_window_decoration,
+    "decoration": _apply_render_func_decoration,
+}
+
+
+def live_apply(attr_name, value, draw_state, kind, class_to_show=None):
+    """Write `value` into the in-memory registration a source of `kind`
+    feeds the render loop from (_LIVE_APPLY), so the view shows it on the
+    next frame without waiting for the save + recompile. False for kinds
+    that only become live through a recompile (signature, @defaults,
+    callers, mode) — those keep the display cache alone."""
+    apply = _LIVE_APPLY.get(kind)
+    if apply is None:
+        return False
+    try:
+        hit = apply(attr_name, value, draw_state, class_to_show)
+    except Exception as e:
+        print(f"[live_apply] {kind} {attr_name}: {e}")
+        return False
+    if hit:
+        from src.lsd.gl_gui.utils.glfw_utils import request_render
+        request_render()
+    return hit
+
+
+def _defer_write(attr_name, value, draw_state, class_to_show, source=None, kind=None):
     """Park a slow-source write for the duration of the drag: the display
     cache serves reads immediately; flush_deferred_writes runs the real
     set_anywhere on release."""
@@ -345,9 +482,10 @@ def _defer_write(attr_name, value, draw_state, class_to_show, source=None):
     if deferred is None:
         deferred = {}
         draw_state._sa_deferred = deferred
-    deferred[attr_name] = (value, class_to_show, source)
+    deferred[attr_name] = (value, class_to_show, source, kind)
     _DEFERRED_DS.add(draw_state)
     _stamp_pending(attr_name, value, draw_state)
+    live_apply(attr_name, value, draw_state, kind, class_to_show)
 
 
 def flush_deferred_writes():
@@ -369,7 +507,7 @@ def flush_deferred_writes():
         deferred = getattr(ds, "_sa_deferred", None) or {}
         items = list(deferred.items())
         deferred.clear()
-        for attr_name, (value, class_to_show, source) in items:
+        for attr_name, (value, class_to_show, source, _kind) in items:
             set_anywhere(attr_name, value, ds, class_to_show=class_to_show,
                          allow_any=True, ds_fallback=True, source=source)
 
@@ -783,8 +921,10 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     if _deferred and attr_name in _deferred and _input_busy():
         _prev = _deferred[attr_name]
         deferred_source = source if source is not None else _prev[2]
-        _deferred[attr_name] = (value, class_to_show, deferred_source)
+        _kind = _prev[3]
+        _deferred[attr_name] = (value, class_to_show, deferred_source, _kind)
         _stamp_pending(attr_name, value, draw_state)
+        live_apply(attr_name, value, draw_state, _kind, class_to_show)
         _last = getattr(draw_state, "_sa_last_source", None)
         return _last.get(attr_name) if _last else None
     srcs = _sources_for(draw_state, class_to_show)
@@ -885,7 +1025,8 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     # instead of running the save/recompile cycle per event (see the
     # full-speed block above).
     if _input_busy() and source_is_slow(srcs["kinds"].get(target)):
-        _defer_write(attr_name, value, draw_state, class_to_show, source=source)
+        _defer_write(attr_name, value, draw_state, class_to_show, source=source,
+                     kind=srcs["kinds"].get(target))
         return target
 
     # (No write-time sanity cross-check here: mid-trip the live value
@@ -915,6 +1056,10 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
             except Exception:
                 pass
     sources[target][attr_name] = write_value
+    # The in-memory twin of the recompile the write arms below: the window
+    # shows the value now, the hotswap lands the same live on the source's
+    # save (see _LIVE_APPLY).
+    live_apply(attr_name, value, draw_state, _t_kind, class_to_show)
     # A write to a BELOW-draw_state layer (signature, @defaults, class var,
     # codec, var) would be otherwise shadowed by a diverged auto_param
     # riding kwargs. The ds layer is framework session state, not user code -

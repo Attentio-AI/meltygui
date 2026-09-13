@@ -39,15 +39,34 @@ import struct
 
 import glfw
 
-# Survives reloads (module re-exec reuses the existing dict).
+# Two scopes, both surviving hotswap (module re-exec reuses the dicts).
+#
+# _STATE is the WINDOW's: the proxies GLFW owns for one OS window (its
+# xdg_toplevel, xdg_surface, wl_surface, native window) and the per-window
+# protocol opcodes. surface.py swaps them per Surface (MODULE_GLOBALS), so a
+# melty app with several windows sees the active window's proxies.
+#
+# _CONN is the CONNECTION's - one per wl_display, never swapped: the seat
+# and pointer bound for the press serials, the registry, the compositor,
+# the relative pointer, the toplevel-tag manager, the listener tables and
+# the ctypes callbacks they point at (`keep`). Binding these per window was
+# the 09-12 abort on closing one of two windows: each Surface bound its own
+# wl_pointer to a listener table that lived only in that Surface's
+# swapped copy of the state; the Surface was collected, the table freed,
+# and the next pointer.enter on the still-registered proxy hit a NULL slot
+# ("listener function for opcode 0 of wl_pointer is NULL").
 _STATE = globals().get("_STATE") or {
-    "attached": False, "window": None, "display": None, "toplevel": None,
-    "seat": None, "pointer": None, "registry": None, "compositor": None, "surface": None,
-    "xdg_surface": None, "relative_manager": None, "relative_pointer": None,
+    "attached": False, "window": None, "display": None, "toplevel": None, "surface": None,
+    "xdg_surface": None, "opcodes": {}, "prev_button_cb": None, "error": None, "tag": None,
+}
+_CONN = globals().get("_CONN") or {
+    "display": None, "registry": None, "seat": None, "pointer": None, "compositor": None,
+    "relative_manager": None, "relative_manager_iface": None, "relative_iface": None,
+    "relative_pointer": None, "tag_manager": None, "tag_iface": None,
     "rel_x": 0.0, "rel_y": 0.0, "rel_events": 0,
-    "press_serial": 0, "grab_serial": 0,
-    "press_button": None, "held": set(), "enter_serial": 0, "masked": set(), "keep": [],
-    "opcodes": {}, "prev_button_cb": None, "error": None,
+    "press_serial": 0, "grab_serial": 0, "press_button": None, "held": set(),
+    "enter_serial": 0, "masked": set(), "keep": [], "pointer_listener": None,
+    "opcodes": {}, "error": None,
 }
 
 # xdg_toplevel.resize_edge values (xdg-shell.xml).
@@ -383,18 +402,18 @@ _RELATIVE_MOTION_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, c
 def _on_relative_motion(data, pointer, utime_hi, utime_lo, dx, dy, dx_unaccel, dy_unaccel):
     # wl_fixed_t: 24.8 fixed point. dx/dy are the coordinate deltas - the
     # pointer's on-screen motion.
-    _STATE["rel_x"] += int(dx) / 256.0
-    _STATE["rel_y"] += int(dy) / 256.0
-    _STATE["rel_events"] += 1
+    _CONN["rel_x"] += int(dx) / 256.0
+    _CONN["rel_y"] += int(dy) / 256.0
+    _CONN["rel_events"] += 1
 
 
 def _setup_relative_pointer():
     """After the registry roundtrip: a relative pointer for our wl_pointer."""
-    manager, pointer = _STATE["relative_manager"], _STATE["pointer"]
-    if not manager or not pointer or _STATE["relative_pointer"]:
+    manager, pointer = _CONN["relative_manager"], _CONN["pointer"]
+    if not manager or not pointer or _CONN["relative_pointer"]:
         return False
     _, wl = _c()
-    rel_iface = _STATE["relative_iface"]
+    rel_iface = _CONN["relative_iface"]
     # get_relative_pointer(new_id, wl_pointer) - "no"
     rel = wl.wl_proxy_marshal_flags(manager, 1, ctypes.addressof(rel_iface),
                                     wl.wl_proxy_get_version(manager), 0,
@@ -403,20 +422,73 @@ def _setup_relative_pointer():
         return False
     cb = _RELATIVE_MOTION_CB(_on_relative_motion)
     table = (ctypes.c_void_p * 1)(ctypes.cast(cb, ctypes.c_void_p).value)
-    _STATE["keep"].extend([cb, table])
+    _CONN["keep"].extend([cb, table])
     wl.wl_proxy_add_listener(rel, ctypes.addressof(table), None)
-    _STATE["relative_pointer"] = rel
+    _CONN["relative_pointer"] = rel
     return True
 
 
 def relative_motion_available():
-    return bool(_STATE["relative_pointer"])
+    """Whether this connection has received relative motion, not just bound it.
+
+    An agent seat can advertise the protocol and accept the subscription
+    while delivering only absolute wl_pointer motion. Treating its untouched
+    totals as a stationary hand makes surface-slide compensation erase every
+    drag. Wait for an actual relative event before using these totals.
+    """
+    return bool(_CONN["relative_pointer"]) and _CONN["rel_events"] > 0
 
 
 def relative_motion_total():
     """Accumulated screen-space pointer motion (px) since attach — an
     arbitrary origin; gestures latch a value and use the difference."""
-    return _STATE["rel_x"], _STATE["rel_y"]
+    return _CONN["rel_x"], _CONN["rel_y"]
+
+
+# ---------------------------------------------------------------------------
+# xdg_toplevel_tag_v1, built by hand: a stable per-window TAG not an
+# app id. A compositor that remembers floating sizes / positions keys on
+# app id + tag (Lukas's Hyprland: `persistent_size`, ignore_title on), so
+# without a tag every window of one app shared ONE remembered box and two
+# @glfw_window roots opened on top of each other, each at the other's center.
+# ---------------------------------------------------------------------------
+
+def _build_toplevel_tag_interface(keep):
+    """The xdg_toplevel_tag_manager_v1 wl_interface (xdg-toplevel-tag-v1.xml:
+    destroy, set_toplevel_tag(toplevel, tag), set_toplevel_description)."""
+    manager = _wl_interface()
+    keep.append(manager)
+    methods = _wl_message_array([
+        (b"destroy", b"", []),
+        (b"set_toplevel_tag", b"os", [None, None]),
+        (b"set_toplevel_description", b"os", [None, None]),
+    ], keep)
+    manager.name = b"xdg_toplevel_tag_manager_v1"
+    manager.version = 1
+    manager.method_count = 3
+    manager.methods = ctypes.cast(methods, ctypes.POINTER(_wl_message))
+    manager.event_count = 0
+    manager.events = ctypes.cast(_wl_message_array([], keep), ctypes.POINTER(_wl_message))
+    return manager
+
+
+def tag_available():
+    return bool(_CONN["tag_manager"])
+
+
+def set_toplevel_tag(toplevel, tag):
+    """xdg_toplevel_tag_manager_v1.set_toplevel_tag(toplevel, tag): the
+    window's stable identity for the compositor (an untranslated string
+    like the @glfw_window name). True when the request went out."""
+    manager = _CONN["tag_manager"]
+    if not manager or not toplevel or not tag:
+        return False
+    _, wl = _c()
+    wl.wl_proxy_marshal_flags(manager, 1, None, wl.wl_proxy_get_version(manager), 0,
+                              ctypes.c_void_p(toplevel), ctypes.c_char_p(str(tag).encode()))
+    if _CONN["display"]:
+        wl.wl_display_flush(_CONN["display"])
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -436,40 +508,49 @@ _ANY_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint
 
 
 def _on_global(data, registry, name, interface, version):
-    if interface == b"zwp_relative_pointer_manager_v1" and _STATE["relative_manager"] is None:
+    if interface == b"zwp_relative_pointer_manager_v1" and _CONN["relative_manager"] is None:
         _, wl = _c()
-        manager_iface = _STATE.get("relative_manager_iface")
+        manager_iface = _CONN.get("relative_manager_iface")
         if manager_iface is not None:
-            _STATE["relative_manager"] = wl.wl_proxy_marshal_flags(
-                registry, _STATE["opcodes"]["bind"], ctypes.addressof(manager_iface), 1, 0,
+            _CONN["relative_manager"] = wl.wl_proxy_marshal_flags(
+                registry, _CONN["opcodes"]["bind"], ctypes.addressof(manager_iface), 1, 0,
                 ctypes.c_uint32(name), ctypes.c_char_p(b"zwp_relative_pointer_manager_v1"),
                 ctypes.c_uint32(1), ctypes.c_void_p(None))
         return
-    if interface == b"wl_compositor" and _STATE["compositor"] is None:
+    if interface == b"xdg_toplevel_tag_manager_v1" and _CONN["tag_manager"] is None:
+        _, wl = _c()
+        tag_iface = _CONN.get("tag_iface")
+        if tag_iface is not None:
+            _CONN["tag_manager"] = wl.wl_proxy_marshal_flags(
+                registry, _CONN["opcodes"]["bind"], ctypes.addressof(tag_iface), 1, 0,
+                ctypes.c_uint32(name), ctypes.c_char_p(b"xdg_toplevel_tag_manager_v1"),
+                ctypes.c_uint32(1), ctypes.c_void_p(None))
+        return
+    if interface == b"wl_compositor" and _CONN["compositor"] is None:
         _, wl = _c()
         comp_iface = _iface_addr(wl, "wl_compositor_interface")
         ver = min(int(version), 4)
-        _STATE["compositor"] = wl.wl_proxy_marshal_flags(
-            registry, _STATE["opcodes"]["bind"], comp_iface, ver, 0,
+        _CONN["compositor"] = wl.wl_proxy_marshal_flags(
+            registry, _CONN["opcodes"]["bind"], comp_iface, ver, 0,
             ctypes.c_uint32(name), ctypes.c_char_p(b"wl_compositor"),
             ctypes.c_uint32(ver), ctypes.c_void_p(None))
         return
-    if interface == b"wl_seat" and _STATE["seat"] is None:
+    if interface == b"wl_seat" and _CONN["seat"] is None:
         _, wl = _c()
         seat_iface = _iface_addr(wl, "wl_seat_interface")
         ver = min(int(version), 5)
         # wl_registry.bind(name, interface, version, new_id) - "usun"
-        seat = wl.wl_proxy_marshal_flags(registry, _STATE["opcodes"]["bind"], seat_iface, ver, 0,
+        seat = wl.wl_proxy_marshal_flags(registry, _CONN["opcodes"]["bind"], seat_iface, ver, 0,
                                          ctypes.c_uint32(name), ctypes.c_char_p(b"wl_seat"),
                                          ctypes.c_uint32(ver), ctypes.c_void_p(None))
-        _STATE["seat"] = seat
+        _CONN["seat"] = seat
         if seat:
             pointer_iface = _iface_addr(wl, "wl_pointer_interface")
             # wl_seat.get_pointer(new_id) - "n", opcode 0
             ptr = wl.wl_proxy_marshal_flags(seat, 0, pointer_iface, ver, 0, ctypes.c_void_p(None))
-            _STATE["pointer"] = ptr
+            _CONN["pointer"] = ptr
             if ptr:
-                wl.wl_proxy_add_listener(ptr, _STATE["pointer_listener"], None)
+                wl.wl_proxy_add_listener(ptr, _CONN["pointer_listener"], None)
 
 
 def _on_global_remove(data, registry, name):
@@ -477,7 +558,7 @@ def _on_global_remove(data, registry, name):
 
 
 def _on_enter(data, pointer, serial, surface, sx, sy):
-    _STATE["enter_serial"] = int(serial)
+    _CONN["enter_serial"] = int(serial)
 
 
 def _on_leave(data, pointer, serial, surface):
@@ -487,24 +568,24 @@ def _on_leave(data, pointer, serial, surface):
     # will be delivered elsewhere and GLFW's button state stays PRESS for
     # good. Mark the buttons as up, and mask GLFW's stale reading until
     # its next real event on them (note_glfw_button).
-    held = _STATE["held"]
+    held = _CONN["held"]
     if held:
-        _STATE["masked"].update(held)
+        _CONN["masked"].update(held)
         held.clear()
 
 
 def _on_button(data, pointer, serial, time_ms, button, state):
     glfw_button = _EVDEV_TO_GLFW.get(int(button), int(button))
     if int(state) == _BTN_PRESSED:
-        if not _STATE["held"]:
+        if not _CONN["held"]:
             # First button in a button sequence: the compositor's pointer
             # grab starts here. A chord's second button gets its own serial.
-            _STATE["grab_serial"] = int(serial)
-        _STATE["press_serial"] = int(serial)
-        _STATE["press_button"] = glfw_button
-        _STATE["held"].add(glfw_button)
+            _CONN["grab_serial"] = int(serial)
+        _CONN["press_serial"] = int(serial)
+        _CONN["press_button"] = glfw_button
+        _CONN["held"].add(glfw_button)
     else:
-        _STATE["held"].discard(glfw_button)
+        _CONN["held"].discard(glfw_button)
 
 
 def _on_any(*args):
@@ -517,7 +598,7 @@ def _build_listeners():
     _, wl = _c()
     reg_iface = _wl_interface.in_dll(wl, "wl_registry_interface")
     ptr_iface = _wl_interface.in_dll(wl, "wl_pointer_interface")
-    keep = _STATE["keep"]
+    keep = _CONN["keep"]
     reg_fns = [_GLOBAL_CB(_on_global), _GLOBAL_REMOVE_CB(_on_global_remove)]
     while len(reg_fns) < reg_iface.event_count:
         reg_fns.append(_ANY_CB(_on_any))
@@ -535,16 +616,73 @@ def _build_listeners():
 # Public surface
 # ---------------------------------------------------------------------------
 
-def attach(window):
-    """Find the window's xdg_toplevel, bind a seat + pointer for serials and
-    chain a GLFW mouse-button callback that clears the post-grab mask. Render
-    thread, once, AFTER Melty.init_input_backend (so the chain runs first).
+def _bind_connection(display):
+    """Once per wl_display: the registry, and through it the seat + pointer
+    (press serials), the compositor (input regions), the relative pointer
+    manager (screen-space right-drag motion) and the toplevel-tag manager.
+    Every window of the process shares these. False with the reason in
+    _CONN["error"] when the seat is missing."""
+    _, wl = _c()
+    if _CONN["display"] != display:
+        # A new connection (new GLFW window): the old seat/pointer/registry
+        # proxies are dangling - never marshal on them again.
+        _CONN.update(seat=None, pointer=None, registry=None, compositor=None, press_serial=0,
+                     grab_serial=0, press_button=None, held=set(), enter_serial=0,
+                     relative_manager=None, relative_pointer=None, tag_manager=None,
+                     opcodes={}, error=None)
+        _CONN["masked"].clear()
+    _CONN["display"] = display
+    if _CONN["registry"]:
+        return bool(_CONN["pointer"])
+    keep = _CONN["keep"]
+    if _CONN.get("relative_manager_iface") is None:
+        manager_iface, rel_iface = _build_relative_pointer_interfaces(wl, keep)
+        _CONN["relative_manager_iface"] = manager_iface
+        _CONN["relative_iface"] = rel_iface
+    if _CONN.get("tag_iface") is None:
+        _CONN["tag_iface"] = _build_toplevel_tag_interface(keep)
+    reg_tab, ptr_tab = _build_listeners()
+    _CONN["pointer_listener"] = ptr_tab
+    # registry: wl_display.get_registry (opcode 1, "n"); bind is opcode 0
+    _CONN["opcodes"]["bind"] = 0
+    reg_iface = _iface_addr(wl, "wl_registry_interface")
+    registry = wl.wl_proxy_marshal_flags(display, 1, reg_iface, wl.wl_proxy_get_version(display), 0,
+                                         ctypes.c_void_p(None))
+    if not registry:
+        _CONN["error"] = "wl_display.get_registry failed"
+        return False
+    _CONN["registry"] = registry
+    wl.wl_proxy_add_listener(registry, reg_tab, None)
+    wl.wl_display_roundtrip(display)       # globals → seat → pointer, compositor, managers
+    if not _CONN["pointer"]:
+        _CONN["error"] = "no wl_seat advertised"
+        return False
+    _setup_relative_pointer()               # screen-space motion for the right-drag
+    # Input region plumbing (set_input_rect): wl_compositor.create_region,
+    # wl_region.add/destroy - by name.
+    if _CONN["compositor"]:
+        _CONN["opcodes"].update(_opcodes(_CONN["compositor"], {b"create_region"}))
+        region_iface = _wl_interface.in_dll(wl, "wl_region_interface")
+        _CONN["opcodes"].update({"region_" + k: v for k, v in
+                                 _opcodes_of(region_iface, {b"add", b"destroy"}).items()})
+    _CONN["error"] = None
+    return True
+
+
+def attach(window, tag=None):
+    """Find the window's xdg_toplevel (+ xdg_surface, EGL window), bind the
+    connection's seat + pointer for serials (once per display) and chain a
+    GLFW mouse-button callback that clears the post-grab mask. Render
+    thread, once per window, AFTER Melty.init_input_backend (so the chain
+    runs first). ``tag`` (a stable string, the @glfw_window name) is set as
+    the toplevel's xdg tag when the compositor offers the protocol.
     Returns True when moves are available; the reason for a False sits in
     last_error()."""
     if _STATE["attached"] and _STATE["window"] == window:
         return available()
     _STATE["attached"] = True
     _STATE["window"] = window
+    _STATE["tag"] = tag
     try:
         if glfw.get_platform() != glfw.PLATFORM_WAYLAND:
             _STATE["error"] = "not a Wayland session"
@@ -555,14 +693,7 @@ def attach(window):
         if not display or not surface:
             _STATE["error"] = "GLFW exposes no Wayland display/surface"
             return False
-        if _STATE["display"] != display:
-            # A new connection (fresh GLFW window): the old seat/pointer/registry
-            # proxies are stale: never marshal on them again.
-            _STATE.update(seat=None, pointer=None, registry=None, press_serial=0, grab_serial=0,
-                          press_button=None, held=set(), enter_serial=0,
-                          relative_manager=None, relative_pointer=None)
         _STATE["display"] = display
-        _STATE["masked"].clear()
         glfw_window = wl.wl_proxy_get_user_data(surface)
         toplevel = _find_proxy(glfw_window, b"xdg_toplevel")
         if not toplevel or wl.wl_proxy_get_class(toplevel) != b"xdg_toplevel":
@@ -583,40 +714,18 @@ def attach(window):
             if "set_window_geometry" in geo:
                 _STATE["xdg_surface"] = xdg_surface
                 _STATE["opcodes"].update(geo)
-        # registry: wl_display.get_registry (opcode 1: "interface"); bind is opcode 0
-        reg_iface = _iface_addr(wl, "wl_registry_interface")
-        _STATE["opcodes"]["bind"] = 0
         _STATE["surface"] = surface
         # The EGL window beside them: its attach offset is the client-side
         # window rect the OS-edge physics rides (os_frame.flush at the flip).
         _STATE["egl_window"] = _find_egl_window(glfw_window, surface)
-        if _STATE.get("relative_manager_iface") is None:
-            manager_iface, rel_iface = _build_relative_pointer_interfaces(wl, _STATE["keep"])
-            _STATE["relative_manager_iface"] = manager_iface
-            _STATE["relative_iface"] = rel_iface
-        reg_tab, ptr_tab = _build_listeners()
-        _STATE["pointer_listener"] = ptr_tab
-        registry = wl.wl_proxy_marshal_flags(display, 1, reg_iface, wl.wl_proxy_get_version(display), 0,
-                                             ctypes.c_void_p(None))
-        if not registry:
-            _STATE["error"] = "wl_display.get_registry failed"
+        if not _bind_connection(display):
+            _STATE["error"] = _CONN["error"]
             return False
-        _STATE["registry"] = registry
-        wl.wl_proxy_add_listener(registry, reg_tab, None)
-        wl.wl_display_roundtrip(display)       # globals → seat, pointer, compositor, relative manager
-        if not _STATE["pointer"]:
-            _STATE["error"] = "no wl_seat advertised"
-            return False
-        _setup_relative_pointer()               # screen-space coordinates for the right-drag
-        # Input region plumbing (set_input_rect): wl_compositor.create_region,
-        # wl_region.add/destroy, wl_surface.set_input_region - by name.
-        if _STATE["compositor"]:
-            _STATE["opcodes"].update(_opcodes(_STATE["compositor"], {b"create_region"}))
-            _STATE["opcodes"].update({"surface_" + k: v for k, v in
-                                      _opcodes(surface, {b"set_input_region"}).items()})
-            region_iface = _wl_interface.in_dll(wl, "wl_region_interface")
-            _STATE["opcodes"].update({"region_" + k: v for k, v in
-                                      _opcodes_of(region_iface, {b"add", b"destroy"}).items()})
+        # wl_surface.set_input_region - by name, on this window's surface.
+        _STATE["opcodes"].update({"surface_" + k: v for k, v in
+                                  _opcodes(surface, {b"set_input_region"}).items()})
+        if tag:
+            set_toplevel_tag(toplevel, tag)
         _STATE["prev_button_cb"] = glfw.set_mouse_button_callback(window, _glfw_button)
         _STATE["error"] = None
         return True
@@ -625,8 +734,19 @@ def attach(window):
         return False
 
 
+def detach(window):
+    """The window is going away (Surface.destroy, before glfw.destroy_window):
+    forget its proxies — GLFW destroys them with the window. The
+    connection's seat, pointer, registry and managers stay bound for the
+    other windows; nothing of theirs is per window."""
+    if _STATE["window"] != window:
+        return
+    _STATE.update(attached=False, window=None, toplevel=None, xdg_surface=None, surface=None,
+                  egl_window=None, offset_armed=False, prev_button_cb=None, tag=None, opcodes={})
+
+
 def available():
-    return bool(_STATE["toplevel"] and _STATE["pointer"] and _STATE["error"] is None)
+    return bool(_STATE["toplevel"] and _CONN["pointer"] and _STATE["error"] is None)
 
 
 def last_error():
@@ -634,13 +754,13 @@ def last_error():
 
 
 def press_serial():
-    return _STATE["press_serial"]
+    return _CONN["press_serial"]
 
 
 def enter_serial():
     """Serial of the last wl_pointer.enter on this client: it changes when the
     pointer comes back after a compositor grab — the grab-over signal."""
-    return _STATE["enter_serial"]
+    return _CONN["enter_serial"]
 
 
 def _grab(opcode_name, *extra):
@@ -653,7 +773,7 @@ def _grab(opcode_name, *extra):
     if not available():
         return False
     serials = []
-    for serial in (_STATE["grab_serial"], _STATE["press_serial"]):
+    for serial in (_CONN["grab_serial"], _CONN["press_serial"]):
         if serial and serial not in serials:
             serials.append(serial)
     if not serials:
@@ -661,16 +781,16 @@ def _grab(opcode_name, *extra):
     _, wl = _c()
     toplevel = _STATE["toplevel"]
     for serial in serials:
-        args = [ctypes.c_void_p(_STATE["seat"]), ctypes.c_uint32(serial)] + list(extra)
+        args = [ctypes.c_void_p(_CONN["seat"]), ctypes.c_uint32(serial)] + list(extra)
         wl.wl_proxy_marshal_flags(toplevel, _STATE["opcodes"][opcode_name], None,
                                   wl.wl_proxy_get_version(toplevel), 0, *args)
     wl.wl_display_flush(_STATE["display"])
     # The grab swallows the release of EVERY button held until now (two
     # when a second button joined before the grab).
-    held = set(_STATE["held"])
-    if _STATE["press_button"] is not None:
-        held.add(_STATE["press_button"])
-    _STATE["masked"].update(held)
+    held = set(_CONN["held"])
+    if _CONN["press_button"] is not None:
+        held.add(_CONN["press_button"])
+    _CONN["masked"].update(held)
     return True
 
 
@@ -739,8 +859,8 @@ def set_window_geometry(x, y, w, h):
 
 
 def input_region_available():
-    ops = _STATE["opcodes"]
-    return bool(_STATE["compositor"] and _STATE["surface"]
+    ops = {**_CONN["opcodes"], **_STATE["opcodes"]}
+    return bool(_CONN["compositor"] and _STATE["surface"]
                 and all(k in ops for k in ("create_region", "surface_set_input_region",
                                            "region_add", "region_destroy")))
 
@@ -755,7 +875,7 @@ def set_input_rect(rect):
     if not input_region_available():
         return False
     _, wl = _c()
-    ops = _STATE["opcodes"]
+    ops = {**_CONN["opcodes"], **_STATE["opcodes"]}
     surface = _STATE["surface"]
     if rect is None:
         wl.wl_proxy_marshal_flags(surface, ops["surface_set_input_region"], None,
@@ -763,7 +883,7 @@ def set_input_rect(rect):
     else:
         x, y, w, h = (int(v) for v in rect)
         region_iface = _iface_addr(wl, "wl_region_interface")
-        compositor = _STATE["compositor"]
+        compositor = _CONN["compositor"]
         region = wl.wl_proxy_marshal_flags(compositor, ops["create_region"], region_iface,
                                            wl.wl_proxy_get_version(compositor), 0, ctypes.c_void_p(None))
         if not region:
@@ -783,25 +903,25 @@ def button_masked(button):
     """True while GLFW's level state for `button` is a stale PRESS: the
     compositor's grab took the release. Polls (imgui, LSDStudio.on_mouse)
     read the button as up while this holds."""
-    return button in _STATE["masked"]
+    return button in _CONN["masked"]
 
 
 def masked_buttons():
-    return set(_STATE["masked"])
+    return set(_CONN["masked"])
 
 
 def button_held(button):
     """Our own wl_pointer's level state for `button` (GLFW index): True /
     False, or None when no pointer is bound (X11, attach failed) — then
     there is no independent truth and the caller must not trust this."""
-    if not _STATE["pointer"]:
+    if not _CONN["pointer"]:
         return None
-    return button in _STATE["held"]
+    return button in _CONN["held"]
 
 
 def note_glfw_button(button, action):
     """GLFW saw a real event for `button` — its state is truthful again."""
-    _STATE["masked"].discard(button)
+    _CONN["masked"].discard(button)
 
 
 def _glfw_button(window, button, action, mods):

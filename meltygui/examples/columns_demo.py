@@ -24,7 +24,7 @@ rows_demo = Rows({
 })
 
 
-@glfw_window(title='Columns demo', size=(900, 560))
+@glfw_window(name='Columns demo', width=900, height=560)
 @render_func(tint=(0.19, 0.23, 0.29), auto_resize=False, min_width=720, min_height=420)
 def draw_columns_demo(_, draw_state):
     imgui.text("draw_rows / draw_columns: shared edges — rows, columns, nested both ways")

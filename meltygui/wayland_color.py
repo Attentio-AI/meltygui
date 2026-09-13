@@ -47,12 +47,23 @@ import glfw
 from src.lsd.gl_gui.wayland_move import (_c, _iface_addr, _wl_interface, _wl_message,
                                          _wl_message_array)
 
+# Two scopes (see wayland_move for the same split): _STATE is the SURFACE's
+# - its wp_color_management_surface, feedback, description, and mode -
+# swapped per Surface by surface.swap; _CONN is the CONNECTION's - the
+# registry, the bound manager and what it supports, the interface tables,
+# the listener tables and their ctypes callbacks (`keep`) - bound once per
+# wl_display and shared by every window (never swapped, never collected
+# with the window).
 _STATE = globals().get("_STATE") or {
-    "display": None, "surface": None, "registry": None, "manager": None, "manager_version": 0,
+    "display": None, "surface": None,
     "cm_surface": None, "description": None, "applied": None, "wanted": None,
+    "ready": None, "failed": None, "identity": None,
+    "reference_nits": None, "error": None, "attached_to": None,
+}
+_CONN = globals().get("_CONN") or {
+    "display": None, "registry": None, "manager": None, "manager_version": 0,
     "supported_tf": set(), "supported_primaries": set(), "supported_features": set(),
-    "done": False, "ready": None, "failed": None, "identity": None,
-    "reference_nits": None, "keep": [], "ifaces": {}, "error": None, "attached_to": None,
+    "done": False, "keep": [], "ifaces": {}, "error": None,
 }
 # Fields added after the first release (a hotswapped module keeps the old dict).
 for _key, _default in (("feedback", None), ("preferred_reference", None), ("preferred_luminances", None),
@@ -157,17 +168,17 @@ _INT8_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, *([ctypes.c_
 
 
 def _on_global(data, registry, name, interface, version):
-    if interface == b"wp_color_manager_v1" and _STATE["manager"] is None:
+    if interface == b"wp_color_manager_v1" and _CONN["manager"] is None:
         _, wl = _c()
         ver = min(int(version), _BIND_VERSION)
         manager = wl.wl_proxy_marshal_flags(
-            registry, 0, ctypes.addressof(_STATE["ifaces"]["manager"]), ver, 0,
+            registry, 0, ctypes.addressof(_CONN["ifaces"]["manager"]), ver, 0,
             ctypes.c_uint32(name), ctypes.c_char_p(b"wp_color_manager_v1"),
             ctypes.c_uint32(ver), ctypes.c_void_p(None))
         if manager:
-            _STATE["manager"] = manager
-            _STATE["manager_version"] = ver
-            wl.wl_proxy_add_listener(manager, _STATE["manager_listener"], None)
+            _CONN["manager"] = manager
+            _CONN["manager_version"] = ver
+            wl.wl_proxy_add_listener(manager, _CONN["manager_listener"], None)
 
 
 def _on_global_remove(data, registry, name):
@@ -179,19 +190,19 @@ def _on_intent(data, proxy, value):
 
 
 def _on_feature(data, proxy, value):
-    _STATE["supported_features"].add(int(value))
+    _CONN["supported_features"].add(int(value))
 
 
 def _on_tf(data, proxy, value):
-    _STATE["supported_tf"].add(int(value))
+    _CONN["supported_tf"].add(int(value))
 
 
 def _on_primaries(data, proxy, value):
-    _STATE["supported_primaries"].add(int(value))
+    _CONN["supported_primaries"].add(int(value))
 
 
 def _on_done(data, proxy):
-    _STATE["done"] = True
+    _CONN["done"] = True
 
 
 def _on_failed(data, proxy, cause, msg):
@@ -243,21 +254,21 @@ def _on_info_ignore(data, proxy, *args):
 def _table(callbacks):
     cbs = [ctor(fn) for ctor, fn in callbacks]
     table = (ctypes.c_void_p * len(cbs))(*[ctypes.cast(cb, ctypes.c_void_p).value for cb in cbs])
-    _STATE["keep"].extend(cbs + [table])
+    _CONN["keep"].extend(cbs + [table])
     return ctypes.addressof(table)
 
 
 def _build_listeners():
-    _STATE["registry_listener"] = _table([(_GLOBAL_CB, _on_global), (_GLOBAL_REMOVE_CB, _on_global_remove)])
-    _STATE["manager_listener"] = _table([(_UINT_CB, _on_intent), (_UINT_CB, _on_feature),
-                                         (_UINT_CB, _on_tf), (_UINT_CB, _on_primaries),
-                                         (_VOID_CB, _on_done)])
-    _STATE["desc_listener"] = _table([(_FAILED_CB, _on_failed), (_UINT_CB, _on_ready),
-                                      (_UINT2_CB, _on_ready2)])
-    _STATE["feedback_listener"] = _table([(_UINT_CB, _on_preferred_changed),
-                                          (_UINT2_CB, _on_preferred_changed)])
+    _CONN["registry_listener"] = _table([(_GLOBAL_CB, _on_global), (_GLOBAL_REMOVE_CB, _on_global_remove)])
+    _CONN["manager_listener"] = _table([(_UINT_CB, _on_intent), (_UINT_CB, _on_feature),
+                                        (_UINT_CB, _on_tf), (_UINT_CB, _on_primaries),
+                                        (_VOID_CB, _on_done)])
+    _CONN["desc_listener"] = _table([(_FAILED_CB, _on_failed), (_UINT_CB, _on_ready),
+                                     (_UINT2_CB, _on_ready2)])
+    _CONN["feedback_listener"] = _table([(_UINT_CB, _on_preferred_changed),
+                                         (_UINT2_CB, _on_preferred_changed)])
     # wp_image_description_info_v1 events, in table order (see _build_interfaces)
-    _STATE["info_listener"] = _table([
+    _CONN["info_listener"] = _table([
         (_VOID_CB, _on_info_done), (_ICC_CB, _on_info_icc), (_INT8_CB, _on_info_ignore),
         (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore), (_UINT_CB, _on_info_ignore),
         (_UINT3_CB, _on_info_luminances), (_INT8_CB, _on_info_ignore), (_UINT2_CB, _on_info_ignore),
@@ -281,35 +292,17 @@ def attach(display, surface) -> bool:
         if not display or not surface:
             _STATE["error"] = "no Wayland display/surface"
             return False
-        if _STATE["display"] != display:
-            _STATE.update(registry=None, manager=None, cm_surface=None, description=None,
-                          applied=None, done=False, supported_tf=set(), supported_primaries=set(),
-                          supported_features=set(), feedback=None, preferred_reference=None,
-                          preferred_dirty=False, preferred_query_failed=None, synced_reference=None)
-        elif _STATE["surface"] != surface:
-            _STATE.update(cm_surface=None, feedback=None, preferred_reference=None,
+        if _STATE["display"] != display or _STATE["surface"] != surface:
+            _STATE.update(cm_surface=None, description=None, applied=None, wanted=None,
+                          feedback=None, preferred_reference=None, preferred_luminances=None,
                           preferred_dirty=False, preferred_query_failed=None, synced_reference=None)
         _STATE.update(display=display, surface=surface)
-        if not _STATE["ifaces"]:
-            _STATE["ifaces"] = _build_interfaces(wl, _STATE["keep"])
-            _build_listeners()
         if not hasattr(wl, "_melty_color_bound"):
             wl.wl_proxy_destroy.argtypes = [ctypes.c_void_p]
             wl.wl_proxy_destroy.restype = None
             wl._melty_color_bound = True
-        if _STATE["registry"] is None:
-            reg_iface = _iface_addr(wl, "wl_registry_interface")
-            registry = wl.wl_proxy_marshal_flags(display, 1, reg_iface, wl.wl_proxy_get_version(display), 0,
-                                                 ctypes.c_void_p(None))
-            if not registry:
-                _STATE["error"] = "wl_display.get_registry failed"
-                return False
-            _STATE["registry"] = registry
-            wl.wl_proxy_add_listener(registry, _STATE["registry_listener"], None)
-            wl.wl_display_roundtrip(display)      # globals → manager bound
-            wl.wl_display_roundtrip(display)      # manager's supported_* + done
-        if _STATE["manager"] is None:
-            _STATE["error"] = "compositor offers no wp_color_manager_v1"
+        if not _bind_connection(display):
+            _STATE["error"] = _CONN["error"]
             return False
         _STATE["error"] = None
         query_preferred()         # the desktop's SDR white; a failure here only means the fallback
@@ -319,8 +312,54 @@ def attach(display, surface) -> bool:
         return False
 
 
+def _bind_connection(display) -> bool:
+    """Once per wl_display: the registry, the colour manager and its
+    supported_* tables. False with the reason in _CONN["error"]."""
+    _, wl = _c()
+    if _CONN["display"] != display:
+        # A new connection (fresh GLFW instance): the old proxies are dangling.
+        _CONN.update(registry=None, manager=None, manager_version=0, done=False, supported_tf=set(),
+                     supported_primaries=set(), supported_features=set(), error=None)
+    _CONN["display"] = display
+    if not _CONN["ifaces"]:
+        _CONN["ifaces"] = _build_interfaces(wl, _CONN["keep"])
+        _build_listeners()
+    if _CONN["registry"] is None:
+        reg_iface = _iface_addr(wl, "wl_registry_interface")
+        registry = wl.wl_proxy_marshal_flags(display, 1, reg_iface, wl.wl_proxy_get_version(display), 0,
+                                             ctypes.c_void_p(None))
+        if not registry:
+            _CONN["error"] = "wl_display.get_registry failed"
+            return False
+        _CONN["registry"] = registry
+        wl.wl_proxy_add_listener(registry, _CONN["registry_listener"], None)
+        wl.wl_display_roundtrip(display)      # globals → manager bound
+        wl.wl_display_roundtrip(display)      # manager's supported_* + done
+    if _CONN["manager"] is None:
+        _CONN["error"] = "compositor offers no wp_color_manager_v1"
+        return False
+    _CONN["error"] = None
+    return True
+
+
+def detach(surface=None):
+    """The surface is going away (Surface.destroy, before glfw.destroy_window):
+    destroy ITS colour-management objects — feedback, surface tag,
+    description — and forget them. The connection's manager stays bound
+    for the other windows. ``surface`` None: whatever _STATE holds."""
+    if surface is not None and _STATE["surface"] != surface:
+        return
+    for key in ("feedback", "cm_surface", "description"):
+        try:
+            _destroy(key)
+        except Exception:
+            _STATE[key] = None
+    _STATE.update(surface=None, attached_to=None, applied=None, wanted=None, synced_reference=None,
+                  preferred_reference=None, preferred_luminances=None, preferred_dirty=False)
+
+
 def available() -> bool:
-    return bool(_STATE["manager"] and _STATE["error"] is None)
+    return bool(_CONN["manager"] and _STATE["error"] is None)
 
 
 def last_error():
@@ -328,8 +367,8 @@ def last_error():
 
 
 def supported() -> dict:
-    return {"tf": sorted(_STATE["supported_tf"]), "primaries": sorted(_STATE["supported_primaries"]),
-            "features": sorted(_STATE["supported_features"]), "version": _STATE["manager_version"]}
+    return {"tf": sorted(_CONN["supported_tf"]), "primaries": sorted(_CONN["supported_primaries"]),
+            "features": sorted(_CONN["supported_features"]), "version": _CONN["manager_version"]}
 
 
 def _destroy(key):
@@ -346,14 +385,14 @@ def create_description(primaries: int, tf: int, reference_nits: float | None = N
     """A parametric image description; blocks for the compositor's ready /
     failed. On success it replaces `_STATE["description"]`."""
     _, wl = _c()
-    manager, display = _STATE["manager"], _STATE["display"]
+    manager, display = _CONN["manager"], _STATE["display"]
     if not manager:
         return False
-    if tf not in _STATE["supported_tf"] or primaries not in _STATE["supported_primaries"]:
+    if tf not in _CONN["supported_tf"] or primaries not in _CONN["supported_primaries"]:
         _STATE["error"] = f"compositor lacks tf {tf} / primaries {primaries}: {supported()}"
         return False
-    ifaces = _STATE["ifaces"]
-    ver = _STATE["manager_version"]
+    ifaces = _CONN["ifaces"]
+    ver = _CONN["manager_version"]
     creator = wl.wl_proxy_marshal_flags(manager, 5, ctypes.addressof(ifaces["creator"]), ver, 0,
                                         ctypes.c_void_p(None))
     if not creator:
@@ -362,7 +401,7 @@ def create_description(primaries: int, tf: int, reference_nits: float | None = N
     wl.wl_proxy_marshal_flags(creator, 3, ctypes.c_void_p(None), ver, 0, ctypes.c_uint32(primaries))
     wl.wl_proxy_marshal_flags(creator, 1, ctypes.c_void_p(None), ver, 0, ctypes.c_uint32(tf))
     used_reference = None
-    if reference_nits and FEATURE_SET_LUMINANCES in _STATE["supported_features"]:
+    if reference_nits and FEATURE_SET_LUMINANCES in _CONN["supported_features"]:
         # min_lum is in 0.0001 cd/m², the others in cd/m²
         wl.wl_proxy_marshal_flags(creator, 5, ctypes.c_void_p(None), ver, 0,
                                   ctypes.c_uint32(int(round(min_nits * 10000))), ctypes.c_uint32(int(max_nits)),
@@ -377,7 +416,7 @@ def create_description(primaries: int, tf: int, reference_nits: float | None = N
     if not desc:
         _STATE["error"] = "image description create failed"
         return False
-    wl.wl_proxy_add_listener(desc, _STATE["desc_listener"], None)
+    wl.wl_proxy_add_listener(desc, _CONN["desc_listener"], None)
     for _ in range(4):
         wl.wl_display_roundtrip(display)
         if _STATE["ready"] is not None:
@@ -395,12 +434,12 @@ def create_description(primaries: int, tf: int, reference_nits: float | None = N
 def set_surface_description(intent: int = INTENT_PERCEPTUAL) -> bool:
     """Tag the surface with the current description (create_description first)."""
     _, wl = _c()
-    manager, surface, desc = _STATE["manager"], _STATE["surface"], _STATE["description"]
+    manager, surface, desc = _CONN["manager"], _STATE["surface"], _STATE["description"]
     if not (manager and surface and desc):
         return False
-    ver = _STATE["manager_version"]
+    ver = _CONN["manager_version"]
     if _STATE["cm_surface"] is None:
-        cm = wl.wl_proxy_marshal_flags(manager, 2, ctypes.addressof(_STATE["ifaces"]["surface"]), ver, 0,
+        cm = wl.wl_proxy_marshal_flags(manager, 2, ctypes.addressof(_CONN["ifaces"]["surface"]), ver, 0,
                                        ctypes.c_void_p(None), ctypes.c_void_p(surface))
         if not cm:
             _STATE["error"] = "get_surface failed"
@@ -417,7 +456,7 @@ def unset_surface_description() -> bool:
     cm = _STATE["cm_surface"]
     if not cm:
         return True
-    wl.wl_proxy_marshal_flags(cm, 2, ctypes.c_void_p(None), _STATE["manager_version"], 0)
+    wl.wl_proxy_marshal_flags(cm, 2, ctypes.c_void_p(None), _CONN["manager_version"], 0)
     wl.wl_display_flush(_STATE["display"])
     return True
 
@@ -430,18 +469,18 @@ def reference_nits():
 
 def _ensure_feedback() -> bool:
     _, wl = _c()
-    manager, surface = _STATE["manager"], _STATE["surface"]
+    manager, surface = _CONN["manager"], _STATE["surface"]
     if not (manager and surface):
         return False
     if _STATE["feedback"] is None:
-        fb = wl.wl_proxy_marshal_flags(manager, 3, ctypes.addressof(_STATE["ifaces"]["feedback"]),
-                                       _STATE["manager_version"], 0, ctypes.c_void_p(None),
+        fb = wl.wl_proxy_marshal_flags(manager, 3, ctypes.addressof(_CONN["ifaces"]["feedback"]),
+                                       _CONN["manager_version"], 0, ctypes.c_void_p(None),
                                        ctypes.c_void_p(surface))
         if not fb:
             _STATE["preferred_query_failed"] = "get_surface_feedback failed"
             return False
         _STATE["feedback"] = fb
-        wl.wl_proxy_add_listener(fb, _STATE["feedback_listener"], None)
+        wl.wl_proxy_add_listener(fb, _CONN["feedback_listener"], None)
     return True
 
 
@@ -455,15 +494,15 @@ def query_preferred() -> float | None:
     _STATE["preferred_dirty"] = False
     if not _ensure_feedback():
         return None
-    ver, display = _STATE["manager_version"], _STATE["display"]
-    ifaces = _STATE["ifaces"]
+    ver, display = _CONN["manager_version"], _STATE["display"]
+    ifaces = _CONN["ifaces"]
     _STATE.update(ready=None, failed=None, identity=None, info_luminances=None, info_done=False)
     desc = wl.wl_proxy_marshal_flags(_STATE["feedback"], 2, ctypes.addressof(ifaces["desc"]), ver, 0,
                                      ctypes.c_void_p(None))
     if not desc:
         _STATE["preferred_query_failed"] = "get_preferred_parametric failed"
         return None
-    wl.wl_proxy_add_listener(desc, _STATE["desc_listener"], None)
+    wl.wl_proxy_add_listener(desc, _CONN["desc_listener"], None)
     info = None
     try:
         for _ in range(4):
@@ -478,7 +517,7 @@ def query_preferred() -> float | None:
         if not info:
             _STATE["preferred_query_failed"] = "get_information failed"
             return None
-        wl.wl_proxy_add_listener(info, _STATE["info_listener"], None)
+        wl.wl_proxy_add_listener(info, _CONN["info_listener"], None)
         for _ in range(4):
             wl.wl_display_roundtrip(display)
             if _STATE["info_done"]:

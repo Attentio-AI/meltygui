@@ -1386,6 +1386,11 @@ class Toggles:
 
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:
+        # Every tree / expand arrow (the header arrows, the chat's carets and
+        # the sidebar's folder arrows) draws at this fraction of its recipe's
+        # brightness and alpha; 1 = as designed.
+        # [tint=(0.62, 0.36, 0.52), show_tint=True]
+        arrow_brightness = 0.5
         # Custom client-side titlebar: undecorated OS window so the UI sticks
         # to the top of the display, with min/max/close drawn to the overlay
         # drawlist top-right and drag/edge-resize handed to the WM via
@@ -1470,6 +1475,16 @@ class Toggles:
         # frames render (0 = only at boot and on focus gain).
         # [tint=(0.55, 0.75, 0.35)]
         titlebar_button_refresh_s = 30
+        # On Lukas's patched Hyprland (the compositor has
+        # general:left_drag_move) the chrome also shows the desktop's
+        # left-drag-move toggle — the hyprbars `state = "left_drag_move"`
+        # button: lit while a plain left drag on empty space moves this
+        # app's windows, faded while the app is in left_drag_move_exclude,
+        # a click flips it through desktop/left-drag-toggle (persisted
+        # by the desktop's Settings). Innermost of the right group.
+        # Off = never shown. (gl_gui/hypr_left_drag.py)
+        # [tint=(0.55, 0.75, 0.35)]
+        titlebar_move_toggle = True
 
         # px hit zones for edge/corner resize on the undecorated window.
         resize_border = 6
@@ -2591,6 +2606,10 @@ class Toggles:
         column_gap = 14
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
         new_conversation_margin = 8
+        # Tallest an inline picture (a pasted image, a Read of an image file)
+        # draws in the transcript, in px; wider ones fit the span.
+        # [tint=(0.95, 0.6, 0.25), show_tint=True]
+        image_max_height = 360
         # Brightness cap (HSV value) of a user message's card; the sidebar's
         # conversation cards stay at draw_bg's 0.18.
         # [tint=(0.95, 0.6, 0.25), show_tint=True]

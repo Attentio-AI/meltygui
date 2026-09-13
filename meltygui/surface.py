@@ -49,14 +49,20 @@ MELTY_ATTRS = ('glfw_window', 'vis', 'framebuffer_size', 'frame_inset', 'frame_o
                'root_draw_states', 'root_draw_states_by_layer', 'cache', 'backend',
                'event_handler', 'frame_key_events', 'hovered_ds', 'imgui_main_window_hovered',
                'glfw_close_requested', 'any_window_hovered', 'any_window_hovered_pending',
-               'filter')      # its executor's VAO is per GL context
+               'filter',      # its executor's VAO is per GL context
+               # The hit-test tree and the focus slots are per OS window: boxes
+               # are window-local coordinates, so one shared tree had window B's
+               # views answering window A's hit test at the same local point (and
+               # a closed window's boxes out of sync - the 09-12 two-roots repro).
+               '_bvh', '_bvh_id_to_ds', '_bvh_gen', '_bvh_query_cache', '_bvh_query_cache_gen',
+               'bvh_hover_ids', 'focused_ds', 'text_focused_ds', 'popover_focused_ds')
 # Module globals that assume one window (titlebar/os_frame resolve "the window"
 # through Melty.glfw_window, so with the swap they see this window's).
 MODULE_GLOBALS = {
     titlebar: ('_pressed_button', '_wm_move_started', '_rdrag', '_corner_gl',
                '_input_rect_applied', '_geometry_applied', '_self_resize',
                '_pending_surface_size', '_pending_surface_offset', '_frame_surface_offset',
-               '_pending_surface_fit', '_pending_surface_wait'),
+               '_pending_surface_fit', '_pending_surface_wait', '_last_surface_size'),
     os_frame: ('_STATE',),
     scene_target: ('_STATE',),
     wayland_move: ('_STATE',),
@@ -96,10 +102,14 @@ class Surface:
     owner_window = None     # app.py's hidden share-group root
     owner_context = None    # the imgui context that owns the font atlas
     app_id = 'melty'
+    session = None            # the AppSession app.py loaded (app_session.py), if any
 
-    def __init__(self, name, body, *, title=None, size=(1280, 800), parent=None,
-                 draw_state=None, tint=None):
-        """``body(surface)`` draws the window's content inline into the root.
+    def __init__(self, name, body, *, width=1280, height=800, parent=None,
+                 draw_state=None, tint=None, on_close=None):
+        """``name`` is the window's name AND its OS title (a child's `##suffix`
+        is stripped from the title); ``width`` / ``height`` the content size —
+        the universal melty names, as on `@window` and every view.
+        ``body(surface)`` draws the window's content inline into the root.
         ``parent``: the Surface this one is a child of (glfw_window=True calls);
         ``draw_state``: the child's root draw_state (its window_pos/size are the
         parent-relative geometry, exactly as for a closable melty window);
@@ -107,7 +117,9 @@ class Surface:
         _capture_defaults()
         self.name, self.body, self.parent, self.draw_state = name, body, parent, draw_state
         self.tint = tint
-        self.title = _unique_title(title or name)
+        self.on_close = on_close      # asked when an OS close lands; False keeps the window
+        width, height = int(width), int(height)
+        self.title = _unique_title(name.split('##')[0])
         self.request = None         # the melty.surface_children entry of a child
         self.toplevel = None        # xdg_toplevel proxy (wayland_move), for set_parent
         self.await_ack = False      # a rect sent, the parent yet to show it
@@ -138,18 +150,24 @@ class Surface:
         except Exception:
             pass
         share = Surface.owner_window
-        self.window = glfw.create_window(int(size[0]), int(size[1]), self.title, None, share)
+        self.window = glfw.create_window(width, height, self.title, None, share)
         if not self.window:
             raise SystemExit('glfw.create_window failed')
 
         # Fresh per-window state: module defaults + a clean Melty set.
         self._mods = {key: _fresh(value) for key, value in _DEFAULTS.items()}
-        registry = Melty.draw_state_registry
-        if registry is None:
-            registry = Melty.draw_state_registry = {}
+        # vis.root is what Melty reads and stores off (draw_state_registry,
+        # surface_windows): the user's persisted session (app_session.py)
+        # when app.py loaded one, else a stand-in around the shared registry.
+        root = Surface.session
+        if root is None:
+            registry = Melty.draw_state_registry
+            if registry is None:
+                registry = Melty.draw_state_registry = {}
+            root = SimpleNamespace(draw_state_registry=registry)
         self._melty = dict(
             glfw_window=self.window,
-            vis=SimpleNamespace(root=SimpleNamespace(draw_state_registry=registry),
+            vis=SimpleNamespace(root=root,
                                 window=self.window, tracked_keys=[], first_frame_keys=set(),
                                 fa_font=None),
             framebuffer_size=None, frame_inset=0, frame_origin=(0, 0),
@@ -157,7 +175,10 @@ class Surface:
             cache=None, backend=None, event_handler=input_handler.InputHandler(),
             frame_key_events=[], hovered_ds=None, imgui_main_window_hovered=False,
             glfw_close_requested=False, any_window_hovered=False, any_window_hovered_pending=False,
-            filter=type(Melty.filter)())
+            filter=type(Melty.filter)(),
+            _bvh=type(Melty._bvh)(), _bvh_id_to_ds={}, _bvh_gen=0, _bvh_query_cache={},
+            _bvh_query_cache_gen=-1, bvh_hover_ids=set(),
+            focused_ds=None, text_focused_ds=None, popover_focused_ds=None)
 
         # imgui context sharing the owner's atlas (the owner context OWNS it,
         # so this surface can die without taking the atlas with it).
@@ -170,8 +191,9 @@ class Surface:
         # The renderer uploads the atlas in its constructor, BEFORE it stamps
         # display_size: the FreeType hinting pass (fonts.hint_atlas) frames on
         # the current context and dies on the (-1, -1) default.
-        imgui.get_io().display_size = (float(size[0]), float(size[1]))
+        imgui.get_io().display_size = (float(width), float(height))
         self.activate()
+        titlebar.note_surface_size(self.window)
         glfw.swap_interval(1)
         from src.lsd.gl_gui.view.core_views.split_overlay_renderer import SplitOverlayRenderer
         from src.lsd.gl_gui.view.core_views.blit_offscreen import TileCacheMasked
@@ -189,7 +211,10 @@ class Surface:
         # branch die without a capture ( (branch_dropped).
         Melty.cache.enabled = False
         if glfw.get_platform() == glfw.PLATFORM_WAYLAND:
-            wayland_move.attach(self.window)
+            # The tag is the window's stable identity for the compositor
+            # (remembered floating state key on app id + tag), the name
+            # before its uniqueness suffix.
+            wayland_move.attach(self.window, tag=name.split('##')[0])
             self.toplevel = wayland_move.toplevel_proxy()
             self.hdr_tagged = wayland_color.attach_window(self.window)
         else:
@@ -210,8 +235,7 @@ class Surface:
         # off the screen and its clamps fight the regrow (09-11).
         inset = int(titlebar.window_inset()) if self.chrome else 0
         if inset > 0:
-            titlebar.request_surface_size(self.window, int(size[0]) + 2 * inset,
-                                          int(size[1]) + 2 * inset, fit=True)
+            titlebar.request_surface_size(self.window, width + 2 * inset, height + 2 * inset, fit=True)
 
     # --- activation ----------------------------------------------------------------
     def _stash(self):
@@ -288,6 +312,9 @@ class Surface:
             # The user may have changed the desktop's title-bar buttons in
             # the meantime (titlebar_buttons: rate-limited re-read).
             titlebar_buttons.refresh()
+            # ... or flipped left-drag move in the desktop's Settings.
+            from src.lsd.gl_gui import hypr_left_drag
+            hypr_left_drag.refresh()
 
     def _on_framebuffer_size(self, width, height):
         request_render()
@@ -313,8 +340,13 @@ class Surface:
     def frame(self):
         self.activate()
         if glfw.window_should_close(self.window):
-            self.closed = True
-            return
+            # The window's ×, the compositor's close and set_window_should_close
+            # all land here; a window's on_close may decline (and hide instead).
+            if self.on_close is not None and self.on_close(self) is False:
+                glfw.set_window_should_close(self.window, False)
+            else:
+                self.closed = True
+                return
         titlebar.apply_pending_surface_size(self.window)
         self.impl.process_inputs()
         fb_w, fb_h = glfw.get_framebuffer_size(self.window)
@@ -469,6 +501,19 @@ class Surface:
             GLState.flush_deletes()
         except Exception:
             pass
+        # This window's Wayland objects, released while its proxies are alive
+        # (glfw.destroy_window takes the wl_surface): the HDR buffer / feedback
+        # / description, and wayland_move's per-window references. The
+        # connection-wide seat, pointer and managers stay for the others.
+        if self.hdr_tagged or glfw.get_platform() == glfw.PLATFORM_WAYLAND:
+            try:
+                wayland_color.detach()
+            except Exception:
+                pass
+            try:
+                wayland_move.detach(self.window)
+            except Exception:
+                pass
         if self in Surface.all:
             Surface.all.remove(self)
         Surface.active = None

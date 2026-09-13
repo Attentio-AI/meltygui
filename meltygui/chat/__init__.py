@@ -6,7 +6,7 @@ backend implements, and the registry that plugs a backend into a provider.
     import melty_agents                       # registers the Claude Code backend
 
     persistent_metadata('~/.cache/my-app/chat_metadata.json')
-    melty.glfw_window(title='Chat', app_id='my-app')(draw_chat_interface)
+    melty.glfw_window(name='Chat', app_id='my-app')(draw_chat_interface)
 
 The window (`draw_chat_interface`, the studio's Chat playground) lists the
 account kinds that carry a `chat_label` in a provider dropdown, the accounts
@@ -14,7 +14,8 @@ of that kind next to it, and draws the selected account's conversations:
 a project-grouped sidebar, the transcript, the composer, approval prompts.
 Conversations come from a **ChatProxy** — a dict of `Chat`s the UI edits
 directly (insert a dict to create, `del` to remove, set `title`, append a
-user message to `chat["messages"]`, set `running=False` to stop) and the
+user message to `chat["messages"]`, set `running=False` to stop; `updated`
+is its last activity in epoch seconds, for the sidebar's age filter) and the
 backend mirrors to its provider from a worker thread. `chat_proxy.py` is
 the contract; `codex_proxy.py` in the same package is the reference
 implementation, and its docstrings say what each operation and event means.
@@ -26,6 +27,10 @@ A backend registers a factory for an account kind name:
     @register_chat_backend('anthropic')     # the "Claude Code" provider
     def claude_chats(account, metadata=None, wake=None):
         return ClaudeCodeChats(account['id'], metadata, wake, account=account)
+
+Pictures (`images`): an ImageReference in a message — a base64 payload, a
+path or a data URL — is decoded once and drawn inline by the window, HDR
+sources (PQ PNGs, PQ ICC profiles) as RGB16F so an HDR desktop shows them.
 
 Message values (`messages`: UserMessage, AssistantMessage, ReasoningMessage,
 CommandExecution, FileChange, ... and `set_text`, `upsert`, `text_blocks`)
@@ -40,6 +45,7 @@ first access, after melty's import thread, like the views in `melty` itself.
 from typing import TYPE_CHECKING
 
 from melty.chat import messages
+from src.lsd.gl_gui.chat import images   # inline pictures: image_data, ImageCache, fitted_size
 from src.lsd.gl_gui.chat.backends import CHAT_BACKENDS, chat_backend, register_chat_backend
 from src.lsd.gl_gui.chat.chat_proxy import Chat, ChatProxy
 
@@ -73,4 +79,4 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['messages', 'Chat', 'ChatProxy', 'CHAT_BACKENDS', 'chat_backend', 'register_chat_backend', *_LAZY]
+__all__ = ['messages', 'images', 'Chat', 'ChatProxy', 'CHAT_BACKENDS', 'chat_backend', 'register_chat_backend', *_LAZY]

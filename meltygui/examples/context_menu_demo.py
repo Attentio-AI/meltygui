@@ -9,7 +9,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import draw_any
 demo = {"greeting": "right-click me", "count": 3}
 
 
-@glfw_window(title='Context menu demo', size=(520, 260))
+@glfw_window(name='Context menu demo', width=520, height=260)
 @render_func(tint=(0.78, 0.16, 0.75), auto_resize=False, min_width=420, min_height=200)
 def draw_context_menu_demo(_, draw_state):
     imgui.text("context_menu={label: callable} — right-click a value below")

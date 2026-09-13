@@ -288,26 +288,19 @@ class RenderHost(_DeepAttrMixin, dict):
         if any_mouse_held or Melty.on_scroll:
             return
         # Snapshot: a host may register / remove during its draw.
-        drew = loading = False
         for host in cls.all():
             if (typing_held and getattr(host, "evictable", False)
                     and host.name.startswith("##")):
                 continue
-            if host.value_key not in host:
-                loading = True
             if not host.draw_needed():
                 continue
             host.draw()
-            drew = True
             if mark is not None:
                 mark(f"host[{str(host.name)[:24]}]")
-        # The loop renders only on request. A host that drew needs its result
-        # in the blit cache for the NEXT frame (its consumers re-run then),
-        # and a host whose value is still on a worker thread needs frames
-        # until it lands, so the pump asks for one in both cases; without
-        # this a melty app showed its tabs over an empty editor.
-        if drew or loading:
-            request_render()
+        # Drawing alone is not a change: cached or idle draws must let the
+        # loop sleep. Materialization, edits and background completions already
+        # request their own frames. A missing parse is not pending work either
+        # (plain data / cache hosts may never have a value_key entry).
 
     @classmethod
     def current(cls):

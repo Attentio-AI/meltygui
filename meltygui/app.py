@@ -92,11 +92,6 @@ def boot(app_id=None):
     os.environ.setdefault('GDK_BACKEND', 'wayland')
     from src.lsd.gl_gui import warm_start
     warm_start.prepare(cache)
-    # The desktop's titlebar button setting (a gsettings subprocess on a
-    # background thread, stdlib-only module): landed long before the first
-    # frame draws the window controls.
-    from src.lsd.gl_gui import titlebar_buttons
-    titlebar_buttons.start_probe()
     # While the import thread holds the GIL, each of pyGLFW's Python-side
     # steps waits up to a switch interval for it (5 ms default: window
     # creation went 80 -> 150 ms). Shorten it until the imports are done.
@@ -181,8 +176,17 @@ def _init_melty():
     mark('fonts loaded')
     Melty.style_manager = ImGuiStyleManager()
     Melty.global_attrs['style_manager'] = Melty.style_manager
-    if Melty.draw_state_registry is None:
-        Melty.draw_state_registry = {}
+    # The app's persisted draw states (app_session.py): loaded on the
+    # first Surface so every surface's `Melty.vis.root` is the session and
+    # get_draw_state / note_window_seen / the window z-order read and write
+    # the stores that run() saves on exit.
+    from src.lsd.gl_gui import app_session
+    session = app_session.load(_state['app_id'])
+    _state['session'] = session
+    Melty.draw_state_registry = session.draw_state_registry
+    Melty.adopt_registered_windows(session)
+    Surface.session = session
+    mark('session loaded')
     # melty boots in "annotation mode" (view calls return carriers, nothing
     # renders) until the studio's Melty.init() clears it. That init also
     # starts file watchers and a jedi worker we do not need.
@@ -208,9 +212,17 @@ def _register_editable(file):
     add_editable_root(file)
 
 
-def glfw_window(fn=None, *, name=None, title=None, size=(1280, 800), app_id=None, **view_kwargs):
+def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, on_close=None, **view_kwargs):
     """Register ``fn`` as an OS window. ``fn()`` draws the window's content
     each frame; views it draws at root level fill the window.
+
+    ``name`` (default: the function's name) is the window's name AND its
+    OS title — one per window; ``width`` / ``height`` its content size.
+    ``on_close(surface)`` is asked when the window is told to close (the
+    title bar's ×, the compositor, `glfw.set_window_should_close`): return
+    False to keep it (hide it, say — a chat app with a turn streaming).
+    These are the universal melty names (`@window`, every view's kwargs),
+    never `title=` or `size=` (Lukas 09-12).
 
     Every other keyword argument is the root VIEW's, exactly as `@window`'s
     are the studio window's (`tint=`, `disable_scroll=`, `value=`,
@@ -231,7 +243,8 @@ def glfw_window(fn=None, *, name=None, title=None, size=(1280, 800), app_id=None
         except TypeError:
             source = None
         _register_editable(source)
-        config = dict(name=name or fn.__name__, title=title, size=size, view_kwargs=view_kwargs)
+        config = dict(name=name or fn.__name__, width=int(width), height=int(height), on_close=on_close,
+                      view_kwargs=view_kwargs)
         for index, (registered, existing) in enumerate(_ROOTS):
             if existing['name'] == config['name']:
                 existing.update(config)        # the live config object: the body reads it
@@ -265,14 +278,18 @@ def _root_body(fn, name, view_kwargs=None, config=None):
         return dict(source or {})
     if hasattr(fn, '__render_func__'):
         return lambda surface: _draw_root(fn, name, **current_kwargs())
-    tint = current_kwargs().get('tint')
-    if tint is None:
+    if current_kwargs().get('tint') is None and config is None:
         return lambda surface: fn()
 
     def tinted(surface):
         # The body runs under the decorator's tint (what draw_bg and the
         # style colours read), and after - the same push/restore the
-        # wrapper does around a tinted view.
+        # wrapper does around a tinted view. Read per frame: a live tint
+        # edit (anywhere.live_apply) or a re-decoration changes the config.
+        tint = current_kwargs().get('tint')
+        if tint is None:
+            fn()
+            return
         from src.lsd.gl_gui.melty import Melty
         previous = Melty.style_manager.get_tint()
         Melty.style_manager.set_imgui_tint(*tint[:4])
@@ -320,20 +337,44 @@ def _hook_main_return():
         elif event == 'return':
             sys.settrace(None)
             fr.f_trace = None
+            _state['hooked'] = False
             if not state['failed']:
                 run()
         return local
 
-    sys.settrace(lambda fr, event, arg: None)
+    _state['tracer'] = lambda fr, event, arg: None
+    sys.settrace(_state['tracer'])
     frame.f_trace_lines = False
     frame.f_trace = local
 
 
 # --- the loop -----------------------------------------------------------------------
+def _unhook_main_return():
+    """Drop the implicit-start trace hook. It needs GLOBAL tracing on to
+    fire its local 'return' hook, and global tracing costs a callback per
+    Python call — fine for the moment between the decorators and the
+    module's return, ruinous for a whole session: a script that calls
+    run() itself never returns from its module while the loop runs, and
+    every frame ran under the tracer (draw_text 26 ms for an empty line,
+    the chat window at 7 fps, 09-12)."""
+    if not _state.get('hooked'):
+        return
+    if sys.gettrace() is not _state.get('tracer'):
+        return                      # a debugger's tracer, not ours: leave it
+    sys.settrace(None)
+    frame = sys._getframe(1)
+    while frame is not None:
+        if frame.f_globals.get('__name__') == '__main__' and frame.f_code.co_name == '<module>':
+            frame.f_trace = None
+        frame = frame.f_back
+    _state['hooked'] = False
+
+
 def run():
     """Open every registered window and run until the last one closes."""
     if _state['ran']:
         return
+    _unhook_main_return()
     _state['ran'] = True
     if not _state['booted']:
         boot()
@@ -349,12 +390,13 @@ def run():
         # kwargs from _draw_root and sits on the default ground.
         ground_tint = None if hasattr(fn, '__render_func__') else view_kwargs.get('tint')
         Surface(kw['name'], _root_body(fn, kw['name'], view_kwargs, config=kw),
-                title=kw['title'] or kw['name'], size=kw['size'], tint=ground_tint)
+                width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
     mark(f'{len(Surface.all)} window(s) created')
     from src.lsd.gl_gui.utils import glfw_utils
     bench = os.environ.get('MELTY_BENCH')
     first = True
     frames = 0
+    frametime = [] if os.environ.get('MELTY_FRAMETIME') else None
     glfw_utils.request_render()
     try:
         while Surface.all:
@@ -371,12 +413,18 @@ def run():
                 glfw_utils._needs_render.clear()
                 Melty.app_tick += 1
                 frames += 1
+                started = time.perf_counter() if frametime is not None else 0.0
                 for surface in list(Surface.all):
                     try:
                         surface.frame()
                     except Exception:
                         _state['failed'] = True
                         raise
+                if frametime is not None:
+                    # MELTY_FRAMETIME=1 prints a line per frame with the render
+                    # thread's time for it (the budget for 120 fps is 8.3 ms).
+                    spent = (time.perf_counter() - started) * 1000
+                    print(f'melty: frame {frames} {spent:.1f} ms', flush=True)
                 _close_stale_children()
             for surface in list(Surface.all):
                 _present_children(surface)
@@ -404,6 +452,7 @@ def run():
         _debug(f'{frames} frames rendered')
         if not _state['failed']:
             _flush_pending_saves()
+            _save_session()
         for surface in list(Surface.all):
             surface.destroy()
         glfw.terminate()
@@ -424,6 +473,18 @@ def _flush_pending_saves():
     PendingSave.apply_all_saves()
 
 
+def _save_session():
+    """Persist the draw states (app_session.save) — the studio's exit save,
+    for an app. Skipped after a failed frame like the pending saves: a
+    broken state must not replace the last good session."""
+    session = _state.get('session')
+    if session is None:
+        return
+    from src.lsd.gl_gui import app_session
+    path = app_session.save(session, _state['app_id'])
+    _debug(f'session saved to {path}' if path else 'session save failed')
+
+
 def _open_requested_children():
     """Child surfaces the render wrapper asked for (glfw_window=True) since
     the last tick: Melty.surface_requests, filled by surface_window_request."""
@@ -437,7 +498,7 @@ def _open_requested_children():
             continue
         ds = req.draw_state
         size = req.window_size
-        child = Surface(req.name, _child_body(req), title=req.name.split('##')[0], size=size,
+        child = Surface(req.name, _child_body(req), width=size[0], height=size[1],
                         parent=parent, draw_state=ds)
         child.request = req
         req.surface = child

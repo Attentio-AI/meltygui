@@ -346,10 +346,8 @@ class SplitOverlayRenderer(GlfwRenderer):
         SLIDE_DEADBAND it is rounding, not a slide. Resets on release, so
         hover after a gesture reads the true pointer again."""
         from src.lsd.gl_gui import wayland_move
-        if not wayland_move.relative_motion_available():
-            return
         down = any(io.mouse_down[i] for i in range(3))
-        if not down:
+        if not down or not wayland_move.relative_motion_available():
             self._slide_base = None
             self._slide_last = None
             self._slide_clamped = (0.0, 0.0)

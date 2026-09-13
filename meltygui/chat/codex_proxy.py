@@ -1,5 +1,7 @@
 """Codex implements the chat mapping. All protocol interpretation lives here."""
-from src.lsd.gl_gui.chat.chat_proxy import Chat, ChatProxy
+import time
+
+from src.lsd.gl_gui.chat.chat_proxy import Chat, ChatProxy, epoch_seconds
 from src.lsd.gl_gui.chat.messages import (from_codex, upsert, set_text, AssistantMessage,
     PlanMessage, CommandExecution, ToolOutput, ReasoningMessage, FileChange, McpToolCall,
     FileTags, diff_counts, match_file)
@@ -85,7 +87,9 @@ class CodexChats(ChatProxy):
                 key = self.metadata.local_key(self.account_id, thread["id"])
                 if key not in self:
                     chat = Chat({"title": thread.get("name") or thread.get("preview") or "Conversation",
-                                 "project": thread.get("cwd") or ""}, remote_id=thread["id"])
+                                 "project": thread.get("cwd") or "",
+                                 "updated": epoch_seconds(thread.get("updatedAt", thread.get("updated_at")))},
+                                remote_id=thread["id"])
                     dict.__setitem__(self, key, chat)
                     self.known[key] = chat
             self.metadata.apply(self.account_id, self)
@@ -207,6 +211,8 @@ class CodexChats(ChatProxy):
             return
         remote_id = params.get("threadId") or (params.get("thread") or {}).get("id")
         chat = next((chat for chat in self.known.values() if chat.remote_id == remote_id), None)
+        if chat is not None:
+            chat["updated"] = time.time()   # any event for a thread is activity on it
         if "id" in event:
             if chat is None:
                 self.submit("unsupported", event["id"], "Unknown conversation")

@@ -5,18 +5,47 @@ only mutates dicts; no RPC or remote lifecycle vocabulary crosses this boundary.
 """
 import queue
 import threading
+import time
 
 from src.lsd.gl_gui.chat.messages import Message, UserMessage, user_message, input_text
 
 
+def epoch_seconds(value):
+    """A provider's timestamp as epoch seconds: seconds or milliseconds
+    (anything past 1e11 is milliseconds), an ISO-8601 string, or 0 when
+    absent / unreadable."""
+    if value is None or value == "":
+        return 0.0
+    if isinstance(value, str):
+        try:
+            from datetime import datetime, timezone
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number / 1000.0 if number > 1e11 else number
+
+
 class Chat(dict):
+    """``updated`` is the conversation's last activity as epoch seconds (0 =
+    unknown): the provider's listing stamps it, a backend bumps it as a turn
+    streams, the proxy bumps it on send. The sidebar's age filter reads it."""
+
     def __init__(self, value=None, remote_id=None):
-        super().__init__(title="New conversation", project="", messages={}, requests={}, running=False)
+        super().__init__(title="New conversation", project="", messages={}, requests={}, running=False,
+                         updated=0.0)
         self.update(value or {})
         self.remote_id = remote_id
         self.applied_tint = None
         self.loaded = remote_id is None
         self.loading = False
+        self.refreshing = False     # re-reading the session another client is writing
         self.inflight = set()
         self.sent = set()
         self.saved_title = self["title"]
@@ -42,6 +71,8 @@ class ChatProxy(dict):
         self.error = None
         self.known = {}
         self.applied_order = None
+        self.refreshed = 0.0        # when the window last asked for `refresh`
+        self._applied_revision = -1
         self.worker = threading.Thread(target=self._work, daemon=True, name="chat-backend")
         self.worker.start()
 
@@ -104,8 +135,13 @@ class ChatProxy(dict):
         for key, value in list(self.items()):
             if not isinstance(value, Chat):
                 self[key] = value
-        self.metadata.collect(self.account_id, self)
-        self.metadata.apply(self.account_id, self)
+        # The metadata passes walk every conversation: only if the set,
+        # the order, an event batch or a tint override changed since last time.
+        keys = list(self)
+        if (keys != self.applied_order or self.revision != self._applied_revision or self._tints_changed()):
+            self.metadata.collect(self.account_id, self)
+            self.metadata.apply(self.account_id, self)
+            self._applied_revision = self.revision
         for key, chat in list(self.known.items()):
             if key not in self and "archive" not in chat.inflight and "create" not in chat.inflight:
                 chat.inflight.add("archive")
@@ -123,6 +159,7 @@ class ChatProxy(dict):
             if not chat.remote_id:
                 if "create" not in chat.inflight:
                     chat.inflight.add("create")
+                    chat["updated"] = chat["updated"] or time.time()
                     self.submit("create", key, chat["project"], chat["title"])
                 continue
             if chat["title"] != chat.saved_title and "rename" not in chat.inflight:
@@ -133,7 +170,12 @@ class ChatProxy(dict):
             if not chat["running"] and chat.turn_id and "interrupt" not in chat.inflight:
                 chat.inflight.add("interrupt")
                 self.submit("interrupt", key, chat.remote_id, chat.turn_id)
-            if chat.loaded and not chat["running"] and not chat.turn_id and "send" not in chat.inflight:
+            if (chat.loaded and not chat["running"] and not chat.turn_id and "send" not in chat.inflight
+                    and len(chat["messages"]) != getattr(chat, "scanned", -1)):
+                # Only a chat that grew since the last scan can hold an
+                # unsent prompt (walking every message in every open chat each
+                # frame was the proxy's main cost).
+                chat.scanned = len(chat["messages"])
                 for message_id, message in chat["messages"].items():
                     # Adopt dict-inserted prompts from UI callers at the model boundary.
                     if not isinstance(message, Message) and message.get("role") == "user":
@@ -142,12 +184,31 @@ class ChatProxy(dict):
                     if message_id not in chat.sent and message.get("role") == "user":
                         chat.inflight.add("send")
                         chat["running"] = True
+                        chat["updated"] = time.time()
                         self.submit("send", key, chat.remote_id, message_id, input_text(message), chat.resumed)
                         break
             for request_id, request in chat["requests"].items():
                 if "answer" in request and not request.get("submitted"):
                     request["submitted"] = True
                     self.submit("answer", key, request_id, request["answer"])
+
+    def _tints_changed(self):
+        """A tint edited on a chat's metadata entry (the sidebar's chip) or
+        pushed through its __overrides__ since the last apply."""
+        for chat in self.values():
+            applied = getattr(chat, "applied_tint", None)
+            if chat.get("__overrides__", {}).get("tint") != applied:
+                return True
+            entry = getattr(chat, "metadata", None)
+            if entry is not None and entry.get("tint") != applied:
+                return True
+        return False
+
+    def refresh(self):
+        """Look for activity outside this window — a session another client
+        (a terminal) is writing — and publish it: a chat's ``updated`` moves,
+        a new session is listed. The window asks every few seconds. Default:
+        nothing to look at."""
 
     def close(self):
         self.closed = True

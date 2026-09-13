@@ -436,6 +436,12 @@ def _ensure_tile(existing: Optional[Tile], w: int, h: int, frame_id: int = 0, dr
         return existing
 
     try:
+        from src.lsd.gl_gui.perf_trace import trace as _tile_trace
+        _tile_trace("tile create", name=getattr(draw_state, "name", None), size=(aw, ah),
+                    logical=(w, h), previous=existing.size if existing else None)
+    except Exception:
+        pass
+    try:
         new_tex = _create_color_tex(aw, ah)
     except Exception as e:
         existing_size = existing.size if existing else None

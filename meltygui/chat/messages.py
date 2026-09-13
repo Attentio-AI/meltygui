@@ -262,6 +262,8 @@ def user_message(text):
 
 def input_text(message):
     def render(value):
+        if isinstance(value, Reference):
+            return ""      # a picture / file / skill is not prose (only its payload)
         if isinstance(value, CodeString):
             return "```" + value.language + "\n" + str(value) + ("" if value.endswith("\n") else "\n") + "```\n"
         if isinstance(value, str):

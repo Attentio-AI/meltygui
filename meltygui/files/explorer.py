@@ -30,6 +30,18 @@ stamps `default_tint` in and opens the picker. The store is only
 WRITTEN for a row the user paints (a meta entry per browsed file would
 bloat ~/.melty/file_meta.pkl); clearing the colour in the picker drops the
 tint again, and the entry with it when nothing else is attached.
+
+Rows drag to reorder (the code editor's tab bar model, `DragDrop.on_drag`
+per row + one `on_drop`): a landed drop stamps every row of the directory
+with an `order` in the meta store — the studio's folder-tree convention
+(folder_files._collect_meta), so the two agree on a folder's order — and
+the listing sorts by those stamps (unstamped rows keep the natural
+folders-first order after the stamped ones). A folder that is itself
+painted washes the whole listing in its tint (`folder_bg_boost`), the rows
+on top of it. `context_menu={label: callable}` is the wrapper's right-click
+menu (the hdr-viewer's), except that the explorer's callables receive ONE
+argument: the path of the row under the right-click (a right-press
+selects it), or the directory when the click landed on no row.
 """
 import os
 import re
@@ -44,10 +56,11 @@ from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.new_codecs import extension_to_codec
-from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow, clear_glows
 from src.lsd.gl_gui.view.core_views.columns import ColumnLayout
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import no_save
+from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
 from src.lsd.gl_gui.view.core_views.headers import _brightness_clamp_fn
 
 
@@ -178,6 +191,57 @@ def set_row_tint(path, value):
     entry["tint"] = tuple(value)
 
 
+def ordered_rows(rows, meta):
+    """`rows` ([(Path, is_dir)], natural order) sorted by the `order` stamps
+    in the meta store, the studio's rule (folder_files._apply_meta):
+    stamped rows first by their number, unstamped ones after in natural
+    order. No stamps at all: `rows` itself."""
+    if meta is None:
+        return rows
+    orders = {}
+    for i, (path, _is_dir) in enumerate(rows):
+        entry = meta.get(str(path))
+        if isinstance(entry, dict):
+            order = entry.get("order")
+            if isinstance(order, (int, float)):
+                orders[i] = order
+    if not orders:
+        return rows
+    indexed = sorted(range(len(rows)), key=lambda i: (orders.get(i, float("inf")), i))
+    return [rows[i] for i in indexed]
+
+
+def set_row_order(paths):
+    """Stamp `order` = position into the meta entry of every path of a
+    directory (created for the rows that have none — a reorder is the
+    user's explicit edit of the folder, like painting it)."""
+    meta = file_meta_store()
+    for i, path in enumerate(paths):
+        key = str(path)
+        entry = meta.get(key)
+        if not isinstance(entry, dict):
+            entry = meta[key] = FileMeta()
+        if entry.get("order") != i:
+            entry["order"] = i
+
+
+def apply_row_drop(rows, drag_keys, first_visible, drop):
+    """The directory's new order after `drop` (a DropEvent from on_drop, or
+    None): `drag_keys` are the rows that registered a drag handle this run
+    — the visible ones, a contiguous slice of `rows` starting at
+    `first_visible` — and the event's indices count in that slice. Returns
+    the complete [Path] order to stamp, or None when nothing moved (no
+    drop, a drop back in place, a cross-collection kind: rows only reorder
+    here)."""
+    if drop is None or drop.kind != "reorder" or not drag_keys:
+        return None
+    keys = list(drag_keys)
+    if not drop.apply(keys):
+        return None
+    paths = [path for path, _is_dir in rows]
+    return paths[:first_visible] + keys + paths[first_visible + len(drag_keys):]
+
+
 def row_tint_bg():
     """A memoized `(tint, boost) -> packed row background` through the
     editor tab's colour recipe (style-manager mix under
@@ -252,7 +316,7 @@ def chip_swatch(tint, bg_rgb, mix=0.55):
 
 
 def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tint,
-                 swatch=None, show_brush=True):
+                 swatch=None, show_brush=True, setter=None):
     """One row's tint control at (x, y): the `draw_tuple_fast` chip when
     `tint` is painted, else the paint-brush button. `key` is the store
     path; `hovered` says the pointer is on the row (the brush brightens
@@ -262,7 +326,10 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     (registered at 3). `swatch` is the colour the chip paints (see
     `chip_swatch`); None paints the tint itself. `show_brush` False draws
     (and registers) no brush for an unpainted row — the listing shows it
-    only on the selected row. Returns True when the store was written."""
+    only on the selected row. ``setter(value)`` writes the tint somewhere
+    other than the file-meta store (the chat window's conversations); None
+    clears. Returns True when the store was written."""
+    write = setter or (lambda value, _k=key: set_row_tint(_k, value))
     # [tint=(0.55, 0.72, 0.95)]
     brush_icon = f"\uf1fc"
     brush_col = pack_color(1.0, 1.0, 1.0, 0.22)
@@ -274,10 +341,10 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
         cursor = imgui.get_cursor_screen_pos()
         changed, new_tint = draw_tuple_fast(
             tint, draw_state, view_id=view_id, x=x, y=y, size=size, priority_delta=4,
-            setter=lambda value, _k=key: set_row_tint(_k, value), swatch=swatch)
+            setter=write, swatch=swatch)
         imgui.set_cursor_screen_pos(cursor)
         if changed:
-            set_row_tint(key, new_tint if isinstance(new_tint, tuple) else None)
+            write(new_tint if isinstance(new_tint, tuple) else None)
             if not isinstance(new_tint, tuple):
                 # The picker's delete button: the chip that opened the popover
                 # is a brush next frame and never runs draw_tuple_fast
@@ -304,7 +371,7 @@ def tint_control(draw_state, key, tint, x, y, size, text_y, hovered, default_tin
     # draw_tuple_fast's own click does - the opening click is graced, and
     # the chip, seeing itself owner with the slot on the host, draws the
     # picker and moves the slot to the pop window.
-    set_row_tint(key, default_tint)
+    write(default_tint)
     Melty.popover_focused_ds = draw_state
     draw_state._tint_edit_key = view_id
     Melty._popover_open_frame = Melty.frame_count
@@ -347,12 +414,14 @@ def shortcut_directories(home=None):
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorerState,
                       left_mouse_down=False, left_mouse_double_clicked=False,
+                      right_mouse_down=False,
                       ctrl_up_key_pressed=False, up_key_pressed=False, down_key_pressed=False,
                       enter_key_pressed=False, escape_key_pressed=False,
                       row_height=20.0, left_pad=6.0, glyph_width=18.0, crumb_height=24.0,
                       show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                       select_boost=0.22, plain_select_boost=0.06, select_shadow=2.0,
                       select_rounding=3.0, chip_mix=0.55, hover_boost=0.08, text_mix=0.3,
+                      folder_bg_boost=-0.12, drag_rows=True, menu_target=None,
                       **kwargs):
     """The path strip + rows of one directory (see the module docstring).
     Returns ``(True, path)`` on navigation / a file double-click, else
@@ -379,6 +448,10 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     crumb_hover_col = pack_color(1.0, 1.0, 1.0, 0.12)
 
     state = explorer_state
+    # The selected row's add_shadow is RETAINED under this draw_state until
+    # the caller opens its group again: a selection that vanishes (the file
+    # trashed, Esc, a new directory) would otherwise keep its shadow.
+    clear_glows(draw_state)
     px = Melty.px
     row_h, pad, glyph_w, crumb_h = px(row_height), px(left_pad), px(glyph_width), px(crumb_height)
     chip = px(chip_size) if show_tint_chips else 0.0
@@ -395,6 +468,10 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
              if (left_mouse_down and hasattr(left_mouse_down, "x")) else None)
     double_click = ((left_mouse_double_clicked.x, left_mouse_double_clicked.y)
                     if (left_mouse_double_clicked and hasattr(left_mouse_double_clicked, "x")) else None)
+    right_press = ((right_mouse_down.x, right_mouse_down.y)
+                   if (right_mouse_down and hasattr(right_mouse_down, "x")) else None)
+    meta = file_meta_store()
+    row_bg = row_tint_bg()
 
     def navigate(target):
         """Leave `dir_key` for `target`: remember where this listing was
@@ -417,7 +494,18 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     if listing is None or listing[:3] != (dir_key, mtime, state.show_hidden):
         listing = state._listing = (dir_key, mtime, state.show_hidden,
                                     list_directory(directory, state.show_hidden))
-    rows = listing[3]
+    rows = ordered_rows(listing[3], meta)
+
+    # ── a painted directory: its tint washes the whole listing, rows on top ──
+    dir_tint = FileMeta.painted_tint(meta.get(dir_key)) if meta is not None else None
+    if dir_tint and folder_bg_boost is not None:
+        wash = getattr(draw_state, "abs_clip_rect", None)
+        if wash is None:
+            wash = (draw_state.abs_left, draw_state.abs_top,
+                    draw_state.abs_left + (draw_state.width or 0),
+                    draw_state.abs_top + (draw_state.height or 0))
+        draw_list.add_rect_filled(wash[0], wash[1], wash[2], wash[3],
+                                  row_bg(dir_tint, folder_bg_boost))
 
     # ── the path strip: every segment a crumb; click = jump there ──
     x0, y0 = imgui.get_cursor_screen_pos()
@@ -457,10 +545,12 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # not navigate.
     chip_x = rows_x + pad
 
-    def row_at(point):
+    drag_left = chip_x + chip + px(2) if show_tint_chips else rows_x
+
+    def row_at(point, chips=False):
         if point is None or not (rows_x <= point[0] <= rows_x + content_w):
             return None
-        if show_tint_chips and point[0] < chip_x + chip + px(2):
+        if not chips and show_tint_chips and point[0] < drag_left:
             return None
         index = int((point[1] - rows_y) // row_h)
         return index if 0 <= index < len(rows) else None
@@ -480,6 +570,22 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         state.selected = str(rows[hit][0])
         selected_index = hit
         request_render()
+    # A right-press selects the row under it (the chip column included): the
+    # wrapper opens the context menu on the release, on that row.
+    hit = row_at(right_press, chips=True)
+    if hit is not None:
+        state.selected = str(rows[hit][0])
+        selected_index = hit
+        draw_state.invalidate()
+        request_render()
+    elif right_press is not None and state.selected is not None:
+        # Empty space: the menu acts on the dir, not a stale selection.
+        state.selected = None
+        selected_index = None
+        draw_state.invalidate()
+        request_render()
+    if menu_target is not None:
+        menu_target["path"] = state.selected if selected_index is not None else dir_key
     if ctrl_up_key_pressed and directory.parent != directory:
         return navigate(directory.parent)
     if enter_key_pressed and selected_index is not None:
@@ -499,10 +605,11 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
 
     # ── rows: viewport-culled, straight to the draw list ──
     clip = getattr(draw_state, "abs_clip_rect", None)
-    meta = file_meta_store()
-    row_bg = row_tint_bg()
 
     text_y_pad = (row_h - imgui.get_font_size()) * 0.5
+    ghost_alpha = 0.9
+    drag_keys = []          # the visible rows' paths, in on_drag call order
+    first_visible = None    # index into `rows` of drag_keys[0]
     for i, (path, is_dir) in enumerate(rows):
         ry0 = rows_y + i * row_h
         ry1 = ry0 + row_h
@@ -511,6 +618,33 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         key = str(path)
         entry = meta.get(key) if meta is not None else None
         tint = FileMeta.painted_tint(entry)
+        icon = row_icon(path, is_dir, entry, folder_icon, file_icon)
+        if tint:
+            name_col = tinted_text(folder_rgba if is_dir else text_rgba, tint, text_mix)
+            icon_col = tinted_text(text_rgba, tint, text_mix)
+        else:
+            name_col = icon_col = folder_col if is_dir else text_col
+        if drag_rows:
+            # The tab bar's immediate-mode DragDrop: the row (past the chip
+            # column) is its own drag handle. While THIS row is the drag,
+            # on_drag has parked the cursor at the ghost: paint the row
+            # there on the overlay, but leave the inline row alone
+            # (DragDrop treats it as the home / drop target).
+            if first_visible is None:
+                first_visible = i
+            drag_keys.append(path)
+            drag = DragDrop.on_drag((drag_left, ry0, rows_x + content_w, ry1), key=key,
+                                    draw_state=draw_state)
+            if drag:
+                ghost = drag.draw_list
+                ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
+                                      pack_color(*row_bg.rgb(tint or default_tint, select_boost),
+                                                 ghost_alpha),
+                                      rounding=px(select_rounding))
+                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, icon_col, icon)
+                ghost.add_text(drag.x + px(4) + glyph_w, drag.y + text_y_pad, name_col, path.name)
+                DragDrop.end_drag()
+                continue
         if tint:
             draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1, row_bg(tint))
         row_hovered = hover_ok and rows_x <= mouse_x <= rows_x + content_w and ry0 <= mouse_y < ry1
@@ -525,12 +659,6 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1,
                                       row_bg(tint or default_tint, boost),
                                       rounding=px(select_rounding))
-        icon = row_icon(path, is_dir, entry, folder_icon, file_icon)
-        if tint:
-            name_col = tinted_text(folder_rgba if is_dir else text_rgba, tint, text_mix)
-            icon_col = tinted_text(text_rgba, tint, text_mix)
-        else:
-            name_col = icon_col = folder_col if is_dir else text_col
         draw_list.add_text(rows_x + text_x, ry0 + text_y_pad, icon_col, icon)
         draw_list.add_text(rows_x + text_x + glyph_w, ry0 + text_y_pad, name_col, path.name)
         if show_tint_chips:
@@ -540,6 +668,20 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                          ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
                          show_brush=i == selected_index)
+
+    # ── close the drag body: paint the between-row slots, apply a drop ──
+    # A reorder lands in on_drag call order = the visible rows, a contiguous
+    # slice of `rows`; splice the new slice in and stamp the whole
+    # directory's order (folders and files together - the stamps are the order
+    # from now on). Cross-collection kinds ("insert" / "remove") are ignored:
+    # rows only reorder here.
+    if drag_rows:
+        drop = DragDrop.on_drop(draw_state=draw_state)
+        order = apply_row_drop(rows, drag_keys, first_visible, drop)
+        if order is not None:
+            set_row_order(order)
+            draw_state.invalidate()
+            request_render()
 
     return False, input_value
 
@@ -571,13 +713,18 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                             left_mouse_down=False, ctrl_up_key_pressed=False,
                             shortcuts_width=190.0, shortcut_row_height=22.0, column_gap=6.0,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
+                            context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
                             **kwargs):
     """A ColumnLayout with two cells: the shortcuts (draw-list rows, a click
     navigates) and `draw_file_listing`, sharing one draggable edge
     (`column_edges`, persisted by auto-state). Returns what the listing
     returns; Ctrl+Up works from anywhere over the explorer. Shortcut rows
     wear their directory's tint like the listing's, with the same leading
-    tint control (`show_tint_chips`, `chip_size`, `default_tint`)."""
+    tint control (`show_tint_chips`, `chip_size`, `default_tint`).
+    `context_menu` = {label: callable(path)} is the listing's right-click
+    menu; each callable gets the path of the right-clicked row, or of the
+    directory (see the module docstring). `drag_rows` / `folder_bg_boost`
+    go to the listing."""
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
@@ -594,6 +741,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     text_mix = 0.3
 
     px = Melty.px
+    clear_glows(draw_state)      # The current shortcut's retained shadow (see the listing)
     directory = Path(input_value if input_value else Path.home()).expanduser()
     draw_list = imgui.get_window_draw_list()
     mouse_x, mouse_y = imgui.get_mouse_pos()
@@ -604,6 +752,14 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     text_x = px(left_pad) + (chip + px(6) if show_tint_chips else 0.0)
     meta = file_meta_store()
     row_bg = row_tint_bg()
+    # The listing writes what the right-click landed on here each run; the
+    # menu item callables (built here, run by the wrapper's items menu with no
+    # label) read it when picked.
+    menu_target = {"path": str(directory)}
+    menu_items = None
+    if context_menu:
+        menu_items = {label: (lambda _action=action: _action(menu_target["path"]))
+                      for label, action in context_menu.items()}
 
     # The band: from the flow cursor to the bottom of the view.
     body_top = imgui.get_cursor_screen_pos()[1]
@@ -665,7 +821,11 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
         imgui.dummy(width, len(shortcuts) * row_h)
     with columns.cell(1, height=body_height) as width:
         changed, value = draw_file_listing(str(directory), name="listing", width=width,
-                                           height=body_height, disable_scroll=False)
+                                           height=body_height, disable_scroll=False,
+                                           context_menu=menu_items, menu_target=menu_target,
+                                           drag_rows=drag_rows, folder_bg_boost=folder_bg_boost,
+                                           show_tint_chips=show_tint_chips, chip_size=chip_size,
+                                           default_tint=default_tint)
         if changed:
             result = (True, value)
     columns.finish()
