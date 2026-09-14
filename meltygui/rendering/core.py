@@ -3464,14 +3464,15 @@ def render_func(*args, **o_kwargs):
 
                 from src.lsd.gl_gui.view.mode import Mode
 
-                # Floating find bar: searchable views that have no header can't
-                # show the inline search box, so float the shared render_search
-                # UI in a window anchored to this view's top-right.
+                # Floating find pill: searchable views that have no header can't
+                # show the inline search box, so float draw_search's one-row
+                # pill in a window anchored to this view's bottom-right corner.
                 _has_header = kwargs.get("show_header", True)
                 # if draw_state.search_active and not _has_header and kwargs.get("searchable", False):
-                from src.lsd.gl_gui.view.core_views.new_core_view import draw_search
-                # WINDOW_CLEAN (not WINDOW) - it auto-resizes to the find bar
-                # and drops the tree arrow/tint, matching pending_window.
+                from src.lsd.gl_gui.view.core_views.new_core_view import draw_search, search_pill_layout
+                # WINDOW_PILL: WINDOW_CLEAN's look (no resize arrow / tint,
+                # matching pending_window) without its fixed 500px width, so
+                # the pill is exactly as wide as its row.
                 # manual_search=True: the view's own body renders the find UI
                 # (e.g. draw_text's inline search box) - skip the floating Find
                 # window here but keep the session push/recount below, which is
@@ -3488,12 +3489,18 @@ def render_func(*args, **o_kwargs):
                             Melty.cache.invalidate_up(draw_state._tile_id, force=True)
                             request_render()
                     else:
+                        # The pill is exactly its row, and the row grows with
+                        # the term (search_pill_layout); the window edge
+                        # below seeds the frame with the FIRST frame's width
+                        # and re-reads the minimum from these measurements every
+                        # frame, so all three follow the term together.
+                        _pill_w = search_pill_layout(draw_state.search_text, draw_state.width)[1]
                         extras = draw_search(input_value=draw_state,
                             closed=False,
                             auto_resize=True,
                             swoosh=False,
                             tint=(1.0, 1.0, 1.0),
-                            mode=Mode.WINDOW_CLEAN,
+                            mode=Mode.WINDOW_PILL,
                             # Pin live to this view's VISIBLE box: Pin.CLIP
                             # intersects the view's rect with the window, so the
                             # bar rides the view's top-left corner while that is
@@ -3501,12 +3508,18 @@ def render_func(*args, **o_kwargs):
                             # view scrolls under it (Pin.PARENT followed the raw
                             # view top, which scrolled the bar away).
                             pin_to_clip=Pin.CLIP,
-                            window_pos=(0, 0),
-                            width=300,
-
-                            initial={"height": 30},
-                            anchor=Anchor.BOTTOM_LEFT,
-                            name=f"Find{unique}",
+                            window_pos=(-14, -12),
+                            # The pill's row: icon, a 210px box, the count, the
+                            # close button (draw_search lays them out at fixed
+                            # offsets) - sized to exactly that.
+                            width=_pill_w, min_width=_pill_w, max_width=_pill_w,
+                            initial={"height": 30, "width": _pill_w}, force_initial=True,
+                            anchor=Anchor.BOTTOM_RIGHT,
+                            parent_anchor=Anchor.BOTTOM_RIGHT,
+                            # A new window name: sessions persisted the old
+                            # bar's size under 'Find...", and a remembered
+                            # size would override the pill's.
+                            name=f"FindPill{unique}",
                             return_extras=True)
                         search_ds = extras[2]
                         if search_ds.last_seen is None:

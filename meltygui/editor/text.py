@@ -13172,6 +13172,40 @@ def draw_text(input_value: str, height=None,
                 # amount needed to reveal it, instead of dragging it to the left.
                 ds.text_h_scroll = max(0.0, match_x_end - text_visible_width + edge_padding)
         request_render()
+        # Flash the match the search LANDED on (the familiar browser's search
+        # feel): a Melty.emphasize on its cells, only when the landing match
+        # moves - a keystroke that keeps the same first match (like on
+        # from "op" to "open") stays quiet, a nav step or a term that lands
+        # elsewhere flashes. Keyed by the match start in this frame.
+        _flash_at = (ms, id(_match_base))
+        if getattr(ds, '_search_flash_at', None) != _flash_at:
+            ds._search_flash_at = _flash_at
+            _fl_line_start = text.rfind('\n', 0, ms) + 1
+            _fl_end = me if _nl == -1 else _nl
+            _fl_cols = (ms - _fl_line_start, max(_fl_end - _fl_line_start, ms - _fl_line_start + 1))
+            _fl_line1 = line if _nl == -1 else _index_to_line_col(text, me)[0]
+
+            def _search_flash_rect(ds=ds, li0=line, li1=_fl_line1,
+                                   cols=_fl_cols if _nl == -1 else None):
+                lp = getattr(ds, '_diff_line_px', None) or 16
+                inset = getattr(ds, '_diff_top_inset', 0)
+                y0 = ds.abs_top + inset + li0 * lp - ds.scroll_offset[1]
+                y1 = ds.abs_top + inset + (li1 + 1) * lp - ds.scroll_offset[1]
+                vt, vb = ds.abs_top, ds.abs_top + (ds.height or 0)
+                if y1 < vt or y0 > vb:
+                    return None
+                x0, x1 = ds.abs_left, ds.abs_left + (ds.width or 0)
+                cw = getattr(ds, '_diff_char_w', None)
+                ox = getattr(ds, '_diff_origin_x_off', None)
+                if cols is not None and cw and ox is not None:
+                    x0 = max(x0, ds.abs_left + ox + cols[0] * cw - 4)
+                    x1 = min(x1, ds.abs_left + ox + cols[1] * cw + 4)
+                    if x1 <= x0:
+                        return None
+                return (x0, max(y0, vt) - 2, x1, min(y1, vb) + 2)
+
+            Melty.emphasize(f"search_landing {ds.name}", _search_flash_rect,
+                            fade_frames=36, rounding=4.0)
     _pf("find_search")
 
 

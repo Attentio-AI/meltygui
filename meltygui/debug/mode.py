@@ -328,6 +328,20 @@ class Mode(Enum):
         )
     }
 
+    # WINDOW_CLEAN with the width left to the caller (a mode's kwargs win
+    # over the call's, so WINDOW_CLEAN's 500 cannot be overridden): the
+    # floating find pill (core_render's draw_search window) sizes itself
+    # to its one child.
+    WINDOW_PILL = {
+        Any: ModeOverrides(
+            kwargs={"show_bg": True, "selectable": False, "use_cache": True, "shadow": True,
+                    "melty_window": True, "closable": True,
+                    "auto_resize": True, "is_tree": False, "show_tint": False, "show_header": True,
+                    "disable_scroll": False},
+            recursive=False
+        )
+    }
+
     code_ui_auto_load = True
     code_ui_params = {'save': True,
                       'recompile': False}

@@ -13010,11 +13010,29 @@ def pending_window(input_value, button_name, pending=None, draw_state=None,
     return False, input_value
 
 
-@render_func(use_cache=True, max_height=893, auto_resize=False, min_width=702, layer_offset=1, searchable=False)
+def search_pill_layout(term, owner_width=None):
+    """The find pill's geometry for `term`: ``(box_width, window_width)``.
+    The query box grows with the term (a long term stays readable instead
+    of scrolling inside a fixed box) from a 200px floor up to what the
+    owning view's width leaves for it (`owner_width` minus the pill's
+    other parts and a margin), and the window is the row: pad, icon, box,
+    gap, count, close, pad. Shared by draw_search (the row) and
+    core_render (the window it floats in), so the two always agree."""
+    text_w = imgui.calc_text_size(term or "").x
+    cap = 520.0 if owner_width is None else max(200.0, owner_width - 220.0)
+    box = max(200.0, min(cap, text_w + 40.0))
+    return box, box + 158.0
+
+
+@render_func(use_cache=True, layer_offset=1, searchable=False)
 def draw_search(input_value=None, draw_state=None, unique=0):
-    """Floating find bar for searchable views that have no header. Rendered as
-    a Mode.WINDOW from core_render when search is active; draws the shared
-    render_search UI against the owning view's draw_state (search_owner)."""
+    """Floating find pill for searchable views that have no header. Rendered
+    as a Mode.WINDOW_CLEAN from core_render when search is active, pinned to
+    the owning view's bottom-right corner (the file browser's search pill):
+    one row — the search icon, the query box, "n of m" (or "no match"), and
+    the close button. Up / Down, Enter / Shift+Enter step the matches (the
+    row has no arrow buttons), Esc closes. State — search_text, count,
+    current index — lives on the owning view's draw_state (search_owner)."""
     owner = input_value
     # draw_search(owner, unique=owner._tile_id, draw_state=draw_state)
     search_ds = owner
@@ -13040,12 +13058,17 @@ def draw_search(input_value=None, draw_state=None, unique=0):
     imgui.text(search_icon)
     imgui.same_line()
     x_width = 30
+    count_width = 84
+    box_width, _pill_w = search_pill_layout(search_ds.search_text, search_ds.width)
 
-    width = draw_state.content_width
+    # Laid out left to right at fixed offsets (never off the pill's own
+    # width - core_render sizes the window to search_pill_layout too). The
+    # box draws no background of its own: the query sits flat on the pill.
+    box_left, row_top = imgui.get_cursor_screen_pos()
     _box = draw_text(search_ds.search_text, searchable=False, is_search_box=True,
-                     width=draw_state.content_width - x_width - 24,
+                     width=box_width, max_width=box_width, show_bg=False,
                      shadow=False, name=search_icon + str(unique),
-                     with_header_end=None, wrap=True, z_offset=-1, single_line=True,
+                     with_header_end=None, wrap=False, z_offset=-1, single_line=True,
                      with_footer=None, tint=search_ds.tint,
                      show_name=False, show_header=False,
                      request_focus=focus_search, select_all_on_focus=focus_fresh,
@@ -13062,38 +13085,49 @@ def draw_search(input_value=None, draw_state=None, unique=0):
         # matches against the new term and the combined index stays in sync.
         Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
         request_render()
-    # initial use
-
-    # Match count + prev/next buttons. The count and current index are
-    # populated by the searchable view's body (e.g. the text editor); the
-    # arrows step the active match and ask the body to scroll it into view.
+    # The count, on the same row: "n of m" while there are matches, "no
+    # match" for a term that finds nothing, populated by the owner's pre-body
+    # search walk (core_render). The keys below step the current match.
+    total = search_ds.text_search_count
+    imgui.same_line()
+    count_left = box_left + box_width + 10
+    imgui.set_cursor_screen_pos((count_left, imgui.get_cursor_screen_pos()[1]))
+    imgui.align_text_to_frame_padding()
+    if total > 0:
+        imgui.text_colored(f"{search_ds.text_search_current + 1} of {total}",
+                           0.62, 0.68, 0.76, 1.0)
+    elif search_ds.search_text:
+        imgui.text_colored("no match", 0.95, 0.55, 0.5, 1.0)
+    else:
+        imgui.text_colored("", 0.62, 0.68, 0.76, 1.0)
 
     imgui.same_line()
-    from src.lsd.gl_gui.view.core_views.new_core_view import button
     fa_x_icon = ""
 
-    imgui.set_cursor_screen_pos((draw_state.abs_left + width - x_width, imgui.get_cursor_screen_pos()[1]))
-    # imgui.set_cursor_screen_pos((imgui.get_cursor_screen_pos()[0], imgui.get_cursor_screen_pos()[1] + 2))
-    if button(fa_x_icon, name=f"{unique}##fa_x_icon", show_bg=False,
-              use_cache=True, height=23, shadow=True, z_offset=4, max_height=40,
-              tile_mode=TileMode.MAX, color=(9, 1, 1, 0))[0]:
+    # The close button: a glyph, dim until hovered, with a click rect on
+    # the pill (no button chrome).
+    close_left = count_left + count_width
+    row_h = max(imgui.get_frame_height(), 24.0)
+    close_rect = (close_left, row_top, close_left + x_width, row_top + row_h)
+    _mx, _my = imgui.get_mouse_pos()
+    _close_hover = (close_rect[0] <= _mx < close_rect[2] and close_rect[1] <= _my < close_rect[3]
+                    and draw_state._bounding_hovered)
+    _glyph_w = imgui.calc_text_size(fa_x_icon).x
+    imgui.get_window_draw_list().add_text(
+        close_left + (x_width - _glyph_w) * 0.5, row_top + (row_h - imgui.get_font_size()) * 0.5,
+        pack_color(1.0, 1.0, 1.0, 0.9 if _close_hover else 0.35), fa_x_icon)
+    imgui.set_cursor_screen_pos((close_left, row_top))
+    imgui.dummy(x_width, row_h)
+    if draw_state.on_action("left_mouse_down", view_id=f"find_close{unique}",
+                            rect=close_rect, priority_delta=4) is not None:
         search_ds.search_active = False
         search_ds._search_was_active = False
         # Keep search_text so reopening the find bar restores the last query.
         Melty.text_focused_ds = None
+        request_render()
 
-    total = search_ds.text_search_count
     if total > 0:
-        imgui.align_text_to_frame_padding()
-        imgui.text_colored(f"{search_ds.text_search_current + 1}/{total}",
-                           0.66, 0.74, 0.82, 1.0)
-        imgui.same_line(spacing=2)
         nav = 0
-        if imgui.small_button(f"##search_prev{unique}"):
-            nav = -1
-        imgui.same_line(spacing=2)
-        if imgui.small_button(f"##search_next{unique}"):
-            nav = 1
         # Enter / Down = find next, Shift+Enter / Up = find prev, Ctrl+Enter =
         # "click" the selected result - but only while the FIND BOX (not the
         # underlying editor) holds text focus, so Enter still inserts newlines
@@ -13162,8 +13196,6 @@ def draw_search(input_value=None, draw_state=None, unique=0):
             Melty.cache.invalidate_up(search_ds._tile_id, force=True, max_depth=12)
             request_render()
     elif search_ds.search_text:
-        imgui.align_text_to_frame_padding()
-        imgui.text_colored("No results", 0.74, 0.5, 0.5, 1.0)
         # Enter with the find box focused force-recomputes the result set. "No
         # results" can be stale - the searched views may have been rebuilt since
         # the count was last done (e.g. a fresh load from disk) - so re-run the
