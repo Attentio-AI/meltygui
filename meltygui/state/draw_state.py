@@ -161,6 +161,8 @@ class TextEditorState(DictConversion):
 
     def __init__(self):
         super().__init__()
+        self._completion_explicit = False
+        self._signature_dismissed = None
         # {def_name: bool} - whether that function's parameter window is
         # visible. The def widget reads/writes this bool DIRECTLY each
         # render (visibility IS this bool); persisted, so a fresh session
@@ -431,7 +433,10 @@ class TileMode(Enum):
          "content_region", "value_hash", "drag_window", "content_region", "did_render", "footer_height", "footer_width",
          "bounding_hovered", "dlt_count", "clip_rect",
  "scrolled", "is_hovered_last", "frame_count", "z_pos",
-         "text_search_current", "text_search_count", "observed_content_height")
+         "text_search_current", "text_search_count", "observed_content_height",
+         # The context menu's Eval tab: typed per keystroke and must not
+         # re-render the inspected view (the eval fires on Run / Enter).
+         "eval_code")
 @no_save_exclude('render_time',  "total_z_offset", 'closable', 'has_full_tile', 'invalid_content_height',
                   "parent_window", "pressed", "bbox", "", "child_selected", "bg_color",
                  'hover_rects', 'nested_window', 'use_cache', "header_top", "header_left", "left_offset",
@@ -455,10 +460,17 @@ class DrawState(DictConversion):
     # Hot reload fallback: live instances predating the persisted rename read
     # this, the wrapper's post-body stamp writes the instance attr.
     observed_content_height = 0
+    # Same fallback for the persisted Eval snippet (context menu's Eval-tab).
+    eval_code = None
 
     def __init__(self):
         super().__init__()
         self._external_change = False
+        # The context menu's Eval-tab snippet for THIS view, persisted so the
+        # tab reopens with what was last typed. Stored on the inspected view's
+        # draw_state (not the tab's) because the eval fires in this view's
+        # render wrapper and a scope-up event retargets the tab at an ancestor.
+        self.eval_code = None
         self._input_value_cache = UNSET_VALUE
         self._output_value_cache = UNSET_VALUE
         self._file_meta = UNSET_VALUE

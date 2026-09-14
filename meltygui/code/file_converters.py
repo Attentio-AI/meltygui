@@ -1259,6 +1259,13 @@ def _hotswap_class(old_cls: type, new_cls: type, src_map: dict = None,
 
         if (isinstance(old_val, types.FunctionType)
                 and isinstance(new_val, types.FunctionType)):
+            if not (old_val.__qualname__.startswith(old_cls.__qualname__ + ".")
+                    and new_val.__qualname__.startswith(new_cls.__qualname__ + ".")):
+                # A function-valued attribute (e.g. view_func=draw_text) is
+                # a closure, not a method defined by this class. Rebind it;
+                # patching its code would mutate the shared renderer itself.
+                setattr(old_cls, name, new_val)
+                continue
             old_val.__code__ = new_val.__code__
             old_val.__defaults__ = new_val.__defaults__
             old_val.__kwdefaults__ = new_val.__kwdefaults__

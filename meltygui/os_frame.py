@@ -388,6 +388,7 @@ def _set_mode(new_mode):
     if _STATE["mode"] != new_mode:
         _STATE["mode"] = new_mode
         _STATE["generation"] += 1          # every root forgets where it saw the OS edges
+        _STATE["gestures"] = {}
         _STATE["expected"] = [None, None]
         _STATE["inflight"] = [None, None]
         _STATE["size_expected"] = [None, None]
@@ -576,6 +577,17 @@ def _foreign_change(axis, d, size, far_held):
             seen = getattr(ds, "_os_seen", None)
             if seen and axis in seen:
                 seen[axis] = (seen[axis][0] + d, seen[axis][1] + d)
+            # A compositor MOVE carries the surface and its drag origin
+            # together. Otherwise sticky replay interprets the new origin as
+            # resize motion and throws the view back to its old screen spot.
+            gesture = (getattr(ds, "_edge_gestures", None) or {}).get(axis)
+            if gesture is not None:
+                gesture["origin"] += d
+                if gesture["os"]:
+                    gesture["os"] = {key: value + d for key, value in gesture["os"].items()}
+        gesture = _STATE["gestures"].get(axis)
+        if gesture is not None:
+            gesture["snap"] = [value + d for value in gesture["snap"]]
         os_seen = _STATE["os_seen"][i]
         if os_seen is not None:
             _STATE["os_seen"][i] = (os_seen[0] + d, os_seen[1] + d)

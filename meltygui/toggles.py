@@ -479,6 +479,9 @@ class Toggles:
     @defaults(tint=(0.811, 0.59, 0.29))
     class TextEditor:
 
+        # Completion menus stay compact; more candidates scroll.
+        completion_max_height = 202
+
         some_list = [122,-21,311]
 
         some_new_dict= {
@@ -810,13 +813,6 @@ class Toggles:
             # are O(log n) (see _line_offsets); turn off to drop locals from
             # the graph if ever needed.
             local_symbol_usages = True
-
-            # Debug badge in the editor's top-right (left of the live-scope
-            # indicator) showing where the view's usage graph came from:
-            # "fresh" (full recompute this session) / "disk" (pickle
-            # warm-start) / "sys" (adopted across a restart in-place), or
-            # "Ni" for N incremental passes on that base.
-            show_usage_graph_source = True
 
             # Ctrl+B always consults FRESH data: run the synchronous
             # single-line usage recheck (usage_data_for_line - full
@@ -1354,6 +1350,18 @@ class Toggles:
         # UI-scale change to apply.
         freetype_hinting = True
 
+        # Style variants (FontManager.styled_font: a Font at another native
+        # size / weight) stay in the atlas until they're not drawn for this
+        # many flushes (one flush = one surface resize, Melty.apply_ui_scale)
+        # AND a bake happens anyway. Too short and windows that draw in turns
+        # evict each other's fonts, so every frame re-bakes the atlas (~0.6 s
+        # each, text jumping to the fallback face in between; the 09-13
+        # playground ran at 1.5 fps). Only a bake can evict.
+        variant_idle_flushes = 600
+        # Hard cap on retained variants past the idle window: the least
+        # recently drawn go first. Bounds the atlas after a long style drag.
+        max_font_variants = 96
+
     # [icon=""]
 
     @defaults(tint=(0.62, 0.36, 0.52))
@@ -1420,6 +1428,15 @@ class Toggles:
         emphasis_stops = 3.0
         # [tint=(0.62, 0.36, 0.52)]
         emphasis_fill_stops = 1.0
+        # Ceiling on TEXT brightness, in stops above the desktop's white:
+        # glyph pixels of the draw-list renderer and the text-texture bake
+        # are scaled down (hue kept) so no channel exceeds 2^text_max_stops
+        # — an HDR colour reaching a label through a style, a tint or an
+        # emphasis lift read as blinding white on the PQ desktop (09-14).
+        # Backgrounds, icons drawn as rects and images keep their full
+        # headroom; 0 = clamp text at reference white. Read live.
+        # [tint=(0.62, 0.36, 0.52)]
+        text_max_stops = 1.0
 
     @defaults(tint=(0.36, 0.42, 0.52))
     class Melty:
@@ -1643,6 +1660,19 @@ class Toggles:
         # every set_imgui_tint call. 0 disables.
         # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
         widget_max_brightness = 0.3
+        # How far a tint chip's edit (draw_tuple_fast: window-header tints,
+        # editor tab tints, file-row tints) cascades through the blit cache.
+        # Every LIVE change from the picker invalidates the chip's host and
+        # its children to tint_edit_live_depth (1 = the host + its direct
+        # children — the bg the tint paints and the rows/headers sitting
+        # right on it); a full invalidate_up per frame walked the whole
+        # subtree and was the drag's cost. CLOSING the picker (click away,
+        # Esc, re-click) runs one deep cascade to tint_edit_close_depth so
+        # every nested tile under the host settles on the final colour.
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tint_edit_live_depth = 1
+        # [tint=(0.635, 0.728, 0.725, 1.0), show_tint=True]
+        tint_edit_close_depth = 10
 
     @defaults(tint=(0.103, 0.341, 0.617))
     class WindowSettings:
@@ -2172,6 +2202,13 @@ class Toggles:
         compare_file_max_width = 650.0
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
         compare_file_bg_value = 0.020
+        # Unselected file labels in the files column (draw_changed_file_header):
+        # the same hsv scale / floor as the tab_inactive_text_* pair, but
+        # brighter — the column's unpainted rows draw no bg to read against.
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_file_text_brightness = 0.75
+        # [tint=(0.85, 0.75, 0.05), show_tint=True]
+        compare_file_text_min_brightness = 0.66
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
         compare_row_gap = 1.0
 

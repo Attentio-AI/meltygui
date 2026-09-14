@@ -1,7 +1,7 @@
 import ctypes
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Tuple
@@ -76,6 +76,7 @@ class FontSpec:
     # font is baked inside boot's critical path (stb rasterize + FreeType
     # hint; the full 17-entry atlas cost 230ms).
     eager: bool = False
+    weight: int = 400
 
 
 _JETBRAINS_MONO = str(_RESOURCES / "JetBrainsMono-Regular.ttf")
@@ -179,6 +180,29 @@ def detect_auto_scale(window=None) -> float:
         return 1.0
 
 
+# The native weight faces of a base font file: {weight: path}, only those
+# that exist. Probed ONCE per path - styled_font() per view per frame and
+# a stat per face there was 150k stats a second in the 09-13 playground.
+_FACES_BY_PATH: dict = {}
+
+
+def _native_faces(path: str, weight: int) -> dict:
+    available = _FACES_BY_PATH.get(path)
+    if available is None:
+        faces = {weight: path}
+        if path == _DEJAVU_SANS:
+            faces = {200: '/usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf',
+                     400: _DEJAVU_SANS, 700: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'}
+        elif path == _JETBRAINS_MONO:
+            faces = {400: _JETBRAINS_MONO}
+            for w, label in ((100, 'Thin'), (200, 'ExtraLight'), (300, 'Light'),
+                             (500, 'Medium'), (600, 'SemiBold'), (700, 'Bold'), (800, 'ExtraBold')):
+                faces[w] = str(_RESOURCES / 'jetbrains-weights' / f'JetBrainsMono-{label}.ttf')
+        available = {w: p for w, p in faces.items() if Path(p).is_file()}
+        _FACES_BY_PATH[path] = available
+    return available
+
+
 # Fonts baked larger than this (px, after UI scale) keep stb's bitmaps:
 # hinting is a small-size legibility aid and the FreeType hint costs ~1 ms
 # per glyph row-set, so the 40/50 px display faces are not worth it.
@@ -223,6 +247,14 @@ class FontManager:
         # the next between-frames bake (flush_pending).
         self._loaded: set = set()
         self._pending: set = set()
+        self._variant_groups = {}
+        # variant FontSpec -> the flush count it was last get()ed at, the
+        # retention clock for _bake (see Toggles.Fonts.variant_idle_flushes).
+        self._variant_last_used = {}
+        self._flush_count = 0
+        # (base font, half-pixel size, native weight) -> variant FontSpec, so
+        # the per-frame get() of a steady style allocates nothing.
+        self._variant_memo = {}
 
     def rebuild(self, scale: float, impl=None) -> bool:
         """Re-bake every LOADED font at `scale` and hand the new atlas to the
@@ -250,6 +282,7 @@ class FontManager:
         when nothing is pending. Same between-frames contract and same
         dangling-handle consequence as rebuild; Melty.apply_ui_scale is the
         call site and does the handle re-gets + tile invalidation."""
+        self._flush_count += 1
         if not self._pending:
             return False
         self._loaded |= self._pending
@@ -277,7 +310,7 @@ class FontManager:
         the eager set is a fraction of that."""
         self._loaded |= {font for font in Font if font.value.eager}
         for font in list(self._loaded):
-            self._loaded.update(_GROUP_OF[font])
+            self._loaded.update(self._variant_groups.get(font, _GROUP_OF.get(font, (font,))))
         self._bake(self._loaded)
 
     def _bake(self, include):
@@ -286,12 +319,37 @@ class FontManager:
         _GROUP_OF closure at every queue site guarantee both are present and
         adjacent). Between frames only; every previously returned handle is
         dangling afterwards."""
+        # Variant retention. A bake is the only moment a variant can leave the
+        # atlas, and it leaves only when it has not been drawn for
+        # Toggles.Fonts.variant_idle_flushes surface frames, or when more
+        # than Toggles.Fonts.max_font_variants are alive (least recently
+        # drawn first). Evicting anything a window drew recently re-queues it
+        # on that window's next frame: one bake per frame, the atlas thrash of
+        # 09-13 (eight windows, ~30 variants, a 24-entry keep list).
+        from src.lsd.gl_gui.toggles import Toggles
+        alive = sorted((base for base in self._variant_last_used if base in include),
+                       key=self._variant_last_used.get, reverse=True)
+        stale_before = self._flush_count - Toggles.Fonts.variant_idle_flushes
+        keep = [base for base in alive if self._variant_last_used[base] >= stale_before]
+        # A variant queued this flush carries the current stamp, so it is
+        # always inside the idle window and sorts first under the cap.
+        keep = keep[:max(0, int(Toggles.Fonts.max_font_variants))]
+        retained = {f for f in include if not isinstance(f, FontSpec)}
+        for base in keep:
+            retained.update(self._variant_groups.get(base, (base,)))
+        include.intersection_update(retained)
+        self._variant_groups = {f: group for f, group in self._variant_groups.items() if f in include}
+        self._variant_last_used = {f: t for f, t in self._variant_last_used.items() if f in include}
         self._handles.clear()
         self.io.fonts.clear()
-        for font in Font:
+        variants = sorted((f for f in include if isinstance(f, FontSpec)),
+                          key=lambda f: (f.path, f.size, f.weight))
+        entries = list(Font) + [f for base in variants if not base.merge
+                                for f in self._variant_groups.get(base, (base,))]
+        for font in entries:
             if font not in include:
                 continue
-            spec = font.value
+            spec = font if isinstance(font, FontSpec) else font.value
             size = max(self.MIN_SIZE, spec.size * self.scale)
             if spec.merge:
                 merge_cfg = dict(
@@ -335,7 +393,7 @@ class FontManager:
                     handle = self.io.fonts.add_font_from_file_ttf(spec.path, size, cfg)
                 self._handles[font] = handle
             except Exception as e:
-                print(f"FontManager: failed to load {font.name} from {spec.path}: {e}")
+                print(f"FontManager: failed to load {self._font_name(font)} from {spec.path}: {e}")
                 self._handles[font] = None
 
     def get(self, font: Font):
@@ -346,12 +404,61 @@ class FontManager:
         real handle arrives next frame and the flush invalidates every
         cached tile. A failed font sits in _handles as None and never
         re-queues."""
+        from src.lsd.gl_gui.melty import Melty
+        from src.lsd.gl_gui.toggles import Toggles
+        if (Toggles.dynamic_styles and Melty.font_style_stack
+                and isinstance(font, (Font, FontSpec))):
+            font = self.styled_font(font, Melty.font_style_stack[-1])
+        return self._get(font)
+
+    def _get(self, font):
+        if isinstance(font, FontSpec) and not font.merge:
+            self._variant_last_used[font] = self._flush_count
         if font in self._handles:
             return self._handles[font]
-        group = _GROUP_OF.get(font)
+        group = self._variant_groups.get(font, _GROUP_OF.get(font))
         if group is not None:
             self._pending.update(group)
         return None
+
+    @staticmethod
+    def _font_name(font):
+        return (f"{Path(font.path).stem}@{font.size:g}" if isinstance(font, FontSpec)
+                else font.name)
+
+    def styled_font(self, font, context):
+        """Select native outlines at the resolved size; never scale glyph quads.
+
+        DejaVu offers extra-light/regular/bold. Bundled JetBrains Mono offers
+        weights 100 through 800. Choose the nearest available native weight.
+        Half-pixel size steps bound atlas churn while preserving 3x LCD texels.
+        """
+        group = _GROUP_OF.get(font, (font,))
+        base = group[0]
+        spec = base if isinstance(base, FontSpec) else base.value
+        from src.lsd.gl_gui.style import evaluate_font_style
+        if context[:4] == (0.0, 0.0, False, False):
+            return font
+        size, weight = evaluate_font_style(context, spec.size, spec.weight)
+        size = round(2 * max(self.MIN_SIZE, min(96.0, size))) / 2
+        weight = max(100, min(900, weight))
+        available = _native_faces(spec.path, spec.weight)
+        chosen = min(available, key=lambda w: abs(w - weight)) if available else spec.weight
+        path = available.get(chosen, spec.path)
+        if size == spec.size and path == spec.path:
+            return font
+        memo_key = (base, size, chosen)
+        variant = self._variant_memo.get(memo_key)
+        if variant is not None:
+            return variant
+        variant = replace(spec, path=path, size=float(size), weight=chosen, eager=False)
+        self._variant_memo[memo_key] = variant
+        if variant not in self._variant_groups:
+            # Scale merged icons at their authored ratio and in the same group.
+            merges = tuple(replace(member.value, size=member.value.size * size / spec.size,
+                                   eager=False) for member in group[1:])
+            self._variant_groups[variant] = (variant,) + merges
+        return variant
 
     def peek(self, font: Font):
         """Handle for `font` if it is baked, else None — WITHOUT queueing a
@@ -455,8 +562,8 @@ class FontManager:
         atlas = np.frombuffer(pixels, np.uint8).reshape(height, width, 4).copy()
         alpha = atlas[..., 3]
         stats = {}
-        for font in Font:
-            spec = font.value
+        for font in self._handles:
+            spec = font if isinstance(font, FontSpec) else font.value
             handle = self._handles.get(font)
             if spec.merge or not spec.hint or handle is None:
                 continue
@@ -504,7 +611,7 @@ class FontManager:
                 alpha[ty0:ty1, tx0:tx1] = 0
                 alpha[ty0 + r0:ty0 + r0 + rows, tx0 + c0 + j0:tx0 + c0 + j1] = src[:, j0:j1]
                 hinted += 1
-            stats[font.name] = (hinted, fallback)
+            stats[self._font_name(font)] = (hinted, fallback)
         self.hint_stats = stats
         total_h = sum(h for h, _ in stats.values())
         total_f = sum(f for _, f in stats.values())

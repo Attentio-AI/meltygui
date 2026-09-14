@@ -6652,7 +6652,13 @@ def _parse_override_comment(text):
         for kw in call.keywords:
             if kw.arg is None:  # reject **kwarg
                 return None
-            parsed[kw.arg] = ast.literal_eval(kw.value)
+            if kw.arg == "view_func" and isinstance(kw.value, (ast.Name, ast.Attribute)):
+                reference = ast.unparse(kw.value)
+                if not all(part.isidentifier() for part in reference.split(".")):
+                    return None
+                parsed[kw.arg] = reference
+            else:
+                parsed[kw.arg] = ast.literal_eval(kw.value)
         return parsed or None
     except (SyntaxError, ValueError, TypeError):
         return None
@@ -8117,6 +8123,9 @@ def dict_to_cst_call(value: dict) -> cst.Call:
     old_node = value.get("__cst__")
     if old_node is None or not isinstance(old_node, cst.Call):
         raise TypeError("Dict has no __cst__ Call")
+
+    if value.get("__callee__") is not None:
+        old_node = old_node.with_changes(func=cst.parse_expression(str(value["__callee__"])))
 
     edits = {k: v for k, v in value.items()
              if not (_is_dunder(k))}

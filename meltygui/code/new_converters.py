@@ -538,6 +538,10 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                 loading_state._debounce_timer.cancel()
                 loading_state._debounce_timer = None
 
+            # Completion can arrive while another OS surface is active.
+            # Wake the cache which owns this runner, captured on the UI thread.
+            runner_cache = Melty.cache
+
             def run(run_next_inner):
                 loading_state._loading = True
                 value, background_kwargs = run_next_inner
@@ -570,8 +574,20 @@ def run_in_background(input_value, loading_state: LoadingState, unique,
                     # ancestors so the caller's body actually re-runs next frame -
                     # a dirty tile would just replay its blit past the result.
                     note = Note(name="Run in background complete", tint=(0.5, 1.0, 0.5), draw_state=draw_state)
-                    Melty.cache.invalidate(draw_state._tile_id, note=note)
-                    request_render()
+                    # A fast load can finish before this frame commits its
+                    # tiles. Queue the wake after that commit on the UI thread.
+                    def wake():
+                        runner_cache.invalidate(draw_state._tile_id, force=True, note=note)
+                        # Hidden, zero-pixel IO hosts have no tiles to dirty.
+                        # Their wrapper flags are the IO pump's wake signal.
+                        current = draw_state
+                        seen = set()
+                        while current is not None and id(current) not in seen:
+                            seen.add(id(current))
+                            if current._tile_id not in runner_cache._tiles:
+                                current._external_change = True
+                            current = current._parent
+                    Melty.post_to_render(wake)
 
             #
             # if Melty.frame_count < 0 or main_thread:

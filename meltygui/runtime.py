@@ -613,6 +613,11 @@ class _LazyRtree:
         return getattr(self._index, name)
 
 
+# Marks a cls.backgrounds entry re-submitted from a cache-sourced background's
+# stamped colour (Melty.add_cached_background).
+_CACHED_BACKGROUND = object()
+
+
 class Melty:
 
     draw_state_registry = None
@@ -1060,7 +1065,19 @@ class Melty:
     bg_stack = []
     bg_color_stack = []
     draw_state_stack = []
+    font_style_stack = []
+    font_base_stack = []
     backgrounds = []
+    background_inline_indices = set()
+    background_shadow_offsets = {}
+    # One entry per cls.backgrounds entry: the rect the background covers,
+    # the clip it was painted under and its corner radius, imgui coords -
+    # the renderer copies them from the palette into the text-context
+    # layer (SplitOverlayRenderer._ensure_style_context), so the text
+    # shader reads the composed background instead of a framebuffer draw.
+    background_rects = []
+    background_gen = 0
+    style_context_root = (0.0, 0.0, 0.0, 1.0)
     dynamic_style_gl = None
 
     input_value_stack = [None]
@@ -2127,6 +2144,13 @@ class Melty:
         return time.monotonic() - cls.os_resize_time <= cls.OS_RESIZE_SETTLE_S
 
     @classmethod
+    def editor_keeps_escape(cls, focused):
+        kwargs = getattr(focused, '_kwargs', None) or {}
+        return (not kwargs.get('single_line', False)
+                and not kwargs.get('is_search_box', False)
+                and not getattr(cls.focused_ds, 'search_active', False))
+
+    @classmethod
     def focused_key_pending(cls):
         """True when the focused text view must re-run THIS frame to catch
         keyboard input: a non-modifier key event is queued, or one is held.
@@ -2158,7 +2182,7 @@ class Melty:
         return False
 
     @classmethod
-    def add_background(cls, style):
+    def add_background(cls, style, *, rect=None, corner_radius=0.0, draw_list=None):
         """Suggest a background in the current view's geometry and paint channel.
 
         Colours are deferred until draw_backgrounds. The image is only a
@@ -2167,27 +2191,101 @@ class Melty:
         if not Toggles.dynamic_styles:
             return
         from src.lsd.gl_gui.gl_state import GLState, gl_limits
-        if not cls.draw_state_stack:
+        if not cls.draw_state_stack and rect is None:
             return  # Outside a view there is no surface to paint.
-        draw_state = cls.draw_state_stack[-1]
+        draw_state = cls.draw_state_stack[-1] if cls.draw_state_stack else None
+        initializing = cls.dynamic_style_gl is None or not cls.backgrounds
         if cls.dynamic_style_gl is None:
             cls.dynamic_style_gl = GLState()
         capacity = gl_limits()['max_2d']
         if len(cls.backgrounds) >= capacity:
             raise RuntimeError("Dynamic background palette exceeds GL texture capacity")
-        previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+        previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D) if initializing else None
         palette = cls.dynamic_style_gl.fbo('background_palette', capacity, 1)
-        gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+        if initializing:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
         index = len(cls.backgrounds)
         cls.backgrounds.append((draw_state, style))
+        if rect is not None:
+            # Inline primitives inherit the owning view without replacing its
+            # context (not making the next sibling inherit the button).
+            cls.background_inline_indices.add(index)
+            left, top, width, height = rect
+            dl = draw_list if draw_list is not None else imgui.get_window_draw_list()
+            clip = (*dl.get_clip_rect_min(), *dl.get_clip_rect_max())
+            cls.background_rects.append((left, top, width, height, clip, corner_radius))
+            uv = ((index + 0.5) / capacity, 0.5)
+            dl.add_image_rounded(palette.texture_id, (left, top),
+                                 (left + width, top + height), uv, uv, 0xffffffff, corner_radius)
+            return
         left, top = draw_state.abs_left, draw_state.abs_top
         width, height = draw_state.width or 0, draw_state.height or 0
+        # Shadow metadata uses the same enclosing background contexts as colour.
+        # Submit over the existing shadow pass while its clip/layer are live.
+        from src.lsd.gl_gui.style import resolve_shadow_offset, default_scalar_accumulation
+        from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+        if index == 0:
+            cls.background_shadow_offsets.clear()
+        # Walk up to the nearest ancestor resolved THIS frame, else one whose
+        # body was cache-served (its tile is blitted, so it never re-submits)
+        # and carries the offset it resolved to last time (_dynamic_shadow).
+        parent = draw_state._parent
+        seen = {id(draw_state)}
+        ancestors = []
+        while (parent is not None and id(parent) not in cls.background_shadow_offsets
+               and id(parent) not in seen and getattr(parent, '_dynamic_shadow', None) is None):
+            seen.add(id(parent))
+            ancestors.append(parent)
+            parent = parent._parent
+        offset, shadow_fn = cls.background_shadow_offsets.get(
+            id(parent), getattr(parent, '_dynamic_shadow', None) or (0.0, default_scalar_accumulation))
+        for ancestor in reversed(ancestors):
+            kwargs = getattr(ancestor, '_kwargs', None) or {}
+            ancestor_style = kwargs.get('style', kwargs.get('tint'))
+            override = getattr(ancestor_style, 'shadow_fn', None)
+            if override is not None:
+                shadow_fn = override
+        override = getattr(style, 'shadow_fn', None)
+        if override is not None:
+            shadow_fn = override
+        offset = resolve_shadow_offset(style, offset, shadow_fn)
+        cls.background_shadow_offsets[id(draw_state)] = (offset, shadow_fn)
+        # Bypass the @live hook: a per-frame stamp must not invalidate the tile.
+        object.__setattr__(draw_state, '_dynamic_shadow', (offset, shadow_fn))
         if width <= 0 or height <= 0:
+            cls.background_rects.append(None)
             return
+        cls.background_rects.append(cls._background_rect(draw_state, left, top, width, height))
+        if offset:
+            add_shadow((left, top, width, height), offset=offset,
+                       corner_radius=draw_state.corner_radius)
         uv = ((index + 0.5) / capacity, 0.5)
         imgui.get_window_draw_list().add_image_rounded(
             palette.texture_id, (left, top), (left + width, top + height),
             uv, uv, 0xffffffff, draw_state.corner_radius)
+
+    @staticmethod
+    def _background_rect(draw_state, left, top, width, height):
+        clip = getattr(draw_state, 'abs_clip_rect', None)
+        if not clip:
+            clip = (left, top, left + width, top + height)
+        return (left, top, width, height, tuple(float(c) for c in clip),
+                float(getattr(draw_state, 'corner_radius', 0.0) or 0.0))
+
+    @classmethod
+    def add_cached_background(cls, draw_state):
+        """A blit-cache hit skips the body, so add_background never runs for
+        it; its tile already holds the right pixels, but live text drawn
+        OVER the tile (a hovered row) must still see its surface. Re-submit
+        the rect with the colour the view resolved to last time."""
+        if not Toggles.dynamic_styles or getattr(draw_state, '_dynamic_bg', None) is None:
+            return
+        width, height = draw_state.width or 0, draw_state.height or 0
+        if width <= 0 or height <= 0:
+            return
+        cls.backgrounds.append((draw_state, _CACHED_BACKGROUND))
+        cls.background_rects.append(cls._background_rect(
+            draw_state, draw_state.abs_left, draw_state.abs_top, width, height))
 
     @classmethod
     def draw_backgrounds(cls):
@@ -2195,20 +2293,47 @@ class Melty:
         if not Toggles.dynamic_styles or not cls.backgrounds:
             return
         import numpy as np
-        from src.lsd.gl_gui.style import draw_background
+        from src.lsd.gl_gui.style import draw_background, default_tint_accumulation
         from src.lsd.gl_gui.gl_state import gl_limits
         root = tuple(hdr_color.srgb_to_linear(c) for c in Toggles.dynamic_style_root) + (1.0,)
         resolved = {}
         colors = []
-        for draw_state, style in cls.backgrounds:
+        for index, (draw_state, style) in enumerate(cls.backgrounds):
+            inline = index in cls.background_inline_indices
+            if style is _CACHED_BACKGROUND:
+                color, tint_fn = draw_state._dynamic_bg
+                resolved[id(draw_state)] = (color, tint_fn)
+                colors.append(color)
+                continue
             parent = draw_state
             seen = set()
-            while parent is not None and id(parent) not in resolved and id(parent) not in seen:
+            ancestors = []
+            # Nearest ancestor resolved this frame, else one whose body was
+            # cache-served (blitted tile, no re-submit) with last frame's
+            # colour stamped on it (_dynamic_bg): a live child under a cached
+            # parent keeps drawing on the parent's surface, not the root.
+            while (parent is not None and id(parent) not in resolved and id(parent) not in seen
+                   and ((parent is draw_state and not inline) or getattr(parent, '_dynamic_bg', None) is None)):
                 seen.add(id(parent))
+                if parent is not draw_state or inline:
+                    ancestors.append(parent)
                 parent = parent._parent
-            behind = resolved.get(id(parent), root)
-            color = draw_background(style, behind)
-            resolved[id(draw_state)] = color
+            behind, tint_fn = resolved.get(
+                id(parent), getattr(parent, '_dynamic_bg', None) or (root, default_tint_accumulation))
+            # A view can change policy without painting a background of its own.
+            for ancestor in reversed(ancestors):
+                kwargs = getattr(ancestor, '_kwargs', None) or {}
+                ancestor_style = kwargs.get('style', kwargs.get('tint'))
+                override = getattr(ancestor_style, 'tint_fn', None)
+                if override is not None:
+                    tint_fn = override
+            override = getattr(style, 'tint_fn', None)
+            if override is not None:
+                tint_fn = override
+            color = draw_background(style, behind, tint_fn)
+            if not inline:
+                resolved[id(draw_state)] = (color, tint_fn)
+                object.__setattr__(draw_state, '_dynamic_bg', (color, tint_fn))
             colors.append(color)
         palette = cls.dynamic_style_gl.fbo('background_palette', gl_limits()['max_2d'], 1)
         previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
@@ -2216,13 +2341,29 @@ class Melty:
         gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, len(colors), 1,
                            gl.GL_RGBA, gl.GL_FLOAT, np.asarray(colors, dtype=np.float32))
         gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+        cls.style_context_root = root
+        cls.background_gen += 1
 
     @classmethod
     def begin_frame(cls):
         cls._sync_gl_error_checking()
+        # Every cached tile holds pixels composed on the previous root colour
+        # (and then adjusted against it): a root / toggle change repaints all.
+        # Tracked ON the cache: every Surface swaps in its own, and a key on
+        # this class would let the first surface to notice consume the change.
+        dynamic_style_key = (Toggles.dynamic_styles, tuple(Toggles.dynamic_style_root))
+        if (cls.cache is not None
+                and dynamic_style_key != getattr(cls.cache, '_dynamic_style_seen', None)):
+            cls.cache._dynamic_style_seen = dynamic_style_key
+            cls.cache.invalidate_all()
         cls.backgrounds.clear()
+        cls.background_inline_indices.clear()
+        cls.background_rects.clear()
+        cls.background_shadow_offsets.clear()
         cls.unique_stack = []
         cls.draw_state_stack = []
+        cls.font_style_stack = []
+        cls.font_base_stack = []
         cls.flow_spacing = 0.0
         cls.indent_count = 0
         cls.unindent_count = 0
@@ -2305,9 +2446,9 @@ class Melty:
         focused = None
         if cls.text_focused_ds is not None and cls.glfw_window is not None:
             focused = cls.text_focused_ds
-            # Esc releases text focus globally - no more needed. Re-render the
-            # (now-)focused text view so its cursor disappears this frame, then
-            # clear focus, which also unblocks global hotkeys via is_key_pressed.
+            # Multiline editors keep keyboard ownership on Escape. Otherwise
+            # dismissing an already-closed hint turns ordinary typing into
+            # global shortcuts. Single-line fields retain their pop gesture.
         # Press EDGE from the callback queue, not glfw.get_key level state: a
         # tap stays PRESSED across multiple frames, so the level check would
         # re-fire on frame 2 - right after a popup consumed the event - and
@@ -2317,7 +2458,8 @@ class Melty:
             # quick-fix) owns this Esc: it should only close the popup, not
             # release text focus. The Esc handlers live inside the focused
             # editor's render, so re-run its subtree and let them consume it.
-            if focused is not None and (getattr(focused, '_ac_open', False)
+            if focused is not None and (cls.editor_keeps_escape(focused)
+                                        or getattr(focused, '_ac_open', False)
                                         or getattr(focused, '_uj_open', False)
                                         or getattr(focused, '_qf_open', False)):
                 cls.cache.invalidate_up(focused._tile_id, force=True)
@@ -4895,14 +5037,28 @@ class Melty:
         bindings registered with text_focus_ok=False — the bare-E toggle's
         rule — while a text_focus_ok binding fires regardless (a Ctrl combo
         no editor binds, e.g. Ctrl+M). A raising callback is printed, never
-        propagated into the frame. Returns True when anything fired."""
-        if not cls.global_hotkeys or not cls.frame_key_events:
+        propagated into the frame. Edit and navigation history are framework
+        defaults, available in every Surface as well as the studio; an app
+        can override a chord with register_global_hotkey. Returns True when
+        anything fired."""
+        if not cls.frame_key_events:
             return False
+        from src.lsd.gl_gui.view.core_views.core_undo import UndoManager, NavUndo
+        control = glfw.MOD_CONTROL
+        control_shift = control | glfw.MOD_SHIFT
+        history_hotkeys = {
+            (glfw.KEY_Z, control): (UndoManager.undo, True),
+            (glfw.KEY_Z, control_shift): (UndoManager.redo, True),
+            (glfw.KEY_Y, control): (UndoManager.redo, True),
+            (glfw.KEY_LEFT, control_shift): (NavUndo.undo, True),
+            (glfw.KEY_RIGHT, control_shift): (NavUndo.redo, True),
+        }
         mod_mask = (glfw.MOD_CONTROL | glfw.MOD_SHIFT | glfw.MOD_ALT
                     | glfw.MOD_SUPER)
         fired = False
         for key, mods in list(cls.frame_key_events):
-            entry = cls.global_hotkeys.get((key, mods & mod_mask))
+            chord = (key, mods & mod_mask)
+            entry = cls.global_hotkeys.get(chord, history_hotkeys.get(chord))
             if entry is None:
                 continue
             callback, text_focus_ok = entry

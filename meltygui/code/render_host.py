@@ -441,8 +441,9 @@ class RenderHost(_DeepAttrMixin, dict):
         # envelope so render_host_view re-runs and calls the wrapper, and the wrapper
         # so its blit-cached body actually re-executes to process the edit (load/save
         # or chain_out). Invalidating only the envelope leaves the wrapper replayed.
-        for ds in (None, self._wrapper_draw_state):
+        for ds in (self._draw_state, self._wrapper_draw_state):
             if ds is not None:
+                ds._external_change = True
                 try:
                     pass
                     # ds.invalidate(frame_delta=0)
@@ -1000,7 +1001,7 @@ class RenderHost(_DeepAttrMixin, dict):
         return f"RenderHost({self.name!r} -> {w}{tail}, {dict.__repr__(self)})"
 
 
-@render_func(use_cache=True, selectable=False, temp=True)
+@render_func(use_cache=True, selectable=False, temp=True, view_func_selection=False)
 def render_host_view(input_value, external_change=False, draw=False, draw_state=None, name=None, **kwargs):
     """Window envelope + wrapper driver for a RenderHost (draw_main → host.draw()).
 

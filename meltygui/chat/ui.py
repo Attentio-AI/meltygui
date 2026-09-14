@@ -61,7 +61,7 @@ class ChatInterfaceState(DictConversion):
         self.sources = []
         self.folder_expanded = {}
         self.folders_default_expanded = True
-        self.sections_expanded = {"recent": True, "all": True}
+        self.sections_expanded = {"recent": True, "all": True, "accounts": True}
 
 
 TRASH_ICON = ""   # FontAwesome trash-alt
@@ -358,16 +358,17 @@ def _text_tint(tint):
     return tuple(a * 0.8 + b * 0.2 for a, b in zip(neutral, hue))
 
 
-def _card(x, y, width, height, tint, selected=False, max_bg_value=None, shadow_offset=None):
+def _card(x, y, width, height, tint, selected=False, max_bg_value=None, shadow_offset=None, shadow=True):
     # Fills paint on the BODY channel (as flat_button does): a fill one channel
     # below sits under the compositor's mask for this rank and its lit rim /
     # specular is masked out - the card showed with no highlight at all.
     draw_list = imgui.get_window_draw_list()
     if Melty.channels_split:
         draw_list.channels_set_current(Melty.get_channel())
-    add_shadow((x, y, width, height),
-               offset=shadow_offset if shadow_offset is not None else (Toggles.Chat.selected_shadow_offset if selected else Toggles.Chat.shadow_offset),
-               corner_radius=Melty.px(6))
+    if shadow:
+        add_shadow((x, y, width, height),
+                   offset=shadow_offset if shadow_offset is not None else (Toggles.Chat.selected_shadow_offset if selected else Toggles.Chat.shadow_offset),
+                   corner_radius=Melty.px(6))
     _, color = draw_bg(left=x, top=y, width=width, height=height,
             style_manager=_tint_style(tuple(tint)), opacity=1, outline=False,
             rounding=Melty.px(6), max_bg_depth=1 if selected else 0,
@@ -1344,8 +1345,10 @@ def draw_messages(messages, draw_state, state, key, width, height,
                            + (header_height if show_more else 0))
             fitted_width = row_width
             if isinstance(message, UserMessage):
+                # Keep the prose renderer's 4px inset plus trailing glyph margin
+                # inside the leaf clip, as well as the bubble's outer padding.
                 fitted_width = min(row_width - chat_indent,
-                                   max(Melty.px(40), content_width + user_inset - Melty.px(8)))
+                                   max(Melty.px(40), content_width + user_inset))
             if isinstance(message, ToolCall):
                 header_width = (max(tag[2] + tag[4] for tag in tags) if tags else
                                 tags_x + _label_width(_message_label(message, expanded)))
@@ -1609,21 +1612,30 @@ def draw_chat_requests(requests, draw_state, state, key, width, height, tint):
     return changed
 
 
+def navigation_heading_control(pane, draw_state, state, x, y, width, height):
+    """App extension: draw a trailing heading control; return changed, width used."""
+    return False, 0
+
+
 @render_func(tint=(0.35, 0.55, 0.75), auto_resize=False, use_cache=True,
              disable_scroll=True, imgui_padding=False, show_header=False, show_bg=False)
 def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState = None,
                          row_edges=None, new_conversation=None, **kwargs):
-    """Recent and complete histories share sources, with independent scroll positions."""
+    """Conversation lists and Internet Accounts share a resizable left column."""
     changed = False
     if not hasattr(state, "sections_expanded"):
-        state.sections_expanded = {"recent": True, "all": True}
-    opened = [state.sections_expanded.get(pane, True) for pane in ("all", "recent")]
+        state.sections_expanded = {"recent": True, "all": True, "accounts": True}
+    panes = ("accounts", "all", "recent")
+    opened = [state.sections_expanded.get(pane, True) for pane in panes]
     heading_height = Melty.px(26)
     tint = Toggles.Chat.navigation_tint
     def section_heading(pane, x, y, width):
+        control_changed, control_width = navigation_heading_control(
+            pane, draw_state, state, x, y, width, heading_height)
+        width = max(0, width - control_width)
         expanded = state.sections_expanded.get(pane, True)
         toggled = _caret(draw_state, "section:" + pane, x, y, Melty.px(18), heading_height, expanded, tint)
-        label = "Recent chats" if pane == "recent" else "All chats"
+        label = {"all": "All chats", "recent": "Recent chats", "accounts": "Internet Accounts"}[pane]
         _title(label, x + Melty.px(20), y, max(0, width - Melty.px(20)), heading_height, tint, brightness=0.7)
         header_clicked = _button(draw_state, "section-label:" + pane, "", x + Melty.px(20), y,
                            max(0, width - Melty.px(20)), tint, height=heading_height,
@@ -1632,18 +1644,18 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
             state.sections_expanded[pane] = not expanded
         elif header_clicked:
             state.sections_expanded[pane] = True
-        return toggled or (header_clicked and not expanded)
+        return control_changed or toggled or (header_clicked and not expanded)
     window = draw_state.parent_window or draw_state
     top = imgui.get_cursor_screen_pos()[1] - window.abs_top
-    rows = RowLayout(draw_state, 2, row_edges=row_edges,
+    rows = RowLayout(draw_state, 3, row_edges=row_edges,
                      top_edge={"y": top}, bottom_edge={"y": top + draw_state.height},
                      # Collapsing hides sections without replacing the rows's
                      # divider with a bottom-pinned, fixed-height header row.
-                     row_heights=[None, None],
-                     row_mins=[heading_height + 8, heading_height + 8],
+                     row_heights=[None, None, None],
+                     row_mins=[heading_height + 8] * 3,
                      persist=True, resizable=True,
                      padding=4, padding_x=0, border_color=None)
-    for index, pane in enumerate(("all", "recent")):
+    for index, pane in enumerate(panes):
         with rows.cell(index) as height:
             width = rows.inner_width()
             x, top = imgui.get_cursor_screen_pos()
@@ -1651,6 +1663,17 @@ def draw_chat_navigation(input_value, draw_state=None, state: ChatInterfaceState
             if not opened[index]:
                 continue
             y = top + heading_height
+            if pane == "accounts":
+                imgui.set_cursor_screen_pos((x, y))
+                edited, _ = internet_accounts.draw_internet_accounts(
+                    internet_accounts.accounts, name="chat-internet-accounts",
+                    width=width, height=max(0, height - heading_height),
+                    show_header=False, show_name=False, show_bg=False, shadow=False,
+                    # This embedded view borrows the chat view's accounts;
+                    # collapsing it should not close their running backends.
+                    on_cleanup=None)
+                changed |= edited
+                continue
             if pane == "recent":
                 chip_x, chip_height = x, Melty.px(22)
                 hours_selected = getattr(state, "age_hours", 0) or 24
@@ -1715,6 +1738,46 @@ def is_new_chat(chat):
     return chat.loaded and not chat["messages"] and not chat["running"]
 
 
+def chat_effort_levels(kind, proxy, model):
+    levels = getattr(proxy, "model_efforts", {}).get(model)
+    if levels is None:
+        levels = ("low", "medium", "high") if kind.name == "anthropic" else ()
+    return tuple(levels)
+
+
+def draw_effort_slider(draw_state, key, value, levels, x, y, width, height, tint):
+    """A discrete slider using the owning view's replayable input actions."""
+    if not levels or value not in levels:
+        _title("Effort: " + ("Unavailable" if not levels else "Loading…"), x, y, width, height,
+               tint, brightness=0.6, ellipsis=True)
+        return False, value
+    selected = levels.index(value)
+    left, right = x + Melty.px(8), x + width - Melty.px(8)
+    rect = (x, y, x + width, y + height)
+    pressed = draw_state.on_action("left_mouse_down", view_id=key, rect=rect, priority_delta=4)
+    dragged = draw_state.on_action("left_mouse_drag", view_id=key + ":drag", rect=rect, priority_delta=4)
+    changed = False
+    if len(levels) > 1 and (pressed is not None or dragged is not None):
+        fraction = max(0, min(1, (imgui.get_mouse_pos()[0] - left) / max(1, right - left)))
+        index = round(fraction * (len(levels) - 1))
+        changed = index != selected
+        selected = index
+    draw_list = imgui.get_window_draw_list()
+    if Melty.channels_split:
+        draw_list.channels_set_current(Melty.get_channel())
+    track_y = y + height - Melty.px(5)
+    color = _text_tint(tuple(tint))
+    draw_list.add_line(left, track_y, right, track_y, _color(color, 0.3), Melty.px(2))
+    for index in range(len(levels)):
+        tick_x = left + (right - left) * index / max(1, len(levels) - 1)
+        draw_list.add_circle_filled(tick_x, track_y, Melty.px(2), _color(color, 0.4), 12)
+    knob_x = left + (right - left) * selected / max(1, len(levels) - 1)
+    draw_list.add_circle_filled(knob_x, track_y, Melty.px(4), _color(color), 16)
+    _title("Effort: " + levels[selected].title(), x + Melty.px(4), y,
+           width - Melty.px(8), height - Melty.px(9), tint, brightness=0.8, ellipsis=True)
+    return changed, levels[selected]
+
+
 def switch_new_chat_source(state, proxies, kinds, key, account_id, model):
     """Move an unsent draft; never move a provider's existing transcript."""
     previous = state.account
@@ -1723,7 +1786,7 @@ def switch_new_chat_source(state, proxies, kinds, key, account_id, model):
         return False
     if account_id != previous:
         target = proxies[account_id]
-        metadata = {field: chat.metadata[field] for field in ("permissions", "tint", "model")
+        metadata = {field: chat.metadata[field] for field in ("permissions", "tint", "model", "effort")
                     if field in chat.metadata}
         target[key] = {"title": chat["title"], "project": chat["project"],
                        "created_at": chat.get("created_at", 0), "updated": chat.get("updated", 0)}
@@ -1991,12 +2054,20 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                 changed = True
             from src.lsd.gl_gui.view.core_views.new_core_view import draw_dropdown
             permissions = {"Ask permission": "ask", "Full access": "full"}
-            if is_new_chat(chat) and meta.get("model") in (None, "", "default"):
+            if not getattr(proxy, "inherits_defaults", False) and is_new_chat(chat) and meta.get("model") in (None, "", "default"):
                 default_model = getattr(proxy, "default_model", None)
                 if default_model:
                     meta["model"] = default_model
                     changed = True
+            inherits_defaults = getattr(proxy, "inherits_defaults", False)
+            defaults = proxy.defaults_for(chat["project"]) if inherits_defaults else {}
             models = chat_models(kind, proxy, meta.get("model", ""))
+            if inherits_defaults:
+                default_model = defaults.get("model") or getattr(proxy, "default_model", None)
+                models = {"Default · " + (default_model or "Codex model"): "default", **models}
+                access = ("Full access" if defaults.get("sandbox_mode") == "danger-full-access"
+                          and defaults.get("approval_policy") == "never" else "Configured access")
+                permissions = {"Default · " + access: "default", **permissions}
             new_chat = is_new_chat(chat)
             if new_chat:
                 # New drafts may choose any available source, including ones
@@ -2012,19 +2083,27 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                         continue
                     options = chat_models(source_kind, source_proxy,
                         meta.get("model", "") if source_id == state.account else "")
+                    if getattr(source_proxy, "inherits_defaults", False):
+                        source_defaults = source_proxy.defaults_for(chat["project"])
+                        default_model = source_defaults.get("model") or getattr(source_proxy, "default_model", None)
+                        options = {"Default · " + (default_model or "Codex model"): "default", **options}
                     grouped_models[source_label(source_id, source_kind, accounts)] = {
                         label: (source_id, model) for label, model in options.items()}
                 model_choices = grouped_models
             else:
                 model_choices = models
+            has_effort = kind.name in ("codex", "anthropic")
+            effort_width = Melty.px(150) if has_effort else 0
             control_x = x + Melty.px(95)
             for index, (field, choices, default) in enumerate((("permissions", permissions, "ask"), ("model", model_choices, ""))):
-                current = meta.get(field, default)
+                current = meta.get(field, "default" if inherits_defaults else default)
+                if inherits_defaults and (not current or field == "model" and not meta.get("model_explicit")):
+                    current = "default"
                 labels = models if field == "model" else permissions
                 label = next((label for label, value in labels.items() if value == current),
                              current if current and current != "default" else "Loading models…")
                 slot = min(_label_width(label) + Melty.px(46), Melty.px(240),
-                           max(Melty.px(80), (width - Melty.px(95)) / 2))
+                           max(Melty.px(80), (width - Melty.px(95) - effort_width) / 2))
                 imgui.set_cursor_screen_pos((control_x, y))
                 edited, value = draw_dropdown(label, collection=choices, display_label=label,
                     name=field + ":" + draft_key, width=slot - Melty.px(4), height=Melty.px(30), trigger_height=Melty.px(30),
@@ -2041,6 +2120,28 @@ def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: 
                         if field == "model":
                             meta["model_explicit"] = True
                         changed = True
+            if has_effort:
+                model = meta.get("model")
+                if model in (None, "", "default") or inherits_defaults and not meta.get("model_explicit"):
+                    model = defaults.get("model") or getattr(proxy, "default_model", None)
+                levels = chat_effort_levels(kind, proxy, model)
+                effort = meta.get("effort")
+                if effort in (None, "", "default") or effort not in levels:
+                    if kind.name == "codex":
+                        effort = defaults.get("model_reasoning_effort") or getattr(proxy, "model_default_efforts", {}).get(model)
+                    else:
+                        effort = proxy.default_effort_for(chat["project"], model)
+                    if effort and effort not in levels and levels:
+                        order = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+                        eligible = [level for level in levels if level in order and effort in order
+                                    and order.index(level) <= order.index(effort)]
+                        effort = eligible[-1] if eligible else levels[0]
+                edited, effort = draw_effort_slider(draw_state, "effort:" + draft_key,
+                    effort, levels, control_x, y,
+                    max(Melty.px(80), x + width - control_x), Melty.px(30), chat_tint)
+                if edited:
+                    meta["effort"] = effort
+                    changed = True
             imgui.set_cursor_screen_pos((x, y))
             imgui.dummy(1, Melty.px(30))
     columns.finish()

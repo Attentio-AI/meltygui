@@ -461,14 +461,14 @@ def _seed_defaults(obj):
 def _default_for(cls):
     """The cached pristine default instance (cls.default_instance), created once if
     absent (DictConversion.__init__ caches it). Template for fast reconstruction."""
-    d = getattr(cls, "default_instance", None)
+    d = cls.__dict__.get("default_instance")     # this class's own, never an inherited base's
     if d is not None:
         return d
     try:
         cls()                       # side effect: caches cls.default_instance
     except Exception:
         return None
-    return getattr(cls, "default_instance", None)
+    return cls.__dict__.get("default_instance")
 
 
 # During a load, every reconstructed DictConversion is appended here so _post_load

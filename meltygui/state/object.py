@@ -51,7 +51,11 @@ class DictConversion(metaclass=FieldMeta):
         self.__post_init__()
         self.__class__._instances.add(self)
 
-        if not hasattr(self.__class__, 'default_instance'):
+        # Check on the class ITSELF (`__dict__`, not hasattr): a subclass
+        # inherits its base's default through hasattr and would never set its
+        # own, so load_save_v2.py rebuilt it from the base's template and
+        # its extra fields (ContextMenuItemsState.open_at) came back missing.
+        if 'default_instance' not in self.__class__.__dict__:
             self.__class__.default_instance = None
             self.__class__.default_instance = self.__class__()
 

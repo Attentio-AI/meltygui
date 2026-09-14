@@ -26,7 +26,7 @@ from imgui.integrations.opengl import (
     get_common_gl_state,
     restore_common_gl_state,
 )
-from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, set_decode_uniforms
+from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, GLSL_TEXT_CLAMP as _GLSL_TEXT_CLAMP, set_decode_uniforms
 
 
 class _FakeWindowRect:
@@ -102,7 +102,7 @@ class SplitOverlayRenderer(GlfwRenderer):
     in vec4 Frag_Color;   // premultiplied (see VERTEX_SHADER_SRC)
     layout(location = 0, index = 0) out vec4 Out_Color;
     layout(location = 0, index = 1) out vec4 Out_Cov;
-    """ + _GLSL_UNPREMULTIPLY + """
+    """ + _GLSL_UNPREMULTIPLY + _GLSL_TEXT_CLAMP + """
     /* dynamic text policy */
     void main() {
         vec4 color = melty_unpremultiply(Frag_Color);
@@ -111,6 +111,9 @@ class SplitOverlayRenderer(GlfwRenderer):
         if (Atlas == 1) {
             vec2 fw = fwidth(Frag_UV);
             if (fw.x > 0.0 && fw.y > 0.0) {
+                // Glyph pixels only (solid geometry samples the atlas's white
+                // texel with a flat UV): cap HDR text at Toggles.HDR.text_max_stops.
+                color.rgb = melty_clamp_text(color.rgb);
                 if (DynamicStyles == 1) color.rgb = adjust_text_color(color.rgb);
                 if (Lcd == 1) {
                     float l = texture(Texture, Frag_UV.st - vec2(TexelSize.x, 0.0)).a;
@@ -298,6 +301,11 @@ class SplitOverlayRenderer(GlfwRenderer):
         from src.lsd.gl_gui.toggles import Toggles
         gl.glBlendFuncSeparate(gl.GL_SRC1_COLOR, gl.GL_ONE_MINUS_SRC1_COLOR,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
+        # The shared atlas can be resized by another surface's lazy font load.
+        # Its live dimensions, just like its live texture ID, are authoritative:
+        # stale texel widths move the LCD taps off their subpixel centres.
+        self._atlas_texel = (1.0 / max(1, self.io.fonts.texture_width),
+                             1.0 / max(1, self.io.fonts.texture_height))
         gl.glUniform2f(self._loc_texel, *self._atlas_texel)
         gl.glUniform1i(self._loc_dynamic_styles, int(Toggles.dynamic_styles))
         gl.glUniform1i(self._loc_style_context, 1)
@@ -306,7 +314,10 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glUniform1i(self._loc_bgr, 1 if Toggles.Fonts.lcd_bgr else 0)
         gamma = float(Toggles.Fonts.text_gamma)
         gl.glUniform1f(self._loc_gamma, gamma if gamma > 0.0 else 1.0)
-        return int(self._font_texture) if self._font_texture is not None else -1
+        # Surfaces share an atlas: any renderer can replace its texture.
+        # Commands use the atlas's live ID, not this renderer's last upload.
+        texture = self.io.fonts.texture_id
+        return int(texture) if texture is not None else -1
 
     def begin_frame_split(self) -> None:
         """Snapshot whether the foreground list has content. Call after the UI
@@ -456,6 +467,11 @@ class SplitOverlayRenderer(GlfwRenderer):
             -1.0,                 1.0,                   0.0, 1.0,
         )
 
+        from src.lsd.gl_gui.toggles import Toggles
+        style_context = 0
+        if self._lcd_ok and Toggles.dynamic_styles:
+            style_context = self._ensure_style_context(fb_width, fb_height, fb_scale_x, fb_scale_y, ox, oy)
+        previous_context = self._bind_style_context(style_context)
         gl.glUseProgram(self._shader_handle)
         gl.glUniform1i(self._attrib_location_tex, 0)
         gl.glUniformMatrix4fv(self._attrib_proj_mtx, 1, gl.GL_FALSE, ortho_projection)
@@ -569,6 +585,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         else:
             gl.glDisable(gl.GL_STENCIL_TEST)
 
+        self._unbind_style_context(previous_context)
         restore_common_gl_state(common_gl_state_tuple)
         gl.glUseProgram(last_program)
         gl.glActiveTexture(last_active_texture)
@@ -683,59 +700,149 @@ class SplitOverlayRenderer(GlfwRenderer):
             self._style_gl.release()
         super().shutdown()
 
-    def _draw_style_elements(self, draw_list, texture_id, start, end, index_type):
-        """Split atlas geometry from glyphs so text samples what is behind it.
+    _STYLE_CONTEXT_VERT = """
+    #version 330 core
+    layout(location = 0) in vec4 rect;   // framebuffer px: x0, y0, x1, y1
+    layout(location = 1) in vec4 clip;   // framebuffer px: x0, y0, x1, y1
+    layout(location = 2) in vec2 extra;  // corner radius px, palette index
+    uniform vec2 size;
+    out vec4 v_rect; out vec4 v_clip; out vec2 v_extra;
+    const vec2 corners[6] = vec2[6](vec2(0, 0), vec2(1, 0), vec2(0, 1),
+                                    vec2(1, 0), vec2(1, 1), vec2(0, 1));
+    void main() {
+        vec2 p = mix(rect.xy, rect.zw, corners[gl_VertexID]);
+        gl_Position = vec4(p / size * 2.0 - 1.0, 0.0, 1.0);
+        v_rect = rect; v_clip = clip; v_extra = extra;
+    }
+    """
 
-        ImGui can merge a solid fill and text into ONE command. Snapshotting
-        only at command boundaries would miss that fill. UVs distinguish the
-        glyph runs using the same two-axis test as the fragment shader.
-        """
-        from src.lsd.gl_gui.toggles import Toggles
-        if not Toggles.dynamic_styles or not self._lcd_ok or int(texture_id) != self._font_texture:
-            gl.glDrawElements(gl.GL_TRIANGLES, end - start, index_type,
-                              ctypes.c_void_p(start * imgui.INDEX_SIZE))
-            return
+    _STYLE_CONTEXT_FRAG = """
+    #version 330 core
+    in vec4 v_rect; in vec4 v_clip; in vec2 v_extra;
+    uniform sampler2D palette;
+    out vec4 frag;
+    void main() {
+        vec2 p = gl_FragCoord.xy;
+        if (p.x < v_clip.x || p.y < v_clip.y || p.x > v_clip.z || p.y > v_clip.w) discard;
+        vec2 half_size = (v_rect.zw - v_rect.xy) * 0.5;
+        float r = min(v_extra.x, min(half_size.x, half_size.y));
+        vec2 q = abs(p - (v_rect.xy + v_rect.zw) * 0.5) - (half_size - vec2(r));
+        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+        float coverage = clamp(0.5 - d, 0.0, 1.0);
+        if (coverage <= 0.0) discard;
+        frag = vec4(texelFetch(palette, ivec2(int(v_extra.y + 0.5), 0), 0).rgb, coverage);
+    }
+    """
+
+    def _ensure_style_context(self, fb_width, fb_height, fb_scale_x, fb_scale_y, ox, oy):
+        """The text-context layer: every dynamic background this frame,
+        painted from the resolved palette (Melty.draw_backgrounds) in
+        submission order over the root colour, rounded and clipped as it
+        was submitted. Built ONCE per frame (Melty.background_gen); the
+        text shader reads it at gl_FragCoord, so it is sized like the
+        framebuffer including the viewport origin. Replaces the per-glyph-run
+        framebuffer copy (5 GL queries + glCopyTexSubImage2D per line of
+        text: 20 ms on a LoRA tree, 09-13). Returns the texture id, 0 when
+        there is nothing to read."""
         import numpy as np
-        from src.lsd.gl_gui.gl_state import GLState
-        indices = np.ctypeslib.as_array(
-            ((ctypes.c_uint16 if imgui.INDEX_SIZE == 2 else ctypes.c_uint32)
-             * draw_list.idx_buffer_size).from_address(draw_list.idx_buffer_data))
-        vertices = (ctypes.c_ubyte * (draw_list.vtx_buffer_size * imgui.VERTEX_SIZE)).from_address(
-            draw_list.vtx_buffer_data)
-        uv = np.ndarray((draw_list.vtx_buffer_size, 2), dtype=np.float32, buffer=vertices,
-                        offset=imgui.VERTEX_BUFFER_UV_OFFSET, strides=(imgui.VERTEX_SIZE, 4))
-        triangles = uv[indices[start:end].reshape(-1, 3)]
-        glyphs = np.all(np.ptp(triangles, axis=1) > 0, axis=1)
-        boundaries = np.r_[0, np.flatnonzero(glyphs[1:] != glyphs[:-1]) + 1, len(glyphs)]
-        for low, high in zip(boundaries[:-1], boundaries[1:]):
-            if glyphs[low]:
-                if not hasattr(self, '_style_gl'):
-                    self._style_gl = GLState()
-                x, y, width, height = map(int, gl.glGetIntegerv(gl.GL_VIEWPORT))
-                texture_zero = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
-                context = self._style_gl.fbo('text_context', x + width, y + height)
-                gl.glBindTexture(gl.GL_TEXTURE_2D, texture_zero)
-                gl.glActiveTexture(gl.GL_TEXTURE1)
-                texture_one = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
-                gl.glBindTexture(gl.GL_TEXTURE_2D, context.texture_id)
-                read_framebuffer = gl.glGetIntegerv(gl.GL_READ_FRAMEBUFFER_BINDING)
-                gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER,
-                                     gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING))
-                # Only the live scissor can contain text pixels this run.
-                clip_x, clip_y, clip_width, clip_height = map(int, gl.glGetIntegerv(gl.GL_SCISSOR_BOX))
-                left, bottom = max(x, clip_x), max(y, clip_y)
-                right, top = min(x + width, clip_x + clip_width), min(y + height, clip_y + clip_height)
-                if right > left and top > bottom:
-                    gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, left, bottom,
-                                          left, bottom, right - left, top - bottom)
-                gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, read_framebuffer)
-                gl.glActiveTexture(gl.GL_TEXTURE0)
-            gl.glDrawElements(gl.GL_TRIANGLES, int((high - low) * 3), index_type,
-                              ctypes.c_void_p(int(start + low * 3) * imgui.INDEX_SIZE))
-            if glyphs[low]:
-                gl.glActiveTexture(gl.GL_TEXTURE1)
-                gl.glBindTexture(gl.GL_TEXTURE_2D, texture_one)
-                gl.glActiveTexture(gl.GL_TEXTURE0)
+        from src.lsd.gl_gui.gl_state import GLState, gl_limits
+        from src.lsd.gl_gui.melty import Melty
+        gen = Melty.background_gen
+        if Melty.dynamic_style_gl is None or not Melty.backgrounds:
+            self._style_context_gen = gen
+            return 0
+        if not hasattr(self, '_style_gl'):
+            self._style_gl = GLState()
+        width, height = int(ox + fb_width), int(oy + fb_height)
+        context = self._style_gl.fbo('text_context', width, height)
+        if getattr(self, '_style_context_gen', None) == gen and \
+                getattr(self, '_style_context_size', None) == (width, height):
+            return context.texture_id
+        self._style_context_gen, self._style_context_size = gen, (width, height)
+
+        # Instance rows, framebuffer coordinates (y up, viewport origin in).
+        rows = []
+        for index, entry in enumerate(Melty.background_rects):
+            if entry is None:
+                continue
+            left, top, w, h, (cl, ct, cr, cb), radius = entry
+            rows.append((left * fb_scale_x + ox, fb_height - (top + h) * fb_scale_y + oy,
+                         (left + w) * fb_scale_x + ox, fb_height - top * fb_scale_y + oy,
+                         cl * fb_scale_x + ox, fb_height - cb * fb_scale_y + oy,
+                         cr * fb_scale_x + ox, fb_height - ct * fb_scale_y + oy,
+                         radius * fb_scale_x, float(index)))
+        instances = np.asarray(rows, dtype=np.float32).reshape(-1, 10)
+
+        def build_program():
+            from OpenGL.GL import shaders
+            return shaders.compileProgram(
+                shaders.compileShader(self._STYLE_CONTEXT_VERT, gl.GL_VERTEX_SHADER),
+                shaders.compileShader(self._STYLE_CONTEXT_FRAG, gl.GL_FRAGMENT_SHADER))
+        program = self._style_gl.get('style_context_program', build_program, gl.glDeleteProgram)
+
+        def build_vao():
+            vbo = int(gl.glGenBuffers(1))
+            gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+            stride = 10 * 4
+            for location, count, offset in ((0, 4, 0), (1, 4, 16), (2, 2, 32)):
+                gl.glEnableVertexAttribArray(location)
+                gl.glVertexAttribPointer(location, count, gl.GL_FLOAT, gl.GL_FALSE, stride,
+                                         ctypes.c_void_p(offset))
+                gl.glVertexAttribDivisor(location, 1)
+            self._style_context_vbo = vbo
+            return (vbo,)
+        vao = self._style_gl.vao('style_context_vao', build_vao)
+        palette = Melty.dynamic_style_gl.fbo('background_palette', gl_limits()['max_2d'], 1)
+
+        last_program = gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM)
+        last_vao = gl.glGetIntegerv(gl.GL_VERTEX_ARRAY_BINDING)
+        last_array_buffer = gl.glGetIntegerv(gl.GL_ARRAY_BUFFER_BINDING)
+        last_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+        last_scissor = gl.glIsEnabled(gl.GL_SCISSOR_TEST)
+        last_blend = gl.glIsEnabled(gl.GL_BLEND)
+        with context:   # binds the FBO + viewport, restores both on exit
+            gl.glDisable(gl.GL_SCISSOR_TEST)
+            gl.glClearColor(*Melty.style_context_root)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+            if len(instances):
+                gl.glEnable(gl.GL_BLEND)
+                gl.glBlendFuncSeparate(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA,
+                                       gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
+                gl.glUseProgram(program)
+                gl.glUniform2f(gl.glGetUniformLocation(program, 'size'), float(width), float(height))
+                gl.glUniform1i(gl.glGetUniformLocation(program, 'palette'), 0)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, palette.texture_id)
+                gl.glBindVertexArray(vao)
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self._style_context_vbo)
+                gl.glBufferData(gl.GL_ARRAY_BUFFER, instances.nbytes, instances, gl.GL_STREAM_DRAW)
+                gl.glDrawArraysInstanced(gl.GL_TRIANGLES, 0, 6, len(instances))
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, last_array_buffer)
+        gl.glBindVertexArray(last_vao)
+        gl.glUseProgram(last_program)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, last_texture)
+        (gl.glEnable if last_scissor else gl.glDisable)(gl.GL_SCISSOR_TEST)
+        (gl.glEnable if last_blend else gl.glDisable)(gl.GL_BLEND)
+        return context.texture_id
+
+    def _bind_style_context(self, texture_id):
+        """Texture unit 1 = StyleContext for the whole command render."""
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        previous = int(gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        return previous
+
+    @staticmethod
+    def _unbind_style_context(previous):
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, previous)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+
+    def _draw_style_elements(self, draw_list, texture_id, start, end, index_type):
+        """One command, one draw. The text shader samples the context layer
+        (_ensure_style_context) at gl_FragCoord for what is behind a glyph."""
+        gl.glDrawElements(gl.GL_TRIANGLES, end - start, index_type,
+                          ctypes.c_void_p(start * imgui.INDEX_SIZE))
 
     def _render_command_lists(self, draw_data, command_lists) -> None:
         """Body of ProgrammablePipelineRenderer.render, parameterized over
@@ -744,8 +851,9 @@ class SplitOverlayRenderer(GlfwRenderer):
         io = self.io
 
         display_width, display_height = io.display_size
-        fb_width = int(display_width * io.display_fb_scale[0])
-        fb_height = int(display_height * io.display_fb_scale[1])
+        fb_scale_x, fb_scale_y = io.display_fb_scale
+        fb_width = int(display_width * fb_scale_x)
+        fb_height = int(display_height * fb_scale_y)
 
         if fb_width == 0 or fb_height == 0:
             return
@@ -778,6 +886,11 @@ class SplitOverlayRenderer(GlfwRenderer):
             -1.0,                 1.0,                   0.0, 1.0,
         )
 
+        from src.lsd.gl_gui.toggles import Toggles
+        style_context = 0
+        if self._lcd_ok and Toggles.dynamic_styles:
+            style_context = self._ensure_style_context(fb_width, fb_height, fb_scale_x, fb_scale_y, ox, oy)
+        previous_context = self._bind_style_context(style_context)
         gl.glUseProgram(self._shader_handle)
         gl.glUniform1i(self._attrib_location_tex, 0)
         gl.glUniformMatrix4fv(self._attrib_proj_mtx, 1, gl.GL_FALSE, ortho_projection)
@@ -822,6 +935,7 @@ class SplitOverlayRenderer(GlfwRenderer):
 
                 idx_buffer_offset += command.elem_count * imgui.INDEX_SIZE
 
+        self._unbind_style_context(previous_context)
         restore_common_gl_state(common_gl_state_tuple)
 
         gl.glUseProgram(last_program)

@@ -412,6 +412,21 @@ def _glsl_mat3(m) -> str:
 
 GLSL_DECODE = GLSL_DECODE % _glsl_mat3(P3_TO_SRGB)
 
+# Text brightness ceiling (Toggles.HDR.text_max_stops): scales the glyph's
+# colour down uniformly - hue and saturation kept, P3 negatives ride along -
+# until its brightest channel sits at MeltyTextMax (multiples of reference
+# white). Spliced into the fragment stage of the draw-list renderer (glyph
+# pixels only) and the text-texture bake; the uniform rides with
+# set_decode_uniforms so both stay live with the toggle.
+GLSL_TEXT_CLAMP = """
+uniform float MeltyTextMax;     // 2^Toggles.HDR.text_max_stops
+
+vec3 melty_clamp_text(vec3 c) {
+    float peak = max(max(c.r, c.g), c.b);
+    return peak > MeltyTextMax ? c * (MeltyTextMax / peak) : c;
+}
+"""
+
 
 def set_decode_uniforms(program: int) -> None:
     """Set the curve uniforms `GLSL_DECODE` declares on a bound program."""
@@ -423,6 +438,10 @@ def set_decode_uniforms(program: int) -> None:
     loc = gl.glGetUniformLocation(program, "MeltyHdrOctaves")
     if loc >= 0:
         gl.glUniform1f(loc, octaves)
+    loc = gl.glGetUniformLocation(program, "MeltyTextMax")   # GLSL_TEXT_CLAMP
+    if loc >= 0:
+        from src.lsd.gl_gui.toggles import Toggles
+        gl.glUniform1f(loc, float(2.0 ** float(Toggles.HDR.text_max_stops)))
 
 
 # Linear scRGB -> display encodings, for the presentation pass.

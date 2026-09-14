@@ -42,11 +42,27 @@ on top of it. `context_menu={label: callable}` is the wrapper's right-click
 menu (the hdr-viewer's), except that the explorer's callables receive ONE
 argument: the path of the row under the right-click (a right-press
 selects it), or the directory when the click landed on no row.
+
+Type to search (`type_to_search`, on by default): while nothing else owns
+the keyboard — no text editor, find box, menu or popover — the listing holds
+melty's text-focus slot (the menu bar's trick), so every keystroke reaches it
+without the pointer having to hover it, and typing searches the directory
+shown. The keys come from the GLFW callback queue (Melty.frame_key_events, the
+editor's source: nothing is dropped on a slow frame). Each keystroke re-ranks
+the rows against the query — a name prefix, then a word start, a substring,
+finally the letters in order — selects the best, scrolls it into view (centred
+when it was out of sight) and flashes it with Melty.emphasize; every other
+match shows the matched letters highlighted and the rest of the listing dims
+so the matches stand out. A pill at the bottom right shows the query and
+"n of m". Up / Down (and Tab / Shift+Tab) step through the matches, Enter
+opens the selected one, Backspace edits, Ctrl+Backspace clears, Ctrl+V pastes,
+Esc clears the search (a second Esc the selection). A navigation clears it.
 """
 import os
 import re
 from pathlib import Path
 
+import glfw
 import imgui
 
 from src.lsd.gl_gui.hdr_color import pack_color
@@ -64,7 +80,7 @@ from src.lsd.gl_gui.view.core_views.drag_drop import DragDrop
 from src.lsd.gl_gui.view.core_views.headers import _brightness_clamp_fn
 
 
-@no_save("_listing", "_last_dir", "_watched")
+@no_save("_listing", "_last_dir", "_watched", "_search", "_search_for")
 class FileExplorerState(DictConversion):
     """The listing's injected state (`explorer_state: FileExplorerState`).
     Persists the selection, the scroll position per directory visited
@@ -79,6 +95,8 @@ class FileExplorerState(DictConversion):
         self._listing = None        # (dir, mtime_ns, show_hidden, rows) memo
         self._last_dir = None       # the dir of the last run: navigation detection
         self._watched = None        # the dir the view's FileWatch emitter is on
+        self._search = ""           # the type-to-search query
+        self._search_for = None     # the query the current selection was found for
 
 
 class ShortcutState(DictConversion):
@@ -418,6 +436,148 @@ def shortcut_directories(home=None):
     return out
 
 
+# ── type-to-search ──────────────────────────────────────────────────────────
+_SEARCH_SEPARATORS = " _-.,()[]{}+&@'\""
+# Keys that keep repeating while held (imgui's synthesized auto-repeat):
+# GLFW's REPEAT events are noisy or absent on Wayland.
+_SEARCH_REPEAT_KEYS = (glfw.KEY_BACKSPACE, glfw.KEY_UP, glfw.KEY_DOWN, glfw.KEY_TAB)
+
+
+def search_match(name, query):
+    """How `name` matches `query`, case-insensitively: ``(rank, spans)`` —
+    rank 0 a prefix of the name, 1 the start of a word inside it (after a
+    space, dot, dash, underscore ...), 2 a substring, 3 a subsequence (the
+    query's characters in order, anything between) — or None. `spans` are
+    the [start, end) character ranges of `name` the query landed on, what
+    the listing highlights."""
+    if not query:
+        return None
+    n, q = name.lower(), query.lower()
+    at = n.find(q)
+    if at == 0:
+        return 0, [(0, len(q))]
+    if at > 0:
+        word_at = at if n[at - 1] in _SEARCH_SEPARATORS else -1
+        pos = at
+        while word_at < 0:
+            pos = n.find(q, pos + 1)
+            if pos < 0:
+                break
+            if n[pos - 1] in _SEARCH_SEPARATORS:
+                word_at = pos
+        if word_at >= 0:
+            return 1, [(word_at, word_at + len(q))]
+        return 2, [(at, at + len(q))]
+    spans, pos = [], 0
+    for ch in q:
+        pos = n.find(ch, pos)
+        if pos < 0:
+            return None
+        if spans and spans[-1][1] == pos:
+            spans[-1] = (spans[-1][0], pos + 1)
+        else:
+            spans.append((pos, pos + 1))
+        pos += 1
+    return 3, spans
+
+
+def search_hits(rows, query):
+    """The rows of `rows` ([(Path, is_dir)]) matching `query`:
+    ``([(row index, rank, spans)] in listing order, position of the best)``
+    — the best is the lowest rank, the earliest in the listing among equals
+    (folders lead it, so a folder beats a file at the same rank). No match:
+    ``([], None)``."""
+    hits = []
+    for i, (path, _is_dir) in enumerate(rows):
+        match = search_match(path.name, query)
+        if match is not None:
+            hits.append((i, match[0], match[1]))
+    if not hits:
+        return hits, None
+    return hits, min(range(len(hits)), key=lambda k: (hits[k][1], k))
+
+
+def search_keys():
+    """This frame's keystrokes, in typed order, for a view that owns the
+    keyboard: the GLFW callback queue (Melty.frame_key_events, every press
+    and repeat since the last frame) plus imgui's synthesized auto-repeat
+    for the keys that should keep firing while held. Keeps frames coming
+    while one of those is down so the repeat cadence is sampled."""
+    keys = list(Melty.frame_key_events)
+    seen = {k for k, _m in keys}
+    io = imgui.get_io()
+    mods = ((glfw.MOD_SHIFT if io.key_shift else 0)
+            | (glfw.MOD_CONTROL if io.key_ctrl else 0)
+            | (glfw.MOD_ALT if getattr(io, "key_alt", False) else 0))
+    for key in _SEARCH_REPEAT_KEYS:
+        if imgui.is_key_down(key):
+            request_render()
+        if key not in seen and imgui.is_key_pressed(key, repeat=True):
+            keys.append((key, mods))
+    return keys
+
+
+def claim_keyboard(draw_state):
+    """Take melty's text-focus slot for `draw_state` when it is free (or held
+    by an earlier draw_state of the same tile — a cache rebuild), the way the
+    menu bar does while a menu is open: begin_frame then re-runs this view on
+    every key event, hovered or not, and the bare-key global hotkeys (E, the
+    invalidate tracker) stay muted. Returns True when the view has the
+    keyboard this frame; an open popover (a colour picker, the context menu)
+    keeps it off so the two never read the same arrows."""
+    holder = Melty.text_focused_ds
+    if holder is None or (holder is not draw_state
+                          and getattr(holder, "_tile_id", None) == draw_state._tile_id):
+        Melty.text_focused_ds = draw_state
+        Melty._text_focus_grant_frame = Melty.frame_count
+        holder = draw_state
+    return holder is draw_state and Melty.popover_focused_ds is None
+
+
+def search_typed(query, keys):
+    """Apply this frame's `keys` ([(glfw key, mods)]) to the search `query`.
+    Returns ``(query, step, activate, parent, escape)``: the edited query,
+    the Up / Down / Tab steps (net, + is down), Enter, Ctrl+Up and a bare
+    Esc that landed on an EMPTY query (the caller's "clear the selection").
+    Alt / Super chords and Ctrl chords other than Backspace (clear) and V
+    (paste) are left alone — they are shortcuts, not typing."""
+    from src.lsd.gl_gui.view.core_views.text_editor import _KEY_CHAR_MAP
+    step, activate, parent, escape = 0, False, False, False
+    for key, mods in keys:
+        if mods & (glfw.MOD_ALT | glfw.MOD_SUPER):
+            continue
+        ctrl, shift = bool(mods & glfw.MOD_CONTROL), bool(mods & glfw.MOD_SHIFT)
+        if key == glfw.KEY_ESCAPE:
+            if query:
+                query = ""
+            else:
+                escape = True
+        elif key == glfw.KEY_BACKSPACE:
+            query = "" if ctrl else query[:-1]
+        elif key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER):
+            activate = True
+        elif key == glfw.KEY_UP:
+            if ctrl:
+                parent = True
+            else:
+                step -= 1
+        elif key == glfw.KEY_DOWN:
+            if not ctrl:
+                step += 1
+        elif key == glfw.KEY_TAB:
+            if query and not ctrl:
+                step += -1 if shift else 1
+        elif ctrl:
+            if key == glfw.KEY_V:
+                lines = (imgui.get_clipboard_text() or "").strip().splitlines()
+                query += lines[0].strip() if lines else ""
+        else:
+            pair = _KEY_CHAR_MAP.get(key)
+            if pair is not None:
+                query += pair[1] if shift else pair[0]
+    return query, step, activate, parent, escape
+
+
 # ── the listing ─────────────────────────────────────────────────────────────
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=False,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
@@ -431,6 +591,8 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                       select_boost=0.22, plain_select_boost=0.06, select_shadow=2.0,
                       select_rounding=3.0, chip_mix=0.55, hover_boost=0.08, text_mix=0.3,
                       folder_bg_boost=-0.12, folder_bg_rounding=0.0, drag_rows=True, menu_target=None,
+                      type_to_search=True, search_tint=(1.0, 0.82, 0.3), search_dim=0.45,
+                      search_flash_frames=36,
                       **kwargs):
     """The path strip + rows of one directory (see the module docstring).
     Returns ``(True, path)`` on navigation / a file double-click, else
@@ -442,7 +604,11 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     `select_shadow` depth (0 disables it). `chip_mix` pulls the tint chip's
     colour toward its row background (0 = the raw tint). Hover is the same
     tint brightened by `hover_boost` (on top of the selection's), and a
-    tinted row's text is mixed `text_mix` toward its tint."""
+    tinted row's text is mixed `text_mix` toward its tint. `type_to_search`
+    is the keyboard search of the module docstring: `search_tint` colours
+    the matched letters and the pill, the non-matching rows' text fades to
+    `search_dim` of its alpha while there are matches, and the flash on the
+    row a keystroke lands on fades over `search_flash_frames` frames."""
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
@@ -455,6 +621,9 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     folder_rgba = (0.78, 0.84, 0.92, 1.0)
     folder_col = pack_color(*folder_rgba)
     crumb_hover_col = pack_color(1.0, 1.0, 1.0, 0.12)
+    search_wash = pack_color(search_tint[0], search_tint[1], search_tint[2], 0.30)
+    search_col = pack_color(search_tint[0], search_tint[1], search_tint[2], 1.0)
+    no_match_col = pack_color(0.95, 0.55, 0.5, 1.0)
 
     state = explorer_state
     # The selected row's add_shadow is RETAINED under this draw_state until
@@ -493,6 +662,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     if state._last_dir != dir_key:
         state._last_dir = dir_key
         state.selected = None
+        state._search, state._search_for = "", None
         draw_state.scroll_offset = (0.0, state.scroll_by_dir.get(dir_key, 0.0))
         draw_state.invalidate()
     watch_directory(draw_state, state, dir_key)
@@ -563,6 +733,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # the chip's own click, never the row's - a double-click there must
     # not navigate.
     chip_x = rows_x + pad
+    clip = getattr(draw_state, "abs_clip_rect", None)
 
     drag_left = chip_x + chip + px(2) if show_tint_chips else rows_x
 
@@ -580,6 +751,50 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             if str(path) == state.selected:
                 selected_index = i
                 break
+
+    # ── the keyboard: the type-to-search queue when this listing owns it,
+    # else the hover-routed key params (the find box has the keyboard, say) ──
+    owns_keys = type_to_search and claim_keyboard(draw_state)
+    query = state._search if type_to_search else ""
+    step = (1 if down_key_pressed else 0) - (1 if up_key_pressed else 0)
+    if owns_keys:
+        keys = search_keys()
+        query, step, enter_key_pressed, ctrl_up_key_pressed, escape_key_pressed = \
+            search_typed(query, keys)
+        if keys:
+            draw_state.invalidate()
+            request_render()
+    if query != state._search:
+        state._search = query
+    rows_top = rows_y - draw_state.abs_top + draw_state.scroll_offset[1]
+    view_rect = clip if clip is not None else (
+        draw_state.abs_left, draw_state.abs_top,
+        draw_state.abs_left + (draw_state.width or 0), draw_state.abs_top + (draw_state.height or 0))
+
+    def flash_row(index):
+        """Melty.emphasize on row `index`: a fire-and-forget flash whose rect
+        follows the scroll, scissored to the listing (keyed by the row's
+        path, so a new target starts a fresh fade)."""
+        top = rows_top + index * row_h
+
+        def rect(ds=draw_state, top=top, h=row_h, x0=rows_x, w=content_w):
+            y = ds.abs_top + top - ds.scroll_offset[1]
+            return (x0, y, x0 + w, y + h)
+
+        def clip_rect(ds=draw_state, fallback=view_rect):
+            return getattr(ds, "abs_clip_rect", None) or fallback
+
+        Melty.emphasize(f"explorer search {draw_state._tile_id} {rows[index][0]}", rect,
+                        clip=clip_rect, rounding=px(select_rounding),
+                        fade_frames=search_flash_frames)
+
+    def jump_to_row(index):
+        state.selected = str(rows[index][0])
+        _scroll_row_into_view(draw_state, index, row_h, rows_top, centre=True,
+                              content_h=len(rows) * row_h + max(0.0, top_inset))
+        flash_row(index)
+        request_render()
+        return index
 
     hit = row_at(double_click)
     if hit is not None:
@@ -611,20 +826,37 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         return navigate(rows[selected_index][0])
     if escape_key_pressed and state.selected is not None:
         state.selected = None
+        draw_state.invalidate()
         request_render()
-    step = (1 if down_key_pressed else 0) - (1 if up_key_pressed else 0)
-    if step and rows:
+
+    # ── the search: rank the rows, land on the best, step through the rest ──
+    # A query change (or a selection that left no matches: a click in the
+    # directory changed under the watch) lands on the best match; Up / Down
+    # / Tab walk the matches in listing order, wrapping. Without a query the
+    # steps walk the whole listing as before. No match: the selection stays
+    # where it was and the listing says so.
+    hits, best = search_hits(rows, query) if query else ([], None)
+    hit_rows = {index: spans for index, _rank, spans in hits}
+    if query and hits:
+        positions = [index for index, _rank, _spans in hits]
+        if state._search_for != query or selected_index not in hit_rows:
+            selected_index = jump_to_row(positions[best])
+        elif step:
+            at = positions.index(selected_index)
+            selected_index = jump_to_row(positions[(at + step) % len(positions)])
+    elif step and rows and not query:
         selected_index = (0 if selected_index is None and step > 0
                           else len(rows) - 1 if selected_index is None
                           else max(0, min(len(rows) - 1, selected_index + step)))
         state.selected = str(rows[selected_index][0])
-        _scroll_row_into_view(draw_state, selected_index, row_h, rows_y - draw_state.abs_top
-                              + draw_state.scroll_offset[1])
+        _scroll_row_into_view(draw_state, selected_index, row_h, rows_top)
         request_render()
+    state._search_for = query if query else None
+    if query and not hits and step:
+        request_render()
+    dimmed = bool(query and hits)
 
     # ── rows: viewport-culled, straight to the draw list ──
-    clip = getattr(draw_state, "abs_clip_rect", None)
-
     text_y_pad = (row_h - imgui.get_font_size()) * 0.5
     ghost_alpha = 0.9
     drag_keys = []          # the visible rows' paths, in on_drag call order
@@ -638,9 +870,17 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         entry = meta.get(key) if meta is not None else None
         tint = FileMeta.painted_tint(entry)
         icon = row_icon(path, is_dir, entry, folder_icon, file_icon)
+        spans = hit_rows.get(i) if dimmed else None
+        name_rgba, glyph_rgba = (folder_rgba if is_dir else text_rgba), text_rgba
+        if dimmed and spans is None:
+            name_rgba = name_rgba[:3] + (name_rgba[3] * search_dim,)
+            glyph_rgba = glyph_rgba[:3] + (glyph_rgba[3] * search_dim,)
         if tint:
-            name_col = tinted_text(folder_rgba if is_dir else text_rgba, tint, text_mix)
-            icon_col = tinted_text(text_rgba, tint, text_mix)
+            name_col = tinted_text(name_rgba, tint, text_mix)
+            icon_col = tinted_text(glyph_rgba, tint, text_mix)
+        elif dimmed and spans is None:
+            name_col = pack_color(*name_rgba)
+            icon_col = pack_color(*glyph_rgba)
         else:
             name_col = icon_col = folder_col if is_dir else text_col
         if drag_rows:
@@ -679,7 +919,16 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                                       row_bg(tint or default_tint, boost),
                                       rounding=px(select_rounding))
         draw_list.add_text(rows_x + text_x, ry0 + text_y_pad, icon_col, icon)
-        draw_list.add_text(rows_x + text_x + glyph_w, ry0 + text_y_pad, name_col, path.name)
+        name_x = rows_x + text_x + glyph_w
+        if spans:
+            # The matched letters: a wash of the search tint over them.
+            name = path.name
+            for start, end in spans:
+                sx0 = name_x + imgui.calc_text_size(name[:start]).x
+                sx1 = sx0 + imgui.calc_text_size(name[start:end]).x
+                draw_list.add_rect_filled(sx0 - px(1), ry0 + px(2), sx1 + px(1), ry1 - px(2),
+                                          search_wash, rounding=px(2))
+        draw_list.add_text(name_x, ry0 + text_y_pad, name_col, path.name)
         if show_tint_chips:
             swatch = None
             if tint:
@@ -687,6 +936,34 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
                          ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
                          show_brush=i == selected_index)
+
+    # ── the search pill: the query and "n of m", bottom right of the view ──
+    if query:
+        icon_search = "\uf002"
+        count = (f"{positions.index(selected_index) + 1} of {len(hits)}"
+                 if hits and selected_index in hit_rows else "no match")
+        pill_h = px(26)
+        pad_x, gap = px(11), px(12)
+        query_w = imgui.calc_text_size(query).x
+        icon_w = imgui.calc_text_size(icon_search).x
+        count_w = imgui.calc_text_size(count).x
+        pill_w = pad_x + icon_w + px(8) + query_w + gap + count_w + pad_x
+        px1 = view_rect[2] - px(14)
+        py1 = view_rect[3] - px(12)
+        px0 = max(view_rect[0] + px(6), px1 - pill_w)
+        py0 = py1 - pill_h
+        draw_list.add_rect_filled(px0 + px(1), py0 + px(2), px1 + px(1), py1 + px(2),
+                                  pack_color(0.0, 0.0, 0.0, 0.35), rounding=pill_h * 0.5)
+        draw_list.add_rect_filled(px0, py0, px1, py1,
+                                  pack_color(*row_bg.rgb(default_tint, -0.02), 0.97),
+                                  rounding=pill_h * 0.5)
+        draw_list.add_rect(px0, py0, px1, py1, pack_color(1.0, 1.0, 1.0, 0.14),
+                           rounding=pill_h * 0.5)
+        pill_ty = py0 + (pill_h - imgui.get_font_size()) * 0.5
+        draw_list.add_text(px0 + pad_x, pill_ty, search_col, icon_search)
+        draw_list.add_text(px0 + pad_x + icon_w + px(8), pill_ty, text_col, query)
+        draw_list.add_text(px1 - pad_x - count_w, pill_ty,
+                           dim_col if hits else no_match_col, count)
 
     # ── close the drag body: paint the between-row slots, apply a drop ──
     # A reorder lands in on_drag call order = the visible rows, a contiguous
@@ -705,9 +982,12 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     return False, input_value
 
 
-def _scroll_row_into_view(draw_state, index, row_h, rows_top):
+def _scroll_row_into_view(draw_state, index, row_h, rows_top, centre=False, content_h=None):
     """Nudge the window's scroll the minimal amount so row `index` (at
-    `rows_top` + index × row_h in content coordinates) is fully visible."""
+    `rows_top` + index × row_h in content coordinates) is fully visible.
+    `centre`: a row that is out of sight lands in the middle of the view
+    instead of at its edge (a search jump), the scroll clamped to
+    `content_h` when given; a row already in view is left alone."""
     view_h = draw_state.abs_clipped_height - draw_state.header_height - draw_state.footer_height
     if view_h <= 0:
         return
@@ -715,10 +995,15 @@ def _scroll_row_into_view(draw_state, index, row_h, rows_top):
     row_top = rows_top + index * row_h
     row_bottom = row_top + row_h
     new_sy = sy
-    if row_bottom > new_sy + view_h:
-        new_sy = row_bottom - view_h
-    if row_top < new_sy:
-        new_sy = row_top
+    if centre and (row_bottom > sy + view_h or row_top < sy):
+        new_sy = row_top - (view_h - row_h) * 0.5
+        if content_h is not None:
+            new_sy = min(new_sy, max(0.0, content_h - view_h))
+    else:
+        if row_bottom > new_sy + view_h:
+            new_sy = row_bottom - view_h
+        if row_top < new_sy:
+            new_sy = row_top
     new_sy = max(0.0, new_sy)
     if new_sy != sy:
         draw_state.scroll_offset = (sx, new_sy)
@@ -734,7 +1019,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                             shortcuts_width=190.0, shortcut_row_height=22.0, column_gap=6.0,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                             context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
-                            folder_bg_rounding=0.0,
+                            folder_bg_rounding=0.0, type_to_search=True,
                             **kwargs):
     """A ColumnLayout with two cells: the shortcuts (draw-list rows, a click
     navigates) and `draw_file_listing`, sharing one draggable edge
@@ -745,7 +1030,9 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     `context_menu` = {label: callable(path)} is the listing's right-click
     menu; each callable gets the path of the right-clicked row, or of the
     directory (see the module docstring). `drag_rows` / `folder_bg_boost`
-    go to the listing. Shortcuts drag to reorder, with their own persisted order."""
+    go to the listing, as does `type_to_search` (the keyboard search of the
+    module docstring; False leaves the keyboard alone). Shortcuts drag to
+    reorder, with their own persisted order."""
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
@@ -864,7 +1151,7 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                                            drag_rows=drag_rows, folder_bg_boost=folder_bg_boost,
                                            folder_bg_rounding=folder_bg_rounding,
                                            show_tint_chips=show_tint_chips, chip_size=chip_size,
-                                           default_tint=default_tint)
+                                           default_tint=default_tint, type_to_search=type_to_search)
         if changed:
             result = (True, value)
     columns.finish()

@@ -630,6 +630,11 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     else:
         origin_now = os_ctx.base - os_frame._screen_pos(window, axis)
     gesture = gestures.get(axis)
+    if gesture is not None and gesture.get("generation") != os_frame._STATE["generation"]:
+        # The geometry feed disappeared/returned or changed shape. Its
+        # screen origin is a new coordinate space; keep the current layout
+        # and start a new gesture instead of replaying the old origin.
+        gesture = None
     if gesture is None:
         snap = {}
         edges = {}
@@ -642,6 +647,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
             snap[id(e)] = e[axis]
         pos = window.window_pos[i] if window.window_pos is not None else None
         gesture = gestures[axis] = {
+            "generation": os_frame._STATE["generation"],
             "edges": edges, "snap": snap, "totals": {},
             "pos": pos, "size": float(window.width if axis == "x" else window.height),
             "origin": origin_now,
@@ -1230,14 +1236,28 @@ def _frame_pass(window, axis):
     # a foreign size write queues None): a hand resize, stamped for the
     # nested windows that hang off the moved corner (_hand_moved)
     hand_resize = any(len(item) < 3 or bool(item[2]) for item in _pending(window, axis))
+    from src.lsd.gl_gui import resize_trace
     os_ctx = os_frame.attach(window, axis, has_pending=bool(_pending(window, axis)),
                              hand_move=_hand_moved(window, Melty.frame_count))
-    moved = _solve_collisions(window, axis, os_ctx)
-    if hand_resize and moved:
-        window._hand_resize_frame = Melty.frame_count
-
-    if os_ctx is not None:
-        os_frame.detach(window, axis, os_ctx)    # books the OS near edge's motion for apply_rebase
+    try:
+        trace_solve = bool(_pending(window, axis) or os_ctx is not None)
+        if trace_solve:
+            resize_trace.record("solve-before", window, axis=axis,
+                                edges=resize_trace.edges(window, axis),
+                                pending=[(id(item[0]), item[1], item[2] if len(item) > 2 else None)
+                                         for item in _pending(window, axis)],
+                                os_base=os_ctx.base if os_ctx is not None else None)
+        moved = _solve_collisions(window, axis, os_ctx)
+        if hand_resize and moved:
+            window._hand_resize_frame = Melty.frame_count
+    except Exception:
+        resize_trace.record("solve-error", window, axis=axis, error=True)
+        raise
+    finally:
+        # Attach shifts SHARED OS/screen edges into this window's space.
+        # Even a failed solve must return them before another window runs.
+        if os_ctx is not None:
+            os_frame.detach(window, axis, os_ctx)
 
     # The display's TOP is a hard limit for a hand move
     # (Toggles.Melty.window_top_hard_limit): the solve above took the OS edge
@@ -1286,6 +1306,9 @@ def _frame_pass(window, axis):
         moved = True
     # Kill snap drift so the invariant check doesn't re-fire every frame.
     far[axis] = float(size)
+    if trace_solve:
+        resize_trace.record("solve-after", window, axis=axis, moved=moved,
+                            edges=resize_trace.edges(window, axis))
     return moved
 
 

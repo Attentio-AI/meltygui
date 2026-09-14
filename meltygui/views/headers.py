@@ -8,6 +8,7 @@ from typing import MutableMapping
 import glfw
 import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
+from src.lsd.gl_gui.style import Style
 from imgui.core import _DrawList
 
 from src.lsd.gl_gui import mouse_cursor
@@ -275,7 +276,7 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
                 event="left_mouse_clicked", text_offset_x=None,
                 style_manager=None, layout=True, draw_list=None,
                 shadow=True, shadow_offset=2.0, text_color=None, pos=None,
-                hovered=None, **kwargs):
+                hovered=None, style=None, **kwargs):
     """Draw-list button — the fast-dock interaction model instead of a
     @render_func widget (~0.7ms of wrapper per call, measured): a rounded
     rect + centered label straight to the draw list, hover from the live
@@ -322,15 +323,25 @@ def flat_button(label, draw_state, view_id, width=None, height=None,
         if shadow and layout:
             add_shadow((x, y, w, h), offset=shadow_offset,
                        corner_radius=rounding)
-        clamp = _brightness_clamp_fn()
-        bg = style_manager.make_color_rgb(
-            color[0], color[1], color[2],
-            value=tint_value + (hover_boost if hovered else 0.0),
-            factor=factor, saturation_scale=saturation, alpha=1.0)
-        bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
-        dl.add_rect_filled(x, y, x + w, y + h,
-                           pack_color(bg[0], bg[1], bg[2], alpha),
-                           rounding=rounding)
+        if Toggles.dynamic_styles:
+            # Legacy callers supply a hue; its strength becomes a residual.
+            # Explicit Style values can supply signed shifts or absolutes.
+            bg_style = style
+            if bg_style is None:
+                strength = tint_value + (hover_boost if hovered else 0.0)
+                bg_style = Style(tuple(c * strength for c in color[:3]) + (alpha,))
+            Melty.add_background(bg_style, rect=(x, y, w, h),
+                                 corner_radius=rounding, draw_list=dl)
+        else:
+            clamp = _brightness_clamp_fn()
+            bg = style_manager.make_color_rgb(
+                color[0], color[1], color[2],
+                value=tint_value + (hover_boost if hovered else 0.0),
+                factor=factor, saturation_scale=saturation, alpha=1.0)
+            bg = clamp(bg[0], bg[1], bg[2], 0.0, max_bg_brightness)
+            dl.add_rect_filled(x, y, x + w, y + h,
+                               pack_color(bg[0], bg[1], bg[2], alpha),
+                               rounding=rounding)
     # text_color: use this exact rgb for the label instead of the theme-mix
     # pipeline below — that pipeline only lets text_value/text_saturation
     # touch `factor` worth of the final color (the rest is the raw `color`),
@@ -581,7 +592,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # instance attr. (The property pair lives in anywhere.py; this is its
     # first caller.) Outlined so the swatch reads apart from the labels.
     from src.lsd.gl_gui.view.core_views.anywhere import get_source_for
+    _aw_attr = "tint"
     _aw_tint = draw_state.locate_tint
+    if Toggles.dynamic_styles and draw_state.locate_style is not None:
+        _aw_attr = "style"
+        _aw_tint = draw_state.locate_style
 
     # The caption re-resolves this often while it still reads the draw_state
     # fallback: the view's code hosts load in the background, so the first
@@ -591,24 +606,24 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
     # [tint=(0.85, 0.55, 0.25)]
     source_retry_frames = 30
 
-    def _aw_source_info(_ds=draw_state):
+    def _aw_source_info(_ds=draw_state, _attr=_aw_attr):
         # Popover caption: the LAST-KNOWN driving source. Reads the cache
         # set_anywhere maintains; resolves (one collection) on first popover
         # open, then caches on the ds — re-resolving only while the answer is
         # the draw_state fallback (see source_retry_frames), never per frame.
         _last = getattr(_ds, "_sa_last_source", None)
-        _src = _last.get("tint") if _last else None
+        _src = _last.get(_attr) if _last else None
         _frame = Melty.frame_count
         _stale = (_src == "draw_state"
                   and _frame - getattr(_ds, "_sa_source_frame", -source_retry_frames) >= source_retry_frames)
         if _src is None or _stale:
-            _src = get_source_for("tint", _ds)
+            _src = get_source_for(_attr, _ds)
             _ds._sa_source_frame = _frame
             if _src is not None:
                 if _last is None:
                     _last = {}
                     _ds._sa_last_source = _last
-                _last["tint"] = _src
+                _last[_attr] = _src
         return f"  {_src}" if _src else None  # FA location-arrow
 
     if _aw_tint is not None and (show_tint or (
@@ -630,10 +645,11 @@ def draw_header(input_value=None, name="", key=None, melty=None, parent_show_add
         _aw_ch, _aw_val = draw_tuple_fast(
             _aw_tint, draw_state, view_id="aw_tint", x=_aw_x, y=_aw_y,
             size=17, outline=True, info=_aw_source_info,
-            setter=lambda value, _ds=draw_state: setattr(_ds, "locate_tint", value))
+            setter=lambda value, _ds=draw_state, _attr=_aw_attr: setattr(_ds, "locate_" + _attr, value),
+            view_owner=draw_state)
         imgui.dummy(17, 17)
         if _aw_ch:
-            draw_state.locate_tint = _aw_val
+            setattr(draw_state, "locate_" + _aw_attr, _aw_val)
         same_line()
 
     # ── Add button ─────────────────────────────────────────────

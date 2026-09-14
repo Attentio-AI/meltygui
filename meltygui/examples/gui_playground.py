@@ -3,7 +3,7 @@ import imgui
 
 import melty
 from melty import Style, glfw_window, pressed
-from src.lsd.gl_gui.hdr_color import pack_color
+from src.lsd.gl_gui.hdr_color import pack_color, white, p3
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_views.core_render import render_func
@@ -52,7 +52,8 @@ def sample(input_value, draw_state, style=None, nested=False):
 
 
 @glfw_window(name='Melty GUI playground', width=840, height=870, show_name=True,
-             with_header=draw_header, app_id='melty-gui-playground', style=Style())
+             with_header=draw_header, app_id='melty-gui-playground', style=Style(),
+             disable_scroll=False)
 @render_func(tint=(0.19, 0.23, 0.29), use_cache=False)
 def playground(input_value, draw_state):
     if pressed('ctrl+d'):
@@ -77,8 +78,45 @@ def playground(input_value, draw_state):
            style=Style((0.94, 0.92, 0.86), absolute=True), width=width, height=78)
     sample('Absolute tuple: legacy colour input', name='tuple',
            style=(0.2, 0.45, 0.3), width=width, height=78)
+    sample('HDR: four times reference white', name='hdr',
+           style=Style(white(4), absolute=True), width=width, height=78)
+    sample('Display P3 red: twice reference intensity', name='p3',
+           style=Style(p3(1, 0, 0, scale=2), absolute=True), width=width, height=78)
     return False, input_value
+
+
+from melty.examples.lora_data import lora_preview, nested_style_kwargs
+
+loras = lora_preview()
+lora_styles = nested_style_kwargs()
+
+
+@glfw_window(name='Loras — GUI playground', width=960, height=950, show_name=True,
+             with_header=draw_header, app_id='melty-gui-playground', style=Style(),
+             disable_scroll=False)
+@render_func(tint=(0.19, 0.23, 0.29), use_cache=False)
+def lora_window(input_value, draw_state):
+    if pressed('ctrl+d'):
+        toggle_styles()
+    if pressed('ctrl+l'):
+        toggle_root()
+    melty.draw_menu_bar({
+        'Styles': {'Enable / disable (Ctrl+D)': toggle_styles,
+                   'Light / dark root (Ctrl+L)': toggle_root, 'Reset': reset},
+    }, name='lora-menu')
+    imgui.text('Studio LoRA models and draw_any, with editable example configurations.')
+    imgui.text('Dynamic styles: ' + ('ON' if Toggles.dynamic_styles else 'OFF'))
+    changed, _ = melty.draw_any(loras, name='Loras', icon='',
+                               style=Style((0.04, 0.025, 0.055)),
+                               initial={'expanded': True}, child_kwargs=lora_styles)
+    return changed, input_value
 
 
 # This app defaults in; the studio's source default remains False.
 reset()
+
+# Register the composition gallery alongside the colour and LoRA windows.
+from melty.examples import style_layouts
+from melty.examples import tint_functions
+from melty.examples import scalar_policies
+from melty.examples import lora_policies

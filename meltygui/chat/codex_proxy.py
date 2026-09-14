@@ -12,6 +12,8 @@ from src.lsd.gl_gui.fim_providers.codex_accounts import account_home
 
 
 class CodexChats(ChatProxy):
+    inherits_defaults = True
+
     def __init__(self, account_id, metadata=None, wake=None, transport_factory=None):
         from .activity import UserMessageTimes
         self.user_times = UserMessageTimes("codex")
@@ -19,6 +21,8 @@ class CodexChats(ChatProxy):
         self.transport = None
         self.writers = {}
         self.refresh_pending = False
+        self.config_defaults = {}
+        self.config_pending = set()
         self.transport_factory = transport_factory or CodexTransport
         super().__init__(account_id, metadata, wake)
 
@@ -48,8 +52,54 @@ class CodexChats(ChatProxy):
         except Exception:
             pass  # Default model remains usable with old servers.
         self.publish("models", models)
+        self._read_defaults(self.transport, "")
         self.publish("writer_locks", codex_writer_locks(self.source_home))
         self.publish("ready", None)
+
+    def defaults_for(self, project):
+        """Queue project-aware config reads without blocking the render thread."""
+        # Existing backend instances survive source hotswaps.
+        self.__dict__.setdefault("config_defaults", {})
+        self.__dict__.setdefault("config_pending", set())
+        if project not in self.config_defaults and project not in self.config_pending:
+            self.config_pending.add(project)
+            self.submit("defaults", project)
+        return self.config_defaults.get(project, self.config_defaults.get("", {}))
+
+    def _read_defaults(self, server, project):
+        config = server.request("config/read", {
+            "includeLayers": False, **({"cwd": project} if project else {})}).get("config", {})
+        self.publish("defaults", (project, config))
+        return config
+
+    def _thread_options(self, server, key, project):
+        config = self._read_defaults(server, project)
+        settings = self.known[key].metadata
+        options = {"cwd": project}
+        # Older Melty versions stamped catalog defaults into settings without
+        # an explicit-selection marker. Those should not override config.toml.
+        model = settings.get("model") if settings.get("model_explicit") else None
+        model = config.get("model") if model in (None, "", "default") else model
+        if model:
+            options["model"] = model
+        permissions = settings.get("permissions")
+        if permissions in ("ask", "full"):
+            options.update(approvalPolicy="never" if permissions == "full" else "on-request",
+                           sandbox="danger-full-access" if permissions == "full" else "workspace-write")
+        else:
+            if config.get("approval_policy") is not None:
+                options["approvalPolicy"] = config["approval_policy"]
+            if config.get("sandbox_mode") is not None:
+                options["sandbox"] = config["sandbox_mode"]
+        effort = settings.get("effort")
+        supported = getattr(self, "model_efforts", {}).get(model)
+        if supported is not None and effort not in supported:
+            effort = None
+        if effort in (None, "", "default"):
+            effort = config.get("model_reasoning_effort")
+        if effort:
+            options["config"] = {"model_reasoning_effort": effort}
+        return options
 
     def _listing_sizes(self, threads):
         # Filesystem data is read from the backend worker, never while drawing.
@@ -92,7 +142,9 @@ class CodexChats(ChatProxy):
 
     def execute(self, operation, *args):
         server = self.transport
-        if operation == "fork":
+        if operation == "defaults":
+            self._read_defaults(server, args[0])
+        elif operation == "fork":
             key, remote_id, project, title = args
             writer = self._open_transport()
             try:
@@ -129,8 +181,7 @@ class CodexChats(ChatProxy):
             key, project, title = args
             writer = self._open_transport()
             try:
-                result = writer.request("thread/start", {"cwd": project,
-                    "approvalPolicy": "on-request", "sandbox": "workspace-write"})
+                result = writer.request("thread/start", self._thread_options(writer, key, project))
                 writer.request("thread/name/set", {"threadId": result["thread"]["id"], "name": title})
                 self.writers[result["thread"]["id"]] = writer
                 self.publish("created", (key, result["thread"]))
@@ -153,15 +204,12 @@ class CodexChats(ChatProxy):
             writer = self.writers.get(remote_id) or self._open_transport(remote_id)
             self.writers[remote_id] = writer
             try:
-                settings = self.known[key].metadata
-                full_access = settings.get("permissions") == "full"
-                model = settings.get("model")
-                writer.request("thread/resume", {"threadId": remote_id,
-                    "approvalPolicy": "never" if full_access else "on-request",
-                    "sandbox": "danger-full-access" if full_access else "workspace-write",
-                    **({"model": model} if model else {})})
+                options = self._thread_options(writer, key, self.known[key]["project"])
+                model = options.get("model")
+                writer.request("thread/resume", {"threadId": remote_id, **options})
                 result = writer.request("turn/start", {"threadId": remote_id,
                     **({"model": model} if model else {}),
+                    **({"effort": options["config"]["model_reasoning_effort"]} if "config" in options else {}),
                     "input": [{"type": "text", "text": text}]})
                 self.publish("sent", (key, message_id, result["turn"]["id"]))
             except Exception:
@@ -181,9 +229,20 @@ class CodexChats(ChatProxy):
             self.publish("answered", (key, request_id))
 
     def receive(self, kind, value):
-        if kind == "forked":
+        if kind == "defaults":
+            project, config = value
+            self.__dict__.setdefault("config_defaults", {})[project] = config
+            self.__dict__.setdefault("config_pending", set()).discard(project)
+            if not project and config.get("model"):
+                self.default_model = config["model"]
+        elif kind == "forked":
             self.finish_fork(*value)
         elif kind == "models":
+            self.model_default_efforts = {row["model"]: row.get("defaultReasoningEffort")
+                                         for row in value if row.get("model")}
+            self.model_efforts = {row["model"]: tuple(option["reasoningEffort"]
+                for option in row.get("supportedReasoningEfforts", []) if option.get("reasoningEffort"))
+                for row in value if row.get("model")}
             self.default_model = next((row["model"] for row in value
                                        if row.get("isDefault") and row.get("model")), None)
             self.models = {row.get("displayName") or row["model"]: row["model"]
@@ -222,7 +281,12 @@ class CodexChats(ChatProxy):
                     if updated > chat["updated"] and not chat["running"]:
                         chat["updated"] = updated
                         self.refresh_history(key)
-                dict.get(self, key)["last_user_at"] = max(dict.get(self, key).get("last_user_at", 0), thread.get("last_user_at", 0))
+                chat = dict.get(self, key)
+                # Session-naming jobs contain real model/assistant messages, so
+                # emptiness and a rounded 0.0 MB size cannot identify them.
+                preview = str(thread.get("preview") or "").lstrip()
+                chat["title_helper"] = preview.startswith("Name a chat session for the request below.")
+                chat["last_user_at"] = max(chat.get("last_user_at", 0), thread.get("last_user_at", 0))
             self.metadata.apply(self.account_id, self)
         elif kind == "ready":
             self.loading = False
@@ -275,6 +339,10 @@ class CodexChats(ChatProxy):
                 self.known[key]["requests"].pop(request_id, None)
         elif kind == "failure":
             operation, args, error = value
+            if operation == "defaults":
+                self.config_pending.discard(args[0])
+                self.models_error = "Could not read Codex defaults: " + error
+                return
             if operation == "refresh":
                 self.refresh_pending = False
                 return

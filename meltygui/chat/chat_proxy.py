@@ -243,7 +243,7 @@ class ChatProxy(dict):
         chat.loaded, chat.loading = False, True
         chat.inflight.add("create")
         self.known[new_key] = chat
-        for field in ("model", "permissions", "model_explicit", "model_selected_at", "permissions_selected_at"):
+        for field in ("model", "permissions", "effort", "model_explicit", "model_selected_at", "permissions_selected_at"):
             if field in source.metadata:
                 chat.metadata[field] = source.metadata[field]
         self.submit("fork", new_key, source.remote_id, source["project"], chat["title"])

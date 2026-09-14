@@ -231,7 +231,13 @@ def parse_override_comment(text):
         for kw in call.keywords:
             if kw.arg is None:
                 return None
-            parsed[kw.arg] = ast.literal_eval(kw.value)
+            if kw.arg == "view_func" and isinstance(kw.value, (ast.Name, ast.Attribute)):
+                reference = ast.unparse(kw.value)
+                if not all(part.isidentifier() for part in reference.split(".")):
+                    return None
+                parsed[kw.arg] = reference
+            else:
+                parsed[kw.arg] = ast.literal_eval(kw.value)
         return parsed or None
     except (SyntaxError, ValueError, TypeError):
         return None
@@ -2509,7 +2515,10 @@ class Extractor:
                     kv = _const_value(kn)
                     hash(kv)
                 except Exception:
-                    return T.CodeLine(self._text(node))
+                    # Mode dictionaries use type expressions as keys. Keep
+                    # those expressions unevaluated while exposing their
+                    # nested kwargs to the same editable source tree.
+                    kv = T.CodeLine(self._text(kn))
                 keys.append(kv)
             seq = self.origin.new_seq(path, "pairs", base=self._base, sep=", ",
                                       insert_at=self.src.node_span(node)[0] + 1)
@@ -2602,6 +2611,9 @@ class Extractor:
         if not readable and not allow_empty:
             self.origin.drop_seq(seq)
             return None
+        callee_span = self.src.node_span(call.func)
+        self.origin.add(Item(self._base, path + ("__callee__",), "__callee__", "callee",
+                             callee_span, callee_span, callee_span, self._text(call.func)))
         if pos_names:
             readable["__pos_names__"] = list(pos_names)
         if pending is not None:

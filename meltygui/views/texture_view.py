@@ -25,10 +25,10 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header
              fill_height=True, selectable=False,
              indent_size=0, min_width=35, min_height=35, wrap=False, disable_scroll=True,
              zoom_speed=0.3, with_header=draw_header, manual_content_height=True)
-def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, right_mouse_drag,
+def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, double_right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
-                 draw_state=None, jet=False, nearest=False, **kwargs):
+                 draw_state=None, jet=False, nearest=False, dim_outside=None, dim_alpha=0.55, **kwargs):
     original_id = input_value
     texture_id = input_value
     imgui.dummy(draw_state.width, draw_state.height - 20)
@@ -94,26 +94,26 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     io = imgui.get_io()
     overlay: _DrawList = imgui.get_overlay_draw_list()
 
-    if right_mouse_drag:
+    if double_right_mouse_drag:
         b_str = f"{zoom_state.brightness:.3f}"
-        overlay.add_text(right_mouse_drag.x, right_mouse_drag.y - 30,
+        overlay.add_text(double_right_mouse_drag.x, double_right_mouse_drag.y - 30,
                          col=pack_color(*highlight_color[:3], 1),
                          text=f"brightness:{zoom_state.brightness:.3}\ncontrast:{zoom_state.contrast:.3}")
 
         if io.key_shift:
             if io.key_ctrl:
-                zoom_state.hue += right_mouse_drag.dx * 0.001
-                zoom_state.saturation -= right_mouse_drag.dy * 0.001
+                zoom_state.hue += double_right_mouse_drag.dx * 0.001
+                zoom_state.saturation -= double_right_mouse_drag.dy * 0.001
             else:
-                zoom_state.brightness += right_mouse_drag.dx * 0.001
-                zoom_state.contrast -= right_mouse_drag.dy * 0.001
+                zoom_state.brightness += double_right_mouse_drag.dx * 0.001
+                zoom_state.contrast -= double_right_mouse_drag.dy * 0.001
         else:
             if io.key_ctrl:
-                zoom_state.hue += right_mouse_drag.dx * 0.005
-                zoom_state.saturation -= right_mouse_drag.dy * 0.005
+                zoom_state.hue += double_right_mouse_drag.dx * 0.005
+                zoom_state.saturation -= double_right_mouse_drag.dy * 0.005
             else:
-                zoom_state.brightness += right_mouse_drag.dx * 0.005
-                zoom_state.contrast -= right_mouse_drag.dy * 0.005
+                zoom_state.brightness += double_right_mouse_drag.dx * 0.005
+                zoom_state.contrast -= double_right_mouse_drag.dy * 0.005
 
         # zoom_state.brightness = max(0.0, min(max_brightness, zoom_state.brightness))
         # zoom_state.contrast = max(0.0, min(max_contrast, zoom_state.contrast))
@@ -162,6 +162,15 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     #     radius=zoom_state.contrast
     # )
 
+    # `dim_outside=(x0, y0, x1, y1)` (texels, row 0 = top): the image is drawn
+    # darkened by `dim_alpha` (the `multiply` filter) and the rectangle is
+    # drawn over it from the undimmed texture, then outlined -- the
+    # hdr-viewer's crop selection. Translucent fills on the image never
+    # showed here (09-14); the image path does.
+    bright_texture_id = texture_id
+    if dim_outside is not None:
+        texture_id = Core.melty.filter.multiply(texture_id, factor=1.0 - dim_alpha)
+
     # Pixel mode: `nearest=True` shows the texels as hard squares when zoomed
     # in (see hdr-viewer: "Pixel Mode Nearest" menu item), else bilinear.
     # Stamped every frame on the filter chain's OUTPUT texture - that is what
@@ -191,7 +200,11 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     forced_zoom = -1.0
     key_1 = 49
     numpad_key_1 = 321
-    if hovered:
+    # Not while a text field has the keyboard (a melty draw_text editor or an
+    # imgui input): typing a path with a "4" in it over the image zoomed the
+    # hdr-viewer to 12.5 % (09-14).
+    typing = Core.melty.text_focused_ds is not None or io.want_text_input
+    if hovered and not typing:
         if imgui.is_key_pressed(key_1) or imgui.is_key_pressed(numpad_key_1):  # Key '1'
             forced_zoom = 1.0
             # Reset Pan to Center
@@ -224,7 +237,19 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     # texel per pixel, which "100 %" scrolling rarely lands on exactly) and
     # fit. Zoom 1.0 is fit, and native is the texture's size over the view's
     # along the fitted axis; "at native" allows a hair of float slop.
+    # The toggle fires on the RELEASE of a double click that did not drag:
+    # a double-click-and-drag is the hdr-viewer's crop gesture (09-14), and
+    # toggling on the press would jump the view under the drag.
     if hovered and imgui.is_mouse_double_clicked(0):
+        zoom_state.double_click_armed = True
+    double_click = False
+    if getattr(zoom_state, 'double_click_armed', False):
+        if imgui.is_mouse_dragging(0, 4.0):
+            zoom_state.double_click_armed = False
+        elif imgui.is_mouse_released(0):
+            zoom_state.double_click_armed = False
+            double_click = True
+    if double_click:
         if view_aspect > tex_aspect:
             native_zoom = height / max(1.0, view_height)
         else:
@@ -273,9 +298,6 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     # 4c. Apply Zoom Logic (Zoom to Cursor)
     if zoom_delta != 0.0:
         new_zoom = max(min_zoom, min(zoom_state.zoom * (2.0 ** zoom_delta), max_zoom))
-        if new_zoom == 1.0:
-            zoom_state.center_u = 0.5   # at fit the whole image shows; a pan
-            zoom_state.center_v = 0.5   # offset would justudge it off-centre
 
         if new_zoom != zoom_state.zoom:
             mouse_pos = imgui.get_mouse_pos()
@@ -300,20 +322,12 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
             diff_w = curr_uv_w - new_uv_w
             diff_h = curr_uv_h - new_uv_h
 
-            if new_zoom < zoom_state.zoom and new_zoom >= 1.0 and zoom_state.zoom > 1.0:
-                # Zooming OUT to fit homes instead of anchoring on the
-                # cursor: the pan offset shrinks in proportion to the zoom
-                # still left to 1.0, so every step moves it an equal share
-                # of the way and it arrives centred at fit with no jump.
-                # (Anchoring before and homing after made each step push the
-                # view towards the cursor and only partly pull it back, so
-                # the last step swallowed the whole view at once.)
-                keep = math.log2(new_zoom) / math.log2(zoom_state.zoom)
-                zoom_state.center_u = 0.5 + (zoom_state.center_u - 0.5) * keep
-                zoom_state.center_v = 0.5 + (zoom_state.center_v - 0.5) * keep
-            else:
-                zoom_state.center_u += diff_w * (mouse_u_ratio - 0.5)
-                zoom_state.center_v += diff_h * (0.5 - mouse_v_ratio)
+            # Every step anchors on the mouse, zooming out included: the
+            # image is not pulled back to centre on the way to fit (that
+            # homing was removed 09-14; the bounding step below still keeps
+            # it on screen).
+            zoom_state.center_u += diff_w * (mouse_u_ratio - 0.5)
+            zoom_state.center_v += diff_h * (0.5 - mouse_v_ratio)
 
             zoom_state.zoom = new_zoom
 
@@ -390,6 +404,23 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     draw_list.add_rect(raw_img_left, raw_img_top, raw_img_right + 1, raw_img_bottom + 1,
                        pack_color(*mixed_color[:3], 1.0),
                        0.0, 0, 1.0)
+    if dim_outside is not None:
+        x0, y0, x1, y1 = dim_outside
+        sx = (raw_img_right - raw_img_left) / max(1, width)
+        sy = (raw_img_bottom - raw_img_top) / max(1, height)
+        sl, st = raw_img_left + x0 * sx, raw_img_top + y0 * sy
+        sr, sb = raw_img_left + x1 * sx, raw_img_top + y1 * sy
+        sl, st = max(sl, clip_left), max(st, clip_top)
+        sr, sb = min(sr, clip_right - 3), min(sb, clip_bottom)
+        if sr > sl and sb > st:
+            def uv(x, y):
+                return uv_x_min + (x - p_min_x) / scale_u_px, uv_y_max - (y - p_min_y) / scale_v_px
+            gl.glBindTexture(gl.GL_TEXTURE_2D, bright_texture_id)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, filter_mode)
+            gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, filter_mode)
+            gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+            draw_list.add_image(bright_texture_id, (sl, st), (sr, sb), uv(sl, st), uv(sr, sb))
+            draw_list.add_rect(sl, st, sr, sb, pack_color(1.0, 1.0, 1.0, 0.9), 0.0, 0, 1.0)
     Core.melty.pop_clip()
 
     line_height = imgui.get_text_line_height()

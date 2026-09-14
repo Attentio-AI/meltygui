@@ -22,7 +22,7 @@ from src.lsd.gl_gui.hdr_color import pack_color
 import OpenGL.GL as gl
 
 from src.lsd.gl_gui.gl_state import GLTexture
-from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, set_decode_uniforms
+from src.lsd.gl_gui.hdr_color import GLSL_DECODE as _GLSL_DECODE, GLSL_UNPREMULTIPLY as _GLSL_UNPREMULTIPLY, GLSL_TEXT_CLAMP as _GLSL_TEXT_CLAMP, set_decode_uniforms
 
 _VS = """
 #version 330 core
@@ -49,9 +49,11 @@ uniform sampler2D Texture;
 in vec2 fUV;
 in vec4 fColor;   // premultiplied (see _VS)
 out vec4 OutColor;
-""" + _GLSL_UNPREMULTIPLY + """
+""" + _GLSL_UNPREMULTIPLY + _GLSL_TEXT_CLAMP + """
 void main() {
-    OutColor = melty_unpremultiply(fColor) * texture(Texture, fUV);
+    vec4 color = melty_unpremultiply(fColor);
+    color.rgb = melty_clamp_text(color.rgb);   // the bake is all text: Toggles.HDR.text_max_stops
+    OutColor = color * texture(Texture, fUV);
 }
 """
 

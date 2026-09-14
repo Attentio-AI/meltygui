@@ -72,6 +72,7 @@ class _RenderFuncs:
     attribute; __getattr__ is the fallback for any render func added since the
     last regeneration. Regenerate via CodeGenerator.update_render_funcs().
     """
+    draw_view_func_selector = _LazyRenderFunc("draw_view_func_selector")
     _do_save = _LazyRenderFunc("_do_save")
     address_to_call_parse = _LazyRenderFunc("address_to_call_parse")
     address_to_class = _LazyRenderFunc("address_to_class")

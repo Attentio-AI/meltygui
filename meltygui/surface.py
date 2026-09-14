@@ -374,6 +374,10 @@ class Surface:
         # window is hovered (draw_view.hover_eligible).
         Melty.imgui_main_window_hovered = imgui.is_window_hovered()
         Melty.begin_frame()
+        # Standalone apps do not run the studio's draw_main. Commit source
+        # edits deferred while a picker/slider held the pointer here too.
+        from src.lsd.gl_gui.view.core_views.anywhere import flush_deferred_writes
+        flush_deferred_writes()
         if self.chrome:
             os_frame.begin_frame()
             titlebar.poll_os_window_drag()
@@ -582,7 +586,8 @@ def root_view_kwargs(name, /, **kwargs):
         kwargs.setdefault('with_header_end', None)
     # OS bodies orchestrate render calls and shortcuts every requested frame.
     # Descendant bodies have their own caches; the app still sleeps when idle.
-    pinned = dict(name=name, closable=True, draggable=False, window_pos=(0, top), width=width, height=height,
+    pinned = dict(name=name, closable=True, draggable=False, frame_pinned=True,
+                  window_pos=(0, top), width=width, height=height,
                   auto_resize=False, show_header=header, with_footer=None, shadow=False, show_bg=True,
                   selectable=False, use_cache=False, disable_scroll=True, indent_size=5,
                   initial={'width': width, 'height': height, 'window_pos': (0, top)})

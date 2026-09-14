@@ -3678,6 +3678,36 @@ class TileCacheMasked:
         self._register_func_keys(draw_state, rkey)
         self.key_to_parent_key[rkey] = parent_ctx.key if parent_ctx else None
 
+    def mask_mark_uncached_window(self, draw_state) -> None:
+        """Depth mark for a closable window that renders WITHOUT a tile
+        (use_cache=False: popovers, dropdown menus, the surface root). The
+        tile path marks a window's rank in mark_end_offscreen / draw_tile,
+        so PASS 5 overwrites the full mask under it and nothing behind the
+        window shows through; an uncached window never marked, so the mask
+        under it kept the windows behind — the code editor's gutter recess
+        (an inset mark baked into the editor tile's cached mask) cast its
+        shadow straight across the colour-picker popover floating over it
+        (Lukas 09-13). Same rect / rank / live-clip recipe as draw_tile's
+        blit mark; flat (no tile mask), so children with tiles of their
+        own stamp their detail over it in paint order — which is why the
+        wrapper calls this BEFORE the window's body runs: PASS 5 stamps
+        flat marks in submission order (last wins), and a mark made after
+        the body flattened every child under it (09-14)."""
+        w, h = draw_state.width, draw_state.height
+        if not w or not h or w <= 0 or h <= 0 or draw_state.closed:
+            return
+        x, y = draw_state.abs_left, draw_state.abs_top
+        corner_radius = getattr(draw_state, "corner_radius", None)
+        if corner_radius is None:
+            corner_radius = 5.0
+        clipped = self._clip_rect(x, y, w, h, self._get_current_clip_rect_screen())
+        if clipped is not None:
+            x, y, w, h = clipped
+            if w <= 0 or h <= 0:
+                return
+        self.mask_mark_view(draw_state, draw_state.z_pos, draw_state.shadow_depth,
+                            x, y, w, h, draw_state._tile_id, corner_radius)
+
     def draw_tile(self, draw_state):
         imgui.push_id(f"{draw_state._tile_id}")
         rkey = draw_state._tile_id

@@ -17,7 +17,7 @@ import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 from imgui.core import _DrawList
 
-from src.lsd.gl_gui import mouse_cursor
+from src.lsd.gl_gui import mouse_cursor, resize_trace
 from src.lsd.gl_gui.background import Background, Pending
 from src.lsd.gl_gui.events.input_handler import ALL_ACTIONS
 from src.lsd.gl_gui.render_funcs import RenderFuncs
@@ -421,7 +421,7 @@ _AUTO_PARAM_EXCLUDE = {
 # hasattr(input_value, "tint") elif this replaces). Whitelisted so arbitrary
 # object attrs never leak into kwargs; separate from the set-anywhere
 # whitelist (anywhere.SET_ANYWHERE_PARAMS).
-OBJ_ATTR_PARAMS = ("tint",)
+OBJ_ATTR_PARAMS = ("tint", "view_func")
 
 _EVENT_SUFFIXES = tuple(f"_{a}" for a in ALL_ACTIONS)
 
@@ -630,6 +630,7 @@ def render_func(*args, **o_kwargs):
 
     sig = inspect.signature(func)
     params = sig.parameters
+    view_func_selection = o_kwargs.pop("view_func_selection", "view_func" not in params)
     param_types = [params[p].annotation for p in params]
     # A module under `from __future__ import annotations` (PEP 563) hands us
     # STRINGS here, and the injected-state path (`set_default`'s misc type:
@@ -746,6 +747,19 @@ def render_func(*args, **o_kwargs):
             # which returns a carrier the metain data into Melty's
             # default kwargs. Never falls through to a real render.
             return annotation_track(input_value, wrapper=wrapper, call_kwargs=kwargs)
+
+        selected_entry = kwargs.pop("_selected_view_entry", False)
+        selected_view = None
+        selection_call_kwargs = dict(kwargs)
+        selection_silence = Melty.silence_invalidate
+        if not selected_entry and view_func_selection and _has_imgui:
+            from src.lsd.gl_gui.view.core_views.view_func_selection import configured_view_func
+            try:
+                selected_view = configured_view_func(input_value, kwargs, merge_o_kwargs)
+            except ValueError as error:
+                from src.lsd.gl_gui.notifications import notify
+                notify(str(error), tag="view_func")
+                selected_view = None
 
         modes = kwargs.get("mode", None)
         if not isinstance(modes, tuple):
@@ -1017,6 +1031,26 @@ def render_func(*args, **o_kwargs):
                                       str(key) + func.__name__, idx=index)
 
         draw_state: DrawState = kwargs.get("draw_state", get_draw_state(unique))
+        if not selected_entry and view_func_selection and _has_imgui:
+            if draw_state.auto_params.get("view_func") is not None:
+                try:
+                    selected_view = configured_view_func(input_value, selection_call_kwargs, merge_o_kwargs,
+                                                        state_view=draw_state.auto_params["view_func"])
+                except ValueError:
+                    pass  # Invalid state references leave the configured renderer active.
+            if selected_view is not None and inspect.unwrap(selected_view) is not func:
+                forwarded = dict(selection_call_kwargs)
+                forwarded.pop("view_func", None)
+                forwarded["_selected_view_entry"] = True
+                forwarded["draw_state"] = draw_state
+                forwarded["_view_func_origin"] = func
+                if mode_stacked:
+                    Melty.mode_stack.pop()
+                Melty.silence_invalidate = selection_silence
+                return selected_view(input_value, **forwarded)
+        previous_view = draw_state._view_func
+        if previous_view is not None and previous_view is not func:
+            draw_state.invalidate_up(max_depth=6)
         closable = kwargs.get("closable", False)
         detached = kwargs.get("detached", False)
         draw_state._view_func = func
@@ -1166,6 +1200,16 @@ def render_func(*args, **o_kwargs):
             elif draw_state.closed and input_value == Melty.registered_windows:
                 draw_state.closed = False
 
+        # A `bg_offset` living on the draw_state is the DRAW_STATE source of
+        # that wrapper kwarg - where a `locate_bg_offset` write lands when no
+        # code explicitly sets it (the colour picker's view-offset rows). It is
+        # not a signature param, so auto-state never mirrors it; read it here
+        # the way the z_offset block reads `draw_state.z_offset`. A passed
+        # kwarg keeps priority (the DRAW_STATE tier is the cascade's last).
+        if "bg_offset" not in kwargs:
+            _ds_bg_offset = draw_state.__dict__.get("bg_offset")
+            if _ds_bg_offset is not None:
+                kwargs["bg_offset"] = _ds_bg_offset
         _restamp_kwargs(draw_state, kwargs)
         # One filtered copy instead of copy() + 20 pops (each runs for every
         # window call; the heavy-arg views have 60+ keys).
@@ -1294,7 +1338,8 @@ def render_func(*args, **o_kwargs):
         # Set default values from initial on the first frame (before any potential mutation)
         if draw_state.frame_count < 3 or draw_state.closed:
             approved_kwargs = ['expanded', 'closed']
-            for item_name, initial_value in initial_values.items():
+            # Diagnostics below may add "forced" to this same mapping.
+            for item_name, initial_value in tuple(initial_values.items()):
                 # An auto-state param receives `kwargs` defaults only before its
                 # first resolution (and never over a deserialized value).
                 if (item_name in auto_state_params
@@ -1720,12 +1765,15 @@ def render_func(*args, **o_kwargs):
         if draw_state.tint is None:
             draw_state.tint = kwargs.get("tint", draw_state.tint)
 
+
         melty_window = kwargs.get("melty_window", False)
         melty_window_header = kwargs.get("melty_window", False)
         draw_state.melty_window = melty_window_header
         previous_tint = None
 
         _pushed_search = False
+        _style_font_pushed = False
+        _font_style_stacked = False
         if (_has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None
                 and not Toggles.dynamic_styles):
             style_manager.set_imgui_tint(*draw_state.current_tint)
@@ -1901,6 +1949,25 @@ def render_func(*args, **o_kwargs):
 
             _restamp_kwargs(draw_state, kwargs)
 
+            if _has_imgui and Toggles.dynamic_styles:
+                from src.lsd.gl_gui.style import resolve_font_style
+                from src.lsd.gl_gui.fonts import Font
+                parent_font_style = (Melty.font_style_stack[-1] if Melty.font_style_stack
+                                     else (0.0, 0.0, False, False))
+                font_style = resolve_font_style(kwargs.get('style', kwargs.get('tint')),
+                                                parent_font_style)
+                font_base = kwargs.get("font") or (Melty.font_base_stack[-1]
+                            if Melty.font_base_stack else Font.DEJAVU_SANS_18)
+                Melty.font_base_stack.append(font_base)
+                Melty.font_style_stack.append(font_style)
+                _font_style_stacked = True
+                if (Melty.font_mgr is not None
+                        and (kwargs.get("font") is not None or font_style != (0.0, 0.0, False, False))):
+                    handle = Melty.font_mgr.get(font_base)
+                    if handle is not None:
+                        imgui.push_font(handle)
+                        _style_font_pushed = True
+
             # if draw_state.kwargs is None:
             #     draw_state.kwargs = AttrDict(kwargs)
             # else:
@@ -1970,7 +2037,12 @@ def render_func(*args, **o_kwargs):
             # an edge (a column / row divider, or its own frame edge, which
             # pushes the OS edge through the gap cell) - never a plain size
             # change the pin would break next frame.
-            draw_state._frame_pinned = bool(closable and kwargs.get("draggable") is False
+            # Fixed popovers also pass width/height and draggable=False;
+            # only the surface root is coupled to the OS frame. Treating a
+            # popover as that root makes the OS solve overwrite its fixed size.
+            draw_state._frame_pinned = bool(kwargs.get("frame_pinned", False)
+                                            and draw_state.parent_window is None
+                                            and closable and kwargs.get("draggable") is False
                                             and passed_width is not None and passed_height is not None)
 
             # Wrapping
@@ -2182,6 +2254,7 @@ def render_func(*args, **o_kwargs):
 
 
                 if handle_press or corner_press:
+                    resize_trace.record("press", draw_state, handle_press or corner_press)
                     # A press marks a NEW gesture boundary - drop every piece of
                     # drag-lifecycle state here. At low framerates the previous
                     # gesture's last drag frame and this press land in ADJACENT
@@ -2214,6 +2287,7 @@ def render_func(*args, **o_kwargs):
                         draw_state._initial_window_pos_resize = None
 
                 if handle_drag and not auto_resize:
+                    resize_trace.record("drag", draw_state, handle_drag)
                     # Which corner this drag drags: a right-drag (and the
                     # corner handle) the BOTTOM-RIGHT corner; a DOUBLE
                     # right-drag the TOP-LEFT corner - left column edge +
@@ -2252,6 +2326,7 @@ def render_func(*args, **o_kwargs):
                                 draw_state, handle_drag.x - draw_state.abs_left,
                                 handle_drag.y, left=from_top_left)
                         except Exception:
+                            resize_trace.record("retarget-x-error", draw_state, handle_drag, error=True)
                             draw_state._resize_target_edge = None
                         draw_state._resize_target_edge_x0 = handle_drag.total_dx
                         # And the row edge for the new side (above the
@@ -2261,6 +2336,7 @@ def render_func(*args, **o_kwargs):
                                 draw_state, handle_drag.y - draw_state.abs_top,
                                 handle_drag.x, above=from_top_left)
                         except Exception:
+                            resize_trace.record("retarget-y-error", draw_state, handle_drag, error=True)
                             draw_state._resize_target_row = None
                         draw_state._resize_target_row_y0 = handle_drag.total_dy
                     if (draw_state._initial_window_size is None
@@ -2317,6 +2393,7 @@ def render_func(*args, **o_kwargs):
                                             (row_edge, row_edge["y"] + inc, True))
                                     queued_rows = True
                             except Exception:
+                                resize_trace.record("queue-y-error", draw_state, handle_drag, error=True)
                                 queued_rows = False
                         if not queued_rows and not frame_pinned:
                             new_h = snap_int(max(size_h, draw_state.min_height))
@@ -2382,6 +2459,7 @@ def render_func(*args, **o_kwargs):
                                             (edge, edge["x"] + inc, True))
                                     queued = True
                             except Exception:
+                                resize_trace.record("queue-x-error", draw_state, handle_drag, error=True)
                                 queued = False
                         if not queued and not frame_pinned:
                             new_w = snap_int(max(size_w, draw_state.min_width))
@@ -2539,7 +2617,11 @@ def render_func(*args, **o_kwargs):
                         if slide > 0:
                             draw_state.window_pos = (snap_int(draw_state.window_pos[0] - slide),
                                                      draw_state.window_pos[1])
+                    resize_trace.record("drag-applied", draw_state, handle_drag,
+                                        queued_x=queued, queued_y=queued_rows)
                 elif not (handle_press or corner_press):
+                    if getattr(draw_state, "_resize_from_top_left", None) is not None:
+                        resize_trace.record("idle-reset", draw_state)
                     # Not on the press branch itself - that would wipe the
                     # press-anchored baselines latched just above before the
                     # drag's first event arrives.
@@ -2674,6 +2756,23 @@ def render_func(*args, **o_kwargs):
                                                            draw_state.window_pos)
                             draw_state._move_undo_origin = None
                         draw_state._initial_window_pos = None
+                elif draw_state.parent_window is not None:
+                    # An explicitly-positioned NESTED window (a popover, a
+                    # context menu, the find bar) has no move handle, so
+                    # nothing in it subscribed to a left drag: the handler's
+                    # down-capture then resolved the drag to the OS window's
+                    # NON-BLOCKING drag-anywhere strip (titlebar.py), which
+                    # survives the blocker pass and sits behind every view -
+                    # a drag in the colour picker's square moved the OS
+                    # window and the compositor's move grab took the pointer
+                    # from imgui mid-gesture (09-13). Absorb the drag at the
+                    # move handle's priority: anything that wants the drag
+                    # (sliders, text rows, a child window's edge) resolves
+                    # first as before; a bare press on the body goes nowhere.
+                    # A surface ROOT (parent_window None) is left alone - the
+                    # bare background IS the OS window's drag-anywhere strip.
+                    draw_state.on_action("left_mouse_drag", "window_hold", priority_delta=-2)
+                    draw_state.on_action("left_mouse_held", "window_hold", priority_delta=-2)
 
                 # Anchor / pin stamping applies to explicitly-positioned windows
                 # too: the find bar (and the Save/Load pending dialogs) pass
@@ -2709,6 +2808,7 @@ def render_func(*args, **o_kwargs):
                 try:
                     _columns.window_edge_pass(draw_state)
                 except Exception as _edge_err:
+                    resize_trace.record("edge-pass-error", draw_state, error=True)
                     if getattr(draw_state, "_edge_pass_error", None) != repr(_edge_err):
                         draw_state._edge_pass_error = repr(_edge_err)
                         print(f"[window_edge_pass] {draw_state.name}: {_edge_err!r}")
@@ -2762,7 +2862,7 @@ def render_func(*args, **o_kwargs):
             # above it, the mangled merge-window / code-editor shadows
             # after an external edit) and no capture (the next frame shows
             # the stale tile).
-            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not Toggles.dynamic_styles
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
             draw_state._bypass_cache = kwargs.get("draw", False)
             draw_state.use_cache = use_cache
             # Opt-in (off by default): during window mouse-dragging the view's
@@ -3309,6 +3409,11 @@ def render_func(*args, **o_kwargs):
 
             _wtC = time.perf_counter()   # TEMP perf: pre-cache is done
             _render_body = Melty.cache.mark_start_offscreen(draw_state=draw_state)
+            if Melty.frame_count % 10 == 0 and (
+                    getattr(draw_state, "_resize_from_top_left", None) is not None
+                    or getattr(draw_state.parent_window, "_resize_from_top_left", None) is not None):
+                resize_trace.record("paint", draw_state, render_body=bool(_render_body),
+                                    clip=draw_state.abs_clip_rect)
             if not _render_body and _has_imgui:
                 # Blit-cache hit: the body below is skipped, and with it every
                 # on_action it would have made (the text editor's I-beam, tab
@@ -3316,7 +3421,24 @@ def render_func(*args, **o_kwargs):
                 # tile keeps its subscriptions - same fix as the pre-gate
                 # register_hovered above, for body-level subs.
                 draw_state.replay_body_actions()
+                if Toggles.dynamic_styles:
+                    Melty.add_cached_background(draw_state)
             if _render_body:
+                # An uncached closable window still owns its region of the
+                # depth mask (TileCacheMasked.mask_mark_uncached_window):
+                # without this mark, the windows BEHIND it kept their depths
+                # under it and cast into it - the editor's gutter recess
+                # shadowed the color-picker panel (09-13). It is submitted
+                # HERE, before the body, and never after it: PASS 5 stamps
+                # flat depth in submission order (last wins), so a mark made
+                # in the body's `finally` painted over every child that
+                # the body had marked - the app's surface shadow from the
+                # root window to its own rank and every child's shadow
+                # fought the background (09-14). PASS 2 MAX-blends on z_pos,
+                # so the flat ownership mask is order-independent either way.
+                if (not use_cache and closable and _has_imgui and Melty.cache is not None
+                        and Melty.cache.enabled):
+                    Melty.cache.mask_mark_uncached_window(draw_state)
                 # Fresh record for this render's body-level on_action calls.
                 draw_state._body_actions = (Melty.frame_count, [])
                 # Rect-scoped event params (draw_state.event_rect): take the
@@ -4157,7 +4279,7 @@ def render_func(*args, **o_kwargs):
                                                          min_width=100, min_height=100, pin_to_clip=Pin.PARENT,
                                                          persistent=False, anchor=Anchor.TOP_LEFT, parent_anchor=Anchor.TOP_RIGHT,
                                                          bg_offset=Tint.context_menu_bg_offset, swoosh_mode=SwooshMode.LINE,
-                                                         with_footer=None, use_cache=True,
+                                                         with_footer=None, use_cache=False,
                                                          name=f"{name}##context_menu_{unique}", auto_resize=False,
                                                          return_extras=True)
 
@@ -5053,6 +5175,11 @@ def render_func(*args, **o_kwargs):
 
 
         finally:
+            if _style_font_pushed:
+                imgui.pop_font()
+            if _font_style_stacked:
+                Melty.font_style_stack.pop()
+                Melty.font_base_stack.pop()
 
             if is_root:
                 style = imgui.get_style()
@@ -5092,7 +5219,7 @@ def render_func(*args, **o_kwargs):
                 if len( Melty.unique_stack) > 0:
                     Melty.unique_stack.pop()
 
-            use_cache = kwargs.get("use_cache", False) and Melty.cache is not None and Melty.cache.enabled and not Toggles.dynamic_styles
+            use_cache = kwargs.get("use_cache", False) and Melty.cache is not None and Melty.cache.enabled
             if not use_cache and Melty.cache is not None:
                 Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
@@ -5312,7 +5439,7 @@ def render_func(*args, **o_kwargs):
                                        f"got {actual_type_class_path}", *yellow)
                     return False, None
 
-        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not Toggles.dynamic_styles
+        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
 
@@ -5325,7 +5452,7 @@ def render_func(*args, **o_kwargs):
         # (The scrollbar reserve is subtracted from content_width unconditionally
         # for scroll-capable views in the renderer - scroll_visible only
         # controls whether the bar is drawn, never the width.)
-   
+
         _max_h = kwargs.get("max_height", None)
         _height_bounded = (not draw_state.auto_resize
                            or (_max_h is not None and draw_state.abs_content_height > _max_h))
@@ -5578,9 +5705,12 @@ def render_func(*args, **o_kwargs):
                         draw_state._eval_pending = False
                         try:
                             from src.lsd.gl_gui.view.core_views.new_core_view import run_scoped_eval
+                            _eval_code = getattr(draw_state, 'eval_code', '') or ''
                             draw_state._eval_result = run_scoped_eval(
-                                getattr(draw_state, '_eval_code', '') or '',
-                                func, draw_state, clean_args)
+                                _eval_code, func, draw_state, clean_args)
+                            # The snippet this result answers - the Eval tab
+                            # titles the result box with it.
+                            draw_state._eval_result_code = _eval_code
                         except Exception as _eval_err:
                             draw_state._eval_result = f"eval harness error: {_eval_err}"
                         draw_state._eval_generation = getattr(draw_state, '_eval_generation', 0) + 1
@@ -5883,7 +6013,7 @@ _RF_KWARG_EXCLUDE = frozenset({
     "current_mode", "auto_apply", "convert_in", "convert_out", "pending",
     "type_collection", "drives", "view_func",
 })
-  
+
 _rf_kwarg_names_cache = None
 
 @window

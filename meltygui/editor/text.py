@@ -122,22 +122,13 @@ _IDENT_RE = re.compile(r'[A-Za-z_]\w*')
 # it must not surface as a bare suggestion. A name that also occurs bare
 # somewhere still matches there and stays in the pool.
 _BARE_IDENT_RE = re.compile(r'(?<![.\w])[A-Za-z_]\w*')
-# Comment strip for the same scan - comment prose must never become
-# suggestions. Single-line strings are matched FIRST and kept, so a '#' inside
-# one can't eat the code after it; a bare '#' then drops the rest of the line.
-# One C-speed sub, no lexer state - cheap enough for the per-keystroke pool
-# rebuild. A '#' inside a still-unterminated string or a multi-line triple
-# quote is over-stripped, but that only ever drops STRING words, never bare.
-_SCAN_COMMENT_RE = re.compile(
-    r'''("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')|#[^\n]*''')
-
-
 def _strip_comments(text):
-    # \1 keeps a matched string alternate; for a bare match the group didn't
-    # participate and sub() substitutes empty; all C-speed, no per-match lambda.
-    return _SCAN_COMMENT_RE.sub(r'\1', text)
+    # Strings are not bindings either: `label = "files"` must not leak a
+    # function-local `files` into the namespace. Preserve line positions.
+    pattern = r'''"""[\s\S]*?(?:"""|$)|\x27\x27\x27[\s\S]*?(?:\x27\x27\x27|$)|"(?:[^"\\\n]|\\.)*(?:"|$)|\x27(?:[^\x27\\\n]|\\.)*(?:\x27|$)|#[^\n]*'''
+    return re.sub(pattern, lambda match: "\n" * match.group().count("\n"), text)
 
-_SCOPE_HEAD_RE = re.compile(r'^(\s*)(def|class)\s+([A-Za-z_]\w*)')
+_SCOPE_HEAD_RE = re.compile(r'^([ \t]*)(?:async\s+)?(def|class)\s+([A-Za-z_]\w*)')
 
 
 def _blank_foreign_scopes(lines, caret_line):
@@ -299,9 +290,15 @@ def _completion_pool(code_tree, text, line, func=None):
     # the caret's own scope isn't defined yet. Without a tree the cap is
     # skipped: later module-level names ARE valid, and the tree isn't going to
     # supply them.
-    lines = _blank_foreign_scopes(text.split("\n"), line)
+    lines = _blank_foreign_scopes(_strip_comments(text).split("\n"), line)
     scan_text = "\n".join(lines[:line + 1] if code_tree is not None else lines)
-    for name in _BARE_IDENT_RE.findall(_strip_comments(scan_text)):
+    # Recognize live assignments before backfilling identifiers. Otherwise a
+    # fully typed local is indistinguishable from the incomplete token echoed
+    # by the scan, and completion keeps stealing Enter after a parse lands.
+    for binding in re.finditer(
+            r'(?m)^([ \t]*)([A-Za-z_]\w*)[ \t]*(?::[^=\n]+)?=(?!=)', scan_text):
+        add(binding.group(2), "local" if binding.group(1) else "var")
+    for name in _BARE_IDENT_RE.findall(scan_text):
         add(name, "name")
     for name in dir(_builtins):
         if not name.startswith("_"):
@@ -627,20 +624,16 @@ def _kind_tag(kind):
     return _KIND_TAGS.get(kind, kind)
 
 
-def _filter_completions(pool, prefix, users=None, tints=None):
-    """Filter the ordered (name, kind) `pool` by `prefix`, returning the matching
-    (name, kind) rows. Prefix matches (case-insensitive) come before looser
-    substring matches. Within each group rows rank: TINTED symbols first (the
-    definition-tint names — the popup's colored rows), then by `users` count
-    (the buffer's usage-graph site totals) descending, then alphabetically —
-    except untinted count-0 rows, which keep the pool's own scope ranking
-    (locals before builtins) via the stable sort. Empty prefix (right after a
-    `.`) keeps one group. The exact word already fully typed ranks first when
-    it's a REAL symbol (a classified kind) — visible as confirmation rather
-    than vanishing. An unclassified "name" exact row is just the half-typed
-    token echoed back by the buffer scan, not a valid pick — dropped, so the
-    top row stays a completion that actually does something."""
+def _filter_completions(pool, prefix, users=None, tints=None, keep_exact=False):
+    """Prefix matches first; scope outranks tint and popularity within a group.
+
+    Automatic suggestions stop at a complete symbol. Ctrl+Space can explicitly
+    ask for alternatives, including the exact symbol. Unclassified exact names
+    are only the incomplete token echoed by the fallback scan.
+    """
     exact = [(n, k) for (n, k) in pool if n == prefix and k != "name"]
+    if exact and not keep_exact:
+        return []  # a complete symbol must not steal the next newline
     rows = [(n, k) for (n, k) in pool if n != prefix]
     if not prefix:
         # Empty prefix only happens right after a '.', where a pile of dunders is
@@ -650,16 +643,48 @@ def _filter_completions(pool, prefix, users=None, tints=None):
         p = prefix.lower()
         groups = [[(n, k) for n, k in rows if n.lower().startswith(p)],
                   [(n, k) for n, k in rows if p in n.lower() and not n.lower().startswith(p)]]
-    if users or tints:
-        def _key(row):
-            n = row[0]
-            tinted = 0 if (tints and n in tints) else 1
-            c = users.get(n, 0) if users else 0
-            return (tinted, -c, n.lower() if (c or not tinted) else "")
-        for g in groups:
-            g.sort(key=_key)
+    def _key(row):
+        n, kind = row
+        scope_rank = (0 if kind in {"param", "local"} else
+                      1 if kind == "name" else
+                      3 if kind in {"builtin", "kw", "auto_import"} else 2)
+        tinted = 0 if (tints and n in tints) else 1
+        count = users.get(n, 0) if users else 0
+        return (scope_rank, tinted, -count)
+    for group in groups:
+        group.sort(key=_key)
     ranked = exact + [r for g in groups for r in g]
     return ranked[:_AC_MAX_ROWS]
+
+
+def _completion_replace_end(text, cursor, pick, snippets=None):
+    """Replace a whole identifier, but leave snippet punctuation untouched.
+
+    Runs only on acceptance; the scan touches the word, never the file.
+    """
+    if snippets and pick in snippets:
+        return cursor
+    while cursor < len(text) and (text[cursor].isalnum() or text[cursor] == '_'):
+        cursor += 1
+    return cursor
+
+
+def _completion_selection(candidates, index, state):
+    # The latched menu paints after the editor. Read its last painted cursor
+    # when handling keys, rather than overwriting it with yesterday's index.
+    path = state.cursor_path
+    if isinstance(path, tuple) and len(path) == 1 and path[0] in candidates:
+        return candidates.index(path[0])
+    return min(index, len(candidates) - 1)
+
+
+def _completion_popup_rect(x, y, line_height, clip, max_height):
+    """Keep assistance inside the editor, above its tabs, with room to scroll."""
+    below = max(0, clip[3] - (y + line_height))
+    above = max(0, y - clip[1])
+    height = min(max_height, max(above, below))
+    top = y + line_height if below >= height else y - height
+    return max(clip[0], min(x, clip[2] - 300)), max(clip[1], top), height
 
 
 # Name-DEFINING keywords: an identifier typed right after one is a NEW name
@@ -1215,13 +1240,10 @@ def _draw_fim_ghost(ds, ghost, text, origin_x, origin_y, line_px, vcols=None):
 
 
 def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcols=None):
-    """Float the active call's signature (name + comma-separated param names) just
-    above the call line, with the current argument highlighted (and its type).
-    The hint's function name is aligned horizontally with the call's function name
-    in the code, so the parameters line up over the call and it's obvious at a
-    glance which argument you're on. Overflow clips on the right (name stays put);
-    no room above → drop below. Non-interactive; mono font assumed active."""
-    if not getattr(ds, '_ac_sig_show', False):
+    """Show the active signature after the current source line, or at the
+    editor's bottom edge when it does not fit. Non-interactive; mono font active.
+    """
+    if not getattr(ds, '_ac_sig_show', False) or getattr(ds, '_ac_open', False):
         return
     sig = getattr(ds, '_ac_sig_data', None)
     if not sig:
@@ -1256,26 +1278,14 @@ def _draw_signature_hint(ds, draw_state, text, origin_x, origin_y, line_px, vcol
 
     th = imgui.get_text_line_height()
     clip = draw_state.abs_clip_rect          # (left, top, right, bottom)
-    cx, cy = _char_pos_to_xy(text, ds.text_cursor_pos, origin_x, origin_y, line_px, vcols=vcols)
-
-    # Align the hint's function name with the call's function name in the code:
-    # walk back from the '(' over the trailing identifier (the displayed name) and
-    # anchor there, so the param list lines up over the call.
-    op = getattr(ds, '_ac_sig_open_paren', None)
-    if op is None or op > len(text):
-        name_start = ds.text_cursor_pos
+    # Prefer unused space after the current source line. When it does not fit,
+    # dock at the editor's bottom edge instead of covering the preceding code.
+    line_end = _get_line_end(text, ds.text_cursor_pos)
+    end_x, end_y = _char_pos_to_xy(text, line_end, origin_x, origin_y, line_px, vcols=vcols)
+    if end_x + total + 24 <= clip[2]:
+        base_x, hy = end_x + 16, end_y
     else:
-        k = op
-        while k > 0 and (text[k - 1].isalnum() or text[k - 1] == '_'):
-            k -= 1
-        name_start = k
-    nx, ny = _char_pos_to_xy(text, name_start, origin_x, origin_y, line_px, vcols=vcols)
-    base_x = max(origin_x, nx)               # never slide under the gutter
-
-    # Sit one line above the call's line (drop below if that's clipped at the top).
-    hy = ny - line_px - 5
-    if hy < clip[1] + 2:
-        hy = ny + line_px + 4
+        base_x, hy = origin_x + 7, clip[3] - th - 6
 
     pad = 7
     x0 = base_x - pad
@@ -8521,7 +8531,7 @@ _AC_MAX_IMPORT_ROWS = 8
 _AC_REAL_KINDS_EXCLUDED = ("name",)
 
 
-def _ac_import_rows(ds, cands, prefix, jump_to=None):
+def _ac_import_rows(ds, cands, prefix, jump_to=None, explicit=False):
     """Merge import shortcuts (code_checks.project_importables — the main
     package's classes/modules) into the candidate list, returning the new
     list. A plain unclassified "name" row matching an importable UPGRADES in
@@ -8534,7 +8544,10 @@ def _ac_import_rows(ds, cands, prefix, jump_to=None):
     and by the other candidate branches so a stale map never fires on a
     same-named ordinary pick."""
     ds._ac_import_stmts = None
-    if not prefix or len(prefix) < 2:
+    if not prefix or (len(prefix) < 3 and not explicit):
+        return cands
+    if not explicit and any(name == prefix and kind != "name"
+                            for name, kind in (getattr(ds, '_ac_pool', None) or ())):
         return cands
     try:
         from src.lsd.gl_gui.view.core_conversion.code_checks import (
@@ -8566,7 +8579,7 @@ def _ac_import_rows(ds, cands, prefix, jump_to=None):
     p = prefix.lower()
     extra = 0
     for n, k in rows:
-        if (n not in have and n not in real and n.lower().startswith(p)):
+        if (n != prefix and n not in have and n not in real and n.lower().startswith(p)):
             merged.append((n, k))
             picked[n] = stmts[n]
             extra += 1
@@ -12077,7 +12090,9 @@ def draw_text(input_value: str, height=None,
         # popup the user is actually looking at this keypress.
         if ac_enabled and getattr(ds, '_ac_open', False):
             _ac_cands = getattr(ds, '_ac_candidates', None) or []
-            _ac_idx = getattr(ds, '_ac_index', 0)
+            _ac_idx = (_completion_selection(_ac_cands, getattr(ds, '_ac_index', 0), ac_state)
+                       if _ac_cands else 0)
+            ds._ac_index = _ac_idx
             if pressed(glfw.KEY_ESCAPE):
                 # Dismiss and remember this site so it doesn't re-open
                 # while the caret stays put (cleared once the caret moves on).
@@ -12104,16 +12119,15 @@ def draw_text(input_value: str, height=None,
                 _fired.discard(glfw.KEY_UP)
                 _fired.discard(glfw.KEY_DOWN)
                 request_render()
-            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)) and _ac_cands and not ctrl:
-                # Tab is deliberately NOT an accept key here - it belongs to the
-                # FIM ghost text accept (fim.py). This popup accepts on Enter.
+            elif (pressed(glfw.KEY_ENTER) or pressed(glfw.KEY_KP_ENTER)
+                  or (pressed(glfw.KEY_TAB) and not shift)) and _ac_cands and not ctrl:
+                # A visible popup owns Tab; otherwise Tab accepts the AI ghost
+                # or indents. Never accept two competing suggestions at once.
                 chosen = _ac_cands[min(_ac_idx, len(_ac_cands) - 1)]
                 anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
-                # Replace the half-typed identifier [anchor, caret) with the
-                # pick as Enter inserts, leaving the rest of the word under the
-                # caret intact. (Tab is no longer a popup-accept key - it
-                # drives the FIM ghost, so the old Tab-overtype is gone.)
-                _replace_to = ds.text_cursor_pos
+                # Both keyboard acceptance keys replace the existing word.
+                _replace_to = _completion_replace_end(
+                    text, ds.text_cursor_pos, chosen, getattr(ds, '_ac_snips', None))
 
                 _ins, _coff, _extra = _ac_pick_insert(ds, chosen,
                                                       following=text[_replace_to:_replace_to + 64],
@@ -12141,18 +12155,20 @@ def draw_text(input_value: str, height=None,
                 changed = True
                 _fired.discard(glfw.KEY_ENTER)
                 _fired.discard(glfw.KEY_KP_ENTER)
+                _fired.discard(glfw.KEY_TAB)
 
         # --- FIM ghost text: accept / dismiss (fim_state) --- reads LAST frame's
         # ghost (what the user is looking at). Runs after the suggestion popup's
         # handlers and before the indent / caret handlers, consuming its keys
-        # the same way. Tab = the current chunk (Ctrl+Tab = everything
-        # buffered), Ctrl+Right = one word. Esc = drop the buffer (not
-        # dismiss - Esc keeps its old jobs). Tab drives the ghost even when
-        # the completion popup is also open (the popup accepts on Enter).
+        # the same way. Tab = the visible chunk (Ctrl+Tab = everything
+        # buffered), Ctrl+Right = one word, Esc = drop the buffer (not
+        # consumed so Esc keeps its other jobs). A visible popup owns acceptance;
+        # hidden ghost text must never splice into a later navigation action.
         _fim_ghost_prev = getattr(ds, '_fim_ghost', None)
         if (fim_state is not None and _fim_ghost_prev is not None and _fim_ghost_prev.text
+                and not getattr(ds, '_ac_open', False)
                 and not is_search_box and not single_line):
-            if pressed(glfw.KEY_ESCAPE):
+            if any(key == glfw.KEY_ESCAPE for key, _ in _frame_keys):
                 fim_state.dismiss()
                 ds._fim_ghost = None
             else:
@@ -12743,9 +12759,11 @@ def draw_text(input_value: str, height=None,
                         and (dot_trigger or import_ctx
                              or not _defining_keyword_before(text, anchor)))
             if ctrl and pressed(glfw.KEY_SPACE):
+                text_editor_state._completion_explicit = True
                 ds._ac_request_anchor = anchor
                 ds._ac_suppress_anchor = sup = -1  # explicit ask overrides a prior Esc
             elif typed_trigger and sup != anchor:
+                text_editor_state._completion_explicit = False
                 ds._ac_request_anchor = anchor
             req = getattr(ds, '_ac_request_anchor', -1)
             if req != -1 and req != anchor:
@@ -12822,7 +12840,8 @@ def draw_text(input_value: str, height=None,
                     raw = completion_source(text, anchor, prefix, dot_trigger) or []
                 except Exception:
                     raw = []
-                cands = _filter_completions(raw, prefix, users=_ac_users, tints=_ac_tinted)
+                cands = _filter_completions(raw, prefix, users=_ac_users, tints=_ac_tinted,
+                                            keep_exact=getattr(text_editor_state, '_completion_explicit', False))
                 ds._ac_member_tints = None
             elif want and (dot_trigger or import_ctx):
                 # Member access (`imgui.`, `foo.bar`) or an import line - the
@@ -12834,7 +12853,8 @@ def draw_text(input_value: str, height=None,
                 members, pending = _ensure_member_completions(ds, text, anchor, jump_to)
                 if members is not None:
                     cands = _filter_completions(members, prefix,
-                                                users=_ac_users, tints=_ac_tinted)
+                                                users=_ac_users, tints=_ac_tinted,
+                                                keep_exact=getattr(text_editor_state, '_completion_explicit', False))
                 else:
                     cands = []   # jedi still resolving; its done-callback wakes us once
             elif want:
@@ -12853,16 +12873,25 @@ def draw_text(input_value: str, height=None,
                 # are file-absolute), so the buffer caret line is the right
                 # coordinate to pass - no _usage_off here.
                 _ac_line = _index_to_line_col(text, ds.text_cursor_pos)[0]
-                _pool_key = (id(_usage_tree), _ac_line, len(text))
+                _pool_key = (id(_usage_tree), _ac_line, id(text))
                 if getattr(ds, '_ac_pool_key', None) != _pool_key:
                     _pool_func = _ac_live_context(ds, text, jump_to)[1]
                     ds._ac_pool = _completion_pool(_usage_tree, text, _ac_line, _pool_func)
                     ds._ac_pool_key = _pool_key
                 cands = _filter_completions(ds._ac_pool, prefix,
-                                            users=_ac_users, tints=_ac_tinted)
+                                            users=_ac_users, tints=_ac_tinted,
+                                            keep_exact=getattr(text_editor_state, '_completion_explicit', False))
+                # Statement-only keywords are not useful after `=`, `return`,
+                # or `if`. Scan only the current line, not the full buffer.
+                line_prefix = text[_get_line_start(text, anchor):anchor].strip()
+                if line_prefix:
+                    expression_keywords = {"True", "False", "None", "not", "lambda", "await"}
+                    cands = [(name, kind) for name, kind in cands
+                             if kind != "kw" or name in expression_keywords]
                 # Import shortcuts: global classes/modules the buffer doesn't
                 # know yet - accepting one also inserts the import statement.
-                cands = _ac_import_rows(ds, cands, prefix, jump_to)
+                cands = _ac_import_rows(ds, cands, prefix, jump_to,
+                                        explicit=getattr(text_editor_state, '_completion_explicit', False))
                 ds._ac_member_tints = None   # scope names - member map would mislabel
             else:
                 cands = []
@@ -12937,8 +12966,15 @@ def draw_text(input_value: str, height=None,
         _pf("kbd:fim")
         if ac_enabled and completion_source is None:
             _open_paren, _arg_index = _call_context(text, ds.text_cursor_pos)
+            if any(key == glfw.KEY_ESCAPE for key, _ in _frame_keys):
+                text_editor_state._signature_dismissed = _open_paren
+            elif ctrl and pressed(glfw.KEY_P):
+                text_editor_state._signature_dismissed = None
+            elif _open_paren != getattr(text_editor_state, '_signature_dismissed', None):
+                text_editor_state._signature_dismissed = None
             _sig_req = getattr(ds, '_ac_sig_request_paren', -1)
-            if _open_paren is None:
+            if (_open_paren is None
+                    or _open_paren == getattr(text_editor_state, '_signature_dismissed', None)):
                 _sig_req = -1
             elif changed or (ctrl and pressed(glfw.KEY_P)):
                 _sig_req = _open_paren
@@ -15701,38 +15737,6 @@ def draw_text(input_value: str, height=None,
     # text_width = max(vcols) if vcols else max((len(l) for l in text.split('\n')), default=0) * char_w
 
     _pf("gutter")
-    if jump_to is not None and not single_line and not is_search_box:
-        # --- Usage-graph source (debug label, at top-right) ------------
-        # Where this span's symbol-usage graph came from: "fresh" (full
-        # recompute this session), "disk" (pickle warm-start), "sys" (adopted
-        # across a restart-in-place) - plus "+Ni" for N incremental passes on
-        # that base. Reads the provenance map libcst_conversion maintains at
-        # each store; "none" = no tracked span covers this view yet.
-        if (Toggles.TextEditor.SymbolUsages.show_usage_graph_source
-                and getattr(jump_to, 'path', None) is not None):
-            from src.lsd.gl_gui.view.core_conversion.libcst_conversion import (
-                usage_graph_source)
-            _ug_start = (getattr(jump_to, 'start', 0) or 0) + 1
-            _ug_txt = usage_graph_source(
-                str(jump_to.path), _ug_start,
-                _ug_start + _fold_full.count('\n'))
-            _ug_dot = {"fresh": (0.25, 0.85, 0.35, 0.95),
-                       "disk": (0.9, 0.65, 0.15, 0.9),
-                       "sys": (0.35, 0.6, 0.9, 0.9)}.get(
-                (_ug_txt or "").split("+")[0], (0.5, 0.5, 0.5, 0.6))
-            _ug_txt = _ug_txt or "none"
-            _ug_x1 = rect_max_x - 8.0
-            _ug_y0 = rect_min_y + 4.0
-            _ug_w = len(_ug_txt) * 7.5 + 20.0
-            draw_list.add_rect_filled(
-                _ug_x1 - _ug_w, _ug_y0, _ug_x1, _ug_y0 + 17.0,
-                pack_color(0.08, 0.08, 0.08, 0.6), 8.5)
-            draw_list.add_circle_filled(_ug_x1 - _ug_w + 9.0, _ug_y0 + 8.5, 3.5,
-                                        pack_color(*_ug_dot))
-            draw_list.add_text(_ug_x1 - _ug_w + 16.0, _ug_y0 + 1.5,
-                               pack_color(0.85, 0.85, 0.85, 0.85),
-                               _ug_txt)
-
     # Icon-picker orphan close: the picker popover is latched by its icon
     # picker's body (draw_icon_selector_plain) - if that widget stopped
     # rendering this frame (token scrolled out, edited away, sort-order name
@@ -15801,12 +15805,16 @@ def draw_text(input_value: str, height=None,
     # Draw FIM ghost text (fim.py): the visible chunk under the caret, extra
     # lines in an anchor below, drawn while the mono font is still pushed.
     _fim_ghost = getattr(ds, '_fim_ghost', None) if is_focused else None
-    if _fim_ghost is not None and (_fim_ghost.text or _fim_ghost.pending):
+    if (_fim_ghost is not None and (_fim_ghost.text or _fim_ghost.pending)
+            and not getattr(ds, '_ac_open', False)):
         _draw_fim_ghost(ds, _fim_ghost, text, origin_x, origin_y, line_px, vcols)
 
     _ac_anchor = getattr(ds, '_ac_anchor', ds.text_cursor_pos)
 
     _ac_x, _ac_y = _char_pos_to_xy(text, _ac_anchor, origin_x, origin_y, line_px, vcols=vcols)
+    popup_x, popup_y, popup_height = _completion_popup_rect(
+        _ac_x, _ac_y, line_px, draw_state.abs_clip_rect,
+        Toggles.TextEditor.completion_max_height)
     if _ac_show:
         # Keyboard-vs-hover highlight. The menu paints the keyboard cursor only in
         # _kbd_mode, else the hovered row - so we keep _kbd_mode True while the
@@ -15816,7 +15824,7 @@ def draw_text(input_value: str, height=None,
         # even with the mouse parked over the popup.
         _mp = imgui.get_mouse_pos()
         _lm = getattr(ac_state, '_last_mouse', None)
-        _pop_x0, _pop_y0 = _ac_x, _ac_y + line_px
+        _pop_x0, _pop_y0 = popup_x, popup_y
         _pop_ds = Melty.cache.key_to_draw_state.get(getattr(ds, '_ac_menu_tile', None))
         if _pop_ds is not None and _pop_ds.width and _pop_ds.height:
             # REAL window rect (live abs pos - cached abs lags a frame during a
@@ -15827,8 +15835,8 @@ def draw_text(input_value: str, height=None,
             _over = (_px0 - 4 <= _mp[0] <= _px0 + _pop_ds.width + 4
                      and _py0 - 2 <= _mp[1] <= _py0 + _pop_ds.height)
         else:
-            # First-open-frame fallback before the popup's tile id is found.
-            _pop_h = min(len(_ac_cands) * 24 + 10, 800)        # ~row height, cap
+            # First-open-frame fallback before the popup's tile id is known.
+            _pop_h = min(len(_ac_cands) * 24 + 10, popup_height)
             _over = (_pop_x0 - 4 <= _mp[0] <= _pop_x0 + 400
                      and _pop_y0 - 2 <= _mp[1] <= _pop_y0 + _pop_h)
         _moved = _lm is not None and (abs(_mp[0] - _lm[0]) > 0.5 or abs(_mp[1] - _lm[1]) > 0.5)
@@ -15847,8 +15855,8 @@ def draw_text(input_value: str, height=None,
     # [tint=(0.867, 0.255, 0.255), show_tint=True]
     ac_changed, ac_pick, _ac_menu_ds = draw_dd_menu(
         _ac_items, name=f"{ds.name}_ac_menu", view_offset=False,
-        temp=True, show_search=False, swoosh=False, closed=not _ac_show, max_height=800,
-        window_pos=(_ac_x - draw_state.abs_left, _ac_y - draw_state.abs_top + line_px), text_align="left",
+        temp=True, show_search=False, swoosh=False, closed=not _ac_show, max_height=popup_height,
+        window_pos=(popup_x - draw_state.abs_left, popup_y - draw_state.abs_top), text_align="left",
         row_tags=(getattr(ds, '_ac_kinds', None) if _ac_show else None),
         row_tints=(_ac_tints or None),
         row_suffixes=(getattr(ds, '_ac_params', None) if _ac_show else None),
@@ -15893,12 +15901,14 @@ def draw_text(input_value: str, height=None,
         ds._ac_menu_sig = None   # force one repaint on the next open
     if ac_changed and isinstance(ac_pick, str):
         anchor = ds._ac_anchor
+        replace_end = _completion_replace_end(
+            text, ds.text_cursor_pos, ac_pick, getattr(ds, '_ac_snips', None))
         _ins, _coff, _extra = _ac_pick_insert(
-            ds, ac_pick, following=text[ds.text_cursor_pos:ds.text_cursor_pos + 64],
+            ds, ac_pick, following=text[replace_end:replace_end + 64],
             preceding=text[max(0, anchor - 64):anchor],
             replaced=text[anchor:ds.text_cursor_pos],
             line_prefix=text[_get_line_start(text, anchor):anchor])
-        text = text[:anchor] + _ins + text[ds.text_cursor_pos:]
+        text = text[:anchor] + _ins + text[replace_end:]
         ds.text_cursor_pos = anchor + _coff
         ds._ac_tabstops = [len(text) - (anchor + s) for s in _extra] or None
         text = _ac_apply_auto_import(ds, ac_pick, jump_to, text)

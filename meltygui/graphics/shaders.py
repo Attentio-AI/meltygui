@@ -1283,3 +1283,19 @@ void main() {
     fragColor = color;
 }
 """
+
+
+@register_shader
+class Multiply:
+    """Scale every colour channel by `factor` (alpha untouched): a plain
+    exposure change, the dim behind draw_texture's crop selection."""
+    shader_type = 'standard'
+    uniforms = {
+        'factor': (GLType.FLOAT, 1.0),
+    }
+    fragment_code = """
+void main() {
+    vec4 color = texture(u_texture, v_texcoord);
+    fragColor = vec4(color.rgb * factor, color.a);
+}
+"""

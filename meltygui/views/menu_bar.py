@@ -39,8 +39,7 @@ from src.lsd.gl_gui.view.core_views.new_core_view import (
 
 
 @render_func(use_cache=True, show_bg=False, shadow=False, selectable=False, is_tree=False,
-             with_header=None, disable_scroll=True, show_add_delete=False,
-             tint=(0.14, 0.30, 0.52))
+             with_header=None, disable_scroll=True, show_add_delete=False)
 def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: MenuBarState,
                   bar_height=25.0, title_pad=12.0, title_gap=2.0, **kwargs):
     """The bar: `input_value` is {title: menu}, a menu being what draw_dd_menu
@@ -53,6 +52,11 @@ def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: M
     idle_title_alpha = 0.0      # idle titles are label-only
     titles = list(input_value.keys()) if isinstance(input_value, dict) else []
     state = menu_bar_state
+    # The bar draws from the CURRENT tint - the context's (the app's / the
+    # enclosing view's) or a caller's tint= the caller pushed - the way
+    # every other view's text does. No decorator tint of its own: one used
+    # to paint the titles into whatever surrounded them.
+    bar_tint = Melty.style_manager.get_tint() or draw_state.tint or (1.0, 1.0, 1.0)
     is_open = Melty.popover_focused_ds is draw_state and state.open_title in input_value
 
     # The slot moved on without us (a click outside, another menu opened):
@@ -99,7 +103,7 @@ def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: M
         clicked = flat_button(label, draw_state, view_id=f"menu_bar_{unique}_{label}",
                               width=width, height=bar_height, hovered=hovered,
                               alpha=open_title_alpha if showing else idle_title_alpha,
-                              color=draw_state.tint, shadow=False)
+                              color=bar_tint, shadow=False)
         if clicked:
             if showing:
                 _close_menu(draw_state, state)
@@ -138,11 +142,9 @@ def draw_menu_bar(input_value: dict, draw_state, name, unique, menu_bar_state: M
     # menu's (draw_context_menu_items) — raise the floor for brighter labels.
     # [tint=(0.994, 0.872, 0.0)]
     menu_tint_value_floor = 0.5
-    menu_tint = draw_state.tint
-    if menu_tint is not None:
-        hue, saturation, value = rgb_to_hsv(*menu_tint[:3])
-        if value < menu_tint_value_floor:
-            menu_tint = hsv_to_rgb(hue, saturation, menu_tint_value_floor)
+    hue, saturation, value = rgb_to_hsv(*bar_tint[:3])
+    menu_tint = (hsv_to_rgb(hue, saturation, menu_tint_value_floor)
+                 if value < menu_tint_value_floor else tuple(bar_tint[:3]))
     picked = None
     cursor = imgui.get_cursor_screen_pos()
     for title in titles:

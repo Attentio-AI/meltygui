@@ -1488,7 +1488,7 @@ def _cleanup_accounts(draw_state):
 @render_func(use_cache=True, selectable=False, show_add_delete=False,
              on_cleanup=_cleanup_accounts,
              is_tree=False, show_name=True, shadow=True,
-             is_default_for="AccountStore", tint=(0.62, 0.47, 0.88))
+             is_default_for="AccountStore", tint=(0.888, 0.669, 0.443))
 def draw_internet_accounts(
         # [tint=(0.85, 0.75, 0.05)]
         input_value: AccountStore,

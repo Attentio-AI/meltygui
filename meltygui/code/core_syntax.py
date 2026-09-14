@@ -629,6 +629,10 @@ def diff(gp, origin=None):
 
 def _walk(node, path, origin, edits):
     keys = _managed_keys(node)
+    if isinstance(node, CallParse) and node.get("__callee__") is not None:
+        item = origin.items.get(path + ("__callee__",))
+        if item is not None and str(node["__callee__"]) != item.orig:
+            edits.append(TextEdit(*item.value_span, str(node["__callee__"])))
     if isinstance(node, dict):
         # Dunder-named DEFS are editable too - `__init__` methods, the chain's
         # synthetic `__melty_*_wrap__` snippet wrappers - just never reordered.
@@ -1222,6 +1226,8 @@ def _forget_subtree(origin, node, path):
         origin.loose.pop(p, None)
         origin.loose.pop(p + ("__overrides__",), None)
         if isinstance(n, dict):
+            # Callee provenance is virtual: it has no normal dict key.
+            origin.items.pop(p + ("__callee__",), None)
             ov = n.get("__overrides__")
             if isinstance(ov, dict):
                 origin.items.pop(p + ("__overrides__",), None)
@@ -1248,7 +1254,8 @@ def _merge_node(old, fresh, path, origin):
     is unchanged (coordinates refreshed onto it), else `fresh` with every
     unchanged child swapped for the old object. Reads `old` only; writes go
     into `fresh`, which is a plain (unwrapped) parse."""
-    changed = [k for k in old if not _is_dunder(k)] != [k for k in fresh if not _is_dunder(k)]
+    changed = ("__callee__" in old
+               or [k for k in old if not _is_dunder(k)] != [k for k in fresh if not _is_dunder(k)])
     # __overrides__ / __pos_names__ are part of the node's identity (a new
     # `# [tint=...]` above a def must not be dropped for an otherwise-equal node).
     for meta in ("__overrides__", "__pos_names__"):
@@ -1281,7 +1288,7 @@ def _merge_node(old, fresh, path, origin):
         # Bookkeeping the fresh parse doesn't produce (`__symbol_usages__`
         # distributed by the symbol generator) rides along on the new node.
         for k, v in old.items():
-            if _is_dunder(k) and k not in fresh and k != "__cst__":
+            if _is_dunder(k) and k not in fresh and k not in ("__cst__", "__callee__"):
                 fresh[k] = v
         return fresh
     _copy_node_attrs(old, fresh)

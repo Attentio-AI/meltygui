@@ -17,7 +17,7 @@ import thread, not at ``import melty``. The TYPE_CHECKING block below gives
 IDEs and type checkers the real definitions for completion.
 """
 from typing import TYPE_CHECKING
-from src.lsd.gl_gui.style import Style
+from src.lsd.gl_gui.style import Style, default_tint_accumulation, default_scalar_accumulation
 
 from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark, persisted
 
@@ -25,7 +25,7 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
     from src.lsd.gl_gui.view.core_views.texture_view import draw_texture
     from src.lsd.gl_gui.view.core_views.new_core_view import (
-        draw_any, draw_button, draw_str, draw_float, draw_int, draw_enum, draw_dropdown,
+        draw_any, draw_button, draw_str, draw_float, draw_int, draw_enum, draw_dropdown, draw_view_func_selector,
         draw_color_picker, draw_collection_as_tabs)
     from src.lsd.gl_gui.view.core_views.columns import draw_columns, draw_rows
     from src.lsd.gl_gui.view.core_views.menu_bar import draw_menu_bar
@@ -45,6 +45,7 @@ _VIEWS = {
     'draw_int': (_NCV, 'draw_int'),
     'draw_enum': (_NCV, 'draw_enum'),
     'draw_dropdown': (_NCV, 'draw_dropdown'),
+    'draw_view_func_selector': (_NCV, 'draw_view_func_selector'),
     'draw_color_picker': (_NCV, 'draw_color_picker'),
     'draw_collection_as_tabs': (_NCV, 'draw_collection_as_tabs'),
     'draw_columns': ('src.lsd.gl_gui.view.core_views.columns', 'draw_columns'),

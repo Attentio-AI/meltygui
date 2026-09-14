@@ -128,6 +128,9 @@ def _sources_for(draw_state, class_to_show=None):
     resolve the same way here as under the context menu."""
     from src.lsd.gl_gui.view.core_views.new_core_view import (
         ContextMenuState, collect_input_sources)
+    if not draw_state._call_site_captured and not draw_state._call_site_requested:
+        draw_state._call_site_requested = True
+        draw_state.invalidate_up(max_depth=6)
     if class_to_show is None:
         raw = draw_state._raw_input_value
         # A view can SHOW a class itself (a @window class like Toggles):
@@ -147,7 +150,7 @@ def _sources_for(draw_state, class_to_show=None):
     # the sanctioned per-frame pulse: stamps liveness AND re-registers a
     # swept host that the upstream straining. Same thing the input
     # tab does at its end with its own draw_state.
-    for _h in (cm_state.render_func_dict, cm_state.class_dict,
+    for _h in (cm_state.render_func_dict, getattr(cm_state, "decoration_dict", None), cm_state.class_dict,
                cm_state.mode_dict,
                *[dh for (_sh, dh) in (cm_state.call_site_hosts or [])]):
         if _h is not None:
@@ -324,6 +327,8 @@ def _stamp_pending(attr_name, value, draw_state):
     refresh the UI value but KEEP the original live_at_set — live hasn't moved
     yet, and that's the baseline whose change means "the trip landed"."""
     live = (draw_state._kwargs or {}).get(attr_name, _UNSET)
+    if attr_name == "view_func":
+        live = getattr(draw_state, "_wrapper", None) or draw_state._view_func
     pending = getattr(draw_state, "_sa_pending", None)
     if pending is None:
         pending = {}
@@ -356,7 +361,7 @@ def _apply_window_decoration(attr_name, value, draw_state, class_to_show):
     registry = getattr(Core.melty, "annotated_window_classes", None)
     if not isinstance(registry, dict):
         return False
-    view_func = getattr(draw_state, "_view_func", None)
+    view_func = (draw_state._kwargs or {}).get("_view_func_origin", getattr(draw_state, "_view_func", None))
     owners = {id(o) for o in (view_func, _raw_of(view_func), class_to_show) if o is not None}
     hit = False
     for entry in registry.values():
@@ -372,7 +377,7 @@ def _apply_glfw_window_decoration(attr_name, value, draw_state, class_to_show):
     `config['view_kwargs']` every frame (app._root_body), and a re-run
     decorator updates that same dict in place."""
     from src.lsd.gl_gui import app
-    view_func = getattr(draw_state, "_view_func", None)
+    view_func = (draw_state._kwargs or {}).get("_view_func_origin", getattr(draw_state, "_view_func", None))
     owners = {id(o) for o in (view_func, _raw_of(view_func)) if o is not None}
     hit = False
     for fn, config in app._ROOTS:
@@ -578,6 +583,12 @@ def _setting_source(srcs, attr_name):
     candidates = [sname for sname in sources
                   if sname in writable
                   and not _unset_value(sources[sname].get(attr_name))]
+    if attr_name == "view_func" and srcs.get("view_func") is not None:
+        import inspect
+        from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func
+        live = inspect.unwrap(resolve_view_func(srcs["view_func"]))
+        candidates = [s for s in candidates if not getattr(sources[s], "direct", False)
+                      or inspect.unwrap(resolve_view_func(sources[s][attr_name])) is live]
     if not candidates:
         return None
     return min(candidates, key=lambda s: _source_priority(kinds.get(s)))
@@ -592,6 +603,9 @@ def _driving_source(srcs, attr_name):
     if target is not None:
         return target
     kinds, writable = srcs["kinds"], set(srcs["writable"])
+    if attr_name == "view_func":
+        return next((s for s in srcs["sources"]
+                     if kinds.get(s) == "draw state" and s in writable), None)
     return next((s for s in srcs["sources"]
                  if kinds.get(s) == "signature" and s in writable), None)
 
@@ -702,7 +716,7 @@ def from_anywhere(attr_name, draw_state, class_to_show=None, default=None):
 # accessors - `draw_state.locate_<param>` and the ParamProxy - pass
 # allow_any=True, but the point of an arbitrary-name accessor is that any
 # param on the view is settable.
-SET_ANYWHERE_PARAMS = ("tint",)
+SET_ANYWHERE_PARAMS = ("tint", "view_func")
 
 
 def anywhere_value(attr_name, draw_state, default=None):
@@ -719,6 +733,8 @@ def anywhere_value(attr_name, draw_state, default=None):
     and live reads resume."""
     _anywhere_recompile_tick(draw_state)
     live = (draw_state._kwargs or {}).get(attr_name)
+    if attr_name == "view_func":
+        live = getattr(draw_state, "_wrapper", None) or draw_state._view_func
     if _unset_value(live):
         live = None      # alpha-0 = the codec opt-out; fall through
     if live is None:
@@ -801,6 +817,8 @@ def _owning_code_host(cm_state, kind):
     """(str_host, source_obj) whose buffer a write of this kind lands in — the
     pair the writer-side hotswap drives. None for kinds that apply LIVE with
     no compile (comment splat, instance attr) or aren't wired yet (callers)."""
+    if kind in ("decoration", "window decoration", "glfw window decoration") and getattr(cm_state, "decoration_str", None) is not None:
+        return cm_state.decoration_str, cm_state.decoration_key
     if kind in ("signature", "decoration", "window decoration", "glfw window decoration"):
         return cm_state.render_func_str, (cm_state.host_key or (None, None))[0]
     if kind in ("class var", "class default", "class decoration"):
@@ -867,13 +885,20 @@ def _anywhere_recompile_tick(draw_state):
         start = True
     run_recompile(pend["source"], cs, draw_state, start=start,
                   name=f"sa_recompile{draw_state.unique}")
-    landed = cs._recompiled_on_frame is not None and         cs._recompiled_on_frame >= pend["start_frame"]
+    landed = (cs._recompiled_on_frame is not None
+              and cs._recompiled_on_frame >= pend["start_frame"])
     # Timeout only counts AFTER the compile started - comparing an unstarted
     # pend's start_frame=0 against the session frame count cleared every
     # stamp on its first tick (the runner silently never ran).
     if landed or (pend["started"]
                   and Core.melty.frame_count - pend["start_frame"] > 600):
         draw_state._sa_recompile = None
+        # Switching draw_any's renderer can retire this DrawState. If it is
+        # reused later, its old baseline may still equal the live renderer;
+        # don't resurrect a selection whose recompile already completed.
+        pending = getattr(draw_state, "_sa_pending", None)
+        if pending:
+            pending.pop("view_func", None)
 
 
 def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=False,
@@ -913,6 +938,13 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         notify(f"set_anywhere: '{attr_name}' not in SET_ANYWHERE_PARAMS",
                tag="set_anywhere")
         return None
+    if attr_name == "view_func":
+        from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func
+        try:
+            value = resolve_view_func(value)
+        except ValueError as error:
+            notify(str(error), tag="set_anywhere")
+            return None
     # Mid-drag repeat write to an already-deferred attr: skip the registry
     # walk entirely - the drag's FIRST write resolved the target (slow) and
     # parked it; later frames just stamp the parked value. This is what
@@ -947,7 +979,11 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         elif source == "draw_state":
             # The ds row only registers once a whitelisted attr diverged, so
             # the picker offers the literal name even when unregistered.
-            setattr(draw_state, attr_name, value)
+            if attr_name == "view_func":
+                draw_state.auto_params[attr_name] = value
+                draw_state.invalidate_up(max_depth=6)
+            else:
+                setattr(draw_state, attr_name, value)
             _last_ds = getattr(draw_state, "_sa_last_source", None)
             if _last_ds is None:
                 _last_ds = {}
@@ -995,7 +1031,11 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         if (_setting is None
                 or (_mirrored
                     and _source_priority(_kind)[0] not in _ABOVE_DRAW_STATE)):
-            setattr(draw_state, attr_name, value)
+            if attr_name == "view_func":
+                draw_state.auto_params[attr_name] = value
+                draw_state.invalidate_up(max_depth=6)
+            else:
+                setattr(draw_state, attr_name, value)
             # Stamp provenance like every explicit target - without it a ds
             # write is invisible ("where did my line_height=2 go?"): the
             # value lives only in auto_params.
@@ -1010,6 +1050,9 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     if target is None:
         notify(f"set_anywhere: no writable source for '{attr_name}'",
                tag="set_anywhere")
+        return None
+    if attr_name == "view_func" and srcs["kinds"].get(target) == "signature" and attr_name not in sources[target]:
+        notify("Choose a caller, defaults, comment, or draw-state source for the renderer", tag="set_anywhere")
         return None
 
     # Last-written source, by attr - lazily maintained (stamped here on every
@@ -1055,6 +1098,16 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
                     return target
             except Exception:
                 pass
+    if attr_name == "view_func":
+        from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func, view_reference_code
+        value = resolve_view_func(value)
+        if _t_kind == "code comment":
+            write_value = f"RenderFuncs.{value.__name__}" if value is not None else None
+        elif not getattr(sources[target], "direct", False) and source_is_slow(_t_kind):
+            location = srcs["locations"].get(target)
+            write_value = view_reference_code(value, location[0] if location else None)
+        else:
+            write_value = value
     sources[target][attr_name] = write_value
     # The in-memory twin of the recompile the write arms below: the window
     # shows the value now, the hotswap lands the same live on the source's
@@ -1066,7 +1119,7 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
     # so the code write CLAIMS the param: drop the stale auto_param and let
     # the new source value drive (the field case: a stale
     # auto_params['hide_internal'] kept overriding a fresh signature edit).
-    if _source_priority(_t_kind)[0] not in _ABOVE_DRAW_STATE:
+    if _t_kind != "draw state" and _source_priority(_t_kind)[0] not in _ABOVE_DRAW_STATE:
         _ap = getattr(draw_state, "auto_params", None)
         if isinstance(_ap, dict):
             _ap.pop(attr_name, None)
@@ -1087,7 +1140,7 @@ def _arm_recompile(draw_state, sources, target, kind):
     `target` (kind caption `kind`) — shared by set_anywhere and
     clear_anywhere. The per-frame tick (_anywhere_recompile_tick) starts the
     recompile when the owning host's buffer moves off the snapshot."""
-    if kind in ("child kwargs", "attr default"):
+    if kind in ("child kwargs", "mode child kwargs", "attr default"):
         # These rows are parse rows of an ANCESTOR's code (stacked
         # @defaults) - which ancestor is not guessable from the ds graph (a
         # Lora item's parent is a plain dict view), but the written row KNOWS
@@ -1170,6 +1223,9 @@ def clear_anywhere(attr_name, draw_state, source, class_to_show=None):
         # a snapshot del wouldn't reach them. Not wired yet.
         notify(f"clear_anywhere: clearing at the codec isn't supported yet",
                tag="set_anywhere")
+        return None
+    if attr_name == "view_func" and getattr(sdict, "direct", False):
+        notify("A direct call needs a render function; choose another renderer", tag="set_anywhere")
         return None
     del sdict[attr_name]
     _arm_recompile(draw_state, srcs["sources"], source, kind)
