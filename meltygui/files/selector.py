@@ -17,7 +17,7 @@ class FileSelectorState(DictConversion):
 
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_bg=False, shadow=False, determines_height=False)
-def draw_file_selector(input_value: str = None, draw_state=None,
+def draw_file_selector(input_value: str | None = None, draw_state=None,
                        selector_state: FileSelectorState = None,
                        escape_key_pressed=False):
     """Return (True, absolute_path) once when a file is activated.

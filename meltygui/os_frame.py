@@ -88,6 +88,7 @@ _STATE.setdefault("size_requests", {"x": [], "y": []})
 _STATE.setdefault("size_observed", [None, None])
 _STATE.setdefault("size_request_frame", [None, None])
 _STATE.setdefault("learned", {"x": [None, None], "y": [None, None]})
+_STATE.setdefault("pin_rebases", {})
 
 
 def _trace(msg):
@@ -117,6 +118,7 @@ def reset(reason="studio start"):
     _STATE["size_observed"] = [None, None]
     _STATE["size_request_frame"] = [None, None]
     _STATE["unapplied_far"] = [0.0, 0.0]
+    _STATE["pin_rebases"] = {}
     _STATE["window_id"] = None
     _STATE["feed_far"] = [None, None]
     _STATE["generation"] += 1
@@ -256,14 +258,62 @@ def _pinned_children(axis, side):
     corner moved with the OS far edge: uncompensated, a context menu hung
     from the app's right corner and dragged right pushed the OS edge out,
     hung further right for it and pushed again — the app grew to the
-    screen in a dozen frames, 09-13)."""
+    screen in a dozen frames, 09-13). Pins with a booked actual anchor
+    defer to rebase_pin after parent layout instead."""
     pinned = {id(ds) for ds in _movable_roots() if _frame_pinned(ds)}
     if not pinned:
         return []
     return [ds for ds in _all_windows()
             if id(getattr(ds, "parent_window", None) or 0) in pinned
             and getattr(ds, "closable", False) and ds.window_pos is not None
+            and id(ds) not in _STATE["pin_rebases"]
             and _driver_of(ds, axis) == side]
+
+
+def _has_pin_anchor(ds):
+    return getattr(ds, "_pin_target", None) is not None
+
+
+def pin_origin(ds):
+    """The actual pin anchor in screen coordinates, outside an edge solve.
+
+    Pin.PARENT can point at a fixed-width text view or a split column;
+    its right corner need not move with the OS window's right edge.
+    """
+    base = ds.clip_anchor_base
+    if base is None:
+        return None
+    y = ds._pinned_base_y(base[1], ds.anchor_offset[1])
+    return (applied_origin("x") + base[0], applied_origin("y") + y)
+
+
+def _book_pin_rebases():
+    """Remember drawn anchors before an own surface request. Only numbers
+    are retained; closed windows drop out on the next request.
+    """
+    pending = _STATE["pin_rebases"]
+    _STATE["pin_rebases"] = {
+        id(ds): pending.get(id(ds), pin_origin(ds))
+        for ds in _all_windows()
+        if _open(ds) and _frame_pinned(getattr(ds, "parent_window", None))
+        and _has_pin_anchor(ds)
+    }
+
+
+def rebase_pin(ds):
+    """After parent layout, before the child's edge pass: keep its screen
+    position through an OS resize using the pin's measured displacement.
+    The parent has not been laid out yet at apply_rebase (frame start).
+    """
+    previous = _STATE["pin_rebases"].pop(id(ds), None)
+    if previous is None or not _has_pin_anchor(ds):
+        return
+    current = pin_origin(ds)
+    if current is not None:
+        for axis, i in _AXIS.items():
+            delta = previous[i] - current[i]
+            if delta:
+                _rebase(ds, axis, delta)
 
 
 def _rebased_windows(axis="x"):
@@ -978,14 +1028,15 @@ def _extent_of(root, children, frames, axis):
 def solve():
     """Frame start, after begin_frame and the titlebar's poll: the OS
     window's own drags (queue_drag) and the OS edges' motion since the last
-    solve (the compositor's resize) — the GLFW window resizes — solved ONCE
+    solve (the compositor's resize) — the GLFW window resizes — solved
     per axis against every root window and nested window, all edges
     independent collidable objects in screen coordinates (Lukas 08-27):
     every window's frame as a cell floored at its minimum and capped at
     its size, the OS frame cell, the screen walls, and a cell between each
     consecutive pair of edges in position order (_chain_floor). No other
     drag collides windows with each other: a melty window's own resize and
-    a hand move solve in the window's own pass (attach).
+    a hand move solve in the window's own pass (attach). A frame-pinned
+    app root sends its frame-handle drags here too: it IS the GLFW frame.
 
     NESTED windows in two phases (Lukas 08-27: "child windows collide
     normally, only revert to adjusting the parent when the collision
@@ -1013,9 +1064,16 @@ def solve():
         seen = _STATE["os_seen"][i]
         own = _STATE["pending"][axis]
         _STATE["pending"][axis] = []
+        gestures = _STATE.setdefault("gestures", {})
+        released = not _any_button_down()
+        # A stationary release still ends the gesture. Do this before
+        # the idle fast-forward, or the next drag replays an old position.
+        if released and not own:
+            gestures.pop(axis, None)
         os_moved = seen is not None and (abs(seen[0] - cur[0]) > 1e-6 or abs(seen[1] - cur[1]) > 1e-6)
         if not own and not os_moved:
             continue
+        _book_pin_rebases()
         walls_mode = _STATE["mode"] == "walls"
         applied = near[axis] - _STATE["unapplied"][i]
         near0 = near[axis]
@@ -1024,21 +1082,33 @@ def solve():
             # against (the graph's position order must see them THERE, or a
             # moved edge sorts past the very edges it tries to shift)
             near[axis], far[axis] = seen
-        windows = _colliding_windows()
+        # A frame-pinned app root IS the OS frame, not another obstacle
+        # inside it. A duplicate proxy root to wall off the inspector
+        # since an inward OS edge could reach and compress it.
+        windows = [ds for ds in _colliding_windows() if not _frame_pinned(ds)]
+        window_ids = {id(ds) for ds in windows}
+
+        def collision_root(ds):
+            while id(getattr(ds, "parent_window", None)) in window_ids:
+                ds = ds.parent_window
+            return ds
+
         children_of = {}
         for ds in windows:
-            parent = getattr(ds, "parent_window", None)
-            if parent is not None:
-                children_of.setdefault(id(_root_of(ds)), []).append(ds)
+            root = collision_root(ds)
+            if root is not ds:
+                children_of.setdefault(id(root), []).append(ds)
         frames = {id(ds): _frame_of(ds, axis, applied) for ds in windows}
         start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
+        os_floor = max([MIN_SIZE[i]] + [_window_floor(ds, axis) for ds in _movable_roots()
+                                       if _frame_pinned(ds) and _open(ds)])
 
         if walls_mode:
-            os_list, os_spec = [near, far], ([MIN_SIZE[i]], [None])
+            os_list, os_spec = [near, far], ([os_floor], [None])
             walls = frozenset({id(near), id(far)})
         else:
             scr_near, scr_far = _STATE["screen"][axis]
-            os_list, os_spec = [scr_near, near, far, scr_far], ([0.0, MIN_SIZE[i], 0.0], [None, None, None])
+            os_list, os_spec = [scr_near, near, far, scr_far], ([0.0, os_floor, 0.0], [None, None, None])
             walls = frozenset({id(scr_near), id(scr_far)})
 
         def graph_of(cells):
@@ -1071,10 +1141,6 @@ def solve():
         # forgotten, and the edge returns to where it began when the hand
         # does. (The roots the drag pushed keep their new positions.)
         # The gesture lives while a mouse button is held.
-        gestures = _STATE.setdefault("gestures", {})
-        released = not _any_button_down()
-        if released and not own:
-            gestures.pop(axis, None)              # the hand let go (a still hand keeps the gesture)
         gesture = gestures.get(axis)
         for index, inc in own:
             if gesture is None:
@@ -1138,7 +1204,7 @@ def solve():
         if residual:
             cells_b = []
             for ds in windows:
-                if getattr(ds, "parent_window", None) is not None:
+                if collision_root(ds) is not ds:
                     continue                          # folded into its root's extent
                 kids = children_of.get(id(ds))
                 if kids:
@@ -1169,7 +1235,7 @@ def solve():
             n0, f0 = start[wid]
             n_a, f_a = after_a[wid]
             delta, new_size = n_a - n0, f_a - n_a
-            if getattr(ds, "parent_window", None) is None and wid in extents:
+            if wid in extents:
                 n_b, f_b, nb0, fb0 = extents[wid]
                 delta += n_b[axis] - nb0
                 new_size -= (fb0 - nb0) - (f_b[axis] - n_b[axis])
@@ -1230,6 +1296,7 @@ def flush():
         _STATE["size_expected"][i] = float(size[i])
     if not changed:
         return None
+    _book_pin_rebases()
     for axis, i in _AXIS.items():
         recent = _STATE["size_requests"][axis]
         if (recent or size[i] != _STATE["size_observed"][i]) and (not recent or recent[-1] != size[i]):

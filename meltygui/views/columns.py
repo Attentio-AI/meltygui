@@ -621,6 +621,10 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     hangs_far = (not is_root and rides_surface and os_frame._driver_of(window, axis) == "far")
     if os_ctx is None or not rides_surface:
         origin_now = 0.0
+    elif not is_root and os_frame._has_pin_anchor(window):
+        base = window.clip_anchor_base
+        anchor = base[0] if axis == "x" else window._pinned_base_y(base[1], window.anchor_offset[1])
+        origin_now = os_ctx.base - os_frame._screen_pos(window, axis) + anchor
     elif hangs_far:
         origin_now = os_frame.edges(axis)[1][axis] + os_ctx.base       # the OS far edge, screen coords
     else:
@@ -1076,8 +1080,10 @@ def _hand_moved(window, frame):
         # _hand_resize_frame) moves the cell the child hangs from, so the
         # child rides exactly as under a hand move and must collide with
         # the OS edges the same way. The window's OWN resize is not a move
-        # of it (its frame drags solve in its pass already).
-        if node is not window and getattr(node, "_hand_resize_frame", None) == frame:
+        # of it (its frame drags solve in its pass already). A frame-pinned
+        # root's resize already collided with the child on the OS graph.
+        if (node is not window and getattr(node, "_hand_resize_frame", None) == frame
+                and not getattr(node, "_frame_pinned", False)):
             return True
         node = getattr(node, "parent_window", None)
         depth += 1
@@ -1198,6 +1204,28 @@ def _frame_pass(window, axis):
     # window's own edges are never written unless the solve moves them; an
     # idle frame moves nothing. Nested windows solve only their own frame.
     from src.lsd.gl_gui import os_frame
+    # The app root's handles resize the GLFW frame. Run that drag through
+    # the OS graph (which contains its floating children), then pack this
+    # root's columns into the resulting size. A local solve alone let the
+    # root push the same OS edge back out in its own pass.
+    if (getattr(window, "_frame_pinned", False) and os_frame._enabled()
+            and os_frame._STATE["frame"] == Melty.frame_count):
+        pending = _pending(window, axis)
+        frame_drags = [item for item in pending
+                       if len(item) > 2 and item[2] and any(item[0] is e for e in fe)]
+        if frame_drags:
+            for edge, target, _cursor in frame_drags:
+                target = _cap_frame_target(window, edge, target, axis)
+                os_frame.queue_drag(axis, 0 if edge is near else 1, target - edge[axis])
+            pending[:] = [item for item in pending if not any(item is drag for drag in frame_drags)]
+            os_frame.solve()
+            os_near, os_far = os_frame.edges(axis)
+            size = os_far[axis] - os_near[axis]
+            if axis == "x":
+                window.width = snap_int(size)
+            else:
+                window.height = snap_int(size)
+            pending.append((far, size, None))
     # a cursor-driven drag of THIS window's frame (handle / corner right-drag;
     # a foreign size write queues None): a hand resize, stamped for the
     # nested windows that hang off the moved corner (_hand_moved)

@@ -1726,7 +1726,8 @@ def render_func(*args, **o_kwargs):
         previous_tint = None
 
         _pushed_search = False
-        if _has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None:
+        if (_has_imgui and closable and draw_state._is_nested and draw_state.current_tint is not None
+                and not Toggles.dynamic_styles):
             style_manager.set_imgui_tint(*draw_state.current_tint)
             kwargs["tint"] = draw_state.current_tint
         try:
@@ -2703,6 +2704,8 @@ def render_func(*args, **o_kwargs):
                 # Resolved through the module each call so columns.py
                 # hotswaps before reaching here.
                 from src.lsd.gl_gui.view.core_views import columns as _columns
+                from src.lsd.gl_gui import os_frame
+                os_frame.rebase_pin(draw_state)
                 try:
                     _columns.window_edge_pass(draw_state)
                 except Exception as _edge_err:
@@ -2759,7 +2762,7 @@ def render_func(*args, **o_kwargs):
             # above it, the mangled merge-window / code-editor shadows
             # after an external edit) and no capture (the next frame shows
             # the stale tile).
-            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+            use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not Toggles.dynamic_styles
             draw_state._bypass_cache = kwargs.get("draw", False)
             draw_state.use_cache = use_cache
             # Opt-in (off by default): during window mouse-dragging the view's
@@ -3875,6 +3878,7 @@ def render_func(*args, **o_kwargs):
                 # tint entirely, and in Source Code the `# [tint=...]`
                 # comment (fed into kwargs by the __overrides__ merges)
                 # outranks @defaults anyway.
+                _dynamic_style = kwargs.get("style", kwargs.get("tint"))
                 _deco_tint = None
                 if isinstance(input_value, dict) and isinstance(
                         input_value.get("decorators"), dict):
@@ -3894,36 +3898,37 @@ def render_func(*args, **o_kwargs):
                 # (DECORATION) yields to a parsed-class @defaults tint
                 # (AT_DEFAULT_CODE_TYPE, ranked above it) - anything higher
                 # already replaced the decoration's object in kwargs.
-                if _deco_tint is not None and _tint_is_decoration(kwargs):
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*_deco_tint)
-
-                elif "tint" in kwargs and kwargs.get("tint", None) is not None:
-                    previous_tint = style_manager.get_tint()
-                    new_tint = kwargs.get("tint")
-                    if isinstance(new_tint, (tuple, list)):
-                        # Forward the full tint, incl. a 4th alpha channel:
-                        # set_imgui_tint blends it against the previous tint so the
-                        # background bleed accumulates down the tint stack.
-                        if len(new_tint) >= 3:
-                            style_manager.set_imgui_tint(*new_tint[:4])
-
-                elif _deco_tint is not None:
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*_deco_tint)
-
-                elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
-                    if name in collection.__tint__:
+                if not Toggles.dynamic_styles:
+                    if _deco_tint is not None and _tint_is_decoration(kwargs):
                         previous_tint = style_manager.get_tint()
-                        style_manager.set_imgui_tint(*collection.__tint__[name])
+                        style_manager.set_imgui_tint(*_deco_tint)
 
-                elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint",
-                                                                                                 False):
-                    previous_tint = style_manager.get_tint()
-                    style_manager.set_imgui_tint(*draw_state.tint)
+                    elif "tint" in kwargs and kwargs.get("tint", None) is not None:
+                        previous_tint = style_manager.get_tint()
+                        new_tint = kwargs.get("tint")
+                        if isinstance(new_tint, (tuple, list)):
+                            # Forward the full tint, inc. a 4th alpha component:
+                            # set_imgui_tint blends it against the parent tint so the
+                            # tint bleed accumulates down the layer stack.
+                            if len(new_tint) >= 3:
+                                style_manager.set_imgui_tint(*new_tint[:4])
 
-                if previous_tint is not None:
-                    kwargs["tint"] = style_manager.get_tint()
+                    elif _deco_tint is not None:
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*_deco_tint)
+
+                    elif hasattr(collection, "__tint__") and getattr(collection, "__tint__"):
+                        if name in collection.__tint__:
+                            previous_tint = style_manager.get_tint()
+                            style_manager.set_imgui_tint(*collection.__tint__[name])
+
+                    elif draw_state.tint is not None and kwargs.get("show_bg", False) and kwargs.get("show_tint",
+                                                                                                     False):
+                        previous_tint = style_manager.get_tint()
+                        style_manager.set_imgui_tint(*draw_state.tint)
+
+                    if previous_tint is not None:
+                        kwargs["tint"] = style_manager.get_tint()
 
                 nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
                 from src.lsd.gl_gui.view.core_views.new_core_view import compute_bg_color
@@ -3963,7 +3968,10 @@ def render_func(*args, **o_kwargs):
                     bg_color = (0, 0, 0, 0)
                     if draw_state.width > 5 and draw_state.height > 5:
                         nested_bg = not closable and kwargs.get("bg_offset", 0) >= 0
-                        if getattr(draw_state, "freeze_resize", False):
+                        if Toggles.dynamic_styles:
+                            Melty.add_background(_dynamic_style)
+                            bg_return = None
+                        elif getattr(draw_state, "freeze_resize", False):
                             # Blit owns ALL bg rendering for freeze_resize
                             # views: the same draw_freeze_bg runs here (live,
                             # capturing the color globals), and during frozen
@@ -5084,7 +5092,7 @@ def render_func(*args, **o_kwargs):
                 if len( Melty.unique_stack) > 0:
                     Melty.unique_stack.pop()
 
-            use_cache = kwargs.get("use_cache", False) and Melty.cache is not None and Melty.cache.enabled
+            use_cache = kwargs.get("use_cache", False) and Melty.cache is not None and Melty.cache.enabled and not Toggles.dynamic_styles
             if not use_cache and Melty.cache is not None:
                 Melty.cache.mark_uncached(draw_state.name, input_value, collection, tile_id, draw_state)
 
@@ -5304,7 +5312,7 @@ def render_func(*args, **o_kwargs):
                                        f"got {actual_type_class_path}", *yellow)
                     return False, None
 
-        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled
+        use_cache = kwargs.get("use_cache", False) and Melty.cache.enabled and not Toggles.dynamic_styles
         draw_state.use_cache = use_cache
         kwargs.pop("use_cache", None)
 

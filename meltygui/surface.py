@@ -46,6 +46,7 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 # --- Per-window state -----------------------------------------------------------
 # Melty class attributes that persist across frames and belong to one window.
 MELTY_ATTRS = ('glfw_window', 'vis', 'framebuffer_size', 'frame_inset', 'frame_origin',
+               'dynamic_style_gl',
                'root_draw_states', 'root_draw_states_by_layer', 'cache', 'backend',
                'event_handler', 'frame_key_events', 'hovered_ds', 'imgui_main_window_hovered',
                'glfw_close_requested', 'any_window_hovered', 'any_window_hovered_pending',
@@ -172,7 +173,7 @@ class Surface:
                                 fa_font=None),
             framebuffer_size=None, frame_inset=0, frame_origin=(0, 0),
             root_draw_states=defaultdict(list), root_draw_states_by_layer=defaultdict(list),
-            cache=None, backend=None, event_handler=input_handler.InputHandler(),
+            cache=None, backend=None, dynamic_style_gl=None, event_handler=input_handler.InputHandler(),
             frame_key_events=[], hovered_ds=None, imgui_main_window_hovered=False,
             glfw_close_requested=False, any_window_hovered=False, any_window_hovered_pending=False,
             filter=type(Melty.filter)(),
@@ -245,6 +246,9 @@ class Surface:
             self._mods[(mod, name)] = mod.__dict__[name]
 
     def _restore(self):
+        # A surface created before the dynamic-style code was hotswapped in
+        # must not inherit another surface's GL resources.
+        self._melty.setdefault('dynamic_style_gl', None)
         for name, value in self._melty.items():
             setattr(Melty, name, value)
         for (mod, name), value in self._mods.items():
@@ -494,7 +498,7 @@ class Surface:
         # else is queued for it later (the GLState updates after the window
         # is gone) is discarded below - its names die with the context.
         scene_target.shutdown()
-        for state in (titlebar._corner_gl, scene_target._STATE.get('gl')):
+        for state in (titlebar._corner_gl, scene_target._STATE.get('gl'), Melty.dynamic_style_gl):
             if state is not None:
                 try:
                     state.release()

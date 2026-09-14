@@ -17,6 +17,7 @@ import thread, not at ``import melty``. The TYPE_CHECKING block below gives
 IDEs and type checkers the real definitions for completion.
 """
 from typing import TYPE_CHECKING
+from src.lsd.gl_gui.style import Style
 
 from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark, persisted
 
@@ -69,4 +70,4 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', *_VIEWS]
+__all__ = ['Style', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', *_VIEWS]

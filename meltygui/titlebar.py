@@ -907,11 +907,12 @@ def poll_os_window_drag():
     if handler is None:
         return
     resize_events = (getattr(Melty, "events", None) or {}).get(_RESIZE_ID, {})
-    if _rdrag is not None and not handler.is_down("right_mouse"):
-        _rdrag = None  # cursor ended - re-latch on the next drag
+    released = not handler.is_down("right_mouse")
     drag = (resize_events.get("non_blocking_right_mouse_double_dragged")
             or resize_events.get("non_blocking_right_mouse_dragged"))
     if drag is None:
+        if released:
+            _rdrag = None
         return
     from src.lsd.gl_gui import os_frame
     if _rdrag is None:
@@ -922,6 +923,10 @@ def poll_os_window_drag():
         inc = now - _rdrag[axis]
         _rdrag[axis] = now
         os_frame.queue_drag(axis, index, inc)
+    # The next frame can carry the drag total. Consume its remainder
+    # against the old baseline before clearing it, not the whole drag again.
+    if released:
+        _rdrag = None
 
 
 # ---------------------------------------------------------------------------

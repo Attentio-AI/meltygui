@@ -469,6 +469,13 @@ class Swoosh:
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
 
+    # [tint=(0.811, 0.59, 0.29)]
+    dynamic_styles = False
+    # [tint=(0.811, 0.59, 0.29)]
+    dynamic_style_root = (0.12, 0.13, 0.15)
+    # [tint=(0.811, 0.59, 0.29)]
+    dynamic_text_contrast = 4.5
+
     @defaults(tint=(0.811, 0.59, 0.29))
     class TextEditor:
 

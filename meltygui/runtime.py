@@ -1060,6 +1060,9 @@ class Melty:
     bg_stack = []
     bg_color_stack = []
     draw_state_stack = []
+    backgrounds = []
+    dynamic_style_gl = None
+
     input_value_stack = [None]
     window_enabled = True
     cache = None
@@ -2155,8 +2158,69 @@ class Melty:
         return False
 
     @classmethod
+    def add_background(cls, style):
+        """Suggest a background in the current view's geometry and paint channel.
+
+        Colours are deferred until draw_backgrounds. The image is only a
+        compositing slot, preserving clipping, rounded edges and window order.
+        """
+        if not Toggles.dynamic_styles:
+            return
+        from src.lsd.gl_gui.gl_state import GLState, gl_limits
+        if not cls.draw_state_stack:
+            return  # Outside a view there is no surface to paint.
+        draw_state = cls.draw_state_stack[-1]
+        if cls.dynamic_style_gl is None:
+            cls.dynamic_style_gl = GLState()
+        capacity = gl_limits()['max_2d']
+        if len(cls.backgrounds) >= capacity:
+            raise RuntimeError("Dynamic background palette exceeds GL texture capacity")
+        previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+        palette = cls.dynamic_style_gl.fbo('background_palette', capacity, 1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+        index = len(cls.backgrounds)
+        cls.backgrounds.append((draw_state, style))
+        left, top = draw_state.abs_left, draw_state.abs_top
+        width, height = draw_state.width or 0, draw_state.height or 0
+        if width <= 0 or height <= 0:
+            return
+        uv = ((index + 0.5) / capacity, 0.5)
+        imgui.get_window_draw_list().add_image_rounded(
+            palette.texture_id, (left, top), (left + width, top + height),
+            uv, uv, 0xffffffff, draw_state.corner_radius)
+
+    @classmethod
+    def draw_backgrounds(cls):
+        """Resolve the queued style hierarchy in one pass before draw lists."""
+        if not Toggles.dynamic_styles or not cls.backgrounds:
+            return
+        import numpy as np
+        from src.lsd.gl_gui.style import draw_background
+        from src.lsd.gl_gui.gl_state import gl_limits
+        root = tuple(hdr_color.srgb_to_linear(c) for c in Toggles.dynamic_style_root) + (1.0,)
+        resolved = {}
+        colors = []
+        for draw_state, style in cls.backgrounds:
+            parent = draw_state
+            seen = set()
+            while parent is not None and id(parent) not in resolved and id(parent) not in seen:
+                seen.add(id(parent))
+                parent = parent._parent
+            behind = resolved.get(id(parent), root)
+            color = draw_background(style, behind)
+            resolved[id(draw_state)] = color
+            colors.append(color)
+        palette = cls.dynamic_style_gl.fbo('background_palette', gl_limits()['max_2d'], 1)
+        previous_texture = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, palette.texture_id)
+        gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, len(colors), 1,
+                           gl.GL_RGBA, gl.GL_FLOAT, np.asarray(colors, dtype=np.float32))
+        gl.glBindTexture(gl.GL_TEXTURE_2D, previous_texture)
+
+    @classmethod
     def begin_frame(cls):
         cls._sync_gl_error_checking()
+        cls.backgrounds.clear()
         cls.unique_stack = []
         cls.draw_state_stack = []
         cls.flow_spacing = 0.0
@@ -4457,6 +4521,7 @@ class Melty:
         # run over the whole surface.
         fb_w, fb_h = cls.framebuffer_size or imgui.get_io().display_size
         draw_data = imgui.get_draw_data()
+        cls.draw_backgrounds()
         _ps_t1 = _pp()
         imgui_impl.render_except_overlay(draw_data)
         # The renderer paints into the inset viewport; everything below

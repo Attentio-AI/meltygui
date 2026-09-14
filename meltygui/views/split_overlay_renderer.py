@@ -16,6 +16,8 @@ from __future__ import absolute_import
 
 import ctypes
 
+from src.lsd.gl_gui.style import adjust_text_color
+
 import OpenGL.GL as gl
 import imgui
 import glfw
@@ -101,6 +103,7 @@ class SplitOverlayRenderer(GlfwRenderer):
     layout(location = 0, index = 0) out vec4 Out_Color;
     layout(location = 0, index = 1) out vec4 Out_Cov;
     """ + _GLSL_UNPREMULTIPLY + """
+    /* dynamic text policy */
     void main() {
         vec4 color = melty_unpremultiply(Frag_Color);
         vec4 t = texture(Texture, Frag_UV.st);
@@ -108,6 +111,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         if (Atlas == 1) {
             vec2 fw = fwidth(Frag_UV);
             if (fw.x > 0.0 && fw.y > 0.0) {
+                if (DynamicStyles == 1) color.rgb = adjust_text_color(color.rgb);
                 if (Lcd == 1) {
                     float l = texture(Texture, Frag_UV.st - vec2(TexelSize.x, 0.0)).a;
                     float r = texture(Texture, Frag_UV.st + vec2(TexelSize.x, 0.0)).a;
@@ -205,6 +209,9 @@ class SplitOverlayRenderer(GlfwRenderer):
         """Build the LCD program; if the driver can't link it (no dual-source
         blending), fall back to the stock shader + stock blending so text
         still renders, just grayscale."""
+        self._text_style_source = adjust_text_color()
+        self.FRAGMENT_SHADER_SRC = type(self).FRAGMENT_SHADER_SRC.replace(
+            "/* dynamic text policy */", self._text_style_source)
         try:
             super()._create_device_objects()
             if not gl.glGetProgramiv(self._shader_handle, gl.GL_LINK_STATUS):
@@ -214,6 +221,9 @@ class SplitOverlayRenderer(GlfwRenderer):
             self._loc_lcd = gl.glGetUniformLocation(self._shader_handle, "Lcd")
             self._loc_bgr = gl.glGetUniformLocation(self._shader_handle, "Bgr")
             self._loc_gamma = gl.glGetUniformLocation(self._shader_handle, "Gamma")
+            self._loc_dynamic_styles = gl.glGetUniformLocation(self._shader_handle, "DynamicStyles")
+            self._loc_style_context = gl.glGetUniformLocation(self._shader_handle, "StyleContext")
+            self._loc_text_contrast = gl.glGetUniformLocation(self._shader_handle, "TextContrast")
             self._lcd_ok = min(self._loc_texel, self._loc_atlas, self._loc_lcd,
                                self._loc_bgr, self._loc_gamma) >= 0
         except Exception as e:
@@ -221,6 +231,9 @@ class SplitOverlayRenderer(GlfwRenderer):
                   f"falling back to grayscale text")
             self._lcd_ok = False
         if not self._lcd_ok:
+            gl.glDeleteProgram(self._shader_handle)
+            gl.glDeleteVertexArrays(1, [self._vao_handle])
+            gl.glDeleteBuffers(2, [self._vbo_handle, self._elements_handle])
             self.FRAGMENT_SHADER_SRC = self._STOCK_FRAGMENT_SHADER_SRC
             super()._create_device_objects()
 
@@ -286,6 +299,9 @@ class SplitOverlayRenderer(GlfwRenderer):
         gl.glBlendFuncSeparate(gl.GL_SRC1_COLOR, gl.GL_ONE_MINUS_SRC1_COLOR,
                                gl.GL_ONE, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glUniform2f(self._loc_texel, *self._atlas_texel)
+        gl.glUniform1i(self._loc_dynamic_styles, int(Toggles.dynamic_styles))
+        gl.glUniform1i(self._loc_style_context, 1)
+        gl.glUniform1f(self._loc_text_contrast, Toggles.dynamic_text_contrast)
         gl.glUniform1i(self._loc_lcd, 1 if Toggles.Fonts.lcd_subpixel else 0)
         gl.glUniform1i(self._loc_bgr, 1 if Toggles.Fonts.lcd_bgr else 0)
         gamma = float(Toggles.Fonts.text_gamma)
@@ -414,6 +430,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         if fb_width == 0 or fb_height == 0:
             return
 
+        self._refresh_style_shader()
         common_gl_state_tuple = get_common_gl_state()
         last_program = gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM)
         last_active_texture = gl.glGetIntegerv(gl.GL_ACTIVE_TEXTURE)
@@ -541,8 +558,7 @@ class SplitOverlayRenderer(GlfwRenderer):
                     gl.glUniform1i(self._loc_atlas, 1 if int(cmd.texture_id) == font_tex else 0)
                 x, y, z, w = cmd.clip_rect
                 gl.glScissor(int(x) + ox, int(fb_height - w) + oy, int(z - x), int(w - y))
-                gl.glDrawElements(gl.GL_TRIANGLES, seg_hi - seg_lo, gltype,
-                                  ctypes.c_void_p(seg_lo * imgui.INDEX_SIZE))
+                self._draw_style_elements(overlay_list, cmd.texture_id, seg_lo, seg_hi, gltype)
 
         if self.debug_overlay_mask:
             self._debug_draw_window_rects(window_channels, fb_height,
@@ -638,6 +654,89 @@ class SplitOverlayRenderer(GlfwRenderer):
         draw_data.scale_clip_rects(*io.display_fb_scale)
         self._scaled_this_frame = True
 
+    def _refresh_style_shader(self):
+        """A hotswapped text policy replaces the program, retaining the atlas."""
+        from src.lsd.gl_gui.toggles import Toggles
+        initialized = hasattr(self, '_text_style_source')
+        if not self._lcd_ok or (initialized and not Toggles.dynamic_styles):
+            return
+        source = adjust_text_color()
+        if (initialized and source == self._text_style_source
+                or source == getattr(self, "_failed_text_style_source", None)):
+            return
+        previous = self.__dict__.copy()
+        self._create_device_objects()
+        if self._lcd_ok:
+            retired = previous
+            self._failed_text_style_source = None
+        else:
+            retired = self.__dict__.copy()
+            self.__dict__.update(previous)
+            # Keep the last good program, retry only after another source edit.
+            self._failed_text_style_source = source
+        gl.glDeleteProgram(retired['_shader_handle'])
+        gl.glDeleteVertexArrays(1, [retired['_vao_handle']])
+        gl.glDeleteBuffers(2, [retired['_vbo_handle'], retired['_elements_handle']])
+
+    def shutdown(self):
+        if hasattr(self, '_style_gl'):
+            self._style_gl.release()
+        super().shutdown()
+
+    def _draw_style_elements(self, draw_list, texture_id, start, end, index_type):
+        """Split atlas geometry from glyphs so text samples what is behind it.
+
+        ImGui can merge a solid fill and text into ONE command. Snapshotting
+        only at command boundaries would miss that fill. UVs distinguish the
+        glyph runs using the same two-axis test as the fragment shader.
+        """
+        from src.lsd.gl_gui.toggles import Toggles
+        if not Toggles.dynamic_styles or not self._lcd_ok or int(texture_id) != self._font_texture:
+            gl.glDrawElements(gl.GL_TRIANGLES, end - start, index_type,
+                              ctypes.c_void_p(start * imgui.INDEX_SIZE))
+            return
+        import numpy as np
+        from src.lsd.gl_gui.gl_state import GLState
+        indices = np.ctypeslib.as_array(
+            ((ctypes.c_uint16 if imgui.INDEX_SIZE == 2 else ctypes.c_uint32)
+             * draw_list.idx_buffer_size).from_address(draw_list.idx_buffer_data))
+        vertices = (ctypes.c_ubyte * (draw_list.vtx_buffer_size * imgui.VERTEX_SIZE)).from_address(
+            draw_list.vtx_buffer_data)
+        uv = np.ndarray((draw_list.vtx_buffer_size, 2), dtype=np.float32, buffer=vertices,
+                        offset=imgui.VERTEX_BUFFER_UV_OFFSET, strides=(imgui.VERTEX_SIZE, 4))
+        triangles = uv[indices[start:end].reshape(-1, 3)]
+        glyphs = np.all(np.ptp(triangles, axis=1) > 0, axis=1)
+        boundaries = np.r_[0, np.flatnonzero(glyphs[1:] != glyphs[:-1]) + 1, len(glyphs)]
+        for low, high in zip(boundaries[:-1], boundaries[1:]):
+            if glyphs[low]:
+                if not hasattr(self, '_style_gl'):
+                    self._style_gl = GLState()
+                x, y, width, height = map(int, gl.glGetIntegerv(gl.GL_VIEWPORT))
+                texture_zero = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+                context = self._style_gl.fbo('text_context', x + width, y + height)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, texture_zero)
+                gl.glActiveTexture(gl.GL_TEXTURE1)
+                texture_one = gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, context.texture_id)
+                read_framebuffer = gl.glGetIntegerv(gl.GL_READ_FRAMEBUFFER_BINDING)
+                gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER,
+                                     gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING))
+                # Only the live scissor can contain text pixels this run.
+                clip_x, clip_y, clip_width, clip_height = map(int, gl.glGetIntegerv(gl.GL_SCISSOR_BOX))
+                left, bottom = max(x, clip_x), max(y, clip_y)
+                right, top = min(x + width, clip_x + clip_width), min(y + height, clip_y + clip_height)
+                if right > left and top > bottom:
+                    gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, left, bottom,
+                                          left, bottom, right - left, top - bottom)
+                gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, read_framebuffer)
+                gl.glActiveTexture(gl.GL_TEXTURE0)
+            gl.glDrawElements(gl.GL_TRIANGLES, int((high - low) * 3), index_type,
+                              ctypes.c_void_p(int(start + low * 3) * imgui.INDEX_SIZE))
+            if glyphs[low]:
+                gl.glActiveTexture(gl.GL_TEXTURE1)
+                gl.glBindTexture(gl.GL_TEXTURE_2D, texture_one)
+                gl.glActiveTexture(gl.GL_TEXTURE0)
+
     def _render_command_lists(self, draw_data, command_lists) -> None:
         """Body of ProgrammablePipelineRenderer.render, parameterized over
         which command lists to iterate. GL state save/restore is self-contained
@@ -653,6 +752,7 @@ class SplitOverlayRenderer(GlfwRenderer):
         if not command_lists:
             return
 
+        self._refresh_style_shader()
         common_gl_state_tuple = get_common_gl_state()
         last_program = gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM)
         last_active_texture = gl.glGetIntegerv(gl.GL_ACTIVE_TEXTURE)
@@ -716,12 +816,9 @@ class SplitOverlayRenderer(GlfwRenderer):
                 else:
                     gltype = gl.GL_UNSIGNED_INT
 
-                gl.glDrawElements(
-                    gl.GL_TRIANGLES,
-                    command.elem_count,
-                    gltype,
-                    ctypes.c_void_p(idx_buffer_offset),
-                )
+                self._draw_style_elements(commands, command.texture_id,
+                                          idx_buffer_offset // imgui.INDEX_SIZE,
+                                          idx_buffer_offset // imgui.INDEX_SIZE + command.elem_count, gltype)
 
                 idx_buffer_offset += command.elem_count * imgui.INDEX_SIZE
 

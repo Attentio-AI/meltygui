@@ -1743,7 +1743,7 @@ def switch_new_chat_source(state, proxies, kinds, key, account_id, model):
 
 
 @window(tint=(1.34, 1.62, 1.76), display_name="Chat", icon=f"", initial={"width": 1100, "height": 760})
-@render_func(auto_resize=False, min_width=700, min_height=500,
+@render_func(auto_resize=False, min_width=700, min_height=500, show_bg=False, shadow=False,
              on_cleanup=_cleanup_chat, use_cache=True, disable_scroll=True, imgui_padding=False, indent_size=0)
 def draw_chat_interface(input_value=None, draw_state=None, bg_offset=-2, state: ChatInterfaceState = None,
                         column_edges=None, new_project=None, default_project=None,
