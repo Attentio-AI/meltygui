@@ -337,6 +337,17 @@ def _root_body(fn, name, view_kwargs=None, config=None):
     return tinted
 
 
+def _searchable_body(body):
+    """The root body plus the app's global search (app_search.draw: a no-op
+    unless melty.global_search enabled it and this is its window), drawn
+    AFTER the body so the search window floats above the root."""
+    def searchable(surface):
+        body(surface)
+        from src.lsd.gl_gui import app_search
+        app_search.draw(surface)
+    return searchable
+
+
 def _draw_root(fn, name, value=None, **kwargs):
     """Draw the render func ``fn`` as the window's root view, filling it:
     what `@glfw_window` over `@render_func` does each frame. ``value`` is
@@ -420,13 +431,16 @@ def run():
     _init_melty()
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.surface import Surface
+    from src.lsd.gl_gui import app_search
+    if _ROOTS:
+        app_search.install(_ROOTS[0][1]['name'])
     for fn, kw in _ROOTS:
         view_kwargs = kw.get('view_kwargs') or {}
         # A plain-function body draws straight onto the surface, so its
         # decorator tint is the surface's; a render-func body gets its
         # kwargs from _draw_root and sits on the default ground.
         ground_tint = None if hasattr(fn, '__render_func__') else view_kwargs.get('tint')
-        Surface(kw['name'], _root_body(fn, kw['name'], view_kwargs, config=kw),
+        Surface(kw['name'], _searchable_body(_root_body(fn, kw['name'], view_kwargs, config=kw)),
                 width=kw['width'], height=kw['height'], tint=ground_tint, on_close=kw.get('on_close'))
     mark(f'{len(Surface.all)} window(s) created')
     from src.lsd.gl_gui.utils import glfw_utils

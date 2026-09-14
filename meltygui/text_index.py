@@ -90,6 +90,57 @@ def _segment_file(root: str) -> Path:
     return d / (hashlib.sha1(root.encode()).hexdigest()[:16] + ".tgi")
 
 
+def _resolve_root(root) -> str:
+    """The index root as a str: the caller's `root` (a melty app's project),
+    else the src root. Every index entry point takes an optional root so a
+    standalone app searches ITS files, not the framework checkout."""
+    return str(root) if root else _search_root()
+
+
+def warm(root=None):
+    """Build (or load) the segment for `root` ahead of the first search, so
+    the first keystroke doesn't pay the walk. Call from a background thread."""
+    root = _resolve_root(root)
+    st = _state(root)
+    _ensure_segment(st, root)
+    _sweep(st, root)
+
+
+def symbol_tables(root=None):
+    """The class/def tables of every indexed .py file under `root`, pending
+    edits included: ``(key, [(rel, symbols)])`` with `symbols` in the
+    _extract_symbols shape ``(name, line, indent, kind, tint, end, sig)`` and
+    every indexed file listed (non-.py files with an empty table). `key` is
+    a cheap identity for memoizing anything derived from the tables — it
+    changes when the segment is rebuilt, a file appears / goes stale, or an
+    edit is queued. Overlay (dirty / new) files are extracted live and
+    shadow their segment entries. Builds the index on first use: call from
+    a background thread (the global-search worker does)."""
+    root = _resolve_root(root)
+    st = _state(root)
+    _ensure_segment(st, root)
+    _sweep(st, root)
+    _maybe_rebuild(st, root)
+    seg = st["seg"]
+    overlay = sorted(st["dirty"] | st["extra"])
+    gens = _pending_gens()
+    key = (root, id(seg), tuple(overlay),
+           sum(g for p, g in gens.items() if p.startswith(root)))
+    out = []
+    seen = set()
+    for ap in overlay:
+        rel = os.path.relpath(ap, root)
+        seen.add(rel)
+        text = _current_text(ap)
+        out.append((rel, _extract_symbols(text, rel.endswith(".py")) if text else []))
+    if seg is not None:
+        for rel, syms in zip(seg.paths, seg.symbols):
+            if rel not in seen:
+                out.append((rel, syms))
+    out.sort(key=lambda t: t[0])
+    return key, out
+
+
 # ── Pending-aware reads (lazy imports: keep this module standalone-testable) ──
 
 def _pending_gens() -> dict:
@@ -573,7 +624,7 @@ def _enclosing_scope(symbols, hit_line):
     return tuple(n for n, _i in chain)
 
 
-def candidate_paths(query: str, exts=(".py",)) -> list:
+def candidate_paths(query: str, exts=(".py",), root=None) -> list:
     """Absolute paths whose CURRENT text may contain `query` (case-
     insensitive): every overlay file (dirty / new — their segment entry is
     stale, so they are always candidates) plus the segment files whose
@@ -584,7 +635,7 @@ def candidate_paths(query: str, exts=(".py",)) -> list:
     Call from a background thread on first use: it builds the index."""
     ql = query.lower()
     qb = ql.encode("utf-8", "replace")
-    root = _search_root()
+    root = _resolve_root(root)
     st = _state(root)
     _ensure_segment(st, root)
     _sweep(st, root)
@@ -627,8 +678,10 @@ def _park_ui():
             park()
 
 
-def search(query: str, limit=200, per_file=_PER_FILE_CAP, cancelled=None):
-    """Case-insensitive search over the src root, pending edits included.
+def search(query: str, limit=200, per_file=_PER_FILE_CAP, cancelled=None, root=None):
+    """Case-insensitive search over `root` (default: the src root — see
+    _search_root; a melty app passes its own project roots, one call per
+    root), pending edits included.
     Returns hit dicts {kind, path, rel, line, text, tint} in three kinds,
     listed in this order:
       file   — the file's NAME matches (line None, text = basename)
@@ -653,7 +706,7 @@ def search(query: str, limit=200, per_file=_PER_FILE_CAP, cancelled=None):
     qb = ql.encode("utf-8", "replace")
     if len(qb) < 3:
         return []
-    root = _search_root()
+    root = _resolve_root(root)
     st = _state(root)
     _ensure_segment(st, root)
     _sweep(st, root)

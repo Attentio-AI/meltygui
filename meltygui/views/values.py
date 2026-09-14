@@ -454,10 +454,33 @@ def _hit_terms(hit, scores=None):
 
 def _search_cats(extra_kinds=()):
     """Selector order: the All tab, then Toggles.GlobalSearch.search_priority,
-    then any hit kinds the priority list doesn't name (under their own name)."""
-    cats = [ALL_CATEGORY] + [str(k) for k in Toggles.GlobalSearch.search_priority]
-    cats += [k for k in extra_kinds if k not in cats]
-    return cats
+    then any hit kinds the priority list doesn't name (under their own name).
+    A host that enabled specific categories (GlobalSearch.categories) gets
+    those in ITS order, nothing else — and no All tab when there is only
+    one, since All would just repeat it."""
+    enabled = _enabled_kinds()
+    if enabled is None:
+        cats = [ALL_CATEGORY] + [str(k) for k in Toggles.GlobalSearch.search_priority]
+        cats += [k for k in extra_kinds if k not in cats]
+        return cats
+    own = [str(k) for k in GlobalSearch.categories if str(k) != ALL_CATEGORY]
+    own += [k for k in extra_kinds if k in enabled and k not in own]
+    return own if len(own) == 1 else [ALL_CATEGORY] + own
+
+
+def _enabled_kinds():
+    """The categories the host enabled (GlobalSearch.categories, set by a
+    melty app's melty.global_search) as a set — None in the studio, where
+    every registered provider runs."""
+    cats = GlobalSearch.categories
+    if cats is None:
+        return None
+    return {str(k) for k in cats if str(k) != ALL_CATEGORY}
+
+
+def _kind_enabled(kind):
+    enabled = _enabled_kinds()
+    return enabled is None or kind in enabled
 
 
 _WINDOW_CAT_TINT = (0.55, 0.9, 0.65)
@@ -1102,10 +1125,16 @@ def search_index(fn=None, *, kind=None):
 
 
 def _providers_for(kinds):
-    """The providers a query scoped to `kinds` (None = all) must run."""
+    """The providers a query scoped to `kinds` (None = all) must run — all
+    within the host's enabled categories (_enabled_kinds), so a melty app
+    that enabled Code alone never sees a Toggles or Windows hit, not even
+    from the empty-tab fallback that widens the scope."""
+    enabled = _enabled_kinds()
+    providers = [p for p in GLOBAL_SEARCH_INDEXES
+                 if enabled is None or getattr(p, "_search_kind", None) in enabled]
     if kinds is None:
-        return list(GLOBAL_SEARCH_INDEXES)
-    return [p for p in GLOBAL_SEARCH_INDEXES
+        return providers
+    return [p for p in providers
             if getattr(p, "_search_kind", None) in (None, *kinds)]
 
 
@@ -1239,6 +1268,8 @@ def symbol_index():
     modules only: the file universe is the symbol index's _src_mod_map, so a
     file nothing imports is invisible."""
     global _symbol_hits_memo
+    if _app_code_roots():
+        return _app_code_hits()[1]
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map
     mod_map = _src_mod_map()
     mod_sig = (tuple(mod_map), _HIT_SCHEMA)
@@ -1383,6 +1414,104 @@ def _asset_files():
     return paths
 
 
+def _app_code_roots():
+    """The directories a HOST put under the Code category (GlobalSearch.
+    code_roots: a sequence of paths or a callable returning one, set by
+    melty.global_search) as resolved, existing, deduplicated Paths — () in
+    the studio, whose Code universe is the loaded-module set."""
+    roots = GlobalSearch.code_roots
+    if roots is None:
+        return ()
+    try:
+        roots = roots() if callable(roots) else roots
+    except Exception:
+        traceback.print_exc()
+        return ()
+    out = []
+    for root in roots or ():
+        try:
+            resolved = Path(root).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved.is_dir() and resolved not in out:
+            out.append(resolved)
+    return tuple(out)
+
+
+def _jump_to_line(path, line, token=None):
+    """Open `path` in the in-app editor at `line`, the caret on `token`."""
+    from src.lsd.gl_gui.view.playground.open_files import open_in_editor
+    open_in_editor(str(path), line, token=token)
+
+
+# (tables signature, file hits, symbol hits) - the app-root Code corpus,
+# rebuilt only when a root's symbol tables change (text_index.symbol_tables'
+# key: a segment load, a file appearing / going stale, a queued edit).
+_app_code_memo = (None, [], [])
+
+
+def _app_code_hits():
+    """The Code corpus of a HOST's roots (_app_code_roots): one file hit per
+    indexed file and one class / def hit per definition, from the trigram
+    index's per-file symbol tables (text_index.symbol_tables — pending edits
+    included, no import needed: the files are the app's, not modules of this
+    process). Same hit shapes as file_index / symbol_index — a file hit is
+    the root of its symbols' tree, a method's parent is its class's hit —
+    so the Code tree, the local-symbol layer (_code_hit_lookup) and the
+    activations (open_in_editor at the def line) are shared. Returns
+    (file_hits, symbol_hits); memoized on the tables' key."""
+    global _app_code_memo
+    from src.lsd.gl_gui import text_index
+    from src.lsd.gl_gui.view.core_conversion.new_codecs import extension_to_codec
+    roots = _app_code_roots()
+    tables = [(root, *text_index.symbol_tables(root)) for root in roots]
+    sig = (tuple(t[1] for t in tables), _HIT_SCHEMA)
+    if _app_code_memo[0] == sig:
+        return _app_code_memo[1], _app_code_memo[2]
+    multi = len(roots) > 1
+    file_base = _category_tint("Files")
+    class_tint = _category_tint("Classes")
+    fn_tint = _category_tint("Functions")
+    entries = []
+    for root, _key, rows in tables:
+        for rel, syms in rows:
+            entries.append((root, rel, root / rel, syms))
+    shorts = _short_unique_paths([e[2] for e in entries])
+    files, symbols = [], []
+    for order, (root, rel, path, syms) in enumerate(entries):
+        label = f"{root.name}/{rel}" if multi else rel
+        codec = extension_to_codec.get(path.suffix.lower())
+        icon = getattr(codec, "icon", None) or _SYM_ICONS["file"]
+        file_hit = SearchHit(label, (lambda p=path, b=file_base: _file_meta_tint(p) or b),
+                             (lambda p=path: _jump_to_symbol_def(None, p)),
+                             kind=CODE_CATEGORY, match=path.name, icon=icon,
+                             sym=CodeSym(path, "", "file", order, None, shorts[path]))
+        files.append(file_hit)
+        stem = path.stem
+        stack = []  # (indent, qualname, hit) of the open enclosing definitions
+        for index, (name, line, indent, kind, tint, _end, sig_line) in enumerate(syms):
+            while stack and stack[-1][0] >= indent:
+                stack.pop()
+            parent = stack[-1][2] if stack else file_hit
+            outer = stack[-1][1] if stack else ""
+            qualname = f"{outer}.{name}" if outer else name
+            is_class = kind == "class"
+            base = class_tint if is_class else fn_tint
+            hit = SearchHit(f"{qualname} - {stem}", (lambda t=tint, b=base: t or b),
+                            (lambda p=path, l=line, n=name: _jump_to_line(p, l, n)),
+                            kind=CODE_CATEGORY, match=qualname, file=path.name,
+                            # The RAW def line (comments kept), as a Text-tab
+                            # buffer row: the embedded editor maps the
+                            # file's washes by line.
+                            code_row=(path, line, "", (sig_line or "")[:200], str(line)),
+                            sym=CodeSym(path, qualname, "class" if is_class else "function",
+                                        index, parent, name))
+            symbols.append(hit)
+            stack.append((indent, qualname, hit))
+    _app_code_memo = (sig, files, symbols)
+    return files, symbols
+
+
 @search_index(kind="Code")
 def file_index():
     """Every loaded src file, labelled by its src-relative path, PLUS every
@@ -1393,6 +1522,8 @@ def file_index():
     file's codec loads. Python universe = the loaded modules (_src_mod_map);
     asset universe = a periodic project walk."""
     global _file_hits_memo
+    if _app_code_roots():
+        return _app_code_hits()[0]
     from src.lsd.gl_gui.view.core_conversion.libcst_conversion import _src_mod_map, _SRC_PREFIX
     from src.lsd.gl_gui.view.core_conversion.new_codecs import extension_to_codec
     mod_map = _src_mod_map()
@@ -1824,12 +1955,20 @@ def _kick_text_search(q):
             # search() aborts (returning None) within one file of the bump.
             _park_while_frame()
             per_term = [[] for _t in terms]
+            # One index per root: the host's Code roots (a melty app's
+            # projects), else the src root (rootless).
+            roots = _app_code_roots() or (None,)
             for i, term in searches:
-                rows = text_index.search(term, limit=_TEXT_SEARCH_LIMIT,
-                                         per_file=_TEXT_PER_FILE_LIMIT,
-                                         cancelled=lambda: GlobalSearch._text_gen != gen)
-                if rows is None:
-                    return  # superseded mid-scan; the newer generation lands its own
+                rows = []
+                for root in roots:
+                    more = text_index.search(term, limit=_TEXT_SEARCH_LIMIT - len(rows),
+                                             per_file=_TEXT_PER_FILE_LIMIT, root=root,
+                                             cancelled=lambda: GlobalSearch._text_gen != gen)
+                    if more is None:
+                        return  # superseded mid-scan; the newer generation lands its own
+                    rows += more
+                    if len(rows) >= _TEXT_SEARCH_LIMIT:
+                        break
                 per_term[i] = rows
             # The merged list keeps the single-term cap: the local layer
             # tokenizes every line, and coverage-first means the rows every
@@ -2379,7 +2518,7 @@ def _ensure_search_store():
         return None
     store = getattr(root, "global_search_store", None)
     if store is None:
-        from src.lsd.gl_gui.model.app_model import GlobalSearchStore
+        from src.lsd.gl_gui.model.global_search_store import GlobalSearchStore
         store = root.global_search_store = GlobalSearchStore()
         print("GlobalSearchStore: backfilled onto live root (root predated the field)")
     _migrate_store_code_kinds(store)
@@ -3519,7 +3658,7 @@ def _merge_tiers(results, text_results, local_results, fuzzy_results, q):
     by_kind = {k: list(v) for k, v in fast_by_kind.items()}
     ranked = list(results)
     if len(q) >= 3:
-        if text_results:
+        if text_results and _kind_enabled("Text"):
             by_kind["Text"] = list(text_results)
         for hit in list(local_results) + list(fuzzy_results):
             by_kind.setdefault(hit.kind, []).append(hit)
@@ -3624,7 +3763,8 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
     # reclaim it after. Lives here (not in toggle_dict) because host
     # creation/registration is main-thread work and the providers now run
     # on the background search worker.
-    _toggles_dict_host().notify_on_change(draw_state)
+    if _kind_enabled("Toggles"):
+        _toggles_dict_host().notify_on_change(draw_state)
     _focus = input_value._focus_requested
     input_value._focus_requested = False
     # return_extras gives the box's draw_state so we can tell when it holds text
@@ -4584,6 +4724,14 @@ def draw_global_search(input_value, vis=None, draw_state=None, max_visible=15, l
         name="GlobalSearch")
 class GlobalSearch:
     query = ""
+    # Host configuration (a melty app's melty.global_search; the studio
+    # leaves both None): `categories` = the kinds the host enabled, in chip
+    # order (None = Toggles.GlobalSearch.search_priority = everything);
+    # `code_roots` = the directories the Code category covers, a sequence
+    # or a callable returning one (None = the studio's default root
+    # and / src/). Class attrs: never persisted.
+    categories = None
+    code_roots = None
     window_ds = None  # this window's own draw_state (for the show shortcut)
     _focus_requested = False
     _body_frame = -10  # frame the body last drew - a gap means "reopened" (_search_click_away)
@@ -4794,6 +4942,7 @@ dropdown_demo_data = {
     },
     "alignment": ["left", "center", "right"],
 }
+
 
 drop_down_selection = None
 # draw_main logs its section split to the perf log for any call slower than
@@ -11505,6 +11654,23 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # falling back to the raw input value.
     # Title shows the LABEL/key of the current selection (e.g. "red"), not the raw
     # value (which may be a tuple/number); selected_label is stamped at pick-time.
+    # The caller's input_value is the selection of record: when that MOVES
+    # (the caller adopted a pick, a nav-undo replay, a selection carried
+    # over from elsewhere), the text follows it - the label/path of the
+    # leaf holding that value - instead of whatever selected_label was last
+    # stamped. The stamp stays put while input_value holds still (callers
+    # passing a static value rely on the last pick showing). Callers used to
+    # re-stamp selected_label themselves after the draw: on the pick frame
+    # their input was still the OLD value, so the old label went back into
+    # the state, and with this body frozen the wrong text sat until a
+    # hover repaint. Arriving here runs on the frame the input changed -
+    # which is a frame before body runs (the input is the tile's hash).
+    if input_value != getattr(drop_down_state, "_dd_last_input", UNSET_VALUE):
+        drop_down_state._dd_last_input = input_value
+        _in_path = _dd_path_for_value(collection, input_value)
+        if _in_path is not None:
+            drop_down_state.selected_path = _in_path
+            drop_down_state.selected_label = _dd_label_for_path(collection, _in_path)
     _sel_label = getattr(drop_down_state, "selected_label", "") or ""
     current = display_label if display_label is not None else (_sel_label if _sel_label else (str(input_value) if input_value is not None else ""))
     caret = "" if is_open else ""  # fa-chevron-down / fa-chevron-right
@@ -11827,6 +11993,30 @@ def _dd_obj_tint(obj, fallback=None):
     if isinstance(t, (tuple, list)) and len(t) >= 3:
         return tuple(t)
     return fallback
+
+
+def _dd_path_for_value(collection, value, _depth=0):
+    """The key/index path of the first LEAF in `collection` equal to
+    `value` (depth-first through nested dicts / lists), or None when no
+    leaf holds it — the inverse of _dd_walk for the trigger label sync."""
+    if _depth > 8 or value is None:
+        return None
+    items = (collection.items() if isinstance(collection, dict)
+             else enumerate(collection) if isinstance(collection, (list, tuple))
+             else ())
+    for key, node in items:
+        if isinstance(node, (dict, list, tuple)):
+            sub = _dd_path_for_value(node, value, _depth + 1)
+            if sub is not None:
+                return (key,) + sub
+            continue
+        try:
+            same = node == value
+        except Exception:
+            same = False
+        if same is True:
+            return (key,)
+    return None
 
 
 def _dd_label_for_path(collection, path):

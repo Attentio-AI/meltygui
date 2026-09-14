@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from src.lsd.gl_gui.style import Style, default_tint_accumulation, default_scalar_accumulation
 
 from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark, persisted
+from src.lsd.gl_gui.app_search import global_search
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from src.lsd.gl_gui.view.core_views.text_editor import draw_text
@@ -71,4 +72,4 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', *_VIEWS]
+__all__ = ['Style', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'global_search', *_VIEWS]

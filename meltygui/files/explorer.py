@@ -20,7 +20,8 @@ scroll); `draw_fast_file_explorer` puts it in a ColumnLayout (columns.py,
 shared draggable edge, persisted) next to the shortcuts — the XDG user
 directories, home and the root. Each row wears the file's OWN tint from the
 shared file-meta store (`FileMeta.painted_tint`, what the studio's tabs and
-trees paint) as its background, run through the editor tab's colour recipe,
+trees paint) on its name and, stronger, on its icon — no row background;
+the selection and hover washes use the tint through the editor tab's colour recipe —
 and its icon from the meta entry, else the codec's, else the folder / file
 glyph. Every row — the shortcuts too — leads with its tint control: a
 painted row shows its `draw_tuple_fast` chip (click = the colour-picker
@@ -589,12 +590,14 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                       row_height=20.0, left_pad=6.0, glyph_width=18.0, crumb_height=24.0,
                       show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                       select_boost=0.22, plain_select_boost=0.06, select_shadow=2.0,
-                      select_rounding=3.0, chip_mix=0.55, hover_boost=0.08, text_mix=0.3,
+                      select_rounding=3.0, chip_mix=0.55, hover_boost=0.06, hover_alpha=0.05, text_mix=0.5, icon_mix=0.9,
                       folder_bg_boost=-0.12, folder_bg_rounding=0.0, drag_rows=True, menu_target=None,
                       type_to_search=True, search_tint=(1.0, 0.82, 0.3), search_dim=0.45,
-                      search_flash_frames=36,
+                      search_flash_frames=36, show_crumbs=True,
                       **kwargs):
     """The path strip + rows of one directory (see the module docstring).
+    `show_crumbs=False` leaves the strip out (a host drawing the crumbs in
+    its own toolbar, where they stay put while the rows scroll).
     Returns ``(True, path)`` on navigation / a file double-click, else
     ``(False, input_value)``. `show_tint_chips` puts the tint chip / brush
     before each row's icon; `default_tint` is what the brush stamps. The
@@ -603,8 +606,10 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     close to the background), lifted off the list by an add_shadow of
     `select_shadow` depth (0 disables it). `chip_mix` pulls the tint chip's
     colour toward its row background (0 = the raw tint). Hover is the same
-    tint brightened by `hover_boost` (on top of the selection's), and a
-    tinted row's text is mixed `text_mix` toward its tint. `type_to_search`
+    tint brightened by `hover_boost` on the selected row; any other hovered
+    row gets only a faint white wash of `hover_alpha`. A painted
+    row wears its tint on its text (mixed `text_mix` toward the tint) and
+    its icon (`icon_mix`, stronger), not as a row background. `type_to_search`
     is the keyboard search of the module docstring: `search_tint` colours
     the matched letters and the pill, the non-matching rows' text fades to
     `search_dim` of its alpha while there are matches, and the flash on the
@@ -624,6 +629,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     search_wash = pack_color(search_tint[0], search_tint[1], search_tint[2], 0.30)
     search_col = pack_color(search_tint[0], search_tint[1], search_tint[2], 1.0)
     no_match_col = pack_color(0.95, 0.55, 0.5, 1.0)
+    hover_wash = pack_color(1.0, 1.0, 1.0, hover_alpha)
 
     state = explorer_state
     # The selected row's add_shadow is RETAINED under this draw_state until
@@ -678,7 +684,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
     # ── the path strip: every segment a crumb; click = jump there ──
     x0, y0 = imgui.get_cursor_screen_pos()
     crumbs = []                              # (x_left, x_right, target Path)
-    parts = directory.parts
+    parts = directory.parts if show_crumbs else ()
     cx = x0 + pad
     crumb_y = y0 + (crumb_h - imgui.get_font_size()) * 0.5
     for i, part in enumerate(parts):
@@ -704,8 +710,9 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
         elif not last:
             draw_list.add_text(cx, crumb_y, dim_col, crumb_separator)
             cx += imgui.calc_text_size(crumb_separator).x
-    imgui.dummy(content_w, crumb_h)
-    if click is not None and y0 <= click[1] < y0 + crumb_h:
+    if show_crumbs:
+        imgui.dummy(content_w, crumb_h)
+    if click is not None and crumbs and y0 <= click[1] < y0 + crumb_h:
         for left, right, target in crumbs:
             if left <= click[0] < right and target != directory:
                 return navigate(target)
@@ -789,10 +796,15 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                         fade_frames=search_flash_frames)
 
     def jump_to_row(index):
+        """Select row `index` and bring it into view; the flash only when the
+        landing row CHANGES (a keystroke that keeps the same best match, or
+        the same step target, is quiet)."""
+        moved = index != selected_index
         state.selected = str(rows[index][0])
         _scroll_row_into_view(draw_state, index, row_h, rows_top, centre=True,
                               content_h=len(rows) * row_h + max(0.0, top_inset))
-        flash_row(index)
+        if moved:
+            flash_row(index)
         request_render()
         return index
 
@@ -877,7 +889,7 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
             glyph_rgba = glyph_rgba[:3] + (glyph_rgba[3] * search_dim,)
         if tint:
             name_col = tinted_text(name_rgba, tint, text_mix)
-            icon_col = tinted_text(glyph_rgba, tint, text_mix)
+            icon_col = tinted_text(glyph_rgba, tint, icon_mix)
         elif dimmed and spans is None:
             name_col = pack_color(*name_rgba)
             icon_col = pack_color(*glyph_rgba)
@@ -904,19 +916,20 @@ def draw_file_listing(input_value: str, draw_state, explorer_state: FileExplorer
                 ghost.add_text(drag.x + px(4) + glyph_w, drag.y + text_y_pad, name_col, path.name)
                 DragDrop.end_drag()
                 continue
-        if tint:
-            draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1, row_bg(tint))
         row_hovered = hover_ok and rows_x <= mouse_x <= rows_x + content_w and ry0 <= mouse_y < ry1
         # Selection / hover are brighter steps of the row's own tint
         # (the default tint when unpainted); they stack.
-        boost = ((select_boost if tint else plain_select_boost) if i == selected_index else 0.0) \
-            + (hover_boost if row_hovered else 0.0)
+        boost = (select_boost if tint else plain_select_boost) if i == selected_index else 0.0
         if i == selected_index and select_shadow:
             add_shadow((rows_x, ry0, content_w, row_h), offset=select_shadow,
                        corner_radius=px(select_rounding), clip=clip, draw_state=draw_state)
         if boost:
             draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1,
-                                      row_bg(tint or default_tint, boost),
+                                      row_bg(tint or default_tint,
+                                             boost + (hover_boost if row_hovered else 0.0)),
+                                      rounding=px(select_rounding))
+        elif row_hovered:
+            draw_list.add_rect_filled(rows_x, ry0, rows_x + content_w, ry1, hover_wash,
                                       rounding=px(select_rounding))
         draw_list.add_text(rows_x + text_x, ry0 + text_y_pad, icon_col, icon)
         name_x = rows_x + text_x + glyph_w
@@ -1019,8 +1032,8 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                             shortcuts_width=190.0, shortcut_row_height=22.0, column_gap=6.0,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                             context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
-                            folder_bg_rounding=0.0, type_to_search=True,
-                            **kwargs):
+                            folder_bg_rounding=0.0, type_to_search=True, show_crumbs=True,
+                            layout_out=None, **kwargs):
     """A ColumnLayout with two cells: the shortcuts (draw-list rows, a click
     navigates) and `draw_file_listing`, sharing one draggable edge
     (`column_edges`, persisted by auto-state). Returns what the listing
@@ -1031,8 +1044,13 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     menu; each callable gets the path of the right-clicked row, or of the
     directory (see the module docstring). `drag_rows` / `folder_bg_boost`
     go to the listing, as does `type_to_search` (the keyboard search of the
-    module docstring; False leaves the keyboard alone). Shortcuts drag to
-    reorder, with their own persisted order."""
+    module docstring; False leaves the keyboard alone), and `show_crumbs`
+    (False drops the listing's path strip for a host that draws its own).
+    `layout_out`, a dict, receives ``listing_left``: the absolute x where
+    the listing column's content starts, so a host toolbar can line up with
+    it (the frame's value lands after this call; a host drawing above the
+    explorer reads last frame's). Shortcuts drag to reorder, with their own
+    persisted order."""
     # [tint=(0.55, 0.72, 0.95)]
     folder_icon = f""
     # [tint=(0.55, 0.72, 0.95)]
@@ -1044,9 +1062,14 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     text_rgba = (0.85, 0.88, 0.92, 1.0)
     text_col = pack_color(*text_rgba)
     # [tint=(0.55, 0.72, 0.95)]
-    hover_boost = 0.08
+    hover_boost = 0.06
     # [tint=(0.55, 0.72, 0.95)]
-    text_mix = 0.3
+    hover_alpha = 0.05
+    # [tint=(0.55, 0.72, 0.95)]
+    text_mix = 0.5
+    # [tint=(0.55, 0.72, 0.95)]
+    icon_mix = 0.9
+    hover_wash = pack_color(1.0, 1.0, 1.0, hover_alpha)
 
     px = Melty.px
     clear_glows(draw_state)      # The current shortcut's retained shadow (see the listing)
@@ -1102,32 +1125,34 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
             tint = FileMeta.painted_tint(meta.get(key)) if meta is not None else None
             icon = computer_icon if path == Path(os.sep) else folder_icon
             label_col = tinted_text(text_rgba, tint, text_mix) if tint else text_col
+            icon_col = tinted_text(text_rgba, tint, icon_mix) if tint else text_col
             drag = DragDrop.on_drag((click_left, ry0, x + width, ry1), key=key,
                                     draw_state=draw_state)
             if drag:
                 ghost = drag.draw_list
                 ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
                                       row_bg(tint or default_tint, 0.22), rounding=px(4))
-                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, label_col, icon)
+                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, icon_col, icon)
                 ghost.add_text(drag.x + px(4) + px(glyph_width), drag.y + text_y_pad,
                                label_col, label)
                 DragDrop.end_drag()
                 continue
-            if tint:
-                draw_list.add_rect_filled(x, ry0, x + width, ry1, row_bg(tint), rounding=px(4))
             row_hovered = hover_ok and x <= mouse_x < x + width and ry0 <= mouse_y < ry1
             # The current shortcut: its tint (default when unpainted),
             # brighter, lifted off the row by a small shadow; hover is a
             # further brightening of the same tint.
-            boost = ((0.22 if tint else 0.06) if path == current else 0.0) \
-                + (hover_boost if row_hovered else 0.0)
+            boost = (0.22 if tint else 0.06) if path == current else 0.0
             if path == current:
                 add_shadow((x, ry0, width, row_h), offset=2.0, corner_radius=px(4),
                            clip=getattr(draw_state, "abs_clip_rect", None), draw_state=draw_state)
             if boost:
                 draw_list.add_rect_filled(x, ry0, x + width, ry1,
-                                          row_bg(tint or default_tint, boost), rounding=px(4))
-            draw_list.add_text(x + text_x, ry0 + text_y_pad, label_col, icon)
+                                          row_bg(tint or default_tint,
+                                                 boost + (hover_boost if row_hovered else 0.0)),
+                                          rounding=px(4))
+            elif row_hovered:
+                draw_list.add_rect_filled(x, ry0, x + width, ry1, hover_wash, rounding=px(4))
+            draw_list.add_text(x + text_x, ry0 + text_y_pad, icon_col, icon)
             draw_list.add_text(x + text_x + px(glyph_width), ry0 + text_y_pad, label_col, label)
             if (click is not None and click_left <= click[0] < x + width and ry0 <= click[1] < ry1
                     and path != directory):
@@ -1145,13 +1170,16 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
             picked = None
         imgui.dummy(width, len(shortcuts) * row_h)
     with columns.cell(1, height=body_height) as width:
+        if layout_out is not None:
+            layout_out["listing_left"] = imgui.get_cursor_screen_pos()[0]
         changed, value = draw_file_listing(str(directory), name="listing", width=width,
                                            height=body_height, disable_scroll=False,
                                            context_menu=menu_items, menu_target=menu_target,
                                            drag_rows=drag_rows, folder_bg_boost=folder_bg_boost,
                                            folder_bg_rounding=folder_bg_rounding,
                                            show_tint_chips=show_tint_chips, chip_size=chip_size,
-                                           default_tint=default_tint, type_to_search=type_to_search)
+                                           default_tint=default_tint, type_to_search=type_to_search,
+                                           show_crumbs=show_crumbs)
         if changed:
             result = (True, value)
     columns.finish()

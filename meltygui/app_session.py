@@ -50,6 +50,11 @@ class AppSession(DictConversion):
         # DictConversion lets app objects through the dict it hands over
         # and keeps between runs, like a studio model field.
         self.app_state = {}
+        # Global search's pick counts / last query (model.global_search_store
+        # .GlobalSearchStore), created by the search view on first use when
+        # the app enabled it (melty.global_search). Declared here because
+        # the pickler keeps only the fields the model declares at init.
+        self.global_search_store = None
 
 
 def session_dir(app_id):
