@@ -6,8 +6,6 @@ edges inside each column — is a shared edge object in the window's
 collision solve, so dragging any of them pushes and pulls the rest and
 out through the window frame, exactly like the columns playground.
 """
-import imgui
-
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.tile_manager import (Split, Tile,
@@ -37,8 +35,7 @@ tiles_demo = Split("x", [
 @window
 @render_func(tint=(0.24, 0.30, 0.20), auto_resize=False, min_width=720,
              min_height=420, show_bg=True)
-def draw_tiled_window_manager_demo(_, draw_state, tile_state: TileManagerState = None):
-    imgui.text("tiled window manager: drag any divider — tiles resize, "
-               "neighbours slide, the window frame follows when they run out; "
-               "drag a tile's corner inward to split it")
-    draw_tiles(tiles_demo, draw_state, tile_state=tile_state)
+def draw_tiled_window_manager_demo(input_value, draw_state, tile_state: TileManagerState = None):
+    tree = tiles_demo if input_value is None else input_value
+    changed = draw_tiles(tree, draw_state, tile_state=tile_state)
+    return changed, tree

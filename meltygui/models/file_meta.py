@@ -67,6 +67,10 @@ class FileMeta(dict):
     # tints through painted_tint(), not entry["tint"] directly.
     tint = (0.0, 0.0, 0.0, 0.0)
     icon = None  # glyph drawn before the file name (editor tabs); None = no icon
+    # A FOLDER marked as a project (folder_project): a root for the editor's
+    # global search, the symbol's usage graph, tabs and editability. Files
+    # never store it; read it through is_project() or project_roots().
+    project = False
 
     # The pre-09-02 class default; stored values of it are dropped at load
     # (folder_files._init_file_meta) so the files read as unpainted.
@@ -215,6 +219,7 @@ class FileMetaProxy(dict):
         self._pending = False       # the poller saw a newer sig: merge on the next read
         self._dirty = set()         # paths edited here since the last save
         self._dirty_all = False     # a clear()/whole-store edit: our copy wins entirely
+        self.generation = 0         # bumped on every local edit and every save (memo key)
         self._timer = None
         self._poller = None
         self.listeners = []         # callables run(reading thread) after an external reload
@@ -281,6 +286,7 @@ class FileMetaProxy(dict):
                 return False
             dict.clear(self)
             dict.update(self, merged)
+            self.generation += 1
             return True
 
     def _adopt(self, entry, key):
@@ -333,6 +339,7 @@ class FileMetaProxy(dict):
         """Mark the store (or one entry) edited here and arm the debounced
         save. FileMeta entries call this through their change hooks."""
         with self._lock:
+            self.generation += 1
             if path is None:
                 self._dirty_all = True
             else:
@@ -523,6 +530,106 @@ def file_meta_store():
                 _store = FileMetaProxy()
                 _store._ensure_poller()
     return _store
+
+
+# ── Projects: folders flagged in the store ─────────────────────────────────
+# A project is a folder whose entry carries `project: True`. Same store,
+# same I/O (debounced atomic writes, cross-process locking), so a folder
+# marked in one melty app is a project in every other one after a poll.
+# The marker enables the editor's global search, editability
+# (address.add_editable_root) and, as the later phases land, the symbol
+# graph and git. `project_for(path)` is the project a file belongs to.
+
+_projects_memo = (None, None)     # (store generation, tuple of roots)
+
+
+def _norm_dir(path):
+    try:
+        return Path(path).expanduser().resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def mark_project(path, on=True):
+    """Flag the folder `path` as a project (or clear the flag with
+    on=False). Returns the resolved root, or None when `path` is not a
+    directory. Marking also registers the tree as editable source, so its
+    code loads into the editor's code hosts at once."""
+    root = _norm_dir(path)
+    if root is None or not root.is_dir():
+        return None
+    meta = file_meta_store()
+    key = str(root)
+    if on:
+        entry = meta.get(key)
+        if not isinstance(entry, dict):
+            entry = meta[key] = FileMeta()
+        entry["project"] = True
+        try:
+            from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
+            add_editable_root(root)
+        except Exception:
+            pass
+    else:
+        entry = meta.get(key)
+        if isinstance(entry, dict) and dict.__contains__(entry, "project"):
+            del entry["project"]
+            if not len(dict.keys(entry)):
+                del meta[key]
+    return root
+
+
+def is_project(path):
+    """True when the folder `path` is marked as a project."""
+    root = _norm_dir(path)
+    if root is None:
+        return False
+    entry = file_meta_store().get(str(root))
+    return bool(isinstance(entry, dict) and dict.get(entry, "project"))
+
+
+def project_roots():
+    """Every marked project folder that still exists, as resolved Paths in
+    path order. Memoized on the store's generation: a plain dict scan
+    otherwise (the studio's folder scan seeds thousands of entries)."""
+    global _projects_memo
+    meta = file_meta_store()
+    entries = list(meta.items())      # applies any pending reload first
+    gen = meta.generation
+    memo_gen, memo_roots = _projects_memo
+    if memo_gen == gen and memo_roots is not None:
+        return memo_roots
+    roots = []
+    for key, entry in entries:
+        if not (isinstance(entry, dict) and dict.get(entry, "project")):
+            continue
+        root = _norm_dir(key)
+        if root is not None and root.is_dir() and root not in roots:
+            roots.append(root)
+    roots = tuple(sorted(roots))
+    _projects_memo = (gen, roots)
+    return roots
+
+
+def project_for(path, implicit=True):
+    """The project root `path` (a file or folder) belongs to: the DEEPEST
+    marked project containing it, else — with implicit=True — the nearest
+    ancestor carrying a project marker (.git, pyproject.toml, ...;
+    address.project_root_of), else None. An open file outside every marked
+    project thus still has a project: shown and searched like one, just
+    not remembered until the user marks it."""
+    target = _norm_dir(path)
+    if target is None:
+        return None
+    best = None
+    for root in project_roots():
+        if target == root or target.is_relative_to(root):
+            if best is None or len(root.parts) > len(best.parts):
+                best = root
+    if best is not None or not implicit:
+        return best
+    from src.lsd.gl_gui.view.core_conversion.address import project_root_of
+    return project_root_of(target)
 
 
 @no_save("file_meta")

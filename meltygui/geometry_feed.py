@@ -442,10 +442,11 @@ def surface_rect(title):
     return (w["x"], w["y"], w["width"], w["height"]) if w else None
 
 
-def place_window(title, rect):
+def place_window(title, rect, *, resize=True):
     """Move AND resize our window titled ``title`` to ``rect`` (absolute
     logical px, top-left anchored) in one request — app.py's child
-    surfaces following their parent. Hyprland only; True on "ok"."""
+    surfaces following their parent. With resize=False only move: the
+    surface's edge solver owns its size. Hyprland only; True on "ok"."""
     if backend() != "hyprland":
         return False
     w = _window_by_title(title)
@@ -454,12 +455,14 @@ def place_window(title, rect):
     selector = f"address:{w['address']}"
     x, y, width, height = (int(v) for v in rect)
     if hypr_config_is_lua():
+        size_request = (f'hl.dispatch(hl.dsp.window.resize({{x = {width}, y = {height}, window = "{selector}"}})); '
+                        if resize else '')
         script = (f'local w = hl.get_window("{selector}"); '
                   f'if not w then error("no window {selector}") end; '
-                  f'hl.dispatch(hl.dsp.window.resize({{x = {width}, y = {height}, window = "{selector}"}})); '
+                  f'{size_request}'
                   f'hl.dispatch(hl.dsp.window.move({{x = {x}, y = {y}, window = "{selector}"}}))')
         return _hypr_eval(script, "place_window")
-    ok = _hypr_run(f"dispatch resizewindowpixel exact {width} {height},{selector}", "resizewindowpixel")
+    ok = not resize or _hypr_run(f"dispatch resizewindowpixel exact {width} {height},{selector}", "resizewindowpixel")
     return _hypr_run(f"dispatch movewindowpixel exact {x} {y},{selector}", "movewindowpixel") and ok
 
 

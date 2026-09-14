@@ -193,7 +193,7 @@ def _apply_meta(tree, folder, meta):
         if not isinstance(entry, dict):
             continue
         params = {k: v for k, v in entry.items()
-                  if k != "order" and not (isinstance(k, str) and k.startswith("__"))
+                  if k not in ("order", "project") and not (isinstance(k, str) and k.startswith("__"))
                   # unpainted (alpha-0) tint: no override, the row keeps its own
                   and not (k == "tint" and isinstance(v, (tuple, list))
                            and len(v) >= 4 and not v[3])}

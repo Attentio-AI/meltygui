@@ -751,6 +751,18 @@ def _solve_collisions(window, axis="x", os_ctx=None):
     pending_attr = _REGISTRY[axis][1]
     pending = getattr(window, pending_attr)
     setattr(window, pending_attr, [])
+    if (getattr(window, "_frame_pinned", False) and os_ctx is not None and os_ctx.drags):
+        # The native frame already overlaps this root's contacts through
+        # the OS edge links. Its width is a fixed value, not the far edge's
+        # coordinate while the near edge is moving. Replaying right=width
+        # after the native edge drags applies that near motion twice and
+        # bypasses the column contacts the native drag just resolved.
+        # Synchronize to the native far edge in this graph's coordinates.
+        frame = _frame(window, axis) or ()
+        if len(frame) == 2:
+            pending = [(item[0], os_ctx.os_far0 - os_ctx.base, *item[2:])
+                       if item[0] is frame[1] and not (len(item) > 2 and bool(item[2]))
+                       else item for item in pending]
     pending = _replay_hand_drags(window, axis, pending, os_ctx)     # sticky: targets from the gesture's start
     os_items = list(os_ctx.drags) if os_ctx is not None else []
     if not pending and not os_items and not (os_ctx is not None and os_ctx.move):
@@ -947,8 +959,10 @@ def _defer_freeze_settle(window, draw_state):
     pending[id(draw_state)] = draw_state
 
 
-def release_row(draw_state):
-    """Drop this host's registered edge rows (both axes). Hosts that
+def release_row(draw_state, keep=()):
+    """Drop this host's registered edge rows (both axes) — except the keyed
+    layouts named in ``keep`` (an outer layout the host built in the same
+    frame around the rows it releases). Hosts that
     sometimes render WITHOUT columns (the code editor leaving a compare
     split) must call this on their column-less frames: window_edge_pass
     only evicts rows whose ds is CLOSED, and a host whose ds IS its window
@@ -967,7 +981,8 @@ def release_row(draw_state):
             # layout's key is (kind, ds.id, key)).
             for k in [k for k in table
                       if isinstance(k, tuple) and len(k) >= 2
-                      and k[0] == kind and k[1] == draw_state.id]:
+                      and k[0] == kind and k[1] == draw_state.id
+                      and not (len(k) > 2 and k[2] in keep)]:
                 del table[k]
     draw_state._column_container = False
     draw_state._row_container = False

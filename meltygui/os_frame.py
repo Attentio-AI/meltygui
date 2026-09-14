@@ -208,14 +208,19 @@ def _observe():
 
 
 def _root_windows():
-    """Every top-level melty window: the REGISTERED windows (@window — the
-    ManagedWindow's draw_state, drawn by the dispatch loop with no window
-    stack, so parent_window stays None) plus whatever sits parentless in
-    Melty.root_draw_states. Deduped by identity."""
+    """Top-level windows in this surface, deduped by identity. The studio
+    uses its registered windows; GLFW surfaces keep their own live roots
+    because the persisted registry also contains other surfaces' windows.
+    Include parentless entries in the surface-local root_draw_states too."""
     from src.lsd.gl_gui.melty import Melty
+    from src.lsd.gl_gui.surface import Surface
     seen, roots = set(), []
-    for managed in list(getattr(Melty, "registered_windows", {}).values()):
-        ds = getattr(managed, "draw_state", None)
+    if Surface.active is not None:
+        candidates = list(getattr(Surface.active, "root_windows", {}).values())
+    else:
+        candidates = [getattr(managed, "draw_state", None)
+                      for managed in list(getattr(Melty, "registered_windows", {}).values())]
+    for ds in candidates:
         if ds is None or id(ds) in seen or getattr(ds, "parent_window", None) is not None:
             continue
         seen.add(id(ds))
@@ -730,10 +735,16 @@ def attach(window, axis, has_pending=True, hand_move=False):
         # solved - columns._solve_collisions - so the edge ends where it
         # really is whatever the pile could give)
         near[axis], far[axis] = seen
-        if seen[0] != cur[0]:
-            ctx.drags.append((near, cur[0] - ctx.base, None))
-        if seen[1] != cur[1]:
-            ctx.drags.append((far, cur[1] - ctx.base, None))
+        endpoints = [(near, seen[0], cur[0]), (far, seen[1], cur[1])]
+        # A translating minimum-width frame must open up before its
+        # trailing edge pushes through it. Near-first on a rightward move
+        # walls that edge against the OLD far edge, and expands the frame
+        # instead of carrying the packed column edges along.
+        if cur[1] > seen[1]:
+            endpoints.reverse()
+        for edge, previous, target in endpoints:
+            if previous != target:
+                ctx.drags.append((edge, target - ctx.base, None))
     for e in ctx.shifted:
         e[axis] -= ctx.base
     return ctx

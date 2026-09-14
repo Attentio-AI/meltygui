@@ -20,8 +20,8 @@ from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_views.core_render import render_func
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core, defaults
 from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
-from src.lsd.gl_gui.view.core_views.new_core_view import (SearchHit, _category_tint, _jump_to_symbol_def, draw_any, draw_button,
-    draw_type, search_index)
+from src.lsd.gl_gui.view.core_views.global_search import SearchHit, _category_tint, _jump_to_symbol_def
+from src.lsd.gl_gui.view.core_views.new_core_view import (draw_any, draw_button, draw_type, search_index)
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 
 

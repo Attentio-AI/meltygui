@@ -2488,7 +2488,7 @@ class Melty:
         if (focused is None and not want_text
                 and any(k == glfw.KEY_E and not (m & (glfw.MOD_CONTROL | glfw.MOD_ALT | glfw.MOD_SUPER))
                         for k, m in cls.frame_key_events)):
-            from src.lsd.gl_gui.view.core_views.new_core_view import toggle_setting
+            from src.lsd.gl_gui.view.core_views.global_search import toggle_setting
             new_value = toggle_setting("InvalidateTracker.enable")
             notify(f"InvalidateTracker {'on' if new_value else 'off'}",
                    tint=(1, 1, 0.4), tag="InvalidateTracker")

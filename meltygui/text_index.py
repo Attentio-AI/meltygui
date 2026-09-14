@@ -90,6 +90,13 @@ def _segment_file(root: str) -> Path:
     return d / (hashlib.sha1(root.encode()).hexdigest()[:16] + ".tgi")
 
 
+def _under(path: str, root: str) -> bool:
+    """`path` is `root` or inside it — a DIRECTORY prefix. A bare
+    str.startswith put /a/bc/x.py under root /a/b once sibling projects
+    were open side by side."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
 def _resolve_root(root) -> str:
     """The index root as a str: the caller's `root` (a melty app's project),
     else the src root. Every index entry point takes an optional root so a
@@ -125,7 +132,7 @@ def symbol_tables(root=None):
     overlay = sorted(st["dirty"] | st["extra"])
     gens = _pending_gens()
     key = (root, id(seg), tuple(overlay),
-           sum(g for p, g in gens.items() if p.startswith(root)))
+           sum(g for p, g in gens.items() if _under(p, root)))
     out = []
     seen = set()
     for ap in overlay:
@@ -511,7 +518,7 @@ def _sweep(st, root):
     pend = _pending_gens()
     if seg is not None:
         for rp, gen in pend.items():
-            if not rp.startswith(root):
+            if not _under(rp, root):
                 continue
             fid = seg.id_by_path.get(os.path.relpath(rp, root))
             if fid is None:

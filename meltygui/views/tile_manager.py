@@ -28,7 +28,10 @@ a mostly-horizontal drag cuts a vertical divider (axis "x"), a vertical
 one a horizontal divider (axis "y"); the new tile sits on the corner's
 side and the new edge follows the cursor for the rest of the drag through
 the same collision solve as any divider (``tile_corner_gesture``). The
-live gesture lives in the injected ``TileManagerState``.
+live gesture lives in the injected ``TileManagerState``. An outward drag
+previews joining a leaf sibling across its whole edge; release removes
+that neighbour and expands the dragged-from tile. Returning inside the
+source or leaving the neighbour cancels the join.
 """
 import imgui
 
@@ -40,7 +43,7 @@ from src.lsd.gl_gui.view.core_views.columns import (ColumnLayout, RowLayout,
                                                     MIN_COLUMN_WIDTH,
                                                     MIN_ROW_HEIGHT,
                                                     _ensure_window_state,
-                                                    _pending, frame_edges)
+                                                    _pending, _views, _specs, _bands, frame_edges)
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import (
     Core, no_save)
 from src.lsd.gl_gui.view.invalidation_tracker import Note
@@ -52,9 +55,8 @@ _NOTE = dict(name="draw_tiles", tint=(0.55, 0.85, 0.45))
 class TileManagerState(DictConversion):
     """Injected state of a tile-manager host (declare
     ``tile_state: TileManagerState = None`` on the render_func). ``gesture``
-    is the live corner drag — ``{"corner": view_id, "axis", "edge"}`` from
-    the frame the split happened until the button is released — and is
-    never persisted."""
+    holds the captured corner and either the new split edge or a join
+    preview target, until the button is released. It is never persisted."""
 
     def __init__(self):
         super().__init__()
@@ -216,7 +218,7 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
 
 def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
                         tile_state, corner, on_left, on_top, grip):
-    """One corner's split gesture. The grip is an ``on_action`` sub-rect
+    """One corner's split / join gesture. The grip is an ``on_action`` sub-rect
     above the edge grab zones (the two overlap at a tile's corners).
     A drag that travels ``split_threshold`` px INTO the tile splits it:
     the dominant direction picks the axis, the new tile goes on the
@@ -238,6 +240,19 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     window = draw_state.parent_window or draw_state
 
     if gesture is not None and gesture["corner"] == view_id:
+        if gesture.get("kind") == "join":
+            if drag is None:
+                tile_state.gesture = None
+                target = gesture["target"]
+                target_path = locate(tree, target) if target is not None else None
+                source_path = locate(tree, tile)
+                if target_path is not None and source_path is not None:
+                    direction = -1 if target_path[-1] > source_path[-1] else +1
+                    join_tiles(tree, target_path, direction)
+                    return True
+                return False
+            tile_state.gesture = {**gesture, "target": join_target(tree, path, root_frame, window, drag)}
+            return False
         if drag is None:
             tile_state.gesture = None            # released
             return False
@@ -258,7 +273,10 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     axis = "x" if abs(dx) >= abs(dy) else "y"
     inward = (dx > 0) == on_left if axis == "x" else (dy > 0) == on_top
     if not inward:
-        return False                             # outward = join, later
+        target = join_target(tree, path, root_frame, window, drag)
+        if target is not None:
+            tile_state.gesture = {"kind": "join", "corner": view_id, "target": target}
+        return False
     before = on_left if axis == "x" else on_top
     near, far = frame_pair(frame, axis)
     floor = MIN_COLUMN_WIDTH if axis == "x" else MIN_ROW_HEIGHT
@@ -272,8 +290,50 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     edge_index = new_path[-1] if before else new_path[-1] - 1
     tile_state.gesture = {"corner": view_id, "axis": axis,
                           "edge": new_node["edges"][edge_index]}
-    draw_state.invalidate(note=Note(reason="tile split", **_NOTE))
     return True
+
+
+def join_target(tree, path, root_frame, window, drag):
+    """Leaf sibling under the pointer across a whole shared edge.
+
+    Join a subdivided neighbour's own tiles first. Moving back into the
+    source or leaving the neighbour cancels the preview.
+    """
+    if not path:
+        return None
+    parent = node_at(tree, path[:-1])
+    frames = {path: frame for path, _node, frame in resolve_frames(tree, root_frame)}
+    for direction in (-1, +1):
+        neighbour = path[-1] + direction
+        if not 0 <= neighbour < len(parent["children"]):
+            continue
+        candidate = parent["children"][neighbour]
+        if isinstance(candidate, Split):
+            continue
+        frame = frames.get(path[:-1] + (neighbour,))
+        if frame is None:
+            continue
+        left, top, right, bottom = frame_rect(frame, window)
+        if left < drag.x < right and top < drag.y < bottom:
+            return candidate
+    return None
+
+
+def draw_join_preview(tree, root_frame, draw_state, tile_state):
+    gesture = tile_state.gesture
+    if gesture is None or gesture.get("kind") != "join" or gesture["target"] is None:
+        return
+    # [tint=(1.0, 0.55, 0.15)]
+    preview_color = (1.0, 0.55, 0.15, 0.42)
+    for _path, tile, frame in resolve_frames(tree, root_frame):
+        if tile is gesture["target"]:
+            rect = tile_rect(frame, draw_state)
+            if rect is not None:
+                draw_list = imgui.get_window_draw_list()
+                draw_list.add_rect_filled(*rect, pack_color(*preview_color))
+                draw_list.add_text(rect[0] + 8, rect[1] + 28,
+                                   pack_color(1.0, 1.0, 1.0, 1.0), "Release to merge")
+            break
 
 
 def draw_tile_node(node, frame, draw_state, path=(), tree=None,
@@ -334,6 +394,16 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0):
     changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
                              root_frame=root_frame, tile_state=tile_state,
                              gap=gap)
+    if changed:
+        # Retire layouts whose paths/axes moved before the next collision solve.
+        for axis in ("x", "y"):
+            for key, entry in list(_views(window, axis).items()):
+                if isinstance(key, tuple) and len(key) == 3 and entry[0] is draw_state:
+                    del _views(window, axis)[key]
+                    _specs(window, axis).pop(key, None)
+                    _bands(window, axis).pop(key, None)
+    if tile_state is not None:
+        draw_join_preview(tree, root_frame, draw_state, tile_state)
     left, right, top, bottom = root_frame
     imgui.dummy(max(0.0, right["x"] - left["x"]), max(0.0, bottom["y"] - top["y"]))
     return changed
@@ -386,6 +456,8 @@ def join_tiles(tree, path, direction=+1):
     the next, -1 = the previous) — Blender's area join: the tile and the
     edge between them go, the neighbour takes the room. Returns the
     neighbour's path after normalization."""
+    if direction not in (-1, +1):
+        raise ValueError("join direction must be -1 or +1")
     if not path:
         raise ValueError("cannot join the root")
     parent = node_at(tree, path[:-1])
@@ -393,6 +465,8 @@ def join_tiles(tree, path, direction=+1):
     neighbour = index + direction
     if not 0 <= neighbour < len(parent["children"]):
         raise ValueError("no neighbour to join into")
+    if isinstance(parent["children"][index], Split) or isinstance(parent["children"][neighbour], Split):
+        raise ValueError("join requires two leaf tiles sharing a whole edge")
     seeded = len(parent["edges"]) == len(parent["children"]) - 1
     parent["children"].pop(index)
     if seeded:

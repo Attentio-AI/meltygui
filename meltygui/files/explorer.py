@@ -69,7 +69,7 @@ import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 from src.lsd.gl_gui.melty import Melty, FileWatch
 from src.lsd.gl_gui.model.dict_conversion import DictConversion
-from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store
+from src.lsd.gl_gui.model.file_meta import FileMeta, file_meta_store, project_roots
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.utils.glfw_utils import request_render
 from src.lsd.gl_gui.view.core_conversion.new_codecs import extension_to_codec
@@ -1023,19 +1023,165 @@ def _scroll_row_into_view(draw_state, index, row_h, rows_top, centre=False, cont
         draw_state.invalidate()
 
 
+# ── the shortcuts column ────────────────────────────────────────────────────
+@render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
+             show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
+def draw_shortcuts(input_value: str, draw_state, left_mouse_clicked=False,
+                   shortcut_state: ShortcutState = None, row_height=22.0,
+                   show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
+                   show_projects=True, **kwargs):
+    """The shortcuts column on its own: home, the XDG user directories and
+    the root as draw-list rows, then a **Projects** section — every folder
+    marked with melty.mark_project (the shared file-meta store's flag) —
+    and a click returns ``(True, path)`` once. `input_value` is the
+    directory the host shows (or None): the deepest shortcut / project
+    holding it is the CURRENT row (brighter, lifted by a shadow, its brush
+    showing). Every row leads with its folder's tint control (the same
+    file-meta tint the listings wear). Shortcuts drag to reorder, the order
+    persisting in `shortcut_state`; projects keep the store's path order.
+    The explorer draws this in its first cell; the code editor draws it as
+    a leading column (`show_shortcuts=True`), a pick going to the host as
+    `OpenFiles.browse_request`."""
+    # [tint=(0.55, 0.72, 0.95)]
+    folder_icon = f""
+    # [tint=(0.55, 0.72, 0.95)]
+    computer_icon = f""
+    # [tint=(0.55, 0.72, 0.95)]
+    left_pad = 8.0
+    # [tint=(0.55, 0.72, 0.95)]
+    glyph_width = 20.0
+    text_rgba = (0.85, 0.88, 0.92, 1.0)
+    text_col = pack_color(*text_rgba)
+    # [tint=(0.55, 0.72, 0.95)]
+    hover_boost = 0.06
+    # [tint=(0.55, 0.72, 0.95)]
+    hover_alpha = 0.05
+    # [tint=(0.55, 0.72, 0.95)]
+    text_mix = 0.5
+    # [tint=(0.55, 0.72, 0.95)]
+    icon_mix = 0.9
+    hover_wash = pack_color(1.0, 1.0, 1.0, hover_alpha)
+
+    px = Melty.px
+    clear_glows(draw_state)      # the current row's retained shadow
+    directory = Path(input_value).expanduser() if input_value else None
+    draw_list = imgui.get_window_draw_list()
+    mouse_x, mouse_y = imgui.get_mouse_pos()
+    hover_ok = draw_state._bounding_hovered
+    click = ((left_mouse_clicked.x, left_mouse_clicked.y)
+             if (left_mouse_clicked and hasattr(left_mouse_clicked, "x")) else None)
+    chip = px(chip_size) if show_tint_chips else 0.0
+    text_x = px(left_pad) + (chip + px(6) if show_tint_chips else 0.0)
+    meta = file_meta_store()
+    row_bg = row_tint_bg()
+    x, y = imgui.get_cursor_screen_pos()
+    width = float(draw_state.content_width or draw_state.width or px(190))
+    row_h = px(row_height)
+    shortcuts = shortcut_directories()
+    ranks = {key: i for i, key in enumerate(shortcut_state.order)}
+    shortcuts.sort(key=lambda item: ranks.get(str(item[1]), len(ranks)))
+    # The second section: every folder marked as a project - an alphabetical
+    # list of the projects, the same rows in path order, no drag-reorder
+    # (the set is the store's, not this column's).
+    projects = ([(root.name or str(root), root) for root in project_roots()]
+                if show_projects else [])
+    # The shortcut / project that holds the current directory: the deepest one.
+    current = None
+    if directory is not None:
+        for label, path in shortcuts + projects:
+            if path == directory or path in directory.parents:
+                if current is None or len(path.parts) > len(current.parts):
+                    current = path
+    text_y_pad = (row_h - imgui.get_font_size()) * 0.5
+    chip_x = x + px(left_pad)
+    # The tint control's column: the chip's own click, never the row's.
+    click_left = chip_x + chip + px(2) if show_tint_chips else x
+    section_gap = row_h * 0.5
+
+    def draw_rows(rows, y, draggable):
+        """One section of rows from `y` down; returns the picked path."""
+        picked = None
+        for i, (label, path) in enumerate(rows):
+            ry0 = y + i * row_h
+            ry1 = ry0 + row_h
+            key = str(path)
+            tint = FileMeta.painted_tint(meta.get(key)) if meta is not None else None
+            icon = computer_icon if path == Path(os.sep) else folder_icon
+            label_col = tinted_text(text_rgba, tint, text_mix) if tint else text_col
+            icon_col = tinted_text(text_rgba, tint, icon_mix) if tint else text_col
+            drag = DragDrop.on_drag((click_left, ry0, x + width, ry1), key=key,
+                                    draw_state=draw_state) if draggable else None
+            if drag:
+                ghost = drag.draw_list
+                ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
+                                      row_bg(tint or default_tint, 0.22), rounding=px(4))
+                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, icon_col, icon)
+                ghost.add_text(drag.x + px(4) + px(glyph_width), drag.y + text_y_pad,
+                               label_col, label)
+                DragDrop.end_drag()
+                continue
+            row_hovered = hover_ok and x <= mouse_x < x + width and ry0 <= mouse_y < ry1
+            # The current row: its tint (default when unpainted), brighter,
+            # lifted above the column by a soft shadow; hover is a smaller
+            # brightening of the same tint.
+            boost = (0.22 if tint else 0.06) if path == current else 0.0
+            if path == current:
+                add_shadow((x, ry0, width, row_h), offset=2.0, corner_radius=px(4),
+                           clip=getattr(draw_state, "abs_clip_rect", None), draw_state=draw_state)
+            if boost:
+                draw_list.add_rect_filled(x, ry0, x + width, ry1,
+                                          row_bg(tint or default_tint,
+                                                 boost + (hover_boost if row_hovered else 0.0)),
+                                          rounding=px(4))
+            elif row_hovered:
+                draw_list.add_rect_filled(x, ry0, x + width, ry1, hover_wash, rounding=px(4))
+            draw_list.add_text(x + text_x, ry0 + text_y_pad, icon_col, icon)
+            draw_list.add_text(x + text_x + px(glyph_width), ry0 + text_y_pad, label_col, label)
+            if (click is not None and click_left <= click[0] < x + width and ry0 <= click[1] < ry1
+                    and path != directory):
+                picked = path
+            if show_tint_chips:
+                swatch = None
+                if tint:
+                    swatch = chip_swatch(tint, row_bg.rgb(tint, boost))
+                tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
+                             ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
+                             show_brush=path == current)
+        return picked
+
+    picked = draw_rows(shortcuts, y, draggable=True)
+    total_h = len(shortcuts) * row_h
+    if projects:
+        # A dim "Projects" heading half a row below the shortcuts.
+        head_y = y + total_h + section_gap
+        draw_list.add_text(x + text_x, head_y + text_y_pad,
+                           imgui.get_color_u32_rgba(*text_rgba[:3], text_rgba[3] * 0.55),
+                           "Projects")
+        picked = draw_rows(projects, head_y + row_h, draggable=False) or picked
+        total_h += section_gap + row_h + len(projects) * row_h
+    drop = DragDrop.on_drop(draw_state=draw_state)
+    if drop is not None and drop.kind == "reorder" and drop.apply(shortcuts):
+        shortcut_state.order = [str(path) for _label, path in shortcuts]
+        picked = None
+    imgui.dummy(width, total_h)
+    if picked is not None:
+        request_render()
+        return True, str(picked)
+    return False, input_value
+
+
 # ── the explorer: shortcuts + listing ───────────────────────────────────────
 @render_func(tint=(0.32, 0.42, 0.54), selectable=False, disable_scroll=True,
              show_add_delete=False, is_tree=False, show_bg=False, shadow=False)
 def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
                             left_mouse_clicked=False, ctrl_up_key_pressed=False,
-                            shortcut_state: ShortcutState = None,
                             shortcuts_width=190.0, shortcut_row_height=22.0, column_gap=6.0,
                             show_tint_chips=True, chip_size=17.0, default_tint=(0.32, 0.42, 0.54, 1.0),
                             context_menu=None, drag_rows=True, folder_bg_boost=-0.12,
                             folder_bg_rounding=0.0, type_to_search=True, show_crumbs=True,
                             layout_out=None, **kwargs):
-    """A ColumnLayout with two cells: the shortcuts (draw-list rows, a click
-    navigates) and `draw_file_listing`, sharing one draggable edge
+    """A ColumnLayout with two cells: `draw_shortcuts` (a click navigates)
+    and `draw_file_listing`, sharing one draggable edge
     (`column_edges`, persisted by auto-state). Returns what the listing
     returns; Ctrl+Up works from anywhere over the explorer. Shortcut rows
     wear their directory's tint like the listing's, with the same leading
@@ -1103,72 +1249,12 @@ def draw_fast_file_explorer(input_value: str, draw_state, column_edges=None,
     result = (False, input_value)
     picked = None
     with columns.cell(0, height=body_height) as width:
-        x, y = imgui.get_cursor_screen_pos()
-        row_h = px(shortcut_row_height)
-        shortcuts = shortcut_directories()
-        ranks = {key: i for i, key in enumerate(shortcut_state.order)}
-        shortcuts.sort(key=lambda item: ranks.get(str(item[1]), len(ranks)))
-        # The shortcut that holds the current directory: the deepest one.
-        current = None
-        for label, path in shortcuts:
-            if path == directory or path in directory.parents:
-                if current is None or len(path.parts) > len(current.parts):
-                    current = path
-        text_y_pad = (row_h - imgui.get_font_size()) * 0.5
-        chip_x = x + px(left_pad)
-        # The tint control's column is the chip's own width, never the row's.
-        click_left = chip_x + chip + px(2) if show_tint_chips else x
-        for i, (label, path) in enumerate(shortcuts):
-            ry0 = y + i * row_h
-            ry1 = ry0 + row_h
-            key = str(path)
-            tint = FileMeta.painted_tint(meta.get(key)) if meta is not None else None
-            icon = computer_icon if path == Path(os.sep) else folder_icon
-            label_col = tinted_text(text_rgba, tint, text_mix) if tint else text_col
-            icon_col = tinted_text(text_rgba, tint, icon_mix) if tint else text_col
-            drag = DragDrop.on_drag((click_left, ry0, x + width, ry1), key=key,
-                                    draw_state=draw_state)
-            if drag:
-                ghost = drag.draw_list
-                ghost.add_rect_filled(drag.x, drag.y, drag.x + drag.w, drag.y + drag.h,
-                                      row_bg(tint or default_tint, 0.22), rounding=px(4))
-                ghost.add_text(drag.x + px(4), drag.y + text_y_pad, icon_col, icon)
-                ghost.add_text(drag.x + px(4) + px(glyph_width), drag.y + text_y_pad,
-                               label_col, label)
-                DragDrop.end_drag()
-                continue
-            row_hovered = hover_ok and x <= mouse_x < x + width and ry0 <= mouse_y < ry1
-            # The current shortcut: its tint (default when unpainted),
-            # brighter, lifted off the row by a small shadow; hover is a
-            # further brightening of the same tint.
-            boost = (0.22 if tint else 0.06) if path == current else 0.0
-            if path == current:
-                add_shadow((x, ry0, width, row_h), offset=2.0, corner_radius=px(4),
-                           clip=getattr(draw_state, "abs_clip_rect", None), draw_state=draw_state)
-            if boost:
-                draw_list.add_rect_filled(x, ry0, x + width, ry1,
-                                          row_bg(tint or default_tint,
-                                                 boost + (hover_boost if row_hovered else 0.0)),
-                                          rounding=px(4))
-            elif row_hovered:
-                draw_list.add_rect_filled(x, ry0, x + width, ry1, hover_wash, rounding=px(4))
-            draw_list.add_text(x + text_x, ry0 + text_y_pad, icon_col, icon)
-            draw_list.add_text(x + text_x + px(glyph_width), ry0 + text_y_pad, label_col, label)
-            if (click is not None and click_left <= click[0] < x + width and ry0 <= click[1] < ry1
-                    and path != directory):
-                picked = path
-            if show_tint_chips:
-                swatch = None
-                if tint:
-                    swatch = chip_swatch(tint, row_bg.rgb(tint, boost))
-                tint_control(draw_state, key, tint, chip_x, ry0 + (row_h - chip) * 0.5, chip,
-                             ry0 + text_y_pad, row_hovered, default_tint, swatch=swatch,
-                             show_brush=path == current)
-        drop = DragDrop.on_drop(draw_state=draw_state)
-        if drop is not None and drop.kind == "reorder" and drop.apply(shortcuts):
-            shortcut_state.order = [str(path) for _label, path in shortcuts]
-            picked = None
-        imgui.dummy(width, len(shortcuts) * row_h)
+        changed_s, picked_s = draw_shortcuts(
+            str(directory), name="shortcuts", width=width, height=body_height,
+            row_height=shortcut_row_height, show_tint_chips=show_tint_chips,
+            chip_size=chip_size, default_tint=default_tint, disable_scroll=True,
+            left_mouse_clicked=left_mouse_clicked)
+        picked = Path(picked_s) if changed_s else None
     with columns.cell(1, height=body_height) as width:
         if layout_out is not None:
             layout_out["listing_left"] = imgui.get_cursor_screen_pos()[0]

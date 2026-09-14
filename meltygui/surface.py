@@ -123,6 +123,7 @@ class Surface:
         self.title = _unique_title(name.split('##')[0])
         self.request = None         # the melty.surface_children entry of a child
         self.toplevel = None        # xdg_toplevel proxy (wayland_move), for set_parent
+        self.parent_linked = False
         self.await_ack = False      # a rect sent, the parent yet to show it
         self.sent_at = 0.0
         self.seen_rect = None       # the feed's rect last tick (present_children)
@@ -157,6 +158,7 @@ class Surface:
 
         # Fresh per-window state: module defaults + a clean Melty set.
         self._mods = {key: _fresh(value) for key, value in _DEFAULTS.items()}
+        self.root_windows = {}  # live collision roots belonging to this surface window
         # vis.root is what Melty reads and stores off (draw_state_registry,
         # surface_windows): the user's persisted session (app_session.py)
         # when app.py loaded one, else a stand-in around the shared registry.
@@ -223,7 +225,7 @@ class Surface:
         if parent is not None:
             parent.children.append(self)
             if self.toplevel and parent.toplevel:
-                wayland_move.set_parent(self.toplevel, parent.toplevel)
+                self.parent_linked = wayland_move.set_parent(self.toplevel, parent.toplevel)
         self._hook_callbacks()
         Surface.all.append(self)
         # The chrome chrome window's shadow margin: the content the caller

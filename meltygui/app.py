@@ -32,6 +32,7 @@ import os
 import pathlib
 import sys
 import threading
+import traceback
 import time
 
 _T0 = float(os.environ.get('MELTY_T0') or time.time())
@@ -184,6 +185,7 @@ def _init_melty():
     # get_draw_state / note_window_seen / the window z-order read and write
     # the stores that run() saves on exit.
     session = _load_session()
+    _register_projects()
     Melty.draw_state_registry = session.draw_state_registry
     Melty.adopt_registered_windows(session)
     Surface.session = session
@@ -247,6 +249,20 @@ def _register_editable(file):
         return
     from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
     add_editable_root(file)
+
+
+def _register_projects():
+    """Every folder marked as a project in the shared file-meta store
+    (file_meta.mark_project — machine-wide, so a project marked in the
+    studio or another app counts here) is editable source too, like the
+    app's own tree. The store is a small pickle; read once at init."""
+    try:
+        from src.lsd.gl_gui.model.file_meta import project_roots
+        from src.lsd.gl_gui.view.core_conversion.address import add_editable_root
+        for root in project_roots():
+            add_editable_root(root)
+    except Exception:
+        traceback.print_exc()
 
 
 def glfw_window(fn=None, *, name=None, width=1280, height=800, app_id=None, on_close=None, **view_kwargs):
@@ -611,7 +627,7 @@ def _present_children(parent):
     if not parent.children:
         return
     import glfw
-    from src.lsd.gl_gui import geometry_feed, titlebar
+    from src.lsd.gl_gui import geometry_feed, titlebar, wayland_move
     prect = geometry_feed.surface_rect(parent.title)
     if prect is None:
         return
@@ -622,6 +638,11 @@ def _present_children(parent):
         req = child.request
         if req is None or child.window is None:
             continue
+        # Retry a missing relationship, including surfaces created before
+        # the set_parent fix was hotswapped into the running app.
+        if (getattr(child, 'toplevel', None) and parent.toplevel
+                and not getattr(child, 'parent_linked', False)):
+            child.parent_linked = wayland_move.set_parent(child.toplevel, parent.toplevel)
         crect = geometry_feed.surface_rect(child.title)
         child_moved = (crect is not None and child.seen_rect is not None
                        and tuple(crect[:2]) != tuple(child.seen_rect[:2]))
@@ -643,10 +664,13 @@ def _present_children(parent):
             inset = int(titlebar.window_inset())
             width, height = max(1, width - 2 * inset), max(1, height - 2 * inset)
         target = (int(prect[0] + pos[0]), int(prect[1] + pos[1]), int(width), int(height))
-        if target != child.last_sent_rect:
-            if crect is not None and tuple(crect) == target:
+        # Following a parent's POSITION only. Reissuing GLFW's size
+        # through the compositor races pending edge-solver commits and
+        # turns an ordinary resize into a second, foreign resize.
+        if child.last_sent_rect is None or target[:2] != child.last_sent_rect[:2]:
+            if crect is not None and tuple(crect[:2]) == target[:2]:
                 child.last_sent_rect = target       # already there
-            elif geometry_feed.place_window(child.title, target):
+            elif geometry_feed.place_window(child.title, target, resize=False):
                 _debug(f'place {child.title!r} at {target} (parent {prect[:2]} + {pos})')
                 child.last_sent_rect = target
                 child.await_ack = True

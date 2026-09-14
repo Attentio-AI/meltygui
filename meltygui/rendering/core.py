@@ -1138,6 +1138,11 @@ def render_func(*args, **o_kwargs):
 
         if closable:
             if draw_state.parent_window is None and not kwargs.get("unmanaged", False):
+                from src.lsd.gl_gui.surface import Surface
+                if Surface.active is not None:
+                    # The persisted registered_windows dict spans surfaces;
+                    # surface roots must belong to the window drawing them.
+                    Surface.active.__dict__.setdefault('root_windows', {})[id(draw_state)] = draw_state
                 # Read BEFORE the defaultdict inserts the entry below. A new
                 # key first reuses the hollow entry saved under this NAME
                 # (or ID of a previous draw_state - see reclaim_window_slot),

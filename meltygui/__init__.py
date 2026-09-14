@@ -31,7 +31,7 @@ if TYPE_CHECKING:   # IDE / type checkers only; never executed
     from src.lsd.gl_gui.view.core_views.columns import draw_columns, draw_rows
     from src.lsd.gl_gui.view.core_views.menu_bar import draw_menu_bar
     from src.lsd.gl_gui.view.playground.file_selector import draw_file_selector
-    from src.lsd.gl_gui.view.playground.fast_file_explorer import draw_fast_file_explorer
+    from src.lsd.gl_gui.view.playground.fast_file_explorer import draw_fast_file_explorer, draw_shortcuts
     from src.lsd.gl_gui.view.playground.folder_files import draw_folder_files
     from src.lsd.gl_gui.view.playground.terminal_playground import draw_terminal
 
@@ -54,14 +54,25 @@ _VIEWS = {
     'draw_menu_bar': ('src.lsd.gl_gui.view.core_views.menu_bar', 'draw_menu_bar'),
     'draw_file_selector': ('src.lsd.gl_gui.view.playground.file_selector', 'draw_file_selector'),
     'draw_fast_file_explorer': ('src.lsd.gl_gui.view.playground.fast_file_explorer', 'draw_fast_file_explorer'),
+    'draw_shortcuts': ('src.lsd.gl_gui.view.playground.fast_file_explorer', 'draw_shortcuts'),
     'draw_folder_files': ('src.lsd.gl_gui.view.playground.folder_files', 'draw_folder_files'),
     'draw_terminal': ('src.lsd.gl_gui.view.playground.terminal_playground', 'draw_terminal'),
     'draw_code_editor': ('src.lsd.gl_gui.view.playground.open_files', 'draw_code_editor'),
 }
+# Projects (model/file_meta.py): folders flagged in the shared file-meta
+# store. Resolved lazily like the views - the model module is not needed
+# inside the loop.
+_FM = 'src.lsd.gl_gui.model.file_meta'
+_FUNCS = {
+    'mark_project': (_FM, 'mark_project'),
+    'is_project': (_FM, 'is_project'),
+    'project_roots': (_FM, 'project_roots'),
+    'project_for': (_FM, 'project_for'),
+}
 
 
 def __getattr__(name):
-    spec = _VIEWS.get(name)
+    spec = _VIEWS.get(name) or _FUNCS.get(name)
     if spec is None:
         raise AttributeError(name)
     import importlib
@@ -72,4 +83,5 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'global_search', *_VIEWS]
+__all__ = ['Style', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'global_search',
+           *_FUNCS, *_VIEWS]

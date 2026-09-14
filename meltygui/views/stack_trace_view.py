@@ -502,7 +502,7 @@ def _draw_file_header(pane, x, y, width, height, text_x=None, draw_state=None, i
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.model.open_files import FileMeta
     from src.lsd.gl_gui.toggles import Toggles
-    from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
+    from src.lsd.gl_gui.view.core_views.global_search import _file_meta_tint
     from src.lsd.gl_gui.view.playground.open_files import _tab_text_color
     text_pad_x = Melty.px(8)
     text_pad_y = Melty.px(3)

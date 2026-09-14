@@ -528,7 +528,7 @@ def _file_tint(path):
     """The tint the user painted on `path` in the code editor (FileMeta), as
     RGBA, or None. Same store the editor tabs / folder tree read."""
     try:
-        from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
+        from src.lsd.gl_gui.view.core_views.global_search import _file_meta_tint
         rgb = _file_meta_tint(path)
     except Exception:
         return None

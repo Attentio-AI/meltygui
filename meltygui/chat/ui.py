@@ -10,6 +10,7 @@ from pathlib import Path
 import uuid
 
 import imgui
+import numpy as np
 from src.lsd.gl_gui.hdr_color import pack_color
 import glfw
 
@@ -31,6 +32,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.new_core_view import draw_tuple_fast, draw_bg
 from src.lsd.gl_gui.view.core_views.headers import flat_button
 from src.lsd.gl_gui.view.core_views.blit_offscreen import add_shadow
+from src.lsd.gl_gui.view.core_views.texture_view import draw_texture
 from src.lsd.gl_gui.view.core_views.text_editor import draw_text
 from src.lsd.gl_gui.view.playground import internet_accounts
 
@@ -53,6 +55,7 @@ class ChatInterfaceState(DictConversion):
         self.chat_menu = None
         self.message_expanded = {}
         self.output_expanded = {}
+        self.image_sizes = {}
         # The sidebar's age filter: conversations active within this many
         # hours (0 = all). AGE_FILTERS lists the choices.
         self.age_hours = 0
@@ -75,7 +78,7 @@ def image_cache():
     return cache
 
 
-def image_box(entry, max_width):
+def image_box(entry, max_width, size=None):
     """The (w, h) a picture takes in the transcript: fitted into the span
     and Toggles.Chat.image_max_height, a placeholder while it decodes."""
     max_height = Melty.px(Toggles.Chat.image_max_height)
@@ -83,6 +86,8 @@ def image_box(entry, max_width):
         return max_width, 0
     if entry.size is None:
         return min(max_width, Melty.px(240)), Melty.px(120)
+    if size is not None:
+        return min(max_width, size[0]), size[1]
     return chat_images.fitted_size(entry.size, max_width, max_height)
 
 
@@ -1122,16 +1127,15 @@ def _row_geometry(rows):
     return tops, ends
 
 
-def _draw_image(ref, x, y, max_width, box_height, caption_height, tint):
-    """A picture fitted at (x, y) with its caption under it: the texture
-    through the draw list (RGB16F for HDR sources, so an HDR desktop shows
-    the highlights), a dim plate while it decodes, the error when it fails."""
+def _draw_image(ref, x, y, max_width, box_height, caption_height, tint, *, name="image", size=None):
+    """An interactive texture with a caption, or a decode placeholder/error."""
     cache = image_cache()
     entry = cache.entry(ref)
     draw_list = imgui.get_window_draw_list()
     if Melty.channels_split:
         draw_list.channels_set_current(Melty.get_channel())  # body channel, see _card
-    width, height = image_box(entry, max_width)
+    width, height = image_box(entry, max_width, size)
+    rendered_size = None
     # Decode can finish between measuring this row and painting it. Keep this
     # frame inside the reserved box; the decode generation reflows the next one.
     if height > box_height:
@@ -1141,14 +1145,23 @@ def _draw_image(ref, x, y, max_width, box_height, caption_height, tint):
     if entry is not None and entry.status == "ready":
         texture = cache.texture(entry)
         if texture is not None:
-            draw_list.add_image_rounded(texture, (x, y), (x + width, y + height),
-                                        uv_a=(0.0, 0.0), uv_b=(1.0, 1.0), rounding=Melty.px(6))
+            imgui.set_cursor_screen_pos((x, y))
+            # Seed the fitted box once; setting width/height each frame would
+            # disable the texture view's built-in right-drag resize.
+            _, _, image_state = draw_texture(
+                np.uint32(texture), name=name, initial={"width": width, "height": height},
+                auto_resize=False, fill_height=False, max_width=max_width, return_extras=True,
+                min_width=Melty.px(35), min_height=Melty.px(35),
+                show_header=False, show_bg=False, with_header=None, show_footer=False, show_info=False, flip_y=True)
+            rendered_size = (image_state.width, image_state.height)
+            width, height = rendered_size
     elif entry is not None and entry.status == "failed":
         caption = (caption + " · " if caption else "") + "could not decode: " + str(entry.error)
     else:
         draw_list.add_rect_filled(x, y, x + width, y + height, _color(tint, 0.12), rounding=Melty.px(6))
         caption = (caption + " · " if caption else "") + "decoding…"
     _title(caption or ref.label, x, y + height, max_width, caption_height, tint, brightness=0.7, ellipsis=True)
+    return rendered_size
 
 
 def draw_messages(messages, draw_state, state, key, width, height,
@@ -1162,6 +1175,8 @@ def draw_messages(messages, draw_state, state, key, width, height,
         state.message_expanded = {}
     if not hasattr(state, "output_expanded"):
         state.output_expanded = {}
+    if not hasattr(state, "image_sizes"):
+        state.image_sizes = {}
     # User and assistant prose sit inset in their span.
     # [tint=(0.95, 0.6, 0.25)]
     user_inset = Melty.px(12)
@@ -1289,7 +1304,8 @@ def draw_messages(messages, draw_state, state, key, width, height,
                                 - (user_inset if isinstance(message, UserMessage) else 0))
                         if isinstance(message, AssistantMessage):
                             span = min(span, terminal_max_width)
-                        image_width, image_height = image_box(image_entry, max(Melty.px(40), span))
+                        image_width, image_height = image_box(
+                            image_entry, max(Melty.px(40), span), state.image_sizes.get(row_key + ":image:" + repr(path)))
                         display, leaf_height = value, image_height + header_height
                     elif isinstance(value, str):
                         # Only plain prose wraps; code, tool output and everything else keeps its lines.
@@ -1480,7 +1496,21 @@ def draw_messages(messages, draw_state, state, key, width, height,
                         imgui.set_cursor_screen_pos((x + content_x, text_y))
                         draw_chat_terminal(value, name=row_key + ":terminal", width=fitted_width - content_x, height=leaf_height)
                     elif isinstance(value, ImageReference):
-                        _draw_image(value, left, text_y, leaf_width, leaf_height - header_height, header_height, tint)
+                        image_name = row_key + ":image:" + repr(path)
+                        # A user bubble contains its image; resizing can still grow
+                        # into the conversation's full user-message span.
+                        if isinstance(message, UserMessage):
+                            leaf_width = row_width - chat_indent - indent - user_inset
+                        previous_size = image_box(image_cache().entry(value), leaf_width,
+                                                  state.image_sizes.get(image_name))
+                        size = _draw_image(value, left, text_y, leaf_width,
+                                           leaf_height - header_height * (2 if caption else 1), header_height, tint,
+                                           name=image_name, size=state.image_sizes.get(image_name))
+                        if size is not None and size != state.image_sizes.get(image_name):
+                            state.image_sizes[image_name] = size
+                            if size != previous_size:
+                                view["relayout"] = True
+                                changed = True
                     elif isinstance(value, Reference):
                         # Never paint data URLs / encoded image data as text.
                         name = value.get("name") or value.get("path") or ""

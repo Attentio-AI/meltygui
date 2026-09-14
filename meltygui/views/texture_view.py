@@ -28,7 +28,7 @@ from src.lsd.gl_gui.view.core_views.headers import draw_header
 def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mouse_drag, double_right_mouse_drag,
                  zoom_state: ZoomState, zoom_speed, header_height=0, min_zoom=0.1,
                  max_zoom=50.0, style_manager=None, max_brightness=5.0, max_contrast=5.0,
-                 draw_state=None, jet=False, nearest=False, dim_outside=None, dim_alpha=0.55, **kwargs):
+                 draw_state=None, jet=False, nearest=False, dim_outside=None, dim_alpha=0.55, show_info=True, flip_y=False, **kwargs):
     original_id = input_value
     texture_id = input_value
     imgui.dummy(draw_state.width, draw_state.height - 20)
@@ -369,8 +369,10 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
     uv_y_min = zoom_state.center_v - half_uv_h
     uv_y_max = zoom_state.center_v + half_uv_h
 
-    uv_a = (uv_x_min, uv_y_max)
-    uv_b = (uv_x_max, uv_y_min)
+    # Top-down uploads (for example chat images) keep the same pan/zoom
+    # geometry and reverse only the texture sampling coordinates.
+    uv_a = (uv_x_min, 1.0 - uv_y_max if flip_y else uv_y_max)
+    uv_b = (uv_x_max, 1.0 - uv_y_min if flip_y else uv_y_min)
 
     # 6. Clip and Draw
     scale_u_px = view_width / uv_width_size
@@ -414,7 +416,8 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
         sr, sb = min(sr, clip_right - 3), min(sb, clip_bottom)
         if sr > sl and sb > st:
             def uv(x, y):
-                return uv_x_min + (x - p_min_x) / scale_u_px, uv_y_max - (y - p_min_y) / scale_v_px
+                v = uv_y_max - (y - p_min_y) / scale_v_px
+                return uv_x_min + (x - p_min_x) / scale_u_px, 1.0 - v if flip_y else v
             gl.glBindTexture(gl.GL_TEXTURE_2D, bright_texture_id)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, filter_mode)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, filter_mode)
@@ -423,10 +426,11 @@ def draw_texture(input_value: numpy.uint32, hovered, scroll_y_changed, middle_mo
             draw_list.add_rect(sl, st, sr, sb, pack_color(1.0, 1.0, 1.0, 0.9), 0.0, 0, 1.0)
     Core.melty.pop_clip()
 
-    line_height = imgui.get_text_line_height()
-    draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
-                       pack_color(*mixed_color[:3], 1.0),
-                       text=f"{original_id} - {texture_id} - {width}x{height} - Zoom: {zoom_state.zoom:.2f}x")
+    if show_info:
+        line_height = imgui.get_text_line_height()
+        draw_list.add_text(max(p_min_x + 5, raw_img_left), clip_top - line_height - 5,
+                           pack_color(*mixed_color[:3], 1.0),
+                           text=f"{original_id} - {texture_id} - {width}x{height} - Zoom: {zoom_state.zoom:.2f}x")
 
     gl.glBindTexture(gl.GL_TEXTURE_2D, original_texture)
 

@@ -808,7 +808,7 @@ def set_parent(child_toplevel, parent_toplevel):
         return False
     try:
         _, wl = _c()
-        opcodes = _opcodes(child_toplevel, ("set_parent",))
+        opcodes = _opcodes(child_toplevel, (b"set_parent",))
         if "set_parent" not in opcodes:
             return False
         wl.wl_proxy_marshal_flags(child_toplevel, opcodes["set_parent"], None,

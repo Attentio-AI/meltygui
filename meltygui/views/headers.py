@@ -420,7 +420,7 @@ def _jump_to_view_source(draw_state):
         return
     if not fn_file:
         return
-    from src.lsd.gl_gui.view.core_views.new_core_view import _jump_to_symbol_def
+    from src.lsd.gl_gui.view.core_views.global_search import _jump_to_symbol_def
     _jump_to_symbol_def(view_fn, Path(fn_file))
 
 

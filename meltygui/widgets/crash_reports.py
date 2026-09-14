@@ -40,7 +40,7 @@ from src.lsd.gl_gui.view.core_views.decoration.window_decoration import window
 from src.lsd.gl_gui.view.core_views.headers import _brightness_clamp_fn, flat_button
 from src.lsd.gl_gui.view.playground.open_files import _tab_text_color
 from src.lsd.gl_gui.view.core_views.text_editor import COLORS
-from src.lsd.gl_gui.view.core_views.new_core_view import _file_meta_tint
+from src.lsd.gl_gui.view.core_views.global_search import _file_meta_tint
 from src.lsd.gl_gui.view.core_views.stack_trace_view import SavedTrace, draw_stack_trace
 
 # Bumped by reports_changed(); the store refreshes when it sees a new value.
