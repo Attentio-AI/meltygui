@@ -190,7 +190,14 @@ class CodexChats(ChatProxy):
                 raise
         elif operation == "archive":
             key, remote_id = args
-            self.writers.get(remote_id, server).request("thread/archive", {"threadId": remote_id})
+            try:
+                self.writers.get(remote_id, server).request("thread/archive", {"threadId": remote_id})
+            except Exception as error:
+                # Unsent threads have no rollout file to archive yet.
+                chat = self.known.get(key)
+                if (chat is None or not chat.loaded or chat["messages"] or chat["running"]
+                        or "no rollout found for thread id" not in str(error).lower()):
+                    raise
             writer = self.writers.pop(remote_id, None)
             if writer:
                 self._close_transport(writer)

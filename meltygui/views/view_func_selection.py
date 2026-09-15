@@ -146,3 +146,32 @@ class CallerViewSource(dict):
             raise ValueError("A direct call needs a render function")
         self.parsed.pop(key, None)
         return super().pop(key, default)
+
+
+class WindowViewSource(CallerViewSource):
+    """Window decorator kwargs, with the decorated renderer as their default.
+
+    The implicit view_func exists only in this projection. Parameter edits
+    write through to the decorator parse; choosing another renderer creates
+    an explicit view_func kwarg through the same path.
+    """
+    def __init__(self, parsed, function, filename=None):
+        super().__init__(parsed, filename, allow_direct=False)
+        self.function = function
+        self.implicit_view_func = self.get("view_func") is None
+        if self.implicit_view_func:
+            dict.__setitem__(self, "view_func", function)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key == "view_func":
+            self.implicit_view_func = value is None
+            if self.implicit_view_func:
+                dict.__setitem__(self, key, self.function)
+
+    def pop(self, key, default=None):
+        value = super().pop(key, default)
+        if key == "view_func":
+            self.implicit_view_func = True
+            dict.__setitem__(self, key, self.function)
+        return value

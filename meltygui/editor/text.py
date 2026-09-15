@@ -2409,8 +2409,25 @@ def _fnrun_resolve(file_path, def_line, def_name=None, prefer_pending=False):
         in-memory truth) in a lazy copy of the module namespace. Returns the
         exec'd function, or None when extraction/compile fails."""
         got = _fnrun_extract_def(file_path, def_line, def_name)
-        if got is None or not modules:
+        if got is None:
             return None
+        if not modules:
+            # Give standalone defs an owner discoverable by live_view without
+            # executing the file's top-level side effects.
+            import hashlib
+            import sys
+            module_name = '_melty_fnrun_' + hashlib.sha256(
+                str(target).encode()).hexdigest()
+            module = types.ModuleType(module_name)
+            module.__file__ = str(target)
+            package = []
+            parent = target.parent
+            while (parent / '__init__.py').is_file():
+                package.insert(0, parent.name)
+                parent = parent.parent
+            module.__package__ = '.'.join(package)
+            sys.modules[module_name] = module
+            modules.append(module)
         src, start0 = got
         # Reuse the compiled function while the def's source (and its
         # pending start line) is unchanged.
@@ -2844,7 +2861,7 @@ def _fnrun_run(fn, instrumented=False, params=None):
     `params` when given (built from the cst dict's parameters by
     _fnrun_params_from_node — the panel-edited truth); otherwise from the
     signature's defaults, with Melty.global_attrs filling params that have
-    none. Blocking, on the render thread (draw_function's default), and the
+    none. Blocking on the caller (the console uses a worker), with the
     same error reporting — colored traceback to the console, the formatted
     message back to the caller. Returns (ok, error_text).
 
@@ -2885,6 +2902,91 @@ def _fnrun_run(fn, instrumented=False, params=None):
         print_colored_traceback(*sys.exc_info())
         _respond_to_cuda_oom(e, fn.__name__)
         return False, _format_run_error(e)
+
+
+def _fnrun_console(editor_ds, skey):
+    from src.lsd.gl_gui.model.function_console import FunctionConsole
+    consoles = editor_ds.__dict__.setdefault('_fnrun_consoles', {})
+    if skey not in consoles:
+        consoles[skey] = FunctionConsole(wake=request_render)
+    return consoles[skey]
+
+
+def _fnrun_start(editor_ds, file_path, def_line, def_name,
+                 instrumented=True, params=None, queue_if_busy=False):
+    """Resolve on the UI thread, run with interactive streams on a worker."""
+    skey = (str(file_path), def_name)
+    console = _fnrun_console(editor_ds, skey)
+    queued = editor_ds.__dict__.setdefault('_fnrun_queued', {})
+    statuses = editor_ds.__dict__.setdefault('_fnrun_status', {})
+    if console.running or statuses.get(skey, (None,))[0] == 'running':
+        if queue_if_busy:
+            queued[skey] = (file_path, def_line, def_name, instrumented, params)
+        return False
+    mode = 'live' if instrumented else 'run'
+    fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
+    if fn is None:
+        statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not found in live modules or source", mode)
+        editor_ds.invalidate()
+        request_render()
+        return False
+    statuses[skey] = ('running', None, mode)
+
+    def done(result):
+        def finish():
+            ok, error = result
+            statuses[skey] = (('ok', Melty.frame_count, mode) if ok
+                              else ('err', error, mode))
+            if instrumented:
+                _fnrun_after_live_run(editor_ds)
+            editor_ds.invalidate()
+            request_render()
+            pending = queued.pop(skey, None)
+            if pending is not None:
+                _fnrun_start(editor_ds, *pending)
+        Melty.post_to_render(finish)
+
+    console.start(lambda: _fnrun_run(fn, instrumented=instrumented, params=params), done)
+    editor_ds.invalidate()
+    request_render()
+    return True
+
+
+def _draw_fnrun_console(console, draw_state, unique):
+    from src.lsd.gl_gui.view.core_views.headers import flat_button
+    text, running, waiting = console.snapshot()
+    imgui.text('Console — ' + ('Waiting for input' if waiting else 'Running' if running else 'Finished' if console.thread else 'Ready'))
+    RenderFuncs.draw_text(text or '', name=f'console-output##{unique}',
+                          width=max(200, draw_state.width - 16), height=220,
+                          editable=False, syntax_highlight=False, autocomplete=False,
+                          wrap=True, show_header=False, show_widgets=False,
+                          use_cache=False)
+    if running:
+        box = RenderFuncs.draw_text(console.draft, name=f'console-input##{unique}',
+                                    width=max(200, draw_state.width - 16), height=30,
+                                    single_line=True, syntax_highlight=False,
+                                    autocomplete=False, show_header=False,
+                                    return_extras=True)
+        if box[0]:
+            console.draft = box[1]
+        input_ds = box[2]
+        enter = (Melty.text_focused_ds is input_ds and
+                 any(key in (glfw.KEY_ENTER, glfw.KEY_KP_ENTER)
+                     for key, _ in Melty.frame_key_events))
+        send = flat_button(f'Send##console-send{unique}', draw_state,
+                           f'console-send::{unique}', height=24)
+        imgui.same_line()
+        eof = flat_button(f'End input##console-eof{unique}', draw_state,
+                          f'console-eof::{unique}', height=24)
+        if send or enter:
+            console.send(console.draft)
+            console.draft = ''
+            draw_state.invalidate()
+        if eof:
+            console.close_input()
+    # Keep the frame's ancestors repainting while output arrives on a worker.
+    if running:
+        draw_state.invalidate()
 
 
 def _fnrun_def_node_for(editor_ds, skey, code_root, def_name, buf_line,
@@ -3347,26 +3449,8 @@ def _fnrun_auto_exec_fire(editor_ds, editor_state, skey, file_path, def_name,
     ent[2] = key
 
     def _run():
-        statuses = getattr(editor_ds, '_fnrun_status', None)
-        if statuses is None:
-            statuses = editor_ds._fnrun_status = {}
-        fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
-        if fn is None:
-            statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
-                                     f"found in live modules or source", 'live')
-        else:
-            # Inputs come from the COMPILED PENDING CODE - and the signature
-            # defaults - never from a cached parse node: the gate above
-            # made pending equal the editor buffer, so those defaults ARE
-            # what the editor (and, once its splice landed, the params
-            # panel) shows. Passing node-derived kwargs here calls the def
-            # with whatever an older tree held.
-            ok, err = _fnrun_run(fn, instrumented=True)
-            statuses[skey] = (('ok', Melty.frame_count, 'live') if ok
-                              else ('err', err, 'live'))
-            _fnrun_after_live_run(editor_ds)
-        editor_ds.invalidate()
-        request_render()
+        _fnrun_start(editor_ds, file_path, def_line, def_name,
+                     instrumented=True, queue_if_busy=True)
 
     Melty.post_to_render(_run)
 
@@ -3452,32 +3536,28 @@ def draw_fnrun_params_panel(input_value=None, draw_state=None, unique=0,
     _ch, _val = draw_any(input_value, name="parameters", child_kwargs={"syntax_highlight":False}, show_add_delete=False)
     if _ch and auto_execute:
         live = True
-    if (run or live) and fnrun_file and fnrun_name:
-        _mode = 'live' if live else 'run'
-        # prefer_pending: compile the LATEST pending source (a change just
-        # spliced from this very panel included) instead of running the stale
-        # live function while the background reparse/live-apply catches up.
-        fn = _fnrun_resolve(fnrun_file, fnrun_line, fnrun_name,
-                            prefer_pending=True)
-        if fn is None:
-            _st = ('err', f"couldn't resolve '{fnrun_name}' — not found in "
-                          f"live modules or source", _mode)
-        else:
-            ok, err = _fnrun_run(fn, instrumented=live,
-                                 params=_fnrun_params_from_node(
-                                     {'parameters': input_value}))
-            _st = (('ok', Melty.frame_count, _mode) if ok
-                   else ('err', err, _mode))
-            if live and editor_ds is not None:
-                _fnrun_after_live_run(editor_ds)
-        if editor_ds is not None:
-            _sts = getattr(editor_ds, '_fnrun_status', None)
-            if _sts is None:
-                _sts = editor_ds._fnrun_status = {}
-            _sts[(str(fnrun_file), fnrun_name)] = _st
-            editor_ds.invalidate()
+    if (run or live) and fnrun_file and fnrun_name and editor_ds is not None:
+        _fnrun_start(editor_ds, fnrun_file, fnrun_line, fnrun_name,
+                     instrumented=live,
+                     params=_fnrun_params_from_node({'parameters': input_value}),
+                     queue_if_busy=bool(_ch and auto_execute))
         draw_state.invalidate()
-        request_render()
+    if editor_ds is not None:
+        console = _fnrun_console(editor_ds, (str(fnrun_file), fnrun_name))
+        _draw_fnrun_console(console, draw_state, unique)
+    # Keep errors in the panel's layout/scroll space, avoid gutter clipping.
+    statuses = getattr(editor_ds, '_fnrun_status', {})
+    status_key = (str(fnrun_file), fnrun_name)
+    status = statuses.get(status_key)
+    if status is not None and status[0] == 'err':
+        imgui.text_wrapped(status[1])
+        if flat_button(f"Dismiss error##fnpperr{unique}", draw_state,
+                       f"fnpperr::{unique}", height=24):
+            statuses.pop(status_key, None)
+            if editor_ds is not None:
+                editor_ds.invalidate()
+            draw_state.invalidate()
+            request_render()
     # A params edit writes the CODE from right here - this panel is the only
     # place that knows it happened, and it must not wait for the def widget
     # (which renders only while the def line is in the viewport: routing the
@@ -3528,8 +3608,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     inspecting); the sliders open the params panel. Both wear the
     function's definition tint (`fn_tint`, the def-block tint) when it has
     one. Errors print the colored traceback and surface on the run button
-    (red; hover shows the message beside it); success flashes it, fading
-    over ~45 frames.
+    (red, with a persistent wrapped message in the params panel until
+    dismissed or replaced by the next run).
 
     Plain (wrapper-less) like the other token widgets. The click routes
     through flat_button's on_action claim on the EDITOR draw_state — the
@@ -3567,8 +3647,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     _c_live = (tuple(fn_tint[:3]) if _has_tint
                else (0.40, 0.53, 0.78))    # draw_function_live's lab blue
     _c_pp = tuple(fn_tint[:3]) if _has_tint else (0.55, 0.58, 0.66)
-    if status is not None:
-        statuses.pop(skey, None)
+    if status is not None and status[0] == 'err':
+        _c_live = (0.85, 0.25, 0.20)
     # Two buttons: the DOUBLE-WIDE instrumented run (play glyph) -
     # live_view_forward's twin path via run_instrumented, so every
     # assignment's snapshot marker lands right in THIS editor through the
@@ -3744,28 +3824,8 @@ def draw_run_fn_token_plain(input_value, width=20, height=20, name=None,
     _fnrun_auto_exec_on_edit(editor_ds, editor_state, skey, file_path,
                              def_line, def_name, code_root, def_buf_line,
                              tv_text, def_disp_line, status)
-    if hovered and status is not None and status[0] == 'err' and status[1]:
-        # Error readout beside the button - draw-list text, hover-only (the
-        # hover-edge invalidation above repaints it in and out).
-        dl = imgui.get_window_draw_list()
-        dl.add_text(x + width + 6.0, y - height,
-                    pack_color(1.0, 0.45, 0.40, 1.0), status[1])
-
     if live_clicked:
-        _mode = 'live'
-        # Same truth as the auto-run: the pending code, with its own
-        # signature defaults (no node-derived kwargs, see the auto-run).
-        fn = _fnrun_resolve(file_path, def_line, def_name, prefer_pending=True)
-        if fn is None:
-            statuses[skey] = ('err', f"couldn't resolve '{def_name}' — not "
-                                     f"found in live modules or source", _mode)
-        else:
-            ok, err = _fnrun_run(fn, instrumented=True)
-            statuses[skey] = (('ok', Melty.frame_count, _mode) if ok
-                              else ('err', err, _mode))
-            _fnrun_after_live_run(editor_ds)
-        editor_ds.invalidate()
-        request_render()
+        _fnrun_start(editor_ds, file_path, def_line, def_name, instrumented=True)
     return False, input_value
 
 draw_run_fn_token_plain._plain_tv = True

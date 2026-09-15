@@ -587,7 +587,8 @@ def _setting_source(srcs, attr_name):
         import inspect
         from src.lsd.gl_gui.view.core_views.view_func_selection import resolve_view_func
         live = inspect.unwrap(resolve_view_func(srcs["view_func"]))
-        candidates = [s for s in candidates if not getattr(sources[s], "direct", False)
+        candidates = [s for s in candidates if not (getattr(sources[s], "direct", False)
+                                                   or getattr(sources[s], "implicit_view_func", False))
                       or inspect.unwrap(resolve_view_func(sources[s][attr_name])) is live]
     if not candidates:
         return None

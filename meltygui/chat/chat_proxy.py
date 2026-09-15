@@ -38,6 +38,40 @@ def epoch_seconds(value):
     return number / 1000.0 if number > 1e11 else number
 
 
+def apply_queue_edit(chat, operation, value=None):
+    """Queue edits are idempotent so a reconnect can safely replay them."""
+    queued = chat.setdefault("queued_messages", {})
+    if operation == "queue_message":
+        identifier, message, interrupt = value
+        if identifier in queued or identifier in chat["messages"] or identifier in chat.sent:
+            return
+        if interrupt:
+            chat["queue_paused"] = False
+            busy = chat["running"] or chat.turn_id or "send" in chat.inflight
+            if busy:
+                chat["queued_messages"] = {identifier: message, **queued}
+                chat["running"] = False
+            else:
+                chat["messages"][identifier] = message
+                chat.scanned = -1
+            if chat.get("retryable_error"):
+                chat.error = None
+                chat["retryable_error"] = False
+        else:
+            queued[identifier] = message
+    elif operation == "send_queued":
+        message = queued.pop(value, None)
+        if message is not None:
+            apply_queue_edit(chat, "queue_message", (value, message, True))
+    elif operation == "cancel_queued":
+        queued.pop(value, None)
+    elif operation == "resume_queue":
+        chat["queue_paused"] = False
+    elif operation == "stop_queue":
+        chat["queue_paused"] = True
+        chat["running"] = False
+
+
 class Chat(dict):
     """``updated`` is the conversation's last activity as epoch seconds (0 =
     unknown): the provider's listing stamps it, a backend bumps it as a turn
@@ -61,6 +95,27 @@ class Chat(dict):
 
 
 class ChatProxy(dict):
+    def _queue_edit(self, key, operation, value=None):
+        apply_queue_edit(self[key], operation, value)
+        self.revision += 1
+        return True
+
+    def queue_message(self, key, message, interrupt=False):
+        import uuid
+        return self._queue_edit(key, "queue_message", (str(uuid.uuid4()), message, interrupt))
+
+    def stop_chat(self, key):
+        self._queue_edit(key, "stop_queue")
+
+    def cancel_queued(self, key, identifier):
+        self._queue_edit(key, "cancel_queued", identifier)
+
+    def resume_queue(self, key):
+        self._queue_edit(key, "resume_queue")
+
+    def send_queued(self, key, identifier):
+        return self._queue_edit(key, "send_queued", identifier)
+
     def __init__(self, account_id, metadata=None, wake=None):
         super().__init__()
         self.session_version = 3
@@ -197,11 +252,18 @@ class ChatProxy(dict):
                 chat.inflight.add("interrupt")
                 self.submit("interrupt", key, chat.remote_id, chat.turn_id)
             if (chat.loaded and not chat["running"] and not chat.turn_id and "send" not in chat.inflight
-                    and len(chat["messages"]) != getattr(chat, "scanned", -1)):
-                # Only a chat that grew since the last scan can hold an
-                # unsent prompt (walking every message in every open chat each
-                # frame was the proxy's main cost).
-                chat.scanned = len(chat["messages"])
+                    and not chat.get("queue_paused") and not chat.get("locked") and not chat.get("external_busy")
+                    and chat.get("queued_messages")
+                    and not any(identifier not in chat.sent and message.get("role") == "user"
+                                for identifier, message in chat["messages"].items())):
+                identifier = next(iter(chat["queued_messages"]))
+                chat["messages"][identifier] = chat["queued_messages"].pop(identifier)
+                self.revision += 1
+            if (chat.loaded and not chat["running"] and not chat.turn_id and "send" not in chat.inflight
+                    and (len(chat["messages"]), len(chat.sent)) != getattr(chat, "scanned", None)):
+                # A prompt can remain after the previous send was acknowledged,
+                # even if the transcript did not grow in the meantime.
+                chat.scanned = (len(chat["messages"]), len(chat.sent))
                 for message_id, message in chat["messages"].items():
                     # Adopt dict-inserted prompts from UI callers at the model boundary.
                     if not isinstance(message, Message) and message.get("role") == "user":

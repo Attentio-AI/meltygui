@@ -254,6 +254,20 @@ def _frame_pinned(ds):
     return bool(getattr(ds, "_frame_pinned", False))
 
 
+def _frame_parent(window):
+    """Containing window, skipping ordinary views used as placement parents."""
+    parent = getattr(window, "parent_window", None)
+    for _ in range(64):
+        if (parent is None or getattr(parent, "closable", False)
+                or _frame_pinned(parent)):
+            return parent
+        ancestor = getattr(parent, "parent_window", None)
+        if ancestor is None or ancestor is parent:
+            return parent
+        parent = ancestor
+    return None
+
+
 def _pinned_children(axis, side):
     """The DIRECT nested closable windows of the frame-pinned roots that
     hang from the root's ``side`` ("near" / "far") corner on ``axis``
@@ -271,7 +285,7 @@ def _pinned_children(axis, side):
     if not pinned:
         return []
     return [ds for ds in _all_windows()
-            if id(getattr(ds, "parent_window", None) or 0) in pinned
+            if id(_frame_parent(ds)) in pinned
             and getattr(ds, "closable", False) and ds.window_pos is not None
             and id(ds) not in _STATE["pin_rebases"]
             and _driver_of(ds, axis) == side]
@@ -281,17 +295,41 @@ def _has_pin_anchor(ds):
     return getattr(ds, "_pin_target", None) is not None
 
 
-def pin_origin(ds):
-    """The actual pin anchor in screen coordinates, outside an edge solve.
+def _has_measured_anchor(ds):
+    return (_has_pin_anchor(ds)
+            or getattr(ds, "parent_window", None) is not _frame_parent(ds))
 
-    Pin.PARENT can point at a fixed-width text view or a split column;
-    its right corner need not move with the OS window's right edge.
+
+def _anchor_base(ds):
+    """Placement origin before the child's own offset or display sliver cap.
+
+    An inline panel can name an ordinary text view as parent_window. Its
+    anchor follows that view's layout, not necessarily the OS frame corner.
     """
-    base = ds.clip_anchor_base
+    if _has_pin_anchor(ds):
+        base = ds.clip_anchor_base
+        if base is None:
+            return None
+        return base[0], ds._pinned_base_y(base[1], ds.anchor_offset[1])
+    parent = ds.parent_window
+    if parent is None:
+        return None
+    scroll_x, scroll_y = ds._ancestor_scroll()
+    anchor_x, anchor_y = ds.parent_anchor_offset
+    return (parent.abs_left + ds.left_offset - scroll_x + anchor_x,
+            parent.abs_top + ds.top_offset - scroll_y + anchor_y)
+
+
+def pin_origin(ds):
+    """The measured placement anchor in screen coordinates, outside a solve.
+
+    Pins and explicit view parents can point at a fixed-width text view or
+    split column; their corners need not move with the OS frame's corners.
+    """
+    base = _anchor_base(ds)
     if base is None:
         return None
-    y = ds._pinned_base_y(base[1], ds.anchor_offset[1])
-    return (applied_origin("x") + base[0], applied_origin("y") + y)
+    return (applied_origin("x") + base[0], applied_origin("y") + base[1])
 
 
 def _book_pin_rebases():
@@ -302,8 +340,8 @@ def _book_pin_rebases():
     _STATE["pin_rebases"] = {
         id(ds): pending.get(id(ds), pin_origin(ds))
         for ds in _all_windows()
-        if _open(ds) and _frame_pinned(getattr(ds, "parent_window", None))
-        and _has_pin_anchor(ds)
+        if _open(ds) and _frame_pinned(_frame_parent(ds))
+        and _has_measured_anchor(ds)
     }
 
 
@@ -313,7 +351,7 @@ def rebase_pin(ds):
     The parent has not been laid out yet at apply_rebase (frame start).
     """
     previous = _STATE["pin_rebases"].pop(id(ds), None)
-    if previous is None or not _has_pin_anchor(ds):
+    if previous is None or not _has_measured_anchor(ds):
         return
     current = pin_origin(ds)
     if current is not None:

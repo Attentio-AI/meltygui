@@ -7034,9 +7034,11 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
                 DecorationsCodec, location=decoration_loc, kind="decoration")
     # @window only exists as a source on actually-@window-decorated funcs -
     # a placeholder row here would be permanent noise on every other tab.
+    from src.lsd.gl_gui.view.core_views.view_func_selection import WindowViewSource
     _window_deco = cm_state.decoration_dict.deep.decorators.window()
     if isinstance(_window_deco, dict) and _window_deco:
-        _add_source(f"@window({decoration_name})", _window_deco,
+        _add_source(f"@window({decoration_name})",
+                    WindowViewSource(_window_deco, decoration_func, decoration_loc[0]),
                     DecorationsCodec, location=decoration_loc, kind="window decoration")
     # @glfw_window(...) on the view fn (`@glfw_window` over `@render_func`,
     # app.py): every kwarg past the OS window's own (title / size / window_id /
@@ -7045,7 +7047,8 @@ def collect_input_sources(input_value, cm_state, class_to_show=None):
     # rule; a missing `@glfw_window` parses to a str and adds nothing.
     _glfw_deco = cm_state.decoration_dict.deep.decorators.glfw_window()
     if isinstance(_glfw_deco, dict) and _glfw_deco:
-        _add_source(f"@glfw_window({decoration_name})", _glfw_deco,
+        _add_source(f"@glfw_window({decoration_name})",
+                    WindowViewSource(_glfw_deco, decoration_func, decoration_loc[0]),
                     DecorationsCodec, location=decoration_loc, kind="glfw window decoration")
 
     cm_state._collect_cache = {
@@ -8115,7 +8118,7 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     trigger_text_value = 1.023
     if _ttb and getattr(input_value, "tint", None) is None:
         trigger_text_value = 1.023 * (1.0 - min(max(float(_ttb), 0.0), 1.0))
-    trigger_top = imgui.get_cursor_screen_pos()[1]
+    trigger_left, trigger_top = imgui.get_cursor_screen_pos()
     clicked, _ = button(drop_down_display_str, name=f"{name}_dd_trigger{unique}", show_bg=False, width=trigger_w,
                         show_button_bg=kwargs.get("show_button_bg", True),
                         shadow=shadow, tint=trigger_tint,
@@ -8176,12 +8179,13 @@ def draw_dropdown(input_value, collection, name, draw_state, unique, drop_down_s
     # leave the items. Neither may become the next menu's permanent size.
     menu_width, menu_height, menu_top = _dd_popup_geometry(
         collection, getattr(drop_down_state, "search_query", ""),
-        trigger_top, trigger_h, open_upwards, menu_min_width)
+        trigger_top, trigger_h, open_upwards, max(trigger_w, menu_min_width or 0))
+    menu_left = max(0, min(trigger_left, imgui.get_io().display_size[0] - menu_width))
     changed, new_item, menu_ds = draw_dd_menu(
         collection, tint=draw_state.tint,
         name=f"{unique}_menu",
         closed=not is_open, temp=True, shadow=False, auto_resize=False,
-        window_pos=(0, menu_top - imgui.get_cursor_screen_pos()[1]),
+        window_pos=(menu_left - imgui.get_cursor_screen_pos()[0], menu_top - imgui.get_cursor_screen_pos()[1]),
         width=menu_width, height=menu_height,
         parent_window=draw_state, swoosh=False, disable_scroll=False,
         row_tags=kwargs.get("row_tags"),
@@ -8530,6 +8534,9 @@ def _dd_close(root_state):
     search query, and release the search box's text focus if it held it."""
     if root_state is None:
         return
+    menu = getattr(root_state, "_menu_ds", None)
+    if menu is not None:
+        menu.closed = True
     root_state._pending_pick = None
     open_was = _dd_as_tuple(root_state.open_path)
     root_state.open_path = ()
@@ -9043,7 +9050,7 @@ def _dd_leaf_row(key, value, label, draw_state, root_state, path_prefix,
 
 
 @render_func(use_cache=True, show_bg=True, shadow=True, selectable=False, temp=True,
-             closable=True, melty_window=False, auto_resize=True, with_header=None,
+             closable=True, popover=True, melty_window=False, auto_resize=True, with_header=None,
              max_height=420, min_width=300, swoosh=False, min_height=33, keep_in_view=True)
 def draw_dd_menu(input_value, draw_state, root_state=None, unique=0, path_prefix=(), tint=None,
                  show_search=None, text_align="right", row_tags=None, row_tints=None,

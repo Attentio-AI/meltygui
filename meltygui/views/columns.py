@@ -615,7 +615,7 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     # OS edges stayed one step short of the return, 09-13 - and pops after)
     i = 0 if axis == "x" else 1
     pinned = bool(getattr(window, "_frame_pinned", False))
-    parent = getattr(window, "parent_window", None)
+    parent = os_frame._frame_parent(window)
     is_root = parent is None
     # Whose coordinates move with the SURFACE: a root's (free: apply_rebase
     # re-bases its window_pos to track the origin; pinned: its edges are
@@ -639,10 +639,9 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     hangs_far = (not is_root and rides_surface and os_frame._driver_of(window, axis) == "far")
     if os_ctx is None or not rides_surface:
         origin_now = 0.0
-    elif not is_root and os_frame._has_pin_anchor(window):
-        base = window.clip_anchor_base
-        anchor = base[0] if axis == "x" else window._pinned_base_y(base[1], window.anchor_offset[1])
-        origin_now = os_ctx.base - os_frame._screen_pos(window, axis) + anchor
+    elif not is_root and os_frame._has_measured_anchor(window):
+        base = os_frame._anchor_base(window)
+        origin_now = os_ctx.base - os_frame._screen_pos(window, axis) + base[i]
     elif hangs_far:
         origin_now = os_frame.edges(axis)[1][axis] + os_ctx.base       # the OS far edge, screen coords
     else:
