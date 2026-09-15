@@ -51,7 +51,7 @@ harnesses that drive frames themselves.
 import threading
 import time
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 
 from src.lsd.gl_gui.melty import Melty
 from src.lsd.gl_gui.toggles import Toggles

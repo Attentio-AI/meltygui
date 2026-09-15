@@ -16,7 +16,7 @@ from types import NoneType
 from typing import Any
 
 import OpenGL.GL as gl
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import math
 import numpy
 from imgui.core import _DrawList

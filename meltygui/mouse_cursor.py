@@ -35,7 +35,7 @@ own cursor image — that owner reports through ``note_external_cursor``.
 import os
 import struct
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 
 ARROW = imgui.MOUSE_CURSOR_ARROW

@@ -9,7 +9,7 @@ where it used to be defined, so registration order and
 import math
 
 import OpenGL.GL as gl
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 import numpy
 from imgui.core import _DrawList

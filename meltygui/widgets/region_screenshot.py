@@ -24,7 +24,7 @@ it — top-left `x, y` and `w × h` in window points — so the tool doubles as
 a measure tool (drag over a thing, read its rect off the label, Esc).
 """
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 

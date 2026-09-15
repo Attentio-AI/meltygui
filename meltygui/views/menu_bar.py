@@ -24,7 +24,7 @@ menu bar does. Hovering another title while a menu is open switches to it.
 import traceback
 from colorsys import rgb_to_hsv, hsv_to_rgb
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 
 from src.lsd.gl_gui.melty import Melty

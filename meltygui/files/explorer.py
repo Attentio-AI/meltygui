@@ -63,7 +63,7 @@ import os
 import re
 from pathlib import Path
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 
 from src.lsd.gl_gui.hdr_color import pack_color

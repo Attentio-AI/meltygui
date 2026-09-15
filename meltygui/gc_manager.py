@@ -762,7 +762,7 @@ def _window_focused(Melty) -> bool:
     if window is None:
         return True
     try:
-        import glfw
+        from src.lsd.gl_gui import window_api as glfw
         return bool(glfw.get_window_attrib(window, glfw.FOCUSED))
     except Exception:
         return True

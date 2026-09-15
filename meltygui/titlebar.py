@@ -34,7 +34,7 @@ each frame, so flipping the toggle takes effect without a restart.
 import ctypes
 import time
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 import OpenGL.GL as gl
 
@@ -596,14 +596,15 @@ def _activate_button(kind, window):
 
 
 def _studio_window():
-    """The studio's GLFW window handle, or None. Only a real ctypes handle
-    passes: a mocked vis (the test harness) hands back a MagicMock, which
-    ctypes coerces through __int__ into a garbage pointer that GLFW
-    segfaults on."""
+    """The active OS window, accepting both native and GLFW handles.
+
+    Keep mocked vis handles out: ctypes can coerce MagicMock to a garbage
+    pointer. Native windows are Python objects with a class-level marker.
+    """
     import ctypes
     from src.lsd.gl_gui.melty import Melty
     window = Melty.glfw_window or getattr(Melty.vis, "window", None)
-    return window if isinstance(window, ctypes._Pointer) else None
+    return window if glfw.is_native_window(window) or isinstance(window, ctypes._Pointer) else None
 
 
 def _main_window_ds():

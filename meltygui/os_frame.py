@@ -27,7 +27,7 @@ them along. Without a position (extension not installed, no bus) the OS
 edges are immovable walls at the display's edges and the old in-display
 pin-and-slide is what remains. Gate: Toggles.Melty.push_os_window_edges.
 """
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 
 # Smallest OS window the physics allows (content px): the OS frame cell is
 # zero, so a drag to it pushes the other OS edge instead of collapsing.
@@ -89,6 +89,7 @@ _STATE.setdefault("size_observed", [None, None])
 _STATE.setdefault("size_request_frame", [None, None])
 _STATE.setdefault("learned", {"x": [None, None], "y": [None, None]})
 _STATE.setdefault("pin_rebases", {})
+_STATE.setdefault("move_requests", {"x": [], "y": []})
 
 
 def _trace(msg):
@@ -119,6 +120,7 @@ def reset(reason="studio start"):
     _STATE["size_request_frame"] = [None, None]
     _STATE["unapplied_far"] = [0.0, 0.0]
     _STATE["pin_rebases"] = {}
+    _STATE["move_requests"] = {"x": [], "y": []}
     _STATE["window_id"] = None
     _STATE["feed_far"] = [None, None]
     _STATE["generation"] += 1
@@ -429,6 +431,8 @@ def begin_frame():
     callback) and the observed position — and fold in what we did not
     request."""
     from src.lsd.gl_gui.melty import Melty
+    # Surfaces saved before this code was hotswapped have no move history.
+    _STATE.setdefault("move_requests", {"x": [], "y": []})
     _STATE["frame"] = Melty.frame_count
     _STATE["consumed"] = {"x": False, "y": False}
     display = Melty.display_size
@@ -452,6 +456,9 @@ def begin_frame():
         scr_near, scr_far = _STATE["screen"][axis]
         scr_near[axis], scr_far[axis] = area[i], area[i] + area[i + 2]
         near, far = _STATE["edges"][axis]
+        requested_size = (bool(_STATE["size_requests"][axis])
+                          and _STATE["size_expected"][i] is not None
+                          and abs(feed_far[i] - pos[i] - _STATE["size_expected"][i]) < 1.0)
         size_pending = _observe_size(axis, size[i])
         expected = _STATE["expected"][i]
         if expected is None:                      # first sight
@@ -475,31 +482,45 @@ def begin_frame():
         if pos[i] != expected:
             flight = _STATE["inflight"][i]
             asked = _STATE["last_offset"][i]
-            # A request FOR SIZE landed while the position stayed exactly
-            # where it was is not "still landing": the compositor processed
-            # it and refused the move (its own clamp) - fold it in NOW, so
+            # A move whose SIZE landed at a different position is not
+            # necessarily "still landing": the compositor can clamp only
+            # part of a move, or shift a resize to respect its own inset.
+            # Fold that constraint in now, so
             # _foreign_change learns the wall this frame, not INFLIGHT_FRAMES
             # later with the far edge ratcheting meanwhile.
             # ... read off the FEED's own far edge (its size = far - pos):
             # only the compositor's committed state shows the new size at
             # the old position; a request merely in flight shows the old
             # size ( (glfw's framebuffer alone landed a frame earlier).
-            refused = (asked and abs(pos[i] - (expected - asked)) <= 1.0
+            refused = (asked and (pos[i] - expected) * asked < 0
                        and _STATE["size_expected"][i] is not None
                        and abs((feed_far[i] - pos[i]) - _STATE["size_expected"][i]) < 1.0)
-            if flight is not None and Melty.frame_count - flight <= INFLIGHT_FRAMES and not refused:
+            # With a size floor, all moves with different sizes. An
+            # older requested box is an in-flight reply, not a refusal of
+            # the latest move. Rebasing to it would send the offset twice.
+            moves = _STATE["move_requests"][axis]
+            observed_box = (pos[i], feed_far[i] - pos[i])
+            older_reply = any(abs(observed_box[0] - at) < 1.0 and abs(observed_box[1] - extent) < 1.0
+                              for at, extent in moves)
+            if older_reply:
+                refused = False
+            constrained = requested_size and _any_button_down() and not older_reply
+            if flight is not None and Melty.frame_count - flight <= INFLIGHT_FRAMES and not (refused or constrained):
                 pass                              # still landing
             else:
+                _STATE["move_requests"][axis].clear()
                 d = pos[i] - expected
                 _STATE["expected"][i] = pos[i]
                 _STATE["inflight"][i] = None
                 far_seen = _STATE["feed_far"][i]
                 far_held = far_seen is not None and abs(feed_far[i] - far_seen) < 1.0
                 _STATE["feed_far"][i] = feed_far[i]
-                _foreign_change(axis, d, size[i], far_held)
+                _foreign_change(axis, d, size[i], far_held, constrained=constrained)
                 continue
         else:
             _STATE["inflight"][i] = None
+            _STATE["move_requests"][axis].clear()
+            _STATE["last_offset"][i] = 0
             _STATE["feed_far"][i] = feed_far[i]
         # Size: ours lands at frame start (size_expected); anything else is
         # the compositor's - the far edge moved.
@@ -557,7 +578,7 @@ def _walls_to_edges(axis):
     scr_far[axis] = max(scr_far[axis], far[axis])
 
 
-def _foreign_change(axis, d, size, far_held):
+def _foreign_change(axis, d, size, far_held, constrained=False):
     """The window's near edge is ``d`` px from where we expected it and we
     asked for nothing: the compositor moved or resized the studio.
     ``far_held`` — the feed's own far edge (x + width) did not move → a
@@ -593,30 +614,32 @@ def _foreign_change(axis, d, size, far_held):
         gesture = _STATE["gestures"].get(axis)
         if gesture is not None:
             gesture["snap"] = [value + d for value in gesture["snap"]]
+            for identity, saved in list(gesture.get("windows", {}).items()):
+                n, f, floor, span, edge_values = saved
+                gesture["windows"][identity] = (n + d, f + d, floor, span, edge_values)
         os_seen = _STATE["os_seen"][i]
         if os_seen is not None:
             _STATE["os_seen"][i] = (os_seen[0] + d, os_seen[1] + d)
         far[axis] = near[axis] + size
-        asked = _STATE["last_offset"][i]
-        if asked and abs(d + asked) <= 1.5:
-            # The compositor undid exactly the move we asked for: the edge
-            # we pushed is clamped THERE (Hyprland keeps a floating window's
-            # strip at 1 while the work area says 0, 09-13). Learn the wall
-            # for the gesture - the flip then has no room on that side - and
-            # pull the OTHER edge back toward the work area: the size DID
-            # land, so the far edge now overhangs by the refused move, and
-            # left "where it is" the next flip grew it by one more each
-            # frame (the studio's size ratcheting below the display).
-            scr_near, scr_far = _STATE["screen"][axis]
-            learned = _STATE["learned"][axis]
-            if asked < 0:
-                learned[0] = near[axis]
-                far[axis] = min(far[axis], scr_far[axis])
-            else:
-                learned[1] = far[axis]
-                near[axis] = max(near[axis], scr_near[axis])
-            _trace(f"{axis}: move {asked:+.0f} refused — wall learned at "
-                   f"{learned[0] if asked < 0 else learned[1]:.0f}")
+    asked = _STATE["last_offset"][i]
+    if constrained or (asked and d * asked < 0):
+        # The compositor constrained our move/resize, possibly only partly:
+        # the displaced edge is clamped THERE. Learn that wall
+        # for the gesture - the flip then has no room on that side - and
+        # pull the OTHER edge back inside the work area: the size changes
+        # land, so the far edge now overhangs by the refused move, and
+        # left "where it is" the next flip grew it by one more screen
+        # size (the studio's bottom ratcheting below the display).
+        scr_near, scr_far = _STATE["screen"][axis]
+        learned = _STATE["learned"][axis]
+        if d > 0:
+            learned[0] = near[axis]
+            far[axis] = min(far[axis], scr_far[axis])
+        else:
+            learned[1] = far[axis]
+            near[axis] = max(near[axis], scr_near[axis])
+        _trace(f"{axis}: move/resize constrained (offset {asked:+.0f}) — wall learned at "
+               f"{learned[0] if d > 0 else learned[1]:.0f}")
     _STATE["size_expected"][i] = size
 
 
@@ -871,38 +894,32 @@ ROOT_FAR, OS_FAR, OS_NEAR, ROOT_NEAR = 0, 1, 2, 3
 
 
 def _flat_chain_ranked(os_pair, roots, axis):
-    """Every OS-level edge in position order as (edge, role), ties (within
-    CHAIN_TOL) by role."""
+    """Position-ordered window edges enclosed by the two OS boundaries.
+
+    Preserve real window-edge order even when a window overhangs the OS
+    frame. Clamping every sort coordinate into the OS span and then sorting
+    by role reversed a fully outside window's near/far pair, making a
+    positive-length cycle with its own minimum-size cell.
+    """
     near, far = os_pair
-    ranked = [(far, OS_FAR), (near, OS_NEAR)]
-    for _ds, n, f, _floor in roots:
-        ranked.append((f, ROOT_FAR))
-        ranked.append((n, ROOT_NEAR))
-    # An edge PAST the OS edge is in that edge's way: it orders as if inside
-    # it (its sort key clamped into the OS span; the roles then place it
-    # just inside), so an OS edge moving inward pushes it back to itself
-    # and on from there. Sorted by its real position it sat beyond the OS
-    # edge, which never touched it again - a popover hung off a corner
-    # near the OS edge is never overhanging and stayed clipped for good
-    # (Lukas 08-27); a root dragged partly off the display comes back the
-    # other way. Outward motion of the OS edge never pulls (no caps).
-    lo, hi = near[axis], far[axis]
-    ranked.sort(key=lambda item: item[0][axis] if item[1] in (OS_FAR, OS_NEAR)
-                else min(max(item[0][axis], lo), hi))
-    # neighbours within tolerance settle by rank (a bubble over a short
-    # list) - measured on the clamped keys, so an edge past the OS edge
-    # ties with it and its role puts it inside
-    def key(item):
-        return item[0][axis] if item[1] in (OS_FAR, OS_NEAR) else min(max(item[0][axis], lo), hi)
-    changed = True
-    while changed:
-        changed = False
-        for k in range(len(ranked) - 1):
-            a, b = ranked[k], ranked[k + 1]
-            if abs(key(b) - key(a)) < CHAIN_TOL and a[1] > b[1]:
-                ranked[k], ranked[k + 1] = b, a
-                changed = True
-    return ranked
+    ranked = []
+    for _window, window_near, window_far, _floor in roots:
+        ranked.extend(((window_near, ROOT_NEAR), (window_far, ROOT_FAR)))
+    ranked.sort(key=lambda item: item[0][axis])
+    # Make genuinely coincident window edges settle by role. Their real
+    # ordering remains intact outside the surface as well as inside it.
+    for index in range(1, len(ranked)):
+        cursor = index
+        while cursor > 0:
+            previous, current = ranked[cursor - 1], ranked[cursor]
+            if (abs(current[0][axis] - previous[0][axis]) >= CHAIN_TOL
+                    or previous[1] <= current[1]):
+                break
+            ranked[cursor - 1], ranked[cursor] = current, previous
+            cursor -= 1
+    # The OS edges are the enclosing boundaries, including for an
+    # overhanging window: an inward push must still be able to reach it.
+    return [(near, OS_NEAR), *ranked, (far, OS_FAR)]
 
 
 def _flat_chain(os_pair, roots, axis):
@@ -1108,7 +1125,9 @@ def solve():
         # A frame-pinned app root IS the OS frame, not another obstacle
         # inside it. A duplicate proxy root to wall off the inspector
         # since an inward OS edge could reach and compress it.
-        windows = [ds for ds in _colliding_windows() if not _frame_pinned(ds)]
+        windows = [ds for ds in _colliding_windows()
+                   if not _frame_pinned(ds)
+                   and not getattr(ds, "_capped_x" if axis == "x" else "_capped_y", False)]
         window_ids = {id(ds) for ds in windows}
 
         def collision_root(ds):
@@ -1123,6 +1142,22 @@ def solve():
                 children_of.setdefault(id(root), []).append(ds)
         frames = {id(ds): _frame_of(ds, axis, applied) for ds in windows}
         start = {wid: (n[axis], f[axis]) for wid, (n, f, _fl, _sz) in frames.items()}
+        gesture = gestures.get(axis)
+        if own:
+            from src.lsd.gl_gui.view.core_views.columns import snapshot_edges
+            if gesture is None:
+                gesture = gestures[axis] = {"snap": list(cur), "totals": [0.0, 0.0], "windows": {}}
+            snapshots = gesture.setdefault("windows", {})
+            for window in windows:
+                identity = id(window)
+                n, f, floor, size = frames[identity]
+                if identity not in snapshots:
+                    snapshots[identity] = (n[axis], f[axis], floor, size, snapshot_edges(window, axis))
+                saved_near, saved_far, floor, size, saved_edges = snapshots[identity]
+                n[axis], f[axis] = saved_near, saved_far
+                frames[identity] = n, f, floor, size
+                for edge, value in saved_edges:
+                    edge[axis] = value
         os_floor = max([MIN_SIZE[i]] + [_window_floor(ds, axis) for ds in _movable_roots()
                                        if _frame_pinned(ds) and _open(ds)])
 
@@ -1162,7 +1197,8 @@ def solve():
         # plus the accumulated total, not the current position plus this
         # frame's increment - a step lost to the screen wall is not
         # forgotten, and the edge returns to where it began when the hand
-        # does. (The roots the drag pushed keep their new positions.)
+        # does. The affected window frames and their layout edges are
+        # restored above, so their geometry returns with the OS edge.
         # The gesture lives while a mouse button is held.
         gesture = gestures.get(axis)
         for index, inc in own:
@@ -1258,6 +1294,12 @@ def solve():
             n0, f0 = start[wid]
             n_a, f_a = after_a[wid]
             delta, new_size = n_a - n0, f_a - n_a
+            parent = getattr(ds, "parent_window", None)
+            if id(parent) in after_a:
+                # A parent's solved anchor edge already carries its child.
+                # Write back the child's remaining motion in parent coordinates.
+                anchor = 0 if _driver_of(ds, axis) == "near" else 1
+                delta -= after_a[id(parent)][anchor] - start[id(parent)][anchor]
             if wid in extents:
                 n_b, f_b, nb0, fb0 = extents[wid]
                 delta += n_b[axis] - nb0
@@ -1312,6 +1354,12 @@ def flush():
         if _STATE["mode"] != "walls":
             expected = _STATE["expected"][i]
             if expected is not None and abs(near[axis] - expected) > 0.5:
+                moves = _STATE["move_requests"][axis]
+                previous = (expected, _STATE["size_expected"][i])
+                if not moves or moves[-1] != previous:
+                    moves.append(previous)
+                # Keep a bounded history even if the OS feed stalls.
+                del moves[:-INFLIGHT_FRAMES * 2]
                 offset[i] = int(round(near[axis] - expected))
                 _STATE["expected"][i] = expected + offset[i]
                 _STATE["inflight"][i] = Melty.frame_count
@@ -1325,7 +1373,10 @@ def flush():
         if (recent or size[i] != _STATE["size_observed"][i]) and (not recent or recent[-1] != size[i]):
             recent.append(float(size[i]))
             _STATE["size_request_frame"][i] = Melty.frame_count
-    _STATE["last_offset"] = [offset[0], offset[1]]
+    for i in range(2):
+        if offset[i]:
+            # A size-only follow-up must not overwrite the unacknowledged move.
+            _STATE["last_offset"][i] = offset[i]
     inset = int(titlebar.window_inset())
     surface = (size[0] + 2 * inset, size[1] + 2 * inset)
     if _STATE["mode"] == "x11":

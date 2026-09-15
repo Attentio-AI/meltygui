@@ -643,13 +643,14 @@ def default_write_source(attr_name, draw_state, class_to_show=None, srcs=None):
     info tab's picker preselection.
 
     1. A source already setting the attr wins (the normal driving pick).
-    2. Otherwise, use the view's OTHER params as a cue: the writable source
+    2. Otherwise, use the source setting view_func when available.
+    3. With no view_func source, use the view's OTHER params as a cue: the writable source
        already defining the most of them is where this view is being
        configured, so a new param belongs there too (SourcePriority as the
        tie-breaker). The signature is excluded — it defines EVERY param by
        construction and would always win — and so is the draw_state (it's
        the fallback, not a configuration site).
-    3. No cue at all: the highest-priority writable code source, else the
+    4. No cue at all: the highest-priority writable code source, else the
        draw_state."""
     if srcs is None:
         srcs = _sources_for(draw_state, class_to_show)
@@ -672,6 +673,9 @@ def default_write_source(attr_name, draw_state, class_to_show=None, srcs=None):
 
     target = _setting_source(srcs, attr_name)
     if target is not None and _eligible(target):
+        return target
+    target = _setting_source(srcs, "view_func")
+    if target is not None:
         return target
     others = set(view_param_names(draw_state))
     others.discard(attr_name)
@@ -910,7 +914,8 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
 
     The DRIVING source is the highest-priority (SourcePriority order) writable
     source that currently sets the attr; when none sets it, the value stamps
-    into the render function's signature defaults (the + button's fallback).
+    alongside view_func, or into the signature defaults when no source sets
+    view_func (the + button's fallback).
     Returns the source name written to, or None when nothing writable exists.
 
     Sanity cross-check, not bulletproof: if the driving source's pre-write
@@ -924,8 +929,9 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
 
     `ds_fallback` changes what happens when NO source sets the param: instead
     of stamping the signature default (the + affordance's behavior), the value
-    is kept on the draw_state. Also generic-accessor behavior — see the branch
-    below.
+    follows the source setting view_func, falling back to draw_state when
+    there is none. This also applies to auto-state params driven only by
+    default layers; higher-priority sources keep their existing writes.
 
     `source` names an EXPLICIT target (a registered source name, or the
     literal "draw_state") — the info tab's per-param picker passes it. It
@@ -1001,26 +1007,9 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
                        if s in _writable
                        and _pref_matches(pref, srcs["kinds"].get(s))), None)
     if target is None and ds_fallback:
-        # The DRAW_STATE is the DEFAULT write target: a plain ds.<param>
-        # write (the attribute is CREATED if it doesn't exist yet, same as
-        # the auto-state mirror and hand-rolled panels), which the wrapper
-        # feeds back into kwargs and persists as a diverged auto_param.
-        # Only a source that genuinely outranks the auto-state layer at
-        # runtime (_ABOVE_DRAW_STATE: comment, mode, caller, child_kwargs,
-        # @window) claims the edit into code state. A lower-layer source
-        # (signature default, @defaults, class var, codec) must NOT stamp it:
-        # the ds write beats those at runtime anyway, and e.g. rewriting
-        # `def draw_x(param=...)` would recompile the module per slider drag.
-        #
-        # "Beats those at runtime" is true for AUTO-STATE-MIRRORED params,
-        # whose ds write rides kwargs as a diverged auto_param. A RESERVED
-        # DrawState field (tint - auto-state param names DrawState already
-        # owns) stays at the DRAW_STATE source instead: the cascade's LAST
-        # fallback, shadowed by ANY setting source (the Lora's injected
-        # instance .tint kept winning while the header wrote ds.tint - the
-        # swatch snapped back every frame). For reserved params the fallback
-        # only applies when NO source sets the param; otherwise fall through
-        # and write the driving source itself.
+        # Preserve sources above auto-state and existing reserved param
+        # sources (such as tint). Otherwise save alongside view_func, with
+        # the old draw_state fallback for calls without a renderer source.
         _setting = _setting_source(srcs, attr_name)
         _kind = srcs["kinds"].get(_setting) if _setting is not None else None
         from src.lsd.gl_gui.view.core_views.core_render import (
@@ -1031,20 +1020,24 @@ def set_anywhere(attr_name, value, draw_state, class_to_show=None, allow_any=Fal
         if (_setting is None
                 or (_mirrored
                     and _source_priority(_kind)[0] not in _ABOVE_DRAW_STATE)):
-            if attr_name == "view_func":
-                draw_state.auto_params[attr_name] = value
-                draw_state.invalidate_up(max_depth=6)
-            else:
-                setattr(draw_state, attr_name, value)
-            # Stamp provenance like every explicit target - without it a ds
-            # write is invisible ("where did my line_height=2 go?"): the
-            # value lives only in auto_params.
-            _last_ds = getattr(draw_state, "_sa_last_source", None)
-            if _last_ds is None:
-                _last_ds = {}
-                draw_state._sa_last_source = _last_ds
-            _last_ds[attr_name] = "draw state"
-            return "draw state"
+            target = _setting_source(srcs, "view_func")
+            if target is None:
+                if attr_name == "view_func":
+                    draw_state.auto_params[attr_name] = value
+                    draw_state.invalidate_up(max_depth=6)
+                else:
+                    setattr(draw_state, attr_name, value)
+                # Stamp provenance like every other target - without it a ds
+                # write is invisible ("where did my line_height=2 go?"): the
+                # value lives only in auto_params.
+                _last_ds = getattr(draw_state, "_sa_last_source", None)
+                if _last_ds is None:
+                    _last_ds = {}
+                    draw_state._sa_last_source = _last_ds
+                _last_ds[attr_name] = "draw state"
+                return "draw state"
+    if target is None and _setting_source(srcs, attr_name) is None:
+        target = _setting_source(srcs, "view_func")
     if target is None:
         target = _driving_source(srcs, attr_name)
     if target is None:

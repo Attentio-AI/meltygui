@@ -335,7 +335,7 @@ def _capture_points(window, left, top, w, h, name):
     GL_BACK and save it as a PNG named after `name`. The one framebuffer
     reader: window / view captures pass a draw_state's box, the region tool
     passes the user's drag box."""
-    import glfw
+    from src.lsd.gl_gui import window_api as glfw
     import numpy as np
     import OpenGL.GL as gl
     from PIL import Image

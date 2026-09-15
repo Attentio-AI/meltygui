@@ -159,7 +159,7 @@ def detect_auto_scale(window=None) -> float:
     primary monitor when the window is None or sits off every monitor
     (mid-drag between screens). 1.0 on any glfw failure."""
     try:
-        import glfw
+        from src.lsd.gl_gui import window_api as glfw
         target = None
         if window is not None:
             wx, wy = glfw.get_window_pos(window)

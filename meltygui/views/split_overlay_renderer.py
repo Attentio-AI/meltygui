@@ -20,8 +20,8 @@ from src.lsd.gl_gui.style import adjust_text_color
 
 import OpenGL.GL as gl
 import imgui
-import glfw
-from imgui.integrations.glfw import GlfwRenderer
+from src.lsd.gl_gui import window_api as glfw
+from src.lsd.gl_gui.window_backends.imgui_renderer import WindowRenderer
 from imgui.integrations.opengl import (
     get_common_gl_state,
     restore_common_gl_state,
@@ -41,7 +41,7 @@ class _FakeWindowRect:
         self.height = h
 
 
-class SplitOverlayRenderer(GlfwRenderer):
+class SplitOverlayRenderer(WindowRenderer):
     debug_overlay_mask = False  # one-shot diagnostics of window-mask overlay
     # ISOLATION TEST: when set, inject a synthetic high-layer "window" with this
     # fixed-screen rect into window_channels, so it flows through the SAME
@@ -129,7 +129,7 @@ class SplitOverlayRenderer(GlfwRenderer):
     }
     """
 
-    _STOCK_FRAGMENT_SHADER_SRC = GlfwRenderer.FRAGMENT_SHADER_SRC
+    _STOCK_FRAGMENT_SHADER_SRC = WindowRenderer.FRAGMENT_SHADER_SRC
 
     def __init__(self, window, attach_callbacks: bool = True):
         # Set before super().__init__: it builds the device objects (shader)
@@ -359,6 +359,8 @@ class SplitOverlayRenderer(GlfwRenderer):
     # edge) since the press - excluded from the slide.
     _slide_last = None
     _slide_clamped = (0.0, 0.0)
+    _slide_screen_origin = None
+    _slide_native_sample = None
     SLIDE_DEADBAND = 1.5
 
     def _cancel_surface_slide(self, io):
@@ -378,7 +380,42 @@ class SplitOverlayRenderer(GlfwRenderer):
             self._slide_base = None
             self._slide_last = None
             self._slide_clamped = (0.0, 0.0)
+            if not down:
+                self._slide_screen_origin = None
+                self._slide_native_sample = None
+                return
+            # Native seats deliver only surface-local motion. The geometry feed
+            # still tells us how far the surface moved: subtract that change
+            # from the drag, without treating a stationary relative pointer as a
+            # stationary hand. Keep this baseline local to the window/gesture.
+            window = getattr(self, 'window', None)
+            generation = (window.cursor_motion_generation
+                          if glfw.is_native_window(window) else None)
+            sample = self._slide_native_sample
+            if generation is not None and sample is not None and sample[0] == generation:
+                # Native Wayland retains the last surface-local sample until
+                # wl_pointer.motion. A configure/feed update alone must not
+                # combine that OLD sample with a NEW surface origin: doing so
+                # turns the window's own translation into another phantom slide.
+                io.mouse_pos = sample[1]
+                return
+            from src.lsd.gl_gui import geometry_feed
+            rect = geometry_feed.frame_rect()
+            if rect is None:
+                self._slide_screen_origin = None
+                return
+            origin = rect[:2]
+            if self._slide_screen_origin is None:
+                self._slide_screen_origin = origin
+            mx, my = io.mouse_pos
+            if mx > -1e6 and my > -1e6:
+                ox, oy = self._slide_screen_origin
+                io.mouse_pos = (mx + origin[0] - ox, my + origin[1] - oy)
+                if generation is not None:
+                    self._slide_native_sample = (generation, tuple(io.mouse_pos))
             return
+        self._slide_screen_origin = None
+        self._slide_native_sample = None
         mx, my = io.mouse_pos
         if mx < -1e6 or my < -1e6:
             return

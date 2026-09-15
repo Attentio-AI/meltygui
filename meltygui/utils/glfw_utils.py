@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 
 from src.lsd.gl_gui.toggles import Toggles
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import Core

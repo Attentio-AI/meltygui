@@ -30,7 +30,7 @@ def _hint_glfw_library(cache):
 
 
 def remember_glfw_library(cache):
-    import glfw
+    from src.lsd.gl_gui import window_api as glfw
     path = getattr(getattr(glfw, '_glfw', None), '_name', None)
     if not path or not os.path.isabs(path):
         return

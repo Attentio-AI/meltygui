@@ -37,7 +37,7 @@ import ctypes
 import os
 import struct
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 
 # Two scopes, both surviving hotswap (module re-exec reuses the dicts).
 #
@@ -694,8 +694,9 @@ def attach(window, tag=None):
             _STATE["error"] = "GLFW exposes no Wayland display/surface"
             return False
         _STATE["display"] = display
-        glfw_window = wl.wl_proxy_get_user_data(surface)
-        toplevel = _find_proxy(glfw_window, b"xdg_toplevel")
+        native_window = glfw.is_native_window(window)
+        glfw_window = None if native_window else wl.wl_proxy_get_user_data(surface)
+        toplevel = window.toplevel if native_window else _find_proxy(glfw_window, b"xdg_toplevel")
         if not toplevel or wl.wl_proxy_get_class(toplevel) != b"xdg_toplevel":
             _STATE["error"] = ("no xdg_toplevel in the GLFW window (libdecor owns "
                                "the surface? Toggles.Melty.wayland_native_frame)")
@@ -708,7 +709,7 @@ def attach(window, tag=None):
         _STATE["opcodes"].update(ops)
         # The xdg_surface beside it: set_window_geometry tells the compositor
         # the window's REAL edges (the content rect inside the shadow margin).
-        xdg_surface = _find_proxy(glfw_window, b"xdg_surface")
+        xdg_surface = window.xdg_surface if native_window else _find_proxy(glfw_window, b"xdg_surface")
         if xdg_surface and wl.wl_proxy_get_class(xdg_surface) == b"xdg_surface":
             geo = _opcodes(xdg_surface, {b"set_window_geometry"})
             if "set_window_geometry" in geo:
@@ -717,7 +718,7 @@ def attach(window, tag=None):
         _STATE["surface"] = surface
         # The EGL window beside them: its attach offset is the client-side
         # window rect the OS-edge physics rides (os_frame.flush at the flip).
-        _STATE["egl_window"] = _find_egl_window(glfw_window, surface)
+        _STATE["egl_window"] = window.egl_window if native_window else _find_egl_window(glfw_window, surface)
         if not _bind_connection(display):
             _STATE["error"] = _CONN["error"]
             return False

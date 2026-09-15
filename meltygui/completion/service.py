@@ -674,7 +674,7 @@ def _wake(ds):
         pass
     try:
         if getattr(_melty(), "vis", None) is not None:     # a window exists (not headless)
-            import glfw
+            from src.lsd.gl_gui import window_api as glfw
             glfw.post_empty_event()
     except Exception:
         pass

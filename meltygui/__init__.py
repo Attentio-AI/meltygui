@@ -16,10 +16,18 @@ docstring); views are resolved lazily so the heavy modules load on the
 import thread, not at ``import melty``. The TYPE_CHECKING block below gives
 IDEs and type checkers the real definitions for completion.
 """
+import os
+import sys
+
+# Wayland windows use EGL with either backend. Select PyOpenGL's dispatch before
+# importing renderer code, including extensions that use Melty eagerly.
+if sys.platform.startswith('linux') and (os.environ.get('WAYLAND_DISPLAY') or os.environ.get('WAYLAND_SOCKET')):
+    os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
+
 from typing import TYPE_CHECKING
 from src.lsd.gl_gui.style import Style, default_tint_accumulation, default_scalar_accumulation
 
-from src.lsd.gl_gui.app import glfw_window, run, pressed, content_size, mark, persisted
+from src.lsd.gl_gui.app import boot, glfw_window, run, pressed, content_size, mark, persisted
 from src.lsd.gl_gui.app_search import global_search
 
 if TYPE_CHECKING:   # IDE / type checkers only; never executed
@@ -72,6 +80,12 @@ _FUNCS = {
 
 
 def __getattr__(name):
+    if name == 'toggles':
+        from src.lsd.gl_gui.toggles import Toggles
+        return Toggles
+    if name == 'window_api':
+        from src.lsd.gl_gui import window_api
+        return window_api
     spec = _VIEWS.get(name) or _FUNCS.get(name)
     if spec is None:
         raise AttributeError(name)
@@ -83,5 +97,5 @@ def __getattr__(name):
     return value
 
 
-__all__ = ['Style', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'global_search',
+__all__ = ['Style', 'boot', 'glfw_window', 'run', 'pressed', 'content_size', 'mark', 'persisted', 'global_search', 'toggles', 'window_api',
            *_FUNCS, *_VIEWS]

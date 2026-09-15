@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import ctypes
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 
 from src.lsd.gl_gui.wayland_move import (_c, _iface_addr, _wl_interface, _wl_message,
                                          _wl_message_array)

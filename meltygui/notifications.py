@@ -7,7 +7,7 @@ import time
 from collections import deque, defaultdict
 from contextlib import contextmanager as _contextmanager
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 

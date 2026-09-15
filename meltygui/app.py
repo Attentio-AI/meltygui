@@ -96,6 +96,11 @@ def boot(app_id=None):
     os.environ.setdefault('GDK_BACKEND', 'wayland')
     from src.lsd.gl_gui import warm_start
     warm_start.prepare(cache)
+    from src.lsd.gl_gui import window_api as glfw
+    from src.lsd.gl_gui.toggles import Toggles
+    backend = glfw.select_backend(Toggles.windows.native_os_windows)
+    if backend == 'wayland':
+        sys._lsd_wayland_libdecor_disabled = True
     # While the import thread holds the GIL, each of pyGLFW's Python-side
     # steps waits up to a switch interval for it (5 ms default: window
     # creation went 80 -> 150 ms). Shorten it until the imports are done.
@@ -104,21 +109,21 @@ def boot(app_id=None):
     thread = threading.Thread(target=_run_imports, name='melty-imports', daemon=True)
     thread.start()
     _state['imports'] = thread
-    import glfw
-    mark('glfw imported')
+    mark(f'{backend} window API ready')
     # libdecor loads its C plugin at init (~60 ms) and the frameless window
     # then shows it: melty's frame hint (Toggles.Melty.wayland_native_frame)
     # disables it and records that for titlebar.py, whose chrome only runs
     # on the native frame. MELTY_LIBDECOR=1 keeps libdecor (compositors
     # without xdg-decoration), which also means the compositor's frame.
-    if os.environ.get('MELTY_LIBDECOR'):
+    if backend == 'glfw' and os.environ.get('MELTY_LIBDECOR'):
         sys._lsd_wayland_libdecor_disabled = False
     from src.lsd.gl_gui.utils.glfw_utils import apply_wayland_frame_hint
     apply_wayland_frame_hint()
     if not glfw.init():
         raise SystemExit('glfw.init failed')
-    mark('glfw.init')
-    warm_start.remember_glfw_library(cache)
+    mark(f'{backend}.init')
+    if backend == 'glfw':
+        warm_start.remember_glfw_library(cache)
     glfw.window_hint(glfw.VISIBLE, False)
     glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 4)
     glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
@@ -129,11 +134,17 @@ def boot(app_id=None):
     glfw.default_window_hints()
     _state['owner'] = owner
     mark('owner window created')
+    # The first eglMakeCurrent loads driver state (~30 ms on NVIDIA). Do it
+    # while the import worker is still running, before joining the worker.
+    glfw.make_context_current(owner)
+    mark('owner context current')
 
 
 def _run_imports():
     try:
-        import numpy  # noqa: F401
+        # PyOpenGL only imports numpy during the first renderer call,
+        # after the driver work could have overlapped it. No GL calls here.
+        from OpenGL.arrays import numpymodule  # noqa: F401
         import imgui  # noqa: F401
         import OpenGL.GL  # noqa: F401
         mark('imgui/numpy/GL imported (bg)')
@@ -159,7 +170,7 @@ def _wait_imports():
 def _init_melty():
     """Once, after the imports: the owner imgui context with the font atlas,
     the global style manager, melty's flags."""
-    import glfw
+    from src.lsd.gl_gui import window_api as glfw
     import imgui
     from src.lsd.gl_gui.melty import Melty
     from src.lsd.gl_gui.fonts import FontManager
@@ -442,7 +453,7 @@ def run():
     _state['ran'] = True
     if not _state['booted']:
         boot()
-    import glfw
+    from src.lsd.gl_gui import window_api as glfw
     _wait_imports()
     _init_melty()
     from src.lsd.gl_gui.melty import Melty
@@ -626,7 +637,7 @@ def _present_children(parent):
     read but never sent."""
     if not parent.children:
         return
-    import glfw
+    from src.lsd.gl_gui import window_api as glfw
     from src.lsd.gl_gui import geometry_feed, titlebar, wayland_move
     prect = geometry_feed.surface_rect(parent.title)
     if prect is None:
@@ -685,7 +696,7 @@ def pressed(combo):
     """Edge-triggered ``'ctrl+s'``-style check against this frame's key
     events of the active window (GLFW press + repeat, so a held chord
     repeats). Modifiers must match exactly."""
-    import glfw
+    from src.lsd.gl_gui import window_api as glfw
     from src.lsd.gl_gui.melty import Melty
     parts = [p.strip().lower() for p in combo.split('+') if p.strip()]
     mods = 0

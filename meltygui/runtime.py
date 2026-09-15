@@ -9,7 +9,7 @@ from copy import copy
 from enum import Enum
 from typing import MutableMapping, Optional
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 from src.lsd.gl_gui import hdr_color
 from src.lsd.gl_gui.hdr_color import pack_color

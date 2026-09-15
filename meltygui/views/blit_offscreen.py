@@ -277,7 +277,7 @@ def _display_max_size() -> Tuple[int, int]:
     reallocate. (0, 0) on any failure — the grow-only path then just rounds
     up from the current framebuffer size instead."""
     try:
-        import glfw
+        from src.lsd.gl_gui import window_api as glfw
         w = h = 0
         for m in glfw.get_monitors():
             mode = glfw.get_video_mode(m)

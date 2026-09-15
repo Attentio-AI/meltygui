@@ -1,5 +1,5 @@
 import time
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 from typing import Callable, Union, Tuple
 from enum import Enum
 

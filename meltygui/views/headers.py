@@ -5,7 +5,7 @@ import types
 from types import NoneType
 from typing import MutableMapping
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 from src.lsd.gl_gui.style import Style

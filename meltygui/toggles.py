@@ -284,13 +284,26 @@ class Tint:
     @staticmethod
     @defaults(tint=(0.17, 0.2, 0.228))
     def line_number_bg():
-        style_manager: ImGuiStyleManager = Core.melty.style_manager
-        active_hsv = style_manager.hsv
-
+        # The gutter follows the editor BODY's painted background, not the main
+        # theme tint: the body is a depth ramp capped at
+        # Toggles.TextEditor.editor_value, but a theme-relative gutter sat a
+        # different distance under that for every file tint (a dark tint left
+        # the strip near black). bg_color_stack[-1] is the fill the editor
+        # painted for the view whose body is running (draw_text is show_bg).
         hue_delta = 0.00
         # Custom knobs - see Toggles.TextEditor.gutter_saturation, gutter_value.
         saturation_factor = Toggles.TextEditor.gutter_saturation
         value_factor = Toggles.TextEditor.gutter_value
+
+        bg_color_stack = Core.melty.bg_color_stack
+        body_bg = bg_color_stack[-1] if isinstance(bg_color_stack, list) and bg_color_stack else None
+        if isinstance(body_bg, (tuple, list)) and len(body_bg) >= 3 and (len(body_bg) < 4 or body_bg[3] > 0):
+            active_hsv = rgb_to_hsv(*body_bg[:3])
+        else:
+            # No painted body (a bare call outside a show_bg run): fall back
+            # to the theme tint, as before.
+            style_manager: ImGuiStyleManager = Core.melty.style_manager
+            active_hsv = style_manager.hsv
 
         active_hsv = ((active_hsv[0] + hue_delta),
                       scale_saturation(active_hsv[1], saturation_factor),
@@ -468,6 +481,13 @@ class Swoosh:
 
 @window(tint=(0.27, 0.19, 0.14))
 class Toggles:
+
+    @defaults(tint=(0.103, 0.341, 0.617))
+    class windows:
+        # Native EGL/Wayland for app windows; GLFW on other display systems.
+        # Chosen when an application's window share group is created.
+        # [tint=(0.103, 0.341, 0.617)]
+        native_os_windows = True
 
     # [tint=(0.811, 0.59, 0.29)]
     dynamic_styles = False
@@ -1109,13 +1129,16 @@ class Toggles:
         usage_heat_shadow_offset = 0.362
         usage_heat_shadow_max = 1.092
         # Gutter background saturation/value — the hsv multipliers
-        # Tint.line_number_bg applies to the theme color (saturation was a
-        # hardcoded 1.6, value a hardcoded 0.35; lower saturation = greyer,
-        # calmer strip; lower value = darker strip).
+        # Tint.line_number_bg applies to the editor BODY's painted background
+        # (the show_bg fill under the text, already capped by editor_value),
+        # so gutter_value is the strip's brightness as a FRACTION of the
+        # body's: 1.0 = same brightness as the text background, lower =
+        # darker strip. Lower saturation = greyer, calmer strip. (Before
+        # 09-14 both applied to the raw theme tint, value 0.325.)
         # [tint=(0.85, 0.75, 0.05), show_tint=True]
         gutter_saturation = 1.046
         # [tint=(0.13, 0.55, 0.13), show_tint=True]
-        gutter_value = 0.325
+        gutter_value = 0.8
         # Gutter TEXT (line numbers) hsv-value guards, applied in
         # Tint.line_number_tint AFTER its value scale: the floor keeps the
         # numbers legible on a dark theme tint, the ceiling stops a bright

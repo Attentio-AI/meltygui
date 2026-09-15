@@ -65,7 +65,7 @@ def current_context():
     state born in one context must run in that context — with several OS
     windows (surface.py) the same name means a different object elsewhere."""
     try:
-        import glfw
+        from src.lsd.gl_gui import window_api as glfw
         import ctypes
         ctx = glfw.get_current_context()
         return ctypes.cast(ctx, ctypes.c_void_p).value if ctx else None

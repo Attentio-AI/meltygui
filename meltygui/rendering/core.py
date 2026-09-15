@@ -12,7 +12,7 @@ from functools import wraps
 from math import ceil
 from typing import Any, get_type_hints
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 from src.lsd.gl_gui.hdr_color import pack_color
 from imgui.core import _DrawList
@@ -2387,7 +2387,11 @@ def render_func(*args, **o_kwargs):
                                     start_y = (handle_drag.y - handle_drag.total_dy) - draw_state.abs_top
                                     draw_state._resize_target_row = _columns.row_edge_under_cursor(
                                         draw_state, start_y, start_x_abs, above=from_top_left)
-                                    draw_state._resize_target_row_y0 = handle_drag.total_dy
+                                    # The first event already includes travel
+                                    # from the press. Consume that too; dropping
+                                    # it offsets every subsequent drag replay.
+                                    if draw_state._resize_target_row_y0 is None:
+                                        draw_state._resize_target_row_y0 = 0.0
                                 row_edge = draw_state._resize_target_row
                                 if row_edge is not None:
                                     inc = handle_drag.total_dy - draw_state._resize_target_row_y0
@@ -2453,7 +2457,8 @@ def render_func(*args, **o_kwargs):
                                     sy = handle_drag.y - handle_drag.total_dy
                                     draw_state._resize_target_edge = _columns.edge_under_cursor(
                                         draw_state, sx, sy, left=from_top_left)
-                                    draw_state._resize_target_edge_x0 = handle_drag.total_dx
+                                    if draw_state._resize_target_edge_x0 is None:
+                                        draw_state._resize_target_edge_x0 = 0.0
                                 edge = draw_state._resize_target_edge
                                 if edge is not None:
                                     inc = handle_drag.total_dx - draw_state._resize_target_edge_x0

@@ -31,7 +31,7 @@ import time
 from collections import defaultdict
 from types import SimpleNamespace
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 import OpenGL.GL as gl
 
@@ -228,17 +228,17 @@ class Surface:
                 self.parent_linked = wayland_move.set_parent(self.toplevel, parent.toplevel)
         self._hook_callbacks()
         Surface.all.append(self)
-        # The chrome chrome window's shadow margin: the content the caller
-        # sized is laid out inside a surface grown by the margin on every
-        # side. Requested like a studio's launch restore - applied at the
-        # first frame (apply_pending_surface_size, self-flagged so the
-        # resize hook leaves it alone) and, on Hyprland, fitted into the
-        # work area: the compositor centres a window at its initial size
-        # and the box grows anchored top-left, so an unfitted window runs
-        # off the screen and its clamps fight the regrow (09-11).
+        # Install the shadow margin BEFORE the first buffer is committed. A
+        # deferred IPC resize overwrites Hyprland's restored content size and
+        # first maps a content box smaller by twice the inset. Grow only the
+        # native surface here; subsequent compositor configures become the
+        # authority for the content size (on_surface_resized adds the margin).
         inset = int(titlebar.window_inset()) if self.chrome else 0
         if inset > 0:
-            titlebar.request_surface_size(self.window, width + 2 * inset, height + 2 * inset, fit=True)
+            content_width, content_height = glfw.get_window_size(self.window)
+            titlebar.set_surface_size(self.window, content_width + 2 * inset,
+                                      content_height + 2 * inset, box=False)
+        titlebar.sync_window_geometry(self.window)
 
     # --- activation ----------------------------------------------------------------
     def _stash(self):

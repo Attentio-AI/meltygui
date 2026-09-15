@@ -222,7 +222,7 @@ class RenderHost(_DeepAttrMixin, dict):
         # draws forever.
         held = bool(Melty._keys_down)
         if held and Melty.glfw_window is not None:
-            import glfw
+            from src.lsd.gl_gui import window_api as glfw
             for k in list(Melty._keys_down):
                 try:
                     if glfw.get_key(Melty.glfw_window, k) != glfw.PRESS:

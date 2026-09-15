@@ -554,31 +554,38 @@ def _hypr_eval(script, what):
 
 
 def hypr_set_box(width, height, dx=0, dy=0):
-    """Resize the studio's window box to (width, height) logical px AND
-    move it by (dx, dy), anchored at its top-left, as ONE request —
-    Hyprland's floating resize is CENTRED (DefaultFloatingAlgorithm
-    ::resizeTarget translates by −Δ/2 whatever the corner), so a bare
-    exact resize slid the window by half the growth. On the Lua build
-    one `eval` reads the window's goal position, resizes, then moves it
-    ABSOLUTELY to goal + (dx, dy): atomic (nothing observes the centred
-    intermediate), integral (no half-pixel goals), and never dependent on
-    the feed's possibly stale position. Hyprland never adopts a size the
-    client commits by itself (CWindow::clampWindowSize only clamps its
-    OWN size — a bare glfw.set_window_size changed the buffer and left
-    the box where it was, 09-06), so this is the way the box follows the
-    surface; the configure it sends back names the size GLFW already
-    applied. Legacy hyprlang build (unverified here): resizewindowpixel
-    exact + movewindowpixel, the centred half-step uncompensated."""
+    """Resize the window's content box and move it by (dx, dy).
+
+    On the patched Lua compositor, publish the box with the matching
+    buffer commit. Until Melty finishes drawing, the old buffer keeps
+    its old box; the new buffer appears at its own size, without a
+    compositor resize animation.
+
+    Older builds retain a single-eval fallback: read the goal position,
+    resize, then move absolutely to goal + offset. This compensates for
+    Hyprland's centred floating resize without using the stale feed.
+    The legacy hyprlang fallback leaves that centred half-step intact.
+    """
     width, height, dx, dy = int(width), int(height), int(dx), int(dy)
     selector = _hypr_selector()
     if selector is None:
         return False
     if hypr_config_is_lua():
-        script = (f'local w = hl.get_window("{selector}"); '
-                  f'if not w then error("no window {selector}") end; '
-                  f'local p = w.at; '
-                  f'hl.dispatch(hl.dsp.window.resize({{x = {width}, y = {height}, window = "{selector}"}})); '
-                  f'hl.dispatch(hl.dsp.window.move({{x = p.x + ({dx}), y = p.y + ({dy}), window = "{selector}"}}))')
+        prefix = (f'local w = hl.get_window("{selector}"); '
+                  f'if not w then error("no window {selector}") end; ')
+        fallback = ('local p = w.at; '
+                    f'hl.dispatch(hl.dsp.window.resize({{x = {width}, y = {height}, window = "{selector}"}})); '
+                    f'hl.dispatch(hl.dsp.window.move({{x = p.x + ({dx}), y = p.y + ({dy}), window = "{selector}"}}))')
+        if hypr_honors_geometry():
+            # Capability detection lives in the same IPC session. Existing
+            # sessions keep working until the new compositor is activated.
+            script = (prefix + 'if hl.dsp.window.resize_on_commit and not w.xwayland '
+                      'and w.floating and not w.group and w.fullscreen == 0 then '
+                      f'hl.dispatch(hl.dsp.window.resize_on_commit({{width = {width}, height = {height}, '
+                      f'dx = {dx}, dy = {dy}, window = "{selector}"}})) '
+                      'else ' + fallback + ' end')
+        else:
+            script = prefix + fallback
         return _hypr_eval(script, "set_box")
     ok = _hypr_dispatch(f"resizewindowpixel exact {width} {height}")
     if dx or dy:

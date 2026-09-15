@@ -4,7 +4,7 @@ from collections import defaultdict
 from enum import Enum
 from traceback import _parse_value_tb
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 import imgui
 from imgui import ImGuiError
 

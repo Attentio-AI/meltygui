@@ -110,6 +110,18 @@ def _specs(window, axis):
     return getattr(window, _REGISTRY[axis][3])
 
 
+def layout_window(draw_state):
+    """The coordinate owner of a layout, including a window's own body.
+
+    parent_window is the containing window of an ordinary view, but the
+    PARENT of a closable window. A window body owns its own frame/cells;
+    adopting its parent's edges separates its contents from its movement.
+    """
+    if getattr(draw_state, "closable", False):
+        return draw_state
+    return draw_state.parent_window or draw_state
+
+
 def frame_edges(window):
     """The window's four frame edge dicts ``(left, right, top, bottom)`` —
     the root frame a layout drawn straight on the window adopts (the tile
@@ -296,6 +308,12 @@ def _all_edges(window, axis="x"):
                 seen.add(id(e))
                 flat.append(e)
     return flat
+
+
+def snapshot_edges(window, axis):
+    """One gesture's local edge positions, shared by Melty and GLFW replay."""
+    _ensure_window_state(window)
+    return [(edge, edge[axis]) for edge in _all_edges(window, axis)]
 
 
 def _cells_from_lists(edge_lists, axis="x", specs=()):
@@ -638,10 +656,9 @@ def _replay_hand_drags(window, axis, pending, os_ctx):
     if gesture is None:
         snap = {}
         edges = {}
-        for key, (ds, edge_list) in _views(window, axis).items():
-            for e in edge_list:
-                edges[id(e)] = e
-                snap[id(e)] = e[axis]
+        for edge, value in snapshot_edges(window, axis):
+            edges[id(edge)] = edge
+            snap[id(edge)] = value
         for e in (_frame(window, axis) or ()):
             edges[id(e)] = e
             snap[id(e)] = e[axis]
@@ -971,7 +988,7 @@ def release_row(draw_state, keep=()):
     stale divider and the window width freezes. ColumnLayout / RowLayout
     re-register on construction, so releasing before building them later
     in the same frame is safe."""
-    window = draw_state.parent_window or draw_state
+    window = layout_window(draw_state)
     for axis, kind in (("x", "row"), ("y", "rows")):
         for attr in (_REGISTRY[axis][0], _REGISTRY[axis][3], _REGISTRY[axis][4]):
             table = getattr(window, attr, None)
@@ -1000,7 +1017,9 @@ def _has_layout_ancestor(draw_state, flag):
     the parent window and guards the root ds's self-parent loop. A Rows
     host is transparent to a Columns view and vice versa: the axes don't
     share edges."""
-    window = draw_state.parent_window
+    window = layout_window(draw_state)
+    if window is draw_state:
+        return False
     node = draw_state._parent
     while node is not None and node is not node._parent:
         if node is window:
@@ -1137,7 +1156,10 @@ def _frame_pass(window, axis):
 
     bands = _bands(window, axis)
     for key, (ds, _) in list(views.items()):
-        if ds is not window and getattr(ds, "closed", False):
+        # A window body owns its own layouts. Evict registrations left on
+        # its former parent after reparenting - a new ownership change.
+        if ds is not window and (getattr(ds, "closed", False)
+                                 or getattr(ds, "closable", False)):
             del views[key]
             specs.pop(key, None)
             bands.pop(key, None)
@@ -1594,7 +1616,7 @@ class ColumnLayout:
         self.border_color = border_color
         self._cell_radius = {}
 
-        window = draw_state.parent_window or draw_state
+        window = layout_window(draw_state)
         _ensure_window_state(window)
         window_edge_pass(window)  # idempotent; usually ran via the wrapper
         self.window = window
@@ -2002,7 +2024,7 @@ class RowLayout:
         self.border_color = border_color
         self._cell_radius = {}
 
-        window = draw_state.parent_window or draw_state
+        window = layout_window(draw_state)
         _ensure_window_state(window)
         window_edge_pass(window)  # idempotent; usually ran via the wrapper
         self.window = window

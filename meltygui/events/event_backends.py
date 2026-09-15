@@ -18,7 +18,7 @@ from collections import deque
 from typing import TYPE_CHECKING
 import time
 
-import glfw
+from src.lsd.gl_gui import window_api as glfw
 
 from src.lsd.gl_gui.utils.glfw_utils import print_stack_trace
 

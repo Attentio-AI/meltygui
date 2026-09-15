@@ -43,7 +43,7 @@ from src.lsd.gl_gui.view.core_views.columns import (ColumnLayout, RowLayout,
                                                     MIN_COLUMN_WIDTH,
                                                     MIN_ROW_HEIGHT,
                                                     _ensure_window_state,
-                                                    _pending, _views, _specs, _bands, frame_edges)
+                                                    _pending, _views, _specs, _bands, frame_edges, layout_window, _drag_inc)
 from src.lsd.gl_gui.view.core_views.decoration.core_decoration import (
     Core, no_save)
 from src.lsd.gl_gui.view.invalidation_tracker import Note
@@ -159,9 +159,14 @@ def tile_rect(frame, draw_state, gap=4.0):
     """A tile's painted box (absolute, ints): its frame inset by ``gap``
     / 2 and clipped to the host's visible box, or None when nothing of it
     shows."""
-    window = draw_state.parent_window or draw_state
+    window = layout_window(draw_state)
     x0, y0, x1, y1 = frame_rect(frame, window)
     clip = Core.melty.get_clip_rect() or draw_state.abs_clip_rect
+    if getattr(draw_state, "closable", False):
+        content = draw_state.get_content_rect()
+        clip = content if clip is None else (
+            max(clip[0], content[0]), max(clip[1], content[1]),
+            min(clip[2], content[2]), min(clip[3], content[3]))
     half = gap / 2
     x0, y0 = snap_int(x0 + half), snap_int(y0 + half)
     x1, y1 = snap_int(x1 - half), snap_int(y1 - half)
@@ -201,8 +206,10 @@ def draw_tile(tile, frame, draw_state, path=(), tree=None, root_frame=None,
     x0, y0, _x1, _y1 = rect
     draw_list = imgui.get_window_draw_list()
     draw_list.add_rect_filled(*rect, pack_color(*tile["tint"], 1.0))
+    draw_list.push_clip_rect(*rect, intersect_with_current_clip_rect=True)
     draw_list.add_text(x0 + label_inset, y0 + label_inset,
                        pack_color(*label_color), str(tile["name"]))
+    draw_list.pop_clip_rect()
 
     changed = False
     for name, on_left, on_top in CORNERS:
@@ -237,7 +244,7 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     drag = draw_state.on_action("left_mouse_drag", view_id=view_id, rect=grip,
                                 priority_delta=2)
     gesture = tile_state.gesture
-    window = draw_state.parent_window or draw_state
+    window = layout_window(draw_state)
 
     if gesture is not None and gesture["corner"] == view_id:
         if gesture.get("kind") == "join":
@@ -254,15 +261,20 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
             tile_state.gesture = {**gesture, "target": join_target(tree, path, root_frame, window, drag)}
             return False
         if drag is None:
-            tile_state.gesture = None            # released
+            tile_state.gesture = None
+            draw_state._drag_totals.pop(view_id, None)
             return False
-        # Follow the cursor: an extra cursor-driven drag of the new edge
-        # (the parent's layout registers it on the frame after the split).
+        # Use the same relative increments as every divider. An absolute cursor
+        # target re-applied at a wall accumulates the blocked distance on every
+        # frame of sticky replay, even when the hand is stationary.
         axis = gesture["axis"]
-        along = (drag.x - window.abs_left) if axis == "x" else (drag.y - window.abs_top)
-        _ensure_window_state(window)
-        _pending(window, axis).append((gesture["edge"], float(along), True))
-        draw_state.invalidate(note=Note(reason="tile split drag", **_NOTE))
+        increment = _drag_inc(draw_state, view_id, drag,
+                              total="total_dx" if axis == "x" else "total_dy")
+        if increment:
+            _ensure_window_state(window)
+            edge = gesture["edge"]
+            _pending(window, axis).append((edge, edge[axis] + increment, True))
+            draw_state.invalidate(note=Note(reason="tile split drag", **_NOTE))
         return False
 
     if drag is None or gesture is not None:
@@ -290,6 +302,8 @@ def tile_corner_gesture(tile, frame, draw_state, path, tree, root_frame,
     edge_index = new_path[-1] if before else new_path[-1] - 1
     tile_state.gesture = {"corner": view_id, "axis": axis,
                           "edge": new_node["edges"][edge_index]}
+    _drag_inc(draw_state, view_id, drag,
+              total="total_dx" if axis == "x" else "total_dy")
     return True
 
 
@@ -389,7 +403,7 @@ def draw_tiles(tree, draw_state, tile_state=None, gap=4.0):
     render_func body with its injected ``tile_state`` (without one the
     tiles draw and their edges drag, but corners don't split). Returns
     True when a gesture changed the tree this frame."""
-    window = draw_state.parent_window or draw_state
+    window = layout_window(draw_state)
     root_frame = frame_edges(window)
     changed = draw_tile_node(tree, root_frame, draw_state, (), tree=tree,
                              root_frame=root_frame, tile_state=tile_state,
